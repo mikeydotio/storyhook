@@ -15,6 +15,8 @@ Usage:
   story <id> "<comment>"
   story <id> assign <member-id|handle>
   story <id> is <state-slug> ["<comment>"]
+  story <id> awaits "<reason>"
+  story <id> awaits --clear
   story <a> <relationship> <b> [--remove]
 
 Global options:
@@ -76,6 +78,13 @@ pub enum Invocation {
         id: String,
         state: String,
         comment: Option<String>,
+    },
+    SetAwaiting {
+        id: String,
+        awaiting: String,
+    },
+    ClearAwaiting {
+        id: String,
     },
     Relate {
         a: String,
@@ -296,6 +305,32 @@ fn parse_story(args: &[String]) -> Result<Invocation, AppError> {
                 None
             },
         });
+    }
+
+    if args.len() >= 2 && args[1] == "awaits" {
+        if args.len() == 3 && args[2] == "--clear" {
+            return Ok(Invocation::ClearAwaiting {
+                id: args[0].clone(),
+            });
+        }
+
+        if args.len() >= 3 {
+            let awaiting = join_tokens(&args[2..]);
+            if awaiting.is_empty() {
+                return Err(AppError::Usage(
+                    "usage: story <id> awaits \"<reason>\" | story <id> awaits --clear".to_string(),
+                ));
+            }
+
+            return Ok(Invocation::SetAwaiting {
+                id: args[0].clone(),
+                awaiting,
+            });
+        }
+
+        return Err(AppError::Usage(
+            "usage: story <id> awaits \"<reason>\" | story <id> awaits --clear".to_string(),
+        ));
     }
 
     if args.len() >= 3 && crate::domain::is_relation_input(&args[1]) {

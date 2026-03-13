@@ -3,7 +3,8 @@ use std::path::Path;
 
 use crate::cli::{CliOptions, HELP_TEXT, Invocation, MemberInput};
 use crate::domain::{
-    Member, StoryEvent, StorySnapshot, SuperState, compute_integrity_issues, relation_edges,
+    Member, StoryEvent, StorySnapshot, SuperState, compute_integrity_issues,
+    derive_family_relationships, relation_edges, would_create_parent_cycle,
 };
 use crate::error::AppError;
 use crate::lock;
@@ -50,7 +51,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             flagged,
         } => {
             storage::ensure_project(root)?;
-            let mut views = all_story_views(root)?;
+            let mut views = build_story_views(root, false)?;
             if let Some(state) = state {
                 views.retain(|view| view.story.state == state);
             }
@@ -103,9 +104,43 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             )?;
             story_view_by_id(root, &id)
         }),
+        Invocation::SetAwaiting { id, awaiting } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            ensure_open_story(root, &id)?;
+            let awaiting = awaiting.trim().to_string();
+            if awaiting.is_empty() {
+                return Err(AppError::Validation(
+                    "awaiting reason must not be empty".to_string(),
+                ));
+            }
+            storage::write_story_events(
+                root,
+                &id,
+                &[StoryEvent::StoryAwaitingSet {
+                    at: storage::now(),
+                    awaiting,
+                }],
+            )?;
+            story_view_by_id(root, &id)
+        }),
+        Invocation::ClearAwaiting { id } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            ensure_open_story(root, &id)?;
+            let story = storage::load_open_story_snapshot(root, &id)?;
+            if story.awaiting.is_none() {
+                return story_view_by_id(root, &id);
+            }
+            storage::write_story_events(
+                root,
+                &id,
+                &[StoryEvent::StoryAwaitingCleared { at: storage::now() }],
+            )?;
+            story_view_by_id(root, &id)
+        }),
         Invocation::SetState { id, state, comment } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             ensure_open_story(root, &id)?;
+            let story = storage::load_open_story_snapshot(root, &id)?;
             let states = storage::load_state_map(root)?;
             let state_def = states
                 .get(&state)
@@ -122,6 +157,9 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 });
             }
             if state_def.super_state == SuperState::Closed {
+                if story.awaiting.is_some() {
+                    events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
+                }
                 events.push(StoryEvent::StoryClosedAndArchived {
                     at: now,
                     state: state.clone(),
@@ -152,8 +190,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             let a_story = storage::load_open_story_snapshot(root, &a)?;
             let b_story = storage::load_open_story_snapshot(root, &b)?;
+            let stories = load_story_map(root)?;
 
-            validate_parent_constraints(&a, &b, &relation, &a_story, &b_story)?;
+            if !remove {
+                validate_parent_constraints(&stories, &a, &b, &relation, &a_story, &b_story)?;
+            }
 
             let edges = relation_edges(&relation).ok_or_else(|| {
                 AppError::Validation(format!("unsupported relationship `{relation}`"))
@@ -317,7 +358,23 @@ fn ensure_open_story(root: &Path, id: &str) -> Result<(), AppError> {
     Err(AppError::NotFound(format!("story `{id}` not found")))
 }
 
-fn all_story_views(root: &Path) -> Result<Vec<StoryView>, AppError> {
+fn load_story_map(root: &Path) -> Result<BTreeMap<String, StorySnapshot>, AppError> {
+    let open = storage::load_all_open_snapshots(root)?;
+    let archived = storage::load_all_archived_snapshots(root)?;
+    let mut stories = BTreeMap::new();
+
+    for story in open {
+        stories.insert(story.id.clone(), story);
+    }
+
+    for story in archived {
+        stories.entry(story.id.clone()).or_insert(story);
+    }
+
+    Ok(stories)
+}
+
+fn build_story_views(root: &Path, include_derived: bool) -> Result<Vec<StoryView>, AppError> {
     let open = storage::load_all_open_snapshots(root)?;
     let archived = storage::load_all_archived_snapshots(root)?;
     let mut stories = BTreeMap::new();
@@ -330,12 +387,17 @@ fn all_story_views(root: &Path) -> Result<Vec<StoryView>, AppError> {
     for story in archived {
         if stories.contains_key(&story.id) {
             duplicates.insert(story.id.clone());
-            continue;
+        } else {
+            stories.insert(story.id.clone(), story);
         }
-        stories.insert(story.id.clone(), story);
     }
 
     let mut issues = compute_integrity_issues(&stories);
+    let derived_relationships = if include_derived {
+        derive_family_relationships(&stories)
+    } else {
+        BTreeMap::new()
+    };
     for duplicate in duplicates {
         issues
             .entry(duplicate)
@@ -345,7 +407,8 @@ fn all_story_views(root: &Path) -> Result<Vec<StoryView>, AppError> {
 
     let mut views = Vec::new();
     for story in stories.into_values() {
-        let mut flagged_reasons = issues.remove(&story.id).unwrap_or_default();
+        let story_id = story.id.clone();
+        let mut flagged_reasons = issues.remove(&story_id).unwrap_or_default();
         if story
             .relationships
             .iter()
@@ -365,6 +428,10 @@ fn all_story_views(root: &Path) -> Result<Vec<StoryView>, AppError> {
 
         views.push(StoryView {
             story,
+            derived_relationships: derived_relationships
+                .get(&story_id)
+                .cloned()
+                .unwrap_or_default(),
             warnings: Vec::new(),
             flagged_reasons,
         });
@@ -379,7 +446,7 @@ fn story_view_by_id(root: &Path, id: &str) -> Result<Response, AppError> {
 }
 
 fn story_view_response(root: &Path, story: StorySnapshot) -> Result<Response, AppError> {
-    let views = all_story_views(root)?;
+    let views = build_story_views(root, true)?;
     let view = views
         .into_iter()
         .find(|candidate| candidate.story.id == story.id)
@@ -406,6 +473,7 @@ fn has_relation(story: &StorySnapshot, relation: &str, other_id: &str) -> bool {
 }
 
 fn validate_parent_constraints(
+    stories: &BTreeMap<String, StorySnapshot>,
     a: &str,
     b: &str,
     relation: &str,
@@ -436,11 +504,29 @@ fn validate_parent_constraints(
         }
     }
 
+    match relation {
+        "parent-of" => {
+            if would_create_parent_cycle(stories, a, b) {
+                return Err(AppError::Validation(format!(
+                    "adding `parent-of` from `{a}` to `{b}` would create a cycle"
+                )));
+            }
+        }
+        "child-of" => {
+            if would_create_parent_cycle(stories, b, a) {
+                return Err(AppError::Validation(format!(
+                    "adding `child-of` from `{a}` to `{b}` would create a cycle"
+                )));
+            }
+        }
+        _ => {}
+    }
+
     Ok(())
 }
 
 fn doctor_report(root: &Path) -> Result<Response, AppError> {
-    let views = all_story_views(root)?;
+    let views = build_story_views(root, false)?;
     let mut issues = Vec::new();
     for view in views {
         for issue in view.flagged_reasons {

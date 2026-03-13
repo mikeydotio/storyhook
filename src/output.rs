@@ -1,11 +1,13 @@
 use serde::Serialize;
 
-use crate::domain::StorySnapshot;
+use crate::domain::{StoryRelation, StorySnapshot};
 use crate::error::AppError;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct StoryView {
     pub story: StorySnapshot,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived_relationships: Vec<StoryRelation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -156,6 +158,9 @@ fn render_story(view: &StoryView) -> String {
         story.superstate.as_str()
     ));
     body.push_str(&format!("assignee: {assignee}\n"));
+    if let Some(awaiting) = &story.awaiting {
+        body.push_str(&format!("awaiting: {awaiting}\n"));
+    }
 
     if let Some(closed_at) = &story.closed_at {
         body.push_str(&format!("closed_at: {closed_at}\n"));
@@ -173,6 +178,13 @@ fn render_story(view: &StoryView) -> String {
     if !story.relationships.is_empty() {
         body.push_str("relationships:\n");
         for relation in &story.relationships {
+            body.push_str(&format!("- {} {}\n", relation.relation, relation.other_id));
+        }
+    }
+
+    if !view.derived_relationships.is_empty() {
+        body.push_str("derived_relationships:\n");
+        for relation in &view.derived_relationships {
             body.push_str(&format!("- {} {}\n", relation.relation, relation.other_id));
         }
     }

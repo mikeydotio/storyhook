@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tempfile::tempdir;
 
@@ -83,4 +84,53 @@ fn comment_and_assign_append_events() {
         .success()
         .stdout(contains("assignee: mikey"))
         .stdout(contains("First pass done"));
+}
+
+#[test]
+fn awaiting_can_be_set_and_cleared() {
+    let dir = tempdir().unwrap();
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["new", "Blocked work"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["SH-1", "awaits", "blocked on API"])
+        .assert()
+        .success()
+        .stdout(contains("awaiting: blocked on API"));
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["SH-1", "--json"])
+        .assert()
+        .success()
+        .stdout(contains("\"awaiting\": \"blocked on API\""));
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["SH-1", "awaits", "--clear"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("SH-1")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("awaiting:").not());
 }
