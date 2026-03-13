@@ -1,0 +1,225 @@
+# story
+
+`story` is a CLI-first story and issue tracker built for local repositories, scripting, and AI coding agents.
+
+It keeps active work in project-local JSON event logs, archives closed work into SQLite, and favors short commands that are easy to type, pipe, and automate.
+
+## Why `story`
+
+- Local-first: project data lives in `/.storyhook` so it can travel with the repository.
+- Agent-friendly: concise commands, stable `--json` output, and explicit exit codes.
+- Audit-friendly: open stories are append-only JSONL event streams.
+- Safe under concurrent use: all writes use a project-scoped file lock; archived stories live in SQLite with WAL enabled.
+
+## Current capabilities
+
+- Create and show stories
+- Add comments with `story <id> "comment"`
+- Assign members
+- Define project states mapped to `OPEN` or `CLOSED`
+- Set and clear `awaiting` blockers
+- Add and remove story relationships
+- Derive read-only `ancestor-of` and `descendent-of` family relationships on show output
+- Archive stories immediately when they move into a `CLOSED` state
+- Run integrity checks with `story doctor` and best-effort repair with `story doctor --fix`
+
+## Install
+
+`story` currently installs from a local checkout.
+
+```bash
+cargo install --path .
+```
+
+For local development without installing:
+
+```bash
+cargo run -- --help
+```
+
+## Quick start
+
+Initialize a project inside the repository you want to track:
+
+```bash
+story init
+```
+
+Create a story:
+
+```bash
+story new "Build CLI parser"
+```
+
+Add collaborators:
+
+```bash
+story member add "Mikey Ward <mw@mikey.io>"
+story member add -g mikeyward
+```
+
+Work the story:
+
+```bash
+story SH-1 assign mikey
+story SH-1 "Parser skeleton is in place"
+story SH-1 awaits "waiting on command grammar decision"
+story SH-1 awaits --clear
+story SH-1 is in-progress "Hooked up argument routing"
+story SH-1 is done "Merged and verified"
+```
+
+Relate stories:
+
+```bash
+story SH-1 parent-of SH-2
+story SH-2 precedes SH-3
+story SH-4 conflicts-with SH-5
+story SH-2 parent-of SH-3 --remove
+```
+
+Inspect and report:
+
+```bash
+story SH-1
+story list --state todo
+story list --assignee mikey
+story list --flagged
+story doctor
+```
+
+## Command reference
+
+```text
+story init
+story new <title>
+story member add "<name <email>>"
+story member add -g <github-handle>
+story state add <state-slug> --super OPEN|CLOSED
+story state remove <state-slug>
+story list [--state <slug>] [--assignee <id|handle>] [--flagged]
+story doctor [--fix]
+story <id>
+story <id> "<comment>"
+story <id> assign <member-id|handle>
+story <id> is <state-slug> ["<comment>"]
+story <id> awaits "<reason>"
+story <id> awaits --clear
+story <a> <relationship> <b> [--remove]
+```
+
+## States
+
+- Every project state maps to exactly one superstate: `OPEN` or `CLOSED`.
+- A project must have at least one `OPEN` state and at least one `CLOSED` state.
+- New projects start with `todo -> OPEN` and `done -> CLOSED`.
+- Moving a story into a `CLOSED` state immediately archives it to SQLite.
+- Closed stories remain readable but are no longer mutable.
+
+## Relationships
+
+Supported direct relationship inputs:
+
+- `starts-before` / `starts-after`
+- `starts-with`
+- `finishes-before` / `finishes-after`
+- `finishes-with`
+- `precedes` / `follows`
+- `relieves` / `relieved-by`
+- `conflicts-with`
+- `coincides-with`
+- `parent-of` / `child-of`
+- `relates-to`
+- `obviates` / `obviated-by`
+
+Derived, read-only relationships shown on story views:
+
+- `ancestor-of`
+- `descendent-of`
+
+Notes:
+
+- Directional relationships automatically create their inverse on the related story.
+- Mutual relationships create matching links on both stories.
+- `parent-of` implies scheduling edges and enforces a single-parent rule for the child.
+- New parent/child links that would create a cycle are rejected.
+
+## Storage model
+
+Project data lives in `/.storyhook`:
+
+```text
+.storyhook/
+  project.toml
+  states.toml
+  members.jsonl
+  next-id
+  lock
+  open/
+    stories/
+      SH-1.jsonl
+  archive/
+    archive.db
+    archive.db-wal
+```
+
+Behavior:
+
+- Open stories are stored as append-only JSONL event streams.
+- Closed stories are archived into SQLite.
+- The story ID counter is project-local and monotonic: `SH-1`, `SH-2`, `SH-3`, ...
+- Every write acquires a project-scoped file lock before mutating state.
+
+## Automation and scripting
+
+`story` is designed to be used by shell scripts and coding agents.
+
+Global flags:
+
+- `--json` emits a structured JSON response envelope
+- `--quiet` suppresses normal success output
+
+Exit codes:
+
+- `0` success
+- `2` usage or validation error
+- `3` not found
+- `4` lock timeout
+- `5` integrity or storage error
+
+Examples:
+
+```bash
+story SH-1 --json
+story list --flagged --json
+story SH-2 is done --quiet
+```
+
+## Integrity checks
+
+`story doctor` reports integrity problems such as:
+
+- dangling relationships
+- missing inverse relationships
+- hierarchy cycles
+- duplicate open/archive presence
+- invalid multi-parent hierarchies
+
+`story doctor --fix` currently performs best-effort repair for supported issues, including:
+
+- adding missing inverse relationships
+- removing dangling direct relationships
+
+## Development
+
+Run the standard checks:
+
+```bash
+cargo test
+cargo fmt -- --check
+cargo clippy --all-targets -- -D warnings
+```
+
+## Project status
+
+The current release is usable for local, repository-backed tracking and automation workflows. The command surface is intentionally small and stable, and the storage model is built to evolve without abandoning existing project data.
