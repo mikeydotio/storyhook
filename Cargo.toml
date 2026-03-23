@@ -1,7 +1,18 @@
 [package]
-name = "story"
+name = "storyhook"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.89"
+description = "CLI-first issue tracker for AI coding agents"
+license = "MIT"
+repository = "https://github.com/mikeydotio/storyhook"
+readme = "README.md"
+keywords = ["cli", "issue-tracker", "project-management", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "story"
+path = "src/main.rs"
 
 [dependencies]
 chrono = { version = "0.4.42", features = ["clock", "serde"] }

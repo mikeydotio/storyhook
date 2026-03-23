@@ -25,16 +25,60 @@ It keeps active work in project-local JSON event logs, archives closed work into
 
 ## Install
 
-`story` currently installs from a local checkout.
+### Quick install (Linux / macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh
+```
+
+This detects your platform and architecture, downloads the latest release binary, and installs it to `~/.local/bin/story`.
+
+To install to a different location:
+
+```bash
+STORYHOOK_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh
+```
+
+To install a specific version:
+
+```bash
+STORYHOOK_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh
+```
+
+### Install with Cargo
+
+```bash
+cargo install storyhook
+```
+
+Or from a local checkout:
 
 ```bash
 cargo install --path .
 ```
 
-For local development without installing:
+### Prebuilt binaries
+
+Download a release archive from the [releases page](https://github.com/mikeydotio/storyhook/releases) and extract the `story` binary to a directory in your PATH.
+
+Available targets:
+- `story-x86_64-unknown-linux-gnu.tar.gz` — Linux x86_64
+- `story-aarch64-unknown-linux-gnu.tar.gz` — Linux ARM64
+- `story-x86_64-apple-darwin.tar.gz` — macOS Intel
+- `story-aarch64-apple-darwin.tar.gz` — macOS Apple Silicon
+
+## Uninstall
+
+If installed via the install script or manual download:
 
 ```bash
-cargo run -- --help
+rm ~/.local/bin/story
+```
+
+If installed via Cargo:
+
+```bash
+cargo uninstall storyhook
 ```
 
 ## Quick start

@@ -1,9 +1,9 @@
 use std::env;
 use std::process;
 
-use story::app;
-use story::cli::{self, CliOptions};
-use story::output;
+use storyhook::app;
+use storyhook::cli::{self, CliOptions};
+use storyhook::output;
 
 fn main() {
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
@@ -13,7 +13,7 @@ fn main() {
             eprintln!("error: failed to resolve current directory: {e}");
             process::exit(1);
         });
-        if let Err(e) = story::mcp::run_mcp_server(&cwd) {
+        if let Err(e) = storyhook::mcp::run_mcp_server(&cwd) {
             eprintln!("MCP server error: {e}");
             process::exit(1);
         }
@@ -39,7 +39,7 @@ fn main() {
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
         Err(error) => {
-            let error = story::error::AppError::Storage(format!(
+            let error = storyhook::error::AppError::Storage(format!(
                 "failed to resolve current directory: {error}"
             ));
             print!("{}", output::render_error(&error, json));
