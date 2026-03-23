@@ -1,15 +1,34 @@
 use crate::error::AppError;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphMode {
+    Overview,
+    CriticalPath,
+    BlockedBy(String),
+    ParallelGroups,
+}
+
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
-  story init
+  story init [--prefix <PREFIX>]
   story new <title>
   story member add "<name <email>>"
   story member add -g <github-handle>
   story state add <state-slug> --super OPEN|CLOSED
   story state remove <state-slug>
-  story list [--state <slug>] [--assignee <id|handle>] [--flagged]
+  story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
+             [--label <labels>] [--created-after <date>] [--updated-after <date>]
+             [--blocked] [--ready]
+  story next [--count <n>]
+  story summary
+  story search <query>
+  story import [<file>]
+  story export
+  story import-project <file>
+  story context [--format markdown|json]
+  story handoff [--since <duration>]
+  story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
   story doctor [--fix]
   story <id>
   story <id> "<comment>"
@@ -17,6 +36,10 @@ Usage:
   story <id> is <state-slug> ["<comment>"]
   story <id> awaits "<reason>"
   story <id> awaits --clear
+  story <id> priority <critical|high|medium|low|none>
+  story <id> label <labels-csv>
+  story <id> label --remove <labels-csv>
+  story <id> reopen
   story <a> <relationship> <b> [--remove]
 
 Global options:
@@ -41,7 +64,9 @@ pub enum MemberInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Invocation {
     Help,
-    Init,
+    Init {
+        prefix: Option<String>,
+    },
     New {
         title: String,
     },
@@ -59,7 +84,20 @@ pub enum Invocation {
         state: Option<String>,
         assignee: Option<String>,
         flagged: bool,
+        priority: Option<String>,
+        label: Option<String>,
+        created_after: Option<String>,
+        updated_after: Option<String>,
+        blocked: bool,
+        ready: bool,
     },
+    Search {
+        query: String,
+    },
+    Next {
+        count: usize,
+    },
+    Summary,
     Doctor {
         fix: bool,
     },
@@ -85,6 +123,34 @@ pub enum Invocation {
     },
     ClearAwaiting {
         id: String,
+    },
+    SetPriority {
+        id: String,
+        priority: String,
+    },
+    SetLabels {
+        id: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+    },
+    Reopen {
+        id: String,
+    },
+    Import {
+        file: Option<String>,
+    },
+    Export,
+    ImportProject {
+        file: String,
+    },
+    Context {
+        format: Option<String>,
+    },
+    Handoff {
+        since: Option<String>,
+    },
+    Graph {
+        mode: GraphMode,
     },
     Relate {
         a: String,
@@ -122,16 +188,40 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "member" => parse_member(args),
         "state" => parse_state(args),
         "list" => parse_list(args),
+        "next" => parse_next(args),
+        "summary" => Ok(Invocation::Summary),
+        "search" => parse_search(args),
+        "import" => parse_import(args),
+        "import-project" => parse_import_project(args),
+        "export" => Ok(Invocation::Export),
+        "context" => parse_context(args),
+        "handoff" => parse_handoff(args),
+        "graph" => parse_graph(args),
         "doctor" => parse_doctor(args),
         _ => parse_story(args),
     }
 }
 
 fn parse_init(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() != 1 {
-        return Err(AppError::Usage("usage: story init".to_string()));
+    let mut prefix = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--prefix" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage("usage: story init [--prefix <PREFIX>]".to_string())
+                })?;
+                prefix = Some(value.clone());
+                index += 2;
+            }
+            _ => {
+                return Err(AppError::Usage(
+                    "usage: story init [--prefix <PREFIX>]".to_string(),
+                ));
+            }
+        }
     }
-    Ok(Invocation::Init)
+    Ok(Invocation::Init { prefix })
 }
 
 fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
@@ -225,39 +315,73 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut state = None;
     let mut assignee = None;
     let mut flagged = false;
+    let mut priority = None;
+    let mut label = None;
+    let mut created_after = None;
+    let mut updated_after = None;
+    let mut blocked = false;
+    let mut ready = false;
     let mut index = 1;
+    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready]";
 
     while index < args.len() {
         match args[index].as_str() {
             "--state" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage(
-                        "usage: story list [--state <slug>] [--assignee <id|handle>] [--flagged]"
-                            .to_string(),
-                    )
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 state = Some(value.clone());
                 index += 2;
             }
             "--assignee" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage(
-                        "usage: story list [--state <slug>] [--assignee <id|handle>] [--flagged]"
-                            .to_string(),
-                    )
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 assignee = Some(value.clone());
+                index += 2;
+            }
+            "--priority" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                priority = Some(value.clone());
+                index += 2;
+            }
+            "--label" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                label = Some(value.clone());
+                index += 2;
+            }
+            "--created-after" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                created_after = Some(value.clone());
+                index += 2;
+            }
+            "--updated-after" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                updated_after = Some(value.clone());
                 index += 2;
             }
             "--flagged" => {
                 flagged = true;
                 index += 1;
             }
+            "--blocked" => {
+                blocked = true;
+                index += 1;
+            }
+            "--ready" => {
+                ready = true;
+                index += 1;
+            }
             _ => {
-                return Err(AppError::Usage(
-                    "usage: story list [--state <slug>] [--assignee <id|handle>] [--flagged]"
-                        .to_string(),
-                ));
+                return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
@@ -266,7 +390,144 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
         state,
         assignee,
         flagged,
+        priority,
+        label,
+        created_after,
+        updated_after,
+        blocked,
+        ready,
     })
+}
+
+fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
+    let mut count = 1;
+    let mut index = 1;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--count" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage("usage: story next [--count <n>]".to_string())
+                })?;
+                count = value.parse::<usize>().map_err(|_| {
+                    AppError::Usage("--count must be a positive integer".to_string())
+                })?;
+                if count == 0 {
+                    return Err(AppError::Usage(
+                        "--count must be a positive integer".to_string(),
+                    ));
+                }
+                index += 2;
+            }
+            _ => {
+                return Err(AppError::Usage(
+                    "usage: story next [--count <n>]".to_string(),
+                ));
+            }
+        }
+    }
+
+    Ok(Invocation::Next { count })
+}
+
+fn parse_search(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() < 2 {
+        return Err(AppError::Usage("usage: story search <query>".to_string()));
+    }
+    Ok(Invocation::Search {
+        query: join_tokens(&args[1..]),
+    })
+}
+
+fn parse_import(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() > 2 {
+        return Err(AppError::Usage("usage: story import [<file>]".to_string()));
+    }
+    let file = args.get(1).cloned();
+    Ok(Invocation::Import { file })
+}
+
+fn parse_import_project(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage(
+            "usage: story import-project <file>".to_string(),
+        ));
+    }
+    Ok(Invocation::ImportProject {
+        file: args[1].clone(),
+    })
+}
+
+fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
+    let mut format = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--format" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage("usage: story context [--format markdown|json]".to_string())
+                })?;
+                format = Some(value.clone());
+                index += 2;
+            }
+            _ => {
+                return Err(AppError::Usage(
+                    "usage: story context [--format markdown|json]".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(Invocation::Context { format })
+}
+
+fn parse_handoff(args: &[String]) -> Result<Invocation, AppError> {
+    let mut since = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--since" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage("usage: story handoff [--since <duration>]".to_string())
+                })?;
+                since = Some(value.clone());
+                index += 2;
+            }
+            _ => {
+                return Err(AppError::Usage(
+                    "usage: story handoff [--since <duration>]".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(Invocation::Handoff { since })
+}
+
+fn parse_graph(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() == 1 {
+        return Ok(Invocation::Graph {
+            mode: GraphMode::Overview,
+        });
+    }
+    match args[1].as_str() {
+        "--critical-path" => Ok(Invocation::Graph {
+            mode: GraphMode::CriticalPath,
+        }),
+        "--blocked-by" => {
+            let id = args.get(2).ok_or_else(|| {
+                AppError::Usage("usage: story graph --blocked-by <id>".to_string())
+            })?;
+            Ok(Invocation::Graph {
+                mode: GraphMode::BlockedBy(id.clone()),
+            })
+        }
+        "--parallel-groups" => Ok(Invocation::Graph {
+            mode: GraphMode::ParallelGroups,
+        }),
+        _ => Err(AppError::Usage(
+            "usage: story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]"
+                .to_string(),
+        )),
+    }
 }
 
 fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
@@ -331,6 +592,49 @@ fn parse_story(args: &[String]) -> Result<Invocation, AppError> {
         return Err(AppError::Usage(
             "usage: story <id> awaits \"<reason>\" | story <id> awaits --clear".to_string(),
         ));
+    }
+
+    if args.len() == 3 && args[1] == "priority" {
+        return Ok(Invocation::SetPriority {
+            id: args[0].clone(),
+            priority: args[2].clone(),
+        });
+    }
+
+    if args.len() >= 3 && args[1] == "label" {
+        if args[2] == "--remove" {
+            if args.len() < 4 {
+                return Err(AppError::Usage(
+                    "usage: story <id> label --remove <labels-csv>".to_string(),
+                ));
+            }
+            let remove: Vec<String> = args[3]
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            return Ok(Invocation::SetLabels {
+                id: args[0].clone(),
+                add: Vec::new(),
+                remove,
+            });
+        }
+        let add: Vec<String> = args[2]
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        return Ok(Invocation::SetLabels {
+            id: args[0].clone(),
+            add,
+            remove: Vec::new(),
+        });
+    }
+
+    if args.len() == 2 && args[1] == "reopen" {
+        return Ok(Invocation::Reopen {
+            id: args[0].clone(),
+        });
     }
 
     if args.len() >= 3 && crate::domain::is_relation_input(&args[1]) {

@@ -21,6 +21,8 @@ pub struct ProjectPaths {
 struct ProjectFile {
     schema: u32,
     created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prefix: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -80,7 +82,7 @@ pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-pub fn init_project(root: &Path) -> Result<(), AppError> {
+pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
     let paths = ProjectPaths::new(root);
     fs::create_dir_all(paths.open_stories_dir())?;
     fs::create_dir_all(paths.open_indexes_dir())?;
@@ -90,6 +92,7 @@ pub fn init_project(root: &Path) -> Result<(), AppError> {
         let project = ProjectFile {
             schema: 1,
             created_at: now(),
+            prefix: prefix.map(|p| p.to_string()),
         };
         fs::write(paths.project_file(), toml::to_string_pretty(&project)?)?;
     }
@@ -252,7 +255,15 @@ pub fn next_story_id(root: &Path) -> Result<String, AppError> {
         .parse::<u64>()
         .map_err(|error| AppError::Storage(format!("invalid next-id counter: {error}")))?;
     fs::write(paths.next_id_file(), format!("{}\n", value + 1))?;
-    Ok(format!("SH-{value}"))
+    let prefix = load_project_prefix(root)?;
+    Ok(format!("{prefix}-{value}"))
+}
+
+fn load_project_prefix(root: &Path) -> Result<String, AppError> {
+    let paths = ProjectPaths::new(root);
+    let raw = fs::read_to_string(paths.project_file())?;
+    let project: ProjectFile = toml::from_str(&raw)?;
+    Ok(project.prefix.unwrap_or_else(|| "SH".to_string()))
 }
 
 pub fn create_story(root: &Path, title: &str) -> Result<StorySnapshot, AppError> {
@@ -430,6 +441,166 @@ pub fn load_all_snapshots(root: &Path) -> Result<Vec<StorySnapshot>, AppError> {
 pub fn open_story_exists(root: &Path, id: &str) -> bool {
     let paths = ProjectPaths::new(root);
     paths.open_story_file(id).exists()
+}
+
+pub fn unarchive_story(root: &Path, id: &str) -> Result<(), AppError> {
+    let connection = open_archive_connection(root)?;
+    let events_json: String = connection
+        .query_row(
+            "SELECT events_json FROM closed_stories WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|_| AppError::NotFound(format!("story `{id}` not found in archive")))?;
+
+    let events: Vec<StoryEvent> = serde_json::from_str(&events_json)?;
+    // Filter out the close event so the story reopens cleanly
+    let events: Vec<StoryEvent> = events
+        .into_iter()
+        .filter(|e| !matches!(e, StoryEvent::StoryClosedAndArchived { .. }))
+        .collect();
+
+    rewrite_story_events(root, id, &events)?;
+    connection.execute("DELETE FROM closed_stories WHERE id = ?1", [id])?;
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectExport {
+    pub schema: u32,
+    pub prefix: Option<String>,
+    pub states: Vec<StateDef>,
+    pub members: Vec<Member>,
+    pub stories: Vec<ExportedStory>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExportedStory {
+    pub id: String,
+    pub events: Vec<StoryEvent>,
+    pub archived: bool,
+}
+
+pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
+    ensure_project(root)?;
+    let paths = ProjectPaths::new(root);
+
+    let raw = fs::read_to_string(paths.project_file())?;
+    let project: ProjectFile = toml::from_str(&raw)?;
+
+    let states = load_states(root)?;
+    let members = load_members(root)?;
+    let mut stories = Vec::new();
+
+    // Export open stories
+    if paths.open_stories_dir().exists() {
+        let mut entries = fs::read_dir(paths.open_stories_dir())?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let id = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .ok_or_else(|| AppError::Storage("invalid story filename".to_string()))?
+                .to_string();
+            let events = read_story_events(&path)?;
+            stories.push(ExportedStory {
+                id,
+                events,
+                archived: false,
+            });
+        }
+    }
+
+    // Export archived stories
+    let connection = open_archive_connection(root)?;
+    let mut statement =
+        connection.prepare("SELECT id, events_json FROM closed_stories ORDER BY id ASC")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, events_json) = row?;
+        let events: Vec<StoryEvent> = serde_json::from_str(&events_json)?;
+        stories.push(ExportedStory {
+            id,
+            events,
+            archived: true,
+        });
+    }
+
+    Ok(ProjectExport {
+        schema: project.schema,
+        prefix: project.prefix,
+        states,
+        members,
+        stories,
+    })
+}
+
+pub fn import_project(root: &Path, export: &ProjectExport) -> Result<(), AppError> {
+    let paths = ProjectPaths::new(root);
+    fs::create_dir_all(paths.open_stories_dir())?;
+    fs::create_dir_all(paths.open_indexes_dir())?;
+    fs::create_dir_all(paths.archive_dir())?;
+
+    let project = ProjectFile {
+        schema: export.schema,
+        created_at: now(),
+        prefix: export.prefix.clone(),
+    };
+    fs::write(paths.project_file(), toml::to_string_pretty(&project)?)?;
+
+    save_states(root, &export.states)?;
+
+    // Write members
+    fs::write(paths.members_file(), "")?;
+    for member in &export.members {
+        store_member(root, member)?;
+    }
+
+    // Write stories
+    let mut max_id: u64 = 0;
+    let state_map = load_state_map(root)?;
+
+    for story in &export.stories {
+        // Track max ID for next-id counter
+        if let Some(num) = story
+            .id
+            .split('-')
+            .nth(1)
+            .and_then(|n| n.parse::<u64>().ok())
+            && num > max_id
+        {
+            max_id = num;
+        }
+
+        if story.archived {
+            let snapshot = fold_story(&story.id, &story.events, &state_map)?;
+            let closed_at = snapshot.closed_at.clone().unwrap_or_else(now);
+            let mut connection = open_archive_connection(root)?;
+            let transaction = connection.transaction()?;
+            transaction.execute(
+                "INSERT OR REPLACE INTO closed_stories (id, snapshot_json, events_json, closed_at, state) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    snapshot.id,
+                    serde_json::to_string(&snapshot)?,
+                    serde_json::to_string(&story.events)?,
+                    closed_at,
+                    snapshot.state,
+                ],
+            )?;
+            transaction.commit()?;
+        } else {
+            rewrite_story_events(root, &story.id, &story.events)?;
+        }
+    }
+
+    fs::write(paths.next_id_file(), format!("{}\n", max_id + 1))?;
+    Ok(())
 }
 
 fn open_archive_connection(root: &Path) -> Result<Connection, AppError> {

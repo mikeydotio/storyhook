@@ -4,6 +4,62 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImportStory {
+    pub title: String,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
+    #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
+    pub relationships: Option<Vec<ImportRelationship>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImportRelationship {
+    pub relation: String,
+    #[serde(default)]
+    pub ref_index: Option<usize>,
+    #[serde(default)]
+    pub other_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    Critical,
+    High,
+    Medium,
+    Low,
+    #[default]
+    None,
+}
+
+impl Priority {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.to_ascii_lowercase().as_str() {
+            "critical" => Some(Self::Critical),
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "low" => Some(Self::Low),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::None => "none",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SuperState {
@@ -74,6 +130,10 @@ pub struct StorySnapshot {
     pub comments: Vec<StoryComment>,
     #[serde(default)]
     pub relationships: Vec<StoryRelation>,
+    #[serde(default)]
+    pub priority: Priority,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<String>,
 }
@@ -115,6 +175,14 @@ pub enum StoryEvent {
         other_id: String,
         relation: String,
     },
+    StoryPrioritySet {
+        at: String,
+        priority: Priority,
+    },
+    StoryLabelsSet {
+        at: String,
+        labels: Vec<String>,
+    },
     StoryClosedAndArchived {
         at: String,
         state: String,
@@ -149,6 +217,8 @@ pub fn fold_story(
     let mut state = None;
     let mut assignee = None;
     let mut awaiting = None;
+    let mut priority = Priority::None;
+    let mut labels = Vec::new();
     let mut comments = Vec::new();
     let mut relationships = BTreeSet::new();
     let mut closed_at = None;
@@ -192,6 +262,20 @@ pub fn fold_story(
                 state: story_state,
             } => {
                 state = Some(story_state.clone());
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryPrioritySet {
+                at,
+                priority: new_priority,
+            } => {
+                priority = new_priority.clone();
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryLabelsSet {
+                at,
+                labels: new_labels,
+            } => {
+                labels = new_labels.clone();
                 updated_at = Some(at.clone());
             }
             StoryEvent::StoryRelationshipAdded {
@@ -249,6 +333,8 @@ pub fn fold_story(
         superstate,
         assignee,
         awaiting,
+        priority,
+        labels,
         comments,
         relationships: relationships.into_iter().collect(),
         closed_at,
@@ -378,6 +464,31 @@ pub fn compute_integrity_issues(
     }
 
     issues
+}
+
+pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnapshot>) -> bool {
+    if story.superstate != SuperState::Open {
+        return false;
+    }
+    if story.awaiting.is_some() {
+        return false;
+    }
+    if story
+        .relationships
+        .iter()
+        .any(|r| r.relation == "obviated-by")
+    {
+        return false;
+    }
+    for relation in &story.relationships {
+        if (relation.relation == "follows" || relation.relation == "starts-after")
+            && let Some(other) = all_stories.get(&relation.other_id)
+            && other.superstate == SuperState::Open
+        {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn would_create_parent_cycle(
@@ -621,12 +732,202 @@ impl HierarchyGraph {
     }
 }
 
+pub fn parse_duration(input: &str) -> Option<chrono::Duration> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+    let (num_str, unit) = if let Some(s) = input.strip_suffix('h') {
+        (s, 'h')
+    } else if let Some(s) = input.strip_suffix('d') {
+        (s, 'd')
+    } else if let Some(s) = input.strip_suffix('m') {
+        (s, 'm')
+    } else if let Some(s) = input.strip_suffix('w') {
+        (s, 'w')
+    } else {
+        return None;
+    };
+    let num: i64 = num_str.parse().ok()?;
+    match unit {
+        'm' => chrono::Duration::try_minutes(num),
+        'h' => chrono::Duration::try_hours(num),
+        'd' => chrono::Duration::try_days(num),
+        'w' => chrono::Duration::try_weeks(num),
+        _ => None,
+    }
+}
+
+/// Dependency graph for open stories using follows/starts-after/precedes relationships
+#[derive(Clone, Debug)]
+pub struct DependencyGraph {
+    /// story_id -> set of story_ids that must complete before this one
+    predecessors: BTreeMap<String, BTreeSet<String>>,
+    /// story_id -> set of story_ids that depend on this one
+    successors: BTreeMap<String, BTreeSet<String>>,
+    /// All open story IDs in this graph
+    nodes: BTreeSet<String>,
+}
+
+impl DependencyGraph {
+    pub fn from_open_stories(stories: &BTreeMap<String, StorySnapshot>) -> Self {
+        let open: BTreeMap<&String, &StorySnapshot> = stories
+            .iter()
+            .filter(|(_, s)| s.superstate == SuperState::Open)
+            .collect();
+
+        let mut predecessors: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut successors: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut nodes = BTreeSet::new();
+
+        for id in open.keys() {
+            nodes.insert((*id).clone());
+            predecessors.entry((*id).clone()).or_default();
+            successors.entry((*id).clone()).or_default();
+        }
+
+        for (id, story) in &open {
+            for rel in &story.relationships {
+                if !open.contains_key(&rel.other_id) {
+                    continue;
+                }
+                match rel.relation.as_str() {
+                    "follows" | "starts-after" => {
+                        predecessors
+                            .entry((*id).clone())
+                            .or_default()
+                            .insert(rel.other_id.clone());
+                        successors
+                            .entry(rel.other_id.clone())
+                            .or_default()
+                            .insert((*id).clone());
+                    }
+                    "precedes" | "starts-before" => {
+                        predecessors
+                            .entry(rel.other_id.clone())
+                            .or_default()
+                            .insert((*id).clone());
+                        successors
+                            .entry((*id).clone())
+                            .or_default()
+                            .insert(rel.other_id.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Self {
+            predecessors,
+            successors,
+            nodes,
+        }
+    }
+
+    /// Longest chain of dependent stories (by count)
+    pub fn critical_path(&self) -> Vec<String> {
+        let mut longest_from: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        // Topological approach: compute longest path from each node using memoization
+        fn longest(
+            node: &str,
+            successors: &BTreeMap<String, BTreeSet<String>>,
+            memo: &mut BTreeMap<String, Vec<String>>,
+            visiting: &mut BTreeSet<String>,
+        ) -> Vec<String> {
+            if let Some(cached) = memo.get(node) {
+                return cached.clone();
+            }
+            if !visiting.insert(node.to_string()) {
+                // Cycle detected — break it
+                return vec![node.to_string()];
+            }
+            let mut best = Vec::new();
+            if let Some(succs) = successors.get(node) {
+                for succ in succs {
+                    let path = longest(succ, successors, memo, visiting);
+                    if path.len() > best.len() {
+                        best = path;
+                    }
+                }
+            }
+            visiting.remove(node);
+            let mut result = vec![node.to_string()];
+            result.extend(best);
+            memo.insert(node.to_string(), result.clone());
+            result
+        }
+
+        let mut visiting = BTreeSet::new();
+        for node in &self.nodes {
+            let path = longest(node, &self.successors, &mut longest_from, &mut visiting);
+            longest_from.insert(node.clone(), path);
+        }
+
+        longest_from
+            .into_values()
+            .max_by_key(|p| p.len())
+            .unwrap_or_default()
+    }
+
+    /// Transitive set of stories blocked (directly or indirectly) by the given story
+    pub fn blocked_chain(&self, id: &str) -> BTreeSet<String> {
+        let mut visited = BTreeSet::new();
+        let mut stack = vec![id.to_string()];
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            if let Some(succs) = self.successors.get(&current) {
+                for succ in succs {
+                    stack.push(succ.clone());
+                }
+            }
+        }
+        visited.remove(id);
+        visited
+    }
+
+    /// Independent clusters of stories with no inter-dependencies
+    pub fn parallel_groups(&self) -> Vec<BTreeSet<String>> {
+        let mut visited = BTreeSet::new();
+        let mut groups = Vec::new();
+
+        for node in &self.nodes {
+            if visited.contains(node) {
+                continue;
+            }
+            let mut group = BTreeSet::new();
+            let mut stack = vec![node.clone()];
+            while let Some(current) = stack.pop() {
+                if !group.insert(current.clone()) {
+                    continue;
+                }
+                if let Some(preds) = self.predecessors.get(&current) {
+                    for pred in preds {
+                        stack.push(pred.clone());
+                    }
+                }
+                if let Some(succs) = self.successors.get(&current) {
+                    for succ in succs {
+                        stack.push(succ.clone());
+                    }
+                }
+            }
+            visited.extend(group.iter().cloned());
+            groups.push(group);
+        }
+
+        groups
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        StateDef, StoryEvent, StoryRelation, StorySnapshot, SuperState,
+        Priority, StateDef, StoryEvent, StoryRelation, StorySnapshot, SuperState,
         derive_family_relationships, fold_story, validate_state_defs, would_create_parent_cycle,
     };
 
@@ -722,6 +1023,52 @@ mod tests {
     }
 
     #[test]
+    fn fold_story_tracks_priority() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Priority".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryPrioritySet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    priority: Priority::High,
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.priority, Priority::High);
+    }
+
+    #[test]
+    fn fold_story_priority_defaults_to_none() {
+        let story = fold_story(
+            "SH-1",
+            &[StoryEvent::StoryCreated {
+                at: "2026-03-13T00:00:00Z".to_string(),
+                title: "No priority".to_string(),
+                state: "todo".to_string(),
+            }],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.priority, Priority::None);
+    }
+
+    #[test]
+    fn priority_ord_ranks_critical_first() {
+        assert!(Priority::Critical < Priority::High);
+        assert!(Priority::High < Priority::Medium);
+        assert!(Priority::Medium < Priority::Low);
+        assert!(Priority::Low < Priority::None);
+    }
+
+    #[test]
     fn derive_family_relationships_omits_immediate_edges() {
         let stories = sample_story_map();
         let derived = derive_family_relationships(&stories);
@@ -777,6 +1124,8 @@ mod tests {
                 superstate: SuperState::Open,
                 assignee: None,
                 awaiting: None,
+                priority: Priority::None,
+                labels: Vec::new(),
                 comments: Vec::new(),
                 relationships: vec![StoryRelation {
                     relation: "parent-of".to_string(),
@@ -793,6 +1142,8 @@ mod tests {
                 superstate: SuperState::Open,
                 assignee: None,
                 awaiting: None,
+                priority: Priority::None,
+                labels: Vec::new(),
                 comments: Vec::new(),
                 relationships: vec![
                     StoryRelation {
@@ -815,6 +1166,8 @@ mod tests {
                 superstate: SuperState::Open,
                 assignee: None,
                 awaiting: None,
+                priority: Priority::None,
+                labels: Vec::new(),
                 comments: Vec::new(),
                 relationships: vec![StoryRelation {
                     relation: "child-of".to_string(),
@@ -831,6 +1184,8 @@ mod tests {
                 superstate: SuperState::Open,
                 assignee: None,
                 awaiting: None,
+                priority: Priority::None,
+                labels: Vec::new(),
                 comments: Vec::new(),
                 relationships: Vec::new(),
                 closed_at: None,

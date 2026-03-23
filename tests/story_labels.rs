@@ -1,0 +1,133 @@
+use assert_cmd::Command;
+use predicates::prelude::*;
+use tempfile::tempdir;
+
+fn story(dir: &std::path::Path) -> Command {
+    let mut cmd = Command::cargo_bin("story").unwrap();
+    cmd.current_dir(dir);
+    cmd
+}
+
+#[test]
+fn add_labels() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Build parser"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["SH-1", "label", "bug,backend"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("labels: backend, bug"));
+}
+
+#[test]
+fn remove_label() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Build parser"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["SH-1", "label", "bug,backend,frontend"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["SH-1", "label", "--remove", "frontend"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("labels: backend, bug"))
+        .stdout(predicate::str::contains("frontend").not());
+}
+
+#[test]
+fn labels_deduplicated() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Build parser"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["SH-1", "label", "bug,bug,bug"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("labels: bug"));
+}
+
+#[test]
+fn list_filters_by_label() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Bug fix"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Feature work"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["SH-1", "label", "bug"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["SH-2", "label", "feature"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .args(["list", "--label", "bug"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("SH-1"));
+    assert!(!stdout.contains("SH-2"));
+}
+
+#[test]
+fn labels_in_json_output() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Build parser"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["SH-1", "label", "api,backend"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["--json", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"labels\""))
+        .stdout(predicate::str::contains("\"api\""))
+        .stdout(predicate::str::contains("\"backend\""));
+}
+
+#[test]
+fn labels_show_in_list() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Build parser"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["SH-1", "label", "bug"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[bug]"));
+}
