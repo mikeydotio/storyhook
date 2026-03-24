@@ -259,7 +259,7 @@ pub fn next_story_id(root: &Path) -> Result<String, AppError> {
     Ok(format!("{prefix}-{value}"))
 }
 
-fn load_project_prefix(root: &Path) -> Result<String, AppError> {
+pub fn load_project_prefix(root: &Path) -> Result<String, AppError> {
     let paths = ProjectPaths::new(root);
     let raw = fs::read_to_string(paths.project_file())?;
     let project: ProjectFile = toml::from_str(&raw)?;

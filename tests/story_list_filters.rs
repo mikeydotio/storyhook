@@ -128,3 +128,77 @@ fn list_combined_filters() {
     assert!(!stdout.contains("SH-2"));
     assert!(!stdout.contains("SH-3"));
 }
+
+#[test]
+fn list_stale_basic() {
+    // --stale 0m means threshold = now, so everything with updated_at < now is stale
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Task one"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Task two"])
+        .assert()
+        .success();
+
+    // With 0m stale threshold, all open stories created even a fraction of a second ago qualify
+    let output = story(dir.path())
+        .args(["list", "--stale", "0m"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("SH-1"));
+    assert!(stdout.contains("SH-2"));
+}
+
+#[test]
+fn list_stale_no_matches() {
+    // --stale 999d means threshold = now - 999 days; nothing is that old
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Fresh task"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .args(["list", "--stale", "999d"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("no stories found"));
+}
+
+#[test]
+fn list_stale_combined() {
+    // Combine --stale with --priority
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "High prio task"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Low prio task"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["SH-1", "priority", "high"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["SH-2", "priority", "low"])
+        .assert()
+        .success();
+
+    // Both are stale (0m threshold), filter to high priority only
+    let output = story(dir.path())
+        .args(["list", "--stale", "0m", "--priority", "high"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("SH-1"));
+    assert!(!stdout.contains("SH-2"));
+}

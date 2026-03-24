@@ -19,17 +19,24 @@ Usage:
   story state remove <state-slug>
   story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
              [--label <labels>] [--created-after <date>] [--updated-after <date>]
-             [--blocked] [--ready]
+             [--blocked] [--ready] [--stale <duration>]
   story next [--count <n>]
   story summary
+  story report [--html]
   story search <query>
   story import [<file>]
   story export
+  story decompose <file> [--dry-run]
+  story decompose --stdin [--dry-run]
   story import-project <file>
   story context [--format markdown|json]
   story handoff [--since <duration>]
   story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
   story doctor [--fix]
+  story mcp-config [--scope project]
+  story sync-git [--since <duration>]
+  story scaffold agents-md
+  story scaffold cursor-rules
   story <id>
   story <id> "<comment>"
   story <id> assign <member-id|handle>
@@ -90,6 +97,7 @@ pub enum Invocation {
         updated_after: Option<String>,
         blocked: bool,
         ready: bool,
+        stale: Option<String>,
     },
     Search {
         query: String,
@@ -98,6 +106,9 @@ pub enum Invocation {
         count: usize,
     },
     Summary,
+    Report {
+        html: bool,
+    },
     Doctor {
         fix: bool,
     },
@@ -139,6 +150,11 @@ pub enum Invocation {
     Import {
         file: Option<String>,
     },
+    Decompose {
+        file: Option<String>,
+        stdin: bool,
+        dry_run: bool,
+    },
     Export,
     ImportProject {
         file: String,
@@ -157,6 +173,15 @@ pub enum Invocation {
         relation: String,
         b: String,
         remove: bool,
+    },
+    McpConfig {
+        scope: Option<String>,
+    },
+    Scaffold {
+        kind: String,
+    },
+    SyncGit {
+        since: Option<String>,
     },
 }
 
@@ -190,14 +215,19 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "list" => parse_list(args),
         "next" => parse_next(args),
         "summary" => Ok(Invocation::Summary),
+        "report" => parse_report(args),
         "search" => parse_search(args),
         "import" => parse_import(args),
+        "decompose" => parse_decompose(args),
         "import-project" => parse_import_project(args),
         "export" => Ok(Invocation::Export),
         "context" => parse_context(args),
         "handoff" => parse_handoff(args),
         "graph" => parse_graph(args),
         "doctor" => parse_doctor(args),
+        "mcp-config" => parse_mcp_config(args),
+        "scaffold" => parse_scaffold(args),
+        "sync-git" => parse_sync_git(args),
         _ => parse_story(args),
     }
 }
@@ -321,8 +351,9 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut updated_after = None;
     let mut blocked = false;
     let mut ready = false;
+    let mut stale = None;
     let mut index = 1;
-    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready]";
+    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -380,6 +411,13 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
                 ready = true;
                 index += 1;
             }
+            "--stale" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                stale = Some(value.clone());
+                index += 2;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
@@ -396,6 +434,7 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
         updated_after,
         blocked,
         ready,
+        stale,
     })
 }
 
@@ -430,6 +469,23 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
     Ok(Invocation::Next { count })
 }
 
+fn parse_report(args: &[String]) -> Result<Invocation, AppError> {
+    let mut html = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--html" => {
+                html = true;
+                index += 1;
+            }
+            _ => {
+                return Err(AppError::Usage("usage: story report [--html]".to_string()));
+            }
+        }
+    }
+    Ok(Invocation::Report { html })
+}
+
 fn parse_search(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 2 {
         return Err(AppError::Usage("usage: story search <query>".to_string()));
@@ -445,6 +501,44 @@ fn parse_import(args: &[String]) -> Result<Invocation, AppError> {
     }
     let file = args.get(1).cloned();
     Ok(Invocation::Import { file })
+}
+
+fn parse_decompose(args: &[String]) -> Result<Invocation, AppError> {
+    let mut file = None;
+    let mut stdin = false;
+    let mut dry_run = false;
+    let mut index = 1;
+    let usage = "usage: story decompose <file> [--dry-run] | story decompose --stdin [--dry-run]";
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--stdin" => {
+                stdin = true;
+                index += 1;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            _ if file.is_none() && !args[index].starts_with("--") => {
+                file = Some(args[index].clone());
+                index += 1;
+            }
+            _ => {
+                return Err(AppError::Usage(usage.to_string()));
+            }
+        }
+    }
+
+    if file.is_none() && !stdin {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+
+    Ok(Invocation::Decompose {
+        file,
+        stdin,
+        dry_run,
+    })
 }
 
 fn parse_import_project(args: &[String]) -> Result<Invocation, AppError> {
@@ -540,6 +634,65 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
     }
 
     Err(AppError::Usage("usage: story doctor [--fix]".to_string()))
+}
+
+fn parse_mcp_config(args: &[String]) -> Result<Invocation, AppError> {
+    let mut scope = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--scope" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage("usage: story mcp-config [--scope project]".to_string())
+                })?;
+                scope = Some(value.clone());
+                index += 2;
+            }
+            _ => {
+                return Err(AppError::Usage(
+                    "usage: story mcp-config [--scope project]".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(Invocation::McpConfig { scope })
+}
+
+fn parse_scaffold(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage(
+            "usage: story scaffold agents-md|cursor-rules".to_string(),
+        ));
+    }
+    let kind = args[1].clone();
+    if kind != "agents-md" && kind != "cursor-rules" {
+        return Err(AppError::Usage(
+            "usage: story scaffold agents-md|cursor-rules".to_string(),
+        ));
+    }
+    Ok(Invocation::Scaffold { kind })
+}
+
+fn parse_sync_git(args: &[String]) -> Result<Invocation, AppError> {
+    let mut since = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--since" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage("usage: story sync-git [--since <duration>]".to_string())
+                })?;
+                since = Some(value.clone());
+                index += 2;
+            }
+            _ => {
+                return Err(AppError::Usage(
+                    "usage: story sync-git [--since <duration>]".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(Invocation::SyncGit { since })
 }
 
 fn parse_story(args: &[String]) -> Result<Invocation, AppError> {

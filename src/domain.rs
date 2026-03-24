@@ -922,6 +922,64 @@ impl DependencyGraph {
     }
 }
 
+/// Extract story IDs matching `{PREFIX}-{DIGITS}` from text.
+/// Returns unique matches respecting word boundaries:
+/// - Prefix must be preceded by start-of-string or a non-alphanumeric character
+/// - Digits must be followed by end-of-string or a non-digit character
+pub fn extract_story_ids(prefix: &str, text: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    let prefix_bytes = prefix.as_bytes();
+    let text_bytes = text.as_bytes();
+    let prefix_len = prefix_bytes.len();
+    let text_len = text_bytes.len();
+
+    let mut i = 0;
+    while i + prefix_len < text_len {
+        // Check word boundary: preceded by start-of-string or non-alphanumeric
+        if i > 0 && text_bytes[i - 1].is_ascii_alphanumeric() {
+            i += 1;
+            continue;
+        }
+
+        // Check prefix match
+        if &text_bytes[i..i + prefix_len] != prefix_bytes {
+            i += 1;
+            continue;
+        }
+
+        // Check dash after prefix
+        let dash_pos = i + prefix_len;
+        if dash_pos >= text_len || text_bytes[dash_pos] != b'-' {
+            i += 1;
+            continue;
+        }
+
+        // Read digits after dash
+        let digits_start = dash_pos + 1;
+        let mut digits_end = digits_start;
+        while digits_end < text_len && text_bytes[digits_end].is_ascii_digit() {
+            digits_end += 1;
+        }
+
+        if digits_end == digits_start {
+            // No digits found
+            i += 1;
+            continue;
+        }
+
+        // Boundary check: next char must be end-of-string or non-digit
+        // (already satisfied since we stopped reading at non-digit)
+
+        let matched = &text[i..digits_end];
+        if !results.contains(&matched.to_string()) {
+            results.push(matched.to_string());
+        }
+        i = digits_end;
+    }
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1196,5 +1254,43 @@ mod tests {
             .into_iter()
             .map(|story| (story.id.clone(), story))
             .collect()
+    }
+
+    #[test]
+    fn extract_story_ids_single_match() {
+        assert_eq!(super::extract_story_ids("SH", "Fix SH-1 bug"), vec!["SH-1"]);
+    }
+
+    #[test]
+    fn extract_story_ids_multiple_matches() {
+        assert_eq!(
+            super::extract_story_ids("SH", "SH-1 and SH-2"),
+            vec!["SH-1", "SH-2"]
+        );
+    }
+
+    #[test]
+    fn extract_story_ids_no_matches() {
+        let result: Vec<String> = Vec::new();
+        assert_eq!(super::extract_story_ids("SH", "no matches here"), result);
+    }
+
+    #[test]
+    fn extract_story_ids_custom_prefix() {
+        assert_eq!(
+            super::extract_story_ids("API", "API-42 done"),
+            vec!["API-42"]
+        );
+    }
+
+    #[test]
+    fn extract_story_ids_no_false_positive_inside_word() {
+        let result: Vec<String> = Vec::new();
+        assert_eq!(super::extract_story_ids("SH", "PUSH-123"), result);
+    }
+
+    #[test]
+    fn extract_story_ids_no_boundary_between_ids() {
+        assert_eq!(super::extract_story_ids("SH", "SH-1SH-2"), vec!["SH-1"]);
     }
 }

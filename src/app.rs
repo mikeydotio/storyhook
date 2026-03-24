@@ -4,12 +4,15 @@ use std::path::Path;
 use crate::cli::{CliOptions, GraphMode, HELP_TEXT, Invocation, MemberInput};
 use crate::domain::{
     DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
-    compute_integrity_issues, derive_family_relationships, is_ready, parse_duration,
-    relation_edges, would_create_parent_cycle,
+    compute_integrity_issues, derive_family_relationships, extract_story_ids, is_ready,
+    parse_duration, relation_edges, would_create_parent_cycle,
 };
 use crate::error::AppError;
 use crate::lock;
-use crate::output::{BlockedChainView, GraphOverview, GraphView, Response, StoryView, SummaryView};
+use crate::output::{
+    BlockedChainView, GraphOverview, GraphView, Response, StoryView, SummaryView,
+    render_html_report,
+};
 use crate::storage;
 
 pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
@@ -56,6 +59,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             updated_after,
             blocked,
             ready,
+            stale,
         } => {
             storage::ensure_project(root)?;
             let mut views = build_story_views(root, false)?;
@@ -105,6 +109,19 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             if ready {
                 views.retain(|view| is_ready(&view.story, &story_map));
+            }
+            if let Some(ref stale_str) = stale {
+                let duration = parse_duration(stale_str).ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "invalid duration `{stale_str}` (use e.g. 2h, 1d, 1w)"
+                    ))
+                })?;
+                let threshold = chrono::Utc::now() - duration;
+                let threshold_str = threshold.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                views.retain(|view| {
+                    view.story.superstate == SuperState::Open
+                        && view.story.updated_at.as_str() <= threshold_str.as_str()
+                });
             }
             sort_story_views(&mut views);
             Ok(Response::Stories(views))
@@ -169,6 +186,140 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 ready_count,
                 ready_stories: ready,
             })))
+        }
+        Invocation::Report { html } => {
+            if !html {
+                // Plain text report delegates to Summary logic
+                storage::ensure_project(root)?;
+                let views = build_story_views(root, false)?;
+                let story_map: BTreeMap<String, StorySnapshot> = views
+                    .iter()
+                    .map(|v| (v.story.id.clone(), v.story.clone()))
+                    .collect();
+
+                let total_open = views
+                    .iter()
+                    .filter(|v| v.story.superstate == SuperState::Open)
+                    .count();
+                let total_closed = views.len() - total_open;
+
+                let mut state_counts: BTreeMap<String, usize> = BTreeMap::new();
+                let mut priority_counts: BTreeMap<String, usize> = BTreeMap::new();
+                let mut blocked_count = 0;
+                let mut flagged_count = 0;
+
+                for view in &views {
+                    *state_counts.entry(view.story.state.clone()).or_default() += 1;
+                    if view.story.priority != Priority::None {
+                        *priority_counts
+                            .entry(view.story.priority.as_str().to_string())
+                            .or_default() += 1;
+                    }
+                    if !view.flagged_reasons.is_empty() {
+                        flagged_count += 1;
+                    }
+                    if view.story.superstate == SuperState::Open
+                        && !is_ready(&view.story, &story_map)
+                    {
+                        blocked_count += 1;
+                    }
+                }
+
+                let mut ready: Vec<StoryView> = views
+                    .into_iter()
+                    .filter(|v| is_ready(&v.story, &story_map))
+                    .collect();
+                ready.sort_by(|a, b| {
+                    a.story
+                        .priority
+                        .cmp(&b.story.priority)
+                        .then_with(|| a.story.created_at.cmp(&b.story.created_at))
+                });
+                let ready_count = ready.len();
+                ready.truncate(5);
+
+                let by_state: Vec<(String, usize)> = state_counts.into_iter().collect();
+                let by_priority: Vec<(String, usize)> = priority_counts.into_iter().collect();
+
+                Ok(Response::Summary(Box::new(SummaryView {
+                    total_open,
+                    total_closed,
+                    by_state,
+                    by_priority,
+                    blocked_count,
+                    flagged_count,
+                    ready_count,
+                    ready_stories: ready,
+                })))
+            } else {
+                // HTML report
+                storage::ensure_project(root)?;
+                let views = build_story_views(root, false)?;
+                let story_map: BTreeMap<String, StorySnapshot> = views
+                    .iter()
+                    .map(|v| (v.story.id.clone(), v.story.clone()))
+                    .collect();
+
+                let total_open = views
+                    .iter()
+                    .filter(|v| v.story.superstate == SuperState::Open)
+                    .count();
+                let total_closed = views.len() - total_open;
+
+                let mut state_counts: BTreeMap<String, usize> = BTreeMap::new();
+                let mut priority_counts: BTreeMap<String, usize> = BTreeMap::new();
+                let mut blocked_count = 0;
+                let mut flagged_count = 0;
+
+                for view in &views {
+                    *state_counts.entry(view.story.state.clone()).or_default() += 1;
+                    if view.story.priority != Priority::None {
+                        *priority_counts
+                            .entry(view.story.priority.as_str().to_string())
+                            .or_default() += 1;
+                    }
+                    if !view.flagged_reasons.is_empty() {
+                        flagged_count += 1;
+                    }
+                    if view.story.superstate == SuperState::Open
+                        && !is_ready(&view.story, &story_map)
+                    {
+                        blocked_count += 1;
+                    }
+                }
+
+                let ready_count = views
+                    .iter()
+                    .filter(|v| is_ready(&v.story, &story_map))
+                    .count();
+
+                let by_state: Vec<(String, usize)> = state_counts.into_iter().collect();
+                let by_priority: Vec<(String, usize)> = priority_counts.into_iter().collect();
+
+                let summary = SummaryView {
+                    total_open,
+                    total_closed,
+                    by_state,
+                    by_priority,
+                    blocked_count,
+                    flagged_count,
+                    ready_count,
+                    ready_stories: Vec::new(),
+                };
+
+                let html_output = render_html_report(
+                    &summary,
+                    &views,
+                    &|id| story_map.get(id).is_some_and(|s| is_ready(s, &story_map)),
+                    &|id| {
+                        story_map.get(id).is_some_and(|s| {
+                            s.superstate == SuperState::Open && !is_ready(s, &story_map)
+                        })
+                    },
+                );
+
+                Ok(Response::Message(html_output))
+            }
         }
         Invocation::Search { query } => {
             storage::ensure_project(root)?;
@@ -493,6 +644,44 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             Ok(Response::Stories(views))
         }),
+        Invocation::Decompose {
+            file,
+            stdin,
+            dry_run,
+        } => {
+            let content = if stdin {
+                use std::io::Read as _;
+                let mut buf = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .map_err(|e| AppError::Storage(format!("failed to read stdin: {e}")))?;
+                buf
+            } else if let Some(ref path) = file {
+                std::fs::read_to_string(path)
+                    .map_err(|e| AppError::Storage(format!("failed to read {path}: {e}")))?
+            } else {
+                return Err(AppError::Usage(
+                    "usage: story decompose <file> [--dry-run] | story decompose --stdin [--dry-run]"
+                        .to_string(),
+                ));
+            };
+
+            let import_stories = crate::decompose::decompose_spec(&content);
+
+            if dry_run {
+                let json = serde_json::to_string_pretty(&import_stories)?;
+                return Ok(Response::Message(json));
+            }
+
+            if import_stories.is_empty() {
+                return Ok(Response::Message("no stories to import".to_string()));
+            }
+
+            lock::with_project_lock(root, || {
+                storage::ensure_project(root)?;
+                import_stories_batch(root, &import_stories)
+            })
+        }
         Invocation::Reopen { id } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             if storage::open_story_exists(root, &id) {
@@ -837,6 +1026,49 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             Ok(Response::Graph(Box::new(graph_view)))
         }
+        Invocation::McpConfig { scope } => {
+            let binary_path = resolve_binary_path();
+            if scope.as_deref() == Some("project") {
+                let config = serde_json::json!({
+                    "mcpServers": {
+                        "storyhook": {
+                            "command": binary_path,
+                            "args": ["--mcp"]
+                        }
+                    }
+                });
+                Ok(Response::Message(
+                    serde_json::to_string_pretty(&config).unwrap(),
+                ))
+            } else {
+                let config = serde_json::json!({
+                    "storyhook": {
+                        "command": binary_path,
+                        "args": ["--mcp"]
+                    }
+                });
+                let json_str = serde_json::to_string_pretty(&config).unwrap();
+                let msg = format!(
+                    "Add the following to your MCP client configuration:\n\n{}\n\n\
+                     For Claude Code: add to ~/.claude.json under \"mcpServers\"\n\
+                     For Cursor: add to .cursor/mcp.json under \"mcpServers\"",
+                    json_str
+                );
+                Ok(Response::Message(msg))
+            }
+        }
+        Invocation::Scaffold { kind } => {
+            let template = match kind.as_str() {
+                "agents-md" => generate_agents_md(root),
+                "cursor-rules" => generate_cursor_rules(),
+                _ => {
+                    return Err(AppError::Usage(
+                        "usage: story scaffold agents-md|cursor-rules".to_string(),
+                    ));
+                }
+            };
+            Ok(Response::Message(template))
+        }
         Invocation::Relate {
             a,
             relation,
@@ -924,6 +1156,107 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
 
             story_view_by_id(root, &a)
+        }),
+        Invocation::SyncGit { since } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+
+            // 1. Check we're in a git repo
+            let git_check = std::process::Command::new("git")
+                .args(["rev-parse", "--git-dir"])
+                .current_dir(root)
+                .output();
+            match git_check {
+                Ok(output) if output.status.success() => {}
+                _ => {
+                    return Err(AppError::Validation("not a git repository".to_string()));
+                }
+            }
+
+            // 2. Load prefix
+            let prefix = storage::load_project_prefix(root)?;
+
+            // 3. Compute --since value
+            let since_str = since.as_deref().unwrap_or("7d");
+            let duration = parse_duration(since_str).ok_or_else(|| {
+                AppError::Validation(format!(
+                    "invalid duration `{since_str}` (use e.g. 2h, 1d, 1w)"
+                ))
+            })?;
+            let since_date =
+                (chrono::Utc::now() - duration).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+            // 4. Run git log
+            let output = std::process::Command::new("git")
+                .args(["log", "--format=%H %s", &format!("--since={since_date}")])
+                .current_dir(root)
+                .output()
+                .map_err(|e| AppError::Storage(format!("failed to run git: {e}")))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(AppError::Storage(format!("git log failed: {stderr}")));
+            }
+
+            let log_output = String::from_utf8_lossy(&output.stdout);
+
+            // 5. Parse output, extract story IDs, add comments
+            let mut commits_scanned: usize = 0;
+            let mut comments_added: usize = 0;
+            let mut stories_touched: BTreeSet<String> = BTreeSet::new();
+
+            for line in log_output.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                commits_scanned += 1;
+
+                let (hash, message) = match line.split_once(' ') {
+                    Some((h, m)) => (h, m),
+                    None => continue,
+                };
+
+                let short_hash = &hash[..7.min(hash.len())];
+                let story_ids = extract_story_ids(&prefix, message);
+
+                for story_id in story_ids {
+                    // Check if the story is open
+                    if !storage::open_story_exists(root, &story_id) {
+                        continue;
+                    }
+
+                    // Check idempotency: look for existing [git] comment with this short hash
+                    let events = storage::load_open_story_events(root, &story_id)?;
+                    let comment_prefix = format!("[git] {short_hash}:");
+                    let already_exists = events.iter().any(|event| {
+                        matches!(event, StoryEvent::StoryCommentAdded { text, .. } if text.starts_with(&comment_prefix))
+                    });
+
+                    if already_exists {
+                        continue;
+                    }
+
+                    // Add comment
+                    let comment_text = format!("[git] {short_hash}: {message}");
+                    storage::write_story_events(
+                        root,
+                        &story_id,
+                        &[StoryEvent::StoryCommentAdded {
+                            at: storage::now(),
+                            text: comment_text,
+                        }],
+                    )?;
+                    comments_added += 1;
+                    stories_touched.insert(story_id);
+                }
+            }
+
+            Ok(Response::Message(format!(
+                "scanned {} commits, added {} comments to {} stories",
+                commits_scanned,
+                comments_added,
+                stories_touched.len()
+            )))
         }),
     }
 }
@@ -1265,4 +1598,228 @@ fn doctor_fix(root: &Path) -> Result<Response, AppError> {
         }
         Err(error) => Err(error),
     }
+}
+
+fn resolve_binary_path() -> String {
+    // Check if "story" is available in PATH
+    if let Ok(output) = std::process::Command::new("which").arg("story").output()
+        && output.status.success()
+    {
+        return "story".to_string();
+    }
+    // Fall back to the absolute path of the current executable
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "story".to_string())
+}
+
+fn generate_agents_md(root: &std::path::Path) -> String {
+    let (prefix, done_state) = match read_project_config(root) {
+        Some((p, d)) => (p, d),
+        None => ("SH".to_string(), "done".to_string()),
+    };
+
+    format!(
+        r#"# AGENTS.md — Project Task Management
+
+This project uses **storyhook** for task tracking. All agents must follow the workflow below.
+
+## Workflow
+
+1. **Start of session**: Load project context
+   ```
+   story context
+   ```
+
+2. **Pick next task**: Get the highest-priority ready story
+   ```
+   story next
+   ```
+
+3. **Work on the task**: Implement the changes for the assigned story
+
+4. **Complete the task**: Mark the story as done
+   ```
+   story <id> is {done_state}
+   ```
+
+5. **End of session**: Generate a handoff summary
+   ```
+   story handoff --since 2h
+   ```
+
+## Quick Reference
+
+| Action | Command |
+|---|---|
+| List open stories | `story list` |
+| Show a story | `story {prefix}-<n>` |
+| Create a story | `story new "<title>"` |
+| Add a comment | `story {prefix}-<n> "comment text"` |
+| Set priority | `story {prefix}-<n> priority high` |
+| Search stories | `story search "<query>"` |
+| Project summary | `story summary` |
+| Context (for LLM) | `story context` |
+| Session handoff | `story handoff --since 2h` |
+
+## MCP Server
+
+This project uses the storyhook MCP server for native integration with AI tools.
+To configure, run:
+```
+story mcp-config
+```
+"#,
+        done_state = done_state,
+        prefix = prefix,
+    )
+}
+
+fn generate_cursor_rules() -> String {
+    r#"# Cursor Rules — storyhook Integration
+
+This project uses **storyhook** as its issue tracker. Use the storyhook CLI
+or MCP server to manage tasks.
+
+## Task Management
+
+- Run `story context` at the start of each session to understand project state.
+- Run `story next` to find the highest-priority ready task.
+- After completing work, mark the story done: `story <id> is done`.
+- Use `story handoff --since 2h` to summarize work at session end.
+
+## Commands
+
+- `story list` — list open stories
+- `story new "<title>"` — create a new story
+- `story <id>` — show story details
+- `story <id> "comment"` — add a comment
+- `story <id> is <state>` — change story state
+- `story <id> priority <level>` — set priority (critical, high, medium, low, none)
+- `story search "<query>"` — search stories
+- `story summary` — project overview
+- `story context` — full project context for LLM consumption
+- `story handoff --since <duration>` — recent changes summary
+
+## MCP Server
+
+storyhook provides an MCP server for native tool integration.
+Configure it with `story mcp-config`.
+"#
+    .to_string()
+}
+
+fn read_project_config(root: &std::path::Path) -> Option<(String, String)> {
+    let prefix = storage::load_project_prefix(root).ok()?;
+    let states = storage::load_states(root).ok()?;
+    let done_state = states
+        .iter()
+        .find(|s| s.super_state == crate::domain::SuperState::Closed)
+        .map(|s| s.slug.clone())
+        .unwrap_or_else(|| "done".to_string());
+    Some((prefix, done_state))
+}
+
+fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<Response, AppError> {
+    if stories.is_empty() {
+        return Ok(Response::Message("no stories to import".to_string()));
+    }
+    let mut created_ids: Vec<String> = Vec::new();
+    for import_story in stories {
+        let story = storage::create_story(root, &import_story.title)?;
+        let id = story.id.clone();
+        let now = storage::now();
+        let mut events = Vec::new();
+        if let Some(ref priority_str) = import_story.priority
+            && let Some(priority) = Priority::parse(priority_str)
+        {
+            events.push(StoryEvent::StoryPrioritySet {
+                at: now.clone(),
+                priority,
+            });
+        }
+        if let Some(ref labels) = import_story.labels
+            && !labels.is_empty()
+        {
+            let mut sorted: Vec<String> = labels.clone();
+            sorted.sort();
+            sorted.dedup();
+            events.push(StoryEvent::StoryLabelsSet {
+                at: now.clone(),
+                labels: sorted,
+            });
+        }
+        if let Some(ref assignee) = import_story.assignee {
+            let member = storage::find_member(root, assignee)?;
+            events.push(StoryEvent::StoryAssigned {
+                at: now.clone(),
+                member_id: member.id,
+            });
+        }
+        if !events.is_empty() {
+            storage::write_story_events(root, &id, &events)?;
+        }
+        created_ids.push(id);
+    }
+    // Second pass: resolve relationships
+    for (index, import_story) in stories.iter().enumerate() {
+        if let Some(ref rels) = import_story.relationships {
+            let a_id = &created_ids[index];
+            for rel in rels {
+                let b_id = if let Some(ref_idx) = rel.ref_index {
+                    created_ids.get(ref_idx).cloned().ok_or_else(|| {
+                        AppError::Validation(format!(
+                            "ref_index {ref_idx} out of bounds for import batch"
+                        ))
+                    })?
+                } else if let Some(ref other) = rel.other_id {
+                    other.clone()
+                } else {
+                    return Err(AppError::Validation(
+                        "relationship must have ref_index or other_id".to_string(),
+                    ));
+                };
+                if a_id == &b_id {
+                    continue;
+                }
+                let edges = relation_edges(&rel.relation).ok_or_else(|| {
+                    AppError::Validation(format!("unsupported relationship `{}`", rel.relation))
+                })?;
+                let now = storage::now();
+                for (a_rel, b_rel) in edges {
+                    storage::write_story_events(
+                        root,
+                        a_id,
+                        &[StoryEvent::StoryRelationshipAdded {
+                            at: now.clone(),
+                            other_id: b_id.clone(),
+                            relation: a_rel.to_string(),
+                        }],
+                    )?;
+                    if storage::open_story_exists(root, &b_id) {
+                        storage::write_story_events(
+                            root,
+                            &b_id,
+                            &[StoryEvent::StoryRelationshipAdded {
+                                at: now.clone(),
+                                other_id: a_id.clone(),
+                                relation: b_rel.to_string(),
+                            }],
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+    let mut views = Vec::new();
+    for id in &created_ids {
+        let story = storage::load_open_story_snapshot(root, id)?;
+        views.push(StoryView {
+            story,
+            derived_relationships: Vec::new(),
+            warnings: Vec::new(),
+            flagged_reasons: Vec::new(),
+        });
+    }
+    Ok(Response::Stories(views))
 }

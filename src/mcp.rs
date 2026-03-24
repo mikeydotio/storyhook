@@ -146,7 +146,8 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                         "label": {"type": "string", "description": "Comma-separated labels"},
                         "flagged": {"type": "boolean", "description": "Only flagged stories"},
                         "blocked": {"type": "boolean", "description": "Only blocked stories"},
-                        "ready": {"type": "boolean", "description": "Only ready stories"}
+                        "ready": {"type": "boolean", "description": "Only ready stories"},
+                        "stale": {"type": "string", "description": "Show stories with updated_at older than duration (e.g. 2h, 1d, 1w)"}
                     }
                 }
             },
@@ -249,6 +250,33 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                 }
             },
             {
+                "name": "storyhook_scaffold",
+                "description": "Generate project template files (AGENTS.md or .cursorrules)",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["agents-md", "cursor-rules"],
+                            "description": "Template kind: agents-md or cursor-rules"
+                        }
+                    },
+                    "required": ["kind"]
+                }
+            },
+            {
+                "name": "storyhook_decompose_spec",
+                "description": "Decompose a Markdown spec into import-compatible stories",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "Markdown content to decompose"},
+                        "dry_run": {"type": "boolean", "description": "If true, return JSON without creating stories"}
+                    },
+                    "required": ["content"]
+                }
+            },
+            {
                 "name": "storyhook_bulk_create",
                 "description": "Create multiple stories from JSON array",
                 "inputSchema": {
@@ -281,6 +309,33 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                         }
                     },
                     "required": ["stories"]
+                }
+            },
+            {
+                "name": "storyhook_generate_report",
+                "description": "Generate a project report in text or HTML format",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "format": {
+                            "type": "string",
+                            "enum": ["html", "text"],
+                            "description": "Output format: html or text (default: text)"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "storyhook_sync_git",
+                "description": "Scan recent git commits for story ID references and add comments to referenced stories",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "since": {
+                            "type": "string",
+                            "description": "Duration to look back (e.g. 7d, 24h, 2w). Default: 7d"
+                        }
+                    }
                 }
             }
         ]
@@ -395,6 +450,7 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
             updated_after: get_str(arguments, "updated_after"),
             blocked: get_bool(arguments, "blocked"),
             ready: get_bool(arguments, "ready"),
+            stale: get_str(arguments, "stale"),
         }),
         "storyhook_get_story" => {
             let id = get_str(arguments, "id").ok_or("missing required parameter: id")?;
@@ -491,6 +547,29 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
                 _ => Err(format!("unknown graph mode: {mode}")),
             }
         }
+        "storyhook_scaffold" => {
+            let kind = get_str(arguments, "kind").ok_or("missing required parameter: kind")?;
+            if kind != "agents-md" && kind != "cursor-rules" {
+                return Err(format!("invalid scaffold kind: {kind}"));
+            }
+            Ok(Invocation::Scaffold { kind })
+        }
+        "storyhook_decompose_spec" => {
+            let content =
+                get_str(arguments, "content").ok_or("missing required parameter: content")?;
+            let dry_run = get_bool(arguments, "dry_run");
+            // Write content to a temp file
+            let temp_dir = std::env::temp_dir();
+            let temp_file =
+                temp_dir.join(format!("storyhook-decompose-mcp-{}.md", std::process::id()));
+            std::fs::write(&temp_file, &content)
+                .map_err(|e| format!("failed to write temp file: {e}"))?;
+            Ok(Invocation::Decompose {
+                file: Some(temp_file.to_string_lossy().to_string()),
+                stdin: false,
+                dry_run,
+            })
+        }
         "storyhook_bulk_create" => {
             let stories = arguments
                 .get("stories")
@@ -506,6 +585,15 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
                 file: Some(temp_file.to_string_lossy().to_string()),
             })
         }
+        "storyhook_generate_report" => {
+            let format = get_str(arguments, "format").unwrap_or_else(|| "text".to_string());
+            Ok(Invocation::Report {
+                html: format == "html",
+            })
+        }
+        "storyhook_sync_git" => Ok(Invocation::SyncGit {
+            since: get_str(arguments, "since"),
+        }),
         _ => Err(format!("unknown tool: {tool_name}")),
     }
 }

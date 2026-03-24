@@ -56,6 +56,10 @@ install -m 755 "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 echo ""
 echo "Installed ${BINARY} to ${INSTALL_DIR}/${BINARY}"
 
+echo ""
+echo "To use storyhook as an MCP server for AI tools (Claude Code, Cursor):"
+echo "  story mcp-config"
+
 # Check if install dir is in PATH
 case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) ;;

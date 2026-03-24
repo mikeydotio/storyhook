@@ -18,10 +18,22 @@ It keeps active work in project-local JSON event logs, archives closed work into
 - Assign members
 - Define project states mapped to `OPEN` or `CLOSED`
 - Set and clear `awaiting` blockers
+- Set priority levels (critical, high, medium, low, none)
+- Add and filter by labels/tags
+- Search stories by title, comments, and labels
+- Project summary with state/priority breakdown
+- Find next ready-to-work stories (`story next`)
 - Add and remove story relationships
 - Derive read-only `ancestor-of` and `descendent-of` family relationships on show output
 - Archive stories immediately when they move into a `CLOSED` state
+- Reopen archived stories
+- Import/export stories (JSON bulk operations)
+- Generate AI context documents (`story context`)
+- Session handoff documents (`story handoff`)
+- Dependency graph analysis (critical path, blocked chains, parallel groups)
+- Configurable project ID prefix
 - Run integrity checks with `story doctor` and best-effort repair with `story doctor --fix`
+- MCP server for native AI tool integration
 
 ## Install
 
@@ -42,7 +54,7 @@ STORYHOOK_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.co
 To install a specific version:
 
 ```bash
-STORYHOOK_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh
+STORYHOOK_VERSION=v0.2.0 curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh
 ```
 
 ### Install with Cargo
@@ -122,6 +134,16 @@ story SH-4 conflicts-with SH-5
 story SH-2 parent-of SH-3 --remove
 ```
 
+Prioritize, label, and triage:
+
+```bash
+story SH-1 priority high
+story SH-1 label backend,api
+story next
+story summary
+story context
+```
+
 Inspect and report:
 
 ```bash
@@ -135,13 +157,24 @@ story doctor
 ## Command reference
 
 ```text
-story init
+story init [--prefix <PREFIX>]
 story new <title>
 story member add "<name <email>>"
 story member add -g <github-handle>
 story state add <state-slug> --super OPEN|CLOSED
 story state remove <state-slug>
-story list [--state <slug>] [--assignee <id|handle>] [--flagged]
+story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
+           [--label <labels>] [--created-after <date>] [--updated-after <date>]
+           [--blocked] [--ready]
+story next [--count <n>]
+story summary
+story search <query>
+story import [<file>]
+story export
+story import-project <file>
+story context [--format markdown|json]
+story handoff [--since <duration>]
+story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
 story doctor [--fix]
 story <id>
 story <id> "<comment>"
@@ -149,6 +182,10 @@ story <id> assign <member-id|handle>
 story <id> is <state-slug> ["<comment>"]
 story <id> awaits "<reason>"
 story <id> awaits --clear
+story <id> priority <critical|high|medium|low|none>
+story <id> label <labels-csv>
+story <id> label --remove <labels-csv>
+story <id> reopen
 story <a> <relationship> <b> [--remove]
 ```
 
@@ -238,6 +275,54 @@ story SH-1 --json
 story list --flagged --json
 story SH-2 is done --quiet
 ```
+
+## AI agent integration
+
+Three commands support AI coding agent workflows:
+
+- `story context` -- generates a project overview document (states, priorities, relationships, and ready work) suitable for the start of an AI session. Use `--format json` for structured output.
+- `story next` -- surfaces the highest-priority unblocked story so an agent can pick up work without manual triage. Use `--count <n>` to get multiple candidates.
+- `story handoff --since <duration>` -- generates a session handoff document summarizing what changed during a work session (e.g. `--since 2h`). Useful when passing context between agents or between an agent and a human.
+
+## MCP Server
+
+storyhook includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server for native integration with AI tools.
+
+Start the server:
+
+```bash
+story --mcp
+```
+
+This runs a stdio JSON-RPC server that exposes the following tools:
+
+| Tool | Description |
+|------|-------------|
+| `storyhook_list_stories` | List stories with optional filters |
+| `storyhook_get_story` | Get a story by ID |
+| `storyhook_create_story` | Create a new story |
+| `storyhook_update_story` | Update story state, priority, labels, or assignee |
+| `storyhook_add_comment` | Add a comment to a story |
+| `storyhook_get_summary` | Get project summary with counts and ready stories |
+| `storyhook_get_next` | Get the next ready story/stories to work on |
+| `storyhook_search` | Search stories by title, comments, or labels |
+| `storyhook_get_graph` | Get dependency graph analysis |
+| `storyhook_bulk_create` | Create multiple stories from a JSON array |
+
+### Setup for Claude Code / Cursor
+
+Add this to your MCP configuration:
+
+```json
+{
+  "storyhook": {
+    "command": "story",
+    "args": ["--mcp"]
+  }
+}
+```
+
+You can also run `story mcp-config` to generate this configuration automatically.
 
 ## Integrity checks
 

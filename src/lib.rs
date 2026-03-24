@@ -1,5 +1,6 @@
 pub mod app;
 pub mod cli;
+pub mod decompose;
 pub mod domain;
 pub mod error;
 pub mod lock;
