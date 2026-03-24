@@ -5,5 +5,6 @@ pub mod domain;
 pub mod error;
 pub mod lock;
 pub mod mcp;
+pub mod mcp_install;
 pub mod output;
 pub mod storage;

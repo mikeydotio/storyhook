@@ -2,7 +2,7 @@ use std::env;
 use std::process;
 
 use storyhook::app;
-use storyhook::cli::{self, CliOptions};
+use storyhook::cli::{self, CliOptions, Invocation};
 use storyhook::output;
 
 fn main() {
@@ -29,6 +29,25 @@ fn main() {
             process::exit(error.exit_code());
         }
     };
+
+    // Interactive mcp-config: when running in a terminal (not piped, not --json),
+    // show an interactive multi-select UI. Otherwise fall through to app::run
+    // which prints the config snippet non-interactively.
+    if matches!(invocation, Invocation::McpConfig { scope: None }) && !json {
+        use std::io::IsTerminal;
+        if std::io::stdout().is_terminal() {
+            match storyhook::mcp_install::run_interactive() {
+                Ok(msg) => {
+                    println!("{msg}");
+                    return;
+                }
+                Err(error) => {
+                    print!("{}", output::render_error(&error, false));
+                    process::exit(error.exit_code());
+                }
+            }
+        }
+    }
 
     let options = CliOptions {
         json,

@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 chrono = { version = "0.4.42", features = ["clock", "serde"] }
+dialoguer = "0.12.0"
 fs4 = "0.8.4"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
