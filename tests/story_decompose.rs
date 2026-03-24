@@ -265,3 +265,19 @@ fn decompose_stdin() {
         .stdout(predicate::str::contains("Stdin Feature"))
         .stdout(predicate::str::contains("child-of SH-1"));
 }
+
+#[test]
+fn decompose_dry_run_works_without_project() {
+    let dir = tempdir().unwrap();
+    // No story init — directory has no .storyhook/
+
+    let md = "# Epic\n## Feature\n";
+
+    story(dir.path())
+        .args(["decompose", "--stdin", "--dry-run"])
+        .write_stdin(md)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Epic"))
+        .stdout(predicate::str::contains("Feature"));
+}

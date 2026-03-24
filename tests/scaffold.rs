@@ -44,6 +44,32 @@ fn scaffold_cursor_rules_contains_storyhook() {
 }
 
 #[test]
+fn scaffold_claude_md_contains_workflow() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["scaffold", "claude-md"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("story context"))
+        .stdout(predicate::str::contains("story next"))
+        .stdout(predicate::str::contains(".storyhook/"));
+}
+
+#[test]
+fn scaffold_claude_md_uses_project_prefix() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["init", "--prefix", "WEB"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["scaffold", "claude-md"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("WEB-<n>"));
+}
+
+#[test]
 fn scaffold_invalid_kind_returns_error() {
     let dir = tempdir().unwrap();
     story(dir.path())

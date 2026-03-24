@@ -1065,10 +1065,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         Invocation::Scaffold { kind } => {
             let template = match kind.as_str() {
                 "agents-md" => generate_agents_md(root),
+                "claude-md" => generate_claude_md(root),
                 "cursor-rules" => generate_cursor_rules(),
                 _ => {
                     return Err(AppError::Usage(
-                        "usage: story scaffold agents-md|cursor-rules".to_string(),
+                        "usage: story scaffold agents-md|claude-md|cursor-rules".to_string(),
                     ));
                 }
             };
@@ -1679,6 +1680,54 @@ To configure, run:
 ```
 story mcp-config
 ```
+"#,
+        done_state = done_state,
+        prefix = prefix,
+    )
+}
+
+fn generate_claude_md(root: &std::path::Path) -> String {
+    let (prefix, done_state) = match read_project_config(root) {
+        Some((p, d)) => (p, d),
+        None => ("SH".to_string(), "done".to_string()),
+    };
+
+    format!(
+        r#"# Task Management
+
+This project uses **storyhook** (`story` CLI) for issue tracking. Use it to find work, track progress, and hand off context between sessions.
+
+## Important
+
+The `.storyhook/` directory is version-controlled project data. Do NOT add it to `.gitignore` or exclude it from commits.
+
+## Start of session
+
+Run `story context` to load the current project state, then `story next` to pick the highest-priority ready task.
+
+## During work
+
+- Mark a story in-progress: `story {prefix}-<n> is in-progress`
+- Add progress notes: `story {prefix}-<n> "what you did"`
+- Set priority: `story {prefix}-<n> priority high`
+
+## Completing work
+
+- Mark done: `story {prefix}-<n> is {done_state}`
+- Generate handoff: `story handoff --since 2h`
+
+## Commands
+
+| Action | Command |
+|---|---|
+| Project overview | `story context` |
+| Next ready task | `story next` |
+| List open stories | `story list` |
+| Show a story | `story {prefix}-<n>` |
+| Create a story | `story new "<title>"` |
+| Search | `story search "<query>"` |
+| Summary stats | `story summary` |
+| Session handoff | `story handoff --since 2h` |
 "#,
         done_state = done_state,
         prefix = prefix,

@@ -251,14 +251,14 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_scaffold",
-                "description": "Generate project template files (AGENTS.md or .cursorrules)",
+                "description": "Generate project template files (AGENTS.md, CLAUDE.md, or .cursorrules)",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "kind": {
                             "type": "string",
-                            "enum": ["agents-md", "cursor-rules"],
-                            "description": "Template kind: agents-md or cursor-rules"
+                            "enum": ["agents-md", "claude-md", "cursor-rules"],
+                            "description": "Template kind: agents-md, claude-md, or cursor-rules"
                         }
                     },
                     "required": ["kind"]
@@ -549,7 +549,7 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
         }
         "storyhook_scaffold" => {
             let kind = get_str(arguments, "kind").ok_or("missing required parameter: kind")?;
-            if kind != "agents-md" && kind != "cursor-rules" {
+            if kind != "agents-md" && kind != "claude-md" && kind != "cursor-rules" {
                 return Err(format!("invalid scaffold kind: {kind}"));
             }
             Ok(Invocation::Scaffold { kind })

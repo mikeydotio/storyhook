@@ -36,6 +36,7 @@ Usage:
   story mcp-config [--scope project]
   story sync-git [--since <duration>]
   story scaffold agents-md
+  story scaffold claude-md
   story scaffold cursor-rules
   story <id>
   story <id> "<comment>"
@@ -661,13 +662,13 @@ fn parse_mcp_config(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_scaffold(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
         return Err(AppError::Usage(
-            "usage: story scaffold agents-md|cursor-rules".to_string(),
+            "usage: story scaffold agents-md|claude-md|cursor-rules".to_string(),
         ));
     }
     let kind = args[1].clone();
-    if kind != "agents-md" && kind != "cursor-rules" {
+    if kind != "agents-md" && kind != "claude-md" && kind != "cursor-rules" {
         return Err(AppError::Usage(
-            "usage: story scaffold agents-md|cursor-rules".to_string(),
+            "usage: story scaffold agents-md|claude-md|cursor-rules".to_string(),
         ));
     }
     Ok(Invocation::Scaffold { kind })
@@ -695,7 +696,30 @@ fn parse_sync_git(args: &[String]) -> Result<Invocation, AppError> {
     Ok(Invocation::SyncGit { since })
 }
 
+fn looks_like_story_id(s: &str) -> bool {
+    // Story IDs are PREFIX-DIGITS (e.g., SH-1, API-42).
+    // Reject bare words that are clearly not IDs so typos like
+    // "story mcp-config" on an old binary produce a clear error.
+    if let Some(pos) = s.find('-') {
+        let prefix = &s[..pos];
+        let suffix = &s[pos + 1..];
+        !prefix.is_empty()
+            && prefix.chars().all(|c| c.is_ascii_alphanumeric())
+            && !suffix.is_empty()
+            && suffix.chars().all(|c| c.is_ascii_digit())
+    } else {
+        false
+    }
+}
+
 fn parse_story(args: &[String]) -> Result<Invocation, AppError> {
+    if !looks_like_story_id(&args[0]) {
+        return Err(AppError::Usage(format!(
+            "unknown command `{}`. Run `story --help` for usage.",
+            args[0]
+        )));
+    }
+
     if args.len() == 1 {
         return Ok(Invocation::Show {
             id: args[0].clone(),
