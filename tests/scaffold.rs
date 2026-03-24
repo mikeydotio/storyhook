@@ -44,29 +44,27 @@ fn scaffold_cursor_rules_contains_storyhook() {
 }
 
 #[test]
-fn scaffold_claude_md_contains_workflow() {
+fn scaffold_claude_md_is_short_pointer() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["scaffold", "claude-md"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("story context"))
-        .stdout(predicate::str::contains("story next"))
-        .stdout(predicate::str::contains(".storyhook/"));
+        .stdout(predicate::str::contains(".storyhook/CLAUDE.md"))
+        .stdout(predicate::str::contains("story context"));
 }
 
 #[test]
-fn scaffold_claude_md_uses_project_prefix() {
+fn init_creates_storyhook_claude_md_with_prefix() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["init", "--prefix", "WEB"])
         .assert()
         .success();
-    story(dir.path())
-        .args(["scaffold", "claude-md"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("WEB-<n>"));
+    let claude_md = std::fs::read_to_string(dir.path().join(".storyhook/CLAUDE.md")).unwrap();
+    assert!(claude_md.contains("WEB-<n>"));
+    assert!(claude_md.contains("story context"));
+    assert!(claude_md.contains("Planning mode"));
 }
 
 #[test]

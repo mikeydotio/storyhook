@@ -122,16 +122,12 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
     let connection = open_archive_connection(root)?;
     drop(connection);
 
-    // Create a README inside .storyhook/ so that LLMs and developers know
-    // this directory is version-controlled project data.
-    let readme_path = paths.storyhook_dir().join("README");
-    if !readme_path.exists() {
-        fs::write(
-            &readme_path,
-            "This directory contains storyhook project data (stories, states, members, archive).\n\
-             It is version-controlled and should be committed to git.\n\
-             Do not add .storyhook/ to .gitignore.\n",
-        )?;
+    // Create CLAUDE.md inside .storyhook/ with full usage instructions.
+    // Claude Code discovers this when accessing files in the directory.
+    let claude_md_path = paths.storyhook_dir().join("CLAUDE.md");
+    if !claude_md_path.exists() {
+        let effective_prefix = prefix.unwrap_or("SH");
+        fs::write(&claude_md_path, generate_claude_md(effective_prefix, "done"))?;
     }
 
     // If a .gitignore exists, append a comment clarifying that .storyhook/
@@ -150,6 +146,81 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn generate_claude_md(prefix: &str, done_state: &str) -> String {
+    format!(
+        r#"# Task Management with Storyhook
+
+This project uses **storyhook** (`story` CLI) for work tracking.
+
+**Important:** The `.storyhook/` directory is version-controlled project data. Do NOT add it to `.gitignore`.
+
+## Session lifecycle
+
+1. Run `story context` at the start of every session to understand project state.
+2. Run `story next` to find the highest-priority ready task.
+3. Update story status as you work: `story {prefix}-<n> is in-progress`
+4. Add progress notes: `story {prefix}-<n> "what changed and why"`
+5. Mark complete: `story {prefix}-<n> is {done_state} "summary of what was delivered"`
+6. Run `story handoff --since 2h` at end of session.
+
+## Planning mode
+
+When creating implementation plans, create a story for each discrete work item, phase, or issue:
+
+```
+story new "Phase 1: Set up database schema"
+story new "Phase 2: Implement API endpoints"
+story new "Phase 3: Add authentication middleware"
+```
+
+Define relationships between stories to express dependencies and structure:
+
+```
+story {prefix}-1 parent-of {prefix}-2
+story {prefix}-2 precedes {prefix}-3
+story {prefix}-5 relates-to {prefix}-2
+story {prefix}-6 obviates {prefix}-7
+```
+
+Set priority on each story so `story next` surfaces the right work:
+
+```
+story {prefix}-1 priority critical
+story {prefix}-4 priority high
+story {prefix}-6 priority medium
+```
+
+## During execution
+
+- Before starting a story: `story {prefix}-<n> is in-progress`
+- When blocked: `story {prefix}-<n> awaits "reason"`
+- When unblocked: `story {prefix}-<n> awaits --clear`
+- When done: `story {prefix}-<n> is {done_state} "what was delivered"`
+- To check what's ready: `story next --count 5`
+- To see blocked work: `story list --blocked`
+- To see the dependency graph: `story graph`
+
+## Commands
+
+| Action | Command |
+|---|---|
+| Project overview | `story context` |
+| Next ready task | `story next` |
+| List open stories | `story list` |
+| Show a story | `story {prefix}-<n>` |
+| Create a story | `story new "<title>"` |
+| Add a comment | `story {prefix}-<n> "comment text"` |
+| Set priority | `story {prefix}-<n> priority high` |
+| Search | `story search "<query>"` |
+| Summary stats | `story summary` |
+| Dependency graph | `story graph` |
+| Session handoff | `story handoff --since 2h` |
+"#,
+        prefix = prefix,
+        done_state = done_state,
+    )
 }
 
 pub fn ensure_project(root: &Path) -> Result<(), AppError> {

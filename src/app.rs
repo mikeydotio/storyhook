@@ -1713,82 +1713,14 @@ story mcp-config
     )
 }
 
-fn generate_claude_md(root: &std::path::Path) -> String {
-    let (prefix, done_state) = match read_project_config(root) {
-        Some((p, d)) => (p, d),
-        None => ("SH".to_string(), "done".to_string()),
-    };
+fn generate_claude_md(_root: &std::path::Path) -> String {
+    r#"## Storyhook
 
-    format!(
-        r#"# Task Management with Storyhook
+This project uses **storyhook** for task tracking. Full usage instructions are in `.storyhook/CLAUDE.md` — read that file before starting work.
 
-This project uses **storyhook** (`story` CLI) for work tracking. The `.storyhook/` directory is version-controlled project data — never add it to `.gitignore`.
-
-## Session lifecycle
-
-1. Run `story context` at the start of every session to understand project state.
-2. Run `story next` to find the highest-priority ready task.
-3. Update story status as you work: `story {prefix}-<n> is in-progress`
-4. Add progress notes: `story {prefix}-<n> "what changed and why"`
-5. Mark complete: `story {prefix}-<n> is {done_state} "summary of what was delivered"`
-6. Run `story handoff --since 2h` at end of session.
-
-## Planning mode
-
-When creating implementation plans, create a story for each discrete work item, phase, or issue:
-
-```
-story new "Phase 1: Set up database schema"
-story new "Phase 2: Implement API endpoints"
-story new "Phase 3: Add authentication middleware"
-```
-
-Define relationships between stories to express dependencies and structure:
-
-```
-story {prefix}-1 parent-of {prefix}-2
-story {prefix}-2 precedes {prefix}-3
-story {prefix}-5 relates-to {prefix}-2
-story {prefix}-6 obviates {prefix}-7
-```
-
-Set priority on each story so `story next` surfaces the right work:
-
-```
-story {prefix}-1 priority critical
-story {prefix}-4 priority high
-story {prefix}-6 priority medium
-```
-
-## During execution
-
-- Before starting a story: `story {prefix}-<n> is in-progress`
-- When blocked: `story {prefix}-<n> awaits "reason"`
-- When unblocked: `story {prefix}-<n> awaits --clear`
-- When done: `story {prefix}-<n> is {done_state} "what was delivered"`
-- To check what's ready: `story next --count 5`
-- To see blocked work: `story list --blocked`
-- To see the dependency graph: `story graph`
-
-## Commands
-
-| Action | Command |
-|---|---|
-| Project overview | `story context` |
-| Next ready task | `story next` |
-| List open stories | `story list` |
-| Show a story | `story {prefix}-<n>` |
-| Create a story | `story new "<title>"` |
-| Add a comment | `story {prefix}-<n> "comment text"` |
-| Set priority | `story {prefix}-<n> priority high` |
-| Search | `story search "<query>"` |
-| Summary stats | `story summary` |
-| Dependency graph | `story graph` |
-| Session handoff | `story handoff --since 2h` |
-"#,
-        done_state = done_state,
-        prefix = prefix,
-    )
+Quick start: run `story context` at session start, `story next` to pick a task.
+"#
+    .to_string()
 }
 
 fn generate_cursor_rules() -> String {
