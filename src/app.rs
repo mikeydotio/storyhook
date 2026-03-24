@@ -1720,28 +1720,55 @@ fn generate_claude_md(root: &std::path::Path) -> String {
     };
 
     format!(
-        r#"# Task Management
+        r#"# Task Management with Storyhook
 
-This project uses **storyhook** (`story` CLI) for issue tracking. Use it to find work, track progress, and hand off context between sessions.
+This project uses **storyhook** (`story` CLI) for work tracking. The `.storyhook/` directory is version-controlled project data — never add it to `.gitignore`.
 
-## Important
+## Session lifecycle
 
-The `.storyhook/` directory is version-controlled project data. Do NOT add it to `.gitignore` or exclude it from commits.
+1. Run `story context` at the start of every session to understand project state.
+2. Run `story next` to find the highest-priority ready task.
+3. Update story status as you work: `story {prefix}-<n> is in-progress`
+4. Add progress notes: `story {prefix}-<n> "what changed and why"`
+5. Mark complete: `story {prefix}-<n> is {done_state} "summary of what was delivered"`
+6. Run `story handoff --since 2h` at end of session.
 
-## Start of session
+## Planning mode
 
-Run `story context` to load the current project state, then `story next` to pick the highest-priority ready task.
+When creating implementation plans, create a story for each discrete work item, phase, or issue:
 
-## During work
+```
+story new "Phase 1: Set up database schema"
+story new "Phase 2: Implement API endpoints"
+story new "Phase 3: Add authentication middleware"
+```
 
-- Mark a story in-progress: `story {prefix}-<n> is in-progress`
-- Add progress notes: `story {prefix}-<n> "what you did"`
-- Set priority: `story {prefix}-<n> priority high`
+Define relationships between stories to express dependencies and structure:
 
-## Completing work
+```
+story {prefix}-1 parent-of {prefix}-2
+story {prefix}-2 precedes {prefix}-3
+story {prefix}-5 relates-to {prefix}-2
+story {prefix}-6 obviates {prefix}-7
+```
 
-- Mark done: `story {prefix}-<n> is {done_state}`
-- Generate handoff: `story handoff --since 2h`
+Set priority on each story so `story next` surfaces the right work:
+
+```
+story {prefix}-1 priority critical
+story {prefix}-4 priority high
+story {prefix}-6 priority medium
+```
+
+## During execution
+
+- Before starting a story: `story {prefix}-<n> is in-progress`
+- When blocked: `story {prefix}-<n> awaits "reason"`
+- When unblocked: `story {prefix}-<n> awaits --clear`
+- When done: `story {prefix}-<n> is {done_state} "what was delivered"`
+- To check what's ready: `story next --count 5`
+- To see blocked work: `story list --blocked`
+- To see the dependency graph: `story graph`
 
 ## Commands
 
@@ -1752,8 +1779,11 @@ Run `story context` to load the current project state, then `story next` to pick
 | List open stories | `story list` |
 | Show a story | `story {prefix}-<n>` |
 | Create a story | `story new "<title>"` |
+| Add a comment | `story {prefix}-<n> "comment text"` |
+| Set priority | `story {prefix}-<n> priority high` |
 | Search | `story search "<query>"` |
 | Summary stats | `story summary` |
+| Dependency graph | `story graph` |
 | Session handoff | `story handoff --since 2h` |
 "#,
         done_state = done_state,
