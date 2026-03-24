@@ -20,7 +20,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         Invocation::Help => Ok(Response::Message(HELP_TEXT.to_string())),
         Invocation::Init { prefix } => {
             storage::init_project(root, prefix.as_deref())?;
-            Ok(Response::Message("initialized story project".to_string()))
+            Ok(Response::Message(
+                "initialized story project\n\n\
+                 The .storyhook/ directory contains your project data.\n\
+                 Remember to commit it to git — it should travel with the repository."
+                    .to_string(),
+            ))
         }
         Invocation::New { title } => lock::with_project_lock(root, || {
             let story = storage::create_story(root, &title)?;
@@ -1661,6 +1666,11 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 | Project summary | `story summary` |
 | Context (for LLM) | `story context` |
 | Session handoff | `story handoff --since 2h` |
+
+## Important
+
+The `.storyhook/` directory is version-controlled project data. Do NOT add it to
+`.gitignore`. It must be committed to git so that project state travels with the repository.
 
 ## MCP Server
 

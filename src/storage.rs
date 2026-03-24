@@ -121,6 +121,34 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
 
     let connection = open_archive_connection(root)?;
     drop(connection);
+
+    // Create a README inside .storyhook/ so that LLMs and developers know
+    // this directory is version-controlled project data.
+    let readme_path = paths.storyhook_dir().join("README");
+    if !readme_path.exists() {
+        fs::write(
+            &readme_path,
+            "This directory contains storyhook project data (stories, states, members, archive).\n\
+             It is version-controlled and should be committed to git.\n\
+             Do not add .storyhook/ to .gitignore.\n",
+        )?;
+    }
+
+    // If a .gitignore exists, append a comment clarifying that .storyhook/
+    // should NOT be ignored — unless the comment is already present.
+    let gitignore_path = root.join(".gitignore");
+    if gitignore_path.exists() {
+        let content = fs::read_to_string(&gitignore_path)?;
+        if !content.contains(".storyhook") {
+            let mut file = OpenOptions::new().append(true).open(&gitignore_path)?;
+            writeln!(file)?;
+            writeln!(
+                file,
+                "# .storyhook/ is version-controlled project data — do not ignore"
+            )?;
+        }
+    }
+
     Ok(())
 }
 
