@@ -1,6 +1,12 @@
 use crate::error::AppError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HooksAction {
+    Install,
+    Uninstall,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphMode {
     Overview,
     CriticalPath,
@@ -33,7 +39,9 @@ Usage:
   story handoff [--since <duration>]
   story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
   story doctor [--fix]
+  story mcp-config [--install <provider>] [--uninstall <provider>] [--uninstall-all]
   story mcp-config [--scope project]
+  story hooks install|uninstall
   story sync-git [--since <duration>]
   story scaffold agents-md
   story scaffold claude-md
@@ -177,6 +185,12 @@ pub enum Invocation {
     },
     McpConfig {
         scope: Option<String>,
+        install: Option<String>,
+        uninstall: Option<String>,
+        uninstall_all: bool,
+    },
+    Hooks {
+        action: HooksAction,
     },
     Scaffold {
         kind: String,
@@ -227,6 +241,7 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "graph" => parse_graph(args),
         "doctor" => parse_doctor(args),
         "mcp-config" => parse_mcp_config(args),
+        "hooks" => parse_hooks(args),
         "scaffold" => parse_scaffold(args),
         "sync-git" => parse_sync_git(args),
         _ => parse_story(args),
@@ -639,24 +654,76 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_mcp_config(args: &[String]) -> Result<Invocation, AppError> {
     let mut scope = None;
+    let mut install = None;
+    let mut uninstall = None;
+    let mut uninstall_all = false;
     let mut index = 1;
+    let usage = "usage: story mcp-config [--install <provider>] [--uninstall <provider>] [--uninstall-all] [--scope project]";
     while index < args.len() {
         match args[index].as_str() {
             "--scope" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage("usage: story mcp-config [--scope project]".to_string())
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 scope = Some(value.clone());
                 index += 2;
             }
+            "--install" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                install = Some(value.clone());
+                index += 2;
+            }
+            "--uninstall" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                uninstall = Some(value.clone());
+                index += 2;
+            }
+            "--uninstall-all" => {
+                uninstall_all = true;
+                index += 1;
+            }
             _ => {
-                return Err(AppError::Usage(
-                    "usage: story mcp-config [--scope project]".to_string(),
-                ));
+                return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
-    Ok(Invocation::McpConfig { scope })
+    // Mutual exclusivity: at most one of --install, --uninstall, --uninstall-all, --scope
+    let flag_count = scope.is_some() as u8
+        + install.is_some() as u8
+        + uninstall.is_some() as u8
+        + uninstall_all as u8;
+    if flag_count > 1 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    Ok(Invocation::McpConfig {
+        scope,
+        install,
+        uninstall,
+        uninstall_all,
+    })
+}
+
+fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage(
+            "usage: story hooks install|uninstall".to_string(),
+        ));
+    }
+    match args[1].as_str() {
+        "install" => Ok(Invocation::Hooks {
+            action: HooksAction::Install,
+        }),
+        "uninstall" => Ok(Invocation::Hooks {
+            action: HooksAction::Uninstall,
+        }),
+        _ => Err(AppError::Usage(
+            "usage: story hooks install|uninstall".to_string(),
+        )),
+    }
 }
 
 fn parse_scaffold(args: &[String]) -> Result<Invocation, AppError> {

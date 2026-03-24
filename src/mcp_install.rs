@@ -188,6 +188,110 @@ fn write_toml_config(path: &PathBuf, binary_path: &str) -> Result<String, AppErr
     Ok(format!("  {} — registered", path.display()))
 }
 
+fn find_provider_by_name(name: &str) -> Option<Provider> {
+    let providers = discover_providers();
+    let target = match name.to_lowercase().as_str() {
+        "claude" | "claude-code" => "Claude Code",
+        "codex" | "codex-cli" => "Codex CLI",
+        "cursor" => "Cursor",
+        "antigravity" => "Antigravity",
+        _ => return None,
+    };
+    providers.into_iter().find(|p| p.name == target)
+}
+
+fn remove_json_config(path: &PathBuf) -> Result<String, AppError> {
+    if !path.exists() {
+        return Ok(format!("  {} — not found, skipping", path.display()));
+    }
+    let content = fs::read_to_string(path)?;
+    let mut root: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&content)
+        .map_err(|e| AppError::Storage(format!("failed to parse {}: {e}", path.display())))?;
+
+    let Some(servers) = root.get_mut("mcpServers") else {
+        return Ok(format!("  {} — storyhook not registered", path.display()));
+    };
+    let Some(map) = servers.as_object_mut() else {
+        return Ok(format!("  {} — storyhook not registered", path.display()));
+    };
+    if map.remove("storyhook").is_none() {
+        return Ok(format!("  {} — storyhook not registered", path.display()));
+    }
+    if map.is_empty() {
+        root.remove("mcpServers");
+    }
+    let json_str = serde_json::to_string_pretty(&serde_json::Value::Object(root))?;
+    fs::write(path, json_str + "\n")?;
+    Ok(format!("  {} — deregistered", path.display()))
+}
+
+fn remove_toml_config(path: &PathBuf) -> Result<String, AppError> {
+    if !path.exists() {
+        return Ok(format!("  {} — not found, skipping", path.display()));
+    }
+    let content = fs::read_to_string(path)?;
+    let mut root: TomlMap<String, toml::Value> = toml::from_str(&content)
+        .map_err(|e| AppError::Storage(format!("failed to parse {}: {e}", path.display())))?;
+
+    let Some(servers) = root.get_mut("mcp_servers") else {
+        return Ok(format!("  {} — storyhook not registered", path.display()));
+    };
+    let Some(table) = servers.as_table_mut() else {
+        return Ok(format!("  {} — storyhook not registered", path.display()));
+    };
+    if table.remove("storyhook").is_none() {
+        return Ok(format!("  {} — storyhook not registered", path.display()));
+    }
+    if table.is_empty() {
+        root.remove("mcp_servers");
+    }
+    let toml_str = toml::to_string_pretty(&root)
+        .map_err(|e| AppError::Storage(format!("failed to serialize TOML: {e}")))?;
+    fs::write(path, toml_str)?;
+    Ok(format!("  {} — deregistered", path.display()))
+}
+
+pub fn run_install(provider_name: &str) -> Result<String, AppError> {
+    let provider = find_provider_by_name(provider_name).ok_or_else(|| {
+        AppError::Usage(format!(
+            "unknown provider `{provider_name}`. Available: claude, codex, cursor, antigravity"
+        ))
+    })?;
+    let binary_path = resolve_binary_path();
+    match provider.format {
+        ConfigFormat::JsonMcpServers => write_json_config(&provider.path, &binary_path),
+        ConfigFormat::TomlMcpServers => write_toml_config(&provider.path, &binary_path),
+    }
+}
+
+pub fn run_uninstall(provider_name: &str) -> Result<String, AppError> {
+    let provider = find_provider_by_name(provider_name).ok_or_else(|| {
+        AppError::Usage(format!(
+            "unknown provider `{provider_name}`. Available: claude, codex, cursor, antigravity"
+        ))
+    })?;
+    match provider.format {
+        ConfigFormat::JsonMcpServers => remove_json_config(&provider.path),
+        ConfigFormat::TomlMcpServers => remove_toml_config(&provider.path),
+    }
+}
+
+pub fn run_uninstall_all() -> Result<String, AppError> {
+    let providers = discover_providers();
+    let mut results = Vec::new();
+    for provider in &providers {
+        let result = match provider.format {
+            ConfigFormat::JsonMcpServers => remove_json_config(&provider.path),
+            ConfigFormat::TomlMcpServers => remove_toml_config(&provider.path),
+        };
+        match result {
+            Ok(msg) => results.push(msg),
+            Err(e) => results.push(format!("  {} — error: {e}", provider.name)),
+        }
+    }
+    Ok(format!("MCP deregistration:\n{}", results.join("\n")))
+}
+
 /// Run the interactive MCP configuration flow.
 /// Caller must verify stdout is a terminal before calling.
 pub fn run_interactive() -> Result<String, AppError> {

@@ -56,9 +56,77 @@ install -m 755 "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 echo ""
 echo "Installed ${BINARY} to ${INSTALL_DIR}/${BINARY}"
 
-echo ""
-echo "To use storyhook as an MCP server for AI tools (Claude Code, Cursor):"
-echo "  story mcp-config"
+# --- Interactive setup starts here ---
+
+# Detect if we can prompt interactively
+if [ -t 0 ]; then
+  TTY_IN="/dev/stdin"
+elif [ -e /dev/tty ]; then
+  TTY_IN="/dev/tty"
+else
+  TTY_IN=""
+fi
+
+if [ -n "$TTY_IN" ]; then
+  echo ""
+  echo "=== MCP Server Configuration ==="
+  echo "storyhook can register as an MCP server for AI coding tools."
+  echo ""
+
+  printf "  Configure for Claude Code? [Y/n] " > /dev/tty
+  read -r ans < "$TTY_IN" || ans=""
+  case "$ans" in
+    [Nn]*) ;;
+    *)
+      if "${INSTALL_DIR}/${BINARY}" mcp-config --install claude 2>&1; then
+        echo "    done."
+      else
+        echo "    skipped (could not configure)."
+      fi
+    ;;
+  esac
+
+  printf "  Configure for Codex CLI? [Y/n] " > /dev/tty
+  read -r ans < "$TTY_IN" || ans=""
+  case "$ans" in
+    [Nn]*) ;;
+    *)
+      if "${INSTALL_DIR}/${BINARY}" mcp-config --install codex 2>&1; then
+        echo "    done."
+      else
+        echo "    skipped (could not configure)."
+      fi
+    ;;
+  esac
+
+  # Git hooks (only if in a git repo)
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    echo ""
+    echo "=== Git Hooks ==="
+    echo "Available hooks:"
+    echo "  - post-commit: link commits to referenced stories"
+    echo "  - post-merge: auto-close stories on merge to main"
+    echo "  - prepare-commit-msg: show top story in commit template"
+    echo ""
+    printf "  Install git hooks in this repository? [Y/n] " > /dev/tty
+    read -r ans < "$TTY_IN" || ans=""
+    case "$ans" in
+      [Nn]*) ;;
+      *)
+        if "${INSTALL_DIR}/${BINARY}" hooks install 2>&1; then
+          echo "    done."
+        else
+          echo "    skipped (could not install hooks)."
+        fi
+      ;;
+    esac
+  fi
+else
+  # Non-interactive fallback
+  echo ""
+  echo "To configure MCP integration: story mcp-config"
+  echo "To install git hooks:         story hooks install"
+fi
 
 # Check if install dir is in PATH
 case ":${PATH}:" in

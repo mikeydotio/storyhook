@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::cli::{CliOptions, GraphMode, HELP_TEXT, Invocation, MemberInput};
+use crate::cli::{CliOptions, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput};
 use crate::domain::{
     DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
     compute_integrity_issues, derive_family_relationships, extract_story_ids, is_ready,
@@ -1031,7 +1031,24 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             Ok(Response::Graph(Box::new(graph_view)))
         }
-        Invocation::McpConfig { scope } => {
+        Invocation::McpConfig {
+            scope,
+            install,
+            uninstall,
+            uninstall_all,
+        } => {
+            if let Some(provider) = install {
+                let msg = crate::mcp_install::run_install(&provider)?;
+                return Ok(Response::Message(msg));
+            }
+            if let Some(provider) = uninstall {
+                let msg = crate::mcp_install::run_uninstall(&provider)?;
+                return Ok(Response::Message(msg));
+            }
+            if uninstall_all {
+                let msg = crate::mcp_install::run_uninstall_all()?;
+                return Ok(Response::Message(msg));
+            }
             let binary_path = resolve_binary_path();
             if scope.as_deref() == Some("project") {
                 let config = serde_json::json!({
@@ -1075,6 +1092,16 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             };
             Ok(Response::Message(template))
         }
+        Invocation::Hooks { action } => match action {
+            HooksAction::Install => {
+                let msg = crate::hooks::install_hooks(root)?;
+                Ok(Response::Message(msg))
+            }
+            HooksAction::Uninstall => {
+                let msg = crate::hooks::uninstall_hooks(root)?;
+                Ok(Response::Message(msg))
+            }
+        },
         Invocation::Relate {
             a,
             relation,
