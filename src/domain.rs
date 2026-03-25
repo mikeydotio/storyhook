@@ -89,6 +89,8 @@ pub struct StateDef {
     pub slug: String,
     #[serde(rename = "super")]
     pub super_state: SuperState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -187,6 +189,25 @@ pub enum StoryEvent {
         at: String,
         state: String,
     },
+}
+
+pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
+    events
+        .last()
+        .map(|event| match event {
+            StoryEvent::StoryCreated { .. } => "created",
+            StoryEvent::StoryCommentAdded { .. } => "comment",
+            StoryEvent::StoryAssigned { .. } => "assigned",
+            StoryEvent::StoryAwaitingSet { .. } => "awaiting-set",
+            StoryEvent::StoryAwaitingCleared { .. } => "awaiting-cleared",
+            StoryEvent::StoryStateChanged { .. } => "state-change",
+            StoryEvent::StoryRelationshipAdded { .. } => "relationship-added",
+            StoryEvent::StoryRelationshipRemoved { .. } => "relationship-removed",
+            StoryEvent::StoryPrioritySet { .. } => "priority-set",
+            StoryEvent::StoryLabelsSet { .. } => "labels-set",
+            StoryEvent::StoryClosedAndArchived { .. } => "archived",
+        })
+        .unwrap_or("unknown")
 }
 
 pub fn validate_state_defs(states: &[StateDef]) -> Result<(), AppError> {
@@ -986,7 +1007,8 @@ mod tests {
 
     use super::{
         Priority, StateDef, StoryEvent, StoryRelation, StorySnapshot, SuperState,
-        derive_family_relationships, fold_story, validate_state_defs, would_create_parent_cycle,
+        derive_family_relationships, fold_story, last_activity_type, validate_state_defs,
+        would_create_parent_cycle,
     };
 
     #[test]
@@ -994,6 +1016,7 @@ mod tests {
         let states = vec![StateDef {
             slug: "todo".to_string(),
             super_state: SuperState::Open,
+            role: None,
         }];
         let error = validate_state_defs(&states).unwrap_err();
         assert!(error.to_string().contains("OPEN"));
@@ -1160,10 +1183,12 @@ mod tests {
             StateDef {
                 slug: "todo".to_string(),
                 super_state: SuperState::Open,
+                role: None,
             },
             StateDef {
                 slug: "done".to_string(),
                 super_state: SuperState::Closed,
+                role: None,
             },
         ]
         .into_iter()
@@ -1292,5 +1317,60 @@ mod tests {
     #[test]
     fn extract_story_ids_no_boundary_between_ids() {
         assert_eq!(super::extract_story_ids("SH", "SH-1SH-2"), vec!["SH-1"]);
+    }
+
+    #[test]
+    fn last_activity_type_returns_correct_types() {
+        assert_eq!(last_activity_type(&[]), "unknown");
+        assert_eq!(
+            last_activity_type(&[StoryEvent::StoryCreated {
+                at: "2026-03-13T00:00:00Z".to_string(),
+                title: "Test".to_string(),
+                state: "todo".to_string(),
+            }]),
+            "created"
+        );
+        assert_eq!(
+            last_activity_type(&[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Test".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryCommentAdded {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    text: "a comment".to_string(),
+                },
+            ]),
+            "comment"
+        );
+        assert_eq!(
+            last_activity_type(&[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Test".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "in-progress".to_string(),
+                },
+            ]),
+            "state-change"
+        );
+        assert_eq!(
+            last_activity_type(&[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Test".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryPrioritySet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    priority: Priority::High,
+                },
+            ]),
+            "priority-set"
+        );
     }
 }

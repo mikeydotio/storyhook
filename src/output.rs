@@ -4,6 +4,13 @@ use crate::domain::{Priority, StoryRelation, StorySnapshot, SuperState};
 use crate::error::AppError;
 
 #[derive(Clone, Debug, Serialize)]
+pub struct StaleInfo {
+    pub last_activity_at: String,
+    pub last_activity_type: String,
+    pub days_stale: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct StoryView {
     pub story: StorySnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -12,6 +19,8 @@ pub struct StoryView {
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flagged_reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_info: Option<StaleInfo>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -210,9 +219,14 @@ fn render_human(response: &Response) -> String {
                 } else {
                     format!(" [{}]", story.story.labels.join(", "))
                 };
+                let stale = if let Some(ref info) = story.stale_info {
+                    format!(" [stale {}d, last: {}]", info.days_stale, info.last_activity_type)
+                } else {
+                    String::new()
+                };
                 body.push_str(&format!(
-                    "{} [{}]{} {}{}{}\n",
-                    story.story.id, story.story.state, priority, story.story.title, labels, flagged
+                    "{} [{}]{} {}{}{}{}\n",
+                    story.story.id, story.story.state, priority, story.story.title, labels, flagged, stale
                 ));
             }
             body
