@@ -20,7 +20,7 @@ fn main() {
         return;
     }
 
-    let (json, quiet, filtered_args) = cli::split_global_flags(&raw_args);
+    let (json, quiet, no_hooks, filtered_args) = cli::split_global_flags(&raw_args);
 
     let invocation = match cli::parse_invocation(&filtered_args) {
         Ok(invocation) => invocation,
@@ -61,6 +61,7 @@ fn main() {
     let options = CliOptions {
         json,
         quiet,
+        no_hooks,
         invocation,
     };
 

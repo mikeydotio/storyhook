@@ -390,6 +390,7 @@ fn handle_tools_call(id: Value, params: Option<Value>, root: &Path) -> JsonRpcRe
     let options = CliOptions {
         json: true,
         quiet: false,
+        no_hooks: false,
         invocation,
     };
 
