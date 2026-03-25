@@ -4,6 +4,8 @@ use crate::error::AppError;
 pub enum HooksAction {
     Install,
     Uninstall,
+    List,
+    Test { event_type: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,7 +43,7 @@ Usage:
   story doctor [--fix]
   story mcp-config [--install <provider>] [--uninstall <provider>] [--uninstall-all]
   story mcp-config [--scope project]
-  story hooks install|uninstall
+  story hooks install|uninstall|list|test <event_type>
   story sync-git [--since <duration>]
   story scaffold agents-md
   story scaffold claude-md
@@ -59,8 +61,9 @@ Usage:
   story <a> <relationship> <b> [--remove]
 
 Global options:
-  --json    Emit structured JSON
-  --quiet   Suppress success output
+  --json      Emit structured JSON
+  --quiet     Suppress success output
+  --no-hooks  Suppress event hook execution
   -h, --help
 "#;
 
@@ -68,6 +71,7 @@ Global options:
 pub struct CliOptions {
     pub json: bool,
     pub quiet: bool,
+    pub no_hooks: bool,
     pub invocation: Invocation,
 }
 
@@ -200,20 +204,22 @@ pub enum Invocation {
     },
 }
 
-pub fn split_global_flags(args: &[String]) -> (bool, bool, Vec<String>) {
+pub fn split_global_flags(args: &[String]) -> (bool, bool, bool, Vec<String>) {
     let mut json = false;
     let mut quiet = false;
+    let mut no_hooks = false;
     let mut filtered = Vec::new();
 
     for arg in args {
         match arg.as_str() {
             "--json" => json = true,
             "--quiet" => quiet = true,
+            "--no-hooks" => no_hooks = true,
             _ => filtered.push(arg.clone()),
         }
     }
 
-    (json, quiet, filtered)
+    (json, quiet, no_hooks, filtered)
 }
 
 pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
@@ -708,9 +714,9 @@ fn parse_mcp_config(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() != 2 {
+    if args.len() < 2 {
         return Err(AppError::Usage(
-            "usage: story hooks install|uninstall".to_string(),
+            "usage: story hooks install|uninstall|list|test <event_type>".to_string(),
         ));
     }
     match args[1].as_str() {
@@ -720,9 +726,20 @@ fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
         "uninstall" => Ok(Invocation::Hooks {
             action: HooksAction::Uninstall,
         }),
-        _ => Err(AppError::Usage(
-            "usage: story hooks install|uninstall".to_string(),
-        )),
+        "list" => Ok(Invocation::Hooks {
+            action: HooksAction::List,
+        }),
+        "test" => {
+            let event_type = args.get(2).ok_or_else(|| {
+                AppError::Usage("usage: story hooks test <event_type>".to_string())
+            })?;
+            Ok(Invocation::Hooks {
+                action: HooksAction::Test {
+                    event_type: event_type.clone(),
+                },
+            })
+        }
+        other => Err(AppError::Usage(format!("unknown hooks action: {other}"))),
     }
 }
 

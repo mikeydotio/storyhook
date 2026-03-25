@@ -16,6 +16,7 @@ use crate::output::{
 use crate::storage;
 
 pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
+    let no_hooks = options.no_hooks;
     match options.invocation {
         Invocation::Help => Ok(Response::Message(HELP_TEXT.to_string())),
         Invocation::Init { prefix } => {
@@ -29,6 +30,23 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         }
         Invocation::New { title } => lock::with_project_lock(root, || {
             let story = storage::create_story(root, &title)?;
+            if !no_hooks
+                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
+            {
+                let payload = serde_json::json!({
+                    "event_type": "create",
+                    "story_id": &story.id,
+                    "timestamp": &story.created_at,
+                    "story_title": &story.title,
+                    "initial_state": &story.state
+                });
+                crate::event_hooks::fire_hook(
+                    root,
+                    config,
+                    crate::event_hooks::HookEventType::Create,
+                    &payload.to_string(),
+                );
+            }
             story_view_response(root, story)
         }),
         Invocation::MemberAdd { input } => lock::with_project_lock(root, || {
@@ -369,6 +387,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         Invocation::Comment { id, text } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             ensure_open_story(root, &id)?;
+            let text_clone = text.clone();
             storage::write_story_events(
                 root,
                 &id,
@@ -377,6 +396,24 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     text,
                 }],
             )?;
+            if !no_hooks
+                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
+            {
+                let snapshot = storage::load_open_story_snapshot(root, &id)?;
+                let payload = serde_json::json!({
+                    "event_type": "comment",
+                    "story_id": &id,
+                    "timestamp": crate::storage::now(),
+                    "story_title": &snapshot.title,
+                    "comment_text": &text_clone
+                });
+                crate::event_hooks::fire_hook(
+                    root,
+                    config,
+                    crate::event_hooks::HookEventType::Comment,
+                    &payload.to_string(),
+                );
+            }
             story_view_by_id(root, &id)
         }),
         Invocation::Assign { id, member } => lock::with_project_lock(root, || {
@@ -450,11 +487,45 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
                 }
                 events.push(StoryEvent::StoryClosedAndArchived {
-                    at: now,
+                    at: now.clone(),
                     state: state.clone(),
                 });
             }
             storage::write_story_events(root, &id, &events)?;
+
+            if !no_hooks
+                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
+            {
+                let payload = serde_json::json!({
+                    "event_type": "state_change",
+                    "story_id": &id,
+                    "timestamp": &now,
+                    "story_title": &story.title,
+                    "from_state": &story.state,
+                    "to_state": &state
+                });
+                crate::event_hooks::fire_hook(
+                    root,
+                    config,
+                    crate::event_hooks::HookEventType::StateChange,
+                    &payload.to_string(),
+                );
+                if state_def.super_state == SuperState::Closed {
+                    let close_payload = serde_json::json!({
+                        "event_type": "close",
+                        "story_id": &id,
+                        "timestamp": &now,
+                        "story_title": &story.title,
+                        "final_state": &state
+                    });
+                    crate::event_hooks::fire_hook(
+                        root,
+                        config,
+                        crate::event_hooks::HookEventType::Close,
+                        &close_payload.to_string(),
+                    );
+                }
+            }
 
             if state_def.super_state == SuperState::Closed {
                 let story = storage::archive_story(root, &id)?;
@@ -483,6 +554,24 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     labels,
                 }],
             )?;
+            if !no_hooks
+                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
+            {
+                let snapshot = storage::load_open_story_snapshot(root, &id)?;
+                let payload = serde_json::json!({
+                    "event_type": "label_change",
+                    "story_id": &id,
+                    "timestamp": crate::storage::now(),
+                    "story_title": &snapshot.title,
+                    "labels": &snapshot.labels
+                });
+                crate::event_hooks::fire_hook(
+                    root,
+                    config,
+                    crate::event_hooks::HookEventType::LabelChange,
+                    &payload.to_string(),
+                );
+            }
             story_view_by_id(root, &id)
         }),
         Invocation::SetPriority { id, priority } => lock::with_project_lock(root, || {
@@ -493,6 +582,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     "priority must be one of: critical, high, medium, low, none".to_string(),
                 )
             })?;
+            let priority_str = priority.as_str().to_string();
             storage::write_story_events(
                 root,
                 &id,
@@ -501,6 +591,24 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     priority,
                 }],
             )?;
+            if !no_hooks
+                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
+            {
+                let snapshot = storage::load_open_story_snapshot(root, &id)?;
+                let payload = serde_json::json!({
+                    "event_type": "priority_change",
+                    "story_id": &id,
+                    "timestamp": crate::storage::now(),
+                    "story_title": &snapshot.title,
+                    "priority": &priority_str
+                });
+                crate::event_hooks::fire_hook(
+                    root,
+                    config,
+                    crate::event_hooks::HookEventType::PriorityChange,
+                    &payload.to_string(),
+                );
+            }
             story_view_by_id(root, &id)
         }),
         Invocation::Next { count } => {
@@ -700,6 +808,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             storage::unarchive_story(root, &id)?;
             let default_state = storage::default_open_state(root)?;
             let now = storage::now();
+            let state_slug = default_state.slug.clone();
             storage::write_story_events(
                 root,
                 &id,
@@ -708,6 +817,25 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     state: default_state.slug,
                 }],
             )?;
+            if !no_hooks
+                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
+            {
+                let snapshot = storage::load_open_story_snapshot(root, &id)?;
+                let payload = serde_json::json!({
+                    "event_type": "state_change",
+                    "story_id": &id,
+                    "timestamp": crate::storage::now(),
+                    "story_title": &snapshot.title,
+                    "from_state": "closed",
+                    "to_state": &state_slug
+                });
+                crate::event_hooks::fire_hook(
+                    root,
+                    config,
+                    crate::event_hooks::HookEventType::StateChange,
+                    &payload.to_string(),
+                );
+            }
             story_view_by_id(root, &id)
         }),
         Invocation::Export => {
@@ -1101,6 +1229,15 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 let msg = crate::hooks::uninstall_hooks(root)?;
                 Ok(Response::Message(msg))
             }
+            HooksAction::List => {
+                let msg = crate::event_hooks::list_hooks(root);
+                Ok(Response::Message(msg))
+            }
+            HooksAction::Test { event_type } => {
+                storage::ensure_project(root)?;
+                let msg = crate::event_hooks::test_hook(root, &event_type)?;
+                Ok(Response::Message(msg))
+            }
         },
         Invocation::Relate {
             a,
@@ -1186,6 +1323,27 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             if !b_events.is_empty() {
                 storage::write_story_events(root, &b, &b_events)?;
+            }
+
+            if !no_hooks
+                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
+            {
+                let snapshot_a = storage::load_open_story_snapshot(root, &a)?;
+                let payload = serde_json::json!({
+                    "event_type": "relationship_change",
+                    "story_id": &a,
+                    "timestamp": crate::storage::now(),
+                    "story_title": &snapshot_a.title,
+                    "action": if remove { "removed" } else { "added" },
+                    "relation": &relation,
+                    "other_id": &b
+                });
+                crate::event_hooks::fire_hook(
+                    root,
+                    config,
+                    crate::event_hooks::HookEventType::RelationshipChange,
+                    &payload.to_string(),
+                );
             }
 
             story_view_by_id(root, &a)
