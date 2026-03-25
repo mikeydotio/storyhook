@@ -245,3 +245,171 @@ fn sync_git_summary_message() {
             "scanned 3 commits, added 2 comments to 2 stories",
         ));
 }
+
+#[test]
+fn sync_git_auto_transition_with_role() {
+    let dir = tempdir().unwrap();
+    init_git(dir.path());
+    story(dir.path()).arg("init").assert().success();
+
+    // Add an "in-progress" state with role=active
+    story(dir.path())
+        .args(["state", "add", "in-progress", "--super", "OPEN", "--role", "active"])
+        .assert()
+        .success();
+
+    // Create a story (starts in "todo")
+    story(dir.path())
+        .args(["new", "Auto-transition test"])
+        .assert()
+        .success();
+
+    // Make a git commit referencing the story
+    git_commit(dir.path(), "Work on SH-1 feature");
+
+    // Run sync-git
+    let assert = story(dir.path())
+        .args(["sync-git", "--since", "1h"])
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        output.contains("added 1 comments to 1 stories"),
+        "unexpected output: {output}"
+    );
+    assert!(
+        output.contains("SH-1: todo"),
+        "expected transition message, got: {output}"
+    );
+    assert!(
+        output.contains("in-progress"),
+        "expected transition to in-progress, got: {output}"
+    );
+
+    // Verify the story is now in-progress
+    story(dir.path())
+        .arg("SH-1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: in-progress"));
+}
+
+#[test]
+fn sync_git_no_transition_without_active_state() {
+    let dir = tempdir().unwrap();
+    init_git(dir.path());
+    story(dir.path()).arg("init").assert().success();
+
+    // Default states: todo/done — no active state (only 1 OPEN state)
+    story(dir.path())
+        .args(["new", "No active state test"])
+        .assert()
+        .success();
+
+    git_commit(dir.path(), "Fix SH-1 bug");
+
+    let assert = story(dir.path())
+        .args(["sync-git", "--since", "1h"])
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        output.contains("added 1 comments to 1 stories"),
+        "unexpected output: {output}"
+    );
+    // Should NOT contain a transition line
+    assert!(
+        !output.contains("\u{2192}"),
+        "should not have transition, got: {output}"
+    );
+
+    // Story stays in todo
+    story(dir.path())
+        .arg("SH-1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: todo"));
+}
+
+#[test]
+fn sync_git_no_re_transition() {
+    let dir = tempdir().unwrap();
+    init_git(dir.path());
+    story(dir.path()).arg("init").assert().success();
+
+    // Add in-progress with role=active
+    story(dir.path())
+        .args(["state", "add", "in-progress", "--super", "OPEN", "--role", "active"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["new", "Already transitioned"])
+        .assert()
+        .success();
+
+    // Manually set the story to in-progress
+    story(dir.path())
+        .args(["SH-1", "is", "in-progress"])
+        .assert()
+        .success();
+
+    // Make a git commit referencing the story
+    git_commit(dir.path(), "More work on SH-1");
+
+    let assert = story(dir.path())
+        .args(["sync-git", "--since", "1h"])
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    // Should NOT contain a transition line since story is already in-progress
+    assert!(
+        !output.contains("\u{2192}"),
+        "should not re-transition, got: {output}"
+    );
+}
+
+#[test]
+fn sync_git_heuristic_two_open_states() {
+    let dir = tempdir().unwrap();
+    init_git(dir.path());
+    story(dir.path()).arg("init").assert().success();
+
+    // Add in-progress without role — heuristic: 2nd OPEN state is "active"
+    story(dir.path())
+        .args(["state", "add", "in-progress", "--super", "OPEN"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["new", "Heuristic transition test"])
+        .assert()
+        .success();
+
+    git_commit(dir.path(), "Work on SH-1");
+
+    let assert = story(dir.path())
+        .args(["sync-git", "--since", "1h"])
+        .assert()
+        .success();
+
+    let output = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        output.contains("SH-1: todo"),
+        "expected transition message, got: {output}"
+    );
+    assert!(
+        output.contains("in-progress"),
+        "expected transition to in-progress, got: {output}"
+    );
+
+    // Verify the story is now in-progress
+    story(dir.path())
+        .arg("SH-1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: in-progress"));
+}

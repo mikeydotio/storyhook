@@ -17,12 +17,28 @@ pub struct ProjectPaths {
     root: PathBuf,
 }
 
+#[derive(Serialize, Deserialize, Default)]
+struct SyncConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auto_transition: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct DoctorConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stale_threshold: Option<String>,
+}
+
 #[derive(Serialize, Deserialize)]
 struct ProjectFile {
     schema: u32,
     created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sync: Option<SyncConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    doctor: Option<DoctorConfig>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -93,6 +109,8 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
             schema: 1,
             created_at: now(),
             prefix: prefix.map(|p| p.to_string()),
+            sync: None,
+            doctor: None,
         };
         fs::write(paths.project_file(), toml::to_string_pretty(&project)?)?;
     }
@@ -102,10 +120,12 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
             StateDef {
                 slug: "todo".to_string(),
                 super_state: SuperState::Open,
+                role: None,
             },
             StateDef {
                 slug: "done".to_string(),
                 super_state: SuperState::Closed,
+                role: None,
             },
         ];
         save_states(root, &states)?;
@@ -261,7 +281,7 @@ pub fn save_states(root: &Path, states: &[StateDef]) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn add_state(root: &Path, slug: &str, superstate: SuperState) -> Result<StateDef, AppError> {
+pub fn add_state(root: &Path, slug: &str, superstate: SuperState, role: Option<String>) -> Result<StateDef, AppError> {
     let mut states = load_states(root)?;
     if states.iter().any(|state| state.slug == slug) {
         return Err(AppError::Validation(format!(
@@ -272,6 +292,7 @@ pub fn add_state(root: &Path, slug: &str, superstate: SuperState) -> Result<Stat
     let state = StateDef {
         slug: slug.to_string(),
         super_state: superstate,
+        role,
     };
     states.push(state.clone());
     save_states(root, &states)?;
@@ -306,6 +327,41 @@ pub fn default_open_state(root: &Path) -> Result<StateDef, AppError> {
         .into_iter()
         .find(|state| state.super_state == SuperState::Open)
         .ok_or_else(|| AppError::Validation("project has no OPEN-mapped default state".to_string()))
+}
+
+pub fn is_auto_transition_enabled(root: &Path) -> Result<bool, AppError> {
+    let paths = ProjectPaths::new(root);
+    let raw = fs::read_to_string(paths.project_file())?;
+    let project: ProjectFile = toml::from_str(&raw)?;
+    Ok(project.sync.and_then(|s| s.auto_transition).unwrap_or(true))
+}
+
+pub fn get_stale_threshold(root: &Path) -> Result<String, AppError> {
+    let paths = ProjectPaths::new(root);
+    let raw = fs::read_to_string(paths.project_file())?;
+    let project: ProjectFile = toml::from_str(&raw)?;
+    Ok(project
+        .doctor
+        .and_then(|d| d.stale_threshold)
+        .unwrap_or_else(|| "14d".to_string()))
+}
+
+pub fn find_active_state(root: &Path) -> Result<Option<StateDef>, AppError> {
+    let states = load_states(root)?;
+    // Priority 1: explicit role = "active"
+    if let Some(state) = states.iter().find(|s| s.role.as_deref() == Some("active")) {
+        return Ok(Some(state.clone()));
+    }
+    // Priority 2: heuristic - if exactly 2 OPEN states, the second is "active"
+    let open_states: Vec<&StateDef> = states
+        .iter()
+        .filter(|s| s.super_state == SuperState::Open)
+        .collect();
+    if open_states.len() == 2 {
+        return Ok(Some(open_states[1].clone()));
+    }
+    // No clear active state
+    Ok(None)
 }
 
 pub fn load_members(root: &Path) -> Result<Vec<Member>, AppError> {
@@ -650,6 +706,8 @@ pub fn import_project(root: &Path, export: &ProjectExport) -> Result<(), AppErro
         schema: export.schema,
         created_at: now(),
         prefix: export.prefix.clone(),
+        sync: None,
+        doctor: None,
     };
     fs::write(paths.project_file(), toml::to_string_pretty(&project)?)?;
 

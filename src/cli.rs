@@ -21,7 +21,7 @@ Usage:
   story new <title>
   story member add "<name <email>>"
   story member add -g <github-handle>
-  story state add <state-slug> --super OPEN|CLOSED
+  story state add <state-slug> --super OPEN|CLOSED [--role active]
   story state remove <state-slug>
   story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
              [--label <labels>] [--created-after <date>] [--updated-after <date>]
@@ -92,6 +92,7 @@ pub enum Invocation {
     StateAdd {
         slug: String,
         superstate: String,
+        role: Option<String>,
     },
     StateRemove {
         slug: String,
@@ -316,13 +317,14 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
         "add" => {
             let slug = args[2].clone();
             let mut superstate = None;
+            let mut role = None;
             let mut index = 3;
             while index < args.len() {
                 match args[index].as_str() {
                     "--super" => {
                         let value = args.get(index + 1).ok_or_else(|| {
                             AppError::Usage(
-                                "usage: story state add <slug> --super OPEN|CLOSED".to_string(),
+                                "usage: story state add <slug> --super OPEN|CLOSED [--role active]".to_string(),
                             )
                         })?;
                         superstate = Some(value.clone());
@@ -332,9 +334,22 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
                         superstate = Some(token.trim_start_matches("--super=").to_string());
                         index += 1;
                     }
+                    "--role" => {
+                        let value = args.get(index + 1).ok_or_else(|| {
+                            AppError::Usage(
+                                "usage: story state add <slug> --super OPEN|CLOSED [--role active]".to_string(),
+                            )
+                        })?;
+                        role = Some(value.clone());
+                        index += 2;
+                    }
+                    token if token.starts_with("--role=") => {
+                        role = Some(token.trim_start_matches("--role=").to_string());
+                        index += 1;
+                    }
                     _ => {
                         return Err(AppError::Usage(
-                            "usage: story state add <slug> --super OPEN|CLOSED".to_string(),
+                            "usage: story state add <slug> --super OPEN|CLOSED [--role active]".to_string(),
                         ));
                     }
                 }
@@ -343,8 +358,9 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
             Ok(Invocation::StateAdd {
                 slug,
                 superstate: superstate.ok_or_else(|| {
-                    AppError::Usage("usage: story state add <slug> --super OPEN|CLOSED".to_string())
+                    AppError::Usage("usage: story state add <slug> --super OPEN|CLOSED [--role active]".to_string())
                 })?,
+                role,
             })
         }
         "remove" => Ok(Invocation::StateRemove {

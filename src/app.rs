@@ -10,7 +10,7 @@ use crate::domain::{
 use crate::error::AppError;
 use crate::lock;
 use crate::output::{
-    BlockedChainView, GraphOverview, GraphView, Response, StoryView, SummaryView,
+    BlockedChainView, GraphOverview, GraphView, Response, StaleInfo, StoryView, SummaryView,
     render_html_report,
 };
 use crate::storage;
@@ -37,12 +37,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             storage::store_member(root, &member)?;
             Ok(Response::Message(format!("added member {}", member.id)))
         }),
-        Invocation::StateAdd { slug, superstate } => lock::with_project_lock(root, || {
+        Invocation::StateAdd { slug, superstate, role } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             let superstate = SuperState::parse(&superstate).ok_or_else(|| {
                 AppError::Validation("superstate must be OPEN or CLOSED".to_string())
             })?;
-            let state = storage::add_state(root, &slug, superstate)?;
+            let state = storage::add_state(root, &slug, superstate, role)?;
             Ok(Response::Message(format!(
                 "added state {} ({})",
                 state.slug,
@@ -127,6 +127,23 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     view.story.superstate == SuperState::Open
                         && view.story.updated_at.as_str() <= threshold_str.as_str()
                 });
+            }
+            if stale.is_some() {
+                for view in &mut views {
+                    let events = storage::load_open_story_events(root, &view.story.id)?;
+                    let activity_type = crate::domain::last_activity_type(&events);
+                    if let Ok(updated) =
+                        chrono::DateTime::parse_from_rfc3339(&view.story.updated_at)
+                    {
+                        let days = (chrono::Utc::now() - updated.with_timezone(&chrono::Utc))
+                            .num_days();
+                        view.stale_info = Some(StaleInfo {
+                            last_activity_at: view.story.updated_at.clone(),
+                            last_activity_type: activity_type.to_string(),
+                            days_stale: days.max(0) as u64,
+                        });
+                    }
+                }
             }
             sort_story_views(&mut views);
             Ok(Response::Stories(views))
@@ -347,6 +364,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         derived_relationships: Vec::new(),
                         warnings: Vec::new(),
                         flagged_reasons: Vec::new(),
+                        stale_info: None,
                     });
                 }
             }
@@ -645,6 +663,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     derived_relationships: Vec::new(),
                     warnings: Vec::new(),
                     flagged_reasons: Vec::new(),
+                    stale_info: None,
                 });
             }
             Ok(Response::Stories(views))
@@ -1205,8 +1224,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 }
             }
 
-            // 2. Load prefix
+            // 2. Load prefix and auto-transition config
             let prefix = storage::load_project_prefix(root)?;
+            let active_state = storage::find_active_state(root)?;
+            let default_open = storage::default_open_state(root)?;
+            let auto_transition_enabled = storage::is_auto_transition_enabled(root)?;
+            let mut transitions: Vec<(String, String, String, String)> = Vec::new(); // (story_id, from, to, short_hash)
 
             // 3. Compute --since value
             let since_str = since.as_deref().unwrap_or("7d");
@@ -1280,16 +1303,41 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         }],
                     )?;
                     comments_added += 1;
-                    stories_touched.insert(story_id);
+                    stories_touched.insert(story_id.clone());
+
+                    // Auto-transition from initial state to active state
+                    if auto_transition_enabled
+                        && let Some(ref active) = active_state
+                    {
+                        let snapshot = storage::load_open_story_snapshot(root, &story_id)?;
+                        if snapshot.state == default_open.slug && !transitions.iter().any(|(tid, _, _, _)| tid == &story_id) {
+                            storage::write_story_events(
+                                root,
+                                &story_id,
+                                &[StoryEvent::StoryStateChanged {
+                                    at: storage::now(),
+                                    state: active.slug.clone(),
+                                }],
+                            )?;
+                            transitions.push((
+                                story_id.clone(),
+                                default_open.slug.clone(),
+                                active.slug.clone(),
+                                short_hash.to_string(),
+                            ));
+                        }
+                    }
                 }
             }
 
-            Ok(Response::Message(format!(
+            let mut msg = format!(
                 "scanned {} commits, added {} comments to {} stories",
-                commits_scanned,
-                comments_added,
-                stories_touched.len()
-            )))
+                commits_scanned, comments_added, stories_touched.len()
+            );
+            for (id, from, to, hash) in &transitions {
+                msg.push_str(&format!("\n{id}: {from} \u{2192} {to} (referenced in {hash})"));
+            }
+            Ok(Response::Message(msg))
         }),
     }
 }
@@ -1463,6 +1511,7 @@ fn build_story_views(root: &Path, include_derived: bool) -> Result<Vec<StoryView
                 .unwrap_or_default(),
             warnings: Vec::new(),
             flagged_reasons,
+            stale_info: None,
         });
     }
 
@@ -1875,6 +1924,7 @@ fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<Response
             derived_relationships: Vec::new(),
             warnings: Vec::new(),
             flagged_reasons: Vec::new(),
+            stale_info: None,
         });
     }
     Ok(Response::Stories(views))
