@@ -671,7 +671,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 ));
             };
 
-            let import_stories = crate::decompose::decompose_spec(&content);
+            let import_stories = crate::decompose::decompose(file.as_deref(), &content)?;
 
             if dry_run {
                 let json = serde_json::to_string_pretty(&import_stories)?;
@@ -1802,6 +1802,14 @@ fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<Response
             events.push(StoryEvent::StoryAssigned {
                 at: now.clone(),
                 member_id: member.id,
+            });
+        }
+        if let Some(ref description) = import_story.description
+            && !description.trim().is_empty()
+        {
+            events.push(StoryEvent::StoryCommentAdded {
+                at: now.clone(),
+                text: description.clone(),
             });
         }
         if !events.is_empty() {

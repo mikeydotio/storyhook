@@ -15,6 +15,8 @@ pub struct ImportStory {
     pub assignee: Option<String>,
     #[serde(default)]
     pub relationships: Option<Vec<ImportRelationship>>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -56,3 +56,9 @@ impl From<rusqlite::Error> for AppError {
         Self::Storage(value.to_string())
     }
 }
+
+impl From<serde_yml::Error> for AppError {
+    fn from(value: serde_yml::Error) -> Self {
+        Self::Storage(value.to_string())
+    }
+}

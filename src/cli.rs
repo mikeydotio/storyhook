@@ -32,7 +32,7 @@ Usage:
   story search <query>
   story import [<file>]
   story export
-  story decompose <file> [--dry-run]
+  story decompose <file> [--dry-run]     (markdown or YAML)
   story decompose --stdin [--dry-run]
   story import-project <file>
   story context [--format markdown|json]
