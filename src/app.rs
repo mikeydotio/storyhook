@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::cli::{CliOptions, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput};
+use crate::cli::{CliOptions, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput, PluginAction};
 use crate::domain::{
     DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
     compute_integrity_issues, derive_family_relationships, extract_story_ids, is_ready,
@@ -19,14 +19,24 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
     let no_hooks = options.no_hooks;
     match options.invocation {
         Invocation::Help => Ok(Response::Message(HELP_TEXT.to_string())),
-        Invocation::Init { prefix } => {
+        Invocation::Init { prefix, no_agents_md } => {
             storage::init_project(root, prefix.as_deref())?;
-            Ok(Response::Message(
-                "initialized story project\n\n\
+            let mut msg = "initialized story project\n\n\
                  The .storyhook/ directory contains your project data.\n\
                  Remember to commit it to git — it should travel with the repository."
-                    .to_string(),
-            ))
+                    .to_string();
+
+            // Generate AGENTS.md by default unless opted out
+            if !no_agents_md {
+                let agents_md_path = root.join("AGENTS.md");
+                if !agents_md_path.exists() {
+                    let content = generate_agents_md(root);
+                    std::fs::write(&agents_md_path, content)?;
+                    msg.push_str("\n\nGenerated AGENTS.md for AI agent discoverability.");
+                }
+            }
+
+            Ok(Response::Message(msg))
         }
         Invocation::New { title } => lock::with_project_lock(root, || {
             let story = storage::create_story(root, &title)?;
@@ -1497,6 +1507,28 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             Ok(Response::Message(msg))
         }),
+        Invocation::HelpTopic { topic } => {
+            match crate::help_topics::get_help_topic(&topic) {
+                Some(text) => Ok(Response::Message(text.to_string())),
+                None => {
+                    let topics = crate::help_topics::list_topics();
+                    Err(AppError::Usage(format!(
+                        "unknown help topic `{topic}`. Available: {}",
+                        topics.join(", ")
+                    )))
+                }
+            }
+        }
+        Invocation::Plugin { action } => match action {
+            PluginAction::Install { target } => {
+                let msg = crate::plugin::install(&target, root)?;
+                Ok(Response::Message(msg))
+            }
+            PluginAction::Uninstall { target } => {
+                let msg = crate::plugin::uninstall(&target, root)?;
+                Ok(Response::Message(msg))
+            }
+        },
     }
 }
 

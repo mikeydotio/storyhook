@@ -136,7 +136,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
         "tools": [
             {
                 "name": "storyhook_list_stories",
-                "description": "List stories with optional filters",
+                "description": "List open stories with optional filters by state, assignee, priority, label, or status flags. Returns an array of story summaries. Use this for browsing the backlog or finding specific stories. For the single best task to work on next, use storyhook_get_next instead.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -153,7 +153,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_get_story",
-                "description": "Get a story by ID",
+                "description": "Get full details for a single story by its ID, including state, priority, labels, comments, relationships, and timestamps. Use this when you need the complete context for a specific story.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -164,7 +164,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_create_story",
-                "description": "Create a new story",
+                "description": "Create a new story with a title and optional priority, labels, and assignee. Returns the created story with its assigned ID. For bulk creation from a spec, use storyhook_decompose_spec instead.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -178,7 +178,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_update_story",
-                "description": "Update story state, priority, labels, or assignee",
+                "description": "Update a story's state, priority, labels, assignee, or awaiting status. Processes one update field per call in priority order (state > priority > labels > assignee > awaiting). Transitioning to a CLOSED state automatically archives the story.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -195,7 +195,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_add_comment",
-                "description": "Add a comment to a story",
+                "description": "Add a timestamped comment to a story. Use for progress notes, decisions, or context that should be preserved in the story's event log. Comments are append-only and form part of the audit trail.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -207,7 +207,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_get_summary",
-                "description": "Get project summary with counts and ready stories",
+                "description": "Get a project summary with story counts by state and priority, plus lists of ready, blocked, and stale stories. Use this for a quick project health check. For a full session-start context document, use the CLI command 'story context' instead.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
@@ -215,7 +215,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_get_next",
-                "description": "Get the next ready story/stories to work on",
+                "description": "Get the highest-priority ready stories to work on. A story is 'ready' when all its predecessors are closed and it has no awaiting blockers. Returns stories sorted by priority then creation time. Use this to pick the next task at session start or after completing work.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -225,7 +225,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_search",
-                "description": "Search stories by title, comments, or labels",
+                "description": "Full-text search across story titles, comments, and labels. Searches both open and archived stories. Use when you know part of a story's content but not its ID. For filtered browsing by state or priority, use storyhook_list_stories instead.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -236,7 +236,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_get_graph",
-                "description": "Get dependency graph analysis",
+                "description": "Analyze the dependency graph of open stories. Shows relationships, bottlenecks, and parallelizable work. Use 'critical_path' to find the longest dependency chain, 'parallel_groups' to find independent work streams, or 'blocked_by' to trace why a specific story is blocked.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -251,7 +251,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_scaffold",
-                "description": "Generate project template files (AGENTS.md, CLAUDE.md, or .cursorrules)",
+                "description": "Generate agent instruction files that teach AI tools how to use storyhook. Creates AGENTS.md (universal), CLAUDE.md (Claude Code), or .cursorrules (Cursor). Use after project init to set up AI agent integration.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -266,7 +266,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_decompose_spec",
-                "description": "Decompose a Markdown spec into import-compatible stories",
+                "description": "Parse a Markdown or YAML specification into individual stories with relationships, priorities, and labels. Use --dry-run to preview without creating. For creating single stories, use storyhook_create_story instead.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -278,7 +278,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_bulk_create",
-                "description": "Create multiple stories from JSON array",
+                "description": "Create multiple stories at once from a JSON array. Each story can have a title, priority, labels, and relationships (by ref_index to other stories in the same batch or by other_id for existing stories). Use for programmatic batch creation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -313,7 +313,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_generate_report",
-                "description": "Generate a project report in text or HTML format",
+                "description": "Generate a project status report in text or standalone HTML format. The HTML report is suitable for stakeholder updates. For a quick summary, use storyhook_get_summary instead.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -327,7 +327,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_sync_git",
-                "description": "Scan recent git commits for story ID references and add comments to referenced stories",
+                "description": "Scan recent git commits for story ID references and link them to stories via comments. Also auto-transitions stories based on commit patterns (e.g., 'closes SH-1'). Safe to run repeatedly — skips already-synced commits. Use after git operations to keep stories up to date.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

@@ -19,7 +19,7 @@ pub enum GraphMode {
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
-  story init [--prefix <PREFIX>]
+  story init [--prefix <PREFIX>] [--no-agents-md]
   story new <title>
   story member add "<name <email>>"
   story member add -g <github-handle>
@@ -45,9 +45,9 @@ Usage:
   story mcp-config [--scope project]
   story hooks install|uninstall|list|test <event_type>
   story sync-git [--since <duration>]
-  story scaffold agents-md
-  story scaffold claude-md
-  story scaffold cursor-rules
+  story scaffold agents-md|claude-md|cursor-rules
+  story help <command>
+  story plugin install|uninstall <target>
   story <id>
   story <id> "<comment>"
   story <id> assign <member-id|handle>
@@ -86,6 +86,7 @@ pub enum Invocation {
     Help,
     Init {
         prefix: Option<String>,
+        no_agents_md: bool,
     },
     New {
         title: String,
@@ -203,6 +204,18 @@ pub enum Invocation {
     SyncGit {
         since: Option<String>,
     },
+    HelpTopic {
+        topic: String,
+    },
+    Plugin {
+        action: PluginAction,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PluginAction {
+    Install { target: String },
+    Uninstall { target: String },
 }
 
 pub fn split_global_flags(args: &[String]) -> (bool, bool, bool, Vec<String>) {
@@ -229,7 +242,8 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
     }
 
     match args[0].as_str() {
-        "-h" | "--help" | "help" => Ok(Invocation::Help),
+        "-h" | "--help" => Ok(Invocation::Help),
+        "help" => parse_help(args),
         "init" => parse_init(args),
         "new" => parse_new(args),
         "member" => parse_member(args),
@@ -251,30 +265,38 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "hooks" => parse_hooks(args),
         "scaffold" => parse_scaffold(args),
         "sync-git" => parse_sync_git(args),
+        "plugin" => parse_plugin(args),
         _ => parse_story(args),
     }
 }
 
 fn parse_init(args: &[String]) -> Result<Invocation, AppError> {
     let mut prefix = None;
+    let mut no_agents_md = false;
     let mut index = 1;
+    let usage = "usage: story init [--prefix <PREFIX>] [--no-agents-md]";
     while index < args.len() {
         match args[index].as_str() {
             "--prefix" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage("usage: story init [--prefix <PREFIX>]".to_string())
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 prefix = Some(value.clone());
                 index += 2;
             }
+            "--no-agents-md" => {
+                no_agents_md = true;
+                index += 1;
+            }
             _ => {
-                return Err(AppError::Usage(
-                    "usage: story init [--prefix <PREFIX>]".to_string(),
-                ));
+                return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
-    Ok(Invocation::Init { prefix })
+    Ok(Invocation::Init {
+        prefix,
+        no_agents_md,
+    })
 }
 
 fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
@@ -794,6 +816,38 @@ fn parse_sync_git(args: &[String]) -> Result<Invocation, AppError> {
         }
     }
     Ok(Invocation::SyncGit { since })
+}
+
+fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() < 2 {
+        return Ok(Invocation::Help);
+    }
+    Ok(Invocation::HelpTopic {
+        topic: args[1].clone(),
+    })
+}
+
+fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() < 3 {
+        return Err(AppError::Usage(
+            "usage: story plugin install|uninstall <target>".to_string(),
+        ));
+    }
+    match args[1].as_str() {
+        "install" => Ok(Invocation::Plugin {
+            action: PluginAction::Install {
+                target: args[2].clone(),
+            },
+        }),
+        "uninstall" => Ok(Invocation::Plugin {
+            action: PluginAction::Uninstall {
+                target: args[2].clone(),
+            },
+        }),
+        other => Err(AppError::Usage(format!(
+            "unknown plugin action: {other}. Usage: story plugin install|uninstall <target>"
+        ))),
+    }
 }
 
 fn looks_like_story_id(s: &str) -> bool {
