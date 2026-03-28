@@ -1,0 +1,7 @@
+[[states]]
+slug = "todo"
+super = "OPEN"
+
+[[states]]
+slug = "done"
+super = "CLOSED"

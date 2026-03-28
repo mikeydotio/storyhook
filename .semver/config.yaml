@@ -1,5 +1,5 @@
 tracking: true
-auto_bump: false
+auto_bump: true
 auto_bump_confirm: true
 version_prefix: "v"
 changelog_format: "grouped"

@@ -1,2 +1,5 @@
 /target
 .DS_Store
+
+# .storyhook/ is version-controlled project data — do not ignore
+.planning/
