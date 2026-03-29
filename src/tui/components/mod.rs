@@ -3,6 +3,7 @@ pub mod create_form;
 pub mod dashboard;
 pub mod filter_bar;
 pub mod help;
+pub mod modal;
 pub mod status_bar;
 pub mod story_detail;
 

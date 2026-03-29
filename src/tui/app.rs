@@ -11,7 +11,9 @@ use crate::error::AppError;
 
 use super::action::{Action, View};
 use super::components::board::Board;
+use super::components::create_form::CreateForm;
 use super::components::status_bar::StatusBar;
+use super::components::story_detail::StoryDetail;
 use super::components::Component;
 use super::data::DataStore;
 use super::event::{Event, EventSource};
@@ -38,14 +40,32 @@ pub fn run(root: &Path) -> Result<(), AppError> {
     // Create components
     let mut board = Board::new();
     let status_bar = StatusBar::new();
+    let mut modal_components = ModalComponents::default();
 
-    let result = main_loop(&mut term, &mut state, &rx, root, &theme, &mut board, &status_bar);
+    let result = main_loop(
+        &mut term,
+        &mut state,
+        &rx,
+        root,
+        &theme,
+        &mut board,
+        &status_bar,
+        &mut modal_components,
+    );
 
     event_source.stop();
     terminal::restore();
     result
 }
 
+/// Holds optional modal component instances.
+#[derive(Default)]
+struct ModalComponents {
+    story_detail: Option<StoryDetail>,
+    create_form: Option<CreateForm>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn main_loop(
     term: &mut ratatui::DefaultTerminal,
     state: &mut AppState,
@@ -54,9 +74,10 @@ fn main_loop(
     theme: &Theme,
     board: &mut Board,
     status_bar: &StatusBar,
+    modal_components: &mut ModalComponents,
 ) -> Result<(), AppError> {
     // Initial render
-    term.draw(|frame| render(frame, state, theme, board, status_bar))?;
+    term.draw(|frame| render(frame, state, theme, board, status_bar, modal_components))?;
 
     while state.running {
         let event = match rx.recv() {
@@ -69,10 +90,10 @@ fn main_loop(
             state.terminal_size = (*w, *h);
         }
 
-        let actions = route_event(event, state, board);
+        let actions = route_event(event, state, board, modal_components);
 
         for action in actions {
-            dispatch(action, state, root, board)?;
+            dispatch(action, state, root, board, modal_components)?;
         }
 
         // Expire notifications (3s timeout)
@@ -82,37 +103,59 @@ fn main_loop(
             state.notification = None;
         }
 
-        term.draw(|frame| render(frame, state, theme, board, status_bar))?;
+        term.draw(|frame| render(frame, state, theme, board, status_bar, modal_components))?;
     }
 
     Ok(())
 }
 
 /// Route an event to zero or more actions based on current focus context.
-fn route_event(event: Event, state: &AppState, board: &mut Board) -> Vec<Action> {
+fn route_event(
+    event: Event,
+    state: &AppState,
+    board: &mut Board,
+    modal_components: &mut ModalComponents,
+) -> Vec<Action> {
     match event {
         Event::Key(key) => {
             let context = determine_key_context(state);
+
+            // First try the keymap for this context
             match keymap::map_key(key, context) {
                 Some(action) => vec![action],
                 None => {
-                    // For global context, also try board/dashboard specific bindings
-                    if context == KeyContext::Global {
-                        match state.view {
-                            View::Board => {
-                                // First check keymap-level board bindings (n, /)
-                                if let Some(action) = keymap::map_key(key, KeyContext::Board) {
-                                    return vec![action];
-                                }
-                                // Then delegate to board component for navigation keys
-                                return board.handle_key(key, state);
+                    // For modal contexts, delegate to the modal component
+                    match context {
+                        KeyContext::StoryDetail => {
+                            if let Some(ref mut detail) = modal_components.story_detail {
+                                return detail.handle_key(key, state);
                             }
-                            View::Dashboard => {
-                                // Dashboard has no extra bindings yet
-                            }
+                            vec![]
                         }
+                        KeyContext::CreateForm => {
+                            if let Some(ref mut form) = modal_components.create_form {
+                                return form.handle_key(key, state);
+                            }
+                            vec![]
+                        }
+                        KeyContext::Global => {
+                            match state.view {
+                                View::Board => {
+                                    // First check keymap-level board bindings (n, /)
+                                    if let Some(action) = keymap::map_key(key, KeyContext::Board) {
+                                        return vec![action];
+                                    }
+                                    // Then delegate to board component for navigation keys
+                                    return board.handle_key(key, state);
+                                }
+                                View::Dashboard => {
+                                    // Dashboard has no extra bindings yet
+                                }
+                            }
+                            vec![]
+                        }
+                        _ => vec![],
                     }
-                    vec![]
                 }
             }
         }
@@ -161,6 +204,7 @@ fn dispatch(
     state: &mut AppState,
     root: &Path,
     board: &mut Board,
+    modal_components: &mut ModalComponents,
 ) -> Result<(), AppError> {
     match action {
         Action::Quit => {
@@ -184,17 +228,29 @@ fn dispatch(
         }
 
         Action::OpenDetail(id) => {
+            modal_components.story_detail = Some(StoryDetail::new(id.clone()));
             state
                 .focus
                 .push_modal(Modal::StoryDetail { story_id: id });
         }
 
         Action::OpenCreateForm => {
+            modal_components.create_form = Some(CreateForm::new());
             state.focus.push_modal(Modal::CreateForm);
         }
 
         Action::CloseModal => {
-            state.focus.pop_modal();
+            if let Some(modal) = state.focus.pop_modal() {
+                match modal {
+                    Modal::StoryDetail { .. } => {
+                        modal_components.story_detail = None;
+                    }
+                    Modal::CreateForm => {
+                        modal_components.create_form = None;
+                    }
+                    Modal::Help => {}
+                }
+            }
         }
 
         Action::FocusFilterBar => {
@@ -218,6 +274,7 @@ fn dispatch(
                     {
                         let id = story_id.clone();
                         state.focus.pop_modal();
+                        modal_components.story_detail = None;
                         state.notification = Some((
                             format!("Story {id} no longer open"),
                             Instant::now(),
@@ -295,7 +352,11 @@ fn dispatch(
                     board.on_state_change(state);
                     state.notification =
                         Some((format!("Created {id}"), Instant::now()));
-                    state.focus.pop_modal(); // Close create form
+                    // Close create form modal
+                    if let Some(Modal::CreateForm) = state.focus.top_modal() {
+                        state.focus.pop_modal();
+                        modal_components.create_form = None;
+                    }
                 }
                 Err(e) => {
                     state.notification =
@@ -540,6 +601,7 @@ fn render(
     theme: &Theme,
     board: &Board,
     status_bar: &StatusBar,
+    modal_components: &ModalComponents,
 ) {
     let area = frame.area();
 
@@ -558,7 +620,7 @@ fn render(
             board.render(frame, content_area, state);
         }
         View::Dashboard => {
-            // Dashboard placeholder until Wave 3+
+            // Dashboard placeholder until Wave 4
             let view_label = "Dashboard";
             let story_count = state.data.story_count();
 
@@ -582,6 +644,25 @@ fn render(
                 Paragraph::new(content).alignment(Alignment::Center),
                 vertical[1],
             );
+        }
+    }
+
+    // Render modal overlays on top
+    for modal in &state.focus.modals {
+        match modal {
+            Modal::StoryDetail { .. } => {
+                if let Some(ref detail) = modal_components.story_detail {
+                    detail.render(frame, area, state);
+                }
+            }
+            Modal::CreateForm => {
+                if let Some(ref form) = modal_components.create_form {
+                    form.render(frame, area, state);
+                }
+            }
+            Modal::Help => {
+                // Help overlay will be implemented in a later wave
+            }
         }
     }
 
