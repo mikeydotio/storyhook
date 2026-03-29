@@ -5,6 +5,8 @@ use crate::domain::{Member, StateDef, StorySnapshot, SuperState};
 use crate::error::AppError;
 use crate::storage;
 
+use super::action::FilterSpec;
+
 /// Bridge between the storage layer and TUI state.
 ///
 /// Loads project data from disk WITHOUT holding the project lock.
@@ -83,6 +85,103 @@ impl DataStore {
     pub fn story_count(&self) -> usize {
         self.stories.len()
     }
+
+    /// Stories grouped by state, in state definition order, filtered by active filters.
+    /// Only includes states with OPEN superstates.
+    pub fn filtered_stories_by_state(
+        &self,
+        filters: &[FilterSpec],
+    ) -> Vec<(&StateDef, Vec<&StorySnapshot>)> {
+        let filtered = apply_filters(filters, &self.stories);
+        self.states
+            .iter()
+            .filter(|state| state.super_state == SuperState::Open)
+            .map(|state| {
+                let matching: Vec<&StorySnapshot> = filtered
+                    .iter()
+                    .filter(|story| story.state == state.slug)
+                    .copied()
+                    .collect();
+                (state, matching)
+            })
+            .collect()
+    }
+}
+
+/// Apply a set of filters to a list of stories.
+///
+/// Multiple filters AND together: a story must match ALL filters to be included.
+/// Returns references to matching stories.
+pub fn apply_filters<'a>(
+    filters: &[FilterSpec],
+    stories: &'a [StorySnapshot],
+) -> Vec<&'a StorySnapshot> {
+    if filters.is_empty() {
+        return stories.iter().collect();
+    }
+    stories
+        .iter()
+        .filter(|story| filters.iter().all(|f| matches_filter(f, story)))
+        .collect()
+}
+
+/// Check whether a single story matches a single filter spec.
+fn matches_filter(filter: &FilterSpec, story: &StorySnapshot) -> bool {
+    // Text filter: case-insensitive substring match on title or id
+    if let Some(ref text) = filter.text {
+        let lower = text.to_ascii_lowercase();
+        let title_match = story.title.to_ascii_lowercase().contains(&lower);
+        let id_match = story.id.to_ascii_lowercase().contains(&lower);
+        if !title_match && !id_match {
+            return false;
+        }
+    }
+
+    // State filter: exact match on state slug
+    if let Some(ref state) = filter.state
+        && story.state != *state
+    {
+        return false;
+    }
+
+    // Assignee filter: exact match
+    if let Some(ref assignee) = filter.assignee {
+        match &story.assignee {
+            Some(a) if a == assignee => {}
+            _ => return false,
+        }
+    }
+
+    // Priority filter: exact match
+    if let Some(ref priority) = filter.priority
+        && story.priority != *priority
+    {
+        return false;
+    }
+
+    // Label filter: any label matches (case-insensitive)
+    if let Some(ref label) = filter.label {
+        let lower_label = label.to_ascii_lowercase();
+        let has_label = story
+            .labels
+            .iter()
+            .any(|l| l.to_ascii_lowercase() == lower_label);
+        if !has_label {
+            return false;
+        }
+    }
+
+    // Blocked filter: story has awaiting set
+    if filter.blocked && story.awaiting.is_none() {
+        return false;
+    }
+
+    // Ready filter: story has NO awaiting set
+    if filter.ready && story.awaiting.is_some() {
+        return false;
+    }
+
+    true
 }
 
 /// Load all open snapshots, tolerating a trailing incomplete JSON line.
@@ -312,5 +411,233 @@ mod tests {
         let store = DataStore::load(root).unwrap();
         assert_eq!(store.story_count(), 1);
         assert_eq!(store.find_story("SH-1").unwrap().title, "Test story");
+    }
+
+    // --- Task 4.2: Filter application tests ---
+
+    fn make_rich_snapshot(
+        id: &str,
+        state: &str,
+        title: &str,
+        priority: Priority,
+        labels: Vec<&str>,
+        assignee: Option<&str>,
+        awaiting: Option<&str>,
+    ) -> StorySnapshot {
+        StorySnapshot {
+            id: id.to_string(),
+            title: title.to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            state: state.to_string(),
+            superstate: SuperState::Open,
+            assignee: assignee.map(|s| s.to_string()),
+            awaiting: awaiting.map(|s| s.to_string()),
+            comments: vec![],
+            relationships: vec![],
+            priority,
+            labels: labels.into_iter().map(|s| s.to_string()).collect(),
+            closed_at: None,
+        }
+    }
+
+    #[test]
+    fn filter_by_text_matches_title() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "Fix login flow", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-2", "todo", "Add search", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            text: Some("login".to_string()),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "SH-1");
+    }
+
+    #[test]
+    fn filter_by_text_matches_id() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            text: Some("SH-2".to_string()),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "SH-2");
+    }
+
+    #[test]
+    fn filter_by_text_is_case_insensitive() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "Fix Login Flow", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            text: Some("fix login".to_string()),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn filter_by_state() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-2", "in-progress", "Second", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            state: Some("todo".to_string()),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "SH-1");
+    }
+
+    #[test]
+    fn filter_by_assignee() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], Some("mikey"), None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], Some("bob"), None),
+            make_rich_snapshot("SH-3", "todo", "Third", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            assignee: Some("mikey".to_string()),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "SH-1");
+    }
+
+    #[test]
+    fn filter_by_priority() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::High, vec![], None, None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::Low, vec![], None, None),
+            make_rich_snapshot("SH-3", "todo", "Third", Priority::High, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            priority: Some(Priority::High),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "SH-1");
+        assert_eq!(result[1].id, "SH-3");
+    }
+
+    #[test]
+    fn filter_by_label() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec!["bug", "tui"], None, None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec!["feature"], None, None),
+            make_rich_snapshot("SH-3", "todo", "Third", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            label: Some("bug".to_string()),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "SH-1");
+    }
+
+    #[test]
+    fn filter_by_label_is_case_insensitive() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec!["BUG"], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            label: Some("bug".to_string()),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn filter_by_blocked() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, Some("waiting for deploy")),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            blocked: true,
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "SH-1");
+    }
+
+    #[test]
+    fn filter_by_ready() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, Some("waiting")),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            ready: true,
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "SH-2");
+    }
+
+    #[test]
+    fn multiple_filters_and_together() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "Fix login", Priority::High, vec!["bug"], Some("mikey"), None),
+            make_rich_snapshot("SH-2", "todo", "Fix signup", Priority::High, vec!["bug"], Some("bob"), None),
+            make_rich_snapshot("SH-3", "todo", "Add search", Priority::Low, vec!["feature"], Some("mikey"), None),
+        ];
+        // state:todo AND p:high AND @mikey
+        let filters = vec![
+            FilterSpec {
+                state: Some("todo".to_string()),
+                ..Default::default()
+            },
+            FilterSpec {
+                priority: Some(Priority::High),
+                ..Default::default()
+            },
+            FilterSpec {
+                assignee: Some("mikey".to_string()),
+                ..Default::default()
+            },
+        ];
+        let result = apply_filters(&filters, &stories);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "SH-1");
+    }
+
+    #[test]
+    fn empty_filters_return_all() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
+            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
+        ];
+        let result = apply_filters(&[], &stories);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn no_match_returns_empty() {
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![FilterSpec {
+            assignee: Some("nobody".to_string()),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &stories);
+        assert!(result.is_empty());
     }
 }

@@ -51,9 +51,9 @@ impl Board {
         }
     }
 
-    /// Build the flat list of visible rows, respecting collapsed sections.
+    /// Build the flat list of visible rows, respecting collapsed sections and active filters.
     pub fn build_visible_rows(&self, state: &AppState) -> Vec<RowItem> {
-        let groups = state.data.stories_by_state();
+        let groups = state.data.filtered_stories_by_state(&state.filters);
         let mut rows = Vec::new();
 
         for (state_def, stories) in &groups {
@@ -180,8 +180,8 @@ impl Component for Board {
             return vec![];
         }
 
-        // Content area height: terminal height minus 1 for status bar
-        let viewport_height = state.terminal_size.1.saturating_sub(1) as usize;
+        // Content area height: terminal height minus 1 for status bar minus 1 for filter bar
+        let viewport_height = state.terminal_size.1.saturating_sub(2) as usize;
 
         let result = match key.code {
             // Cursor movement
@@ -315,6 +315,21 @@ impl Component for Board {
             return;
         }
 
+        // Check if filters are active but produced no story rows
+        let has_story_rows = rows.iter().any(|r| matches!(r, RowItem::StoryRow { .. }));
+        if !has_story_rows && !state.filters.is_empty() {
+            let empty_msg = Line::from(Span::styled(
+                "No stories match current filters",
+                theme.section_count,
+            ));
+            frame.render_widget(
+                Paragraph::new(empty_msg)
+                    .alignment(ratatui::layout::Alignment::Center),
+                area,
+            );
+            return;
+        }
+
         let viewport_height = area.height as usize;
         // scroll_offset is kept in sync by handle_key and on_state_change.
         // Compute a local adjustment in case the viewport size changed since
@@ -367,7 +382,7 @@ impl Component for Board {
     fn on_state_change(&mut self, state: &AppState) {
         let rows = self.build_visible_rows(state);
         self.clamp_cursor(rows.len());
-        let viewport_height = state.terminal_size.1.saturating_sub(1) as usize;
+        let viewport_height = state.terminal_size.1.saturating_sub(2) as usize;
         self.update_scroll(viewport_height);
     }
 

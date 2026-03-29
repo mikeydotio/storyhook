@@ -1,9 +1,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use ratatui::layout::{Alignment, Constraint, Layout};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::layout::{Constraint, Layout};
 use ratatui::Frame;
 
 use crate::domain::SuperState;
@@ -12,6 +10,8 @@ use crate::error::AppError;
 use super::action::{Action, View};
 use super::components::board::Board;
 use super::components::create_form::CreateForm;
+use super::components::dashboard::Dashboard;
+use super::components::filter_bar::FilterBar;
 use super::components::status_bar::StatusBar;
 use super::components::story_detail::StoryDetail;
 use super::components::Component;
@@ -39,6 +39,8 @@ pub fn run(root: &Path) -> Result<(), AppError> {
 
     // Create components
     let mut board = Board::new();
+    let mut filter_bar = FilterBar::new();
+    let mut dashboard = Dashboard::new();
     let status_bar = StatusBar::new();
     let mut modal_components = ModalComponents::default();
 
@@ -49,6 +51,8 @@ pub fn run(root: &Path) -> Result<(), AppError> {
         root,
         &theme,
         &mut board,
+        &mut filter_bar,
+        &mut dashboard,
         &status_bar,
         &mut modal_components,
     );
@@ -73,11 +77,24 @@ fn main_loop(
     root: &Path,
     theme: &Theme,
     board: &mut Board,
+    filter_bar: &mut FilterBar,
+    dashboard: &mut Dashboard,
     status_bar: &StatusBar,
     modal_components: &mut ModalComponents,
 ) -> Result<(), AppError> {
     // Initial render
-    term.draw(|frame| render(frame, state, theme, board, status_bar, modal_components))?;
+    term.draw(|frame| {
+        render(
+            frame,
+            state,
+            theme,
+            board,
+            filter_bar,
+            dashboard,
+            status_bar,
+            modal_components,
+        )
+    })?;
 
     while state.running {
         let event = match rx.recv() {
@@ -90,7 +107,7 @@ fn main_loop(
             state.terminal_size = (*w, *h);
         }
 
-        let actions = route_event(event, state, board, modal_components);
+        let actions = route_event(event, state, board, filter_bar, dashboard, modal_components);
 
         for action in actions {
             dispatch(action, state, root, board, modal_components)?;
@@ -103,7 +120,18 @@ fn main_loop(
             state.notification = None;
         }
 
-        term.draw(|frame| render(frame, state, theme, board, status_bar, modal_components))?;
+        term.draw(|frame| {
+            render(
+                frame,
+                state,
+                theme,
+                board,
+                filter_bar,
+                dashboard,
+                status_bar,
+                modal_components,
+            )
+        })?;
     }
 
     Ok(())
@@ -114,6 +142,8 @@ fn route_event(
     event: Event,
     state: &AppState,
     board: &mut Board,
+    filter_bar: &mut FilterBar,
+    dashboard: &mut Dashboard,
     modal_components: &mut ModalComponents,
 ) -> Vec<Action> {
     match event {
@@ -126,6 +156,10 @@ fn route_event(
                 None => {
                     // For modal contexts, delegate to the modal component
                     match context {
+                        KeyContext::FilterBarFocused => {
+                            // Delegate to filter bar component for text input, Enter, etc.
+                            filter_bar.handle_key(key, state)
+                        }
                         KeyContext::StoryDetail => {
                             if let Some(ref mut detail) = modal_components.story_detail {
                                 return detail.handle_key(key, state);
@@ -138,22 +172,20 @@ fn route_event(
                             }
                             vec![]
                         }
-                        KeyContext::Global => {
-                            match state.view {
-                                View::Board => {
-                                    // First check keymap-level board bindings (n, /)
-                                    if let Some(action) = keymap::map_key(key, KeyContext::Board) {
-                                        return vec![action];
-                                    }
-                                    // Then delegate to board component for navigation keys
-                                    return board.handle_key(key, state);
+                        KeyContext::Global => match state.view {
+                            View::Board => {
+                                // First check keymap-level board bindings (n, /)
+                                if let Some(action) = keymap::map_key(key, KeyContext::Board) {
+                                    return vec![action];
                                 }
-                                View::Dashboard => {
-                                    // Dashboard has no extra bindings yet
-                                }
+                                // Then delegate to board component for navigation keys
+                                board.handle_key(key, state)
                             }
-                            vec![]
-                        }
+                            View::Dashboard => {
+                                // Delegate to dashboard component for j/k/Enter/n
+                                dashboard.handle_key(key, state)
+                            }
+                        },
                         _ => vec![],
                     }
                 }
@@ -180,8 +212,8 @@ fn route_event(
 
 /// Determine the key context based on current focus state.
 fn determine_key_context(state: &AppState) -> KeyContext {
-    // If filter bar is focused, it gets priority
-    if state.filter_bar_focused {
+    // If filter bar is focused (only relevant on board view), it gets priority
+    if state.filter_bar_focused && state.view == View::Board {
         return KeyContext::FilterBarFocused;
     }
 
@@ -212,6 +244,10 @@ fn dispatch(
         }
 
         Action::SwitchView(view) => {
+            // Unfocus filter bar when leaving board view
+            if view != View::Board {
+                state.filter_bar_focused = false;
+            }
             state.view = view.clone();
             state.focus.base = match view {
                 View::Dashboard => FocusTarget::Dashboard,
@@ -300,17 +336,20 @@ fn dispatch(
 
         Action::SetFilter(spec) => {
             state.filters.push(spec);
+            board.on_state_change(state);
         }
 
         Action::ClearFilter(index) => {
             if index < state.filters.len() {
                 state.filters.remove(index);
             }
+            board.on_state_change(state);
         }
 
         Action::ClearAllFilters => {
             state.filters.clear();
             state.filter_bar_focused = false;
+            board.on_state_change(state);
         }
 
         // Data mutations: acquire lock, perform mutation, refresh
@@ -595,11 +634,14 @@ fn dispatch(
 }
 
 /// Render the current state.
+#[allow(clippy::too_many_arguments)]
 fn render(
     frame: &mut Frame,
     state: &AppState,
-    theme: &Theme,
+    _theme: &Theme,
     board: &Board,
+    filter_bar: &FilterBar,
+    dashboard: &Dashboard,
     status_bar: &StatusBar,
     modal_components: &ModalComponents,
 ) {
@@ -617,33 +659,18 @@ fn render(
     // Main content
     match state.view {
         View::Board => {
-            board.render(frame, content_area, state);
-        }
-        View::Dashboard => {
-            // Dashboard placeholder until Wave 4
-            let view_label = "Dashboard";
-            let story_count = state.data.story_count();
-
-            let content = Line::from(vec![
-                Span::styled(view_label, theme.section_header),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{story_count} stories"),
-                    theme.section_count,
-                ),
-            ]);
-
-            let vertical = Layout::vertical([
-                Constraint::Fill(1),
-                Constraint::Length(1),
-                Constraint::Fill(1),
+            // Split content_area: 1 line for filter bar, rest for board
+            let board_chunks = Layout::vertical([
+                Constraint::Length(1), // Filter bar
+                Constraint::Fill(1),   // Board
             ])
             .split(content_area);
 
-            frame.render_widget(
-                Paragraph::new(content).alignment(Alignment::Center),
-                vertical[1],
-            );
+            filter_bar.render(frame, board_chunks[0], state);
+            board.render(frame, board_chunks[1], state);
+        }
+        View::Dashboard => {
+            dashboard.render(frame, content_area, state);
         }
     }
 
