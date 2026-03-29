@@ -1,4 +1,16 @@
-use crate::domain::Priority;
+use crate::domain::{Priority, StoryEvent};
+
+/// A snapshot of a story's events before a mutation, used for undo/redo.
+#[derive(Debug, Clone)]
+pub struct UndoEntry {
+    /// Human-readable description of the action, e.g. "Moved SH-1 to in-progress"
+    pub description: String,
+    /// The story ID this entry pertains to
+    pub story_id: String,
+    /// The full event log of the story before the mutation was applied.
+    /// Empty vec means the story did not exist yet (was newly created).
+    pub events_before: Vec<StoryEvent>,
+}
 
 /// The primary view the TUI can display.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +90,10 @@ pub enum Action {
     SetFilter(FilterSpec),
     ClearFilter(usize),
     ClearAllFilters,
+
+    // Undo/Redo
+    Undo,
+    Redo,
 
     // System
     RefreshData,

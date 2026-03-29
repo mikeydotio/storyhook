@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use super::action::{FilterSpec, View};
+use super::action::{FilterSpec, UndoEntry, View};
 use super::data::DataStore;
 use super::focus::{FocusStack, FocusTarget};
 
@@ -14,6 +14,10 @@ pub struct AppState {
     pub running: bool,
     pub notification: Option<(String, Instant)>,
     pub terminal_size: (u16, u16),
+    /// Session-only undo stack: most recent mutation is at the back.
+    pub undo_stack: Vec<UndoEntry>,
+    /// Session-only redo stack: populated when undo is performed.
+    pub redo_stack: Vec<UndoEntry>,
 }
 
 impl AppState {
@@ -30,6 +34,8 @@ impl AppState {
             running: true,
             notification: None,
             terminal_size: (0, 0),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 }

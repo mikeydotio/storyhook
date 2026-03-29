@@ -82,6 +82,8 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     key_row(&mut lines, "2", "Switch to Board", theme);
     key_row(&mut lines, "3", "Switch to Graph", theme);
     key_row(&mut lines, "r", "Refresh data from disk", theme);
+    key_row(&mut lines, "Ctrl+Z", "Undo last action", theme);
+    key_row(&mut lines, "Ctrl+Y", "Redo last undone action", theme);
     lines.push(Line::from(""));
 
     // Board
@@ -184,6 +186,8 @@ pub fn all_help_keys() -> Vec<&'static str> {
         "2",
         "3",
         "r",
+        "Ctrl+Z",
+        "Ctrl+Y",
         // Board
         "j / Down",
         "k / Up",
@@ -251,7 +255,7 @@ mod tests {
 
         // Check all design-specified keys
         let design_keys = vec![
-            "q", "Ctrl+C", "?", "1", "2", "3", "r",
+            "q", "Ctrl+C", "?", "1", "2", "3", "r", "Ctrl+Z", "Ctrl+Y",
             "j / Down", "k / Up", "h", "l", "g", "G",
             "Space", "Enter", "> / L", "< / H", "n", "/",
             "Tab", "Backspace", "Esc", "Ctrl+U",
@@ -333,6 +337,8 @@ mod tests {
             running: true,
             notification: None,
             terminal_size: (80, 24),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 }

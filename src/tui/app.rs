@@ -5,10 +5,10 @@ use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::Frame;
 
-use crate::domain::SuperState;
+use crate::domain::{StoryEvent, SuperState};
 use crate::error::AppError;
 
-use super::action::{Action, View};
+use super::action::{Action, UndoEntry, View};
 use super::components::board::Board;
 use super::components::create_form::CreateForm;
 use super::components::dashboard::Dashboard;
@@ -292,6 +292,26 @@ fn determine_key_context(state: &AppState) -> KeyContext {
     KeyContext::Global
 }
 
+/// Load the current events for a story, returning an empty vec if the story doesn't exist.
+fn snapshot_for_undo(root: &Path, story_id: &str) -> Vec<StoryEvent> {
+    crate::storage::load_open_story_events(root, story_id).unwrap_or_default()
+}
+
+/// Push an undo entry and clear the redo stack (any new mutation invalidates redo history).
+fn push_undo(
+    state: &mut AppState,
+    description: String,
+    story_id: String,
+    events_before: Vec<StoryEvent>,
+) {
+    state.undo_stack.push(UndoEntry {
+        description,
+        story_id,
+        events_before,
+    });
+    state.redo_stack.clear();
+}
+
 /// Dispatch a single action, mutating AppState.
 #[allow(clippy::too_many_arguments)]
 fn dispatch(
@@ -519,6 +539,7 @@ fn dispatch(
             labels,
             assignee,
         } => {
+            let desc = format!("Created story: {title}");
             let result = crate::lock::with_project_lock(root, || {
                 let story = crate::storage::create_story(root, &title)?;
                 let mut events = Vec::new();
@@ -547,6 +568,8 @@ fn dispatch(
             });
             match result {
                 Ok(id) => {
+                    // Story didn't exist before creation: events_before is empty
+                    push_undo(state, desc, id.clone(), Vec::new());
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
@@ -566,6 +589,8 @@ fn dispatch(
         }
 
         Action::MoveStory { id, target_state } => {
+            // Snapshot before mutation for potential undo
+            let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
                 // Check if target state is CLOSED -- if so, we need to archive
                 let states = crate::storage::load_state_map(root)?;
@@ -573,13 +598,15 @@ fn dispatch(
                     AppError::Validation(format!("state `{target_state}` is not defined"))
                 })?;
 
+                let is_close = state_def.super_state == SuperState::Closed;
+
                 let now = crate::storage::now();
                 let mut events = vec![crate::domain::StoryEvent::StoryStateChanged {
                     at: now.clone(),
                     state: target_state.clone(),
                 }];
 
-                if state_def.super_state == SuperState::Closed {
+                if is_close {
                     // Clear awaiting if set
                     let snapshot = crate::storage::load_open_story_snapshot(root, &id)?;
                     if snapshot.awaiting.is_some() {
@@ -596,19 +623,32 @@ fn dispatch(
                 crate::storage::write_story_events(root, &id, &events)?;
 
                 // Archive MUST happen inside the lock closure
-                if state_def.super_state == SuperState::Closed {
+                if is_close {
                     crate::storage::archive_story(root, &id)?;
                 }
 
-                Ok(())
+                Ok(is_close)
             });
             match result {
-                Ok(()) => {
+                Ok(is_close) => {
+                    if is_close {
+                        state.notification = Some((
+                            format!("{id} closed (close cannot be undone)"),
+                            Instant::now(),
+                        ));
+                    } else {
+                        push_undo(
+                            state,
+                            format!("Moved {id} to {target_state}"),
+                            id.clone(),
+                            events_before,
+                        );
+                        state.notification =
+                            Some((format!("{id} moved to {target_state}"), Instant::now()));
+                    }
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
-                    state.notification =
-                        Some((format!("{id} moved to {target_state}"), Instant::now()));
                 }
                 Err(e) => {
                     state.notification =
@@ -618,6 +658,7 @@ fn dispatch(
         }
 
         Action::UpdateTitle { id, title } => {
+            let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
                 crate::storage::write_story_events(
                     root,
@@ -630,6 +671,7 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
+                    push_undo(state, format!("{id} title updated"), id.clone(), events_before);
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
@@ -644,6 +686,7 @@ fn dispatch(
         }
 
         Action::SetPriority { id, priority } => {
+            let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
                 crate::storage::write_story_events(
                     root,
@@ -656,6 +699,7 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
+                    push_undo(state, format!("{id} priority set to {}", priority.as_str()), id.clone(), events_before);
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
@@ -670,6 +714,7 @@ fn dispatch(
         }
 
         Action::SetLabels { id, labels } => {
+            let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
                 crate::storage::write_story_events(
                     root,
@@ -682,6 +727,7 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
+                    push_undo(state, format!("{id} labels updated"), id.clone(), events_before);
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
@@ -696,6 +742,7 @@ fn dispatch(
         }
 
         Action::AssignStory { id, assignee } => {
+            let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
                 crate::storage::write_story_events(
                     root,
@@ -708,6 +755,7 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
+                    push_undo(state, format!("{id} assigned to {assignee}"), id.clone(), events_before);
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
@@ -722,6 +770,7 @@ fn dispatch(
         }
 
         Action::AddComment { id, text } => {
+            let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
                 crate::storage::write_story_events(
                     root,
@@ -734,6 +783,7 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
+                    push_undo(state, format!("{id} comment added"), id.clone(), events_before);
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
@@ -748,6 +798,7 @@ fn dispatch(
         }
 
         Action::SetAwaiting { id, reason } => {
+            let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
                 crate::storage::write_story_events(
                     root,
@@ -760,6 +811,7 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
+                    push_undo(state, format!("{id} awaiting: {reason}"), id.clone(), events_before);
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
@@ -774,6 +826,7 @@ fn dispatch(
         }
 
         Action::ClearAwaiting { id } => {
+            let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
                 crate::storage::write_story_events(
                     root,
@@ -785,6 +838,7 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
+                    push_undo(state, format!("{id} unblocked"), id.clone(), events_before);
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
@@ -795,6 +849,104 @@ fn dispatch(
                     state.notification =
                         Some((format!("Clear awaiting failed: {e}"), Instant::now()));
                 }
+            }
+        }
+
+        Action::Undo => {
+            if let Some(entry) = state.undo_stack.pop() {
+                // Snapshot current state for redo
+                let current_events = snapshot_for_undo(root, &entry.story_id);
+
+                let story_id = entry.story_id.clone();
+                let events_before = entry.events_before.clone();
+                let result = crate::lock::with_project_lock(root, || {
+                    if events_before.is_empty() {
+                        // Story was newly created -- undo means delete it
+                        let paths = crate::storage::ProjectPaths::new(root);
+                        let path = paths.open_story_file(&story_id);
+                        if path.exists() {
+                            std::fs::remove_file(&path).map_err(|e| {
+                                AppError::Storage(format!("Failed to delete story file: {e}"))
+                            })?;
+                        }
+                        Ok(())
+                    } else {
+                        crate::storage::rewrite_story_events(root, &story_id, &events_before)
+                    }
+                });
+
+                match result {
+                    Ok(()) => {
+                        state.redo_stack.push(UndoEntry {
+                            description: entry.description.clone(),
+                            story_id: entry.story_id,
+                            events_before: current_events,
+                        });
+                        state.data =
+                            DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                        board.on_state_change(state);
+                        graph.on_state_change(state);
+                        state.notification =
+                            Some((format!("Undone: {}", entry.description), Instant::now()));
+                    }
+                    Err(e) => {
+                        // Put entry back on undo stack since undo failed
+                        state.undo_stack.push(entry);
+                        state.notification =
+                            Some((format!("Undo failed: {e}"), Instant::now()));
+                    }
+                }
+            } else {
+                state.notification = Some(("Nothing to undo".to_string(), Instant::now()));
+            }
+        }
+
+        Action::Redo => {
+            if let Some(entry) = state.redo_stack.pop() {
+                // Snapshot current state for undo
+                let current_events = snapshot_for_undo(root, &entry.story_id);
+
+                let story_id = entry.story_id.clone();
+                let events_before = entry.events_before.clone();
+                let result = crate::lock::with_project_lock(root, || {
+                    if events_before.is_empty() {
+                        // Redo of a creation-undo means delete again
+                        let paths = crate::storage::ProjectPaths::new(root);
+                        let path = paths.open_story_file(&story_id);
+                        if path.exists() {
+                            std::fs::remove_file(&path).map_err(|e| {
+                                AppError::Storage(format!("Failed to delete story file: {e}"))
+                            })?;
+                        }
+                        Ok(())
+                    } else {
+                        crate::storage::rewrite_story_events(root, &story_id, &events_before)
+                    }
+                });
+
+                match result {
+                    Ok(()) => {
+                        state.undo_stack.push(UndoEntry {
+                            description: entry.description.clone(),
+                            story_id: entry.story_id,
+                            events_before: current_events,
+                        });
+                        state.data =
+                            DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                        board.on_state_change(state);
+                        graph.on_state_change(state);
+                        state.notification =
+                            Some((format!("Redone: {}", entry.description), Instant::now()));
+                    }
+                    Err(e) => {
+                        // Put entry back on redo stack since redo failed
+                        state.redo_stack.push(entry);
+                        state.notification =
+                            Some((format!("Redo failed: {e}"), Instant::now()));
+                    }
+                }
+            } else {
+                state.notification = Some(("Nothing to redo".to_string(), Instant::now()));
             }
         }
     }
@@ -929,6 +1081,8 @@ mod tests {
             running: true,
             notification: None,
             terminal_size: (80, 24),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 

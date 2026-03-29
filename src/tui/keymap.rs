@@ -37,6 +37,15 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
 }
 
 fn map_global(key: KeyEvent) -> Option<Action> {
+    // Ctrl+Z / Ctrl+Y for undo/redo (global, never during text editing)
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('z') => return Some(Action::Undo),
+            KeyCode::Char('y') => return Some(Action::Redo),
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Char('?') => Some(Action::ToggleHelp),

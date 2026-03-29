@@ -782,6 +782,8 @@ mod tests {
             running: true,
             notification: None,
             terminal_size: (80, 24),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 

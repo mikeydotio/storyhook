@@ -60,14 +60,23 @@ impl Component for StatusBar {
             vec![]
         };
 
-        // Right: view label + story count
+        // Right: undo/redo indicator + view label + story count
         let view_label = match state.view {
             View::Dashboard => "Dashboard",
             View::Board => "Board",
             View::Graph => "Graph",
         };
         let count = state.data.story_count();
-        let right_text = format!("{view_label} | {count} stories");
+        let undo_redo_text = {
+            let u = state.undo_stack.len();
+            let r = state.redo_stack.len();
+            if u > 0 || r > 0 {
+                format!("u:{u} r:{r} | ")
+            } else {
+                String::new()
+            }
+        };
+        let right_text = format!("{undo_redo_text}{view_label} | {count} stories");
         let right_len = right_text.chars().count();
 
         // Calculate spacing
