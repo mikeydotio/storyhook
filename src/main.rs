@@ -8,6 +8,18 @@ use storyhook::output;
 fn main() {
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
 
+    if raw_args.first().is_some_and(|arg| arg == "tui") {
+        let cwd = env::current_dir().unwrap_or_else(|e| {
+            eprintln!("error: failed to resolve current directory: {e}");
+            process::exit(1);
+        });
+        if let Err(e) = storyhook::tui::run(&cwd) {
+            eprintln!("error: {e}");
+            process::exit(e.exit_code());
+        }
+        return;
+    }
+
     if raw_args.iter().any(|arg| arg == "--mcp") {
         let cwd = env::current_dir().unwrap_or_else(|e| {
             eprintln!("error: failed to resolve current directory: {e}");

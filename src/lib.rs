@@ -12,3 +12,4 @@ pub mod mcp_install;
 pub mod output;
 pub mod plugin;
 pub mod storage;
+pub mod tui;
