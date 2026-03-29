@@ -1,6 +1,7 @@
 use std::collections::HashSet;
+use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -11,7 +12,7 @@ use crate::tui::action::Action;
 use crate::tui::state::AppState;
 use crate::tui::theme::Theme;
 
-use super::{Component, HitRegion};
+use super::{Component, HitRegion, HitTarget};
 
 /// An item in the flat visible-rows list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +34,10 @@ pub struct Board {
     pub collapsed: HashSet<String>,
     pub hit_regions: Vec<HitRegion>,
     pub scroll_offset: usize,
+    /// Last click time and row index for double-click detection.
+    last_click: Option<(Instant, usize)>,
+    /// The render area from the last render, used to interpret mouse coordinates.
+    render_area: Rect,
 }
 
 impl Default for Board {
@@ -48,6 +53,8 @@ impl Board {
             collapsed: HashSet::new(),
             hit_regions: Vec::new(),
             scroll_offset: 0,
+            last_click: None,
+            render_area: Rect::default(),
         }
     }
 
@@ -293,12 +300,75 @@ impl Component for Board {
         result
     }
 
-    fn handle_mouse(&mut self, _mouse: MouseEvent, _state: &AppState) -> Vec<Action> {
-        // Mouse handling deferred to later wave
-        vec![]
+    fn handle_mouse(&mut self, mouse: MouseEvent, state: &AppState) -> Vec<Action> {
+        let rows = self.build_visible_rows(state);
+        if rows.is_empty() {
+            return vec![];
+        }
+        let viewport_height = self.render_area.height as usize;
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Determine which row was clicked based on mouse Y position
+                // relative to the render area
+                if mouse.column < self.render_area.x
+                    || mouse.column >= self.render_area.x + self.render_area.width
+                    || mouse.row < self.render_area.y
+                    || mouse.row >= self.render_area.y + self.render_area.height
+                {
+                    return vec![];
+                }
+
+                let click_y = (mouse.row - self.render_area.y) as usize;
+                let row_index = self.scroll_offset + click_y;
+
+                if row_index >= rows.len() {
+                    return vec![];
+                }
+
+                // Double-click detection: same row within 300ms
+                let now = Instant::now();
+                let is_double_click = if let Some((last_time, last_row)) = self.last_click {
+                    last_row == row_index
+                        && now.duration_since(last_time).as_millis() < 300
+                } else {
+                    false
+                };
+
+                self.last_click = Some((now, row_index));
+                self.cursor = row_index;
+                self.update_scroll(viewport_height);
+
+                if is_double_click {
+                    // Double-click on story row opens detail
+                    if let Some(RowItem::StoryRow { id }) = rows.get(row_index) {
+                        return vec![Action::OpenDetail(id.clone())];
+                    }
+                }
+
+                vec![]
+            }
+            MouseEventKind::ScrollUp => {
+                if self.cursor > 0 {
+                    self.cursor -= 1;
+                    self.update_scroll(viewport_height);
+                }
+                vec![]
+            }
+            MouseEventKind::ScrollDown => {
+                if self.cursor + 1 < rows.len() {
+                    self.cursor += 1;
+                    self.update_scroll(viewport_height);
+                }
+                vec![]
+            }
+            _ => vec![],
+        }
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
+    fn render(&mut self, frame: &mut Frame, area: Rect, state: &AppState) {
+        self.render_area = area;
+
         let theme = Theme::from_env();
         let rows = self.build_visible_rows(state);
 
@@ -312,6 +382,7 @@ impl Component for Board {
                     .alignment(ratatui::layout::Alignment::Center),
                 area,
             );
+            self.hit_regions.clear();
             return;
         }
 
@@ -319,7 +390,7 @@ impl Component for Board {
         let has_story_rows = rows.iter().any(|r| matches!(r, RowItem::StoryRow { .. }));
         if !has_story_rows && !state.filters.is_empty() {
             let empty_msg = Line::from(Span::styled(
-                "No stories match current filters",
+                "No stories match current filters.",
                 theme.section_count,
             ));
             frame.render_widget(
@@ -327,6 +398,7 @@ impl Component for Board {
                     .alignment(ratatui::layout::Alignment::Center),
                 area,
             );
+            self.hit_regions.clear();
             return;
         }
 
@@ -345,13 +417,29 @@ impl Component for Board {
         let width = area.width as usize;
         let mut lines: Vec<Line> = Vec::with_capacity(viewport_height);
 
-        for (i, row) in rows
+        // Populate hit_regions for mouse support
+        self.hit_regions.clear();
+
+        for (vi, (i, row)) in rows
             .iter()
             .enumerate()
             .skip(scroll_offset)
             .take(viewport_height)
+            .enumerate()
         {
             let is_selected = i == self.cursor;
+
+            // Register hit region for this visible row
+            let row_rect = Rect::new(area.x, area.y + vi as u16, area.width, 1);
+            let target = match row {
+                RowItem::SectionHeader { slug, .. } => {
+                    HitTarget::SectionHeader { state_slug: slug.clone() }
+                }
+                RowItem::StoryRow { id } => {
+                    HitTarget::StoryRow { id: id.clone() }
+                }
+            };
+            self.hit_regions.push(HitRegion { rect: row_rect, target });
 
             match row {
                 RowItem::SectionHeader {
@@ -457,19 +545,54 @@ fn render_story_row(
         right_parts.push((format!(" {pri_sym}"), pri_style));
     }
 
-    // Labels
+    // Assignee (compute first to know fixed overhead)
+    let assignee_part: Option<(String, ratatui::style::Style)> =
+        story.assignee.as_ref().map(|a| (format!(" @{a}"), theme.assignee));
+    let blocked_part: Option<(String, ratatui::style::Style)> = if story.awaiting.is_some() {
+        Some((" BLK".to_string(), theme.blocked_badge))
+    } else {
+        None
+    };
+
+    // Calculate non-label right-side width to figure out label budget
+    let non_label_right: usize = right_parts.iter().map(|(s, _)| s.chars().count()).sum::<usize>()
+        + assignee_part.as_ref().map_or(0, |(s, _)| s.chars().count())
+        + blocked_part.as_ref().map_or(0, |(s, _)| s.chars().count());
+
+    // Labels: fit as many as possible, show "+N more" if truncated
+    let id_display_width = format!("{:<8}", &story.id).chars().count();
+    // Rough budget for labels: total width - cursor(2) - id(8) - gap(1) - min_title(10) - non_label_right
+    let label_budget = width.saturating_sub(2 + id_display_width + 1 + 10 + non_label_right);
+    let mut label_parts: Vec<(String, ratatui::style::Style)> = Vec::new();
+    let mut label_width_used = 0usize;
+    let mut labels_shown = 0usize;
     for label in &story.labels {
-        right_parts.push((format!(" [{label}]"), theme.labels));
+        let label_str = format!(" [{label}]");
+        let label_len = label_str.chars().count();
+        let remaining = story.labels.len() - labels_shown;
+        // Reserve space for "+N more" if there are more labels after this
+        let more_suffix_width = if remaining > 1 {
+            format!(" +{} more", remaining - 1).chars().count()
+        } else {
+            0
+        };
+        if label_width_used + label_len + more_suffix_width <= label_budget || labels_shown == 0 {
+            label_parts.push((label_str, theme.labels));
+            label_width_used += label_len;
+            labels_shown += 1;
+        } else {
+            let more_count = story.labels.len() - labels_shown;
+            label_parts.push((format!(" +{more_count} more"), theme.section_count));
+            break;
+        }
     }
 
-    // Assignee
-    if let Some(ref assignee) = story.assignee {
-        right_parts.push((format!(" @{assignee}"), theme.assignee));
+    right_parts.extend(label_parts);
+    if let Some(part) = assignee_part {
+        right_parts.push(part);
     }
-
-    // Blocked badge
-    if story.awaiting.is_some() {
-        right_parts.push((" BLK".to_string(), theme.blocked_badge));
+    if let Some(part) = blocked_part {
+        right_parts.push(part);
     }
 
     // Calculate right-side width
@@ -980,6 +1103,293 @@ mod tests {
         assert!(
             matches!(&actions[0], Action::MoveStory { id, target_state } if id == "SH-1" && target_state == "done")
         );
+    }
+
+    // --- Task 5.2 Tests: Mouse support ---
+
+    #[test]
+    fn mouse_click_selects_row() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "First"),
+                test_snapshot("SH-2", "todo", "Second"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22); // Simulated board area
+        assert_eq!(board.cursor, 0);
+
+        // Click on row at y=3 (area.y=1, so click_y=2, row_index = scroll_offset(0) + 2 = 2)
+        // Row 2 should be SH-1 story row
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 3,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let actions = board.handle_mouse(mouse, &state);
+        assert!(actions.is_empty()); // single click just selects
+        assert_eq!(board.cursor, 2);
+    }
+
+    #[test]
+    fn mouse_double_click_opens_detail() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "First"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+
+        // First click on SH-1 row (row index 1 = story row)
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 2, // area.y=1, click_y=1, row_index=1 (SH-1)
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        board.handle_mouse(mouse, &state);
+        assert_eq!(board.cursor, 1);
+
+        // Second click within 300ms on the same row (simulated by last_click being recent)
+        // last_click was set by the first click
+        let actions = board.handle_mouse(mouse, &state);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::OpenDetail(id) if id == "SH-1"));
+    }
+
+    #[test]
+    fn mouse_double_click_on_header_does_not_open_detail() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "First"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+
+        // Double click on header row (row index 0 = section header)
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 1, // area.y=1, click_y=0, row_index=0 (header)
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        board.handle_mouse(mouse, &state);
+        let actions = board.handle_mouse(mouse, &state);
+        // Double click on header should NOT emit OpenDetail
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn mouse_scroll_moves_cursor() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "First"),
+                test_snapshot("SH-2", "todo", "Second"),
+                test_snapshot("SH-3", "in-progress", "Third"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+        assert_eq!(board.cursor, 0);
+
+        // Scroll down
+        let scroll_down = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 10,
+            row: 5,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        board.handle_mouse(scroll_down, &state);
+        assert_eq!(board.cursor, 1);
+
+        // Scroll up
+        let scroll_up = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 5,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        board.handle_mouse(scroll_up, &state);
+        assert_eq!(board.cursor, 0);
+
+        // Scroll up at 0 stays at 0
+        board.handle_mouse(scroll_up, &state);
+        assert_eq!(board.cursor, 0);
+    }
+
+    #[test]
+    fn mouse_click_outside_board_area_ignored() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![test_snapshot("SH-1", "todo", "First")],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 0, // Above board area (area.y=1)
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let actions = board.handle_mouse(mouse, &state);
+        assert!(actions.is_empty());
+        assert_eq!(board.cursor, 0); // unchanged
+    }
+
+    #[test]
+    fn double_click_timing_expired_does_not_open() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![test_snapshot("SH-1", "todo", "First")],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+
+        // Simulate a click that happened long ago
+        board.last_click = Some((Instant::now() - std::time::Duration::from_millis(500), 1));
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 2, // row_index=1 (SH-1)
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        // This should NOT be a double-click since last click was > 300ms ago
+        let actions = board.handle_mouse(mouse, &state);
+        assert!(actions.is_empty());
+        assert_eq!(board.cursor, 1);
+    }
+
+    #[test]
+    fn very_small_terminal_does_not_panic() {
+        // Task 5.5: Resize handling - components shouldn't panic with tiny viewports
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "First story with a very long title"),
+                test_snapshot("SH-2", "in-progress", "Second"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let mut state = make_state(data);
+        state.terminal_size = (20, 5); // Very small terminal
+
+        let mut board = Board::new();
+        // The board should handle small viewport gracefully
+        board.on_state_change(&state);
+
+        // Navigate should not panic
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+            &state,
+        );
+
+        // Zero-size viewport
+        state.terminal_size = (0, 0);
+        board.on_state_change(&state);
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &state,
+        );
+    }
+
+    #[test]
+    fn hit_region_matching_finds_correct_target() {
+        // Test that hit regions populated during render can be used to find the right target
+        use super::super::HitTarget;
+
+        let regions = [
+            HitRegion {
+                rect: Rect::new(0, 1, 80, 1),
+                target: HitTarget::SectionHeader {
+                    state_slug: "todo".to_string(),
+                },
+            },
+            HitRegion {
+                rect: Rect::new(0, 2, 80, 1),
+                target: HitTarget::StoryRow {
+                    id: "SH-1".to_string(),
+                },
+            },
+            HitRegion {
+                rect: Rect::new(0, 3, 80, 1),
+                target: HitTarget::StoryRow {
+                    id: "SH-2".to_string(),
+                },
+            },
+        ];
+
+        // Click at (10, 2) should match SH-1
+        let col = 10u16;
+        let row = 2u16;
+        let matched = regions.iter().find(|r| {
+            col >= r.rect.x
+                && col < r.rect.x + r.rect.width
+                && row >= r.rect.y
+                && row < r.rect.y + r.rect.height
+        });
+        assert!(matched.is_some());
+        assert!(
+            matches!(&matched.unwrap().target, HitTarget::StoryRow { id } if id == "SH-1")
+        );
+
+        // Click at (10, 1) should match todo header
+        let row = 1u16;
+        let matched = regions.iter().find(|r| {
+            col >= r.rect.x
+                && col < r.rect.x + r.rect.width
+                && row >= r.rect.y
+                && row < r.rect.y + r.rect.height
+        });
+        assert!(matched.is_some());
+        assert!(
+            matches!(&matched.unwrap().target, HitTarget::SectionHeader { state_slug } if state_slug == "todo")
+        );
+
+        // Click at (10, 10) should match nothing (out of range)
+        let row = 10u16;
+        let matched = regions.iter().find(|r| {
+            col >= r.rect.x
+                && col < r.rect.x + r.rect.width
+                && row >= r.rect.y
+                && row < r.rect.y + r.rect.height
+        });
+        assert!(matched.is_none());
     }
 
     #[test]

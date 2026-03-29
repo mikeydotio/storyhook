@@ -40,7 +40,7 @@ pub trait Component {
     fn handle_mouse(&mut self, mouse: MouseEvent, state: &AppState) -> Vec<Action>;
 
     /// Render the component into the given frame area.
-    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState);
+    fn render(&mut self, frame: &mut Frame, area: Rect, state: &AppState);
 
     /// Called after AppState changes so the component can update derived state.
     fn on_state_change(&mut self, _state: &AppState) {}

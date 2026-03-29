@@ -167,7 +167,7 @@ impl Component for Dashboard {
         vec![]
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
+    fn render(&mut self, frame: &mut Frame, area: Rect, state: &AppState) {
         let theme = Theme::from_env();
         let mut lines: Vec<Line> = Vec::new();
 
@@ -190,6 +190,18 @@ impl Component for Dashboard {
             ),
         ]));
         lines.push(Line::from(""));
+
+        // Show empty state message if no stories at all
+        if total_open == 0 {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  No stories yet. Press n to create one.",
+                theme.section_count,
+            )));
+            lines.push(Line::from(""));
+            frame.render_widget(Paragraph::new(lines), area);
+            return;
+        }
 
         // --- Stories by State ---
         lines.push(Line::from(Span::styled(

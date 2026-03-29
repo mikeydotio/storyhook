@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -10,7 +10,7 @@ use crate::tui::action::{Action, FilterSpec};
 use crate::tui::state::AppState;
 use crate::tui::theme::Theme;
 
-use super::{Component, HitRegion};
+use super::{Component, HitRegion, HitTarget};
 
 /// The filter bar component: renders a 1-line bar above the board.
 ///
@@ -19,6 +19,8 @@ use super::{Component, HitRegion};
 pub struct FilterBar {
     pub input: tui_input::Input,
     pub hit_regions: Vec<HitRegion>,
+    /// The render area from the last render, for mouse detection.
+    pub render_area: Rect,
 }
 
 impl Default for FilterBar {
@@ -32,6 +34,7 @@ impl FilterBar {
         Self {
             input: tui_input::Input::default(),
             hit_regions: Vec::new(),
+            render_area: Rect::default(),
         }
     }
 }
@@ -82,23 +85,62 @@ impl Component for FilterBar {
         }
     }
 
-    fn handle_mouse(&mut self, _mouse: MouseEvent, _state: &AppState) -> Vec<Action> {
+    fn handle_mouse(&mut self, mouse: MouseEvent, state: &AppState) -> Vec<Action> {
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return vec![];
+        }
+
+        // Check if click is within the filter bar area
+        if mouse.row < self.render_area.y
+            || mouse.row >= self.render_area.y + self.render_area.height
+            || mouse.column < self.render_area.x
+            || mouse.column >= self.render_area.x + self.render_area.width
+        {
+            return vec![];
+        }
+
+        // Check if click is on a filter chip
+        for region in &self.hit_regions {
+            if mouse.column >= region.rect.x
+                && mouse.column < region.rect.x + region.rect.width
+                && mouse.row >= region.rect.y
+                && mouse.row < region.rect.y + region.rect.height
+                && let HitTarget::FilterChip { index } = &region.target
+                && *index < state.filters.len()
+            {
+                return vec![Action::ClearFilter(*index)];
+            }
+        }
+
+        // Click anywhere else on filter bar focuses it
+        if !state.filter_bar_focused {
+            return vec![Action::FocusFilterBar];
+        }
+
         vec![]
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
+    fn render(&mut self, frame: &mut Frame, area: Rect, state: &AppState) {
+        self.render_area = area;
+        self.hit_regions.clear();
         let theme = Theme::from_env();
 
         let mut spans: Vec<Span> = Vec::new();
+        let mut x_offset: u16 = 0;
 
-        // Render active filter chips
-        for filter in &state.filters {
+        // Render active filter chips and record their hit regions
+        for (idx, filter) in state.filters.iter().enumerate() {
             let chip_text = format_chip(filter);
-            spans.push(Span::styled(
-                format!(" {chip_text} "),
-                theme.filter_chip,
-            ));
+            let display = format!(" {chip_text} ");
+            let chip_width = display.chars().count() as u16;
+            self.hit_regions.push(HitRegion {
+                rect: Rect::new(area.x + x_offset, area.y, chip_width, 1),
+                target: HitTarget::FilterChip { index: idx },
+            });
+            x_offset += chip_width;
+            spans.push(Span::styled(display, theme.filter_chip));
             spans.push(Span::raw(" "));
+            x_offset += 1;
         }
 
         if state.filter_bar_focused {
@@ -408,5 +450,107 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(format_chip(&spec), "\"login\"");
+    }
+
+    // --- Task 5.3 Tests: Mouse support on filter bar ---
+
+    #[test]
+    fn mouse_click_on_chip_removes_filter() {
+        use crate::tui::action::View;
+        use crate::tui::data::DataStore;
+        use crate::tui::focus::{FocusStack, FocusTarget};
+        use crate::tui::state::AppState;
+
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        let state = AppState {
+            data,
+            focus: FocusStack::new(FocusTarget::Board),
+            view: View::Board,
+            filters: vec![
+                FilterSpec {
+                    state: Some("todo".to_string()),
+                    ..Default::default()
+                },
+                FilterSpec {
+                    label: Some("bug".to_string()),
+                    ..Default::default()
+                },
+            ],
+            filter_bar_focused: false,
+            running: true,
+            notification: None,
+            terminal_size: (80, 24),
+        };
+
+        let mut bar = FilterBar::new();
+        // Simulate the hit regions as they would be after render
+        // Chip 0: " state:todo " = 12 chars wide at x=0
+        // Chip 1: " #bug " = 6 chars wide at x=13 (12 + 1 gap)
+        bar.render_area = Rect::new(0, 0, 80, 1);
+        bar.hit_regions = vec![
+            HitRegion {
+                rect: Rect::new(0, 0, 12, 1),
+                target: HitTarget::FilterChip { index: 0 },
+            },
+            HitRegion {
+                rect: Rect::new(13, 0, 6, 1),
+                target: HitTarget::FilterChip { index: 1 },
+            },
+        ];
+
+        // Click on first chip
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let actions = bar.handle_mouse(mouse, &state);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::ClearFilter(0)));
+
+        // Click on second chip
+        let mouse2 = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 15,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let actions2 = bar.handle_mouse(mouse2, &state);
+        assert_eq!(actions2.len(), 1);
+        assert!(matches!(&actions2[0], Action::ClearFilter(1)));
+    }
+
+    #[test]
+    fn mouse_click_on_bar_focuses_it() {
+        use crate::tui::action::View;
+        use crate::tui::data::DataStore;
+        use crate::tui::focus::{FocusStack, FocusTarget};
+        use crate::tui::state::AppState;
+
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        let state = AppState {
+            data,
+            focus: FocusStack::new(FocusTarget::Board),
+            view: View::Board,
+            filters: vec![],
+            filter_bar_focused: false,
+            running: true,
+            notification: None,
+            terminal_size: (80, 24),
+        };
+
+        let mut bar = FilterBar::new();
+        bar.render_area = Rect::new(0, 0, 80, 1);
+
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 0,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        };
+        let actions = bar.handle_mouse(mouse, &state);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::FocusFilterBar));
     }
 }

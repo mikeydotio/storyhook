@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -133,6 +133,13 @@ impl StoryDetail {
     }
 
     fn handle_viewing_key(&mut self, key: KeyEvent, state: &AppState) -> Vec<Action> {
+        // Ctrl+E: open $EDITOR for adding a comment
+        if key.code == KeyCode::Char('e') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return vec![Action::OpenEditor {
+                id: self.story_id.clone(),
+            }];
+        }
+
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.selected_field + 1 < FIELDS.len() {
@@ -376,7 +383,7 @@ impl Component for StoryDetail {
         vec![]
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
+    fn render(&mut self, frame: &mut Frame, area: Rect, state: &AppState) {
         let theme = Theme::from_env();
         let inner = render_modal(frame, area, &self.story_id, &theme);
 

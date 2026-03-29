@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::time::Instant;
 
-use ratatui::layout::{Constraint, Layout};
+use crossterm::event::{MouseButton, MouseEventKind};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::Frame;
 
 use crate::domain::SuperState;
@@ -12,6 +13,7 @@ use super::components::board::Board;
 use super::components::create_form::CreateForm;
 use super::components::dashboard::Dashboard;
 use super::components::filter_bar::FilterBar;
+use super::components::help::Help;
 use super::components::status_bar::StatusBar;
 use super::components::story_detail::StoryDetail;
 use super::components::Component;
@@ -41,7 +43,7 @@ pub fn run(root: &Path) -> Result<(), AppError> {
     let mut board = Board::new();
     let mut filter_bar = FilterBar::new();
     let mut dashboard = Dashboard::new();
-    let status_bar = StatusBar::new();
+    let mut status_bar = StatusBar::new();
     let mut modal_components = ModalComponents::default();
 
     let result = main_loop(
@@ -53,7 +55,7 @@ pub fn run(root: &Path) -> Result<(), AppError> {
         &mut board,
         &mut filter_bar,
         &mut dashboard,
-        &status_bar,
+        &mut status_bar,
         &mut modal_components,
     );
 
@@ -67,6 +69,9 @@ pub fn run(root: &Path) -> Result<(), AppError> {
 struct ModalComponents {
     story_detail: Option<StoryDetail>,
     create_form: Option<CreateForm>,
+    help: Option<Help>,
+    /// The rect of the top modal from the last render, for click-outside detection.
+    modal_rect: Option<Rect>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -79,7 +84,7 @@ fn main_loop(
     board: &mut Board,
     filter_bar: &mut FilterBar,
     dashboard: &mut Dashboard,
-    status_bar: &StatusBar,
+    status_bar: &mut StatusBar,
     modal_components: &mut ModalComponents,
 ) -> Result<(), AppError> {
     // Initial render
@@ -110,7 +115,7 @@ fn main_loop(
         let actions = route_event(event, state, board, filter_bar, dashboard, modal_components);
 
         for action in actions {
-            dispatch(action, state, root, board, modal_components)?;
+            dispatch(action, state, root, term, board, modal_components)?;
         }
 
         // Expire notifications (3s timeout)
@@ -172,6 +177,12 @@ fn route_event(
                             }
                             vec![]
                         }
+                        KeyContext::Help => {
+                            if let Some(ref mut help) = modal_components.help {
+                                return help.handle_key(key, state);
+                            }
+                            vec![]
+                        }
                         KeyContext::Global => match state.view {
                             View::Board => {
                                 // First check keymap-level board bindings (n, /)
@@ -191,14 +202,44 @@ fn route_event(
                 }
             }
         }
-        Event::Mouse(_mouse) => {
-            // Mouse handling will be implemented in later waves
-            vec![]
+        Event::Mouse(mouse) => {
+            // If a modal is open, check if click is inside or outside
+            if state.focus.has_modal() {
+                if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
+                    && let Some(modal_rect) = modal_components.modal_rect
+                {
+                    let inside = mouse.column >= modal_rect.x
+                        && mouse.column < modal_rect.x + modal_rect.width
+                        && mouse.row >= modal_rect.y
+                        && mouse.row < modal_rect.y + modal_rect.height;
+                    if !inside {
+                        return vec![Action::CloseModal];
+                    }
+                }
+                // Route to the modal component (currently modals don't handle mouse)
+                return vec![];
+            }
+
+            // No modal open: route to the active view
+            match state.view {
+                View::Board => {
+                    // First check filter bar
+                    let filter_actions = filter_bar.handle_mouse(mouse, state);
+                    if !filter_actions.is_empty() {
+                        return filter_actions;
+                    }
+                    // Then check board
+                    board.handle_mouse(mouse, state)
+                }
+                View::Dashboard => {
+                    dashboard.handle_mouse(mouse, state)
+                }
+            }
         }
-        Event::Resize(w, h) => {
-            // Resize is handled inline, no action needed
-            // State will be updated during dispatch
-            vec![Action::Notify(format!("Resized to {w}x{h}"))]
+        Event::Resize(_w, _h) => {
+            // Terminal size is updated in the main loop before routing.
+            // Components re-render automatically on the next draw cycle.
+            vec![]
         }
         Event::DataChanged => {
             vec![Action::RefreshData]
@@ -231,10 +272,12 @@ fn determine_key_context(state: &AppState) -> KeyContext {
 }
 
 /// Dispatch a single action, mutating AppState.
+#[allow(clippy::too_many_arguments)]
 fn dispatch(
     action: Action,
     state: &mut AppState,
     root: &Path,
+    term: &mut ratatui::DefaultTerminal,
     board: &mut Board,
     modal_components: &mut ModalComponents,
 ) -> Result<(), AppError> {
@@ -258,7 +301,9 @@ fn dispatch(
         Action::ToggleHelp => {
             if let Some(Modal::Help) = state.focus.top_modal() {
                 state.focus.pop_modal();
+                modal_components.help = None;
             } else {
+                modal_components.help = Some(Help::new());
                 state.focus.push_modal(Modal::Help);
             }
         }
@@ -284,7 +329,9 @@ fn dispatch(
                     Modal::CreateForm => {
                         modal_components.create_form = None;
                     }
-                    Modal::Help => {}
+                    Modal::Help => {
+                        modal_components.help = None;
+                    }
                 }
             }
         }
@@ -350,6 +397,91 @@ fn dispatch(
             state.filters.clear();
             state.filter_bar_focused = false;
             board.on_state_change(state);
+        }
+
+        Action::OpenEditor { id } => {
+            // $EDITOR integration: suspend TUI, run editor, resume TUI
+            let editor = std::env::var("EDITOR")
+                .or_else(|_| std::env::var("VISUAL"))
+                .ok();
+
+            if let Some(editor_cmd) = editor {
+                // Create temp file with placeholder text
+                let tmp_dir = std::env::temp_dir();
+                let tmp_path = tmp_dir.join(format!("storyhook-comment-{}.txt", &id));
+                if let Err(e) = std::fs::write(&tmp_path, "") {
+                    state.notification =
+                        Some((format!("Failed to create temp file: {e}"), Instant::now()));
+                } else {
+                    // Suspend TUI
+                    terminal::restore();
+
+                    // Run editor
+                    let result = std::process::Command::new(&editor_cmd)
+                        .arg(&tmp_path)
+                        .status();
+
+                    // Re-init TUI
+                    match terminal::init() {
+                        Ok(new_term) => {
+                            *term = new_term;
+                        }
+                        Err(e) => {
+                            // Fatal: can't restore TUI
+                            eprintln!("Failed to re-init terminal: {e}");
+                            state.running = false;
+                        }
+                    }
+
+                    match result {
+                        Ok(status) if status.success() => {
+                            // Read the temp file
+                            match std::fs::read_to_string(&tmp_path) {
+                                Ok(content) => {
+                                    let text = content.trim().to_string();
+                                    if !text.is_empty() {
+                                        // Dispatch AddComment
+                                        dispatch(
+                                            Action::AddComment {
+                                                id: id.clone(),
+                                                text,
+                                            },
+                                            state,
+                                            root,
+                                            term,
+                                            board,
+                                            modal_components,
+                                        )?;
+                                    }
+                                }
+                                Err(e) => {
+                                    state.notification = Some((
+                                        format!("Failed to read temp file: {e}"),
+                                        Instant::now(),
+                                    ));
+                                }
+                            }
+                        }
+                        Ok(_) => {
+                            state.notification =
+                                Some(("Editor exited with error".to_string(), Instant::now()));
+                        }
+                        Err(e) => {
+                            state.notification = Some((
+                                format!("Failed to run editor: {e}"),
+                                Instant::now(),
+                            ));
+                        }
+                    }
+                    // Clean up temp file
+                    let _ = std::fs::remove_file(&tmp_path);
+                }
+            } else {
+                state.notification = Some((
+                    "$EDITOR not set. Set EDITOR or VISUAL env var.".to_string(),
+                    Instant::now(),
+                ));
+            }
         }
 
         // Data mutations: acquire lock, perform mutation, refresh
@@ -639,13 +771,29 @@ fn render(
     frame: &mut Frame,
     state: &AppState,
     _theme: &Theme,
-    board: &Board,
-    filter_bar: &FilterBar,
-    dashboard: &Dashboard,
-    status_bar: &StatusBar,
-    modal_components: &ModalComponents,
+    board: &mut Board,
+    filter_bar: &mut FilterBar,
+    dashboard: &mut Dashboard,
+    status_bar: &mut StatusBar,
+    modal_components: &mut ModalComponents,
 ) {
     let area = frame.area();
+
+    // Minimum size check: show a message instead of the full UI
+    if area.width < 40 || area.height < 10 {
+        let msg = ratatui::text::Line::from(ratatui::text::Span::styled(
+            "Terminal too small (min 40x10)",
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Yellow)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(msg)
+                .alignment(ratatui::layout::Alignment::Center),
+            area,
+        );
+        return;
+    }
 
     let chunks = Layout::vertical([
         Constraint::Fill(1),   // Main content
@@ -674,21 +822,32 @@ fn render(
         }
     }
 
-    // Render modal overlays on top
-    for modal in &state.focus.modals {
+    // Render modal overlays on top and track the top modal rect
+    modal_components.modal_rect = None;
+    // Clone modal list to avoid borrow conflict with modal_components
+    let modals: Vec<Modal> = state.focus.modals.clone();
+    for modal in &modals {
         match modal {
             Modal::StoryDetail { .. } => {
-                if let Some(ref detail) = modal_components.story_detail {
+                if let Some(ref mut detail) = modal_components.story_detail {
                     detail.render(frame, area, state);
+                    modal_components.modal_rect =
+                        Some(super::components::modal::centered_modal_rect(area));
                 }
             }
             Modal::CreateForm => {
-                if let Some(ref form) = modal_components.create_form {
+                if let Some(ref mut form) = modal_components.create_form {
                     form.render(frame, area, state);
+                    modal_components.modal_rect =
+                        Some(super::components::modal::centered_modal_rect(area));
                 }
             }
             Modal::Help => {
-                // Help overlay will be implemented in a later wave
+                if let Some(ref mut help) = modal_components.help {
+                    help.render(frame, area, state);
+                    modal_components.modal_rect =
+                        Some(super::components::modal::centered_modal_rect(area));
+                }
             }
         }
     }

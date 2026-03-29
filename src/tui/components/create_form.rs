@@ -169,7 +169,7 @@ impl Component for CreateForm {
         vec![]
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, _state: &AppState) {
+    fn render(&mut self, frame: &mut Frame, area: Rect, _state: &AppState) {
         let theme = Theme::from_env();
         let inner = render_modal(frame, area, "New Story", &theme);
 

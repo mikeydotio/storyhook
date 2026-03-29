@@ -38,7 +38,7 @@ impl Component for StatusBar {
         vec![]
     }
 
-    fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
+    fn render(&mut self, frame: &mut Frame, area: Rect, state: &AppState) {
         let theme = Theme::from_env();
         let width = area.width as usize;
 
