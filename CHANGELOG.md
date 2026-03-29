@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.7.0] - 2026-03-29
+
+### Added
+- Full-featured terminal UI via `story tui` — dashboard home screen, grouped-table board view with collapsible state sections, story detail modal with inline editing, create form, persistent filter bar, help overlay, and Phase 1 mouse support (b9024ae, 8009ddc, 11079e4, f6fbca8, 1c44348, 7d8ddae)
+- `StoryTitleSet` event variant in the domain layer, enabling title editing from the TUI (ba3461d)
+- 245 tests covering the TUI (225 unit + 19 integration + 1 performance) (6f3bc0e)
+- `story help tui` help topic documenting TUI keybindings and usage (6f3bc0e)
+
+### Fixed
+- Title editing in TUI now actually persists via `StoryTitleSet` event instead of writing a comment (ba3461d)
+
+### Maintenance
+- Track tool config files (.storyhook, .semver) and gitignore .planning directory (b682963)
+
+_[manual]_
+
 ## [v0.6.0] - 2026-03-27
 
 ### Added
