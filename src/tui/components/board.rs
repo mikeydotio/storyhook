@@ -14,6 +14,23 @@ use crate::tui::theme::Theme;
 
 use super::{Component, HitRegion, HitTarget};
 
+/// Tracks the state of a drag-and-drop operation on the board.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DragState {
+    Idle,
+    Pending {
+        story_id: String,
+        origin_row: usize,
+        start_col: u16,
+        start_row: u16,
+    },
+    Dragging {
+        story_id: String,
+        origin_row: usize,
+        current_target_section: Option<String>,
+    },
+}
+
 /// An item in the flat visible-rows list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowItem {
@@ -38,6 +55,8 @@ pub struct Board {
     last_click: Option<(Instant, usize)>,
     /// The render area from the last render, used to interpret mouse coordinates.
     render_area: Rect,
+    /// Current drag-and-drop state.
+    pub drag_state: DragState,
 }
 
 impl Default for Board {
@@ -55,6 +74,7 @@ impl Board {
             scroll_offset: 0,
             last_click: None,
             render_area: Rect::default(),
+            drag_state: DragState::Idle,
         }
     }
 
@@ -171,10 +191,29 @@ impl Board {
             None
         }
     }
+
+    /// Find the section header slug at the given screen row, using hit_regions.
+    fn find_section_at(&self, row: u16) -> Option<String> {
+        self.hit_regions.iter().find_map(|region| {
+            if row >= region.rect.y
+                && row < region.rect.y + region.rect.height
+                && let HitTarget::SectionHeader { state_slug } = &region.target
+            {
+                return Some(state_slug.clone());
+            }
+            None
+        })
+    }
 }
 
 impl Component for Board {
     fn handle_key(&mut self, key: KeyEvent, state: &AppState) -> Vec<Action> {
+        // Cancel any active drag on Esc
+        if self.drag_state != DragState::Idle && key.code == KeyCode::Esc {
+            self.drag_state = DragState::Idle;
+            return vec![];
+        }
+
         let rows = self.build_visible_rows(state);
         if rows.is_empty() {
             // Only 'n' and '/' work on empty board
@@ -346,8 +385,85 @@ impl Component for Board {
                     }
                 }
 
+                // Start a pending drag if clicking on a story row
+                if let Some(RowItem::StoryRow { id }) = rows.get(row_index) {
+                    self.drag_state = DragState::Pending {
+                        story_id: id.clone(),
+                        origin_row: row_index,
+                        start_col: mouse.column,
+                        start_row: mouse.row,
+                    };
+                }
+
                 vec![]
             }
+
+            MouseEventKind::Drag(MouseButton::Left) => {
+                match &self.drag_state {
+                    DragState::Pending {
+                        story_id,
+                        origin_row,
+                        start_col,
+                        start_row,
+                    } => {
+                        // Manhattan distance threshold to avoid accidental drags
+                        let dx = mouse.column.abs_diff(*start_col);
+                        let dy = mouse.row.abs_diff(*start_row);
+                        if dx + dy > 3 {
+                            // Determine if the mouse is currently over a section header
+                            let target_section = self.find_section_at(mouse.row);
+                            self.drag_state = DragState::Dragging {
+                                story_id: story_id.clone(),
+                                origin_row: *origin_row,
+                                current_target_section: target_section,
+                            };
+                        }
+                        vec![]
+                    }
+                    DragState::Dragging {
+                        story_id,
+                        origin_row,
+                        ..
+                    } => {
+                        // Update the target section as the mouse moves
+                        let target_section = self.find_section_at(mouse.row);
+                        self.drag_state = DragState::Dragging {
+                            story_id: story_id.clone(),
+                            origin_row: *origin_row,
+                            current_target_section: target_section,
+                        };
+                        vec![]
+                    }
+                    DragState::Idle => vec![],
+                }
+            }
+
+            MouseEventKind::Up(MouseButton::Left) => {
+                match std::mem::replace(&mut self.drag_state, DragState::Idle) {
+                    DragState::Dragging {
+                        story_id,
+                        current_target_section: Some(target_slug),
+                        ..
+                    } => {
+                        // Successful drop on a section header
+                        vec![Action::MoveStory {
+                            id: story_id,
+                            target_state: target_slug,
+                        }]
+                    }
+                    DragState::Dragging { .. } => {
+                        // Dropped outside any valid section -- cancel
+                        vec![]
+                    }
+                    DragState::Pending { .. } => {
+                        // No drag movement occurred -- treat as normal click
+                        // (last_click and cursor were already set in MouseDown)
+                        vec![]
+                    }
+                    DragState::Idle => vec![],
+                }
+            }
+
             MouseEventKind::ScrollUp => {
                 if self.cursor > 0 {
                     self.cursor -= 1;
@@ -417,6 +533,16 @@ impl Component for Board {
         let width = area.width as usize;
         let mut lines: Vec<Line> = Vec::with_capacity(viewport_height);
 
+        // Extract drag info for visual feedback
+        let (drag_source_id, drag_target_slug) = match &self.drag_state {
+            DragState::Dragging {
+                story_id,
+                current_target_section,
+                ..
+            } => (Some(story_id.clone()), current_target_section.clone()),
+            _ => (None, None),
+        };
+
         // Populate hit_regions for mouse support
         self.hit_regions.clear();
 
@@ -443,23 +569,37 @@ impl Component for Board {
 
             match row {
                 RowItem::SectionHeader {
+                    slug,
                     name,
                     count,
                     expanded,
-                    ..
                 } => {
-                    lines.push(render_section_header(
+                    let is_drag_target = drag_target_slug.as_deref() == Some(slug);
+                    let mut line = render_section_header(
                         name,
                         *count,
                         *expanded,
                         is_selected,
                         width,
                         &theme,
-                    ));
+                    );
+                    if is_drag_target {
+                        for span in &mut line.spans {
+                            span.style = theme.drag_target;
+                        }
+                    }
+                    lines.push(line);
                 }
                 RowItem::StoryRow { id } => {
+                    let is_drag_source = drag_source_id.as_deref() == Some(id.as_str());
                     let story = state.data.find_story(id);
-                    lines.push(render_story_row(story, is_selected, width, &theme));
+                    let mut line = render_story_row(story, is_selected, width, &theme);
+                    if is_drag_source {
+                        for span in &mut line.spans {
+                            span.style = span.style.patch(theme.drag_source);
+                        }
+                    }
+                    lines.push(line);
                 }
             }
         }
@@ -1899,5 +2039,352 @@ mod tests {
         let rows = board.build_visible_rows(&state);
         assert!(board.cursor < rows.len());
         assert!(board.scroll_offset <= board.cursor);
+    }
+
+    // =======================================================================
+    // Drag-and-drop tests (Phase 2 mouse)
+    // =======================================================================
+
+    #[test]
+    fn drag_pending_on_mousedown_story_row() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "First"),
+                test_snapshot("SH-2", "todo", "Second"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+
+        // Click on SH-1 story row (row index 1, screen row = area.y + 1 = 2)
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(mouse, &state);
+        assert!(
+            matches!(
+                &board.drag_state,
+                DragState::Pending { story_id, origin_row: 1, start_col: 10, start_row: 2 }
+                if story_id == "SH-1"
+            ),
+            "mousedown on story row should set Pending drag state"
+        );
+    }
+
+    #[test]
+    fn drag_threshold_prevents_accidental_drag() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![test_snapshot("SH-1", "todo", "First")],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+
+        // Click on SH-1
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(down, &state);
+
+        // Drag only 1 cell (Manhattan distance = 1, below threshold of 3)
+        let drag = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 11,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(drag, &state);
+        assert!(
+            matches!(&board.drag_state, DragState::Pending { .. }),
+            "small movement should stay Pending"
+        );
+    }
+
+    #[test]
+    fn drag_active_after_threshold() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![test_snapshot("SH-1", "todo", "First")],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+        // Pre-populate hit_regions so find_section_at works
+        board.hit_regions = vec![
+            HitRegion {
+                rect: Rect::new(0, 1, 80, 1),
+                target: HitTarget::SectionHeader {
+                    state_slug: "todo".to_string(),
+                },
+            },
+            HitRegion {
+                rect: Rect::new(0, 2, 80, 1),
+                target: HitTarget::StoryRow {
+                    id: "SH-1".to_string(),
+                },
+            },
+        ];
+
+        // Click on SH-1
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(down, &state);
+
+        // Drag more than 3 cells (Manhattan distance = 4)
+        let drag = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 10,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(drag, &state);
+        assert!(
+            matches!(&board.drag_state, DragState::Dragging { story_id, .. } if story_id == "SH-1"),
+            "movement exceeding threshold should transition to Dragging"
+        );
+    }
+
+    #[test]
+    fn drag_drop_on_section_header_emits_move() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "First"),
+                test_snapshot("SH-2", "in-progress", "Second"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+        // Rows: [0] todo hdr (y=1), [1] SH-1 (y=2), [2] in-progress hdr (y=3), [3] SH-2 (y=4), [4] review hdr (y=5)
+        board.hit_regions = vec![
+            HitRegion {
+                rect: Rect::new(0, 1, 80, 1),
+                target: HitTarget::SectionHeader {
+                    state_slug: "todo".to_string(),
+                },
+            },
+            HitRegion {
+                rect: Rect::new(0, 2, 80, 1),
+                target: HitTarget::StoryRow {
+                    id: "SH-1".to_string(),
+                },
+            },
+            HitRegion {
+                rect: Rect::new(0, 3, 80, 1),
+                target: HitTarget::SectionHeader {
+                    state_slug: "in-progress".to_string(),
+                },
+            },
+            HitRegion {
+                rect: Rect::new(0, 4, 80, 1),
+                target: HitTarget::StoryRow {
+                    id: "SH-2".to_string(),
+                },
+            },
+            HitRegion {
+                rect: Rect::new(0, 5, 80, 1),
+                target: HitTarget::SectionHeader {
+                    state_slug: "review".to_string(),
+                },
+            },
+        ];
+
+        // Click on SH-1
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(down, &state);
+
+        // Drag to in-progress header row (y=3), distance > 3 not needed if we
+        // first exceed threshold then land on header. Let's exceed threshold first.
+        let drag_far = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 10,
+            row: 6, // distance = 4 > 3
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(drag_far, &state);
+
+        // Drag to land on in-progress header
+        let drag_target = MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 10,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(drag_target, &state);
+
+        // Verify current_target_section is set
+        assert!(
+            matches!(
+                &board.drag_state,
+                DragState::Dragging { current_target_section: Some(slug), .. }
+                if slug == "in-progress"
+            ),
+            "dragging over section header should set current_target_section"
+        );
+
+        // Drop
+        let up = MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 10,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        let actions = board.handle_mouse(up, &state);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(
+                &actions[0],
+                Action::MoveStory { id, target_state }
+                if id == "SH-1" && target_state == "in-progress"
+            ),
+            "drop on section header should emit MoveStory"
+        );
+        assert_eq!(board.drag_state, DragState::Idle);
+    }
+
+    #[test]
+    fn drag_cancel_on_esc() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![test_snapshot("SH-1", "todo", "First")],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.drag_state = DragState::Dragging {
+            story_id: "SH-1".to_string(),
+            origin_row: 1,
+            current_target_section: Some("in-progress".to_string()),
+        };
+
+        let actions = board.handle_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &state,
+        );
+        assert!(actions.is_empty());
+        assert_eq!(board.drag_state, DragState::Idle);
+    }
+
+    #[test]
+    fn drag_cancel_on_mouseup_no_target() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![test_snapshot("SH-1", "todo", "First")],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.drag_state = DragState::Dragging {
+            story_id: "SH-1".to_string(),
+            origin_row: 1,
+            current_target_section: None,
+        };
+
+        let up = MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 40,
+            row: 15,
+            modifiers: KeyModifiers::NONE,
+        };
+        let actions = board.handle_mouse(up, &state);
+        assert!(actions.is_empty(), "drop with no target should cancel");
+        assert_eq!(board.drag_state, DragState::Idle);
+    }
+
+    #[test]
+    fn click_preserved_when_no_drag() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "First"),
+                test_snapshot("SH-2", "todo", "Second"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+
+        // Click on SH-2 (row index 2, screen row = 3)
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(down, &state);
+        assert_eq!(board.cursor, 2, "click should select the row");
+
+        // Release without drag
+        let up = MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 10,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        let actions = board.handle_mouse(up, &state);
+        assert!(actions.is_empty(), "simple click-release should not emit actions");
+        assert_eq!(board.drag_state, DragState::Idle);
+        assert_eq!(board.cursor, 2, "cursor should remain on clicked row");
+    }
+
+    #[test]
+    fn double_click_preserved_when_no_drag() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![test_snapshot("SH-1", "todo", "First")],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.render_area = Rect::new(0, 1, 80, 22);
+
+        // First click on SH-1 (row index 1, screen row = 2)
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 10,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        };
+        board.handle_mouse(mouse, &state);
+
+        // Second click (double-click) on same row
+        let actions = board.handle_mouse(mouse, &state);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::OpenDetail(id) if id == "SH-1"),
+            "double-click should still open detail"
+        );
     }
 }

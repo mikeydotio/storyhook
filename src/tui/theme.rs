@@ -24,6 +24,8 @@ pub struct Theme {
     pub status_bar_keys: Style,
     pub modal_border: Style,
     pub disclosure: Style,
+    pub drag_source: Style,
+    pub drag_target: Style,
 }
 
 impl Theme {
@@ -58,6 +60,8 @@ impl Theme {
             status_bar_keys: Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             modal_border: Style::default().fg(Color::Cyan),
             disclosure: Style::default().fg(Color::DarkGray),
+            drag_source: Style::default().add_modifier(Modifier::DIM),
+            drag_target: Style::default().fg(Color::Black).bg(Color::Cyan),
         }
     }
 
@@ -83,6 +87,8 @@ impl Theme {
             status_bar_keys: Style::default().fg(reset).add_modifier(Modifier::BOLD),
             modal_border: Style::default().fg(reset),
             disclosure: Style::default().fg(reset).add_modifier(Modifier::DIM),
+            drag_source: Style::default().add_modifier(Modifier::DIM),
+            drag_target: Style::default().fg(reset).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         }
     }
 }
