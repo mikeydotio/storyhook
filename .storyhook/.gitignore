@@ -1,0 +1,4 @@
+# Runtime files — not project data
+lock
+archive/*.db-wal
+archive/*.db-shm

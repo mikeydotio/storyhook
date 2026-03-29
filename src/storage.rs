@@ -142,6 +142,16 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
     let connection = open_archive_connection(root)?;
     drop(connection);
 
+    // Create .gitignore inside .storyhook/ to exclude runtime files
+    // (lock file, SQLite WAL/SHM) from version control.
+    let inner_gitignore = paths.storyhook_dir().join(".gitignore");
+    if !inner_gitignore.exists() {
+        fs::write(
+            &inner_gitignore,
+            "# Runtime files — not project data\nlock\narchive/*.db-wal\narchive/*.db-shm\n",
+        )?;
+    }
+
     // Create CLAUDE.md inside .storyhook/ with full usage instructions.
     // Claude Code discovers this when accessing files in the directory.
     let claude_md_path = paths.storyhook_dir().join("CLAUDE.md");
