@@ -2,14 +2,17 @@ use std::path::Path;
 use std::time::Instant;
 
 use ratatui::layout::{Alignment, Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::domain::SuperState;
 use crate::error::AppError;
 
 use super::action::{Action, View};
+use super::components::board::Board;
+use super::components::status_bar::StatusBar;
+use super::components::Component;
 use super::data::DataStore;
 use super::event::{Event, EventSource};
 use super::focus::{FocusTarget, Modal};
@@ -32,7 +35,11 @@ pub fn run(root: &Path) -> Result<(), AppError> {
         state.terminal_size = (size.width, size.height);
     }
 
-    let result = main_loop(&mut term, &mut state, &rx, root, &theme);
+    // Create components
+    let mut board = Board::new();
+    let status_bar = StatusBar::new();
+
+    let result = main_loop(&mut term, &mut state, &rx, root, &theme, &mut board, &status_bar);
 
     event_source.stop();
     terminal::restore();
@@ -45,9 +52,11 @@ fn main_loop(
     rx: &std::sync::mpsc::Receiver<Event>,
     root: &Path,
     theme: &Theme,
+    board: &mut Board,
+    status_bar: &StatusBar,
 ) -> Result<(), AppError> {
     // Initial render
-    term.draw(|frame| render(frame, state, theme))?;
+    term.draw(|frame| render(frame, state, theme, board, status_bar))?;
 
     while state.running {
         let event = match rx.recv() {
@@ -55,10 +64,15 @@ fn main_loop(
             Err(_) => break, // All senders dropped
         };
 
-        let actions = route_event(event, state);
+        // Update terminal size on resize events
+        if let Event::Resize(w, h) = &event {
+            state.terminal_size = (*w, *h);
+        }
+
+        let actions = route_event(event, state, board);
 
         for action in actions {
-            dispatch(action, state, root)?;
+            dispatch(action, state, root, board)?;
         }
 
         // Expire notifications (3s timeout)
@@ -68,14 +82,14 @@ fn main_loop(
             state.notification = None;
         }
 
-        term.draw(|frame| render(frame, state, theme))?;
+        term.draw(|frame| render(frame, state, theme, board, status_bar))?;
     }
 
     Ok(())
 }
 
 /// Route an event to zero or more actions based on current focus context.
-fn route_event(event: Event, state: &AppState) -> Vec<Action> {
+fn route_event(event: Event, state: &AppState, board: &mut Board) -> Vec<Action> {
     match event {
         Event::Key(key) => {
             let context = determine_key_context(state);
@@ -84,14 +98,18 @@ fn route_event(event: Event, state: &AppState) -> Vec<Action> {
                 None => {
                     // For global context, also try board/dashboard specific bindings
                     if context == KeyContext::Global {
-                        let view_context = match state.view {
-                            View::Dashboard => KeyContext::Global, // Dashboard has no extra bindings yet
-                            View::Board => KeyContext::Board,
-                        };
-                        if view_context != KeyContext::Global
-                            && let Some(action) = keymap::map_key(key, view_context)
-                        {
-                            return vec![action];
+                        match state.view {
+                            View::Board => {
+                                // First check keymap-level board bindings (n, /)
+                                if let Some(action) = keymap::map_key(key, KeyContext::Board) {
+                                    return vec![action];
+                                }
+                                // Then delegate to board component for navigation keys
+                                return board.handle_key(key, state);
+                            }
+                            View::Dashboard => {
+                                // Dashboard has no extra bindings yet
+                            }
                         }
                     }
                     vec![]
@@ -138,7 +156,12 @@ fn determine_key_context(state: &AppState) -> KeyContext {
 }
 
 /// Dispatch a single action, mutating AppState.
-fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), AppError> {
+fn dispatch(
+    action: Action,
+    state: &mut AppState,
+    root: &Path,
+    board: &mut Board,
+) -> Result<(), AppError> {
     match action {
         Action::Quit => {
             state.running = false;
@@ -186,6 +209,8 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
             match DataStore::load(root) {
                 Ok(data) => {
                     state.data = data;
+                    // Notify board of state change so it can reclamp cursor
+                    board.on_state_change(state);
                     // Stale modal protection: if a detail modal is open, check
                     // that the story still exists
                     if let Some(Modal::StoryDetail { story_id }) = state.focus.top_modal()
@@ -211,7 +236,9 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
         }
 
         Action::ToggleSection(_slug) => {
-            // Handled by Board component in Wave 2
+            // Section toggling is handled directly by the Board component
+            // via Space key in handle_key. This action variant exists for
+            // potential future use (e.g., mouse clicks on headers).
         }
 
         Action::SetFilter(spec) => {
@@ -265,6 +292,7 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
             match result {
                 Ok(id) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
                     state.notification =
                         Some((format!("Created {id}"), Instant::now()));
                     state.focus.pop_modal(); // Close create form
@@ -278,18 +306,45 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
 
         Action::MoveStory { id, target_state } => {
             let result = crate::lock::with_project_lock(root, || {
-                crate::storage::write_story_events(
-                    root,
-                    &id,
-                    &[crate::domain::StoryEvent::StoryStateChanged {
-                        at: crate::storage::now(),
+                // Check if target state is CLOSED -- if so, we need to archive
+                let states = crate::storage::load_state_map(root)?;
+                let state_def = states.get(&target_state).ok_or_else(|| {
+                    AppError::Validation(format!("state `{target_state}` is not defined"))
+                })?;
+
+                let now = crate::storage::now();
+                let mut events = vec![crate::domain::StoryEvent::StoryStateChanged {
+                    at: now.clone(),
+                    state: target_state.clone(),
+                }];
+
+                if state_def.super_state == SuperState::Closed {
+                    // Clear awaiting if set
+                    let snapshot = crate::storage::load_open_story_snapshot(root, &id)?;
+                    if snapshot.awaiting.is_some() {
+                        events.push(crate::domain::StoryEvent::StoryAwaitingCleared {
+                            at: now.clone(),
+                        });
+                    }
+                    events.push(crate::domain::StoryEvent::StoryClosedAndArchived {
+                        at: now,
                         state: target_state.clone(),
-                    }],
-                )
+                    });
+                }
+
+                crate::storage::write_story_events(root, &id, &events)?;
+
+                // Archive MUST happen inside the lock closure
+                if state_def.super_state == SuperState::Closed {
+                    crate::storage::archive_story(root, &id)?;
+                }
+
+                Ok(())
             });
             match result {
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
                     state.notification =
                         Some((format!("{id} moved to {target_state}"), Instant::now()));
                 }
@@ -301,9 +356,6 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
         }
 
         Action::UpdateTitle { id, title } => {
-            // Title update requires rewriting events (storyhook doesn't have a title-change event,
-            // so we add a comment noting the title change and rewrite)
-            // For now, we'll add a comment and handle title editing in the StoryDetail component.
             let result = crate::lock::with_project_lock(root, || {
                 crate::storage::write_story_events(
                     root,
@@ -317,6 +369,7 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
             match result {
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
                     state.notification =
                         Some((format!("{id} title updated"), Instant::now()));
                 }
@@ -341,6 +394,7 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
             match result {
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
                     state.notification =
                         Some((format!("{id} priority set"), Instant::now()));
                 }
@@ -365,6 +419,7 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
             match result {
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
                     state.notification =
                         Some((format!("{id} labels updated"), Instant::now()));
                 }
@@ -389,6 +444,7 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
             match result {
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
                     state.notification =
                         Some((format!("{id} assigned to {assignee}"), Instant::now()));
                 }
@@ -413,6 +469,7 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
             match result {
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
                     state.notification =
                         Some((format!("{id} comment added"), Instant::now()));
                 }
@@ -437,6 +494,7 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
             match result {
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
                     state.notification =
                         Some((format!("{id} awaiting: {reason}"), Instant::now()));
                 }
@@ -460,6 +518,7 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
             match result {
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
                     state.notification =
                         Some((format!("{id} unblocked"), Instant::now()));
                 }
@@ -474,9 +533,14 @@ fn dispatch(action: Action, state: &mut AppState, root: &Path) -> Result<(), App
     Ok(())
 }
 
-/// Render the current state. For Wave 1, this shows view name + story count.
-/// Full component rendering comes in Wave 2.
-fn render(frame: &mut Frame, state: &AppState, theme: &Theme) {
+/// Render the current state.
+fn render(
+    frame: &mut Frame,
+    state: &AppState,
+    theme: &Theme,
+    board: &Board,
+    status_bar: &StatusBar,
+) {
     let area = frame.area();
 
     let chunks = Layout::vertical([
@@ -485,62 +549,44 @@ fn render(frame: &mut Frame, state: &AppState, theme: &Theme) {
     ])
     .split(area);
 
-    // Main content: view label + story count
-    let view_label = match state.view {
-        View::Dashboard => "Dashboard",
-        View::Board => "Board",
-    };
-    let story_count = state.data.story_count();
-
-    let content = Line::from(vec![
-        Span::styled(view_label, theme.section_header),
-        Span::raw("  "),
-        Span::styled(
-            format!("{story_count} stories"),
-            theme.section_count,
-        ),
-    ]);
-
     let content_area = chunks[0];
-    let vertical = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .split(content_area);
+    let status_area = chunks[1];
 
-    frame.render_widget(
-        Paragraph::new(content).alignment(Alignment::Center),
-        vertical[1],
-    );
+    // Main content
+    match state.view {
+        View::Board => {
+            board.render(frame, content_area, state);
+        }
+        View::Dashboard => {
+            // Dashboard placeholder until Wave 3+
+            let view_label = "Dashboard";
+            let story_count = state.data.story_count();
 
-    // Status bar
-    let mut status_spans = vec![
-        Span::styled(" q", theme.status_bar_keys),
-        Span::styled(" quit  ", theme.status_bar),
-        Span::styled("?", theme.status_bar_keys),
-        Span::styled(" help  ", theme.status_bar),
-        Span::styled("1", theme.status_bar_keys),
-        Span::styled(" dash  ", theme.status_bar),
-        Span::styled("2", theme.status_bar_keys),
-        Span::styled(" board", theme.status_bar),
-    ];
+            let content = Line::from(vec![
+                Span::styled(view_label, theme.section_header),
+                Span::raw("  "),
+                Span::styled(
+                    format!("{story_count} stories"),
+                    theme.section_count,
+                ),
+            ]);
 
-    // Show notification if any
-    if let Some((ref msg, _)) = state.notification {
-        status_spans.push(Span::raw("  "));
-        status_spans.push(Span::styled(
-            msg.clone(),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ));
+            let vertical = Layout::vertical([
+                Constraint::Fill(1),
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ])
+            .split(content_area);
+
+            frame.render_widget(
+                Paragraph::new(content).alignment(Alignment::Center),
+                vertical[1],
+            );
+        }
     }
 
-    frame.render_widget(
-        Paragraph::new(Line::from(status_spans)),
-        chunks[1],
-    );
+    // Status bar
+    status_bar.render(frame, status_area, state);
 }
 
 /// Allow DataStore to be moved out via `std::mem::take` for fallback on reload errors.
