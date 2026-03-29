@@ -2,6 +2,7 @@ pub mod board;
 pub mod create_form;
 pub mod dashboard;
 pub mod filter_bar;
+pub mod graph;
 pub mod help;
 pub mod modal;
 pub mod status_bar;

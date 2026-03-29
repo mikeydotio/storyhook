@@ -5,6 +5,7 @@ use crate::domain::Priority;
 pub enum View {
     Dashboard,
     Board,
+    Graph,
 }
 
 /// Filter specification for narrowing displayed stories.

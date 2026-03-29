@@ -3,6 +3,7 @@
 pub enum FocusTarget {
     Dashboard,
     Board,
+    Graph,
 }
 
 /// A modal overlay that captures all keyboard input when active.

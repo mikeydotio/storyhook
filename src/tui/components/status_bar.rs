@@ -64,6 +64,7 @@ impl Component for StatusBar {
         let view_label = match state.view {
             View::Dashboard => "Dashboard",
             View::Board => "Board",
+            View::Graph => "Graph",
         };
         let count = state.data.story_count();
         let right_text = format!("{view_label} | {count} stories");
@@ -155,7 +156,21 @@ fn build_key_hints<'a>(state: &AppState, theme: &Theme) -> Vec<Span<'a>> {
             Span::styled("1", theme.status_bar_keys),
             Span::styled(" dash  ", theme.status_bar),
             Span::styled("2", theme.status_bar_keys),
-            Span::styled(" board", theme.status_bar),
+            Span::styled(" board  ", theme.status_bar),
+            Span::styled("3", theme.status_bar_keys),
+            Span::styled(" graph", theme.status_bar),
+        ],
+        View::Graph => vec![
+            Span::styled(" q", theme.status_bar_keys),
+            Span::styled(" quit  ", theme.status_bar),
+            Span::styled("j/k", theme.status_bar_keys),
+            Span::styled(" nav  ", theme.status_bar),
+            Span::styled("Tab", theme.status_bar_keys),
+            Span::styled(" mode  ", theme.status_bar),
+            Span::styled("Enter", theme.status_bar_keys),
+            Span::styled(" open  ", theme.status_bar),
+            Span::styled("?", theme.status_bar_keys),
+            Span::styled(" help", theme.status_bar),
         ],
     }
 }

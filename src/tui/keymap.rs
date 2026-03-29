@@ -7,6 +7,7 @@ use super::action::{Action, View};
 pub enum KeyContext {
     Global,
     Board,
+    Graph,
     FilterBarFocused,
     StoryDetail,
     CreateForm,
@@ -27,6 +28,7 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
     match context {
         KeyContext::Global => map_global(key),
         KeyContext::Board => map_board(key),
+        KeyContext::Graph => map_graph(key),
         KeyContext::FilterBarFocused => map_filter_bar(key),
         KeyContext::StoryDetail => map_story_detail(key),
         KeyContext::CreateForm => map_create_form(key),
@@ -40,7 +42,16 @@ fn map_global(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('1') => Some(Action::SwitchView(View::Dashboard)),
         KeyCode::Char('2') => Some(Action::SwitchView(View::Board)),
+        KeyCode::Char('3') => Some(Action::SwitchView(View::Graph)),
         KeyCode::Char('r') => Some(Action::RefreshData),
+        _ => None,
+    }
+}
+
+fn map_graph(key: KeyEvent) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('n') => Some(Action::OpenCreateForm),
+        // j/k/g/G/Tab/m/Enter/Esc are handled by the Graph component directly.
         _ => None,
     }
 }
@@ -139,6 +150,7 @@ mod tests {
         for ctx in [
             KeyContext::Global,
             KeyContext::Board,
+            KeyContext::Graph,
             KeyContext::FilterBarFocused,
             KeyContext::StoryDetail,
             KeyContext::CreateForm,

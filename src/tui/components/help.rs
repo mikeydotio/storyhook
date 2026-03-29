@@ -80,6 +80,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     key_row(&mut lines, "?", "Toggle help overlay", theme);
     key_row(&mut lines, "1", "Switch to Dashboard", theme);
     key_row(&mut lines, "2", "Switch to Board", theme);
+    key_row(&mut lines, "3", "Switch to Graph", theme);
     key_row(&mut lines, "r", "Refresh data from disk", theme);
     lines.push(Line::from(""));
 
@@ -130,6 +131,18 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     key_row(&mut lines, "Enter", "Submit (if title non-empty)", theme);
     lines.push(Line::from(""));
 
+    // Graph View
+    section_header(&mut lines, "Graph View", theme);
+    key_row(&mut lines, "j / Down", "Next row", theme);
+    key_row(&mut lines, "k / Up", "Previous row", theme);
+    key_row(&mut lines, "g", "Jump to first row", theme);
+    key_row(&mut lines, "G", "Jump to last row", theme);
+    key_row(&mut lines, "Tab / m", "Cycle modes (Tree/Deps/Critical/Focus)", theme);
+    key_row(&mut lines, "Enter", "Open detail or set focus story", theme);
+    key_row(&mut lines, "Esc", "Exit focus mode", theme);
+    key_row(&mut lines, "n", "Open create form", theme);
+    lines.push(Line::from(""));
+
     // Help Overlay
     section_header(&mut lines, "Help Overlay", theme);
     key_row(&mut lines, "Esc / q / ?", "Close", theme);
@@ -169,6 +182,7 @@ pub fn all_help_keys() -> Vec<&'static str> {
         "?",
         "1",
         "2",
+        "3",
         "r",
         // Board
         "j / Down",
@@ -205,6 +219,8 @@ pub fn all_help_keys() -> Vec<&'static str> {
         "Esc",
         "Tab / Shift+Tab",
         "Enter",
+        // Graph View
+        "Tab / m",
         // Help
         "Esc / q / ?",
         "j / k",
@@ -235,12 +251,13 @@ mod tests {
 
         // Check all design-specified keys
         let design_keys = vec![
-            "q", "Ctrl+C", "?", "1", "2", "r",
+            "q", "Ctrl+C", "?", "1", "2", "3", "r",
             "j / Down", "k / Up", "h", "l", "g", "G",
             "Space", "Enter", "> / L", "< / H", "n", "/",
             "Tab", "Backspace", "Esc", "Ctrl+U",
             "e", "c", "Ctrl+E", ">", "<",
-            "Tab / Shift+Tab", "Esc / q / ?", "j / k",
+            "Tab / Shift+Tab", "Tab / m",
+            "Esc / q / ?", "j / k",
         ];
 
         for key in &design_keys {
@@ -271,6 +288,7 @@ mod tests {
         assert!(full_text.contains("Filter Bar"), "Missing Filter Bar section");
         assert!(full_text.contains("Story Detail"), "Missing Story Detail section");
         assert!(full_text.contains("Create Form"), "Missing Create Form section");
+        assert!(full_text.contains("Graph View"), "Missing Graph View section");
         assert!(full_text.contains("Help Overlay"), "Missing Help Overlay section");
     }
 

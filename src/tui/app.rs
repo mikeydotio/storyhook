@@ -13,6 +13,7 @@ use super::components::board::Board;
 use super::components::create_form::CreateForm;
 use super::components::dashboard::Dashboard;
 use super::components::filter_bar::FilterBar;
+use super::components::graph::GraphComponent;
 use super::components::help::Help;
 use super::components::status_bar::StatusBar;
 use super::components::story_detail::StoryDetail;
@@ -43,6 +44,7 @@ pub fn run(root: &Path) -> Result<(), AppError> {
     let mut board = Board::new();
     let mut filter_bar = FilterBar::new();
     let mut dashboard = Dashboard::new();
+    let mut graph = GraphComponent::new();
     let mut status_bar = StatusBar::new();
     let mut modal_components = ModalComponents::default();
 
@@ -55,6 +57,7 @@ pub fn run(root: &Path) -> Result<(), AppError> {
         &mut board,
         &mut filter_bar,
         &mut dashboard,
+        &mut graph,
         &mut status_bar,
         &mut modal_components,
     );
@@ -84,6 +87,7 @@ fn main_loop(
     board: &mut Board,
     filter_bar: &mut FilterBar,
     dashboard: &mut Dashboard,
+    graph: &mut GraphComponent,
     status_bar: &mut StatusBar,
     modal_components: &mut ModalComponents,
 ) -> Result<(), AppError> {
@@ -96,6 +100,7 @@ fn main_loop(
             board,
             filter_bar,
             dashboard,
+            graph,
             status_bar,
             modal_components,
         )
@@ -112,10 +117,10 @@ fn main_loop(
             state.terminal_size = (*w, *h);
         }
 
-        let actions = route_event(event, state, board, filter_bar, dashboard, modal_components);
+        let actions = route_event(event, state, board, filter_bar, dashboard, graph, modal_components);
 
         for action in actions {
-            dispatch(action, state, root, term, board, modal_components)?;
+            dispatch(action, state, root, term, board, graph, modal_components)?;
         }
 
         // Expire notifications (3s timeout)
@@ -133,6 +138,7 @@ fn main_loop(
                 board,
                 filter_bar,
                 dashboard,
+                graph,
                 status_bar,
                 modal_components,
             )
@@ -149,6 +155,7 @@ fn route_event(
     board: &mut Board,
     filter_bar: &mut FilterBar,
     dashboard: &mut Dashboard,
+    graph: &mut GraphComponent,
     modal_components: &mut ModalComponents,
 ) -> Vec<Action> {
     match event {
@@ -196,6 +203,14 @@ fn route_event(
                                 // Delegate to dashboard component for j/k/Enter/n
                                 dashboard.handle_key(key, state)
                             }
+                            View::Graph => {
+                                // First check keymap-level graph bindings (n)
+                                if let Some(action) = keymap::map_key(key, KeyContext::Graph) {
+                                    return vec![action];
+                                }
+                                // Then delegate to graph component for navigation keys
+                                graph.handle_key(key, state)
+                            }
                         },
                         _ => vec![],
                     }
@@ -233,6 +248,9 @@ fn route_event(
                 }
                 View::Dashboard => {
                     dashboard.handle_mouse(mouse, state)
+                }
+                View::Graph => {
+                    graph.handle_mouse(mouse, state)
                 }
             }
         }
@@ -282,6 +300,7 @@ fn dispatch(
     root: &Path,
     term: &mut ratatui::DefaultTerminal,
     board: &mut Board,
+    graph: &mut GraphComponent,
     modal_components: &mut ModalComponents,
 ) -> Result<(), AppError> {
     match action {
@@ -298,6 +317,7 @@ fn dispatch(
             state.focus.base = match view {
                 View::Dashboard => FocusTarget::Dashboard,
                 View::Board => FocusTarget::Board,
+                View::Graph => FocusTarget::Graph,
             };
         }
 
@@ -353,6 +373,7 @@ fn dispatch(
                     state.data = data;
                     // Notify board of state change so it can reclamp cursor
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     // Stale modal protection: if a detail modal is open, check
                     // that the story still exists
                     if let Some(Modal::StoryDetail { story_id }) = state.focus.top_modal()
@@ -387,6 +408,7 @@ fn dispatch(
         Action::SetFilter(spec) => {
             state.filters.push(spec);
             board.on_state_change(state);
+            graph.on_state_change(state);
         }
 
         Action::ClearFilter(index) => {
@@ -394,12 +416,14 @@ fn dispatch(
                 state.filters.remove(index);
             }
             board.on_state_change(state);
+            graph.on_state_change(state);
         }
 
         Action::ClearAllFilters => {
             state.filters.clear();
             state.filter_bar_focused = false;
             board.on_state_change(state);
+            graph.on_state_change(state);
         }
 
         Action::OpenEditor { id } => {
@@ -453,6 +477,7 @@ fn dispatch(
                                             root,
                                             term,
                                             board,
+                                            graph,
                                             modal_components,
                                         )?;
                                     }
@@ -524,6 +549,7 @@ fn dispatch(
                 Ok(id) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     state.notification =
                         Some((format!("Created {id}"), Instant::now()));
                     // Close create form modal
@@ -580,6 +606,7 @@ fn dispatch(
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     state.notification =
                         Some((format!("{id} moved to {target_state}"), Instant::now()));
                 }
@@ -605,6 +632,7 @@ fn dispatch(
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     state.notification =
                         Some((format!("{id} title updated"), Instant::now()));
                 }
@@ -630,6 +658,7 @@ fn dispatch(
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     state.notification =
                         Some((format!("{id} priority set"), Instant::now()));
                 }
@@ -655,6 +684,7 @@ fn dispatch(
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     state.notification =
                         Some((format!("{id} labels updated"), Instant::now()));
                 }
@@ -680,6 +710,7 @@ fn dispatch(
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     state.notification =
                         Some((format!("{id} assigned to {assignee}"), Instant::now()));
                 }
@@ -705,6 +736,7 @@ fn dispatch(
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     state.notification =
                         Some((format!("{id} comment added"), Instant::now()));
                 }
@@ -730,6 +762,7 @@ fn dispatch(
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     state.notification =
                         Some((format!("{id} awaiting: {reason}"), Instant::now()));
                 }
@@ -754,6 +787,7 @@ fn dispatch(
                 Ok(()) => {
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
+                    graph.on_state_change(state);
                     state.notification =
                         Some((format!("{id} unblocked"), Instant::now()));
                 }
@@ -777,6 +811,7 @@ fn render(
     board: &mut Board,
     filter_bar: &mut FilterBar,
     dashboard: &mut Dashboard,
+    graph: &mut GraphComponent,
     status_bar: &mut StatusBar,
     modal_components: &mut ModalComponents,
 ) {
@@ -822,6 +857,9 @@ fn render(
         }
         View::Dashboard => {
             dashboard.render(frame, content_area, state);
+        }
+        View::Graph => {
+            graph.render(frame, content_area, state);
         }
     }
 
