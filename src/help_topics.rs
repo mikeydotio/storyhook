@@ -508,5 +508,272 @@ Related:
 "#,
         );
 
+        m.insert(
+            "json-format",
+            r#"JSON Output Format Reference
+
+All storyhook CLI commands support structured JSON output via the global
+--json flag. This document describes the envelope format, per-command
+response shapes, error format, and exit codes.
+
+== Global --json flag ==
+
+Pass --json as a global option (before or after the subcommand) to get
+machine-readable JSON instead of human-readable text:
+
+  story list --json
+  story --json SH-1
+  story summary --json
+
+The flag applies to every command. When --json is active, all output
+(success and error) is valid JSON printed to stdout.
+
+== JSON Envelope ==
+
+Every successful response is wrapped in a standard envelope:
+
+  {
+    "result": "ok",
+    <data fields depending on command>,
+    "warnings": ["..."],          // omitted when empty
+    "flagged_reasons": ["..."]    // omitted when empty
+  }
+
+The "result" field is always "ok" for success. Data fields vary by
+command (see below). The "warnings" and "flagged_reasons" arrays are
+present only when non-empty.
+
+== Per-Command Response Shapes ==
+
+Commands returning a single story ("story" field):
+  story new <title>           -> "story": StoryView
+  story <id>                  -> "story": StoryView
+  story <id> "<comment>"      -> "story": StoryView
+  story <id> assign <member>  -> "story": StoryView
+  story <id> is <state>       -> "story": StoryView
+  story <id> awaits "<reason>" -> "story": StoryView
+  story <id> awaits --clear   -> "story": StoryView
+  story <id> priority <level> -> "story": StoryView
+  story <id> label <csv>      -> "story": StoryView
+  story <id> reopen           -> "story": StoryView
+  story <a> <rel> <b>         -> "story": StoryView (of story a)
+  story next                  -> "story": StoryView (single result)
+
+  StoryView object:
+    {
+      "story": {
+        "id": "SH-1",
+        "title": "Implement auth",
+        "state": "todo",
+        "superstate": "open",
+        "priority": "high",
+        "assignee": "alice",
+        "labels": ["backend"],
+        "awaiting": null,
+        "relationships": [
+          {"relation": "follows", "other_id": "SH-2"}
+        ],
+        "comments": [
+          {"at": "2025-01-15T10:00:00Z", "text": "Started work"}
+        ],
+        "created_at": "2025-01-15T09:00:00Z",
+        "updated_at": "2025-01-15T10:00:00Z",
+        "closed_at": null
+      },
+      "derived_relationships": [],
+      "warnings": [],
+      "flagged_reasons": [],
+      "stale_info": null
+    }
+
+Commands returning a story list ("stories" field):
+  story list [filters]        -> "stories": [StoryView, ...]
+  story search <query>        -> "stories": [StoryView, ...]
+  story next --count <n>      -> "stories": [StoryView, ...]
+  story import [file]          -> "stories": [StoryView, ...]
+  story decompose <file>       -> "stories": [StoryView, ...]
+
+Commands returning a summary ("summary" field):
+  story summary               -> "summary": SummaryView
+  story report                -> "summary": SummaryView
+
+  SummaryView object:
+    {
+      "total_open": 5,
+      "total_closed": 3,
+      "by_state": [["todo", 3], ["in-progress", 2]],
+      "by_priority": [["high", 2], ["medium", 1]],
+      "blocked_count": 1,
+      "flagged_count": 0,
+      "ready_count": 4,
+      "ready_stories": [StoryView, ...]
+    }
+
+Commands returning a graph ("graph" field):
+  story graph                 -> "graph": GraphView
+  story graph --critical-path -> "graph": GraphView
+  story graph --blocked-by <id> -> "graph": GraphView
+  story graph --parallel-groups -> "graph": GraphView
+
+  GraphView object:
+    {
+      "critical_path": ["SH-1", "SH-3", "SH-5"],
+      "blocked_chain": {"source": "SH-2", "blocked": ["SH-4"]},
+      "parallel_groups": [["SH-1", "SH-2"], ["SH-3"]],
+      "overview": {
+        "total_open": 5,
+        "total_edges": 3,
+        "roots": ["SH-1"],
+        "leaves": ["SH-5"]
+      }
+    }
+
+  Fields are present only for the requested mode. For example,
+  --critical-path only populates "critical_path"; other fields are null.
+
+Commands returning issues ("issues" field):
+  story doctor                -> "issues": ["issue description", ...]
+
+Commands returning a message ("message" field):
+  story init                  -> "message": "initialized story project..."
+  story member add            -> "message": "added member alice"
+  story state add/remove      -> "message": "added state in-progress (open)"
+  story export                -> "message": "<json array of stories>"
+  story context               -> "message": "<markdown or json string>"
+  story handoff               -> "message": "<markdown string>"
+  story report --html         -> "message": "<html string>"
+  story scaffold              -> "message": "<template content>"
+  story hooks install/...     -> "message": "<status text>"
+  story sync-git              -> "message": "scanned N commits..."
+  story mcp-config            -> "message": "<config json or instructions>"
+  story next (no results)     -> "message": "no ready stories"
+  story help <topic>          -> "message": "<help text>"
+
+== Error Format ==
+
+Errors produce:
+
+  {
+    "result": "error",
+    "error": "story `SH-99` not found",
+    "exit_code": 3
+  }
+
+== Exit Codes ==
+
+  0  Success
+  2  Usage error or validation error (bad arguments, invalid input)
+  3  Not found (story ID does not exist)
+  4  Lock timeout (another process holds the project lock)
+  5  Integrity or storage error (corrupt data, I/O failure)
+
+== MCP (Model Context Protocol) ==
+
+The MCP server (story --mcp) wraps the same JSON envelope inside
+standard JSON-RPC 2.0 responses. Each tool call returns:
+
+  {
+    "jsonrpc": "2.0",
+    "id": <request-id>,
+    "result": {
+      "content": [{
+        "type": "text",
+        "text": "<storyhook JSON envelope as a string>"
+      }]
+    }
+  }
+
+The "text" field contains the serialized storyhook JSON envelope
+(the same format described above). Parse the text value as JSON to
+access the structured data.
+
+== Examples ==
+
+Show a story:
+
+  $ story SH-1 --json
+  {
+    "result": "ok",
+    "story": {
+      "story": {
+        "id": "SH-1",
+        "title": "Add login page",
+        "state": "todo",
+        "superstate": "open",
+        "priority": "high",
+        "assignee": null,
+        "labels": [],
+        "awaiting": null,
+        "relationships": [],
+        "comments": [],
+        "created_at": "2025-01-15T09:00:00Z",
+        "updated_at": "2025-01-15T09:00:00Z",
+        "closed_at": null
+      },
+      "derived_relationships": [],
+      "warnings": [],
+      "flagged_reasons": []
+    }
+  }
+
+List stories:
+
+  $ story list --ready --json
+  {
+    "result": "ok",
+    "stories": [
+      {
+        "story": {
+          "id": "SH-1",
+          "title": "Add login page",
+          "state": "todo",
+          "superstate": "open",
+          "priority": "high",
+          "assignee": null,
+          "labels": [],
+          ...
+        },
+        ...
+      }
+    ]
+  }
+
+Error:
+
+  $ story SH-999 --json
+  {
+    "result": "error",
+    "error": "story `SH-999` not found",
+    "exit_code": 3
+  }
+"#,
+        );
+
         m
     });
+
+#[cfg(test)]
+mod tests {
+    use super::get_help_topic;
+
+    #[test]
+    fn json_format_topic_exists_and_covers_key_concepts() {
+        let content = get_help_topic("json-format").expect("json-format topic should exist");
+        assert!(content.contains("\"result\""), "should document result field");
+        assert!(content.contains("--json"), "should document --json flag");
+        assert!(content.contains("\"story\""), "should document story field");
+        assert!(content.contains("\"stories\""), "should document stories field");
+        assert!(content.contains("\"summary\""), "should document summary field");
+        assert!(content.contains("\"graph\""), "should document graph field");
+        assert!(content.contains("\"issues\""), "should document issues field");
+        assert!(content.contains("\"message\""), "should document message field");
+        assert!(content.contains("exit_code"), "should document exit codes");
+        assert!(content.contains("JSON-RPC"), "should document MCP format");
+    }
+
+    #[test]
+    fn json_format_topic_listed() {
+        let topics = super::list_topics();
+        assert!(topics.contains(&"json-format"), "json-format should appear in topic list");
+    }
+}
