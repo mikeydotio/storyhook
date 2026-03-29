@@ -888,4 +888,263 @@ mod tests {
         // Mode stays Viewing because ClearAwaiting is immediate
         assert_eq!(detail.mode, DetailMode::Viewing);
     }
+
+    // =======================================================================
+    // QA: Story not found edge case
+    // =======================================================================
+
+    #[test]
+    fn viewing_key_on_nonexistent_story_does_nothing() {
+        // If the story was deleted externally while the modal is open
+        let state = make_state(vec![test_snapshot()]); // SH-1 exists
+        let mut detail = StoryDetail::new("SH-99".to_string()); // SH-99 doesn't
+
+        // 'e' on Title should bail gracefully (story not found)
+        detail.selected_field = 0;
+        let actions = detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert!(actions.is_empty());
+        assert_eq!(detail.mode, DetailMode::Viewing);
+
+        // '>' should bail gracefully
+        let actions = detail.handle_key(
+            KeyEvent::new(KeyCode::Char('>'), KeyModifiers::SHIFT),
+            &state,
+        );
+        assert!(actions.is_empty());
+
+        // '<' should bail gracefully
+        let actions = detail.handle_key(
+            KeyEvent::new(KeyCode::Char('<'), KeyModifiers::SHIFT),
+            &state,
+        );
+        assert!(actions.is_empty());
+    }
+
+    // =======================================================================
+    // QA: Empty title rejection on edit
+    // =======================================================================
+
+    #[test]
+    fn enter_on_empty_title_does_not_emit_update() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 0;
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingTitle);
+
+        // Clear the pre-filled input
+        for _ in 0..20 {
+            detail.handle_key(key(KeyCode::Backspace), &state);
+        }
+        assert!(detail.title_input.value().is_empty());
+
+        // Enter with empty title should NOT emit UpdateTitle
+        let actions = detail.handle_key(key(KeyCode::Enter), &state);
+        assert!(actions.is_empty(), "Empty title should be rejected");
+        assert_eq!(detail.mode, DetailMode::Viewing);
+    }
+
+    // =======================================================================
+    // QA: Empty comment rejection
+    // =======================================================================
+
+    #[test]
+    fn enter_on_empty_comment_does_not_emit_add() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+
+        detail.handle_key(key(KeyCode::Char('c')), &state);
+        assert_eq!(detail.mode, DetailMode::AddingComment);
+
+        // Enter immediately (empty comment)
+        let actions = detail.handle_key(key(KeyCode::Enter), &state);
+        assert!(actions.is_empty(), "Empty comment should be rejected");
+        assert_eq!(detail.mode, DetailMode::Viewing);
+    }
+
+    // =======================================================================
+    // QA: Empty assignee rejection
+    // =======================================================================
+
+    #[test]
+    fn enter_on_empty_assignee_does_not_emit_assign() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 3; // Assignee
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingAssignee);
+
+        // Clear the pre-filled input ("mikey")
+        for _ in 0..10 {
+            detail.handle_key(key(KeyCode::Backspace), &state);
+        }
+
+        let actions = detail.handle_key(key(KeyCode::Enter), &state);
+        assert!(actions.is_empty(), "Empty assignee should be rejected");
+    }
+
+    // =======================================================================
+    // QA: Empty awaiting rejection
+    // =======================================================================
+
+    #[test]
+    fn enter_on_empty_awaiting_does_not_emit_set() {
+        let mut snap = test_snapshot();
+        snap.awaiting = None; // not awaiting
+        let state = make_state(vec![snap]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 5; // Awaiting
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingAwaiting);
+
+        // Enter immediately (empty reason)
+        let actions = detail.handle_key(key(KeyCode::Enter), &state);
+        assert!(actions.is_empty(), "Empty awaiting reason should be rejected");
+    }
+
+    // =======================================================================
+    // QA: State movement boundary -- can't move past first/last
+    // =======================================================================
+
+    #[test]
+    fn move_backward_at_first_state_does_nothing() {
+        let state = make_state(vec![test_snapshot()]); // SH-1 in "todo" (first open state)
+        let mut detail = StoryDetail::new("SH-1".to_string());
+
+        let actions = detail.handle_key(
+            KeyEvent::new(KeyCode::Char('<'), KeyModifiers::SHIFT),
+            &state,
+        );
+        assert!(actions.is_empty(), "Can't move backward from first state");
+    }
+
+    #[test]
+    fn move_forward_from_last_open_goes_to_closed() {
+        let mut snap = test_snapshot();
+        snap.state = "in-progress".to_string(); // last open state before "done"
+        let state = make_state(vec![snap]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+
+        let actions = detail.handle_key(
+            KeyEvent::new(KeyCode::Char('>'), KeyModifiers::SHIFT),
+            &state,
+        );
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::MoveStory { target_state, .. } if target_state == "done")
+        );
+    }
+
+    // =======================================================================
+    // QA: Priority cycle boundary
+    // =======================================================================
+
+    #[test]
+    fn priority_cursor_does_not_go_below_zero() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 2; // Priority
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingPriority);
+
+        // Move to first option
+        detail.priority_cursor = 0;
+        // Try to move up -- should stay at 0
+        detail.handle_key(key(KeyCode::Char('k')), &state);
+        assert_eq!(detail.priority_cursor, 0);
+    }
+
+    #[test]
+    fn priority_cursor_does_not_exceed_max() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 2;
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+
+        // Move to last option
+        detail.priority_cursor = PRIORITY_OPTIONS.len() - 1;
+        detail.handle_key(key(KeyCode::Char('j')), &state);
+        assert_eq!(detail.priority_cursor, PRIORITY_OPTIONS.len() - 1);
+    }
+
+    // =======================================================================
+    // QA: Esc during each editing mode returns to Viewing
+    // =======================================================================
+
+    #[test]
+    fn esc_from_every_editing_mode_returns_to_viewing() {
+        let state = make_state(vec![test_snapshot()]);
+
+        // EditingPriority
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 2;
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingPriority);
+        detail.handle_key(key(KeyCode::Esc), &state);
+        assert_eq!(detail.mode, DetailMode::Viewing);
+
+        // EditingLabels
+        detail.selected_field = 4;
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingLabels);
+        detail.handle_key(key(KeyCode::Esc), &state);
+        assert_eq!(detail.mode, DetailMode::Viewing);
+
+        // EditingAssignee
+        detail.selected_field = 3;
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingAssignee);
+        detail.handle_key(key(KeyCode::Esc), &state);
+        assert_eq!(detail.mode, DetailMode::Viewing);
+
+        // EditingAwaiting
+        detail.selected_field = 5;
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingAwaiting);
+        detail.handle_key(key(KeyCode::Esc), &state);
+        assert_eq!(detail.mode, DetailMode::Viewing);
+
+        // AddingComment
+        detail.handle_key(key(KeyCode::Char('c')), &state);
+        assert_eq!(detail.mode, DetailMode::AddingComment);
+        detail.handle_key(key(KeyCode::Esc), &state);
+        assert_eq!(detail.mode, DetailMode::Viewing);
+    }
+
+    // =======================================================================
+    // QA: e on non-editable fields does nothing
+    // =======================================================================
+
+    #[test]
+    fn e_on_state_field_does_nothing() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 1; // State
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        // Should remain in Viewing mode (State is not editable via e)
+        assert_eq!(detail.mode, DetailMode::Viewing);
+    }
+
+    #[test]
+    fn e_on_relationships_does_nothing() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 6; // Relationships
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::Viewing);
+    }
+
+    #[test]
+    fn e_on_comments_does_nothing() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 7; // Comments
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::Viewing);
+    }
 }

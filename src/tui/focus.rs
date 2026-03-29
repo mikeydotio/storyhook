@@ -147,4 +147,62 @@ mod tests {
         stack.pop_modal();
         assert!(!stack.has_modal());
     }
+
+    // =======================================================================
+    // QA: Focus trapping -- help over detail
+    // =======================================================================
+
+    #[test]
+    fn help_over_detail_pops_in_correct_order() {
+        // Open detail, then open help on top. Closing help should return
+        // to detail, not to the base view.
+        let mut stack = FocusStack::new(FocusTarget::Board);
+        stack.push_modal(Modal::StoryDetail {
+            story_id: "SH-1".to_string(),
+        });
+        stack.push_modal(Modal::Help);
+
+        // Top is Help
+        assert_eq!(stack.top_modal(), Some(&Modal::Help));
+        assert_eq!(stack.modals.len(), 2);
+
+        // Pop help
+        let popped = stack.pop_modal();
+        assert_eq!(popped, Some(Modal::Help));
+
+        // Detail is now on top
+        assert_eq!(
+            stack.top_modal(),
+            Some(&Modal::StoryDetail {
+                story_id: "SH-1".to_string()
+            })
+        );
+        assert!(stack.has_modal());
+    }
+
+    #[test]
+    fn closing_all_modals_returns_to_base() {
+        let mut stack = FocusStack::new(FocusTarget::Dashboard);
+        stack.push_modal(Modal::CreateForm);
+        stack.push_modal(Modal::Help);
+
+        stack.pop_modal(); // Help
+        stack.pop_modal(); // CreateForm
+        assert!(!stack.has_modal());
+        assert_eq!(stack.base(), &FocusTarget::Dashboard);
+    }
+
+    #[test]
+    fn push_same_modal_type_twice() {
+        // Degenerate case: pushing Help twice should still work
+        let mut stack = FocusStack::new(FocusTarget::Board);
+        stack.push_modal(Modal::Help);
+        stack.push_modal(Modal::Help);
+
+        assert_eq!(stack.modals.len(), 2);
+        stack.pop_modal();
+        assert_eq!(stack.top_modal(), Some(&Modal::Help));
+        stack.pop_modal();
+        assert!(!stack.has_modal());
+    }
 }

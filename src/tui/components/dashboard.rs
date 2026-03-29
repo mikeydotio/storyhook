@@ -615,4 +615,147 @@ mod tests {
         let recent = recent_stories(&stories);
         assert_eq!(recent.len(), 5);
     }
+
+    // =======================================================================
+    // QA: Empty project behavior
+    // =======================================================================
+
+    fn make_app_state(stories: Vec<StorySnapshot>) -> crate::tui::state::AppState {
+        use crate::tui::action::View;
+        use crate::tui::data::DataStore;
+        use crate::tui::focus::{FocusStack, FocusTarget};
+        let data = DataStore::from_test_data(
+            test_states(),
+            stories,
+            "SH".to_string(),
+            vec![],
+        );
+        crate::tui::state::AppState {
+            data,
+            focus: FocusStack::new(FocusTarget::Dashboard),
+            view: View::Dashboard,
+            filters: Vec::new(),
+            filter_bar_focused: false,
+            running: true,
+            notification: None,
+            terminal_size: (80, 24),
+        }
+    }
+
+    fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn empty_project_dashboard_navigation_does_not_panic() {
+        let state = make_app_state(vec![]);
+        let mut dashboard = Dashboard::new();
+
+        // All navigation should be safe on empty project
+        for _ in 0..10 {
+            dashboard.handle_key(key(crossterm::event::KeyCode::Char('j')), &state);
+        }
+        for _ in 0..10 {
+            dashboard.handle_key(key(crossterm::event::KeyCode::Char('k')), &state);
+        }
+        // Enter on empty should not panic
+        dashboard.handle_key(key(crossterm::event::KeyCode::Enter), &state);
+    }
+
+    #[test]
+    fn empty_project_n_opens_create_form() {
+        let state = make_app_state(vec![]);
+        let mut dashboard = Dashboard::new();
+
+        let actions = dashboard.handle_key(key(crossterm::event::KeyCode::Char('n')), &state);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::OpenCreateForm));
+    }
+
+    #[test]
+    fn empty_ready_and_recent_lists() {
+        let stories: Vec<StorySnapshot> = vec![];
+        let ready = ready_stories(&stories);
+        assert!(ready.is_empty());
+        let recent = recent_stories(&stories);
+        assert!(recent.is_empty());
+    }
+
+    #[test]
+    fn all_blocked_means_no_ready_stories() {
+        let stories = vec![
+            make_snapshot("SH-1", "todo", "A", Priority::High, Some("waiting for API"), "2026-01-01T00:00:00Z"),
+            make_snapshot("SH-2", "in-progress", "B", Priority::Critical, Some("blocked by deploy"), "2026-01-02T00:00:00Z"),
+        ];
+        let ready = ready_stories(&stories);
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn dashboard_view_board_action_from_keyboard() {
+        let state = make_app_state(vec![
+            make_snapshot("SH-1", "todo", "A", Priority::None, None, "2026-01-01T00:00:00Z"),
+        ]);
+        let mut dashboard = Dashboard::new();
+
+        let actions = dashboard.handle_key(
+            key(crossterm::event::KeyCode::Char('2')),
+            &state,
+        );
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::SwitchView(View::Board)));
+    }
+
+    // =======================================================================
+    // QA: Dashboard cursor on stories
+    // =======================================================================
+
+    #[test]
+    fn dashboard_enter_on_story_opens_detail() {
+        let state = make_app_state(vec![
+            make_snapshot("SH-1", "todo", "Alpha", Priority::High, None, "2026-01-01T00:00:00Z"),
+        ]);
+        let mut dashboard = Dashboard::new();
+
+        // Navigate to find a story item
+        // Build items to inspect structure
+        dashboard.build_items(&state);
+
+        // Find the first selectable story index
+        let story_idx = dashboard.items.iter().position(|item| {
+            matches!(item, DashboardItem::Story { .. })
+        });
+        if let Some(idx) = story_idx {
+            dashboard.cursor = idx;
+            let actions = dashboard.handle_key(
+                key(crossterm::event::KeyCode::Enter),
+                &state,
+            );
+            assert_eq!(actions.len(), 1);
+            assert!(matches!(&actions[0], Action::OpenDetail(id) if id == "SH-1"));
+        }
+    }
+
+    #[test]
+    fn dashboard_on_state_change_clamps_cursor() {
+        let state = make_app_state(vec![
+            make_snapshot("SH-1", "todo", "A", Priority::None, None, "2026-01-01T00:00:00Z"),
+            make_snapshot("SH-2", "todo", "B", Priority::None, None, "2026-01-02T00:00:00Z"),
+            make_snapshot("SH-3", "todo", "C", Priority::None, None, "2026-01-03T00:00:00Z"),
+        ]);
+        let mut dashboard = Dashboard::new();
+        dashboard.build_items(&state);
+
+        // Set cursor to end
+        dashboard.cursor = dashboard.items.len().saturating_sub(1);
+
+        // Rebuild with fewer stories (simulating data change)
+        let empty_state = make_app_state(vec![]);
+        dashboard.on_state_change(&empty_state);
+
+        // Cursor should be clamped
+        if !dashboard.items.is_empty() {
+            assert!(dashboard.cursor < dashboard.items.len());
+        }
+    }
 }

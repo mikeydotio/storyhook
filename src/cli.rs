@@ -21,6 +21,7 @@ pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 Usage:
   story init [--prefix <PREFIX>] [--no-agents-md]
   story new <title>
+  story tui                                           (interactive terminal UI)
   story member add "<name <email>>"
   story member add -g <github-handle>
   story state add <state-slug> --super OPEN|CLOSED [--role active]

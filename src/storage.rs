@@ -236,6 +236,7 @@ story {prefix}-6 priority medium
 | Search | `story search "<query>"` |
 | Summary stats | `story summary` |
 | Dependency graph | `story graph` |
+| Interactive TUI | `story tui` |
 | Session handoff | `story handoff --since 2h` |
 "#,
         prefix = prefix,

@@ -253,12 +253,10 @@ fn route_event(
 
 /// Determine the key context based on current focus state.
 fn determine_key_context(state: &AppState) -> KeyContext {
-    // If filter bar is focused (only relevant on board view), it gets priority
-    if state.filter_bar_focused && state.view == View::Board {
-        return KeyContext::FilterBarFocused;
-    }
-
-    // If a modal is open, it captures all input
+    // Modals ALWAYS capture input first (focus trapping).
+    // This must be checked before the filter bar to prevent a
+    // stale `filter_bar_focused` flag from stealing keystrokes
+    // when a modal is open on top.
     if let Some(modal) = state.focus.top_modal() {
         return match modal {
             Modal::StoryDetail { .. } => KeyContext::StoryDetail,
@@ -267,7 +265,12 @@ fn determine_key_context(state: &AppState) -> KeyContext {
         };
     }
 
-    // No modal: global context (view-specific bindings checked in route_event)
+    // If filter bar is focused (only relevant on board view), it gets priority
+    if state.filter_bar_focused && state.view == View::Board {
+        return KeyContext::FilterBarFocused;
+    }
+
+    // No modal, no focused filter bar: global context (view-specific bindings checked in route_event)
     KeyContext::Global
 }
 
@@ -866,5 +869,103 @@ impl Default for DataStore {
             prefix: String::new(),
             members: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::action::View;
+    use crate::tui::data::DataStore;
+    use crate::tui::focus::{FocusStack, FocusTarget, Modal};
+    use crate::tui::state::AppState;
+
+    fn make_state() -> AppState {
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        AppState {
+            data,
+            focus: FocusStack::new(FocusTarget::Board),
+            view: View::Board,
+            filters: Vec::new(),
+            filter_bar_focused: false,
+            running: true,
+            notification: None,
+            terminal_size: (80, 24),
+        }
+    }
+
+    // =======================================================================
+    // QA: Focus priority (BUG FIX verification)
+    // Modals must always take priority over filter_bar_focused.
+    // =======================================================================
+
+    #[test]
+    fn modal_takes_priority_over_filter_bar_focused() {
+        let mut state = make_state();
+        state.filter_bar_focused = true;
+        state.focus.push_modal(Modal::Help);
+
+        // With the bug fixed, Help modal should capture input
+        let ctx = determine_key_context(&state);
+        assert_eq!(ctx, KeyContext::Help,
+            "Modal must take priority over filter_bar_focused");
+    }
+
+    #[test]
+    fn filter_bar_focused_works_when_no_modal() {
+        let mut state = make_state();
+        state.filter_bar_focused = true;
+        state.view = View::Board;
+
+        let ctx = determine_key_context(&state);
+        assert_eq!(ctx, KeyContext::FilterBarFocused);
+    }
+
+    #[test]
+    fn global_context_when_nothing_focused() {
+        let state = make_state();
+        let ctx = determine_key_context(&state);
+        assert_eq!(ctx, KeyContext::Global);
+    }
+
+    #[test]
+    fn story_detail_modal_context() {
+        let mut state = make_state();
+        state.focus.push_modal(Modal::StoryDetail {
+            story_id: "SH-1".to_string(),
+        });
+        let ctx = determine_key_context(&state);
+        assert_eq!(ctx, KeyContext::StoryDetail);
+    }
+
+    #[test]
+    fn create_form_modal_context() {
+        let mut state = make_state();
+        state.focus.push_modal(Modal::CreateForm);
+        let ctx = determine_key_context(&state);
+        assert_eq!(ctx, KeyContext::CreateForm);
+    }
+
+    #[test]
+    fn nested_modals_top_wins() {
+        let mut state = make_state();
+        state.focus.push_modal(Modal::StoryDetail {
+            story_id: "SH-1".to_string(),
+        });
+        state.focus.push_modal(Modal::Help);
+
+        let ctx = determine_key_context(&state);
+        assert_eq!(ctx, KeyContext::Help, "Top modal should determine context");
+    }
+
+    #[test]
+    fn filter_bar_on_dashboard_view_is_global() {
+        let mut state = make_state();
+        state.filter_bar_focused = true;
+        state.view = View::Dashboard; // filter bar only active on Board
+
+        let ctx = determine_key_context(&state);
+        assert_eq!(ctx, KeyContext::Global,
+            "filter_bar_focused should be ignored on Dashboard view");
     }
 }

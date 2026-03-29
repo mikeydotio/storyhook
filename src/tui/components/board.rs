@@ -1422,4 +1422,482 @@ mod tests {
         let rows = board.build_visible_rows(&state);
         assert_eq!(board.cursor, rows.len() - 1);
     }
+
+    // =======================================================================
+    // QA: Cursor-out-of-bounds after filter changes
+    // =======================================================================
+
+    #[test]
+    fn cursor_clamps_after_filter_reduces_rows() {
+        // The #1 crash scenario: cursor at row 5, filter removes stories,
+        // now there are only 3 rows. Without clamping, accessing row 5 panics.
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "Alpha"),
+                test_snapshot("SH-2", "todo", "Beta"),
+                test_snapshot("SH-3", "in-progress", "Gamma"),
+                test_snapshot("SH-4", "in-progress", "Delta"),
+                test_snapshot("SH-5", "review", "Epsilon"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let mut state = make_state(data);
+        let mut board = Board::new();
+
+        // Place cursor on last visible row
+        let rows = board.build_visible_rows(&state);
+        board.cursor = rows.len() - 1; // index 8 (3 headers + 5 stories)
+
+        // Now apply a filter that eliminates most stories
+        use crate::tui::action::FilterSpec;
+        state.filters.push(FilterSpec {
+            text: Some("Alpha".to_string()),
+            ..Default::default()
+        });
+        board.on_state_change(&state);
+
+        // After filter: 3 headers + 1 story = 4 rows. Cursor must clamp.
+        let new_rows = board.build_visible_rows(&state);
+        assert!(board.cursor < new_rows.len(),
+            "cursor {} must be < row count {}", board.cursor, new_rows.len());
+    }
+
+    #[test]
+    fn cursor_clamps_after_filter_removes_all_stories() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "Alpha"),
+                test_snapshot("SH-2", "in-progress", "Beta"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let mut state = make_state(data);
+        let mut board = Board::new();
+        board.cursor = 3; // on the in-progress story row
+
+        // Filter that matches nothing
+        use crate::tui::action::FilterSpec;
+        state.filters.push(FilterSpec {
+            text: Some("ZZZZZ_NO_MATCH".to_string()),
+            ..Default::default()
+        });
+        board.on_state_change(&state);
+
+        let new_rows = board.build_visible_rows(&state);
+        // Should have 3 section headers only
+        assert_eq!(new_rows.len(), 3);
+        assert!(board.cursor < new_rows.len());
+    }
+
+    #[test]
+    fn navigation_after_filter_does_not_panic() {
+        // Simulate: have stories, filter to subset, navigate with j/k/g/G
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "Alpha"),
+                test_snapshot("SH-2", "todo", "Beta"),
+                test_snapshot("SH-3", "in-progress", "Gamma"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let mut state = make_state(data);
+        let mut board = Board::new();
+
+        // Apply filter
+        use crate::tui::action::FilterSpec;
+        state.filters.push(FilterSpec {
+            text: Some("Alpha".to_string()),
+            ..Default::default()
+        });
+        board.on_state_change(&state);
+
+        // Navigate extensively -- none of these should panic
+        for _ in 0..20 {
+            board.handle_key(
+                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+                &state,
+            );
+        }
+        for _ in 0..20 {
+            board.handle_key(
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+                &state,
+            );
+        }
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+            &state,
+        );
+        // Section jumps
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+            &state,
+        );
+    }
+
+    // =======================================================================
+    // QA: Filter + collapse interaction
+    // =======================================================================
+
+    #[test]
+    fn filter_then_collapse_then_clear_filter() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "Alpha"),
+                test_snapshot("SH-2", "todo", "Beta"),
+                test_snapshot("SH-3", "in-progress", "Gamma"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let mut state = make_state(data);
+        let mut board = Board::new();
+
+        // Filter to Alpha only
+        use crate::tui::action::FilterSpec;
+        state.filters.push(FilterSpec {
+            text: Some("Alpha".to_string()),
+            ..Default::default()
+        });
+        board.on_state_change(&state);
+
+        // Collapse todo section
+        board.cursor = 0; // todo header
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &state,
+        );
+        assert!(board.collapsed.contains("todo"));
+
+        // Clear filter -- todo section is still collapsed
+        state.filters.clear();
+        board.on_state_change(&state);
+
+        let rows = board.build_visible_rows(&state);
+        // todo collapsed: header only. in-progress: header + Gamma. review: header.
+        // Total: 3 headers + 1 story = 4
+        assert_eq!(rows.len(), 4);
+        assert!(board.cursor < rows.len());
+    }
+
+    // =======================================================================
+    // QA: All sections collapsed
+    // =======================================================================
+
+    #[test]
+    fn all_sections_collapsed_navigation() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "Alpha"),
+                test_snapshot("SH-2", "in-progress", "Beta"),
+                test_snapshot("SH-3", "review", "Gamma"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+
+        // Collapse all sections
+        board.collapsed.insert("todo".to_string());
+        board.collapsed.insert("in-progress".to_string());
+        board.collapsed.insert("review".to_string());
+
+        let rows = board.build_visible_rows(&state);
+        // Only 3 section headers, no story rows
+        assert_eq!(rows.len(), 3);
+
+        // Navigate with j/k -- should work on headers only
+        board.cursor = 0;
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &state,
+        );
+        assert_eq!(board.cursor, 1);
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &state,
+        );
+        assert_eq!(board.cursor, 2);
+
+        // Can't go past last
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &state,
+        );
+        assert_eq!(board.cursor, 2);
+
+        // Enter on header should do nothing (no story)
+        let actions = board.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &state,
+        );
+        assert!(actions.is_empty());
+
+        // > on header should do nothing (no story)
+        let actions = board.handle_key(
+            KeyEvent::new(KeyCode::Char('>'), KeyModifiers::SHIFT),
+            &state,
+        );
+        assert!(actions.is_empty());
+    }
+
+    // =======================================================================
+    // QA: Empty board edge cases
+    // =======================================================================
+
+    #[test]
+    fn empty_board_no_states_at_all() {
+        // Edge case: a project with no states defined (empty states.toml)
+        let data = DataStore::from_test_data(
+            vec![], // no states
+            vec![], // no stories
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+
+        let rows = board.build_visible_rows(&state);
+        assert_eq!(rows.len(), 0);
+
+        // All navigation should be no-ops, never panic
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+            &state,
+        );
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+            &state,
+        );
+
+        assert_eq!(board.cursor, 0);
+    }
+
+    #[test]
+    fn empty_board_n_still_opens_create_form() {
+        let data = DataStore::from_test_data(
+            vec![], // no states
+            vec![], // no stories
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+
+        let actions = board.handle_key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            &state,
+        );
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::OpenCreateForm));
+    }
+
+    #[test]
+    fn empty_board_slash_still_focuses_filter_bar() {
+        let data = DataStore::from_test_data(
+            vec![], // no states
+            vec![], // no stories
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+
+        let actions = board.handle_key(
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            &state,
+        );
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::FocusFilterBar));
+    }
+
+    // =======================================================================
+    // QA: State movement at boundaries
+    // =======================================================================
+
+    #[test]
+    fn move_forward_from_last_closed_state_only() {
+        // Project with only closed states (weird but possible)
+        use crate::domain::StateDef;
+        let data = DataStore::from_test_data(
+            vec![
+                StateDef {
+                    slug: "done".to_string(),
+                    super_state: SuperState::Closed,
+                    role: None,
+                },
+            ],
+            vec![],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let board = Board::new();
+
+        // No open states => no visible rows
+        let rows = board.build_visible_rows(&state);
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[test]
+    fn move_forward_on_header_row_does_nothing() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![test_snapshot("SH-1", "todo", "First")],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+        board.cursor = 0; // on "todo" section header
+
+        let actions = board.handle_key(
+            KeyEvent::new(KeyCode::Char('>'), KeyModifiers::SHIFT),
+            &state,
+        );
+        assert!(actions.is_empty(), "> on header should do nothing");
+
+        let actions = board.handle_key(
+            KeyEvent::new(KeyCode::Char('<'), KeyModifiers::SHIFT),
+            &state,
+        );
+        assert!(actions.is_empty(), "< on header should do nothing");
+    }
+
+    // =======================================================================
+    // QA: Collapse with cursor on story being hidden
+    // =======================================================================
+
+    #[test]
+    fn collapse_section_cursor_was_on_story_inside() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo", "Alpha"),
+                test_snapshot("SH-2", "todo", "Beta"),
+                test_snapshot("SH-3", "in-progress", "Gamma"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let state = make_state(data);
+        let mut board = Board::new();
+
+        // Rows: [0] todo hdr, [1] SH-1, [2] SH-2, [3] in-progress hdr, [4] SH-3, [5] review hdr
+        // Move cursor to todo header and collapse
+        board.cursor = 0;
+        board.handle_key(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &state,
+        );
+        // After collapse: [0] todo hdr, [1] in-progress hdr, [2] SH-3, [3] review hdr
+        assert!(board.collapsed.contains("todo"));
+        assert!(board.cursor < 4, "cursor should be clamped to new row count");
+    }
+
+    // =======================================================================
+    // QA: on_state_change with 0-height terminal
+    // =======================================================================
+
+    #[test]
+    fn on_state_change_zero_terminal_height() {
+        let data = DataStore::from_test_data(
+            test_states(),
+            vec![test_snapshot("SH-1", "todo", "Alpha")],
+            "SH".to_string(),
+            vec![],
+        );
+        let mut state = make_state(data);
+        state.terminal_size = (80, 0); // height = 0
+
+        let mut board = Board::new();
+        // Should not panic
+        board.on_state_change(&state);
+        assert_eq!(board.cursor, 0);
+    }
+
+    // =======================================================================
+    // QA: scroll_offset integrity
+    // =======================================================================
+
+    #[test]
+    fn scroll_offset_stays_valid_on_rapid_navigation() {
+        let mut stories = Vec::new();
+        for i in 1..=20 {
+            stories.push(test_snapshot(
+                &format!("SH-{i}"),
+                "todo",
+                &format!("Story {i}"),
+            ));
+        }
+        let data = DataStore::from_test_data(
+            test_states(),
+            stories,
+            "SH".to_string(),
+            vec![],
+        );
+        let mut state = make_state(data);
+        state.terminal_size = (80, 10); // small viewport
+
+        let mut board = Board::new();
+        // Navigate to bottom
+        for _ in 0..30 {
+            board.handle_key(
+                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+                &state,
+            );
+        }
+        // Navigate back to top
+        for _ in 0..30 {
+            board.handle_key(
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+                &state,
+            );
+        }
+        // scroll_offset should be 0 (or at least valid)
+        let rows = board.build_visible_rows(&state);
+        assert!(board.cursor < rows.len());
+        assert!(board.scroll_offset <= board.cursor);
+    }
 }

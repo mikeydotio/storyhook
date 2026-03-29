@@ -413,6 +413,59 @@ Related:
         );
 
         m.insert(
+            "tui",
+            r#"story tui
+
+Launch an interactive terminal user interface for managing stories. The
+TUI provides a dashboard, a Kanban-style board view, story detail editing,
+filtering, and story creation — all without leaving the terminal.
+
+When to use:
+  When you want a visual overview of project state, or prefer to browse,
+  edit, and move stories interactively rather than via individual CLI
+  commands.
+
+Views:
+  Dashboard (1)   Project summary with metrics and recent activity
+  Board (2)       Stories grouped by state as a scrollable table
+
+Key bindings (board view):
+  j/k, Up/Down    Navigate between rows
+  h/l             Jump to previous/next section header
+  Enter           Open story detail modal
+  > / <           Move story to next/previous state
+  n               Create a new story
+  /               Focus the filter bar
+  Space           Toggle section collapsed/expanded
+  ?               Show full keybinding reference
+  q               Quit
+
+Filtering:
+  Press / to focus the filter bar, then type a filter query:
+    state:todo        Filter by state
+    priority:high     Filter by priority
+    assignee:mikey    Filter by assignee
+    label:bug         Filter by label
+    blocked           Only blocked stories
+    ready             Only unblocked stories
+    <free text>       Substring match on title or ID
+
+Mouse support:
+  Click on a story row to select it. Double-click to open the detail
+  modal. Scroll wheel navigates the board. Click outside a modal to
+  close it.
+
+Examples:
+  story tui                     # Launch the TUI in the current project
+
+Related:
+  story list     — CLI-based story listing with filters
+  story summary  — Project summary (similar to TUI dashboard)
+  story context  — Full project context for AI agents
+"#,
+        );
+
+        m.insert(
             "import",
             r#"story import [<file>]
 

@@ -640,4 +640,110 @@ mod tests {
         let result = apply_filters(&filters, &stories);
         assert!(result.is_empty());
     }
+
+    // =======================================================================
+    // QA: filtered_stories_by_state edge cases
+    // =======================================================================
+
+    #[test]
+    fn filtered_stories_by_state_empty_project() {
+        let store = DataStore::from_test_data(
+            test_states(),
+            vec![],
+            "SH".to_string(),
+            vec![],
+        );
+        let result = store.filtered_stories_by_state(&[]);
+        // Should still have 2 open state groups (todo, in-progress) with 0 stories each
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].1.len(), 0);
+        assert_eq!(result[1].1.len(), 0);
+    }
+
+    #[test]
+    fn filtered_stories_by_state_filter_removes_all() {
+        let store = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "todo"),
+                test_snapshot("SH-2", "in-progress"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let filters = vec![FilterSpec {
+            text: Some("ZZZZZ_NO_MATCH".to_string()),
+            ..Default::default()
+        }];
+        let result = store.filtered_stories_by_state(&filters);
+        // State groups still present, but all empty
+        assert_eq!(result.len(), 2);
+        let total: usize = result.iter().map(|(_, s)| s.len()).sum();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn filtered_stories_by_state_preserves_state_order() {
+        let store = DataStore::from_test_data(
+            test_states(),
+            vec![
+                test_snapshot("SH-1", "in-progress"),
+                test_snapshot("SH-2", "todo"),
+            ],
+            "SH".to_string(),
+            vec![],
+        );
+        let result = store.filtered_stories_by_state(&[]);
+        // Order is defined by states definition, not story insertion
+        assert_eq!(result[0].0.slug, "todo");
+        assert_eq!(result[1].0.slug, "in-progress");
+    }
+
+    #[test]
+    fn empty_data_store_default() {
+        let store = DataStore::default();
+        assert_eq!(store.story_count(), 0);
+        assert!(store.find_story("anything").is_none());
+        assert!(store.stories_by_state().is_empty());
+        assert!(store.filtered_stories_by_state(&[]).is_empty());
+    }
+
+    // =======================================================================
+    // QA: blocked + ready filter conflict
+    // =======================================================================
+
+    #[test]
+    fn blocked_and_ready_together_matches_nothing() {
+        // A story can't be both blocked (awaiting.is_some()) and ready (awaiting.is_none())
+        let stories = vec![
+            make_rich_snapshot("SH-1", "todo", "A", Priority::None, vec![], None, Some("waiting")),
+            make_rich_snapshot("SH-2", "todo", "B", Priority::None, vec![], None, None),
+        ];
+        let filters = vec![
+            FilterSpec {
+                blocked: true,
+                ..Default::default()
+            },
+            FilterSpec {
+                ready: true,
+                ..Default::default()
+            },
+        ];
+        let result = apply_filters(&filters, &stories);
+        assert!(result.is_empty(), "blocked AND ready should match nothing");
+    }
+
+    // =======================================================================
+    // QA: Filter on empty story collections
+    // =======================================================================
+
+    #[test]
+    fn apply_filters_on_empty_stories() {
+        let filters = vec![FilterSpec {
+            text: Some("anything".to_string()),
+            ..Default::default()
+        }];
+        let result = apply_filters(&filters, &[]);
+        assert!(result.is_empty());
+    }
 }

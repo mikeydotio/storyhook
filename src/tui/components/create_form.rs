@@ -462,4 +462,142 @@ mod tests {
             other => panic!("Expected CreateStory, got {other:?}"),
         }
     }
+
+    // =======================================================================
+    // QA: Empty title validation (the design spec says "if title non-empty")
+    // =======================================================================
+
+    #[test]
+    fn submit_whitespace_only_title_notifies() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+
+        // Type only spaces
+        for ch in "   ".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        let actions = form.handle_key(key(KeyCode::Enter), &state);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::Notify(msg) if msg.contains("Title")),
+            "Whitespace-only title should be rejected"
+        );
+    }
+
+    // =======================================================================
+    // QA: Priority cursor boundaries
+    // =======================================================================
+
+    #[test]
+    fn priority_cursor_cannot_go_below_zero() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+        form.handle_key(key(KeyCode::Tab), &state); // move to Priority field
+        assert_eq!(form.priority_cursor, 0);
+
+        // k at 0 stays at 0
+        form.handle_key(key(KeyCode::Char('k')), &state);
+        assert_eq!(form.priority_cursor, 0);
+    }
+
+    #[test]
+    fn priority_cursor_cannot_exceed_max() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+        form.handle_key(key(KeyCode::Tab), &state); // move to Priority field
+
+        // Move to last option
+        for _ in 0..10 {
+            form.handle_key(key(KeyCode::Char('j')), &state);
+        }
+        assert_eq!(form.priority_cursor, PRIORITY_OPTIONS.len() - 1);
+    }
+
+    // =======================================================================
+    // QA: Labels parsing edge cases
+    // =======================================================================
+
+    #[test]
+    fn submit_with_trailing_commas_in_labels() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+
+        // Type title
+        for ch in "Test".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        // Move to labels
+        form.handle_key(key(KeyCode::Tab), &state); // Priority
+        form.handle_key(key(KeyCode::Tab), &state); // Labels
+
+        // Type labels with trailing/extra commas
+        for ch in "bug,,, tui, ".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        let actions = form.handle_key(key(KeyCode::Enter), &state);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::CreateStory { labels, .. } => {
+                // Empty strings from extra commas should be filtered out
+                assert_eq!(labels, &vec!["bug".to_string(), "tui".to_string()]);
+            }
+            other => panic!("Expected CreateStory, got {other:?}"),
+        }
+    }
+
+    // =======================================================================
+    // QA: Tab wrapping
+    // =======================================================================
+
+    #[test]
+    fn tab_wraps_from_last_to_first() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+        form.focused_field = CREATE_FIELDS.len() - 1;
+
+        form.handle_key(key(KeyCode::Tab), &state);
+        assert_eq!(form.focused_field, 0);
+    }
+
+    #[test]
+    fn backtab_wraps_from_first_to_last() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+        assert_eq!(form.focused_field, 0);
+
+        form.handle_key(
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
+            &state,
+        );
+        assert_eq!(form.focused_field, CREATE_FIELDS.len() - 1);
+    }
+
+    // =======================================================================
+    // QA: Submit from any field (not just title)
+    // =======================================================================
+
+    #[test]
+    fn submit_works_from_assignee_field() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+
+        // Type title
+        for ch in "My story".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        // Move to assignee (last field)
+        form.handle_key(key(KeyCode::Tab), &state);
+        form.handle_key(key(KeyCode::Tab), &state);
+        form.handle_key(key(KeyCode::Tab), &state);
+        assert_eq!(form.focused_field, 3);
+
+        // Submit should still work
+        let actions = form.handle_key(key(KeyCode::Enter), &state);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::CreateStory { title, .. } if title == "My story"));
+    }
 }

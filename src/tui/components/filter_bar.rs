@@ -553,4 +553,157 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], Action::FocusFilterBar));
     }
+
+    // =======================================================================
+    // QA: Filter bar edge cases
+    // =======================================================================
+
+    fn make_focused_state(filters: Vec<FilterSpec>) -> AppState {
+        use crate::tui::action::View;
+        use crate::tui::data::DataStore;
+        use crate::tui::focus::{FocusStack, FocusTarget};
+
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        AppState {
+            data,
+            focus: FocusStack::new(FocusTarget::Board),
+            view: View::Board,
+            filters,
+            filter_bar_focused: true,
+            running: true,
+            notification: None,
+            terminal_size: (80, 24),
+        }
+    }
+
+    fn fkey(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn enter_on_empty_input_unfocuses() {
+        let state = make_focused_state(vec![]);
+        let mut bar = FilterBar::new();
+
+        let actions = bar.handle_key(fkey(KeyCode::Enter), &state);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], Action::UnfocusFilterBar));
+    }
+
+    #[test]
+    fn backspace_on_empty_input_removes_last_chip() {
+        let state = make_focused_state(vec![
+            FilterSpec {
+                state: Some("todo".to_string()),
+                ..Default::default()
+            },
+            FilterSpec {
+                label: Some("bug".to_string()),
+                ..Default::default()
+            },
+        ]);
+        let mut bar = FilterBar::new();
+
+        let actions = bar.handle_key(fkey(KeyCode::Backspace), &state);
+        assert_eq!(actions.len(), 1);
+        // Should remove the last chip (index 1)
+        assert!(matches!(&actions[0], Action::ClearFilter(1)));
+    }
+
+    #[test]
+    fn backspace_on_empty_input_with_no_chips_does_nothing() {
+        let state = make_focused_state(vec![]);
+        let mut bar = FilterBar::new();
+
+        let actions = bar.handle_key(fkey(KeyCode::Backspace), &state);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn unfocused_filter_bar_ignores_keys() {
+        use crate::tui::action::View;
+        use crate::tui::data::DataStore;
+        use crate::tui::focus::{FocusStack, FocusTarget};
+
+        let data = DataStore::from_test_data(vec![], vec![], "SH".to_string(), vec![]);
+        let state = AppState {
+            data,
+            focus: FocusStack::new(FocusTarget::Board),
+            view: View::Board,
+            filters: vec![],
+            filter_bar_focused: false, // NOT focused
+            running: true,
+            notification: None,
+            terminal_size: (80, 24),
+        };
+        let mut bar = FilterBar::new();
+
+        // Typing should do nothing when unfocused
+        let actions = bar.handle_key(fkey(KeyCode::Char('a')), &state);
+        assert!(actions.is_empty());
+        assert!(bar.input.value().is_empty());
+    }
+
+    // =======================================================================
+    // QA: Filter parsing edge cases
+    // =======================================================================
+
+    #[test]
+    fn parse_at_sign_alone() {
+        // "@" with no value
+        let spec = parse_filter("@");
+        // The strip_prefix succeeds but value is empty, so the let-chain guard fails
+        // This falls through to text search
+        assert!(spec.is_some());
+        let spec = spec.unwrap();
+        assert_eq!(spec.text, Some("@".to_string()));
+    }
+
+    #[test]
+    fn parse_hash_alone() {
+        // "#" with no value
+        let spec = parse_filter("#");
+        assert!(spec.is_some());
+        let spec = spec.unwrap();
+        assert_eq!(spec.text, Some("#".to_string()));
+    }
+
+    #[test]
+    fn parse_colon_only_value_empty() {
+        // "state:" with no value after colon
+        let spec = parse_filter("state:").unwrap();
+        // Empty value treated as text search
+        assert_eq!(spec.text, Some("state:".to_string()));
+    }
+
+    #[test]
+    fn parse_unknown_priority_value_becomes_text() {
+        let spec = parse_filter("p:extreme").unwrap();
+        // "extreme" is not a valid priority, falls back to text
+        assert_eq!(spec.text, Some("p:extreme".to_string()));
+    }
+
+    #[test]
+    fn format_chip_ready() {
+        let spec = FilterSpec {
+            ready: true,
+            ..Default::default()
+        };
+        assert_eq!(format_chip(&spec), "ready");
+    }
+
+    #[test]
+    fn format_chip_blocked() {
+        let spec = FilterSpec {
+            blocked: true,
+            ..Default::default()
+        };
+        assert_eq!(format_chip(&spec), "blocked");
+    }
+
+    #[test]
+    fn format_chip_empty_spec() {
+        let spec = FilterSpec::default();
+        assert_eq!(format_chip(&spec), "?");
+    }
 }
