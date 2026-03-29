@@ -595,9 +595,9 @@ fn dispatch(
                 crate::storage::write_story_events(
                     root,
                     &id,
-                    &[crate::domain::StoryEvent::StoryCommentAdded {
+                    &[crate::domain::StoryEvent::StoryTitleSet {
                         at: crate::storage::now(),
-                        text: format!("Title updated to: {title}"),
+                        title: title.clone(),
                     }],
                 )
             });

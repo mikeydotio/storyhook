@@ -187,6 +187,10 @@ pub enum StoryEvent {
         at: String,
         labels: Vec<String>,
     },
+    StoryTitleSet {
+        at: String,
+        title: String,
+    },
     StoryClosedAndArchived {
         at: String,
         state: String,
@@ -207,6 +211,7 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryRelationshipRemoved { .. } => "relationship-removed",
             StoryEvent::StoryPrioritySet { .. } => "priority-set",
             StoryEvent::StoryLabelsSet { .. } => "labels-set",
+            StoryEvent::StoryTitleSet { .. } => "title-set",
             StoryEvent::StoryClosedAndArchived { .. } => "archived",
         })
         .unwrap_or("unknown")
@@ -299,6 +304,13 @@ pub fn fold_story(
                 labels: new_labels,
             } => {
                 labels = new_labels.clone();
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryTitleSet {
+                at,
+                title: new_title,
+            } => {
+                title = Some(new_title.clone());
                 updated_at = Some(at.clone());
             }
             StoryEvent::StoryRelationshipAdded {
