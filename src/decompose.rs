@@ -158,6 +158,19 @@ fn extract_labels(text: &str) -> (String, Vec<String>) {
 // Markdown parsing (enhanced)
 // ---------------------------------------------------------------------------
 
+/// Parse a wave heading like "Wave 1", "Wave 2 (parallel)", "Wave 3 (depends on Wave 2)".
+/// Returns the wave number if the heading matches, None otherwise.
+fn parse_wave_heading(title: &str) -> Option<usize> {
+    let lower = title.to_ascii_lowercase();
+    let rest = lower.strip_prefix("wave ")?;
+    // The wave number is the first token after "wave "
+    let num_str = rest.split(|c: char| !c.is_ascii_digit()).next()?;
+    if num_str.is_empty() {
+        return None;
+    }
+    num_str.parse::<usize>().ok()
+}
+
 pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
     let mut stories: Vec<ImportStory> = Vec::new();
     // Track heading stack: (heading_level, story_index)
@@ -166,6 +179,9 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
     let mut descriptions: HashMap<usize, Vec<String>> = HashMap::new();
     // Index of the most recently created story (for description capture)
     let mut last_story_index: Option<usize> = None;
+    // Wave-based format tracking
+    let mut current_wave: Option<usize> = None;
+    let mut wave_task_indices: HashMap<usize, Vec<usize>> = HashMap::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -175,6 +191,17 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             if title.is_empty() {
                 continue;
             }
+
+            // Check if this is a wave heading (e.g. "Wave 1", "Wave 2 (depends on Wave 1)")
+            if let Some(wave_num) = parse_wave_heading(&title) {
+                current_wave = Some(wave_num);
+                wave_task_indices.entry(wave_num).or_default();
+                continue;
+            }
+
+            // Non-wave ### heading: reset wave tracking
+            current_wave = None;
+
             let (title, priority) = extract_priority(&title);
             let (title, labels) = extract_labels(&title);
             // Find parent: nearest ## heading
@@ -208,6 +235,8 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             heading_stack.retain(|(level, _)| *level < 3);
             heading_stack.push((3, index));
         } else if let Some(rest) = trimmed.strip_prefix("## ") {
+            // New ## heading resets wave tracking
+            current_wave = None;
             let title = rest.trim().to_string();
             if title.is_empty() {
                 continue;
@@ -245,6 +274,8 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             heading_stack.retain(|(level, _)| *level < 2);
             heading_stack.push((2, index));
         } else if let Some(rest) = trimmed.strip_prefix("# ") {
+            // New # heading resets wave tracking
+            current_wave = None;
             let title = rest.trim().to_string();
             if title.is_empty() {
                 continue;
@@ -298,6 +329,10 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 relationships,
             });
             last_story_index = Some(index);
+            // Track task index for wave sequencing
+            if let Some(wave_num) = current_wave {
+                wave_task_indices.entry(wave_num).or_default().push(index);
+            }
         } else if trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
             // Checked items are skipped
             continue;
@@ -305,6 +340,31 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             // Body text: accumulate as description for most recent story
             if let Some(idx) = last_story_index {
                 descriptions.entry(idx).or_default().push(trimmed.to_string());
+            }
+        }
+    }
+
+    // Add wave sequencing relationships
+    let mut sorted_waves: Vec<usize> = wave_task_indices.keys().copied().collect();
+    sorted_waves.sort();
+    for window in sorted_waves.windows(2) {
+        let prev_wave = window[0];
+        let curr_wave = window[1];
+        if let (Some(prev_tasks), Some(curr_tasks)) = (
+            wave_task_indices.get(&prev_wave),
+            wave_task_indices.get(&curr_wave),
+        ) {
+            for &curr_idx in curr_tasks {
+                for &prev_idx in prev_tasks {
+                    let rels = stories[curr_idx]
+                        .relationships
+                        .get_or_insert_with(Vec::new);
+                    rels.push(ImportRelationship {
+                        relation: "follows".to_string(),
+                        ref_index: Some(prev_idx),
+                        other_id: None,
+                    });
+                }
             }
         }
     }
@@ -571,5 +631,167 @@ stories:
             detect_format(None, "Just some text"),
             SpecFormat::Markdown
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Wave format tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn wave_format_basic() {
+        let input = "\
+## Feature
+### Wave 1 (parallel)
+- [ ] Task A
+- [ ] Task B
+### Wave 2 (depends on Wave 1)
+- [ ] Task C
+- [ ] Task D";
+        let stories = decompose_spec(input);
+        // stories: [0]=Feature, [1]=Task A, [2]=Task B, [3]=Task C, [4]=Task D
+        assert_eq!(stories.len(), 5);
+        assert_eq!(stories[0].title, "Feature");
+        assert_eq!(stories[1].title, "Task A");
+        assert_eq!(stories[2].title, "Task B");
+        assert_eq!(stories[3].title, "Task C");
+        assert_eq!(stories[4].title, "Task D");
+
+        // Wave 1 tasks should only have child-of relationship to Feature
+        let rels_a = stories[1].relationships.as_ref().unwrap();
+        assert_eq!(rels_a.len(), 1);
+        assert_eq!(rels_a[0].relation, "child-of");
+
+        let rels_b = stories[2].relationships.as_ref().unwrap();
+        assert_eq!(rels_b.len(), 1);
+        assert_eq!(rels_b[0].relation, "child-of");
+
+        // Wave 2 tasks should have child-of + 2 follows relationships
+        let rels_c = stories[3].relationships.as_ref().unwrap();
+        assert_eq!(rels_c.len(), 3); // child-of + follows Task A + follows Task B
+        assert_eq!(rels_c[0].relation, "child-of");
+        assert_eq!(rels_c[0].ref_index, Some(0));
+        let follows_c: Vec<_> = rels_c.iter().filter(|r| r.relation == "follows").collect();
+        assert_eq!(follows_c.len(), 2);
+        let follow_indices: Vec<_> = follows_c.iter().map(|r| r.ref_index.unwrap()).collect();
+        assert!(follow_indices.contains(&1)); // Task A
+        assert!(follow_indices.contains(&2)); // Task B
+
+        let rels_d = stories[4].relationships.as_ref().unwrap();
+        assert_eq!(rels_d.len(), 3);
+        let follows_d: Vec<_> = rels_d.iter().filter(|r| r.relation == "follows").collect();
+        assert_eq!(follows_d.len(), 2);
+    }
+
+    #[test]
+    fn wave_format_parallel_within_wave() {
+        let input = "\
+### Wave 1 (parallel)
+- [ ] Task A
+- [ ] Task B
+- [ ] Task C";
+        let stories = decompose_spec(input);
+        assert_eq!(stories.len(), 3);
+        // No task should have a "follows" relationship — they're all in the same wave
+        for story in &stories {
+            if let Some(rels) = &story.relationships {
+                for rel in rels {
+                    assert_ne!(rel.relation, "follows");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wave_format_three_waves() {
+        let input = "\
+### Wave 1
+- [ ] Task A
+### Wave 2
+- [ ] Task B
+### Wave 3
+- [ ] Task C";
+        let stories = decompose_spec(input);
+        // stories: [0]=Task A, [1]=Task B, [2]=Task C
+        assert_eq!(stories.len(), 3);
+
+        // Task A (wave 1): no follows
+        assert!(stories[0].relationships.is_none());
+
+        // Task B (wave 2): follows Task A only
+        let rels_b = stories[1].relationships.as_ref().unwrap();
+        assert_eq!(rels_b.len(), 1);
+        assert_eq!(rels_b[0].relation, "follows");
+        assert_eq!(rels_b[0].ref_index, Some(0));
+
+        // Task C (wave 3): follows Task B only (not Task A directly)
+        let rels_c = stories[2].relationships.as_ref().unwrap();
+        assert_eq!(rels_c.len(), 1);
+        assert_eq!(rels_c[0].relation, "follows");
+        assert_eq!(rels_c[0].ref_index, Some(1));
+    }
+
+    #[test]
+    fn wave_format_with_parent() {
+        let input = "\
+## Feature Alpha
+### Wave 1
+- [ ] Setup database
+### Wave 2
+- [ ] Build API";
+        let stories = decompose_spec(input);
+        // stories: [0]=Feature Alpha, [1]=Setup database, [2]=Build API
+        assert_eq!(stories.len(), 3);
+
+        // Setup database: child-of Feature Alpha, no follows
+        let rels_setup = stories[1].relationships.as_ref().unwrap();
+        assert_eq!(rels_setup.len(), 1);
+        assert_eq!(rels_setup[0].relation, "child-of");
+        assert_eq!(rels_setup[0].ref_index, Some(0));
+
+        // Build API: child-of Feature Alpha + follows Setup database
+        let rels_api = stories[2].relationships.as_ref().unwrap();
+        assert_eq!(rels_api.len(), 2);
+        let child_of: Vec<_> = rels_api.iter().filter(|r| r.relation == "child-of").collect();
+        assert_eq!(child_of.len(), 1);
+        assert_eq!(child_of[0].ref_index, Some(0));
+        let follows: Vec<_> = rels_api.iter().filter(|r| r.relation == "follows").collect();
+        assert_eq!(follows.len(), 1);
+        assert_eq!(follows[0].ref_index, Some(1));
+    }
+
+    #[test]
+    fn non_wave_headings_unchanged() {
+        // Regression: ### headings that don't match "Wave N" still produce stories
+        let input = "\
+## Parent
+### Regular Heading
+- [ ] A task under regular heading";
+        let stories = decompose_spec(input);
+        // stories: [0]=Parent, [1]=Regular Heading, [2]=A task under regular heading
+        assert_eq!(stories.len(), 3);
+        assert_eq!(stories[0].title, "Parent");
+        assert_eq!(stories[1].title, "Regular Heading");
+        assert_eq!(stories[2].title, "A task under regular heading");
+
+        // Regular Heading is child of Parent
+        let rels_heading = stories[1].relationships.as_ref().unwrap();
+        assert_eq!(rels_heading.len(), 1);
+        assert_eq!(rels_heading[0].relation, "child-of");
+        assert_eq!(rels_heading[0].ref_index, Some(0));
+
+        // Task is child of Regular Heading (the most recent heading)
+        let rels_task = stories[2].relationships.as_ref().unwrap();
+        assert_eq!(rels_task.len(), 1);
+        assert_eq!(rels_task[0].relation, "child-of");
+        assert_eq!(rels_task[0].ref_index, Some(1));
+
+        // No "follows" relationships anywhere
+        for story in &stories {
+            if let Some(rels) = &story.relationships {
+                for rel in rels {
+                    assert_ne!(rel.relation, "follows");
+                }
+            }
+        }
     }
 }
