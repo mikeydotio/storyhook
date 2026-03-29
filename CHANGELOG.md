@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.8.0] - 2026-03-29
+
+### Added
+- TUI drag-and-drop: drag story rows to section headers to move between states (d564d12)
+- TUI dependency graph view (`3` key) with Tree, Dependencies, Critical Path, and Focus modes (a82c01b)
+- TUI session-only undo/redo via `Ctrl+Z` / `Ctrl+Y` with event snapshot/restore (b08edfb)
+- Wave-based markdown format in `story decompose` — `### Wave N` headings auto-generate `follows` relationships between waves (4f9336f)
+- `story help json-format` documenting the complete JSON output contract for programmatic consumers (09af4c2)
+
+### Fixed
+- `.storyhook/lock` and SQLite WAL/SHM files now gitignored via `.storyhook/.gitignore` created during `story init` (88a6736)
+
+_[manual]_
+
 ## [v0.7.0] - 2026-03-29
 
 ### Added
