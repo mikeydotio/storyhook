@@ -42,11 +42,11 @@ fn next_respects_priority_sorting() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "low"])
+        .args(["prioritize", "SH-1", "low"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "priority", "critical"])
+        .args(["prioritize", "SH-2", "critical"])
         .assert()
         .success();
 
@@ -71,7 +71,7 @@ fn next_skips_awaiting_stories() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "awaits", "API spec"])
+        .args(["block", "SH-1", "API spec"])
         .assert()
         .success();
 
@@ -96,7 +96,7 @@ fn next_skips_dependency_blocked_stories() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "blocked-by", "SH-1"])
+        .args(["relate", "SH-2", "blocked-by", "SH-1"])
         .assert()
         .success();
 
@@ -122,13 +122,13 @@ fn next_unblocks_after_dependency_closed() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "blocked-by", "SH-1"])
+        .args(["relate", "SH-2", "blocked-by", "SH-1"])
         .assert()
         .success();
 
     // Close SH-1
     story(dir.path())
-        .args(["SH-1", "is", "done"])
+        .args(["move", "SH-1", "done"])
         .assert()
         .success();
 
@@ -196,7 +196,7 @@ fn next_all_blocked_returns_no_ready() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "awaits", "external dependency"])
+        .args(["block", "SH-1", "external dependency"])
         .assert()
         .success();
 

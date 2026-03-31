@@ -9,7 +9,7 @@ const HOOK_MARKER: &str = "# storyhook managed hook -- do not edit this line";
 const POST_COMMIT_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
 command -v story >/dev/null 2>&1 || exit 0
-story sync-git --since 1h --quiet 2>/dev/null || true
+story commit-sync --since 1h --quiet 2>/dev/null || true
 "#;
 
 const POST_MERGE_HOOK: &str = r#"#!/bin/sh
@@ -21,7 +21,7 @@ ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
 git log --format='%s' "$ORIG_HEAD..HEAD" 2>/dev/null | while IFS= read -r msg; do
   echo "$msg" | grep -oiE '(closes?|fixes?|resolves?)\s+[A-Z]+-[0-9]+' | while IFS= read -r match; do
     STORY_ID="$(echo "$match" | grep -oE '[A-Z]+-[0-9]+' | head -1)"
-    [ -n "$STORY_ID" ] && story "$STORY_ID" is done "auto-closed by merge" --quiet 2>/dev/null || true
+    [ -n "$STORY_ID" ] && story move "$STORY_ID" done "auto-closed by merge" --quiet 2>/dev/null || true
   done
 done
 "#;

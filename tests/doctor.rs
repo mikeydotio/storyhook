@@ -98,7 +98,7 @@ fn doctor_reports_parent_cycle_and_show_suppresses_virtual_relationships() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "--json"])
+        .args(["--json", "show", "SH-1"])
         .assert()
         .success()
         .stdout(contains("\"parent-of\""))

@@ -20,7 +20,7 @@ fn list_blocked_filter() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "awaits", "external API"])
+        .args(["block", "SH-2", "external API"])
         .assert()
         .success();
 
@@ -46,7 +46,7 @@ fn list_ready_filter() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "awaits", "external API"])
+        .args(["block", "SH-2", "external API"])
         .assert()
         .success();
 
@@ -72,7 +72,7 @@ fn list_dependency_blocked() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "blocked-by", "SH-1"])
+        .args(["relate", "SH-2", "blocked-by", "SH-1"])
         .assert()
         .success();
 
@@ -102,19 +102,19 @@ fn list_combined_filters() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "high"])
+        .args(["prioritize", "SH-1", "high"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "priority", "low"])
+        .args(["prioritize", "SH-2", "low"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-3", "priority", "high"])
+        .args(["prioritize", "SH-3", "high"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-3", "awaits", "review"])
+        .args(["block", "SH-3", "review"])
         .assert()
         .success();
 
@@ -185,11 +185,11 @@ fn list_stale_combined() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "high"])
+        .args(["prioritize", "SH-1", "high"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "priority", "low"])
+        .args(["prioritize", "SH-2", "low"])
         .assert()
         .success();
 

@@ -39,7 +39,7 @@ fn search_by_comment() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "Found the root cause in the parser"])
+        .args(["comment", "SH-1", "Found the root cause in the parser"])
         .assert()
         .success();
 
@@ -59,7 +59,7 @@ fn search_by_label() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "label", "backend"])
+        .args(["label", "SH-1", "backend"])
         .assert()
         .success();
 
@@ -79,7 +79,7 @@ fn search_includes_archived_stories() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "is", "done"])
+        .args(["move", "SH-1", "done"])
         .assert()
         .success();
 

@@ -29,7 +29,7 @@ fn list_flagged_filters_to_attention_items() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "obviates", "SH-2"])
+        .args(["relate", "SH-1", "obviates", "SH-2"])
         .assert()
         .success();
 

@@ -3,6 +3,30 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.11.0] - 2026-03-31
+
+### Changed
+- **CLI grammar restructured to verb-first** — all story commands now use `story <verb> <id> [args]` instead of `story <id> <verb> [args]`. Old forms removed entirely.
+- `story <id> is <state>` → `story move <id> <state>` — industry-standard verb for state transitions
+- `story <id> awaits "<reason>"` → `story block <id> "<reason>"` — universally understood verb
+- `story <id> awaits --clear` → `story unblock <id>` — symmetric pair with `block`
+- `story <id> priority <level>` → `story prioritize <id> <level>` — verb form
+- `story <id> label --remove <csv>` → `story unlabel <id> <csv>` — consistent `un-` prefix
+- `story <a> <rel> <b> [--remove]` → `story relate <a> <rel> <b>` / `story unrelate <a> <rel> <b>`
+- All help topics, AGENTS.md, CLAUDE.md template, cursor-rules template, and git hooks updated to verb-first syntax
+
+### Added
+- `story show <id>` — explicit verb for viewing stories (previously `story <id>`)
+- `story comment <id> "<text>"` — explicit verb for adding comments (previously `story <id> "<text>"`)
+- `story set <id> [--field value ...]` — batch update multiple fields in one command
+- `story set <id> --json '{"key":"value"}'` — JSON mode for structured batch updates with field validation
+- `story link` / `story unlink` — aliases for `story relate` / `story unrelate`
+- 14 new help topics: show, move, block, unblock, set, comment, assign, prioritize, label, unlabel, relate, unrelate, reopen, delete
+- Redirect aliases: `story help is` → move, `story help awaits` → block, `story help priority` → prioritize, `story help link` → relate
+- 22 new integration tests in `tests/cli_grammar.rs` covering all verb-first commands
+
+_[manual]_
+
 ## [v0.10.0] - 2026-03-31
 
 ### Added

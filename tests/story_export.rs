@@ -21,15 +21,15 @@ fn export_and_import_roundtrip() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "high"])
+        .args(["prioritize", "SH-1", "high"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "label", "backend"])
+        .args(["label", "SH-1", "backend"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "is", "done"])
+        .args(["move", "SH-2", "done"])
         .assert()
         .success();
 
@@ -50,7 +50,7 @@ fn export_and_import_roundtrip() {
 
     // Verify open story preserved
     story(dir2.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Task one"))
@@ -59,7 +59,7 @@ fn export_and_import_roundtrip() {
 
     // Verify archived story preserved
     story(dir2.path())
-        .args(["SH-2"])
+        .args(["show", "SH-2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Task two"))

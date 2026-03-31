@@ -18,7 +18,7 @@ fn add_labels() {
         .success();
 
     story(dir.path())
-        .args(["SH-1", "label", "bug,backend"])
+        .args(["label", "SH-1", "bug,backend"])
         .assert()
         .success()
         .stdout(predicate::str::contains("labels: backend, bug"));
@@ -33,12 +33,12 @@ fn remove_label() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "label", "bug,backend,frontend"])
+        .args(["label", "SH-1", "bug,backend,frontend"])
         .assert()
         .success();
 
     story(dir.path())
-        .args(["SH-1", "label", "--remove", "frontend"])
+        .args(["unlabel", "SH-1", "frontend"])
         .assert()
         .success()
         .stdout(predicate::str::contains("labels: backend, bug"))
@@ -54,7 +54,7 @@ fn labels_deduplicated() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "label", "bug,bug,bug"])
+        .args(["label", "SH-1", "bug,bug,bug"])
         .assert()
         .success()
         .stdout(predicate::str::contains("labels: bug"));
@@ -73,11 +73,11 @@ fn list_filters_by_label() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "label", "bug"])
+        .args(["label", "SH-1", "bug"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "label", "feature"])
+        .args(["label", "SH-2", "feature"])
         .assert()
         .success();
 
@@ -99,12 +99,12 @@ fn labels_in_json_output() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "label", "api,backend"])
+        .args(["label", "SH-1", "api,backend"])
         .assert()
         .success();
 
     story(dir.path())
-        .args(["--json", "SH-1"])
+        .args(["--json", "show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"labels\""))
@@ -121,7 +121,7 @@ fn labels_show_in_list() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "label", "bug"])
+        .args(["label", "SH-1", "bug"])
         .assert()
         .success();
 

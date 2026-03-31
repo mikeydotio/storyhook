@@ -41,14 +41,14 @@ fn decompose_nested_headings() {
 
     // Verify parent story
     story(dir.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Parent Epic"));
 
     // Verify child story with relationship
     story(dir.path())
-        .args(["SH-2"])
+        .args(["show", "SH-2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Child Feature"))
@@ -70,21 +70,21 @@ fn decompose_three_levels() {
         .success();
 
     // Epic has no parent
-    let output = story(dir.path()).args(["SH-1"]).assert().success();
+    let output = story(dir.path()).args(["show", "SH-1"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("Epic"));
     assert!(stdout.contains("parent-of SH-2"));
 
     // Feature is child of Epic
     story(dir.path())
-        .args(["SH-2"])
+        .args(["show", "SH-2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("child-of SH-1"));
 
     // Task is child of Feature
     story(dir.path())
-        .args(["SH-3"])
+        .args(["show", "SH-3"])
         .assert()
         .success()
         .stdout(predicate::str::contains("child-of SH-2"));
@@ -105,13 +105,13 @@ fn decompose_checkboxes() {
         .success();
 
     story(dir.path())
-        .args(["SH-2"])
+        .args(["show", "SH-2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("First task"));
 
     story(dir.path())
-        .args(["SH-3"])
+        .args(["show", "SH-3"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Second task"));
@@ -216,24 +216,24 @@ fn decompose_roundtrip() {
 
     // Verify all stories exist
     story(dir.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Parent"));
     story(dir.path())
-        .args(["SH-2"])
+        .args(["show", "SH-2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Child A"))
         .stdout(predicate::str::contains("child-of SH-1"));
     story(dir.path())
-        .args(["SH-3"])
+        .args(["show", "SH-3"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Child B"))
         .stdout(predicate::str::contains("child-of SH-1"));
     story(dir.path())
-        .args(["SH-4"])
+        .args(["show", "SH-4"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Grandchild"))
@@ -254,12 +254,12 @@ fn decompose_stdin() {
         .success();
 
     story(dir.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Stdin Epic"));
     story(dir.path())
-        .args(["SH-2"])
+        .args(["show", "SH-2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Stdin Feature"))
@@ -304,7 +304,7 @@ fn decompose_yaml_file() {
 
     // Verify parent
     story(dir.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Auth Service"))
@@ -312,14 +312,14 @@ fn decompose_yaml_file() {
 
     // Verify children
     story(dir.path())
-        .args(["SH-2"])
+        .args(["show", "SH-2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Login endpoint"))
         .stdout(predicate::str::contains("child-of SH-1"));
 
     story(dir.path())
-        .args(["SH-3"])
+        .args(["show", "SH-3"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Signup endpoint"))
@@ -373,7 +373,7 @@ fn decompose_markdown_with_priority() {
         .success();
 
     story(dir.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Secure the API"))
@@ -395,7 +395,7 @@ fn decompose_markdown_with_labels() {
         .success();
 
     story(dir.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Build API"))

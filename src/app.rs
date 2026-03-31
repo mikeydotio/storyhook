@@ -1621,6 +1621,203 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 }
             }
         }
+        Invocation::SetFields {
+            id,
+            title,
+            state,
+            priority,
+            assignee,
+            labels,
+            blocked,
+            unblocked,
+            json: json_patch,
+        } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            ensure_open_story(root, &id)?;
+            let story = storage::load_open_story_snapshot(root, &id)?;
+            let now = storage::now();
+            let mut events: Vec<StoryEvent> = Vec::new();
+            let mut changes: Vec<String> = Vec::new();
+
+            if let Some(ref t) = title {
+                events.push(StoryEvent::StoryTitleSet {
+                    at: now.clone(),
+                    title: t.clone(),
+                });
+                changes.push(format!("title -> {t}"));
+            }
+            if let Some(ref s) = state {
+                let states = storage::load_state_map(root)?;
+                let state_def = states.get(s).ok_or_else(|| {
+                    AppError::Validation(format!("state `{s}` is not defined"))
+                })?;
+                events.push(StoryEvent::StoryStateChanged {
+                    at: now.clone(),
+                    state: s.clone(),
+                });
+                if state_def.super_state == SuperState::Closed {
+                    if story.awaiting.is_some() {
+                        events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
+                    }
+                    events.push(StoryEvent::StoryClosedAndArchived {
+                        at: now.clone(),
+                        state: s.clone(),
+                    });
+                }
+                changes.push(format!("state -> {s}"));
+            }
+            if let Some(ref p) = priority {
+                let level = Priority::parse(p).ok_or_else(|| {
+                    AppError::Validation(format!("invalid priority `{p}`"))
+                })?;
+                events.push(StoryEvent::StoryPrioritySet {
+                    at: now.clone(),
+                    priority: level,
+                });
+                changes.push(format!("priority -> {p}"));
+            }
+            if let Some(ref a) = assignee {
+                let members = storage::load_members(root)?;
+                let member = members.iter().find(|m| m.id == *a || m.github.as_deref() == Some(a)).ok_or_else(|| {
+                    AppError::Validation(format!("member `{a}` not found"))
+                })?;
+                events.push(StoryEvent::StoryAssigned {
+                    at: now.clone(),
+                    member_id: member.id.clone(),
+                });
+                changes.push(format!("assignee -> {a}"));
+            }
+            if let Some(ref l) = labels {
+                let add: Vec<String> = l.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let mut current_labels: BTreeSet<String> = story.labels.iter().cloned().collect();
+                for label in &add {
+                    current_labels.insert(label.clone());
+                }
+                events.push(StoryEvent::StoryLabelsSet {
+                    at: now.clone(),
+                    labels: current_labels.into_iter().collect(),
+                });
+                changes.push(format!("labels += {l}"));
+            }
+            if let Some(ref reason) = blocked {
+                events.push(StoryEvent::StoryAwaitingSet {
+                    at: now.clone(),
+                    awaiting: reason.clone(),
+                });
+                changes.push(format!("blocked: {reason}"));
+            }
+            if unblocked {
+                events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
+                changes.push("unblocked".to_string());
+            }
+            if let Some(ref j) = json_patch {
+                let patch: serde_json::Value = serde_json::from_str(j).map_err(|e| {
+                    AppError::Validation(format!("invalid JSON: {e}"))
+                })?;
+                let obj = patch.as_object().ok_or_else(|| {
+                    AppError::Validation("JSON must be an object".to_string())
+                })?;
+                for (key, value) in obj {
+                    match key.as_str() {
+                        "title" => {
+                            let v = value.as_str().ok_or_else(|| AppError::Validation("title must be a string".to_string()))?;
+                            if !v.is_empty() {
+                                events.push(StoryEvent::StoryTitleSet { at: now.clone(), title: v.to_string() });
+                                changes.push(format!("title -> {v}"));
+                            }
+                        }
+                        "state" => {
+                            let v = value.as_str().ok_or_else(|| AppError::Validation("state must be a string".to_string()))?;
+                            let states = storage::load_state_map(root)?;
+                            let state_def = states.get(v).ok_or_else(|| AppError::Validation(format!("state `{v}` is not defined")))?;
+                            events.push(StoryEvent::StoryStateChanged { at: now.clone(), state: v.to_string() });
+                            if state_def.super_state == SuperState::Closed {
+                                if story.awaiting.is_some() {
+                                    events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
+                                }
+                                events.push(StoryEvent::StoryClosedAndArchived { at: now.clone(), state: v.to_string() });
+                            }
+                            changes.push(format!("state -> {v}"));
+                        }
+                        "priority" => {
+                            let v = value.as_str().ok_or_else(|| AppError::Validation("priority must be a string".to_string()))?;
+                            let level = Priority::parse(v).ok_or_else(|| AppError::Validation(format!("invalid priority `{v}`")))?;
+                            events.push(StoryEvent::StoryPrioritySet { at: now.clone(), priority: level });
+                            changes.push(format!("priority -> {v}"));
+                        }
+                        "assignee" => {
+                            if value.is_null() {
+                                changes.push("assignee cleared".to_string());
+                            } else if let Some(v) = value.as_str() {
+                                if v.is_empty() {
+                                    changes.push("assignee cleared".to_string());
+                                } else {
+                                    events.push(StoryEvent::StoryAssigned { at: now.clone(), member_id: v.to_string() });
+                                    changes.push(format!("assignee -> {v}"));
+                                }
+                            } else {
+                                return Err(AppError::Validation("assignee must be a string or null".to_string()));
+                            }
+                        }
+                        "labels" => {
+                            let arr = value.as_array().ok_or_else(|| AppError::Validation("labels must be an array of strings".to_string()))?;
+                            let new_labels: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                            events.push(StoryEvent::StoryLabelsSet { at: now.clone(), labels: new_labels.clone() });
+                            changes.push(format!("labels -> [{}]", new_labels.join(", ")));
+                        }
+                        "blocked" => {
+                            if value.is_null() {
+                                events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
+                                changes.push("unblocked".to_string());
+                            } else if let Some(v) = value.as_str() {
+                                if v.is_empty() {
+                                    events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
+                                    changes.push("unblocked".to_string());
+                                } else {
+                                    events.push(StoryEvent::StoryAwaitingSet { at: now.clone(), awaiting: v.to_string() });
+                                    changes.push(format!("blocked: {v}"));
+                                }
+                            } else {
+                                return Err(AppError::Validation("blocked must be a string or null".to_string()));
+                            }
+                        }
+                        other => return Err(AppError::Validation(format!("unknown field `{other}` in JSON. Valid fields: title, state, priority, assignee, labels, blocked"))),
+                    }
+                }
+            }
+
+            if events.is_empty() {
+                return Err(AppError::Usage("no fields to update".to_string()));
+            }
+
+            storage::write_story_events(root, &id, &events)?;
+
+            // Archive if state changed to CLOSED
+            let needs_archive = state.as_ref().map(|s| {
+                storage::load_state_map(root)
+                    .ok()
+                    .and_then(|m| m.get(s).map(|d| d.super_state == SuperState::Closed))
+                    .unwrap_or(false)
+            }).unwrap_or(false)
+            || json_patch.as_ref().map(|j| {
+                serde_json::from_str::<serde_json::Value>(j).ok()
+                    .and_then(|v| v.get("state")?.as_str().map(|s| s.to_string()))
+                    .map(|s| storage::load_state_map(root)
+                        .ok()
+                        .and_then(|m| m.get(&s).map(|d| d.super_state == SuperState::Closed))
+                        .unwrap_or(false))
+                    .unwrap_or(false)
+            }).unwrap_or(false);
+
+            if needs_archive {
+                storage::archive_story(root, &id)?;
+            }
+
+            Ok(Response::Message(format!(
+                "updated {id}: {}",
+                changes.join(", ")
+            )))
+        }),
         Invocation::Plugin { action } => match action {
             PluginAction::Install { target } => {
                 let msg = crate::plugin::install(&target, root)?;
@@ -2032,7 +2229,7 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 
 4. **Complete the task**: Mark the story as done
    ```
-   story <id> is {done_state}
+   story move <id> {done_state}
    ```
 
 5. **End of session**: Generate a handoff summary
@@ -2045,10 +2242,17 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 | Action | Command |
 |---|---|
 | List open stories | `story list` |
-| Show a story | `story {prefix}-<n>` |
+| Show a story | `story show {prefix}-<n>` |
 | Create a story | `story new "<title>"` |
-| Add a comment | `story {prefix}-<n> "comment text"` |
-| Set priority | `story {prefix}-<n> priority high` |
+| Move to state | `story move {prefix}-<n> <state>` |
+| Add a comment | `story comment {prefix}-<n> "comment text"` |
+| Set priority | `story prioritize {prefix}-<n> high` |
+| Assign a story | `story assign {prefix}-<n> <member>` |
+| Add a label | `story label {prefix}-<n> <label>` |
+| Block a story | `story block {prefix}-<n> "reason"` |
+| Unblock a story | `story unblock {prefix}-<n>` |
+| Add relationship | `story relate {prefix}-1 blocks {prefix}-2` |
+| Set multiple fields | `story set {prefix}-<n> --priority high --state in-progress` |
 | Search stories | `story search "<query>"` |
 | Project summary | `story summary` |
 | Context (for LLM) | `story context` |
@@ -2092,17 +2296,23 @@ or MCP server to manage tasks.
 
 - Run `story context` at the start of each session to understand project state.
 - Run `story next` to find the highest-priority ready task.
-- After completing work, mark the story done: `story <id> is done`.
+- After completing work, mark the story done: `story move <id> done`.
 - Use `story handoff --since 2h` to summarize work at session end.
 
 ## Commands
 
 - `story list` — list open stories
 - `story new "<title>"` — create a new story
-- `story <id>` — show story details
-- `story <id> "comment"` — add a comment
-- `story <id> is <state>` — change story state
-- `story <id> priority <level>` — set priority (critical, high, medium, low, none)
+- `story show <id>` — show story details
+- `story comment <id> "text"` — add a comment
+- `story move <id> <state>` — change story state
+- `story prioritize <id> <level>` — set priority (critical, high, medium, low, none)
+- `story assign <id> <member>` — assign a story
+- `story label <id> <label>` — add a label
+- `story block <id> "reason"` — mark story as blocked
+- `story unblock <id>` — clear blocked status
+- `story relate <a> <rel> <b>` — add a relationship
+- `story set <id> --field value` — update multiple fields at once
 - `story search "<query>"` — search stories
 - `story summary` — project overview
 - `story context` — full project context for LLM consumption

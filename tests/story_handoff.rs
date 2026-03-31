@@ -35,7 +35,7 @@ fn handoff_captures_closed_stories() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "is", "done"])
+        .args(["move", "SH-1", "done"])
         .assert()
         .success();
 

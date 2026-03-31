@@ -21,7 +21,7 @@ fn context_generates_markdown() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "high"])
+        .args(["prioritize", "SH-1", "high"])
         .assert()
         .success();
 
@@ -44,7 +44,7 @@ fn context_shows_blocked_stories() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "awaits", "external API"])
+        .args(["block", "SH-1", "external API"])
         .assert()
         .success();
 

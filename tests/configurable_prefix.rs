@@ -40,7 +40,7 @@ fn custom_prefix_stories_are_showable() {
         .success();
 
     story(dir.path())
-        .arg("WEB-1")
+        .args(["show", "WEB-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("WEB-1 Build homepage"));
@@ -63,12 +63,12 @@ fn custom_prefix_stories_support_relationships() {
         .success();
 
     story(dir.path())
-        .args(["FE-1", "parent-of", "FE-2"])
+        .args(["relate", "FE-1", "parent-of", "FE-2"])
         .assert()
         .success();
 
     story(dir.path())
-        .arg("FE-1")
+        .args(["show", "FE-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("parent-of FE-2"));

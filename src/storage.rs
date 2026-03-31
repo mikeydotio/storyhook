@@ -195,9 +195,9 @@ This project uses **storyhook** (`story` CLI) for work tracking.
 
 1. Run `story context` at the start of every session to understand project state.
 2. Run `story next` to find the highest-priority ready task.
-3. Update story status as you work: `story {prefix}-<n> is in-progress`
-4. Add progress notes: `story {prefix}-<n> "what changed and why"`
-5. Mark complete: `story {prefix}-<n> is {done_state} "summary of what was delivered"`
+3. Update story status as you work: `story move {prefix}-<n> in-progress`
+4. Add progress notes: `story comment {prefix}-<n> "what changed and why"`
+5. Mark complete: `story move {prefix}-<n> {done_state} "summary of what was delivered"`
 6. Run `story handoff --since 2h` at end of session.
 
 ## Planning mode
@@ -213,26 +213,26 @@ story new "Phase 3: Add authentication middleware"
 Define relationships between stories to express dependencies and structure:
 
 ```
-story {prefix}-1 parent-of {prefix}-2
-story {prefix}-2 blocks {prefix}-3
-story {prefix}-5 relates-to {prefix}-2
-story {prefix}-6 obviates {prefix}-7
+story relate {prefix}-1 parent-of {prefix}-2
+story relate {prefix}-2 blocks {prefix}-3
+story relate {prefix}-5 relates-to {prefix}-2
+story relate {prefix}-6 obviates {prefix}-7
 ```
 
 Set priority on each story so `story next` surfaces the right work:
 
 ```
-story {prefix}-1 priority critical
-story {prefix}-4 priority high
-story {prefix}-6 priority medium
+story prioritize {prefix}-1 critical
+story prioritize {prefix}-4 high
+story prioritize {prefix}-6 medium
 ```
 
 ## During execution
 
-- Before starting a story: `story {prefix}-<n> is in-progress`
-- When blocked: `story {prefix}-<n> awaits "reason"`
-- When unblocked: `story {prefix}-<n> awaits --clear`
-- When done: `story {prefix}-<n> is {done_state} "what was delivered"`
+- Before starting a story: `story move {prefix}-<n> in-progress`
+- When blocked: `story block {prefix}-<n> "reason"`
+- When unblocked: `story unblock {prefix}-<n>`
+- When done: `story move {prefix}-<n> {done_state} "what was delivered"`
 - To check what's ready: `story next --count 5`
 - To see blocked work: `story list --blocked`
 - To see the dependency graph: `story graph`
@@ -244,10 +244,15 @@ story {prefix}-6 priority medium
 | Project overview | `story context` |
 | Next ready task | `story next` |
 | List open stories | `story list` |
-| Show a story | `story {prefix}-<n>` |
+| Show a story | `story show {prefix}-<n>` |
 | Create a story | `story new "<title>"` |
-| Add a comment | `story {prefix}-<n> "comment text"` |
-| Set priority | `story {prefix}-<n> priority high` |
+| Add a comment | `story comment {prefix}-<n> "comment text"` |
+| Move to state | `story move {prefix}-<n> <state>` |
+| Set priority | `story prioritize {prefix}-<n> high` |
+| Assign a story | `story assign {prefix}-<n> <member>` |
+| Add a label | `story label {prefix}-<n> <label>` |
+| Set multiple fields | `story set {prefix}-<n> --priority high --state in-progress` |
+| Add relationship | `story relate {prefix}-1 blocks {prefix}-2` |
 | Search | `story search "<query>"` |
 | Summary stats | `story summary` |
 | Dependency graph | `story graph` |

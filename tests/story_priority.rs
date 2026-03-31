@@ -18,13 +18,13 @@ fn set_and_show_priority() {
         .success();
 
     story(dir.path())
-        .args(["SH-1", "priority", "high"])
+        .args(["prioritize", "SH-1", "high"])
         .assert()
         .success()
         .stdout(predicate::str::contains("priority: high"));
 
     story(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("priority: high"));
@@ -40,7 +40,7 @@ fn priority_defaults_to_none() {
         .success();
 
     story(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("priority: none"));
@@ -56,11 +56,11 @@ fn override_priority() {
         .success();
 
     story(dir.path())
-        .args(["SH-1", "priority", "critical"])
+        .args(["prioritize", "SH-1", "critical"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "low"])
+        .args(["prioritize", "SH-1", "low"])
         .assert()
         .success()
         .stdout(predicate::str::contains("priority: low"));
@@ -76,7 +76,7 @@ fn invalid_priority_fails() {
         .success();
 
     story(dir.path())
-        .args(["SH-1", "priority", "urgent"])
+        .args(["prioritize", "SH-1", "urgent"])
         .assert()
         .failure()
         .code(2);
@@ -95,11 +95,11 @@ fn list_filters_by_priority() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "low"])
+        .args(["prioritize", "SH-1", "low"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "priority", "high"])
+        .args(["prioritize", "SH-2", "high"])
         .assert()
         .success();
 
@@ -121,12 +121,12 @@ fn priority_in_json_output() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "critical"])
+        .args(["prioritize", "SH-1", "critical"])
         .assert()
         .success();
 
     story(dir.path())
-        .args(["--json", "SH-1"])
+        .args(["--json", "show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"priority\": \"critical\""));
@@ -141,7 +141,7 @@ fn list_shows_priority_in_line() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "high"])
+        .args(["prioritize", "SH-1", "high"])
         .assert()
         .success();
 

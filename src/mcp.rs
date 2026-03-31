@@ -179,7 +179,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_update_story",
-                "description": "Update a story's state, priority, labels, assignee, or awaiting status. Processes one update field per call in priority order (state > priority > labels > assignee > awaiting). Transitioning to a CLOSED state automatically archives the story. Default states: todo, in-progress, done. Use storyhook_list_stories to see all stories or storyhook_get_graph for dependency analysis.",
+                "description": "Update a story's state, priority, labels, assignee, or awaiting status. Equivalent to CLI `story set <id> --field value`. For batch updates across multiple stories, use storyhook_bulk_update. Processes one update field per call in priority order (state > priority > labels > assignee > awaiting). Transitioning to a CLOSED state automatically archives the story. Default states: todo, in-progress, done.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

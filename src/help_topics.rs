@@ -53,9 +53,9 @@ Examples:
   story new "Refactor database connection pooling" --json
 
 Related:
-  story decompose  — Create multiple stories from a spec file
-  story <id> priority  — Set priority after creation
-  story <id> label     — Add labels after creation
+  story decompose        — Create multiple stories from a spec file
+  story prioritize <id>  — Set priority after creation
+  story label <id>       — Add labels after creation
 "#,
         );
 
@@ -205,8 +205,8 @@ Examples:
   story search "database" --json
 
 Related:
-  story list  — Filter by state, priority, label, etc.
-  story <id>  — Show a specific story by ID
+  story list      — Filter by state, priority, label, etc.
+  story show <id> — Show a specific story by ID
 "#,
         );
 
@@ -559,7 +559,7 @@ Pass --json as a global option (before or after the subcommand) to get
 machine-readable JSON instead of human-readable text:
 
   story list --json
-  story --json SH-1
+  story show SH-1 --json
   story summary --json
 
 The flag applies to every command. When --json is active, all output
@@ -583,18 +583,19 @@ present only when non-empty.
 == Per-Command Response Shapes ==
 
 Commands returning a single story ("story" field):
-  story new <title>           -> "story": StoryView
-  story <id>                  -> "story": StoryView
-  story <id> "<comment>"      -> "story": StoryView
-  story <id> assign <member>  -> "story": StoryView
-  story <id> is <state>       -> "story": StoryView
-  story <id> awaits "<reason>" -> "story": StoryView
-  story <id> awaits --clear   -> "story": StoryView
-  story <id> priority <level> -> "story": StoryView
-  story <id> label <csv>      -> "story": StoryView
-  story <id> reopen           -> "story": StoryView
-  story <a> <rel> <b>         -> "story": StoryView (of story a)
-  story next                  -> "story": StoryView (single result)
+  story new <title>                -> "story": StoryView
+  story show <id>                  -> "story": StoryView
+  story comment <id> "<text>"      -> "story": StoryView
+  story assign <id> <member>       -> "story": StoryView
+  story move <id> <state>          -> "story": StoryView
+  story block <id> "<reason>"      -> "story": StoryView
+  story unblock <id>               -> "story": StoryView
+  story prioritize <id> <level>    -> "story": StoryView
+  story label <id> <csv>           -> "story": StoryView
+  story reopen <id>                -> "story": StoryView
+  story relate <a> <rel> <b>       -> "story": StoryView (of story a)
+  story set <id> --field value     -> "story": StoryView
+  story next                       -> "story": StoryView (single result)
 
   StoryView object:
     {
@@ -728,7 +729,7 @@ access the structured data.
 
 Show a story:
 
-  $ story SH-1 --json
+  $ story show SH-1 --json
   {
     "result": "ok",
     "story": {
@@ -777,12 +778,331 @@ List stories:
 
 Error:
 
-  $ story SH-999 --json
+  $ story show SH-999 --json
   {
     "result": "error",
     "error": "story `SH-999` not found",
     "exit_code": 3
   }
+"#,
+        );
+
+        m.insert(
+            "show",
+            r#"story show <id>
+
+Show full details for a single story by its ID, including state,
+priority, labels, comments, relationships, and timestamps.
+
+When to use:
+  When you need the complete context for a specific story. For a
+  filtered listing, use 'story list' instead.
+
+Examples:
+  story show SH-1              # Full story details
+  story show SH-1 --json       # Structured JSON output
+
+Related:
+  story list      — Browse stories with filters
+  story search    — Find stories by content
+"#,
+        );
+
+        m.insert(
+            "move",
+            r#"story move <id> <state> ["<comment>"]
+
+Transition a story to a new state. Transitioning to a CLOSED state
+automatically archives the story. Optionally add a comment in the
+same operation.
+
+When to use:
+  To update the status of a story as you work on it, or to close
+  it when complete.
+
+Examples:
+  story move SH-1 in-progress                 # Start working on it
+  story move SH-1 done                         # Mark as done
+  story move SH-1 done "shipped v2.1"          # Done with comment
+
+Related:
+  story reopen <id>  — Reopen a closed story
+  story set <id>     — Update multiple fields at once
+  story next         — Pick the next ready story
+"#,
+        );
+
+        // Redirect old "is" name to "move"
+        m.insert("is", m["move"]);
+
+        m.insert(
+            "block",
+            r#"story block <id> "<reason>"
+
+Mark a story as blocked with a reason. Blocked stories are excluded
+from 'story next' results and highlighted in listings.
+
+When to use:
+  When external dependencies, decisions, or other factors prevent
+  progress on a story.
+
+Examples:
+  story block SH-3 "waiting for API access from vendor"
+  story block SH-7 "needs design review"
+
+Related:
+  story unblock <id>    — Clear the blocked status
+  story list --blocked  — List all blocked stories
+  story list --ready    — List all unblocked stories
+"#,
+        );
+
+        // Redirect old "awaits" name to "block"
+        m.insert("awaits", m["block"]);
+
+        m.insert(
+            "unblock",
+            r#"story unblock <id>
+
+Clear the blocked/awaiting status on a story, making it eligible
+for 'story next' again.
+
+When to use:
+  When the blocking condition has been resolved and the story can
+  proceed.
+
+Examples:
+  story unblock SH-3
+  story unblock SH-7
+
+Related:
+  story block <id>     — Mark a story as blocked
+  story list --ready   — List stories ready to work on
+  story next           — Pick the next ready story
+"#,
+        );
+
+        m.insert(
+            "set",
+            r#"story set <id> [--title "text"] [--state <slug>] [--priority <level>]
+              [--assignee <member>] [--labels <csv>] [--blocked "<reason>"]
+              [--unblocked] [--json '{"key": "value"}']
+
+Update multiple fields on a story in a single command. Accepts any
+combination of field flags. Use --json for arbitrary key-value data.
+
+When to use:
+  When you need to update more than one field at a time, or when
+  using the --json flag for structured metadata. For single-field
+  updates, the dedicated verb commands (move, prioritize, assign,
+  label, block, unblock) are more concise.
+
+Examples:
+  story set SH-1 --priority high --state in-progress
+  story set SH-1 --assignee alice --labels "backend,urgent"
+  story set SH-1 --json '{"estimate": "3d", "epic": "auth"}'
+  story set SH-1 --blocked "waiting for deploy"
+  story set SH-1 --unblocked
+
+Related:
+  story move <id>        — Change state only
+  story prioritize <id>  — Set priority only
+  story assign <id>      — Set assignee only
+  story label <id>       — Add labels only
+  story block <id>       — Set blocked status only
+"#,
+        );
+
+        m.insert(
+            "comment",
+            r#"story comment <id> "<text>"
+
+Add a timestamped comment to a story. Comments are append-only and
+form part of the audit trail.
+
+When to use:
+  To record progress notes, decisions, blockers, or context that
+  should be preserved in the story's event log.
+
+Examples:
+  story comment SH-1 "Started implementing the auth middleware"
+  story comment SH-3 "Decided to use JWT instead of sessions"
+
+Related:
+  story show <id>  — View a story including its comments
+  story move <id>  — Move state with an optional comment
+"#,
+        );
+
+        m.insert(
+            "assign",
+            r#"story assign <id> <member>
+
+Assign a story to a team member by their member ID or GitHub handle.
+
+When to use:
+  To indicate who is responsible for a story.
+
+Examples:
+  story assign SH-1 alice
+  story assign SH-3 mikey
+
+Related:
+  story list --assignee <id>  — Filter stories by assignee
+  story member add            — Add a team member
+"#,
+        );
+
+        m.insert(
+            "prioritize",
+            r#"story prioritize <id> <level>
+
+Set the priority of a story. Priority levels: critical, high,
+medium, low, none.
+
+When to use:
+  After creating a story, or when reprioritizing work. Priority
+  affects the ordering of 'story next' results.
+
+Examples:
+  story prioritize SH-1 critical
+  story prioritize SH-5 high
+  story prioritize SH-8 low
+
+Related:
+  story next                   — Get highest-priority ready story
+  story list --priority high   — Filter by priority
+"#,
+        );
+
+        // Redirect old "priority" name
+        m.insert("priority", m["prioritize"]);
+
+        m.insert(
+            "label",
+            r#"story label <id> <labels>
+
+Add one or more comma-separated labels to a story.
+
+When to use:
+  To categorize stories for filtering and organization.
+
+Examples:
+  story label SH-1 backend
+  story label SH-3 bug,urgent
+
+Related:
+  story unlabel <id>       — Remove labels
+  story list --label <csv> — Filter stories by label
+"#,
+        );
+
+        m.insert(
+            "unlabel",
+            r#"story unlabel <id> <labels>
+
+Remove one or more comma-separated labels from a story.
+
+When to use:
+  To remove labels that no longer apply to a story.
+
+Examples:
+  story unlabel SH-1 wontfix
+  story unlabel SH-3 bug,urgent
+
+Related:
+  story label <id>         — Add labels
+  story list --label <csv> — Filter stories by label
+"#,
+        );
+
+        m.insert(
+            "relate",
+            r#"story relate <a> <relation> <b>
+
+Add a relationship between two stories. Relationship types:
+  blocks / blocked-by    — Task dependencies (A blocks B)
+  parent-of / child-of   — Hierarchy
+  relates-to             — General link
+  duplicate-of           — Mark as duplicate
+  obviates / obviated-by — One story makes another unnecessary
+
+When to use:
+  To define dependencies, hierarchy, or other links between stories.
+  Use blocks/blocked-by to control execution order. 'story next'
+  respects blocking relationships.
+
+Examples:
+  story relate SH-1 blocks SH-2
+  story relate SH-3 parent-of SH-4
+  story relate SH-5 relates-to SH-6
+
+Related:
+  story unrelate <a> <rel> <b>  — Remove a relationship
+  story graph                   — Visualize the dependency graph
+  story graph --blocked-by <id> — Trace why a story is blocked
+"#,
+        );
+
+        // "link" is an alias for "relate"
+        m.insert("link", m["relate"]);
+
+        m.insert(
+            "unrelate",
+            r#"story unrelate <a> <relation> <b>
+
+Remove a relationship between two stories.
+
+When to use:
+  When a previously defined relationship no longer applies.
+
+Examples:
+  story unrelate SH-1 blocks SH-2
+  story unrelate SH-3 parent-of SH-4
+
+Related:
+  story relate <a> <rel> <b>  — Add a relationship
+  story graph                 — Visualize the dependency graph
+"#,
+        );
+
+        m.insert(
+            "reopen",
+            r#"story reopen <id>
+
+Reopen a closed/archived story, returning it to an open state.
+
+When to use:
+  When a completed story needs more work, or was closed by mistake.
+
+Examples:
+  story reopen SH-5
+  story reopen SH-12
+
+Related:
+  story move <id> <state>  — Transition to a specific state
+  story show <id>          — View story details
+"#,
+        );
+
+        m.insert(
+            "delete",
+            r#"story delete <id> "<reason>"
+
+Soft-delete a story with a required reason. The story is archived
+with a deletion flag — never truly lost. Deleted stories won't appear
+in list results but can be found via search.
+
+When to use:
+  For duplicate, erroneous, or abandoned stories.
+
+Examples:
+  story delete SH-3 "duplicate of SH-1"
+  story delete SH-7 "created in error"
+
+Related:
+  story reopen <id>  — Reopen a closed story
+  story search       — Find deleted stories
 "#,
         );
 

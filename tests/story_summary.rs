@@ -16,7 +16,7 @@ fn summary_shows_counts() {
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path()).args(["new", "Task C"]).assert().success();
     story(dir.path())
-        .args(["SH-3", "is", "done"])
+        .args(["move", "SH-3", "done"])
         .assert()
         .success();
 
@@ -35,11 +35,11 @@ fn summary_shows_priority_breakdown() {
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path())
-        .args(["SH-1", "priority", "high"])
+        .args(["prioritize", "SH-1", "high"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "priority", "critical"])
+        .args(["prioritize", "SH-2", "critical"])
         .assert()
         .success();
 
@@ -64,7 +64,7 @@ fn summary_shows_ready_stories() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "awaits", "waiting on API"])
+        .args(["block", "SH-2", "waiting on API"])
         .assert()
         .success();
 

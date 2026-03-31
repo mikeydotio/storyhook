@@ -54,7 +54,7 @@ fn sync_git_basic() {
 
     // Verify the story now has a [git] comment
     story(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("[git]"))
@@ -156,7 +156,7 @@ fn sync_git_closed_story_ignored() {
 
     // Close the story (archives it)
     story(dir.path())
-        .args(["SH-1", "is", "done"])
+        .args(["move", "SH-1", "done"])
         .assert()
         .success();
 
@@ -191,7 +191,7 @@ fn sync_git_custom_prefix() {
         .stdout(predicate::str::contains("added 1 comments to 1 stories"));
 
     story(dir.path())
-        .arg("API-1")
+        .args(["show", "API-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("[git]"))
@@ -285,7 +285,7 @@ fn sync_git_auto_transition_with_role() {
 
     // Verify the story is now in-progress
     story(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("state: in-progress"));
@@ -328,7 +328,7 @@ fn sync_git_no_transition_without_active_state() {
 
     // Story stays in todo
     story(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("state: todo"));
@@ -349,7 +349,7 @@ fn sync_git_no_re_transition() {
 
     // Manually set the story to in-progress
     story(dir.path())
-        .args(["SH-1", "is", "in-progress"])
+        .args(["move", "SH-1", "in-progress"])
         .assert()
         .success();
 
@@ -410,7 +410,7 @@ fn sync_git_heuristic_two_open_states() {
 
     // Verify the story is now in-progress
     story(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("state: in-progress"));

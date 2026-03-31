@@ -32,7 +32,7 @@ fn story_new_assigns_monotonic_ids_and_show_works() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(contains("First"));
@@ -65,21 +65,21 @@ fn comment_and_assign_append_events() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "assign", "mikey"])
+        .args(["assign", "SH-1", "mikey"])
         .assert()
         .success();
 
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "First pass done"])
+        .args(["comment", "SH-1", "First pass done"])
         .assert()
         .success();
 
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(contains("assignee: mikey"))
@@ -106,7 +106,7 @@ fn awaiting_can_be_set_and_cleared() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "awaits", "blocked on API"])
+        .args(["block", "SH-1", "blocked on API"])
         .assert()
         .success()
         .stdout(contains("awaiting: blocked on API"));
@@ -114,7 +114,7 @@ fn awaiting_can_be_set_and_cleared() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "--json"])
+        .args(["--json", "show", "SH-1"])
         .assert()
         .success()
         .stdout(contains("\"awaiting\": \"blocked on API\""));
@@ -122,14 +122,14 @@ fn awaiting_can_be_set_and_cleared() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "awaits", "--clear"])
+        .args(["unblock", "SH-1"])
         .assert()
         .success();
 
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicates::str::contains("awaiting:").not());

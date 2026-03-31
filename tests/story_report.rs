@@ -15,7 +15,7 @@ fn report_text_matches_summary() {
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path())
-        .args(["SH-2", "priority", "high"])
+        .args(["prioritize", "SH-2", "high"])
         .assert()
         .success();
 
@@ -105,7 +105,7 @@ fn report_html_xss_comment() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "<img onerror=alert(1)>"])
+        .args(["comment", "SH-1", "<img onerror=alert(1)>"])
         .assert()
         .success();
 
@@ -132,7 +132,7 @@ fn report_html_xss_label() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "label", "\"><script>"])
+        .args(["label", "SH-1", "\"><script>"])
         .assert()
         .success();
 
@@ -183,11 +183,11 @@ fn report_html_shows_priority() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "priority", "critical"])
+        .args(["prioritize", "SH-1", "critical"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "priority", "low"])
+        .args(["prioritize", "SH-2", "low"])
         .assert()
         .success();
 

@@ -22,7 +22,7 @@ fn closed_state_moves_story_to_archive_db() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "is", "done", "completed"])
+        .args(["move", "SH-1", "done", "completed"])
         .assert()
         .success()
         .stdout(contains("closed_at:"));
@@ -37,7 +37,7 @@ fn closed_state_moves_story_to_archive_db() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("SH-1")
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(contains("Finish me"))
@@ -64,14 +64,14 @@ fn closing_story_clears_awaiting_in_archive_snapshot() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "awaits", "waiting on review"])
+        .args(["block", "SH-1", "waiting on review"])
         .assert()
         .success();
 
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "is", "done"])
+        .args(["move", "SH-1", "done"])
         .assert()
         .success()
         .stdout(contains("closed_at:"));
@@ -79,7 +79,7 @@ fn closing_story_clears_awaiting_in_archive_snapshot() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "--json"])
+        .args(["--json", "show", "SH-1"])
         .assert()
         .success()
         .stdout(contains("\"awaiting\": null"));

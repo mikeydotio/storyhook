@@ -31,7 +31,7 @@ fn import_creates_stories_from_json() {
 
     // Verify they exist
     story(dir.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Build API"));
@@ -53,7 +53,7 @@ fn import_with_priority_and_labels() {
         .success();
 
     story(dir.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("priority: critical"))
@@ -79,21 +79,21 @@ fn import_with_cross_references() {
 
     // Verify parent-child relationship
     story(dir.path())
-        .args(["SH-2"])
+        .args(["show", "SH-2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("child-of SH-1"));
 
     // Verify blocked-by relationship
     story(dir.path())
-        .args(["SH-3"])
+        .args(["show", "SH-3"])
         .assert()
         .success()
         .stdout(predicate::str::contains("blocked-by SH-2"));
 
     // Verify inverse on parent
     story(dir.path())
-        .args(["SH-1"])
+        .args(["show", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("parent-of SH-2"));

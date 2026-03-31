@@ -50,18 +50,24 @@ Usage:
   story scaffold agents-md|claude-md|cursor-rules
   story help <command>
   story plugin install|uninstall <target>
-  story <id>
-  story <id> "<comment>"
-  story <id> assign <member-id|handle>
-  story <id> is <state-slug> ["<comment>"]
-  story <id> awaits "<reason>"
-  story <id> awaits --clear
-  story <id> priority <critical|high|medium|low|none>
-  story <id> label <labels-csv>
-  story <id> label --remove <labels-csv>
-  story <id> reopen
-  story <id> delete "<reason>"
-  story <a> <relationship> <b> [--remove]
+  story show <id>
+  story comment <id> "<text>"
+  story assign <id> <member-id|handle>
+  story move <id> <state-slug> ["<comment>"]
+  story block <id> "<reason>"
+  story unblock <id>
+  story prioritize <id> <critical|high|medium|low|none>
+  story label <id> <labels-csv>
+  story unlabel <id> <labels-csv>
+  story reopen <id>
+  story delete <id> "<reason>"
+  story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
+                  [--assignee <member>] [--labels "<csv>"] [--blocked "<reason>"]
+                  [--unblocked] [--json "<json>"]
+  story relate <a> <relationship-type> <b>
+  story unrelate <a> <relationship-type> <b>
+  story link <a> <relationship-type> <b>
+  story unlink <a> <relationship-type> <b>
 
 Global options:
   --json      Emit structured JSON
@@ -194,6 +200,17 @@ pub enum Invocation {
     Graph {
         mode: GraphMode,
     },
+    SetFields {
+        id: String,
+        title: Option<String>,
+        state: Option<String>,
+        priority: Option<String>,
+        assignee: Option<String>,
+        labels: Option<String>,
+        blocked: Option<String>,
+        unblocked: bool,
+        json: Option<String>,
+    },
     Relate {
         a: String,
         relation: String,
@@ -282,7 +299,24 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "commit-sync" | "sync-git" => parse_commit_sync(args),
         "github-sync" => parse_github_sync(args),
         "plugin" => parse_plugin(args),
-        _ => parse_story(args),
+        "show" => parse_show(args),
+        "comment" => parse_comment(args),
+        "assign" => parse_assign(args),
+        "move" => parse_move(args),
+        "block" => parse_block(args),
+        "unblock" => parse_unblock(args),
+        "prioritize" => parse_prioritize(args),
+        "label" => parse_label(args),
+        "unlabel" => parse_unlabel(args),
+        "reopen" => parse_reopen_verb(args),
+        "delete" => parse_delete_verb(args),
+        "set" => parse_set(args),
+        "relate" | "link" => parse_relate(args),
+        "unrelate" | "unlink" => parse_unrelate(args),
+        _ => Err(AppError::Usage(format!(
+            "unknown command `{}`. Run `story --help` for usage.",
+            args[0]
+        ))),
     }
 }
 
@@ -924,134 +958,213 @@ fn looks_like_story_id(s: &str) -> bool {
     }
 }
 
-fn parse_story(args: &[String]) -> Result<Invocation, AppError> {
-    if !looks_like_story_id(&args[0]) {
-        return Err(AppError::Usage(format!(
-            "unknown command `{}`. Run `story --help` for usage.",
-            args[0]
-        )));
+fn parse_show(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage("usage: story show <id>".to_string()));
     }
+    Ok(Invocation::Show { id: args[1].clone() })
+}
 
-    if args.len() == 1 {
-        return Ok(Invocation::Show {
-            id: args[0].clone(),
-        });
+fn parse_comment(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() < 3 {
+        return Err(AppError::Usage("usage: story comment <id> \"<text>\"".to_string()));
     }
-
-    if args.len() >= 3 && args[1] == "assign" {
-        return Ok(Invocation::Assign {
-            id: args[0].clone(),
-            member: join_tokens(&args[2..]),
-        });
-    }
-
-    if args.len() >= 3 && args[1] == "is" {
-        return Ok(Invocation::SetState {
-            id: args[0].clone(),
-            state: args[2].clone(),
-            comment: if args.len() > 3 {
-                Some(join_tokens(&args[3..]))
-            } else {
-                None
-            },
-        });
-    }
-
-    if args.len() >= 2 && args[1] == "awaits" {
-        if args.len() == 3 && args[2] == "--clear" {
-            return Ok(Invocation::ClearAwaiting {
-                id: args[0].clone(),
-            });
-        }
-
-        if args.len() >= 3 {
-            let awaiting = join_tokens(&args[2..]);
-            if awaiting.is_empty() {
-                return Err(AppError::Usage(
-                    "usage: story <id> awaits \"<reason>\" | story <id> awaits --clear".to_string(),
-                ));
-            }
-
-            return Ok(Invocation::SetAwaiting {
-                id: args[0].clone(),
-                awaiting,
-            });
-        }
-
-        return Err(AppError::Usage(
-            "usage: story <id> awaits \"<reason>\" | story <id> awaits --clear".to_string(),
-        ));
-    }
-
-    if args.len() == 3 && args[1] == "priority" {
-        return Ok(Invocation::SetPriority {
-            id: args[0].clone(),
-            priority: args[2].clone(),
-        });
-    }
-
-    if args.len() >= 3 && args[1] == "label" {
-        if args[2] == "--remove" {
-            if args.len() < 4 {
-                return Err(AppError::Usage(
-                    "usage: story <id> label --remove <labels-csv>".to_string(),
-                ));
-            }
-            let remove: Vec<String> = args[3]
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            return Ok(Invocation::SetLabels {
-                id: args[0].clone(),
-                add: Vec::new(),
-                remove,
-            });
-        }
-        let add: Vec<String> = args[2]
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        return Ok(Invocation::SetLabels {
-            id: args[0].clone(),
-            add,
-            remove: Vec::new(),
-        });
-    }
-
-    if args.len() == 2 && args[1] == "reopen" {
-        return Ok(Invocation::Reopen {
-            id: args[0].clone(),
-        });
-    }
-
-    if args.len() >= 3 && args[1] == "delete" {
-        let reason = join_tokens(&args[2..]);
-        if reason.is_empty() {
-            return Err(AppError::Usage(
-                "usage: story <id> delete \"<reason>\"".to_string(),
-            ));
-        }
-        return Ok(Invocation::Delete {
-            id: args[0].clone(),
-            reason,
-        });
-    }
-
-    if args.len() >= 3 && crate::domain::is_relation_input(&args[1]) {
-        let remove = args[3..].iter().any(|arg| arg == "--remove");
-        return Ok(Invocation::Relate {
-            a: args[0].clone(),
-            relation: args[1].clone(),
-            b: args[2].clone(),
-            remove,
-        });
-    }
-
     Ok(Invocation::Comment {
-        id: args[0].clone(),
-        text: join_tokens(&args[1..]),
+        id: args[1].clone(),
+        text: join_tokens(&args[2..]),
+    })
+}
+
+fn parse_assign(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() < 3 {
+        return Err(AppError::Usage("usage: story assign <id> <member>".to_string()));
+    }
+    Ok(Invocation::Assign {
+        id: args[1].clone(),
+        member: join_tokens(&args[2..]),
+    })
+}
+
+fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() < 3 {
+        return Err(AppError::Usage("usage: story move <id> <state> [\"<comment>\"]".to_string()));
+    }
+    Ok(Invocation::SetState {
+        id: args[1].clone(),
+        state: args[2].clone(),
+        comment: if args.len() > 3 { Some(join_tokens(&args[3..])) } else { None },
+    })
+}
+
+fn parse_block(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() < 3 {
+        return Err(AppError::Usage("usage: story block <id> \"<reason>\"".to_string()));
+    }
+    Ok(Invocation::SetAwaiting {
+        id: args[1].clone(),
+        awaiting: join_tokens(&args[2..]),
+    })
+}
+
+fn parse_unblock(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage("usage: story unblock <id>".to_string()));
+    }
+    Ok(Invocation::ClearAwaiting { id: args[1].clone() })
+}
+
+fn parse_prioritize(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 3 {
+        return Err(AppError::Usage("usage: story prioritize <id> <level>".to_string()));
+    }
+    Ok(Invocation::SetPriority {
+        id: args[1].clone(),
+        priority: args[2].clone(),
+    })
+}
+
+fn parse_label(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 3 {
+        return Err(AppError::Usage("usage: story label <id> <labels-csv>".to_string()));
+    }
+    let add: Vec<String> = args[2].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    Ok(Invocation::SetLabels {
+        id: args[1].clone(),
+        add,
+        remove: Vec::new(),
+    })
+}
+
+fn parse_unlabel(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 3 {
+        return Err(AppError::Usage("usage: story unlabel <id> <labels-csv>".to_string()));
+    }
+    let remove: Vec<String> = args[2].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    Ok(Invocation::SetLabels {
+        id: args[1].clone(),
+        add: Vec::new(),
+        remove,
+    })
+}
+
+fn parse_reopen_verb(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage("usage: story reopen <id>".to_string()));
+    }
+    Ok(Invocation::Reopen { id: args[1].clone() })
+}
+
+fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() < 3 {
+        return Err(AppError::Usage("usage: story delete <id> \"<reason>\"".to_string()));
+    }
+    let reason = join_tokens(&args[2..]);
+    if reason.is_empty() {
+        return Err(AppError::Usage("usage: story delete <id> \"<reason>\"".to_string()));
+    }
+    Ok(Invocation::Delete { id: args[1].clone(), reason })
+}
+
+fn parse_relate(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 4 {
+        return Err(AppError::Usage("usage: story relate <a> <relationship-type> <b>".to_string()));
+    }
+    Ok(Invocation::Relate {
+        a: args[1].clone(),
+        relation: args[2].clone(),
+        b: args[3].clone(),
+        remove: false,
+    })
+}
+
+fn parse_unrelate(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 4 {
+        return Err(AppError::Usage("usage: story unrelate <a> <relationship-type> <b>".to_string()));
+    }
+    Ok(Invocation::Relate {
+        a: args[1].clone(),
+        relation: args[2].clone(),
+        b: args[3].clone(),
+        remove: true,
+    })
+}
+
+fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() < 3 {
+        return Err(AppError::Usage("usage: story set <id> [--field value ...]".to_string()));
+    }
+    let id = args[1].clone();
+    let mut title = None;
+    let mut state = None;
+    let mut priority = None;
+    let mut assignee = None;
+    let mut labels = None;
+    let mut blocked = None;
+    let mut unblocked = false;
+    let mut json = None;
+    let mut index = 2;
+    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--assignee <member>] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"]";
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--title" => {
+                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                title = Some(value.clone());
+                index += 2;
+            }
+            "--state" => {
+                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                state = Some(value.clone());
+                index += 2;
+            }
+            "--priority" => {
+                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                priority = Some(value.clone());
+                index += 2;
+            }
+            "--assignee" => {
+                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                assignee = Some(value.clone());
+                index += 2;
+            }
+            "--labels" => {
+                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                labels = Some(value.clone());
+                index += 2;
+            }
+            "--blocked" => {
+                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                blocked = Some(value.clone());
+                index += 2;
+            }
+            "--unblocked" => {
+                unblocked = true;
+                index += 1;
+            }
+            "--json" => {
+                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                json = Some(value.clone());
+                index += 2;
+            }
+            _ => return Err(AppError::Usage(usage.to_string())),
+        }
+    }
+
+    if title.is_none() && state.is_none() && priority.is_none() && assignee.is_none()
+        && labels.is_none() && blocked.is_none() && !unblocked && json.is_none() {
+        return Err(AppError::Usage("no fields specified. Usage: story set <id> --<field> <value> ...".to_string()));
+    }
+
+    Ok(Invocation::SetFields {
+        id,
+        title,
+        state,
+        priority,
+        assignee,
+        labels,
+        blocked,
+        unblocked,
+        json,
     })
 }
 
@@ -1064,14 +1177,25 @@ mod tests {
     use super::{Invocation, parse_invocation};
 
     #[test]
-    fn routes_state_change_form() {
+    fn routes_move_command() {
         let invocation = parse_invocation(&[
+            "move".to_string(),
             "SH-1".to_string(),
-            "is".to_string(),
             "in-progress".to_string(),
-            "note".to_string(),
         ])
         .unwrap();
         assert!(matches!(invocation, Invocation::SetState { .. }));
+    }
+
+    #[test]
+    fn routes_show_command() {
+        let invocation = parse_invocation(&["show".to_string(), "SH-1".to_string()]).unwrap();
+        assert!(matches!(invocation, Invocation::Show { .. }));
+    }
+
+    #[test]
+    fn unknown_command_errors() {
+        let result = parse_invocation(&["SH-1".to_string(), "is".to_string(), "done".to_string()]);
+        assert!(result.is_err());
     }
 }

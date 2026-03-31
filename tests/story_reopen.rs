@@ -17,20 +17,20 @@ fn reopen_archived_story() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "is", "done"])
+        .args(["move", "SH-1", "done"])
         .assert()
         .success();
 
     // Reopen
     story(dir.path())
-        .args(["SH-1", "reopen"])
+        .args(["reopen", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("state: todo"));
 
     // Verify it's modifiable again
     story(dir.path())
-        .args(["SH-1", "Added more context"])
+        .args(["comment", "SH-1", "Added more context"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Added more context"));
@@ -46,7 +46,7 @@ fn reopen_already_open_story_fails() {
         .success();
 
     story(dir.path())
-        .args(["SH-1", "reopen"])
+        .args(["reopen", "SH-1"])
         .assert()
         .failure()
         .stdout(predicate::str::contains("already open"));
@@ -58,7 +58,7 @@ fn reopen_nonexistent_story_fails() {
     story(dir.path()).arg("init").assert().success();
 
     story(dir.path())
-        .args(["SH-999", "reopen"])
+        .args(["reopen", "SH-999"])
         .assert()
         .failure()
         .stdout(predicate::str::contains("not found"));
@@ -73,16 +73,16 @@ fn reopen_preserves_comments() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "Important note"])
+        .args(["comment", "SH-1", "Important note"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "is", "done"])
+        .args(["move", "SH-1", "done"])
         .assert()
         .success();
 
     story(dir.path())
-        .args(["SH-1", "reopen"])
+        .args(["reopen", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Important note"));
@@ -97,12 +97,12 @@ fn reopen_json_output() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "is", "done"])
+        .args(["move", "SH-1", "done"])
         .assert()
         .success();
 
     story(dir.path())
-        .args(["--json", "SH-1", "reopen"])
+        .args(["--json", "reopen", "SH-1"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"result\": \"ok\""))
