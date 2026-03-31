@@ -272,8 +272,8 @@ impl GraphComponent {
             text: "Critical Path".to_string(),
         }];
 
-        // Build a "blocks" or "follows" chain graph, then find longest path
-        // We look for "blocks", "follows", and parent-of/child-of relationships
+        // Build a "blocks"/"blocked-by" chain graph, then find longest path
+        // We look for "blocks", "blocked-by", and parent-of/child-of relationships
         let mut adjacency: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
         for story in stories.values() {
@@ -289,8 +289,8 @@ impl GraphComponent {
                             .or_default()
                             .push(rel.other_id.clone());
                     }
-                    "follows" => {
-                        // story follows rel.other_id => other_id must come before story
+                    "blocked-by" => {
+                        // story blocked-by rel.other_id => other_id must come before story
                         adjacency
                             .entry(rel.other_id.clone())
                             .or_default()
@@ -516,7 +516,7 @@ impl GraphComponent {
             ]),
             GraphLine::Empty => {
                 Line::from(Span::styled(
-                    "  No relationships found. Stories need parent-of, follows, or other relationships to appear here.",
+                    "  No relationships found. Stories need parent-of, blocks, or other relationships to appear here.",
                     theme.story_id,
                 ))
             }
@@ -851,7 +851,7 @@ mod tests {
                 vec![rel("parent-of", "SH-2"), rel("blocks", "SH-3")],
             ),
             snapshot("SH-2", "Story 2", "todo", vec![]),
-            snapshot("SH-3", "Story 3", "todo", vec![rel("follows", "SH-1")]),
+            snapshot("SH-3", "Story 3", "todo", vec![rel("blocked-by", "SH-1")]),
         ];
         let state = make_state(stories);
         let mut graph = GraphComponent::new();
@@ -863,7 +863,7 @@ mod tests {
             .iter()
             .filter(|l| matches!(l, GraphLine::RelationRow { .. }))
             .collect();
-        // SH-1 parent-of SH-2, SH-1 blocks SH-3, SH-3 follows SH-1
+        // SH-1 parent-of SH-2, SH-1 blocks SH-3, SH-3 blocked-by SH-1
         assert_eq!(
             relation_rows.len(),
             3,

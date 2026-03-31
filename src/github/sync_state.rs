@@ -1,0 +1,438 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use serde::{Deserialize, Serialize};
+
+use crate::domain::StorySnapshot;
+use crate::error::AppError;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubSyncConfig {
+    pub github: GithubRepo,
+    pub sync: SyncSettings,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub etags: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mappings: Vec<StoryIssueMapping>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubRepo {
+    pub owner: String,
+    pub repo: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncMode {
+    Off,
+    Manual,
+    Auto,
+}
+
+impl Default for SyncMode {
+    fn default() -> Self {
+        Self::Manual
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncSettings {
+    #[serde(default)]
+    pub mode: SyncMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_full_sync_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoryIssueMapping {
+    pub story_id: String,
+    pub issue_number: u64,
+    pub last_synced_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_local_event_index: Option<usize>,
+}
+
+// ---------------------------------------------------------------------------
+// File-path helpers
+// ---------------------------------------------------------------------------
+
+fn config_path(root: &Path) -> std::path::PathBuf {
+    root.join(".storyhook/github-sync.toml")
+}
+
+fn bases_dir(root: &Path) -> std::path::PathBuf {
+    root.join(".storyhook/github-sync/bases")
+}
+
+fn backups_dir(root: &Path) -> std::path::PathBuf {
+    root.join(".storyhook/github-sync/backups")
+}
+
+// ---------------------------------------------------------------------------
+// Config persistence
+// ---------------------------------------------------------------------------
+
+/// Load github-sync.toml from the .storyhook directory.
+/// Returns `None` if the file does not exist.
+pub fn load_sync_config(root: &Path) -> Result<Option<GithubSyncConfig>, AppError> {
+    let path = config_path(root);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path)?;
+    let config: GithubSyncConfig = toml::from_str(&text)?;
+    Ok(Some(config))
+}
+
+/// Save github-sync.toml to the .storyhook directory.
+pub fn save_sync_config(root: &Path, config: &GithubSyncConfig) -> Result<(), AppError> {
+    let path = config_path(root);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let text = toml::to_string_pretty(config)?;
+    fs::write(&path, text)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Base snapshots
+// ---------------------------------------------------------------------------
+
+/// Load a base snapshot from `.storyhook/github-sync/bases/{story_id}.json`.
+/// Returns `None` if no snapshot exists for this story.
+pub fn load_base_snapshot(
+    root: &Path,
+    story_id: &str,
+) -> Result<Option<StorySnapshot>, AppError> {
+    let path = bases_dir(root).join(format!("{story_id}.json"));
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path)?;
+    let snapshot: StorySnapshot = serde_json::from_str(&text)?;
+    Ok(Some(snapshot))
+}
+
+/// Save a base snapshot to `.storyhook/github-sync/bases/{story_id}.json`.
+pub fn save_base_snapshot(
+    root: &Path,
+    story_id: &str,
+    snapshot: &StorySnapshot,
+) -> Result<(), AppError> {
+    let dir = bases_dir(root);
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{story_id}.json"));
+    let text = serde_json::to_string_pretty(snapshot)?;
+    fs::write(&path, text)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Backups
+// ---------------------------------------------------------------------------
+
+/// Create a backup of the specified story's event log file before sync
+/// modifies it.  Backups go to
+/// `.storyhook/github-sync/backups/{timestamp}/{story_id}.jsonl`.
+pub fn create_backup(root: &Path, story_id: &str) -> Result<(), AppError> {
+    let source = root
+        .join(".storyhook/open/stories")
+        .join(format!("{story_id}.jsonl"));
+    if !source.exists() {
+        return Err(AppError::NotFound(format!(
+            "event log not found for story {story_id}"
+        )));
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let dest_dir = backups_dir(root).join(&timestamp);
+    fs::create_dir_all(&dest_dir)?;
+
+    let dest = dest_dir.join(format!("{story_id}.jsonl"));
+    fs::copy(&source, &dest)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Mapping lookups
+// ---------------------------------------------------------------------------
+
+/// Find the mapping for a given story ID.
+pub fn find_mapping<'a>(
+    config: &'a GithubSyncConfig,
+    story_id: &str,
+) -> Option<&'a StoryIssueMapping> {
+    config.mappings.iter().find(|m| m.story_id == story_id)
+}
+
+/// Find the mapping for a given GitHub issue number.
+pub fn find_mapping_by_issue<'a>(
+    config: &'a GithubSyncConfig,
+    issue_number: u64,
+) -> Option<&'a StoryIssueMapping> {
+    config
+        .mappings
+        .iter()
+        .find(|m| m.issue_number == issue_number)
+}
+
+// ---------------------------------------------------------------------------
+// Git remote detection
+// ---------------------------------------------------------------------------
+
+/// Parse a GitHub remote URL into owner/repo.
+///
+/// Handles:
+/// - `https://github.com/{owner}/{repo}.git`
+/// - `https://github.com/{owner}/{repo}`
+/// - `git@github.com:{owner}/{repo}.git`
+pub fn parse_github_url(url: &str) -> Option<GithubRepo> {
+    let url = url.trim();
+
+    // SSH format: git@github.com:owner/repo.git
+    if let Some(rest) = url.strip_prefix("git@github.com:") {
+        let rest = rest.strip_suffix(".git").unwrap_or(rest);
+        let mut parts = rest.splitn(2, '/');
+        let owner = parts.next()?;
+        let repo = parts.next()?;
+        if owner.is_empty() || repo.is_empty() {
+            return None;
+        }
+        return Some(GithubRepo {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+        });
+    }
+
+    // HTTPS format: https://github.com/owner/repo[.git]
+    if let Some(rest) = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+    {
+        let rest = rest.strip_suffix(".git").unwrap_or(rest);
+        let rest = rest.strip_suffix('/').unwrap_or(rest);
+        let mut parts = rest.splitn(2, '/');
+        let owner = parts.next()?;
+        let repo = parts.next()?;
+        if owner.is_empty() || repo.is_empty() {
+            return None;
+        }
+        return Some(GithubRepo {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+        });
+    }
+
+    None
+}
+
+/// Detect owner/repo from git remote origin URL.
+/// Handles both HTTPS and SSH formats.
+pub fn detect_github_remote(root: &Path) -> Result<Option<GithubRepo>, AppError> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(root)
+        .output();
+
+    let output = match output {
+        Ok(o) => o,
+        Err(_) => return Ok(None),
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_github_url(&url))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toml_roundtrip() {
+        let config = GithubSyncConfig {
+            github: GithubRepo {
+                owner: "acme".into(),
+                repo: "widgets".into(),
+            },
+            sync: SyncSettings {
+                mode: SyncMode::Auto,
+                last_sync_at: Some("2026-03-30T12:00:00Z".into()),
+                last_full_sync_at: None,
+            },
+            etags: BTreeMap::from([("issues".into(), "abc123".into())]),
+            mappings: vec![StoryIssueMapping {
+                story_id: "SH-1".into(),
+                issue_number: 42,
+                last_synced_at: "2026-03-30T12:00:00Z".into(),
+                last_local_event_index: Some(5),
+            }],
+        };
+
+        let text = toml::to_string_pretty(&config).unwrap();
+        let parsed: GithubSyncConfig = toml::from_str(&text).unwrap();
+
+        assert_eq!(parsed.github.owner, "acme");
+        assert_eq!(parsed.github.repo, "widgets");
+        assert_eq!(parsed.sync.mode, SyncMode::Auto);
+        assert_eq!(
+            parsed.sync.last_sync_at.as_deref(),
+            Some("2026-03-30T12:00:00Z")
+        );
+        assert!(parsed.sync.last_full_sync_at.is_none());
+        assert_eq!(parsed.etags.get("issues").unwrap(), "abc123");
+        assert_eq!(parsed.mappings.len(), 1);
+        assert_eq!(parsed.mappings[0].story_id, "SH-1");
+        assert_eq!(parsed.mappings[0].issue_number, 42);
+        assert_eq!(parsed.mappings[0].last_local_event_index, Some(5));
+    }
+
+    #[test]
+    fn sync_mode_serialization() {
+        // Serialize via JSON (TOML cannot serialize bare enums)
+        assert_eq!(serde_json::to_string(&SyncMode::Off).unwrap(), r#""off""#);
+        assert_eq!(
+            serde_json::to_string(&SyncMode::Manual).unwrap(),
+            r#""manual""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SyncMode::Auto).unwrap(),
+            r#""auto""#
+        );
+
+        // Deserialize
+        let off: SyncMode = serde_json::from_str(r#""off""#).unwrap();
+        assert_eq!(off, SyncMode::Off);
+        let manual: SyncMode = serde_json::from_str(r#""manual""#).unwrap();
+        assert_eq!(manual, SyncMode::Manual);
+        let auto: SyncMode = serde_json::from_str(r#""auto""#).unwrap();
+        assert_eq!(auto, SyncMode::Auto);
+    }
+
+    #[test]
+    fn sync_mode_default_is_manual() {
+        assert_eq!(SyncMode::default(), SyncMode::Manual);
+    }
+
+    fn sample_config() -> GithubSyncConfig {
+        GithubSyncConfig {
+            github: GithubRepo {
+                owner: "org".into(),
+                repo: "project".into(),
+            },
+            sync: SyncSettings {
+                mode: SyncMode::Manual,
+                last_sync_at: None,
+                last_full_sync_at: None,
+            },
+            etags: BTreeMap::new(),
+            mappings: vec![
+                StoryIssueMapping {
+                    story_id: "SH-1".into(),
+                    issue_number: 10,
+                    last_synced_at: "2026-01-01T00:00:00Z".into(),
+                    last_local_event_index: None,
+                },
+                StoryIssueMapping {
+                    story_id: "SH-2".into(),
+                    issue_number: 20,
+                    last_synced_at: "2026-01-02T00:00:00Z".into(),
+                    last_local_event_index: Some(3),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn find_mapping_by_story_id() {
+        let config = sample_config();
+
+        let m = find_mapping(&config, "SH-1").unwrap();
+        assert_eq!(m.issue_number, 10);
+
+        let m = find_mapping(&config, "SH-2").unwrap();
+        assert_eq!(m.issue_number, 20);
+
+        assert!(find_mapping(&config, "SH-99").is_none());
+    }
+
+    #[test]
+    fn find_mapping_by_issue_number() {
+        let config = sample_config();
+
+        let m = find_mapping_by_issue(&config, 10).unwrap();
+        assert_eq!(m.story_id, "SH-1");
+
+        let m = find_mapping_by_issue(&config, 20).unwrap();
+        assert_eq!(m.story_id, "SH-2");
+
+        assert!(find_mapping_by_issue(&config, 999).is_none());
+    }
+
+    #[test]
+    fn parse_https_url() {
+        let r = parse_github_url("https://github.com/acme/widgets.git").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_https_url_no_dot_git() {
+        let r = parse_github_url("https://github.com/acme/widgets").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_https_url_trailing_slash() {
+        let r = parse_github_url("https://github.com/acme/widgets/").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_ssh_url() {
+        let r = parse_github_url("git@github.com:acme/widgets.git").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_ssh_url_no_dot_git() {
+        let r = parse_github_url("git@github.com:acme/widgets").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_non_github_url_returns_none() {
+        assert!(parse_github_url("https://gitlab.com/acme/widgets.git").is_none());
+        assert!(parse_github_url("git@gitlab.com:acme/widgets.git").is_none());
+        assert!(parse_github_url("not-a-url").is_none());
+    }
+
+    #[test]
+    fn parse_url_with_newline_trimmed() {
+        // git remote get-url often returns a trailing newline
+        let r = parse_github_url("https://github.com/acme/widgets.git\n").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+}

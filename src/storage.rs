@@ -209,7 +209,7 @@ Define relationships between stories to express dependencies and structure:
 
 ```
 story {prefix}-1 parent-of {prefix}-2
-story {prefix}-2 precedes {prefix}-3
+story {prefix}-2 blocks {prefix}-3
 story {prefix}-5 relates-to {prefix}-2
 story {prefix}-6 obviates {prefix}-7
 ```

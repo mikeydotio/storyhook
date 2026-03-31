@@ -382,32 +382,12 @@ pub fn is_relation_input(raw: &str) -> bool {
 
 pub fn relation_edges(input: &str) -> Option<Vec<(&'static str, &'static str)>> {
     match input {
-        "starts-before" => Some(vec![("starts-before", "starts-after")]),
-        "starts-after" => Some(vec![("starts-after", "starts-before")]),
-        "starts-with" => Some(vec![("starts-with", "starts-with")]),
-        "finishes-before" => Some(vec![("finishes-before", "finishes-after")]),
-        "finishes-after" => Some(vec![("finishes-after", "finishes-before")]),
-        "finishes-with" => Some(vec![("finishes-with", "finishes-with")]),
-        "precedes" => Some(vec![("precedes", "follows")]),
-        "follows" => Some(vec![("follows", "precedes")]),
-        "relieves" => Some(vec![("relieves", "relieved-by")]),
-        "relieved-by" => Some(vec![("relieved-by", "relieves")]),
-        "conflicts-with" => Some(vec![("conflicts-with", "conflicts-with")]),
-        "coincides-with" => Some(vec![
-            ("starts-with", "starts-with"),
-            ("finishes-with", "finishes-with"),
-        ]),
-        "parent-of" => Some(vec![
-            ("parent-of", "child-of"),
-            ("starts-before", "starts-after"),
-            ("finishes-after", "finishes-before"),
-        ]),
-        "child-of" => Some(vec![
-            ("child-of", "parent-of"),
-            ("starts-after", "starts-before"),
-            ("finishes-before", "finishes-after"),
-        ]),
-        "relates-to" => Some(vec![("relates-to", "relates-to")]),
+        "relates-to" | "related-to" => Some(vec![("relates-to", "relates-to")]),
+        "blocks" => Some(vec![("blocks", "blocked-by")]),
+        "blocked-by" => Some(vec![("blocked-by", "blocks")]),
+        "parent-of" => Some(vec![("parent-of", "child-of")]),
+        "child-of" => Some(vec![("child-of", "parent-of")]),
+        "duplicate-of" => Some(vec![("duplicate-of", "duplicate-of")]),
         "obviates" => Some(vec![("obviates", "obviated-by")]),
         "obviated-by" => Some(vec![("obviated-by", "obviates")]),
         _ => None,
@@ -416,20 +396,12 @@ pub fn relation_edges(input: &str) -> Option<Vec<(&'static str, &'static str)>> 
 
 pub fn inverse_relation(relation: &str) -> Option<&'static str> {
     match relation {
-        "starts-before" => Some("starts-after"),
-        "starts-after" => Some("starts-before"),
-        "starts-with" => Some("starts-with"),
-        "finishes-before" => Some("finishes-after"),
-        "finishes-after" => Some("finishes-before"),
-        "finishes-with" => Some("finishes-with"),
-        "precedes" => Some("follows"),
-        "follows" => Some("precedes"),
-        "relieves" => Some("relieved-by"),
-        "relieved-by" => Some("relieves"),
-        "conflicts-with" => Some("conflicts-with"),
+        "relates-to" => Some("relates-to"),
+        "blocks" => Some("blocked-by"),
+        "blocked-by" => Some("blocks"),
         "parent-of" => Some("child-of"),
         "child-of" => Some("parent-of"),
-        "relates-to" => Some("relates-to"),
+        "duplicate-of" => Some("duplicate-of"),
         "obviates" => Some("obviated-by"),
         "obviated-by" => Some("obviates"),
         _ => None,
@@ -439,7 +411,7 @@ pub fn inverse_relation(relation: &str) -> Option<&'static str> {
 pub fn is_mutual_relation(relation: &str) -> bool {
     matches!(
         relation,
-        "starts-with" | "finishes-with" | "conflicts-with" | "relates-to"
+        "relates-to" | "duplicate-of"
     )
 }
 
@@ -516,7 +488,7 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnaps
         return false;
     }
     for relation in &story.relationships {
-        if (relation.relation == "follows" || relation.relation == "starts-after")
+        if relation.relation == "blocked-by"
             && let Some(other) = all_stories.get(&relation.other_id)
             && other.superstate == SuperState::Open
         {
@@ -827,7 +799,7 @@ impl DependencyGraph {
                     continue;
                 }
                 match rel.relation.as_str() {
-                    "follows" | "starts-after" => {
+                    "blocked-by" => {
                         predecessors
                             .entry((*id).clone())
                             .or_default()
@@ -837,7 +809,7 @@ impl DependencyGraph {
                             .or_default()
                             .insert((*id).clone());
                     }
-                    "precedes" | "starts-before" => {
+                    "blocks" => {
                         predecessors
                             .entry(rel.other_id.clone())
                             .or_default()

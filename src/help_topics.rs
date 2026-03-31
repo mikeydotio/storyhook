@@ -184,7 +184,7 @@ Examples:
 
 Related:
   story context   — Session start (pair with handoff at session end)
-  story sync-git  — Link git commits to stories before handoff
+  story commit-sync  — Link git commits to stories before handoff
 "#,
         );
 
@@ -310,8 +310,8 @@ Related:
         );
 
         m.insert(
-            "sync-git",
-            r#"story sync-git [--since <duration>]
+            "commit-sync",
+            r#"story commit-sync [--since <duration>]
 
 Scan recent git commits for story ID references and add comments to
 those stories. Also auto-transitions stories based on commit patterns
@@ -322,13 +322,50 @@ When to use:
   stories. Safe to run repeatedly — skips already-synced commits.
 
 Examples:
-  story sync-git                  # Default: last 7 days
-  story sync-git --since 1h      # Last hour only
-  story sync-git --since 2w      # Last 2 weeks
+  story commit-sync                  # Default: last 7 days
+  story commit-sync --since 1h      # Last hour only
+  story commit-sync --since 2w      # Last 2 weeks
+
+Note: Previously named 'sync-git'. The old name still works as an alias.
 
 Related:
-  story hooks install  — Auto-sync via git hooks
-  story handoff        — End-of-session summary
+  story hooks install    — Auto-sync via git hooks
+  story github-sync      — Sync stories with GitHub Issues
+  story handoff          — End-of-session summary
+"#,
+        );
+
+        // Keep old name as alias
+        m.insert("sync-git", m["commit-sync"]);
+
+        m.insert(
+            "github-sync",
+            r#"story github-sync [<id>] [--dry-run]
+
+Sync stories with GitHub Issues bidirectionally. Pulls remote changes
+and pushes local changes using three-way merge. Requires the
+STORYHOOK_GITHUB_TOKEN environment variable to be set with a GitHub
+Personal Access Token.
+
+When to use:
+  After making local story changes you want reflected on GitHub, or
+  to pull in changes made on GitHub (comments, state changes, etc.).
+
+Examples:
+  story github-sync                  # Full project sync
+  story github-sync SH-1            # Sync a single story
+  story github-sync --dry-run       # Preview changes without applying
+
+Configuration (in .storyhook/project.toml):
+  [github]
+  sync_mode = "manual"    # off | manual | auto
+
+  When sync_mode = "auto", any story-modifying command triggers a
+  sync for the affected story automatically.
+
+Related:
+  story commit-sync  — Link git commits to stories
+  story doctor       — Check project health including sync status
 "#,
         );
 
@@ -378,7 +415,7 @@ Examples:
   story hooks test on_create      # Test the on_create hook
 
 Related:
-  story sync-git     — Manual git sync (hooks automate this)
+  story commit-sync  — Manual git sync (hooks automate this)
   .storyhook/hooks.toml — Event hook configuration file
 "#,
         );
@@ -571,7 +608,7 @@ Commands returning a single story ("story" field):
         "labels": ["backend"],
         "awaiting": null,
         "relationships": [
-          {"relation": "follows", "other_id": "SH-2"}
+          {"relation": "blocked-by", "other_id": "SH-2"}
         ],
         "comments": [
           {"at": "2025-01-15T10:00:00Z", "text": "Started work"}
@@ -644,7 +681,7 @@ Commands returning a message ("message" field):
   story report --html         -> "message": "<html string>"
   story scaffold              -> "message": "<template content>"
   story hooks install/...     -> "message": "<status text>"
-  story sync-git              -> "message": "scanned N commits..."
+  story commit-sync            -> "message": "scanned N commits..."
   story mcp-config            -> "message": "<config json or instructions>"
   story next (no results)     -> "message": "no ready stories"
   story help <topic>          -> "message": "<help text>"

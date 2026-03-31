@@ -326,8 +326,8 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                 }
             },
             {
-                "name": "storyhook_sync_git",
-                "description": "Scan recent git commits for story ID references and link them to stories via comments. Also auto-transitions stories based on commit patterns (e.g., 'closes SH-1'). Safe to run repeatedly — skips already-synced commits. Use after git operations to keep stories up to date.",
+                "name": "storyhook_commit_sync",
+                "description": "Scan recent git commits for story ID references and link them to stories via comments. Also auto-transitions stories based on commit patterns (e.g., 'closes SH-1'). Safe to run repeatedly — skips already-synced commits. Use after git operations to keep stories up to date. (Previously named storyhook_sync_git.)",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -592,7 +592,7 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
                 html: format == "html",
             })
         }
-        "storyhook_sync_git" => Ok(Invocation::SyncGit {
+        "storyhook_commit_sync" | "storyhook_sync_git" => Ok(Invocation::CommitSync {
             since: get_str(arguments, "since"),
         }),
         _ => Err(format!("unknown tool: {tool_name}")),

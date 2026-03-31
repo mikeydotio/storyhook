@@ -3,6 +3,26 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.9.0] - 2026-03-31
+
+### Added
+- Two-way GitHub Issues sync via `story github-sync [<id>] [--dry-run]` — full bidirectional sync between storyhook stories and GitHub Issues with three-way merge conflict detection, interactive resolution, and per-story atomicity
+- GitHub API client (`ureq` 3.x, synchronous, no tokio) behind `github-sync` cargo feature flag for optional builds without network dependencies
+- Fenced `storyhook` YAML code block in GitHub Issue bodies for encoding non-native fields (priority, awaiting, non-native relationships)
+- Native GitHub Sub-issues and Dependencies API integration (API version 2026-03-10) for `parent-of`/`child-of` and `blocks`/`blocked-by` relationship sync
+- Initial sync setup wizard with import-all, title-match, push-only, and start-fresh strategies
+- Configurable sync modes (`off`/`manual`/`auto`) — auto mode triggers per-story sync on any story-modifying command
+- Sync state persistence in `.storyhook/github-sync.toml` with base snapshots for three-way merge and pre-sync backups for rollback
+- `story github-sync --dry-run` to preview sync changes without applying them
+- `storyhook_github_sync` MCP tool for AI agent integration
+
+### Changed
+- Renamed `story sync-git` to `story commit-sync` (old name kept as alias for backward compatibility)
+- Renamed `storyhook_sync_git` MCP tool to `storyhook_commit_sync` (old name kept as alias)
+- New error exit codes: 6 (GitHub auth), 7 (GitHub API), 8 (sync conflict)
+
+_[manual]_
+
 ## [v0.8.0] - 2026-03-29
 
 ### Added

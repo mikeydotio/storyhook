@@ -360,7 +360,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                         .relationships
                         .get_or_insert_with(Vec::new);
                     rels.push(ImportRelationship {
-                        relation: "follows".to_string(),
+                        relation: "blocked-by".to_string(),
                         ref_index: Some(prev_idx),
                         other_id: None,
                     });
@@ -670,7 +670,7 @@ stories:
         assert_eq!(rels_c.len(), 3); // child-of + follows Task A + follows Task B
         assert_eq!(rels_c[0].relation, "child-of");
         assert_eq!(rels_c[0].ref_index, Some(0));
-        let follows_c: Vec<_> = rels_c.iter().filter(|r| r.relation == "follows").collect();
+        let follows_c: Vec<_> = rels_c.iter().filter(|r| r.relation == "blocked-by").collect();
         assert_eq!(follows_c.len(), 2);
         let follow_indices: Vec<_> = follows_c.iter().map(|r| r.ref_index.unwrap()).collect();
         assert!(follow_indices.contains(&1)); // Task A
@@ -678,7 +678,7 @@ stories:
 
         let rels_d = stories[4].relationships.as_ref().unwrap();
         assert_eq!(rels_d.len(), 3);
-        let follows_d: Vec<_> = rels_d.iter().filter(|r| r.relation == "follows").collect();
+        let follows_d: Vec<_> = rels_d.iter().filter(|r| r.relation == "blocked-by").collect();
         assert_eq!(follows_d.len(), 2);
     }
 
@@ -691,11 +691,11 @@ stories:
 - [ ] Task C";
         let stories = decompose_spec(input);
         assert_eq!(stories.len(), 3);
-        // No task should have a "follows" relationship — they're all in the same wave
+        // No task should have a "blocked-by" relationship — they're all in the same wave
         for story in &stories {
             if let Some(rels) = &story.relationships {
                 for rel in rels {
-                    assert_ne!(rel.relation, "follows");
+                    assert_ne!(rel.relation, "blocked-by");
                 }
             }
         }
@@ -720,13 +720,13 @@ stories:
         // Task B (wave 2): follows Task A only
         let rels_b = stories[1].relationships.as_ref().unwrap();
         assert_eq!(rels_b.len(), 1);
-        assert_eq!(rels_b[0].relation, "follows");
+        assert_eq!(rels_b[0].relation, "blocked-by");
         assert_eq!(rels_b[0].ref_index, Some(0));
 
         // Task C (wave 3): follows Task B only (not Task A directly)
         let rels_c = stories[2].relationships.as_ref().unwrap();
         assert_eq!(rels_c.len(), 1);
-        assert_eq!(rels_c[0].relation, "follows");
+        assert_eq!(rels_c[0].relation, "blocked-by");
         assert_eq!(rels_c[0].ref_index, Some(1));
     }
 
@@ -754,7 +754,7 @@ stories:
         let child_of: Vec<_> = rels_api.iter().filter(|r| r.relation == "child-of").collect();
         assert_eq!(child_of.len(), 1);
         assert_eq!(child_of[0].ref_index, Some(0));
-        let follows: Vec<_> = rels_api.iter().filter(|r| r.relation == "follows").collect();
+        let follows: Vec<_> = rels_api.iter().filter(|r| r.relation == "blocked-by").collect();
         assert_eq!(follows.len(), 1);
         assert_eq!(follows[0].ref_index, Some(1));
     }
@@ -785,11 +785,11 @@ stories:
         assert_eq!(rels_task[0].relation, "child-of");
         assert_eq!(rels_task[0].ref_index, Some(1));
 
-        // No "follows" relationships anywhere
+        // No "blocked-by" relationships anywhere
         for story in &stories {
             if let Some(rels) = &story.relationships {
                 for rel in rels {
-                    assert_ne!(rel.relation, "follows");
+                    assert_ne!(rel.relation, "blocked-by");
                 }
             }
         }

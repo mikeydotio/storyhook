@@ -4,6 +4,8 @@ pub mod decompose;
 pub mod domain;
 pub mod error;
 pub mod event_hooks;
+#[cfg(feature = "github-sync")]
+pub mod github;
 pub mod help_topics;
 pub mod hooks;
 pub mod lock;

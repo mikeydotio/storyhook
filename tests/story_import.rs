@@ -68,7 +68,7 @@ fn import_with_cross_references() {
     let json = r#"[
         {"title": "Parent task"},
         {"title": "Child task", "relationships": [{"relation": "child-of", "ref_index": 0}]},
-        {"title": "Follows child", "relationships": [{"relation": "follows", "ref_index": 1}]}
+        {"title": "Blocked by child", "relationships": [{"relation": "blocked-by", "ref_index": 1}]}
     ]"#;
 
     story(dir.path())
@@ -84,12 +84,12 @@ fn import_with_cross_references() {
         .success()
         .stdout(predicate::str::contains("child-of SH-1"));
 
-    // Verify follows relationship
+    // Verify blocked-by relationship
     story(dir.path())
         .args(["SH-3"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("follows SH-2"));
+        .stdout(predicate::str::contains("blocked-by SH-2"));
 
     // Verify inverse on parent
     story(dir.path())

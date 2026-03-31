@@ -15,7 +15,7 @@ fn graph_overview() {
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path())
-        .args(["SH-1", "precedes", "SH-2"])
+        .args(["SH-1", "blocks", "SH-2"])
         .assert()
         .success();
 
@@ -35,11 +35,11 @@ fn graph_critical_path() {
     story(dir.path()).args(["new", "Second"]).assert().success();
     story(dir.path()).args(["new", "Third"]).assert().success();
     story(dir.path())
-        .args(["SH-1", "precedes", "SH-2"])
+        .args(["SH-1", "blocks", "SH-2"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "precedes", "SH-3"])
+        .args(["SH-2", "blocks", "SH-3"])
         .assert()
         .success();
 
@@ -68,11 +68,11 @@ fn graph_blocked_by() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "precedes", "SH-2"])
+        .args(["SH-1", "blocks", "SH-2"])
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "precedes", "SH-3"])
+        .args(["SH-2", "blocks", "SH-3"])
         .assert()
         .success();
 
@@ -99,7 +99,7 @@ fn graph_parallel_groups() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-1", "precedes", "SH-2"])
+        .args(["SH-1", "blocks", "SH-2"])
         .assert()
         .success();
     // Group 2: SH-3 (independent)

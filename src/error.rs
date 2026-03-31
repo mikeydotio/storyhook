@@ -14,6 +14,12 @@ pub enum AppError {
     Integrity(String),
     #[error("{0}")]
     Storage(String),
+    #[error("github auth: {0}")]
+    GithubAuth(String),
+    #[error("github api: {0}")]
+    GithubApi(String),
+    #[error("sync conflict: {0}")]
+    SyncConflict(String),
 }
 
 impl AppError {
@@ -23,6 +29,9 @@ impl AppError {
             Self::NotFound(_) => 3,
             Self::LockTimeout(_) => 4,
             Self::Integrity(_) | Self::Storage(_) => 5,
+            Self::GithubAuth(_) => 6,
+            Self::GithubApi(_) => 7,
+            Self::SyncConflict(_) => 8,
         }
     }
 }

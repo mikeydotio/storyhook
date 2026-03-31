@@ -45,7 +45,8 @@ Usage:
   story mcp-config [--install <provider>] [--uninstall <provider>] [--uninstall-all]
   story mcp-config [--scope project]
   story hooks install|uninstall|list|test <event_type>
-  story sync-git [--since <duration>]
+  story commit-sync [--since <duration>]
+  story github-sync [<id>] [--dry-run]
   story scaffold agents-md|claude-md|cursor-rules
   story help <command>
   story plugin install|uninstall <target>
@@ -202,8 +203,12 @@ pub enum Invocation {
     Scaffold {
         kind: String,
     },
-    SyncGit {
+    CommitSync {
         since: Option<String>,
+    },
+    GithubSync {
+        id: Option<String>,
+        dry_run: bool,
     },
     HelpTopic {
         topic: String,
@@ -265,7 +270,8 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "mcp-config" => parse_mcp_config(args),
         "hooks" => parse_hooks(args),
         "scaffold" => parse_scaffold(args),
-        "sync-git" => parse_sync_git(args),
+        "commit-sync" | "sync-git" => parse_commit_sync(args),
+        "github-sync" => parse_github_sync(args),
         "plugin" => parse_plugin(args),
         _ => parse_story(args),
     }
@@ -797,26 +803,48 @@ fn parse_scaffold(args: &[String]) -> Result<Invocation, AppError> {
     Ok(Invocation::Scaffold { kind })
 }
 
-fn parse_sync_git(args: &[String]) -> Result<Invocation, AppError> {
+fn parse_commit_sync(args: &[String]) -> Result<Invocation, AppError> {
     let mut since = None;
     let mut index = 1;
+    let usage = "usage: story commit-sync [--since <duration>]";
     while index < args.len() {
         match args[index].as_str() {
             "--since" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage("usage: story sync-git [--since <duration>]".to_string())
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 since = Some(value.clone());
                 index += 2;
             }
             _ => {
-                return Err(AppError::Usage(
-                    "usage: story sync-git [--since <duration>]".to_string(),
-                ));
+                return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
-    Ok(Invocation::SyncGit { since })
+    Ok(Invocation::CommitSync { since })
+}
+
+fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
+    let mut id = None;
+    let mut dry_run = false;
+    let mut index = 1;
+    let usage = "usage: story github-sync [<id>] [--dry-run]";
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            arg if looks_like_story_id(arg) => {
+                id = Some(arg.to_string());
+                index += 1;
+            }
+            _ => {
+                return Err(AppError::Usage(usage.to_string()));
+            }
+        }
+    }
+    Ok(Invocation::GithubSync { id, dry_run })
 }
 
 fn parse_help(args: &[String]) -> Result<Invocation, AppError> {

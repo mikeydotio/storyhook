@@ -96,11 +96,11 @@ fn next_skips_dependency_blocked_stories() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "follows", "SH-1"])
+        .args(["SH-2", "blocked-by", "SH-1"])
         .assert()
         .success();
 
-    // SH-2 is blocked because SH-1 (which it follows) is still open
+    // SH-2 is blocked because SH-1 (which blocks it) is still open
     story(dir.path())
         .arg("next")
         .assert()
@@ -122,7 +122,7 @@ fn next_unblocks_after_dependency_closed() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "follows", "SH-1"])
+        .args(["SH-2", "blocked-by", "SH-1"])
         .assert()
         .success();
 

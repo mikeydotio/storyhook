@@ -29,10 +29,10 @@ fn adding_directional_relationship_creates_inverse_edge() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["SH-1", "starts-before", "SH-2"])
+        .args(["SH-1", "blocks", "SH-2"])
         .assert()
         .success()
-        .stdout(contains("starts-before SH-2"));
+        .stdout(contains("blocks SH-2"));
 
     Command::cargo_bin("story")
         .unwrap()
@@ -40,7 +40,7 @@ fn adding_directional_relationship_creates_inverse_edge() {
         .arg("SH-2")
         .assert()
         .success()
-        .stdout(contains("starts-after SH-1"));
+        .stdout(contains("blocked-by SH-1"));
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn show_renders_derived_ancestor_and_descendent_relationships() {
         .arg("SH-1")
         .assert()
         .success()
-        .stdout(contains("relationships:\n- finishes-after SH-2"))
+        .stdout(contains("relationships:\n- parent-of SH-2"))
         .stdout(contains("derived_relationships:\n- ancestor-of SH-3"));
 
     Command::cargo_bin("story")

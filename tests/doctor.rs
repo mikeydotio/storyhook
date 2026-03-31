@@ -31,7 +31,7 @@ fn doctor_reports_missing_inverse_edge() {
         dir.path().join(".storyhook/open/stories/SH-1.jsonl"),
         concat!(
             "{\"kind\":\"StoryCreated\",\"at\":\"2026-03-11T00:00:00Z\",\"title\":\"A\",\"state\":\"todo\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:01Z\",\"other_id\":\"SH-2\",\"relation\":\"starts-before\"}\n"
+            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:01Z\",\"other_id\":\"SH-2\",\"relation\":\"blocks\"}\n"
         ),
     )
     .unwrap();
@@ -73,9 +73,7 @@ fn doctor_reports_parent_cycle_and_show_suppresses_virtual_relationships() {
         dir.path().join(".storyhook/open/stories/SH-1.jsonl"),
         concat!(
             "{\"kind\":\"StoryCreated\",\"at\":\"2026-03-11T00:00:00Z\",\"title\":\"A\",\"state\":\"todo\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:01Z\",\"other_id\":\"SH-2\",\"relation\":\"parent-of\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:02Z\",\"other_id\":\"SH-2\",\"relation\":\"finishes-after\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:03Z\",\"other_id\":\"SH-2\",\"relation\":\"starts-before\"}\n"
+            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:01Z\",\"other_id\":\"SH-2\",\"relation\":\"parent-of\"}\n"
         ),
     )
     .unwrap();
@@ -84,8 +82,6 @@ fn doctor_reports_parent_cycle_and_show_suppresses_virtual_relationships() {
         concat!(
             "{\"kind\":\"StoryCreated\",\"at\":\"2026-03-11T00:00:00Z\",\"title\":\"B\",\"state\":\"todo\"}\n",
             "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:01Z\",\"other_id\":\"SH-1\",\"relation\":\"child-of\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:02Z\",\"other_id\":\"SH-1\",\"relation\":\"finishes-before\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:03Z\",\"other_id\":\"SH-1\",\"relation\":\"starts-after\"}\n",
             "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:04Z\",\"other_id\":\"SH-1\",\"relation\":\"parent-of\"}\n"
         ),
     )

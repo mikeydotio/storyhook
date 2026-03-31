@@ -72,7 +72,7 @@ fn list_dependency_blocked() {
         .assert()
         .success();
     story(dir.path())
-        .args(["SH-2", "follows", "SH-1"])
+        .args(["SH-2", "blocked-by", "SH-1"])
         .assert()
         .success();
 

@@ -17,7 +17,11 @@ use crate::storage;
 
 pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
     let no_hooks = options.no_hooks;
-    match options.invocation {
+
+    #[cfg(feature = "github-sync")]
+    let invocation_clone = options.invocation.clone();
+
+    let response = match options.invocation {
         Invocation::Help => Ok(Response::Message(HELP_TEXT.to_string())),
         Invocation::Init { prefix, no_agents_md } => {
             storage::init_project(root, prefix.as_deref())?;
@@ -1090,7 +1094,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         for rel in &story.relationships {
                             if matches!(
                                 rel.relation.as_str(),
-                                "follows" | "starts-after" | "precedes" | "starts-before"
+                                "blocks" | "blocked-by"
                             ) && story_map
                                 .get(&rel.other_id)
                                 .is_some_and(|s| s.superstate == SuperState::Open)
@@ -1104,7 +1108,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         .iter()
                         .filter(|s| {
                             !s.relationships.iter().any(|r| {
-                                (r.relation == "follows" || r.relation == "starts-after")
+                                r.relation == "blocked-by"
                                     && story_map
                                         .get(&r.other_id)
                                         .is_some_and(|o| o.superstate == SuperState::Open)
@@ -1116,7 +1120,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         .iter()
                         .filter(|s| {
                             !s.relationships.iter().any(|r| {
-                                (r.relation == "precedes" || r.relation == "starts-before")
+                                r.relation == "blocks"
                                     && story_map
                                         .get(&r.other_id)
                                         .is_some_and(|o| o.superstate == SuperState::Open)
@@ -1377,7 +1381,25 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             story_view_by_id(root, &a)
         }),
-        Invocation::SyncGit { since } => lock::with_project_lock(root, || {
+        Invocation::GithubSync { id, dry_run } => {
+            #[cfg(feature = "github-sync")]
+            {
+                Ok(lock::with_project_lock(root, || {
+                    storage::ensure_project(root)?;
+                    crate::github::run_sync(root, id.as_deref(), dry_run)
+                })?)
+            }
+            #[cfg(not(feature = "github-sync"))]
+            {
+                let _ = (id, dry_run);
+                return Err(AppError::Usage(
+                    "github-sync requires the `github-sync` feature. \
+                     Rebuild with: cargo install storyhook --features github-sync"
+                        .to_string(),
+                ));
+            }
+        }
+        Invocation::CommitSync { since } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
 
             // 1. Check we're in a git repo
@@ -1529,6 +1551,31 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 Ok(Response::Message(msg))
             }
         },
+    };
+
+    // After successful command, maybe auto-sync to GitHub
+    #[cfg(feature = "github-sync")]
+    if let Ok(ref resp) = response {
+        if !no_hooks {
+            let created_id = extract_created_story_id(resp);
+            crate::github::auto::maybe_auto_sync(
+                root,
+                &invocation_clone,
+                created_id.as_deref(),
+            );
+        }
+    }
+
+    response
+}
+
+/// Extract the story ID from a successful `New` command response.
+#[cfg(feature = "github-sync")]
+fn extract_created_story_id(response: &Response) -> Option<String> {
+    if let Response::Story(view) = response {
+        Some(view.story.id.clone())
+    } else {
+        None
     }
 }
 
@@ -1682,13 +1729,6 @@ fn build_story_views(root: &Path, include_derived: bool) -> Result<Vec<StoryView
             .any(|relation| relation.relation == "obviated-by")
         {
             flagged_reasons.push("story is obviated by another story".to_string());
-        }
-        if story
-            .relationships
-            .iter()
-            .any(|relation| relation.relation == "conflicts-with")
-        {
-            flagged_reasons.push("story conflicts with another story".to_string());
         }
         flagged_reasons.sort();
         flagged_reasons.dedup();
