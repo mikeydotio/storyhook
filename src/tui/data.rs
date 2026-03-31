@@ -372,8 +372,8 @@ mod tests {
         storage::init_project(root, Some("TEST")).unwrap();
 
         crate::lock::with_project_lock(root, || {
-            storage::create_story(root, "First story")?;
-            storage::create_story(root, "Second story")?;
+            storage::create_story(root, "First story", None)?;
+            storage::create_story(root, "Second story", None)?;
             Ok(())
         })
         .unwrap();
@@ -393,7 +393,7 @@ mod tests {
 
         // Create a story normally
         crate::lock::with_project_lock(root, || {
-            storage::create_story(root, "Test story")?;
+            storage::create_story(root, "Test story", None)?;
             Ok(())
         })
         .unwrap();

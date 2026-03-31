@@ -17,6 +17,8 @@ pub struct ImportStory {
     pub relationships: Option<Vec<ImportRelationship>>,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -195,6 +197,10 @@ pub enum StoryEvent {
         at: String,
         state: String,
     },
+    StoryDeleted {
+        at: String,
+        reason: String,
+    },
 }
 
 pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
@@ -213,6 +219,7 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryLabelsSet { .. } => "labels-set",
             StoryEvent::StoryTitleSet { .. } => "title-set",
             StoryEvent::StoryClosedAndArchived { .. } => "archived",
+            StoryEvent::StoryDeleted { .. } => "deleted",
         })
         .unwrap_or("unknown")
 }
@@ -342,6 +349,12 @@ pub fn fold_story(
                 closed_at = Some(at.clone());
                 state = Some(story_state.clone());
                 updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryDeleted { at, .. } => {
+                updated_at = Some(at.clone());
+                if closed_at.is_none() {
+                    closed_at = Some(at.clone());
+                }
             }
         }
     }

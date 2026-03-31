@@ -123,6 +123,11 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
                 role: None,
             },
             StateDef {
+                slug: "in-progress".to_string(),
+                super_state: SuperState::Open,
+                role: Some("active".to_string()),
+            },
+            StateDef {
                 slug: "done".to_string(),
                 super_state: SuperState::Closed,
                 role: None,
@@ -432,14 +437,35 @@ pub fn load_project_prefix(root: &Path) -> Result<String, AppError> {
     Ok(project.prefix.unwrap_or_else(|| "SH".to_string()))
 }
 
-pub fn create_story(root: &Path, title: &str) -> Result<StorySnapshot, AppError> {
+pub fn create_story(
+    root: &Path,
+    title: &str,
+    initial_state: Option<&str>,
+) -> Result<StorySnapshot, AppError> {
     ensure_project(root)?;
     let id = next_story_id(root)?;
-    let state = default_open_state(root)?;
+    let state_slug = if let Some(slug) = initial_state {
+        let states = load_states(root)?;
+        let valid = states.iter().any(|s| s.slug == slug && s.super_state == SuperState::Open);
+        if !valid {
+            return Err(AppError::Validation(format!(
+                "'{slug}' is not a valid OPEN state. Available OPEN states: {}",
+                states
+                    .iter()
+                    .filter(|s| s.super_state == SuperState::Open)
+                    .map(|s| s.slug.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        slug.to_string()
+    } else {
+        default_open_state(root)?.slug
+    };
     let event = StoryEvent::StoryCreated {
         at: now(),
         title: title.to_string(),
-        state: state.slug,
+        state: state_slug,
     };
     write_story_events(root, &id, &[event])?;
     load_open_story_snapshot(root, &id)
@@ -545,6 +571,56 @@ pub fn archive_story(root: &Path, id: &str) -> Result<StorySnapshot, AppError> {
     transaction.commit()?;
     fs::remove_file(story_path)?;
     Ok(snapshot)
+}
+
+pub fn delete_story(root: &Path, id: &str, reason: &str) -> Result<(), AppError> {
+    let paths = ProjectPaths::new(root);
+    let story_file = paths.open_story_file(id);
+    if !story_file.exists() {
+        return Err(AppError::NotFound(format!("story `{id}` not found")));
+    }
+    let states = load_state_map(root)?;
+
+    // Append deletion events
+    let ts = now();
+    write_story_events(
+        root,
+        id,
+        &[
+            StoryEvent::StoryCommentAdded {
+                at: ts.clone(),
+                text: format!("[deleted] {reason}"),
+            },
+            StoryEvent::StoryDeleted {
+                at: ts,
+                reason: reason.to_string(),
+            },
+        ],
+    )?;
+
+    // Reload and fold
+    let events = load_open_story_events(root, id)?;
+    let snapshot = fold_story(id, &events, &states)?;
+
+    // Archive to SQLite with deleted_reason
+    let mut connection = open_archive_connection(root)?;
+    let transaction = connection.transaction()?;
+    transaction.execute(
+        "INSERT OR REPLACE INTO closed_stories (id, snapshot_json, events_json, closed_at, state, deleted_reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            snapshot.id,
+            serde_json::to_string(&snapshot)?,
+            serde_json::to_string(&events)?,
+            snapshot.closed_at.as_deref().unwrap_or(""),
+            snapshot.state,
+            Some(reason),
+        ],
+    )?;
+    transaction.commit()?;
+
+    // Remove the JSONL file
+    fs::remove_file(&story_file)?;
+    Ok(())
 }
 
 pub fn load_archived_story(root: &Path, id: &str) -> Result<StorySnapshot, AppError> {
@@ -786,5 +862,19 @@ fn open_archive_connection(root: &Path) -> Result<Connection, AppError> {
         )",
         [],
     )?;
+
+    // Migration: add deleted_reason column if missing
+    let has_col: bool = connection
+        .prepare("PRAGMA table_info(closed_stories)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == "deleted_reason");
+    if !has_col {
+        connection.execute(
+            "ALTER TABLE closed_stories ADD COLUMN deleted_reason TEXT",
+            [],
+        )?;
+    }
+
     Ok(connection)
 }

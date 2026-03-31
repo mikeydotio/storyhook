@@ -23,7 +23,7 @@ fn init_project(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 /// Helper: create a story inside a lock and return its ID.
 fn create_story(root: &Path, title: &str) -> String {
     storyhook::lock::with_project_lock(root, || {
-        let snap = storyhook::storage::create_story(root, title)?;
+        let snap = storyhook::storage::create_story(root, title, None)?;
         Ok(snap.id)
     })
     .unwrap()
@@ -67,8 +67,7 @@ fn perform_undo(root: &Path, entry: &UndoEntry) {
 #[test]
 fn undo_move_story_restores_state() {
     let (_dir, root) = init_project("UM");
-    // Add in-progress state
-    storyhook::storage::add_state(&root, "in-progress", SuperState::Open, None).unwrap();
+    // in-progress is now a default state — no need to add it
 
     let id = create_story(&root, "Test story");
     assert_eq!(id, "UM-1");
@@ -115,7 +114,7 @@ fn undo_move_story_restores_state() {
 #[test]
 fn redo_after_undo() {
     let (_dir, root) = init_project("RD");
-    storyhook::storage::add_state(&root, "in-progress", SuperState::Open, None).unwrap();
+    // in-progress is now a default state — no need to add it
 
     let id = create_story(&root, "Redo test");
 

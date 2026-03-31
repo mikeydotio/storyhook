@@ -164,11 +164,12 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_create_story",
-                "description": "Create a new story with a title and optional priority, labels, and assignee. Returns the created story with its assigned ID. For bulk creation from a spec, use storyhook_decompose_spec instead.",
+                "description": "Create a new story with a title and optional priority, labels, assignee, and initial state. Returns the created story with its assigned ID. Default states: todo (default), in-progress, done. For bulk creation from a spec, use storyhook_decompose_spec. For batch creation with relationships, use storyhook_bulk_create.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "title": {"type": "string", "description": "Story title"},
+                        "state": {"type": "string", "description": "Initial state slug (default: todo). Common states: todo, in-progress, done"},
                         "priority": {"type": "string", "description": "Priority: critical, high, medium, low, none"},
                         "labels": {"type": "string", "description": "Comma-separated labels"},
                         "assignee": {"type": "string", "description": "Assignee member ID"}
@@ -178,7 +179,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_update_story",
-                "description": "Update a story's state, priority, labels, assignee, or awaiting status. Processes one update field per call in priority order (state > priority > labels > assignee > awaiting). Transitioning to a CLOSED state automatically archives the story.",
+                "description": "Update a story's state, priority, labels, assignee, or awaiting status. Processes one update field per call in priority order (state > priority > labels > assignee > awaiting). Transitioning to a CLOSED state automatically archives the story. Default states: todo, in-progress, done. Use storyhook_list_stories to see all stories or storyhook_get_graph for dependency analysis.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -215,7 +216,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_get_next",
-                "description": "Get the highest-priority ready stories to work on. A story is 'ready' when all its predecessors are closed and it has no awaiting blockers. Returns stories sorted by priority then creation time. Use this to pick the next task at session start or after completing work.",
+                "description": "Get the highest-priority ready stories to work on. A story is 'ready' when it has no open 'blocks'/'blocked-by' dependencies and no awaiting blockers. Returns stories sorted by priority then creation time. Use this to pick the next task. Manage dependencies with storyhook_add_relationship (blocks/blocked-by).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -266,7 +267,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_decompose_spec",
-                "description": "Parse a Markdown or YAML specification into individual stories with relationships, priorities, and labels. Use --dry-run to preview without creating. For creating single stories, use storyhook_create_story instead.",
+                "description": "Parse a Markdown or YAML specification into stories with relationships, priorities, and labels. Markdown format: # and ## headings create parent-child story hierarchies. Checkbox items (- [ ]) under headings become child stories. Nested checklists create nested parent-child relationships. Use '### Wave N' headings for sequencing — stories in later waves are automatically blocked-by stories in earlier waves. Inline markers: [HIGH], [CRITICAL] etc. set priority; #label sets labels. Use --dry-run to preview. For single stories, use storyhook_create_story.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -288,6 +289,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                                 "type": "object",
                                 "properties": {
                                     "title": {"type": "string"},
+                                    "state": {"type": "string", "description": "Initial state slug (e.g., todo, in-progress)"},
                                     "priority": {"type": "string"},
                                     "labels": {"type": "array", "items": {"type": "string"}},
                                     "relationships": {
@@ -295,7 +297,11 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                                         "items": {
                                             "type": "object",
                                             "properties": {
-                                                "relation": {"type": "string"},
+                                                "relation": {
+                                                    "type": "string",
+                                                    "enum": ["relates-to", "blocks", "blocked-by", "parent-of", "child-of", "duplicate-of", "obviates", "obviated-by"],
+                                                    "description": "Relationship type. Use blocks/blocked-by for task dependencies, parent-of/child-of for hierarchy."
+                                                },
                                                 "ref_index": {"type": "integer"},
                                                 "other_id": {"type": "string"}
                                             },
@@ -323,6 +329,56 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                             "description": "Output format: html or text (default: text)"
                         }
                     }
+                }
+            },
+            {
+                "name": "storyhook_bulk_update",
+                "description": "Update multiple stories at once. Supports batch state changes for bulk close, reopen, or state transitions. Each update is independent — failures don't block other updates. Default states: todo, in-progress, done.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "updates": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string", "description": "Story ID"},
+                                    "state": {"type": "string", "description": "New state slug"}
+                                },
+                                "required": ["id", "state"]
+                            }
+                        }
+                    },
+                    "required": ["updates"]
+                }
+            },
+            {
+                "name": "storyhook_add_relationship",
+                "description": "Add a relationship between two stories. Use blocks/blocked-by for task dependencies (A blocks B means B cannot start until A is done), parent-of/child-of for hierarchy, relates-to for general links.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "a": {"type": "string", "description": "Source story ID"},
+                        "relation": {
+                            "type": "string",
+                            "enum": ["relates-to", "blocks", "blocked-by", "parent-of", "child-of", "duplicate-of", "obviates", "obviated-by"],
+                            "description": "Relationship type"
+                        },
+                        "b": {"type": "string", "description": "Target story ID"}
+                    },
+                    "required": ["a", "relation", "b"]
+                }
+            },
+            {
+                "name": "storyhook_delete_story",
+                "description": "Soft-delete a story with a required reason. The story is archived with a deletion flag for audit — never truly lost. Deleted stories won't appear in list_stories but can be found via search. Use for duplicate, erroneous, or abandoned stories.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "Story ID to delete"},
+                        "reason": {"type": "string", "description": "Required reason for deletion (e.g., 'duplicate of SH-5', 'created in error')"}
+                    },
+                    "required": ["id", "reason"]
                 }
             },
             {
@@ -459,7 +515,8 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
         }
         "storyhook_create_story" => {
             let title = get_str(arguments, "title").ok_or("missing required parameter: title")?;
-            Ok(Invocation::New { title })
+            let state = get_str(arguments, "state");
+            Ok(Invocation::New { title, state })
         }
         "storyhook_update_story" => {
             let id = get_str(arguments, "id").ok_or("missing required parameter: id")?;
@@ -591,6 +648,47 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
             Ok(Invocation::Report {
                 html: format == "html",
             })
+        }
+        "storyhook_bulk_update" => {
+            let updates_val = arguments
+                .get("updates")
+                .ok_or("missing required parameter: updates")?;
+            let updates_arr = updates_val
+                .as_array()
+                .ok_or("updates must be an array")?;
+            let mut updates: Vec<(String, String)> = Vec::new();
+            for item in updates_arr {
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("each update must have an id")?
+                    .to_string();
+                let state = item
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .ok_or("each update must have a state")?
+                    .to_string();
+                updates.push((id, state));
+            }
+            Ok(Invocation::BulkUpdate { updates })
+        }
+        "storyhook_add_relationship" => {
+            let a = get_str(arguments, "a").ok_or("missing required parameter: a")?;
+            let relation =
+                get_str(arguments, "relation").ok_or("missing required parameter: relation")?;
+            let b = get_str(arguments, "b").ok_or("missing required parameter: b")?;
+            Ok(Invocation::Relate {
+                a,
+                relation,
+                b,
+                remove: false,
+            })
+        }
+        "storyhook_delete_story" => {
+            let id = get_str(arguments, "id").ok_or("missing required parameter: id")?;
+            let reason =
+                get_str(arguments, "reason").ok_or("missing required parameter: reason")?;
+            Ok(Invocation::Delete { id, reason })
         }
         "storyhook_commit_sync" | "storyhook_sync_git" => Ok(Invocation::CommitSync {
             since: get_str(arguments, "since"),

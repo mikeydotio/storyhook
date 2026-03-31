@@ -20,7 +20,7 @@ pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
   story init [--prefix <PREFIX>] [--no-agents-md]
-  story new <title>
+  story new <title> [--state <slug>]
   story tui                                           (interactive terminal UI)
   story member add "<name <email>>"
   story member add -g <github-handle>
@@ -60,6 +60,7 @@ Usage:
   story <id> label <labels-csv>
   story <id> label --remove <labels-csv>
   story <id> reopen
+  story <id> delete "<reason>"
   story <a> <relationship> <b> [--remove]
 
 Global options:
@@ -92,6 +93,7 @@ pub enum Invocation {
     },
     New {
         title: String,
+        state: Option<String>,
     },
     MemberAdd {
         input: MemberInput,
@@ -163,6 +165,13 @@ pub enum Invocation {
     },
     Reopen {
         id: String,
+    },
+    Delete {
+        id: String,
+        reason: String,
+    },
+    BulkUpdate {
+        updates: Vec<(String, String)>,
     },
     Import {
         file: Option<String>,
@@ -307,11 +316,31 @@ fn parse_init(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() < 2 {
-        return Err(AppError::Usage("usage: story new <title>".to_string()));
+    let mut state = None;
+    let mut title_parts = Vec::new();
+    let mut index = 1;
+    let usage = "usage: story new <title> [--state <slug>]";
+    while index < args.len() {
+        match args[index].as_str() {
+            "--state" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                state = Some(value.clone());
+                index += 2;
+            }
+            _ => {
+                title_parts.push(args[index].clone());
+                index += 1;
+            }
+        }
+    }
+    if title_parts.is_empty() {
+        return Err(AppError::Usage(usage.to_string()));
     }
     Ok(Invocation::New {
-        title: join_tokens(&args[1..]),
+        title: title_parts.join(" "),
+        state,
     })
 }
 
@@ -994,6 +1023,19 @@ fn parse_story(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() == 2 && args[1] == "reopen" {
         return Ok(Invocation::Reopen {
             id: args[0].clone(),
+        });
+    }
+
+    if args.len() >= 3 && args[1] == "delete" {
+        let reason = join_tokens(&args[2..]);
+        if reason.is_empty() {
+            return Err(AppError::Usage(
+                "usage: story <id> delete \"<reason>\"".to_string(),
+            ));
+        }
+        return Ok(Invocation::Delete {
+            id: args[0].clone(),
+            reason,
         });
     }
 

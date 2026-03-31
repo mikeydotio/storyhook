@@ -65,7 +65,7 @@ pub struct GraphOverview {
 pub enum Response {
     Message(String),
     Story(Box<StoryView>),
-    Stories(Vec<StoryView>),
+    Stories(Vec<StoryView>, Option<String>),
     Summary(Box<SummaryView>),
     Graph(Box<GraphView>),
     Issues(Vec<String>),
@@ -143,9 +143,9 @@ fn render_json(response: &Response) -> String {
             warnings: &view.warnings,
             flagged_reasons: &view.flagged_reasons,
         }),
-        Response::Stories(stories) => serde_json::to_string_pretty(&JsonEnvelope {
+        Response::Stories(stories, msg) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
-            message: None,
+            message: msg.as_deref(),
             story: None,
             stories: Some(stories),
             summary: None,
@@ -197,12 +197,16 @@ fn render_human(response: &Response) -> String {
     match response {
         Response::Message(message) => format!("{message}\n"),
         Response::Story(view) => render_story(view),
-        Response::Stories(stories) => {
+        Response::Stories(stories, msg) => {
             if stories.is_empty() {
                 return "no stories found\n".to_string();
             }
 
             let mut body = String::new();
+            if let Some(msg) = msg {
+                body.push_str(msg);
+                body.push('\n');
+            }
             for story in stories {
                 let flagged = if story.flagged_reasons.is_empty() {
                     ""

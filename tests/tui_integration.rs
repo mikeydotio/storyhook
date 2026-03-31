@@ -23,7 +23,7 @@ fn init_project(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 /// Helper: create a story inside a lock and return its ID.
 fn create_story(root: &std::path::Path, title: &str) -> String {
     storyhook::lock::with_project_lock(root, || {
-        let snap = storyhook::storage::create_story(root, title)?;
+        let snap = storyhook::storage::create_story(root, title, None)?;
         Ok(snap.id)
     })
     .unwrap()
@@ -887,7 +887,7 @@ fn datastore_load_100_stories_under_500ms() {
     // Create 100 stories with varying attributes
     storyhook::lock::with_project_lock(&root, || {
         for i in 1..=100 {
-            storyhook::storage::create_story(&root, &format!("Performance test story {i}"))?;
+            storyhook::storage::create_story(&root, &format!("Performance test story {i}"), None)?;
         }
         Ok(())
     })

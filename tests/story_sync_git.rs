@@ -252,11 +252,7 @@ fn sync_git_auto_transition_with_role() {
     init_git(dir.path());
     story(dir.path()).arg("init").assert().success();
 
-    // Add an "in-progress" state with role=active
-    story(dir.path())
-        .args(["state", "add", "in-progress", "--super", "OPEN", "--role", "active"])
-        .assert()
-        .success();
+    // in-progress (with role=active) is now a default state
 
     // Create a story (starts in "todo")
     story(dir.path())
@@ -301,7 +297,12 @@ fn sync_git_no_transition_without_active_state() {
     init_git(dir.path());
     story(dir.path()).arg("init").assert().success();
 
-    // Default states: todo/done — no active state (only 1 OPEN state)
+    // Remove the default in-progress state so only todo/done remain (no active state)
+    story(dir.path())
+        .args(["state", "remove", "in-progress"])
+        .assert()
+        .success();
+
     story(dir.path())
         .args(["new", "No active state test"])
         .assert()
@@ -339,11 +340,7 @@ fn sync_git_no_re_transition() {
     init_git(dir.path());
     story(dir.path()).arg("init").assert().success();
 
-    // Add in-progress with role=active
-    story(dir.path())
-        .args(["state", "add", "in-progress", "--super", "OPEN", "--role", "active"])
-        .assert()
-        .success();
+    // in-progress (with role=active) is now a default state
 
     story(dir.path())
         .args(["new", "Already transitioned"])
@@ -378,7 +375,12 @@ fn sync_git_heuristic_two_open_states() {
     init_git(dir.path());
     story(dir.path()).arg("init").assert().success();
 
-    // Add in-progress without role — heuristic: 2nd OPEN state is "active"
+    // Default states include in-progress (with role=active).
+    // Remove it and re-add without role to test the heuristic path.
+    story(dir.path())
+        .args(["state", "remove", "in-progress"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["state", "add", "in-progress", "--super", "OPEN"])
         .assert()

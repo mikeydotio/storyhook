@@ -3,6 +3,26 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.10.0] - 2026-03-31
+
+### Added
+- Default `in-progress` state (OPEN, role=active) — new projects now ship with todo/in-progress/done out of the box
+- `--state <slug>` flag on `story new` to set initial state at creation time
+- `state` parameter on `storyhook_create_story` and `storyhook_bulk_create` MCP tools for setting initial state
+- `storyhook_bulk_update` MCP tool for batch state changes (bulk close, bulk reopen, bulk transitions)
+- `storyhook_add_relationship` MCP tool with `{a, relation, b}` params and enum for all 8 relationship types
+- `storyhook_delete_story` MCP tool and `story <id> delete "<reason>"` CLI — soft-delete with required reason, archived with deletion flag for full audit trail
+- Nested checklist support in `story decompose` — indented `- [ ]` items create parent-child relationships to their parent checkbox
+- Relationship summary in decompose response — shows created relationships after decomposition
+- `state` field on `ImportStory` for setting initial state during bulk import
+
+### Changed
+- All MCP tool descriptions enriched with relationship type enums, available states, dependency hints (`blocks`/`blocked-by`), and cross-references to related tools
+- `storyhook_decompose_spec` description now documents Wave syntax, nested checklists, and inline priority/label markers
+- Archive database schema: added `deleted_reason` column for soft-delete audit trail
+
+_[manual]_
+
 ## [v0.9.0] - 2026-03-31
 
 ### Added

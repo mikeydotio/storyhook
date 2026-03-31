@@ -541,7 +541,7 @@ fn dispatch(
         } => {
             let desc = format!("Created story: {title}");
             let result = crate::lock::with_project_lock(root, || {
-                let story = crate::storage::create_story(root, &title)?;
+                let story = crate::storage::create_story(root, &title, None)?;
                 let mut events = Vec::new();
                 if let Some(p) = &priority {
                     events.push(crate::domain::StoryEvent::StoryPrioritySet {

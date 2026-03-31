@@ -42,8 +42,8 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             Ok(Response::Message(msg))
         }
-        Invocation::New { title } => lock::with_project_lock(root, || {
-            let story = storage::create_story(root, &title)?;
+        Invocation::New { title, state } => lock::with_project_lock(root, || {
+            let story = storage::create_story(root, &title, state.as_deref())?;
             if !no_hooks
                 && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
             {
@@ -178,7 +178,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 }
             }
             sort_story_views(&mut views);
-            Ok(Response::Stories(views))
+            Ok(Response::Stories(views, None))
         }
         Invocation::Summary => {
             storage::ensure_project(root)?;
@@ -401,7 +401,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 }
             }
             sort_story_views(&mut results);
-            Ok(Response::Stories(results))
+            Ok(Response::Stories(results, None))
         }
         Invocation::Doctor { fix } => {
             storage::ensure_project(root)?;
@@ -666,7 +666,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             } else if count == 1 {
                 Ok(Response::Story(Box::new(ready.remove(0))))
             } else {
-                Ok(Response::Stories(ready))
+                Ok(Response::Stories(ready, None))
             }
         }
         Invocation::Import { file } => lock::with_project_lock(root, || {
@@ -689,7 +689,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             let mut created_ids: Vec<String> = Vec::new();
             for import_story in &stories {
-                let story = storage::create_story(root, &import_story.title)?;
+                let story = storage::create_story(root, &import_story.title, import_story.state.as_deref())?;
                 let id = story.id.clone();
                 let now = storage::now();
                 let mut events = Vec::new();
@@ -788,7 +788,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     stale_info: None,
                 });
             }
-            Ok(Response::Stories(views))
+            Ok(Response::Stories(views, None))
         }),
         Invocation::Decompose {
             file,
@@ -825,7 +825,26 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             lock::with_project_lock(root, || {
                 storage::ensure_project(root)?;
-                import_stories_batch(root, &import_stories)
+                let result = import_stories_batch(root, &import_stories)?;
+
+                // Build a relationship summary
+                let story_count = result.views.len();
+                let rel_count = result.relationship_lines.len();
+                let mut summary = format!(
+                    "Created {} {} with {} {}",
+                    story_count,
+                    if story_count == 1 { "story" } else { "stories" },
+                    rel_count,
+                    if rel_count == 1 { "relationship" } else { "relationships" },
+                );
+                if !result.relationship_lines.is_empty() {
+                    summary.push(':');
+                    for line in &result.relationship_lines {
+                        summary.push_str(&format!("\n  {}", line));
+                    }
+                }
+
+                Ok(Response::Stories(result.views, Some(summary)))
             })
         }
         Invocation::Reopen { id } => lock::with_project_lock(root, || {
@@ -870,6 +889,67 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 );
             }
             story_view_by_id(root, &id)
+        }),
+        Invocation::Delete { id, reason } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            storage::delete_story(root, &id, &reason)?;
+            Ok(Response::Message(format!("deleted {id}: {reason}")))
+        }),
+        Invocation::BulkUpdate { updates } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            let states = storage::load_state_map(root)?;
+            let mut results: Vec<String> = Vec::new();
+
+            for (id, state_slug) in &updates {
+                match states.get(state_slug) {
+                    None => {
+                        results.push(format!("{id}: error — state `{state_slug}` is not defined"));
+                    }
+                    Some(state_def) => {
+                        if !storage::open_story_exists(root, id) {
+                            results.push(format!("{id}: error — story not found or not open"));
+                            continue;
+                        }
+
+                        let now = storage::now();
+                        let mut events = vec![StoryEvent::StoryStateChanged {
+                            at: now.clone(),
+                            state: state_slug.clone(),
+                        }];
+
+                        if state_def.super_state == SuperState::Closed {
+                            // Clear awaiting if set
+                            if let Ok(snapshot) = storage::load_open_story_snapshot(root, id) {
+                                if snapshot.awaiting.is_some() {
+                                    events.push(StoryEvent::StoryAwaitingCleared {
+                                        at: now.clone(),
+                                    });
+                                }
+                            }
+                            events.push(StoryEvent::StoryClosedAndArchived {
+                                at: now,
+                                state: state_slug.clone(),
+                            });
+                        }
+
+                        if let Err(e) = storage::write_story_events(root, id, &events) {
+                            results.push(format!("{id}: error — {e}"));
+                            continue;
+                        }
+
+                        if state_def.super_state == SuperState::Closed {
+                            match storage::archive_story(root, id) {
+                                Ok(_) => results.push(format!("{id}: {state_slug} (archived)")),
+                                Err(e) => results.push(format!("{id}: error archiving — {e}")),
+                            }
+                        } else {
+                            results.push(format!("{id}: {state_slug}"));
+                        }
+                    }
+                }
+            }
+
+            Ok(Response::Message(results.join("\n")))
         }),
         Invocation::Export => {
             storage::ensure_project(root)?;
@@ -2047,13 +2127,23 @@ fn read_project_config(root: &std::path::Path) -> Option<(String, String)> {
     Some((prefix, done_state))
 }
 
-fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<Response, AppError> {
+/// Result of importing a batch of stories, including relationship summary.
+struct ImportBatchResult {
+    views: Vec<StoryView>,
+    /// Human-readable relationship summary lines (e.g. "SH-10 child-of SH-9").
+    relationship_lines: Vec<String>,
+}
+
+fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<ImportBatchResult, AppError> {
     if stories.is_empty() {
-        return Ok(Response::Message("no stories to import".to_string()));
+        return Ok(ImportBatchResult {
+            views: Vec::new(),
+            relationship_lines: Vec::new(),
+        });
     }
     let mut created_ids: Vec<String> = Vec::new();
     for import_story in stories {
-        let story = storage::create_story(root, &import_story.title)?;
+        let story = storage::create_story(root, &import_story.title, import_story.state.as_deref())?;
         let id = story.id.clone();
         let now = storage::now();
         let mut events = Vec::new();
@@ -2096,7 +2186,8 @@ fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<Response
         }
         created_ids.push(id);
     }
-    // Second pass: resolve relationships
+    // Second pass: resolve relationships and collect summary
+    let mut relationship_lines: Vec<String> = Vec::new();
     for (index, import_story) in stories.iter().enumerate() {
         if let Some(ref rels) = import_story.relationships {
             let a_id = &created_ids[index];
@@ -2143,6 +2234,7 @@ fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<Response
                         )?;
                     }
                 }
+                relationship_lines.push(format!("{} {} {}", a_id, rel.relation, b_id));
             }
         }
     }
@@ -2157,5 +2249,8 @@ fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<Response
             stale_info: None,
         });
     }
-    Ok(Response::Stories(views))
+    Ok(ImportBatchResult {
+        views,
+        relationship_lines,
+    })
 }

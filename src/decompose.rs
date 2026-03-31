@@ -101,6 +101,7 @@ fn flatten_yaml(
             assignee: story.assignee.clone(),
             description: story.description.clone(),
             relationships,
+            state: None,
         });
         if let Some(ref children) = story.children {
             flatten_yaml(children, Some(my_index), output);
@@ -175,6 +176,8 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
     let mut stories: Vec<ImportStory> = Vec::new();
     // Track heading stack: (heading_level, story_index)
     let mut heading_stack: Vec<(usize, usize)> = Vec::new();
+    // Track checkbox nesting: (indentation_level, story_index)
+    let mut checkbox_stack: Vec<(usize, usize)> = Vec::new();
     // Track description lines per story index
     let mut descriptions: HashMap<usize, Vec<String>> = HashMap::new();
     // Index of the most recently created story (for description capture)
@@ -229,11 +232,13 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 assignee: None,
                 description: None,
                 relationships,
+                state: None,
             });
             last_story_index = Some(index);
             // Update heading stack: pop anything >= level 3, push this
             heading_stack.retain(|(level, _)| *level < 3);
             heading_stack.push((3, index));
+            checkbox_stack.clear();
         } else if let Some(rest) = trimmed.strip_prefix("## ") {
             // New ## heading resets wave tracking
             current_wave = None;
@@ -268,11 +273,13 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 assignee: None,
                 description: None,
                 relationships,
+                state: None,
             });
             last_story_index = Some(index);
             // Update heading stack: pop anything >= level 2, push this
             heading_stack.retain(|(level, _)| *level < 2);
             heading_stack.push((2, index));
+            checkbox_stack.clear();
         } else if let Some(rest) = trimmed.strip_prefix("# ") {
             // New # heading resets wave tracking
             current_wave = None;
@@ -294,11 +301,13 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 assignee: None,
                 description: None,
                 relationships: None,
+                state: None,
             });
             last_story_index = Some(index);
             // Reset heading stack for new top-level heading
             heading_stack.clear();
             heading_stack.push((1, index));
+            checkbox_stack.clear();
         } else if let Some(rest) = trimmed.strip_prefix("- [ ] ") {
             let title = rest.trim().to_string();
             if title.is_empty() {
@@ -306,8 +315,30 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             }
             let (title, priority) = extract_priority(&title);
             let (title, labels) = extract_labels(&title);
-            // Parent is the most recent heading at any level
-            let parent_index = heading_stack.last().map(|(_, idx)| *idx);
+
+            // Determine indentation level (number of leading spaces/tabs)
+            let indent = line.len() - line.trim_start().len();
+
+            // Find parent: check checkbox stack first for nested checklists,
+            // then fall back to heading stack
+            let parent_index = {
+                // Pop checkbox entries at same or deeper indentation
+                while let Some(&(prev_indent, _)) = checkbox_stack.last() {
+                    if prev_indent >= indent {
+                        checkbox_stack.pop();
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(&(_, parent_idx)) = checkbox_stack.last() {
+                    // Nested under a previous checkbox
+                    Some(parent_idx)
+                } else {
+                    // No checkbox parent — use the most recent heading
+                    heading_stack.last().map(|(_, idx)| *idx)
+                }
+            };
+
             let relationships = parent_index.map(|idx| {
                 vec![ImportRelationship {
                     relation: "child-of".to_string(),
@@ -327,8 +358,11 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 assignee: None,
                 description: None,
                 relationships,
+                state: None,
             });
             last_story_index = Some(index);
+            // Push onto checkbox stack so deeper items can become children
+            checkbox_stack.push((indent, index));
             // Track task index for wave sequencing
             if let Some(wave_num) = current_wave {
                 wave_task_indices.entry(wave_num).or_default().push(index);
@@ -793,5 +827,99 @@ stories:
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Nested checklist tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn nested_checklist_parent_child() {
+        let input = "\
+## Phase 1
+- [ ] Parent task
+  - [ ] Subtask A
+  - [ ] Subtask B";
+        let stories = decompose_spec(input);
+        // stories: [0]=Phase 1, [1]=Parent task, [2]=Subtask A, [3]=Subtask B
+        assert_eq!(stories.len(), 4);
+        assert_eq!(stories[0].title, "Phase 1");
+        assert_eq!(stories[1].title, "Parent task");
+        assert_eq!(stories[2].title, "Subtask A");
+        assert_eq!(stories[3].title, "Subtask B");
+
+        // Parent task is child of Phase 1
+        let rels_parent = stories[1].relationships.as_ref().unwrap();
+        assert_eq!(rels_parent.len(), 1);
+        assert_eq!(rels_parent[0].relation, "child-of");
+        assert_eq!(rels_parent[0].ref_index, Some(0));
+
+        // Subtask A is child of Parent task (not Phase 1)
+        let rels_a = stories[2].relationships.as_ref().unwrap();
+        assert_eq!(rels_a.len(), 1);
+        assert_eq!(rels_a[0].relation, "child-of");
+        assert_eq!(rels_a[0].ref_index, Some(1));
+
+        // Subtask B is child of Parent task (not Phase 1)
+        let rels_b = stories[3].relationships.as_ref().unwrap();
+        assert_eq!(rels_b.len(), 1);
+        assert_eq!(rels_b[0].relation, "child-of");
+        assert_eq!(rels_b[0].ref_index, Some(1));
+    }
+
+    #[test]
+    fn nested_checklist_three_levels() {
+        let input = "\
+# Epic
+- [ ] Top level task
+  - [ ] Mid level task
+    - [ ] Deep task";
+        let stories = decompose_spec(input);
+        // stories: [0]=Epic, [1]=Top level task, [2]=Mid level task, [3]=Deep task
+        assert_eq!(stories.len(), 4);
+
+        // Top level task is child of Epic
+        let rels_top = stories[1].relationships.as_ref().unwrap();
+        assert_eq!(rels_top[0].relation, "child-of");
+        assert_eq!(rels_top[0].ref_index, Some(0));
+
+        // Mid level task is child of Top level task
+        let rels_mid = stories[2].relationships.as_ref().unwrap();
+        assert_eq!(rels_mid[0].relation, "child-of");
+        assert_eq!(rels_mid[0].ref_index, Some(1));
+
+        // Deep task is child of Mid level task
+        let rels_deep = stories[3].relationships.as_ref().unwrap();
+        assert_eq!(rels_deep[0].relation, "child-of");
+        assert_eq!(rels_deep[0].ref_index, Some(2));
+    }
+
+    #[test]
+    fn nested_checklist_sibling_after_nested() {
+        // After nested items, a sibling at the same level as the parent should
+        // be a child of the heading, not the previous nested item
+        let input = "\
+## Feature
+- [ ] Task A
+  - [ ] Subtask A1
+- [ ] Task B";
+        let stories = decompose_spec(input);
+        // stories: [0]=Feature, [1]=Task A, [2]=Subtask A1, [3]=Task B
+        assert_eq!(stories.len(), 4);
+
+        // Task A is child of Feature
+        let rels_a = stories[1].relationships.as_ref().unwrap();
+        assert_eq!(rels_a[0].relation, "child-of");
+        assert_eq!(rels_a[0].ref_index, Some(0));
+
+        // Subtask A1 is child of Task A
+        let rels_a1 = stories[2].relationships.as_ref().unwrap();
+        assert_eq!(rels_a1[0].relation, "child-of");
+        assert_eq!(rels_a1[0].ref_index, Some(1));
+
+        // Task B is child of Feature (same level as Task A, not child of Subtask A1)
+        let rels_b = stories[3].relationships.as_ref().unwrap();
+        assert_eq!(rels_b[0].relation, "child-of");
+        assert_eq!(rels_b[0].ref_index, Some(0));
     }
 }

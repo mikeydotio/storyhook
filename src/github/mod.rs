@@ -610,7 +610,7 @@ fn create_story_from_issue(
     _prefix: &str,
 ) -> Result<String, AppError> {
     // Create the story via storage
-    let snapshot = storage::create_story(root, &issue.title)?;
+    let snapshot = storage::create_story(root, &issue.title, None)?;
     let story_id = snapshot.id.clone();
 
     // Append events for additional fields
