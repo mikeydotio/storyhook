@@ -75,6 +75,7 @@ Filters:
   --assignee <id>         Filter by assignee member ID or GitHub handle
   --priority <levels>     Comma-separated: critical,high,medium,low,none
   --label <labels>        Comma-separated label filter
+  --phase <N>             Filter by phase number
   --flagged               Only stories with integrity warnings
   --blocked               Only stories blocked by dependencies or awaiting
   --ready                 Only stories ready to work on (unblocked)
@@ -85,6 +86,7 @@ Filters:
 Examples:
   story list                          # All open stories
   story list --ready                  # Unblocked, ready to work on
+  story list --phase 1                # Stories in phase 1
   story list --priority critical,high # Only critical and high priority
   story list --blocked --json         # Blocked stories as JSON
   story list --stale 3d               # Not updated in 3 days
@@ -111,12 +113,13 @@ When to use:
 Examples:
   story next                # Top-priority ready story
   story next --count 3      # Top 3 ready stories
+  story next --phase 1      # Top-priority ready story in phase 1
   story next --json         # Structured JSON output
 
 Related:
-  story context  — Full project overview (use first in a new session)
-  story list     — All stories with filters (use for exploration)
-  story graph    — Dependency visualization (use to understand blockers)
+  story load-context  — Full project overview (use first in a new session)
+  story list          — All stories with filters (use for exploration)
+  story graph         — Dependency visualization (use to understand blockers)
 "#,
         );
 
@@ -128,7 +131,7 @@ Show project summary with story counts by state and priority, plus
 lists of ready, blocked, and stale stories.
 
 When to use:
-  For a quick overview of project health. Use 'story context' for a
+  For a quick overview of project health. Use 'story load-context' for a
   more comprehensive session-start document.
 
 Examples:
@@ -136,33 +139,75 @@ Examples:
   story summary --json      # Structured JSON output
 
 Related:
-  story context  — Full project context document
-  story list     — Detailed filtered listing
-  story report   — HTML or text report
+  story load-context  — Full project context document
+  story list          — Detailed filtered listing
+  story report        — HTML or text report
 "#,
         );
 
         m.insert(
-            "context",
-            r#"story context [--format markdown|json]
+            "load-context",
+            r#"story load-context [--format markdown|json]
 
 Generate a comprehensive project context document suitable for AI agent
 session initialization. Includes project state, open stories, blocked
-items, and ready tasks.
+items, ready tasks, and phase progress (if any stories have phase:N labels).
 
 When to use:
   At the start of every session. This is the primary command for
   understanding what's happening in the project.
 
+Note: Previously named 'story context'. The old name still works as an alias.
+
 Examples:
-  story context                       # Markdown format (default)
-  story context --format json         # JSON format
-  story context --format markdown     # Explicit markdown
+  story load-context                       # Markdown format (default)
+  story load-context --format json         # JSON format
+  story load-context --format markdown     # Explicit markdown
 
 Related:
   story next     — Pick the next task to work on
   story handoff  — Generate end-of-session summary
   story summary  — Quick state/priority counts
+  story phase    — Phase management commands
+"#,
+        );
+
+        // Keep old name as alias
+        m.insert("context", m["load-context"]);
+
+        m.insert(
+            "phase",
+            r#"story phase list|show|add|remove|create
+
+Manage story phases. Phases are a convention on labels: a story in
+phase 2 has the label "phase:2". Phase commands are sugar over the
+existing label system.
+
+Subcommands:
+  list                     Per-phase progress overview
+  show <N>                 List stories in phase N
+  add <id> <N>             Assign story to phase N (removes old phase)
+  remove <id>              Remove phase assignment
+  create <N> ["<title>"]   Create a grouping story for the phase
+
+When to use:
+  When work is organized into sequential phases (e.g., from a spec
+  decomposed with ### Wave N headings). Use 'story decompose' to
+  auto-assign phases from Wave headings.
+
+Examples:
+  story phase list                           # Overview of all phases
+  story phase show 1                         # Stories in phase 1
+  story phase add SH-5 2                     # Move SH-5 to phase 2
+  story phase remove SH-5                    # Clear phase assignment
+  story phase create 1 "Foundation"          # Create phase grouping story
+  story list --phase 1                       # List stories in phase 1
+  story next --phase 2                       # Next ready story in phase 2
+
+Related:
+  story decompose     — Wave headings auto-assign phase labels
+  story label         — Manual label management
+  story load-context  — Shows phase progress when phases exist
 "#,
         );
 
@@ -183,8 +228,8 @@ Examples:
   story handoff --since 1d        # Last day
 
 Related:
-  story context   — Session start (pair with handoff at session end)
-  story commit-sync  — Link git commits to stories before handoff
+  story load-context  — Session start (pair with handoff at session end)
+  story commit-sync   — Link git commits to stories before handoff
 "#,
         );
 
@@ -304,8 +349,8 @@ Examples:
   story report --html > status.html  # Save to file
 
 Related:
-  story summary  — Quick summary counts
-  story context  — Agent-friendly context document
+  story summary       — Quick summary counts
+  story load-context  — Agent-friendly context document
 "#,
         );
 
@@ -391,8 +436,8 @@ Examples:
   story scaffold cursor-rules     # Generate .cursorrules content
 
 Related:
-  story init    — Initialize project (creates .storyhook/CLAUDE.md)
-  story context — Project state for session start
+  story init         — Initialize project (creates .storyhook/CLAUDE.md)
+  story load-context — Project state for session start
 "#,
         );
 
@@ -496,9 +541,9 @@ Examples:
   story tui                     # Launch the TUI in the current project
 
 Related:
-  story list     — CLI-based story listing with filters
-  story summary  — Project summary (similar to TUI dashboard)
-  story context  — Full project context for AI agents
+  story list         — CLI-based story listing with filters
+  story summary      — Project summary (similar to TUI dashboard)
+  story load-context — Full project context for AI agents
 "#,
         );
 

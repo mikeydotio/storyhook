@@ -3,6 +3,28 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.12.0] - 2026-03-31
+
+### Added
+- **Phase support** — organize stories into phases using `phase:N` labels (convention on existing labels, zero storage changes)
+- `story phase list` — per-phase progress overview with completion counts
+- `story phase show <N>` — list stories in a specific phase
+- `story phase add <id> <N>` — assign story to phase (auto-strips old phase assignment)
+- `story phase remove <id>` — clear phase assignment
+- `story phase create <N> ["<title>"]` — create a named grouping story for a phase
+- `--phase <N>` filter on `story list` and `story next` — scope queries to a specific phase
+- `story load-context` — renamed from `story context` for clarity; auto-detects phases and includes Phase Progress section
+- `### Wave N` in `story decompose` now preserves phase identity via `phase:N` labels (previously lost after import)
+- `storyhook_phase_list` MCP tool and `phase` parameter on `storyhook_list_stories` / `storyhook_get_next`
+- Phase number validation — must be a positive integer
+- 11 new integration tests for phase commands
+
+### Changed
+- `story context` renamed to `story load-context` (old name kept as alias)
+- Phase counting uses state roles instead of hardcoded "in-progress" — works with custom active states
+
+_[manual]_
+
 ## [v0.11.0] - 2026-03-31
 
 ### Changed

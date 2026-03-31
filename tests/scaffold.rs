@@ -16,7 +16,7 @@ fn scaffold_agents_md_contains_workflow_commands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("story next"))
-        .stdout(predicate::str::contains("story context"));
+        .stdout(predicate::str::contains("story load-context"));
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn scaffold_claude_md_is_short_pointer() {
         .assert()
         .success()
         .stdout(predicate::str::contains(".storyhook/CLAUDE.md"))
-        .stdout(predicate::str::contains("story context"));
+        .stdout(predicate::str::contains("story load-context"));
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn init_creates_storyhook_claude_md_with_prefix() {
         .success();
     let claude_md = std::fs::read_to_string(dir.path().join(".storyhook/CLAUDE.md")).unwrap();
     assert!(claude_md.contains("WEB-<n>"));
-    assert!(claude_md.contains("story context"));
+    assert!(claude_md.contains("story load-context"));
     assert!(claude_md.contains("Planning mode"));
 }
 

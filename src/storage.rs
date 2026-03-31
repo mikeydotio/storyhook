@@ -193,7 +193,7 @@ This project uses **storyhook** (`story` CLI) for work tracking.
 
 ## Session lifecycle
 
-1. Run `story context` at the start of every session to understand project state.
+1. Run `story load-context` at the start of every session to understand project state.
 2. Run `story next` to find the highest-priority ready task.
 3. Update story status as you work: `story move {prefix}-<n> in-progress`
 4. Add progress notes: `story comment {prefix}-<n> "what changed and why"`
@@ -241,7 +241,7 @@ story prioritize {prefix}-6 medium
 
 | Action | Command |
 |---|---|
-| Project overview | `story context` |
+| Project overview | `story load-context` |
 | Next ready task | `story next` |
 | List open stories | `story list` |
 | Show a story | `story show {prefix}-<n>` |

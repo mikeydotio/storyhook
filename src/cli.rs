@@ -16,6 +16,15 @@ pub enum GraphMode {
     ParallelGroups,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PhaseAction {
+    List,
+    Show { phase: String },
+    Add { id: String, phase: String },
+    Remove { id: String },
+    Create { phase: String, title: Option<String> },
+}
+
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
@@ -28,8 +37,8 @@ Usage:
   story state remove <state-slug>
   story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
              [--label <labels>] [--created-after <date>] [--updated-after <date>]
-             [--blocked] [--ready] [--stale <duration>]
-  story next [--count <n>]
+             [--blocked] [--ready] [--stale <duration>] [--phase <N>]
+  story next [--count <n>] [--phase <N>]
   story summary
   story report [--html]
   story search <query>
@@ -38,8 +47,13 @@ Usage:
   story decompose <file> [--dry-run]     (markdown or YAML)
   story decompose --stdin [--dry-run]
   story import-project <file>
-  story context [--format markdown|json]
+  story load-context [--format markdown|json]
   story handoff [--since <duration>]
+  story phase list
+  story phase show <N>
+  story phase add <id> <N>
+  story phase remove <id>
+  story phase create <N> ["<title>"]
   story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
   story doctor [--fix]
   story mcp-config [--install <provider>] [--uninstall <provider>] [--uninstall-all]
@@ -123,12 +137,14 @@ pub enum Invocation {
         blocked: bool,
         ready: bool,
         stale: Option<String>,
+        phase: Option<String>,
     },
     Search {
         query: String,
     },
     Next {
         count: usize,
+        phase: Option<String>,
     },
     Summary,
     Report {
@@ -196,6 +212,9 @@ pub enum Invocation {
     },
     Handoff {
         since: Option<String>,
+    },
+    Phase {
+        action: PhaseAction,
     },
     Graph {
         mode: GraphMode,
@@ -289,7 +308,8 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "decompose" => parse_decompose(args),
         "import-project" => parse_import_project(args),
         "export" => Ok(Invocation::Export),
-        "context" => parse_context(args),
+        "load-context" | "context" => parse_context(args),
+        "phase" => parse_phase(args),
         "handoff" => parse_handoff(args),
         "graph" => parse_graph(args),
         "doctor" => parse_doctor(args),
@@ -482,8 +502,9 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut blocked = false;
     let mut ready = false;
     let mut stale = None;
+    let mut phase = None;
     let mut index = 1;
-    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>]";
+    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -548,6 +569,13 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
                 stale = Some(value.clone());
                 index += 2;
             }
+            "--phase" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                phase = Some(value.clone());
+                index += 2;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
@@ -565,18 +593,21 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
         blocked,
         ready,
         stale,
+        phase,
     })
 }
 
 fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
     let mut count = 1;
+    let mut phase = None;
     let mut index = 1;
+    let usage = "usage: story next [--count <n>] [--phase <N>]";
 
     while index < args.len() {
         match args[index].as_str() {
             "--count" => {
                 let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage("usage: story next [--count <n>]".to_string())
+                    AppError::Usage(usage.to_string())
                 })?;
                 count = value.parse::<usize>().map_err(|_| {
                     AppError::Usage("--count must be a positive integer".to_string())
@@ -588,15 +619,20 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
                 }
                 index += 2;
             }
+            "--phase" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage(usage.to_string())
+                })?;
+                phase = Some(value.clone());
+                index += 2;
+            }
             _ => {
-                return Err(AppError::Usage(
-                    "usage: story next [--count <n>]".to_string(),
-                ));
+                return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
 
-    Ok(Invocation::Next { count })
+    Ok(Invocation::Next { count, phase })
 }
 
 fn parse_report(args: &[String]) -> Result<Invocation, AppError> {
@@ -685,23 +721,101 @@ fn parse_import_project(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
     let mut format = None;
     let mut index = 1;
+    let usage = "usage: story load-context [--format markdown|json]";
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
                 let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage("usage: story context [--format markdown|json]".to_string())
+                    AppError::Usage(usage.to_string())
                 })?;
                 format = Some(value.clone());
                 index += 2;
             }
             _ => {
-                return Err(AppError::Usage(
-                    "usage: story context [--format markdown|json]".to_string(),
-                ));
+                return Err(AppError::Usage(usage.to_string()));
             }
         }
     }
     Ok(Invocation::Context { format })
+}
+
+fn validate_phase_number(s: &str) -> Result<(), AppError> {
+    s.parse::<u32>()
+        .map_err(|_| AppError::Validation(format!("phase must be a positive integer, got `{s}`")))
+        .and_then(|n| {
+            if n == 0 {
+                Err(AppError::Validation("phase must be >= 1".to_string()))
+            } else {
+                Ok(())
+            }
+        })
+}
+
+fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story phase list|show <N>|add <id> <N>|remove <id>|create <N> [\"<title>\"]";
+    if args.len() < 2 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    match args[1].as_str() {
+        "list" => Ok(Invocation::Phase {
+            action: PhaseAction::List,
+        }),
+        "show" => {
+            let phase = args
+                .get(2)
+                .ok_or_else(|| AppError::Usage("usage: story phase show <N>".to_string()))?
+                .clone();
+            validate_phase_number(&phase)?;
+            Ok(Invocation::Phase {
+                action: PhaseAction::Show { phase },
+            })
+        }
+        "add" => {
+            if args.len() < 4 {
+                return Err(AppError::Usage(
+                    "usage: story phase add <id> <N>".to_string(),
+                ));
+            }
+            validate_phase_number(&args[3])?;
+            Ok(Invocation::Phase {
+                action: PhaseAction::Add {
+                    id: args[2].clone(),
+                    phase: args[3].clone(),
+                },
+            })
+        }
+        "remove" => {
+            let id = args
+                .get(2)
+                .ok_or_else(|| {
+                    AppError::Usage("usage: story phase remove <id>".to_string())
+                })?
+                .clone();
+            Ok(Invocation::Phase {
+                action: PhaseAction::Remove { id },
+            })
+        }
+        "create" => {
+            let phase = args
+                .get(2)
+                .ok_or_else(|| {
+                    AppError::Usage(
+                        "usage: story phase create <N> [\"<title>\"]".to_string(),
+                    )
+                })?
+                .clone();
+            validate_phase_number(&phase)?;
+            let title = if args.len() > 3 {
+                Some(args[3..].join(" "))
+            } else {
+                None
+            };
+            Ok(Invocation::Phase {
+                action: PhaseAction::Create { phase, title },
+            })
+        }
+        _ => Err(AppError::Usage(usage.to_string())),
+    }
 }
 
 fn parse_handoff(args: &[String]) -> Result<Invocation, AppError> {

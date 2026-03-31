@@ -420,3 +420,245 @@ fn new_with_state() {
         .success()
         .stdout(predicate::str::contains("state: in-progress"));
 }
+
+// -----------------------------------------------------------------------
+// Phase tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn phase_list_empty() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "A task"]).assert().success();
+
+    story(dir.path())
+        .args(["phase", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no phases found"));
+}
+
+#[test]
+fn phase_add_and_list() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Task A"]).assert().success();
+    story(dir.path()).args(["new", "Task B"]).assert().success();
+    story(dir.path()).args(["new", "Task C"]).assert().success();
+
+    // Assign stories to phases
+    story(dir.path())
+        .args(["phase", "add", "SH-1", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("assigned SH-1 to phase 1"));
+    story(dir.path())
+        .args(["phase", "add", "SH-2", "1"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["phase", "add", "SH-3", "2"])
+        .assert()
+        .success();
+
+    // List phases
+    let output = story(dir.path())
+        .args(["phase", "list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("Phase 1"), "should show Phase 1");
+    assert!(stdout.contains("Phase 2"), "should show Phase 2");
+}
+
+#[test]
+fn phase_show() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Task A"]).assert().success();
+    story(dir.path()).args(["new", "Task B"]).assert().success();
+
+    story(dir.path())
+        .args(["phase", "add", "SH-1", "1"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["phase", "add", "SH-2", "2"])
+        .assert()
+        .success();
+
+    // Show phase 1 should only have Task A
+    story(dir.path())
+        .args(["phase", "show", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Task A"))
+        .stdout(predicate::str::contains("Task B").not());
+}
+
+#[test]
+fn phase_create() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    story(dir.path())
+        .args(["phase", "create", "1", "Foundation"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Phase 1: Foundation"))
+        .stdout(predicate::str::contains("phase:1"));
+}
+
+#[test]
+fn phase_remove() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Task A"]).assert().success();
+
+    story(dir.path())
+        .args(["phase", "add", "SH-1", "1"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["phase", "remove", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed phase assignment"));
+
+    // Verify no phase label remains
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("phase:").not());
+}
+
+#[test]
+fn list_with_phase_filter() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Task A"]).assert().success();
+    story(dir.path()).args(["new", "Task B"]).assert().success();
+
+    story(dir.path())
+        .args(["phase", "add", "SH-1", "1"])
+        .assert()
+        .success();
+
+    // List with --phase 1 should only show Task A
+    story(dir.path())
+        .args(["list", "--phase", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Task A"))
+        .stdout(predicate::str::contains("Task B").not());
+}
+
+#[test]
+fn next_with_phase_filter() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Task A"]).assert().success();
+    story(dir.path()).args(["new", "Task B"]).assert().success();
+
+    story(dir.path())
+        .args(["phase", "add", "SH-2", "2"])
+        .assert()
+        .success();
+
+    // Next with --phase 2 should only return Task B
+    story(dir.path())
+        .args(["next", "--phase", "2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Task B"));
+}
+
+#[test]
+fn decompose_sets_phase_labels() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let spec = "### Wave 1\n- [ ] Task A\n- [ ] Task B\n### Wave 2\n- [ ] Task C\n";
+    let spec_path = dir.path().join("spec.md");
+    std::fs::write(&spec_path, spec).unwrap();
+
+    story(dir.path())
+        .args(["decompose", "spec.md"])
+        .assert()
+        .success();
+
+    // Task A and B should have phase:1 label
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("phase:1"));
+
+    story(dir.path())
+        .args(["show", "SH-2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("phase:1"));
+
+    // Task C should have phase:2 label
+    story(dir.path())
+        .args(["show", "SH-3"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("phase:2"));
+}
+
+#[test]
+fn load_context_shows_phases() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Task A"]).assert().success();
+    story(dir.path()).args(["new", "Task B"]).assert().success();
+
+    story(dir.path())
+        .args(["phase", "add", "SH-1", "1"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["phase", "add", "SH-2", "2"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["load-context"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Phase Progress"))
+        .stdout(predicate::str::contains("Phase 1"))
+        .stdout(predicate::str::contains("Phase 2"));
+}
+
+#[test]
+fn old_context_alias_works() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Task A"]).assert().success();
+
+    // "context" should still work as an alias for "load-context"
+    story(dir.path())
+        .args(["context"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Project Status"));
+}
+
+#[test]
+fn load_context_basic() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Task A"]).assert().success();
+
+    story(dir.path())
+        .args(["load-context"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("# Project Status"))
+        .stdout(predicate::str::contains("1 open"));
+}

@@ -61,6 +61,18 @@ pub struct GraphOverview {
     pub leaves: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PhaseView {
+    pub phase: String,
+    pub title: Option<String>,
+    pub total: usize,
+    pub done: usize,
+    pub in_progress: usize,
+    pub todo: usize,
+    pub blocked: usize,
+    pub story_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub enum Response {
     Message(String),
@@ -69,6 +81,7 @@ pub enum Response {
     Summary(Box<SummaryView>),
     Graph(Box<GraphView>),
     Issues(Vec<String>),
+    PhaseList(Vec<PhaseView>),
 }
 
 #[derive(Serialize)]
@@ -86,6 +99,8 @@ struct JsonEnvelope<'a> {
     graph: Option<&'a GraphView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     issues: Option<&'a [String]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phases: Option<&'a [PhaseView]>,
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
     warnings: &'a [String],
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
@@ -129,6 +144,7 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: None,
+            phases: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -140,6 +156,7 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: None,
+            phases: None,
             warnings: &view.warnings,
             flagged_reasons: &view.flagged_reasons,
         }),
@@ -151,6 +168,7 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: None,
+            phases: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -162,6 +180,7 @@ fn render_json(response: &Response) -> String {
             summary: Some(summary.as_ref()),
             graph: None,
             issues: None,
+            phases: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -173,6 +192,7 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: Some(graph.as_ref()),
             issues: None,
+            phases: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -184,6 +204,19 @@ fn render_json(response: &Response) -> String {
             summary: None,
             graph: None,
             issues: Some(issues),
+            phases: None,
+            warnings: &[],
+            flagged_reasons: &[],
+        }),
+        Response::PhaseList(phase_views) => serde_json::to_string_pretty(&JsonEnvelope {
+            result: "ok",
+            message: None,
+            story: None,
+            stories: None,
+            summary: None,
+            graph: None,
+            issues: None,
+            phases: Some(phase_views),
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -245,6 +278,37 @@ fn render_human(response: &Response) -> String {
             for issue in issues {
                 body.push_str(issue);
                 body.push('\n');
+            }
+            body
+        }
+        Response::PhaseList(phase_views) => {
+            if phase_views.is_empty() {
+                return "no phases found\n".to_string();
+            }
+            let mut body = String::new();
+            for pv in phase_views {
+                let title_str = pv
+                    .title
+                    .as_ref()
+                    .map(|t| format!(": {t}"))
+                    .unwrap_or_default();
+                let status = if pv.total == 0 {
+                    "(empty)".to_string()
+                } else {
+                    let mut parts = Vec::new();
+                    parts.push(format!("{}/{} done", pv.done, pv.total));
+                    if pv.in_progress > 0 {
+                        parts.push(format!("{} in-progress", pv.in_progress));
+                    }
+                    if pv.blocked > 0 {
+                        parts.push(format!("{} blocked", pv.blocked));
+                    }
+                    format!("({})", parts.join(", "))
+                };
+                body.push_str(&format!(
+                    "Phase {}{} -- {} {}\n",
+                    pv.phase, title_str, pv.total, status
+                ));
             }
             body
         }

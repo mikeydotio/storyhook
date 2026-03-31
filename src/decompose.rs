@@ -363,9 +363,14 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
             last_story_index = Some(index);
             // Push onto checkbox stack so deeper items can become children
             checkbox_stack.push((indent, index));
-            // Track task index for wave sequencing
+            // Track task index for wave sequencing and add phase label
             if let Some(wave_num) = current_wave {
                 wave_task_indices.entry(wave_num).or_default().push(index);
+                let phase_label = format!("phase:{wave_num}");
+                let labels = stories[index].labels.get_or_insert_with(Vec::new);
+                if !labels.contains(&phase_label) {
+                    labels.push(phase_label);
+                }
             }
         } else if trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
             // Checked items are skipped

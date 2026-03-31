@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::cli::{CliOptions, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput, PluginAction};
+use crate::cli::{CliOptions, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput, PhaseAction, PluginAction};
 use crate::domain::{
     DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
     compute_integrity_issues, derive_family_relationships, extract_story_ids, is_ready,
@@ -10,8 +10,8 @@ use crate::domain::{
 use crate::error::AppError;
 use crate::lock;
 use crate::output::{
-    BlockedChainView, GraphOverview, GraphView, Response, StaleInfo, StoryView, SummaryView,
-    render_html_report,
+    BlockedChainView, GraphOverview, GraphView, PhaseView, Response, StaleInfo, StoryView,
+    SummaryView, render_html_report,
 };
 use crate::storage;
 
@@ -97,6 +97,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             blocked,
             ready,
             stale,
+            phase,
         } => {
             storage::ensure_project(root)?;
             let mut views = build_story_views(root, false)?;
@@ -146,6 +147,10 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             if ready {
                 views.retain(|view| is_ready(&view.story, &story_map));
+            }
+            if let Some(ref phase_num) = phase {
+                let phase_label = format!("phase:{phase_num}");
+                views.retain(|view| view.story.labels.contains(&phase_label));
             }
             if let Some(ref stale_str) = stale {
                 let duration = parse_duration(stale_str).ok_or_else(|| {
@@ -643,7 +648,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             story_view_by_id(root, &id)
         }),
-        Invocation::Next { count } => {
+        Invocation::Next { count, phase } => {
             storage::ensure_project(root)?;
             let views = build_story_views(root, false)?;
             let story_map: BTreeMap<String, StorySnapshot> = views
@@ -654,6 +659,10 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 .into_iter()
                 .filter(|v| is_ready(&v.story, &story_map))
                 .collect();
+            if let Some(ref phase_num) = phase {
+                let phase_label = format!("phase:{phase_num}");
+                ready.retain(|v| v.story.labels.contains(&phase_label));
+            }
             ready.sort_by(|a, b| {
                 a.story
                     .priority
@@ -1071,6 +1080,70 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     }
                 }
 
+                // Phase Progress section
+                let mut phase_map: BTreeMap<String, Vec<&StoryView>> = BTreeMap::new();
+                for view in &views {
+                    for label in &view.story.labels {
+                        if let Some(num) = label.strip_prefix("phase:") {
+                            phase_map.entry(num.to_string()).or_default().push(view);
+                        }
+                    }
+                }
+
+                if !phase_map.is_empty() {
+                    body.push_str("\n## Phase Progress\n\n");
+                    for (phase_num, phase_stories) in &phase_map {
+                        let total = phase_stories.len();
+                        let done_count = phase_stories
+                            .iter()
+                            .filter(|v| v.story.superstate == SuperState::Closed)
+                            .count();
+                        let default_open = storage::default_open_state(root)
+                            .map(|s| s.slug)
+                            .unwrap_or_else(|_| "todo".to_string());
+                        let in_prog = phase_stories
+                            .iter()
+                            .filter(|v| {
+                                v.story.superstate == SuperState::Open
+                                    && v.story.state != default_open
+                            })
+                            .count();
+                        let blocked_count = phase_stories
+                            .iter()
+                            .filter(|v| {
+                                v.story.superstate == SuperState::Open
+                                    && !is_ready(&v.story, &story_map)
+                            })
+                            .count();
+
+                        // Look for a phase title from a grouping story
+                        let title_suffix = phase_stories.iter().find_map(|v| {
+                            let prefix = format!("Phase {}:", phase_num);
+                            if v.story.title.starts_with(&prefix) {
+                                let rest = v.story.title[prefix.len()..].trim();
+                                if !rest.is_empty() {
+                                    return Some(format!(": {rest}"));
+                                }
+                            }
+                            None
+                        }).unwrap_or_default();
+
+                        let mut status_parts = Vec::new();
+                        status_parts.push(format!("{done_count}/{total} done"));
+                        if in_prog > 0 {
+                            status_parts.push(format!("{in_prog} in-progress"));
+                        }
+                        if blocked_count > 0 {
+                            status_parts.push(format!("{blocked_count} blocked"));
+                        }
+
+                        body.push_str(&format!(
+                            "- Phase {}{} -- {}\n",
+                            phase_num, title_suffix, status_parts.join(", ")
+                        ));
+                    }
+                }
+
                 Ok(Response::Message(body))
             }
         }
@@ -1150,6 +1223,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             Ok(Response::Message(body))
         }
+        Invocation::Phase { action } => handle_phase(root, action, no_hooks),
         Invocation::Graph { mode } => {
             storage::ensure_project(root)?;
             let views = build_story_views(root, false)?;
@@ -2202,6 +2276,184 @@ fn resolve_binary_path() -> String {
         .unwrap_or_else(|_| "story".to_string())
 }
 
+fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Response, AppError> {
+    match action {
+        PhaseAction::List => {
+            storage::ensure_project(root)?;
+            let views = build_story_views(root, false)?;
+            let story_map: BTreeMap<String, StorySnapshot> = views
+                .iter()
+                .map(|v| (v.story.id.clone(), v.story.clone()))
+                .collect();
+
+            let mut phase_map: BTreeMap<String, Vec<&StoryView>> = BTreeMap::new();
+            for view in &views {
+                for label in &view.story.labels {
+                    if let Some(num) = label.strip_prefix("phase:") {
+                        phase_map.entry(num.to_string()).or_default().push(view);
+                    }
+                }
+            }
+
+            if phase_map.is_empty() {
+                return Ok(Response::PhaseList(Vec::new()));
+            }
+
+            let default_open = storage::default_open_state(root)
+                .map(|s| s.slug)
+                .unwrap_or_else(|_| "todo".to_string());
+            let mut phase_views = Vec::new();
+            for (phase_num, stories) in &phase_map {
+                let total = stories.len();
+                let mut done = 0;
+                let mut in_progress = 0;
+                let mut todo = 0;
+                let mut blocked_count = 0;
+                let mut title = None;
+                let mut story_ids = Vec::new();
+
+                for view in stories {
+                    story_ids.push(view.story.id.clone());
+                    if view.story.superstate == SuperState::Closed {
+                        done += 1;
+                    } else if view.story.superstate == SuperState::Open
+                        && !is_ready(&view.story, &story_map)
+                    {
+                        blocked_count += 1;
+                    } else if view.story.superstate == SuperState::Open
+                        && view.story.state != default_open
+                    {
+                        in_progress += 1;
+                    } else {
+                        todo += 1;
+                    }
+
+                    // Check for a phase grouping story (title starts with "Phase N:")
+                    let prefix = format!("Phase {}:", phase_num);
+                    if view.story.title.starts_with(&prefix) {
+                        let rest = view.story.title[prefix.len()..].trim();
+                        if !rest.is_empty() {
+                            title = Some(rest.to_string());
+                        }
+                    } else {
+                        let prefix_bare = format!("Phase {}", phase_num);
+                        if view.story.title == prefix_bare {
+                            // No title suffix
+                        }
+                    }
+                }
+
+                phase_views.push(PhaseView {
+                    phase: phase_num.clone(),
+                    title,
+                    total,
+                    done,
+                    in_progress,
+                    todo,
+                    blocked: blocked_count,
+                    story_ids,
+                });
+            }
+
+            Ok(Response::PhaseList(phase_views))
+        }
+        PhaseAction::Show { phase } => {
+            storage::ensure_project(root)?;
+            let mut views = build_story_views(root, false)?;
+            let phase_label = format!("phase:{phase}");
+            views.retain(|v| v.story.labels.contains(&phase_label));
+            sort_story_views(&mut views);
+            Ok(Response::Stories(views, None))
+        }
+        PhaseAction::Add { id, phase } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            ensure_open_story(root, &id)?;
+            let story = storage::load_open_story_snapshot(root, &id)?;
+            let mut labels: BTreeSet<String> = story.labels.into_iter().collect();
+            // Remove any existing phase:* labels
+            labels.retain(|l| !l.starts_with("phase:"));
+            // Add the new phase label
+            labels.insert(format!("phase:{phase}"));
+            let labels: Vec<String> = labels.into_iter().collect();
+            storage::write_story_events(
+                root,
+                &id,
+                &[StoryEvent::StoryLabelsSet {
+                    at: storage::now(),
+                    labels,
+                }],
+            )?;
+            if !no_hooks
+                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
+            {
+                let snapshot = storage::load_open_story_snapshot(root, &id)?;
+                let payload = serde_json::json!({
+                    "event_type": "label_change",
+                    "story_id": &id,
+                    "timestamp": crate::storage::now(),
+                    "story_title": &snapshot.title,
+                    "labels": &snapshot.labels
+                });
+                crate::event_hooks::fire_hook(
+                    root,
+                    config,
+                    crate::event_hooks::HookEventType::LabelChange,
+                    &payload.to_string(),
+                );
+            }
+            Ok(Response::Message(format!(
+                "assigned {id} to phase {phase}"
+            )))
+        }),
+        PhaseAction::Remove { id } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            ensure_open_story(root, &id)?;
+            let story = storage::load_open_story_snapshot(root, &id)?;
+            let mut labels: BTreeSet<String> = story.labels.into_iter().collect();
+            let had_phase = labels.iter().any(|l| l.starts_with("phase:"));
+            labels.retain(|l| !l.starts_with("phase:"));
+            if !had_phase {
+                return Ok(Response::Message(format!(
+                    "{id} has no phase assignment"
+                )));
+            }
+            let labels: Vec<String> = labels.into_iter().collect();
+            storage::write_story_events(
+                root,
+                &id,
+                &[StoryEvent::StoryLabelsSet {
+                    at: storage::now(),
+                    labels,
+                }],
+            )?;
+            Ok(Response::Message(format!(
+                "removed phase assignment from {id}"
+            )))
+        }),
+        PhaseAction::Create { phase, title } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            let story_title = if let Some(ref t) = title {
+                format!("Phase {}: {}", phase, t)
+            } else {
+                format!("Phase {}", phase)
+            };
+            let story = storage::create_story(root, &story_title, None)?;
+            let id = story.id.clone();
+            // Add the phase label
+            let labels = vec![format!("phase:{phase}")];
+            storage::write_story_events(
+                root,
+                &id,
+                &[StoryEvent::StoryLabelsSet {
+                    at: storage::now(),
+                    labels,
+                }],
+            )?;
+            story_view_by_id(root, &id)
+        }),
+    }
+}
+
 fn generate_agents_md(root: &std::path::Path) -> String {
     let (prefix, done_state) = match read_project_config(root) {
         Some((p, d)) => (p, d),
@@ -2217,7 +2469,7 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 
 1. **Start of session**: Load project context
    ```
-   story context
+   story load-context
    ```
 
 2. **Pick next task**: Get the highest-priority ready story
@@ -2255,7 +2507,8 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 | Set multiple fields | `story set {prefix}-<n> --priority high --state in-progress` |
 | Search stories | `story search "<query>"` |
 | Project summary | `story summary` |
-| Context (for LLM) | `story context` |
+| Context (for LLM) | `story load-context` |
+| Phase progress | `story phase list` |
 | Session handoff | `story handoff --since 2h` |
 
 ## Important
@@ -2281,7 +2534,7 @@ fn generate_claude_md(_root: &std::path::Path) -> String {
 
 This project uses **storyhook** for task tracking. Full usage instructions are in `.storyhook/CLAUDE.md` — read that file before starting work.
 
-Quick start: run `story context` at session start, `story next` to pick a task.
+Quick start: run `story load-context` at session start, `story next` to pick a task.
 "#
     .to_string()
 }
@@ -2294,7 +2547,7 @@ or MCP server to manage tasks.
 
 ## Task Management
 
-- Run `story context` at the start of each session to understand project state.
+- Run `story load-context` at the start of each session to understand project state.
 - Run `story next` to find the highest-priority ready task.
 - After completing work, mark the story done: `story move <id> done`.
 - Use `story handoff --since 2h` to summarize work at session end.
@@ -2315,7 +2568,8 @@ or MCP server to manage tasks.
 - `story set <id> --field value` — update multiple fields at once
 - `story search "<query>"` — search stories
 - `story summary` — project overview
-- `story context` — full project context for LLM consumption
+- `story load-context` — full project context for LLM consumption
+- `story phase list` — phase progress overview
 - `story handoff --since <duration>` — recent changes summary
 
 ## MCP Server

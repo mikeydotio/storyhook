@@ -6,7 +6,7 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 
 1. **Start of session**: Load project context
    ```
-   story context
+   story load-context
    ```
 
 2. **Pick next task**: Get the highest-priority ready story
@@ -44,7 +44,8 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 | Set multiple fields | `story set SH-<n> --priority high --state in-progress` |
 | Search stories | `story search "<query>"` |
 | Project summary | `story summary` |
-| Context (for LLM) | `story context` |
+| Context (for LLM) | `story load-context` |
+| Phase progress | `story phase list` |
 | Session handoff | `story handoff --since 2h` |
 
 ## Important

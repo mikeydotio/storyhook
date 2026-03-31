@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::app;
-use crate::cli::{CliOptions, GraphMode, Invocation};
+use crate::cli::{CliOptions, GraphMode, Invocation, PhaseAction};
 use crate::output;
 
 const SERVER_NAME: &str = "storyhook";
@@ -147,7 +147,8 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                         "flagged": {"type": "boolean", "description": "Only flagged stories"},
                         "blocked": {"type": "boolean", "description": "Only blocked stories"},
                         "ready": {"type": "boolean", "description": "Only ready stories"},
-                        "stale": {"type": "string", "description": "Show stories with updated_at older than duration (e.g. 2h, 1d, 1w)"}
+                        "stale": {"type": "string", "description": "Show stories with updated_at older than duration (e.g. 2h, 1d, 1w)"},
+                        "phase": {"type": "string", "description": "Filter by phase number (stories with label phase:N)"}
                     }
                 }
             },
@@ -208,7 +209,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
             },
             {
                 "name": "storyhook_get_summary",
-                "description": "Get a project summary with story counts by state and priority, plus lists of ready, blocked, and stale stories. Use this for a quick project health check. For a full session-start context document, use the CLI command 'story context' instead.",
+                "description": "Get a project summary with story counts by state and priority, plus lists of ready, blocked, and stale stories. Use this for a quick project health check. For a full session-start context document, use the CLI command 'story load-context' instead.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
@@ -220,7 +221,8 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "count": {"type": "integer", "description": "Number of stories to return (default: 1)"}
+                        "count": {"type": "integer", "description": "Number of stories to return (default: 1)"},
+                        "phase": {"type": "string", "description": "Filter by phase number (stories with label phase:N)"}
                     }
                 }
             },
@@ -393,6 +395,14 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                         }
                     }
                 }
+            },
+            {
+                "name": "storyhook_phase_list",
+                "description": "List all phases with per-phase progress. Phases are a convention on labels (phase:N). Returns phase number, title, total stories, and counts by state (done, in-progress, todo, blocked). Use this to get an overview of phased work.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
             }
         ]
     });
@@ -508,6 +518,7 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
             blocked: get_bool(arguments, "blocked"),
             ready: get_bool(arguments, "ready"),
             stale: get_str(arguments, "stale"),
+            phase: get_str(arguments, "phase"),
         }),
         "storyhook_get_story" => {
             let id = get_str(arguments, "id").ok_or("missing required parameter: id")?;
@@ -579,6 +590,7 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
             let count = arguments.get("count").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
             Ok(Invocation::Next {
                 count: count.max(1),
+                phase: get_str(arguments, "phase"),
             })
         }
         "storyhook_search" => {
@@ -692,6 +704,9 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
         }
         "storyhook_commit_sync" | "storyhook_sync_git" => Ok(Invocation::CommitSync {
             since: get_str(arguments, "since"),
+        }),
+        "storyhook_phase_list" => Ok(Invocation::Phase {
+            action: PhaseAction::List,
         }),
         _ => Err(format!("unknown tool: {tool_name}")),
     }
