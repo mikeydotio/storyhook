@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::cli::{CliOptions, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput, PhaseAction, PluginAction};
+use crate::cli::{CliOptions, EpicAction, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput, PhaseAction, PluginAction, TypeAction};
 use crate::domain::{
     DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
     compute_integrity_issues, derive_family_relationships, extract_story_ids, is_ready,
@@ -42,8 +42,29 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             Ok(Response::Message(msg))
         }
-        Invocation::New { title, state, .. } => lock::with_project_lock(root, || {
+        Invocation::New { title, state, story_type } => lock::with_project_lock(root, || {
+            // Validate story_type before creating the story
+            if let Some(ref st) = story_type {
+                let type_map = storage::load_type_map(root)?;
+                if !type_map.contains_key(st.as_str()) {
+                    return Err(AppError::Validation(format!(
+                        "unknown type `{st}`. Available types: {}",
+                        type_map.keys().cloned().collect::<Vec<_>>().join(", ")
+                    )));
+                }
+            }
             let story = storage::create_story(root, &title, state.as_deref())?;
+            // Emit StoryTypeSet if a type was specified
+            if let Some(ref st) = story_type {
+                storage::write_story_events(
+                    root,
+                    &story.id,
+                    &[StoryEvent::StoryTypeSet {
+                        at: storage::now(),
+                        story_type: st.clone(),
+                    }],
+                )?;
+            }
             if !no_hooks
                 && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
             {
@@ -98,7 +119,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             ready,
             stale,
             phase,
-            ..
+            story_type,
         } => {
             storage::ensure_project(root)?;
             let mut views = build_story_views(root, false)?;
@@ -152,6 +173,13 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             if let Some(ref phase_num) = phase {
                 let phase_label = format!("phase:{phase_num}");
                 views.retain(|view| view.story.labels.contains(&phase_label));
+            }
+            if let Some(ref st) = story_type {
+                if st == "none" {
+                    views.retain(|view| view.story.story_type.is_none());
+                } else {
+                    views.retain(|view| view.story.story_type.as_deref() == Some(st.as_str()));
+                }
             }
             if let Some(ref stale_str) = stale {
                 let duration = parse_duration(stale_str).ok_or_else(|| {
@@ -1708,7 +1736,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             blocked,
             unblocked,
             json: json_patch,
-            ..
+            story_type,
         } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             ensure_open_story(root, &id)?;
@@ -1787,6 +1815,20 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             if unblocked {
                 events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
                 changes.push("unblocked".to_string());
+            }
+            if let Some(ref st) = story_type {
+                let type_map = storage::load_type_map(root)?;
+                if !type_map.contains_key(st.as_str()) {
+                    return Err(AppError::Validation(format!(
+                        "unknown type `{st}`. Available types: {}",
+                        type_map.keys().cloned().collect::<Vec<_>>().join(", ")
+                    )));
+                }
+                events.push(StoryEvent::StoryTypeSet {
+                    at: now.clone(),
+                    story_type: st.clone(),
+                });
+                changes.push(format!("type -> {st}"));
             }
             if let Some(ref j) = json_patch {
                 let patch: serde_json::Value = serde_json::from_str(j).map_err(|e| {
@@ -1906,12 +1948,118 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 Ok(Response::Message(msg))
             }
         },
-        Invocation::Type { .. } => {
-            Err(crate::error::AppError::Usage("type management not yet implemented".to_string()))
-        }
-        Invocation::Epic { .. } => {
-            Err(crate::error::AppError::Usage("epic management not yet implemented".to_string()))
-        }
+        Invocation::Type { action } => match action {
+            TypeAction::List => {
+                storage::ensure_project(root)?;
+                let types = storage::load_types(root)?;
+                let lines: Vec<String> = types
+                    .iter()
+                    .map(|t| {
+                        if let Some(ref desc) = t.description {
+                            format!("{} — {desc}", t.slug)
+                        } else {
+                            t.slug.clone()
+                        }
+                    })
+                    .collect();
+                Ok(Response::Message(lines.join("\n")))
+            }
+            TypeAction::Add { slug, description } => lock::with_project_lock(root, || {
+                storage::ensure_project(root)?;
+                let type_def = storage::add_type(root, &slug, description.as_deref())?;
+                Ok(Response::Message(format!("added type {}", type_def.slug)))
+            }),
+            TypeAction::Remove { slug } => lock::with_project_lock(root, || {
+                storage::ensure_project(root)?;
+                storage::remove_type(root, &slug)?;
+                Ok(Response::Message(format!("removed type {slug}")))
+            }),
+        },
+        Invocation::Epic { action } => match action {
+            EpicAction::Create { title } => lock::with_project_lock(root, || {
+                storage::ensure_project(root)?;
+                // Validate that "epic" type exists
+                let type_map = storage::load_type_map(root)?;
+                if !type_map.contains_key("epic") {
+                    return Err(AppError::Validation(
+                        "type `epic` is not defined. Add it with: story type add epic".to_string(),
+                    ));
+                }
+                // Create story + set type to epic in a single lock
+                let story = storage::create_story(root, &title, None)?;
+                storage::write_story_events(
+                    root,
+                    &story.id,
+                    &[StoryEvent::StoryTypeSet {
+                        at: storage::now(),
+                        story_type: "epic".to_string(),
+                    }],
+                )?;
+                story_view_response(root, story)
+            }),
+            EpicAction::Add { epic_id, story_id } => lock::with_project_lock(root, || {
+                storage::ensure_project(root)?;
+                ensure_open_story(root, &epic_id)?;
+                ensure_open_story(root, &story_id)?;
+                if epic_id == story_id {
+                    return Err(AppError::Validation(
+                        "stories cannot relate to themselves".to_string(),
+                    ));
+                }
+                let a_story = storage::load_open_story_snapshot(root, &epic_id)?;
+                let b_story = storage::load_open_story_snapshot(root, &story_id)?;
+                let stories = load_story_map(root)?;
+
+                validate_parent_constraints(
+                    &stories, &epic_id, &story_id, "parent-of", &a_story, &b_story,
+                )?;
+
+                let edges = relation_edges("parent-of").ok_or_else(|| {
+                    AppError::Validation("unsupported relationship `parent-of`".to_string())
+                })?;
+
+                let now = storage::now();
+                let mut a_events = Vec::new();
+                let mut b_events = Vec::new();
+
+                for (a_relation, b_relation) in edges {
+                    if !has_relation(&a_story, a_relation, &story_id) {
+                        a_events.push(StoryEvent::StoryRelationshipAdded {
+                            at: now.clone(),
+                            other_id: story_id.clone(),
+                            relation: a_relation.to_string(),
+                        });
+                    }
+                    if !has_relation(&b_story, b_relation, &epic_id) {
+                        b_events.push(StoryEvent::StoryRelationshipAdded {
+                            at: now.clone(),
+                            other_id: epic_id.clone(),
+                            relation: b_relation.to_string(),
+                        });
+                    }
+                }
+
+                if !a_events.is_empty() {
+                    storage::write_story_events(root, &epic_id, &a_events)?;
+                }
+                if !b_events.is_empty() {
+                    storage::write_story_events(root, &story_id, &b_events)?;
+                }
+
+                story_view_by_id(root, &epic_id)
+            }),
+            EpicAction::List => {
+                storage::ensure_project(root)?;
+                let mut views = build_story_views(root, false)?;
+                views.retain(|view| view.story.story_type.as_deref() == Some("epic"));
+                sort_story_views(&mut views);
+                Ok(Response::Stories(views, None))
+            }
+            EpicAction::Show { id } => {
+                storage::ensure_project(root)?;
+                story_view_by_id(root, &id)
+            }
+        },
     };
 
     // After successful command, maybe auto-sync to GitHub
