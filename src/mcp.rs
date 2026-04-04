@@ -148,7 +148,8 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                         "blocked": {"type": "boolean", "description": "Only blocked stories"},
                         "ready": {"type": "boolean", "description": "Only ready stories"},
                         "stale": {"type": "string", "description": "Show stories with updated_at older than duration (e.g. 2h, 1d, 1w)"},
-                        "phase": {"type": "string", "description": "Filter by phase number (stories with label phase:N)"}
+                        "phase": {"type": "string", "description": "Filter by phase number (stories with label phase:N)"},
+                        "story_type": {"type": "string", "description": "Filter by story type slug (e.g. bug, epic, story). Use 'none' for untyped stories"}
                     }
                 }
             },
@@ -173,7 +174,8 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                         "state": {"type": "string", "description": "Initial state slug (default: todo). Common states: todo, in-progress, done"},
                         "priority": {"type": "string", "description": "Priority: critical, high, medium, low, none"},
                         "labels": {"type": "string", "description": "Comma-separated labels"},
-                        "assignee": {"type": "string", "description": "Assignee member ID"}
+                        "assignee": {"type": "string", "description": "Assignee member ID"},
+                        "story_type": {"type": "string", "description": "Story type slug (e.g. story, epic, bug, chore, task)"}
                     },
                     "required": ["title"]
                 }
@@ -190,7 +192,8 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                         "labels_add": {"type": "string", "description": "Labels to add (comma-separated)"},
                         "labels_remove": {"type": "string", "description": "Labels to remove (comma-separated)"},
                         "assignee": {"type": "string", "description": "Assignee member ID"},
-                        "awaiting": {"type": "string", "description": "Set awaiting reason (use empty string to clear)"}
+                        "awaiting": {"type": "string", "description": "Set awaiting reason (use empty string to clear)"},
+                        "story_type": {"type": "string", "description": "Set story type slug"}
                     },
                     "required": ["id"]
                 }
@@ -293,6 +296,7 @@ fn handle_tools_list(id: Value) -> JsonRpcResponse {
                                     "title": {"type": "string"},
                                     "state": {"type": "string", "description": "Initial state slug (e.g., todo, in-progress)"},
                                     "priority": {"type": "string"},
+                                    "story_type": {"type": "string", "description": "Story type slug (e.g. story, epic, bug, chore, task)"},
                                     "labels": {"type": "array", "items": {"type": "string"}},
                                     "relationships": {
                                         "type": "array",
@@ -578,6 +582,20 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
                     return Ok(Invocation::ClearAwaiting { id });
                 }
                 return Ok(Invocation::SetAwaiting { id, awaiting });
+            }
+            if let Some(story_type) = get_str(arguments, "story_type") {
+                return Ok(Invocation::SetFields {
+                    id,
+                    title: None,
+                    state: None,
+                    priority: None,
+                    assignee: None,
+                    labels: None,
+                    blocked: None,
+                    unblocked: false,
+                    json: None,
+                    story_type: Some(story_type),
+                });
             }
             Err("no update fields provided".to_string())
         }
