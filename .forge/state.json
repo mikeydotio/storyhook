@@ -1,10 +1,14 @@
 {
-  "status": "running",
-  "resume": null,
-  "sessions_completed": 0,
-  "stories_attempted": 0,
+  "status": "paused",
+  "resume": {
+    "command": "/forge continue",
+    "handoff_file": "handoffs/handoff-execute.md",
+    "summary": "Execution paused — 1 story completed (SH-3). Session limit reached."
+  },
+  "sessions_completed": 1,
+  "stories_attempted": 1,
   "total_retries": 0,
   "retry_counts": {},
   "storyhook_consecutive_failures": 0,
-  "updated_at": "2026-04-04T05:00:00Z"
+  "updated_at": "2026-04-04T05:08:00Z"
 }
