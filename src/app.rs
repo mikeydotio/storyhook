@@ -403,6 +403,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         warnings: Vec::new(),
                         flagged_reasons: Vec::new(),
                         stale_info: None,
+                        progress: None,
                     });
                 }
             }
@@ -796,6 +797,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     warnings: Vec::new(),
                     flagged_reasons: Vec::new(),
                     stale_info: None,
+                    progress: None,
                 });
             }
             Ok(Response::Stories(views, None))
@@ -2101,6 +2103,7 @@ fn build_story_views(root: &Path, include_derived: bool) -> Result<Vec<StoryView
             warnings: Vec::new(),
             flagged_reasons,
             stale_info: None,
+            progress: None,
         });
     }
 
@@ -2719,6 +2722,7 @@ fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<ImportBa
             warnings: Vec::new(),
             flagged_reasons: Vec::new(),
             stale_info: None,
+            progress: None,
         });
     }
     Ok(ImportBatchResult {

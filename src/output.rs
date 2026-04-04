@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::domain::{Priority, StoryRelation, StorySnapshot, SuperState};
+use crate::domain::{Priority, ProgressRollup, StoryRelation, StorySnapshot, SuperState};
 use crate::error::AppError;
 
 #[derive(Clone, Debug, Serialize)]
@@ -21,6 +21,8 @@ pub struct StoryView {
     pub flagged_reasons: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stale_info: Option<StaleInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<ProgressRollup>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -251,6 +253,16 @@ fn render_human(response: &Response) -> String {
                 } else {
                     String::new()
                 };
+                let type_badge = if let Some(ref t) = story.story.story_type {
+                    format!(" [{}]", t)
+                } else {
+                    String::new()
+                };
+                let progress_summary = if let Some(ref p) = story.progress {
+                    format!(" ({}/{})", p.children_done, p.children_total)
+                } else {
+                    String::new()
+                };
                 let labels = if story.story.labels.is_empty() {
                     String::new()
                 } else {
@@ -262,8 +274,8 @@ fn render_human(response: &Response) -> String {
                     String::new()
                 };
                 body.push_str(&format!(
-                    "{} [{}]{} {}{}{}{}\n",
-                    story.story.id, story.story.state, priority, story.story.title, labels, flagged, stale
+                    "{} [{}]{}{} {}{}{}{}{}\n",
+                    story.story.id, story.story.state, priority, type_badge, story.story.title, progress_summary, labels, flagged, stale
                 ));
             }
             body
@@ -327,6 +339,8 @@ fn render_story(view: &StoryView) -> String {
     ));
     body.push_str(&format!("assignee: {assignee}\n"));
     body.push_str(&format!("priority: {}\n", story.priority.as_str()));
+    let type_display = story.story_type.as_deref().unwrap_or("-");
+    body.push_str(&format!("type: {type_display}\n"));
     if story.labels.is_empty() {
         body.push_str("labels: -\n");
     } else {
@@ -360,6 +374,18 @@ fn render_story(view: &StoryView) -> String {
         body.push_str("derived_relationships:\n");
         for relation in &view.derived_relationships {
             body.push_str(&format!("- {} {}\n", relation.relation, relation.other_id));
+        }
+    }
+
+    if let Some(ref progress) = view.progress {
+        if progress.children_total > 0 {
+            let pct = (progress.children_done as f64 / progress.children_total as f64 * 100.0) as u64;
+            body.push_str(&format!(
+                "progress: {}/{} children done ({}%)\n",
+                progress.children_done, progress.children_total, pct
+            ));
+        } else {
+            body.push_str("progress: 0/0 children done (0%)\n");
         }
     }
 
