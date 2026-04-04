@@ -1,16 +1,18 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-006
-- **Stories completed**: 1 (SH-8)
+- **Session**: session-execute-007
+- **Stories completed**: 1 (SH-9)
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 max_stories_per_session)
 
 ## What Happened
-Implemented SH-8 (app.rs — build_story_views progress rollup, Next parent skip, doctor type check). Generator-evaluator loop: pass on first attempt. All tests pass (389+ unit + integration). No new clippy warnings. Full autonomy (canary complete in prior sessions).
+Implemented SH-9 (mcp.rs — story_type param on MCP tools). Generator-evaluator loop: pass on first attempt. All tests pass (389+ unit + integration). No new clippy warnings. Full autonomy (canary complete in prior sessions).
+
+Also fixed SH-7 storyhook state (was still "todo" despite code being committed — storyhook state wasn't synced during earlier session).
 
 ## Stories Completed This Session
-- SH-8: app.rs — build_story_views progress rollup, Next parent skip, doctor type check — Added `has_children` and `compute_progress` public functions to domain.rs. Modified `build_story_views` in app.rs to compute a `progress_map` from all stories and attach progress to each StoryView. Added `!has_children(&v.story)` filter to Next handler so parent stories are excluded from next recommendations. Added type integrity check to `doctor_report` that loads `storage::load_type_map` and flags stories with unknown types. Added 6 unit tests and 6 integration tests.
+- SH-9: mcp.rs — story_type param on MCP tools — Added story_type to inputSchema for storyhook_list_stories, storyhook_create_story, storyhook_update_story, and storyhook_bulk_create. Added build_invocation handling for story_type in storyhook_update_story via Invocation::SetFields.
 
 ## Current Blockers
 None.
@@ -36,11 +38,14 @@ None.
 - `--type none` in List filters to `story_type.is_none()`
 - `--type <slug>` in List filters to `story_type.as_deref() == Some(slug)`
 - SetFields story_type handling placed after `unblocked` block, before `json_patch` block
-- **NEW**: `has_children` is a standalone public function in domain.rs, NOT a method on HierarchyGraph (which is private)
-- **NEW**: `compute_progress` takes `(&StorySnapshot, &BTreeMap<String, StorySnapshot>)` — same pattern as `is_ready`
-- **NEW**: `build_story_views` computes `progress_map` BEFORE `stories.into_values()` consumes the BTreeMap
-- **NEW**: Next handler combines `is_ready` and `!has_children` in a single `.filter()` call
-- **NEW**: `doctor_report` loads type_map once and checks each story's type after iterating flagged_reasons
+- `has_children` is a standalone public function in domain.rs, NOT a method on HierarchyGraph (which is private)
+- `compute_progress` takes `(&StorySnapshot, &BTreeMap<String, StorySnapshot>)` — same pattern as `is_ready`
+- `build_story_views` computes `progress_map` BEFORE `stories.into_values()` consumes the BTreeMap
+- Next handler combines `is_ready` and `!has_children` in a single `.filter()` call
+- `doctor_report` loads type_map once and checks each story's type after iterating flagged_reasons
+- **NEW**: MCP update_story story_type handling uses `Invocation::SetFields` (not a dedicated variant) — placed after awaiting, before error fallback
+- **NEW**: MCP update_story processes one field per call in priority order: state > priority > labels > assignee > awaiting > story_type
+- **NEW**: storyhook_bulk_create story_type works via JSON passthrough (entire object serialized, deserialized by ImportStory)
 
 ### Micro-Decisions
 - Type fallback in render_story uses "-" (consistent with assignee pattern), not "story" default — output.rs has no storage access; default resolution is display-time concern
@@ -51,9 +56,8 @@ None.
 - Epic Add returns `story_view_by_id(root, &epic_id)` — shows the epic after adding child
 - Epic Create does NOT fire event hooks for the create — only the New handler has hook firing
 - Type validation error message includes available types: `"unknown type \`{st}\`. Available types: bug, chore, epic, story, task"`
-- **NEW**: `compute_progress` handles dangling references gracefully — missing children counted as not-done via `map_or(false, ...)`
-- **NEW**: Doctor type check placed AFTER the flagged_reasons loop, not inside it — separate concern from integrity issues
-- **NEW**: `has_children` and `compute_progress` placed after `compute_integrity_issues` in domain.rs (line 520), before `is_ready`
+- `compute_progress` handles dangling references gracefully — missing children counted as not-done via `map_or(false, ...)`
+- Doctor type check placed AFTER the flagged_reasons loop, not inside it — separate concern from integrity issues
 
 ### Code Landmarks
 - `src/domain.rs:108-112` — ProgressRollup struct definition
@@ -67,16 +71,19 @@ None.
 - `src/app.rs:2355` — `let type_map = storage::load_type_map(root)?;` in doctor_report
 - `src/app.rs:2364-2368` — unknown type check in doctor_report
 - `src/app.rs:1948-2061` — Full Type and Epic handler implementations (from SH-7)
+- `src/mcp.rs:152` — story_type in list inputSchema
+- `src/mcp.rs:178` — story_type in create inputSchema
+- `src/mcp.rs:196` — story_type in update inputSchema
+- `src/mcp.rs:299` — story_type in bulk_create per-item schema
+- `src/mcp.rs:586-598` — story_type handling in update build_invocation (SetFields)
 
 ### Test State
 - **Command**: `cargo test`
 - **Result**: 389+ unit tests + integration tests, 0 failures
-- **Clippy**: 25 pre-existing warnings, 0 new
+- **Clippy**: 26 pre-existing warnings, 0 new
 - **Flaky tests**: none detected
 
 ## What's Next
-- SH-9 (T3.2: mcp.rs — story_type param on MCP tools) is ready
-- SH-10 (T3.3: storage.rs + app.rs — Export/import types.toml) is ready
-- SH-9 and SH-10 are both wave 4, independent of each other
-- SH-11 is blocked by SH-9 and SH-10
-- Recommended next: story next will pick one of SH-9/SH-10 based on priority
+- SH-10 (T3.3: storage.rs + app.rs — Export/import types.toml, ImportStory type handling) is ready
+- SH-11 (T4.1: Full compilation and test pass) is blocked by SH-10
+- After SH-10 and SH-11, all stories will be done — proceed to review+validate

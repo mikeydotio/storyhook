@@ -1,7 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-04T04:44:29Z","title":"T3.2: mcp.rs — story_type param on MCP tools","state":"todo"}
-{"kind":"StoryPrioritySet","at":"2026-04-04T04:44:29Z","priority":"high"}
-{"kind":"StoryLabelsSet","at":"2026-04-04T04:44:29Z","labels":["phase:4"]}
-{"kind":"StoryCommentAdded","at":"2026-04-04T04:44:29Z","text":"Requirements: R23, R24. Files: src/mcp.rs.\nAC: story_type in create/update/list tool inputSchema; build_invocation passes story_type for all three tools."}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-2","relation":"child-of"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-7","relation":"blocked-by"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-11","relation":"blocks"}
