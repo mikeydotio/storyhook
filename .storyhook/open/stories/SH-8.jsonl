@@ -1,7 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-04T04:44:29Z","title":"T3.1: app.rs — build_story_views progress rollup, Next parent skip, doctor type check","state":"todo"}
-{"kind":"StoryPrioritySet","at":"2026-04-04T04:44:29Z","priority":"high"}
-{"kind":"StoryLabelsSet","at":"2026-04-04T04:44:29Z","labels":["phase:4"]}
-{"kind":"StoryCommentAdded","at":"2026-04-04T04:44:29Z","text":"Requirements: R5, R20, R21, R22. Files: src/domain.rs, src/app.rs.\nAC: has_children returns true for parent-of relationships; compute_progress returns ProgressRollup for parents; build_story_views attaches progress; Next handler filters out parents; doctor_report flags unknown types."}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-2","relation":"child-of"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-7","relation":"blocked-by"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-11","relation":"blocks"}
