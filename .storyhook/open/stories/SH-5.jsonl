@@ -6,3 +6,5 @@
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-3","relation":"blocked-by"}
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-4","relation":"blocked-by"}
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-7","relation":"blocks"}
+{"kind":"StoryStateChanged","at":"2026-04-04T05:15:55Z","state":"in-progress"}
+{"kind":"StoryStateChanged","at":"2026-04-04T05:20:22Z","state":"verifying"}

@@ -1,8 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-04T04:44:29Z","title":"T1.1: domain.rs — StoryTypeSet event, TypeDef, snapshot field, fold logic","state":"todo"}
-{"kind":"StoryPrioritySet","at":"2026-04-04T04:44:29Z","priority":"high"}
-{"kind":"StoryLabelsSet","at":"2026-04-04T04:44:29Z","labels":["phase:1"]}
-{"kind":"StoryCommentAdded","at":"2026-04-04T04:44:29Z","text":"Requirements: R1, R2, R3, R4, R6, R28, R34. Files: src/domain.rs.\nAC: StoryEvent has StoryTypeSet { at, story_type } variant; TypeDef struct with slug + description; StorySnapshot.story_type: Option<String> with serde(default); ImportStory.story_type: Option<String> with serde(default); ProgressRollup struct with children_done + children_total; fold_story handles StoryTypeSet; last_activity_type returns \"type-set\"; existing domain::tests pass; new fold tests for story_type."}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-2","relation":"child-of"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-5","relation":"blocks"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-6","relation":"blocks"}
-{"kind":"StoryStateChanged","at":"2026-04-04T04:56:30Z","state":"verifying"}

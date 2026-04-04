@@ -8,7 +8,8 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    Member, StateDef, StoryEvent, StorySnapshot, SuperState, fold_story, validate_state_defs,
+    Member, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef, fold_story,
+    validate_state_defs,
 };
 use crate::error::AppError;
 
@@ -46,6 +47,11 @@ struct StatesFile {
     states: Vec<StateDef>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct TypesFile {
+    types: Vec<TypeDef>,
+}
+
 impl ProjectPaths {
     pub fn new(root: &Path) -> Self {
         Self {
@@ -63,6 +69,10 @@ impl ProjectPaths {
 
     pub fn states_file(&self) -> PathBuf {
         self.storyhook_dir().join("states.toml")
+    }
+
+    pub fn types_file(&self) -> PathBuf {
+        self.storyhook_dir().join("types.toml")
     }
 
     pub fn members_file(&self) -> PathBuf {
@@ -135,6 +145,8 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
         ];
         save_states(root, &states)?;
     }
+
+    ensure_types_file(root)?;
 
     if !paths.members_file().exists() {
         fs::write(paths.members_file(), "")?;
@@ -341,6 +353,120 @@ pub fn remove_state(root: &Path, slug: &str) -> Result<(), AppError> {
         .collect::<Vec<_>>();
     save_states(root, &retained)?;
     Ok(())
+}
+
+fn default_types() -> Vec<TypeDef> {
+    vec![
+        TypeDef {
+            slug: "story".to_string(),
+            description: Some("A user story or feature".to_string()),
+        },
+        TypeDef {
+            slug: "epic".to_string(),
+            description: Some("A large initiative containing child stories".to_string()),
+        },
+        TypeDef {
+            slug: "bug".to_string(),
+            description: Some("A defect or regression".to_string()),
+        },
+        TypeDef {
+            slug: "chore".to_string(),
+            description: Some("Maintenance or infrastructure work".to_string()),
+        },
+        TypeDef {
+            slug: "task".to_string(),
+            description: Some("A discrete unit of work".to_string()),
+        },
+    ]
+}
+
+pub fn ensure_types_file(root: &Path) -> Result<(), AppError> {
+    let paths = ProjectPaths::new(root);
+    if !paths.types_file().exists() {
+        save_types(root, &default_types())?;
+    }
+    Ok(())
+}
+
+pub fn load_types(root: &Path) -> Result<Vec<TypeDef>, AppError> {
+    ensure_project(root)?;
+    ensure_types_file(root)?;
+    let paths = ProjectPaths::new(root);
+    let raw = fs::read_to_string(paths.types_file())?;
+    let types_file = toml::from_str::<TypesFile>(&raw)?;
+    Ok(types_file.types)
+}
+
+pub fn load_type_map(root: &Path) -> Result<BTreeMap<String, TypeDef>, AppError> {
+    Ok(load_types(root)?
+        .into_iter()
+        .map(|t| (t.slug.clone(), t))
+        .collect())
+}
+
+pub fn save_types(root: &Path, types: &[TypeDef]) -> Result<(), AppError> {
+    let paths = ProjectPaths::new(root);
+    fs::write(
+        paths.types_file(),
+        toml::to_string_pretty(&TypesFile {
+            types: types.to_vec(),
+        })?,
+    )?;
+    Ok(())
+}
+
+pub fn add_type(root: &Path, slug: &str, description: Option<&str>) -> Result<TypeDef, AppError> {
+    if slug == "none" {
+        return Err(AppError::Validation(
+            "type slug `none` is reserved and cannot be used".to_string(),
+        ));
+    }
+
+    let mut types = load_types(root)?;
+    if types.iter().any(|t| t.slug == slug) {
+        return Err(AppError::Validation(format!(
+            "type `{slug}` already exists"
+        )));
+    }
+
+    let type_def = TypeDef {
+        slug: slug.to_string(),
+        description: description.map(|d| d.to_string()),
+    };
+    types.push(type_def.clone());
+    save_types(root, &types)?;
+    Ok(type_def)
+}
+
+pub fn remove_type(root: &Path, slug: &str) -> Result<(), AppError> {
+    let types = load_types(root)?;
+    if !types.iter().any(|t| t.slug == slug) {
+        return Err(AppError::NotFound(format!("type `{slug}` not found")));
+    }
+
+    if load_all_snapshots(root)?
+        .into_iter()
+        .any(|story| story.story_type.as_deref() == Some(slug))
+    {
+        return Err(AppError::Validation(format!(
+            "type `{slug}` is still used by an existing story"
+        )));
+    }
+
+    let retained = types
+        .into_iter()
+        .filter(|t| t.slug != slug)
+        .collect::<Vec<_>>();
+    save_types(root, &retained)?;
+    Ok(())
+}
+
+pub fn default_type(root: &Path) -> Result<String, AppError> {
+    let types = load_types(root)?;
+    types
+        .first()
+        .map(|t| t.slug.clone())
+        .ok_or_else(|| AppError::Validation("types.toml has no types defined".to_string()))
 }
 
 pub fn default_open_state(root: &Path) -> Result<StateDef, AppError> {
@@ -882,4 +1008,247 @@ fn open_archive_connection(root: &Path) -> Result<Connection, AppError> {
     }
 
     Ok(connection)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn setup_project() -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        init_project(dir.path(), None).unwrap();
+        dir
+    }
+
+    // --- ProjectPaths::types_file ---
+
+    #[test]
+    fn types_file_returns_correct_path() {
+        let paths = ProjectPaths::new(Path::new("/tmp/test"));
+        assert_eq!(paths.types_file(), PathBuf::from("/tmp/test/.storyhook/types.toml"));
+    }
+
+    // --- ensure_types_file ---
+
+    #[test]
+    fn ensure_types_file_creates_defaults_when_missing() {
+        let dir = setup_project();
+        let paths = ProjectPaths::new(dir.path());
+        // init_project already calls ensure_types_file, so the file exists.
+        // Remove it and call ensure again.
+        fs::remove_file(paths.types_file()).unwrap();
+        assert!(!paths.types_file().exists());
+        ensure_types_file(dir.path()).unwrap();
+        assert!(paths.types_file().exists());
+        let types = load_types(dir.path()).unwrap();
+        assert_eq!(types.len(), 5);
+        assert_eq!(types[0].slug, "story");
+    }
+
+    #[test]
+    fn ensure_types_file_does_not_overwrite_existing() {
+        let dir = setup_project();
+        // Save a custom types file with only 2 entries
+        let custom = vec![
+            TypeDef { slug: "alpha".to_string(), description: None },
+            TypeDef { slug: "beta".to_string(), description: None },
+        ];
+        save_types(dir.path(), &custom).unwrap();
+        ensure_types_file(dir.path()).unwrap();
+        let types = load_types(dir.path()).unwrap();
+        assert_eq!(types.len(), 2);
+        assert_eq!(types[0].slug, "alpha");
+    }
+
+    // --- init_project creates types.toml ---
+
+    #[test]
+    fn init_project_creates_types_file() {
+        let dir = tempdir().unwrap();
+        init_project(dir.path(), None).unwrap();
+        let paths = ProjectPaths::new(dir.path());
+        assert!(paths.types_file().exists());
+    }
+
+    // --- load_types ---
+
+    #[test]
+    fn load_types_returns_default_types() {
+        let dir = setup_project();
+        let types = load_types(dir.path()).unwrap();
+        assert_eq!(types.len(), 5);
+        let slugs: Vec<&str> = types.iter().map(|t| t.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["story", "epic", "bug", "chore", "task"]);
+    }
+
+    #[test]
+    fn load_types_auto_creates_if_missing() {
+        let dir = setup_project();
+        let paths = ProjectPaths::new(dir.path());
+        fs::remove_file(paths.types_file()).unwrap();
+        // load_types calls ensure_types_file lazily
+        let types = load_types(dir.path()).unwrap();
+        assert_eq!(types.len(), 5);
+    }
+
+    // --- load_type_map ---
+
+    #[test]
+    fn load_type_map_returns_btree_keyed_by_slug() {
+        let dir = setup_project();
+        let map = load_type_map(dir.path()).unwrap();
+        assert_eq!(map.len(), 5);
+        assert!(map.contains_key("story"));
+        assert!(map.contains_key("epic"));
+        assert!(map.contains_key("bug"));
+        assert!(map.contains_key("chore"));
+        assert!(map.contains_key("task"));
+        assert_eq!(map["story"].description.as_deref(), Some("A user story or feature"));
+    }
+
+    // --- save_types ---
+
+    #[test]
+    fn save_types_writes_file() {
+        let dir = setup_project();
+        let custom = vec![
+            TypeDef { slug: "feature".to_string(), description: Some("A feature".to_string()) },
+        ];
+        save_types(dir.path(), &custom).unwrap();
+        let types = load_types(dir.path()).unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].slug, "feature");
+        assert_eq!(types[0].description.as_deref(), Some("A feature"));
+    }
+
+    // --- add_type ---
+
+    #[test]
+    fn add_type_appends_new_type() {
+        let dir = setup_project();
+        let result = add_type(dir.path(), "spike", Some("A time-boxed investigation")).unwrap();
+        assert_eq!(result.slug, "spike");
+        assert_eq!(result.description.as_deref(), Some("A time-boxed investigation"));
+        let types = load_types(dir.path()).unwrap();
+        assert_eq!(types.len(), 6);
+        assert_eq!(types[5].slug, "spike");
+    }
+
+    #[test]
+    fn add_type_rejects_duplicate() {
+        let dir = setup_project();
+        let result = add_type(dir.path(), "story", Some("duplicate"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn add_type_rejects_none_slug() {
+        let dir = setup_project();
+        let result = add_type(dir.path(), "none", Some("reserved"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn add_type_without_description() {
+        let dir = setup_project();
+        let result = add_type(dir.path(), "spike", None).unwrap();
+        assert_eq!(result.slug, "spike");
+        assert_eq!(result.description, None);
+    }
+
+    // --- remove_type ---
+
+    #[test]
+    fn remove_type_removes_unused_type() {
+        let dir = setup_project();
+        let types_before = load_types(dir.path()).unwrap();
+        assert!(types_before.iter().any(|t| t.slug == "chore"));
+        remove_type(dir.path(), "chore").unwrap();
+        let types_after = load_types(dir.path()).unwrap();
+        assert_eq!(types_after.len(), types_before.len() - 1);
+        assert!(!types_after.iter().any(|t| t.slug == "chore"));
+    }
+
+    #[test]
+    fn remove_type_rejects_nonexistent() {
+        let dir = setup_project();
+        let result = remove_type(dir.path(), "nonexistent");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn remove_type_rejects_in_use() {
+        let dir = setup_project();
+        // Create a story and set its type to "epic"
+        let story = create_story(dir.path(), "test story", None).unwrap();
+        write_story_events(
+            dir.path(),
+            &story.id,
+            &[StoryEvent::StoryTypeSet {
+                at: now(),
+                story_type: "epic".to_string(),
+            }],
+        )
+        .unwrap();
+        let result = remove_type(dir.path(), "epic");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("still used"));
+    }
+
+    // --- default_type ---
+
+    #[test]
+    fn default_type_returns_first_slug() {
+        let dir = setup_project();
+        let dt = default_type(dir.path()).unwrap();
+        assert_eq!(dt, "story");
+    }
+
+    #[test]
+    fn default_type_returns_first_after_custom_save() {
+        let dir = setup_project();
+        let custom = vec![
+            TypeDef { slug: "zeta".to_string(), description: None },
+            TypeDef { slug: "alpha".to_string(), description: None },
+        ];
+        save_types(dir.path(), &custom).unwrap();
+        let dt = default_type(dir.path()).unwrap();
+        assert_eq!(dt, "zeta");
+    }
+
+    #[test]
+    fn default_type_errors_on_empty_types() {
+        let dir = setup_project();
+        save_types(dir.path(), &[]).unwrap();
+        let result = default_type(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("no types defined"));
+    }
+
+    // --- TypesFile wraps Vec<TypeDef> ---
+
+    #[test]
+    fn types_file_round_trips_through_toml() {
+        let types = vec![
+            TypeDef { slug: "story".to_string(), description: Some("A user story".to_string()) },
+            TypeDef { slug: "bug".to_string(), description: None },
+        ];
+        let types_file = TypesFile { types: types.clone() };
+        let serialized = toml::to_string_pretty(&types_file).unwrap();
+        let deserialized: TypesFile = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.types.len(), 2);
+        assert_eq!(deserialized.types[0].slug, "story");
+        assert_eq!(deserialized.types[0].description.as_deref(), Some("A user story"));
+        assert_eq!(deserialized.types[1].slug, "bug");
+        assert_eq!(deserialized.types[1].description, None);
+    }
 }
