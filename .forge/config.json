@@ -1,0 +1,12 @@
+{
+  "yolo": false,
+  "max_fix_cycles": 3,
+  "max_fix_cycles_yolo": 10,
+  "when_in_doubt": "escalate",
+  "max_retries": 4,
+  "max_stories_per_session": 1,
+  "max_sessions": 200,
+  "max_total_retries": 20,
+  "canary_stories": 3,
+  "heartbeat_window_minutes": 30
+}
