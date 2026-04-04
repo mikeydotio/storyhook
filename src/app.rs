@@ -4,8 +4,8 @@ use std::path::Path;
 use crate::cli::{CliOptions, EpicAction, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput, PhaseAction, PluginAction, TypeAction};
 use crate::domain::{
     DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
-    compute_integrity_issues, derive_family_relationships, extract_story_ids, is_ready,
-    parse_duration, relation_edges, would_create_parent_cycle,
+    compute_integrity_issues, compute_progress, derive_family_relationships, extract_story_ids,
+    has_children, is_ready, parse_duration, relation_edges, would_create_parent_cycle,
 };
 use crate::error::AppError;
 use crate::lock;
@@ -687,7 +687,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 .collect();
             let mut ready: Vec<StoryView> = views
                 .into_iter()
-                .filter(|v| is_ready(&v.story, &story_map))
+                .filter(|v| is_ready(&v.story, &story_map) && !has_children(&v.story))
                 .collect();
             if let Some(ref phase_num) = phase {
                 let phase_label = format!("phase:{phase_num}");
@@ -2228,6 +2228,13 @@ fn build_story_views(root: &Path, include_derived: bool) -> Result<Vec<StoryView
             .push("story exists in both open and archive storage".to_string());
     }
 
+    let progress_map: BTreeMap<String, _> = stories
+        .values()
+        .filter_map(|story| {
+            compute_progress(story, &stories).map(|p| (story.id.clone(), p))
+        })
+        .collect();
+
     let mut views = Vec::new();
     for story in stories.into_values() {
         let story_id = story.id.clone();
@@ -2251,7 +2258,7 @@ fn build_story_views(root: &Path, include_derived: bool) -> Result<Vec<StoryView
             warnings: Vec::new(),
             flagged_reasons,
             stale_info: None,
-            progress: None,
+            progress: progress_map.get(&story_id).cloned(),
         });
     }
 
@@ -2345,6 +2352,7 @@ fn validate_parent_constraints(
 
 fn doctor_report(root: &Path) -> Result<Response, AppError> {
     let views = build_story_views(root, false)?;
+    let type_map = storage::load_type_map(root)?;
     let mut issues = Vec::new();
     for view in views {
         for issue in view.flagged_reasons {
@@ -2352,6 +2360,11 @@ fn doctor_report(root: &Path) -> Result<Response, AppError> {
                 continue;
             }
             issues.push(format!("{}: {}", view.story.id, issue));
+        }
+        if let Some(ref slug) = view.story.story_type {
+            if !type_map.contains_key(slug) {
+                issues.push(format!("{}: unknown type `{}`", view.story.id, slug));
+            }
         }
     }
 

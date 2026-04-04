@@ -517,6 +517,44 @@ pub fn compute_integrity_issues(
     issues
 }
 
+pub fn has_children(story: &StorySnapshot) -> bool {
+    story
+        .relationships
+        .iter()
+        .any(|r| r.relation == "parent-of")
+}
+
+pub fn compute_progress(
+    story: &StorySnapshot,
+    all_stories: &BTreeMap<String, StorySnapshot>,
+) -> Option<ProgressRollup> {
+    let children: Vec<&str> = story
+        .relationships
+        .iter()
+        .filter(|r| r.relation == "parent-of")
+        .map(|r| r.other_id.as_str())
+        .collect();
+
+    if children.is_empty() {
+        return None;
+    }
+
+    let children_total = children.len();
+    let children_done = children
+        .iter()
+        .filter(|child_id| {
+            all_stories
+                .get(**child_id)
+                .map_or(false, |s| s.superstate == SuperState::Closed)
+        })
+        .count();
+
+    Some(ProgressRollup {
+        children_done,
+        children_total,
+    })
+}
+
 pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnapshot>) -> bool {
     if story.superstate != SuperState::Open {
         return false;
@@ -1037,8 +1075,8 @@ mod tests {
 
     use super::{
         Priority, StateDef, StoryEvent, StoryRelation, StorySnapshot, SuperState,
-        derive_family_relationships, fold_story, last_activity_type, validate_state_defs,
-        would_create_parent_cycle,
+        compute_progress, derive_family_relationships, fold_story, has_children,
+        last_activity_type, validate_state_defs, would_create_parent_cycle,
     };
 
     #[test]
@@ -1486,5 +1524,58 @@ mod tests {
 
         assert_eq!(story.story_type.as_deref(), Some("bug"));
         assert_eq!(story.updated_at, "2026-03-13T00:02:00Z");
+    }
+
+    #[test]
+    fn has_children_true_for_parent_of() {
+        let stories = sample_story_map();
+        assert!(has_children(stories.get("SH-1").unwrap()));
+    }
+
+    #[test]
+    fn has_children_false_for_leaf() {
+        let stories = sample_story_map();
+        assert!(!has_children(stories.get("SH-3").unwrap()));
+        assert!(!has_children(stories.get("SH-4").unwrap()));
+    }
+
+    #[test]
+    fn compute_progress_returns_rollup_for_parent() {
+        let stories = sample_story_map();
+        let progress = compute_progress(stories.get("SH-1").unwrap(), &stories);
+        assert!(progress.is_some());
+        let p = progress.unwrap();
+        assert_eq!(p.children_total, 1);
+        assert_eq!(p.children_done, 0);
+    }
+
+    #[test]
+    fn compute_progress_counts_closed_children() {
+        let mut stories = sample_story_map();
+        // Close child SH-2
+        stories.get_mut("SH-2").unwrap().superstate = SuperState::Closed;
+        stories.get_mut("SH-2").unwrap().state = "done".to_string();
+
+        let progress = compute_progress(stories.get("SH-1").unwrap(), &stories);
+        let p = progress.unwrap();
+        assert_eq!(p.children_total, 1);
+        assert_eq!(p.children_done, 1);
+    }
+
+    #[test]
+    fn compute_progress_returns_none_for_leaf() {
+        let stories = sample_story_map();
+        let progress = compute_progress(stories.get("SH-4").unwrap(), &stories);
+        assert!(progress.is_none());
+    }
+
+    #[test]
+    fn compute_progress_only_counts_direct_children() {
+        let stories = sample_story_map();
+        // SH-1 is parent-of SH-2, SH-2 is parent-of SH-3
+        // SH-1 should only count SH-2 as direct child, not SH-3
+        let progress = compute_progress(stories.get("SH-1").unwrap(), &stories);
+        let p = progress.unwrap();
+        assert_eq!(p.children_total, 1);
     }
 }

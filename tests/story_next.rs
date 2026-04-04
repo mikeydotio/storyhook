@@ -206,3 +206,58 @@ fn next_all_blocked_returns_no_ready() {
         .success()
         .stdout(predicate::str::contains("no ready stories"));
 }
+
+#[test]
+fn next_skips_parent_stories() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Parent epic"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Child task"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["relate", "SH-1", "parent-of", "SH-2"])
+        .assert()
+        .success();
+
+    // Next should skip SH-1 (parent) and return SH-2 (child)
+    story(dir.path())
+        .arg("next")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SH-2"))
+        .stdout(predicate::str::contains("Child task"));
+}
+
+#[test]
+fn next_returns_no_ready_when_only_parents_are_ready() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Parent epic"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Child task"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["relate", "SH-1", "parent-of", "SH-2"])
+        .assert()
+        .success();
+    // Block the child so only the parent would be "ready"
+    story(dir.path())
+        .args(["block", "SH-2", "waiting on design"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .arg("next")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no ready stories"));
+}

@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tempfile::tempdir;
 
@@ -180,4 +181,92 @@ fn parent_cycle_is_rejected() {
         .assert()
         .code(2)
         .stdout(contains("would create a cycle"));
+}
+
+#[test]
+fn parent_story_shows_progress_rollup_in_json() {
+    let dir = tempdir().unwrap();
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    for title in ["Parent", "Child A", "Child B"] {
+        Command::cargo_bin("story")
+            .unwrap()
+            .current_dir(dir.path())
+            .args(["new", title])
+            .assert()
+            .success();
+    }
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["relate", "SH-1", "parent-of", "SH-2"])
+        .assert()
+        .success();
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["relate", "SH-1", "parent-of", "SH-3"])
+        .assert()
+        .success();
+
+    // Before closing any child
+    let output = Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["--json", "list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("\"children_total\": 2"));
+    assert!(stdout.contains("\"children_done\": 0"));
+
+    // Close one child
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["move", "SH-2", "done"])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["--json", "list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("\"children_done\": 1"));
+    assert!(stdout.contains("\"children_total\": 2"));
+}
+
+#[test]
+fn leaf_story_has_no_progress_in_json() {
+    let dir = tempdir().unwrap();
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["new", "Leaf story"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["--json", "show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(contains("children_total").not());
 }
