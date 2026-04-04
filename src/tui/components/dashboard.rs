@@ -526,6 +526,7 @@ mod tests {
             relationships: vec![],
             priority,
             labels: vec![],
+            story_type: None,
             closed_at: None,
         }
     }

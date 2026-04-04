@@ -849,6 +849,7 @@ mod tests {
             relationships: vec![],
             priority: Priority::None,
             labels: vec![],
+            story_type: None,
             closed_at: None,
         }
     }

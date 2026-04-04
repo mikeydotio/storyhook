@@ -5,3 +5,4 @@
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-2","relation":"child-of"}
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-5","relation":"blocks"}
 {"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-6","relation":"blocks"}
+{"kind":"StoryStateChanged","at":"2026-04-04T04:56:30Z","state":"verifying"}

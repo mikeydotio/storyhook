@@ -355,6 +355,7 @@ mod tests {
             relationships: Vec::new(),
             priority: Priority::None,
             labels: Vec::new(),
+            story_type: None,
             closed_at: None,
         }
     }

@@ -102,6 +102,7 @@ fn flatten_yaml(
             description: story.description.clone(),
             relationships,
             state: None,
+            story_type: None,
         });
         if let Some(ref children) = story.children {
             flatten_yaml(children, Some(my_index), output);
@@ -233,6 +234,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 description: None,
                 relationships,
                 state: None,
+                story_type: None,
             });
             last_story_index = Some(index);
             // Update heading stack: pop anything >= level 3, push this
@@ -274,6 +276,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 description: None,
                 relationships,
                 state: None,
+                story_type: None,
             });
             last_story_index = Some(index);
             // Update heading stack: pop anything >= level 2, push this
@@ -302,6 +305,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 description: None,
                 relationships: None,
                 state: None,
+                story_type: None,
             });
             last_story_index = Some(index);
             // Reset heading stack for new top-level heading
@@ -359,6 +363,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
                 description: None,
                 relationships,
                 state: None,
+                story_type: None,
             });
             last_story_index = Some(index);
             // Push onto checkbox stack so deeper items can become children

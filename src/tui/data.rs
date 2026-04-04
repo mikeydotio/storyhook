@@ -286,6 +286,7 @@ mod tests {
             relationships: vec![],
             priority: Priority::None,
             labels: vec![],
+            story_type: None,
             closed_at: None,
         }
     }
@@ -437,6 +438,7 @@ mod tests {
             relationships: vec![],
             priority,
             labels: labels.into_iter().map(|s| s.to_string()).collect(),
+            story_type: None,
             closed_at: None,
         }
     }

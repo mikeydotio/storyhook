@@ -19,6 +19,8 @@ pub struct ImportStory {
     pub description: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
+    #[serde(default)]
+    pub story_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,6 +100,19 @@ pub struct StateDef {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TypeDef {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProgressRollup {
+    pub children_done: usize,
+    pub children_total: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Member {
     pub id: String,
     pub display_name: String,
@@ -140,6 +155,8 @@ pub struct StorySnapshot {
     pub priority: Priority,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub story_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<String>,
 }
@@ -185,6 +202,10 @@ pub enum StoryEvent {
         at: String,
         priority: Priority,
     },
+    StoryTypeSet {
+        at: String,
+        story_type: String,
+    },
     StoryLabelsSet {
         at: String,
         labels: Vec<String>,
@@ -216,6 +237,7 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryRelationshipAdded { .. } => "relationship-added",
             StoryEvent::StoryRelationshipRemoved { .. } => "relationship-removed",
             StoryEvent::StoryPrioritySet { .. } => "priority-set",
+            StoryEvent::StoryTypeSet { .. } => "type-set",
             StoryEvent::StoryLabelsSet { .. } => "labels-set",
             StoryEvent::StoryTitleSet { .. } => "title-set",
             StoryEvent::StoryClosedAndArchived { .. } => "archived",
@@ -253,6 +275,7 @@ pub fn fold_story(
     let mut assignee = None;
     let mut awaiting = None;
     let mut priority = Priority::None;
+    let mut story_type = None;
     let mut labels = Vec::new();
     let mut comments = Vec::new();
     let mut relationships = BTreeSet::new();
@@ -304,6 +327,13 @@ pub fn fold_story(
                 priority: new_priority,
             } => {
                 priority = new_priority.clone();
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryTypeSet {
+                at,
+                story_type: new_type,
+            } => {
+                story_type = Some(new_type.clone());
                 updated_at = Some(at.clone());
             }
             StoryEvent::StoryLabelsSet {
@@ -383,6 +413,7 @@ pub fn fold_story(
         awaiting,
         priority,
         labels,
+        story_type,
         comments,
         relationships: relationships.into_iter().collect(),
         closed_at,
@@ -1208,6 +1239,7 @@ mod tests {
                 awaiting: None,
                 priority: Priority::None,
                 labels: Vec::new(),
+                story_type: None,
                 comments: Vec::new(),
                 relationships: vec![StoryRelation {
                     relation: "parent-of".to_string(),
@@ -1226,6 +1258,7 @@ mod tests {
                 awaiting: None,
                 priority: Priority::None,
                 labels: Vec::new(),
+                story_type: None,
                 comments: Vec::new(),
                 relationships: vec![
                     StoryRelation {
@@ -1250,6 +1283,7 @@ mod tests {
                 awaiting: None,
                 priority: Priority::None,
                 labels: Vec::new(),
+                story_type: None,
                 comments: Vec::new(),
                 relationships: vec![StoryRelation {
                     relation: "child-of".to_string(),
@@ -1268,6 +1302,7 @@ mod tests {
                 awaiting: None,
                 priority: Priority::None,
                 labels: Vec::new(),
+                story_type: None,
                 comments: Vec::new(),
                 relationships: Vec::new(),
                 closed_at: None,
@@ -1371,5 +1406,85 @@ mod tests {
             ]),
             "priority-set"
         );
+        assert_eq!(
+            last_activity_type(&[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Test".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryTypeSet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    story_type: "epic".to_string(),
+                },
+            ]),
+            "type-set"
+        );
+    }
+
+    #[test]
+    fn fold_story_tracks_story_type() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Typed story".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryTypeSet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    story_type: "epic".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.story_type.as_deref(), Some("epic"));
+        assert_eq!(story.updated_at, "2026-03-13T00:01:00Z");
+    }
+
+    #[test]
+    fn fold_story_story_type_defaults_to_none() {
+        let story = fold_story(
+            "SH-1",
+            &[StoryEvent::StoryCreated {
+                at: "2026-03-13T00:00:00Z".to_string(),
+                title: "No type".to_string(),
+                state: "todo".to_string(),
+            }],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.story_type, None);
+    }
+
+    #[test]
+    fn fold_story_story_type_can_be_changed() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Changing type".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryTypeSet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    story_type: "epic".to_string(),
+                },
+                StoryEvent::StoryTypeSet {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                    story_type: "bug".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.story_type.as_deref(), Some("bug"));
+        assert_eq!(story.updated_at, "2026-03-13T00:02:00Z");
     }
 }

@@ -984,6 +984,7 @@ fn remote_snapshot_to_story_snapshot(
         relationships: remote.non_native_relationships.clone(),
         priority: remote.priority.clone(),
         labels: remote.labels.clone(),
+        story_type: None,
         closed_at: issue.closed_at.clone(),
     }
 }

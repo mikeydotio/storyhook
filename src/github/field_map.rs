@@ -410,6 +410,7 @@ mod tests {
             ],
             priority: Priority::High,
             labels: vec!["bug".to_string(), "frontend".to_string()],
+            story_type: None,
             closed_at: None,
         }
     }

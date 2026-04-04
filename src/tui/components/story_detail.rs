@@ -705,6 +705,7 @@ mod tests {
             relationships: vec![],
             priority: Priority::High,
             labels: vec!["bug".to_string(), "tui".to_string()],
+            story_type: None,
             closed_at: None,
         }
     }

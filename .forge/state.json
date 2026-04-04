@@ -1,0 +1,10 @@
+{
+  "status": "running",
+  "resume": null,
+  "sessions_completed": 0,
+  "stories_attempted": 0,
+  "total_retries": 0,
+  "retry_counts": {},
+  "storyhook_consecutive_failures": 0,
+  "updated_at": "2026-04-04T05:00:00Z"
+}

@@ -763,6 +763,7 @@ mod tests {
             relationships: rels,
             priority: Priority::None,
             labels: vec![],
+            story_type: None,
             closed_at: None,
         }
     }
