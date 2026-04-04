@@ -1,18 +1,16 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-007
-- **Stories completed**: 1 (SH-9)
+- **Session**: session-execute-008
+- **Stories completed**: 1 (SH-10)
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 max_stories_per_session)
 
 ## What Happened
-Implemented SH-9 (mcp.rs — story_type param on MCP tools). Generator-evaluator loop: pass on first attempt. All tests pass (389+ unit + integration). No new clippy warnings. Full autonomy (canary complete in prior sessions).
-
-Also fixed SH-7 storyhook state (was still "todo" despite code being committed — storyhook state wasn't synced during earlier session).
+Implemented SH-10 (export/import types.toml, ImportStory type handling). Generator-evaluator loop: pass on first attempt. All tests pass (389+ unit + integration). No new clippy warnings. Full autonomy (canary complete in prior sessions).
 
 ## Stories Completed This Session
-- SH-9: mcp.rs — story_type param on MCP tools — Added story_type to inputSchema for storyhook_list_stories, storyhook_create_story, storyhook_update_story, and storyhook_bulk_create. Added build_invocation handling for story_type in storyhook_update_story via Invocation::SetFields.
+- SH-10: storage.rs + app.rs — Export/import types.toml, ImportStory type handling — Added `types: Vec<TypeDef>` with `#[serde(default)]` to `ProjectExport`; `export_project` calls `load_types`; `import_project` restores types.toml via `save_types`; both Import handler and `import_stories_batch` emit `StoryTypeSet` events for typed stories. Two integration tests added (round-trip with custom types, import with story_type).
 
 ## Current Blockers
 None.
@@ -43,9 +41,13 @@ None.
 - `build_story_views` computes `progress_map` BEFORE `stories.into_values()` consumes the BTreeMap
 - Next handler combines `is_ready` and `!has_children` in a single `.filter()` call
 - `doctor_report` loads type_map once and checks each story's type after iterating flagged_reasons
-- **NEW**: MCP update_story story_type handling uses `Invocation::SetFields` (not a dedicated variant) — placed after awaiting, before error fallback
-- **NEW**: MCP update_story processes one field per call in priority order: state > priority > labels > assignee > awaiting > story_type
-- **NEW**: storyhook_bulk_create story_type works via JSON passthrough (entire object serialized, deserialized by ImportStory)
+- MCP update_story story_type handling uses `Invocation::SetFields` (not a dedicated variant) — placed after awaiting, before error fallback
+- MCP update_story processes one field per call in priority order: state > priority > labels > assignee > awaiting > story_type
+- storyhook_bulk_create story_type works via JSON passthrough (entire object serialized, deserialized by ImportStory)
+- **NEW**: ProjectExport.types uses `#[serde(default)]` for backward-compatible deserialization of pre-types exports
+- **NEW**: export_project calls `load_types(root)?` and includes types in the ProjectExport struct
+- **NEW**: import_project checks `!export.types.is_empty()` before calling `save_types` — skips for legacy exports
+- **NEW**: Import handler (app.rs:761-766) and import_stories_batch (app.rs:2826-2831) both emit StoryTypeSet after description/comment handling, following same pattern as priority/labels/assignee
 
 ### Micro-Decisions
 - Type fallback in render_story uses "-" (consistent with assignee pattern), not "story" default — output.rs has no storage access; default resolution is display-time concern
@@ -58,6 +60,8 @@ None.
 - Type validation error message includes available types: `"unknown type \`{st}\`. Available types: bug, chore, epic, story, task"`
 - `compute_progress` handles dangling references gracefully — missing children counted as not-done via `map_or(false, ...)`
 - Doctor type check placed AFTER the flagged_reasons loop, not inside it — separate concern from integrity issues
+- **NEW**: import_project only restores types when export.types is non-empty — avoids overwriting auto-created types.toml when importing legacy exports
+- **NEW**: story_type event pushed in same events Vec as priority/labels/assignee — single write_story_events call per story
 
 ### Code Landmarks
 - `src/domain.rs:108-112` — ProgressRollup struct definition
@@ -66,11 +70,16 @@ None.
 - `src/domain.rs:558-580` — `is_ready` function (unchanged)
 - `src/app.rs:4-8` — imports now include `compute_progress` and `has_children`
 - `src/app.rs:690` — Next handler filter: `is_ready && !has_children`
+- `src/app.rs:761-766` — Import handler StoryTypeSet emission
+- `src/app.rs:2826-2831` — import_stories_batch StoryTypeSet emission
 - `src/app.rs:2231-2236` — `progress_map` computation in `build_story_views`
 - `src/app.rs:2261` — `progress: progress_map.get(&story_id).cloned()`
 - `src/app.rs:2355` — `let type_map = storage::load_type_map(root)?;` in doctor_report
 - `src/app.rs:2364-2368` — unknown type check in doctor_report
 - `src/app.rs:1948-2061` — Full Type and Epic handler implementations (from SH-7)
+- `src/storage.rs:844-849` — ProjectExport struct with types field
+- `src/storage.rs:867` — load_types in export_project
+- `src/storage.rs:938-940` — save_types in import_project
 - `src/mcp.rs:152` — story_type in list inputSchema
 - `src/mcp.rs:178` — story_type in create inputSchema
 - `src/mcp.rs:196` — story_type in update inputSchema
@@ -80,10 +89,9 @@ None.
 ### Test State
 - **Command**: `cargo test`
 - **Result**: 389+ unit tests + integration tests, 0 failures
-- **Clippy**: 26 pre-existing warnings, 0 new
+- **Clippy**: 25 pre-existing warnings, 0 new
 - **Flaky tests**: none detected
 
 ## What's Next
-- SH-10 (T3.3: storage.rs + app.rs — Export/import types.toml, ImportStory type handling) is ready
-- SH-11 (T4.1: Full compilation and test pass) is blocked by SH-10
-- After SH-10 and SH-11, all stories will be done — proceed to review+validate
+- SH-11 (T4.1: Full compilation and test pass) is now unblocked — all blockers (SH-8, SH-9, SH-10) are done
+- SH-11 is the final story — after it's done, proceed to review+validate
