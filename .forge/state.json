@@ -1,14 +1,14 @@
 {
-  "status": "running",
+  "status": "paused",
   "resume": {
     "command": "/forge continue",
     "handoff_file": "handoffs/handoff-execute.md",
-    "summary": "Resuming execution — SH-3 done, SH-4 next."
+    "summary": "Execution paused — 2 stories completed (SH-3, SH-4). Session limit reached."
   },
-  "sessions_completed": 1,
-  "stories_attempted": 1,
+  "sessions_completed": 2,
+  "stories_attempted": 2,
   "total_retries": 0,
   "retry_counts": {},
   "storyhook_consecutive_failures": 0,
-  "updated_at": "2026-04-04T05:16:00Z"
+  "updated_at": "2026-04-04T05:26:00Z"
 }
