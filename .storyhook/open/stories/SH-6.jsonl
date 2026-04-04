@@ -1,0 +1,8 @@
+{"kind":"StoryCreated","at":"2026-04-04T04:44:29Z","title":"T2.2: output.rs — StoryView.progress, type + progress rendering","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-04T04:44:29Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-04T04:44:29Z","labels":["phase:2"]}
+{"kind":"StoryCommentAdded","at":"2026-04-04T04:44:29Z","text":"Requirements: R25, R26, R27, R31. Files: src/output.rs.\nAC: StoryView.progress: Option<ProgressRollup> with skip_serializing_if; render_story shows type after priority with default fallback; progress line when present; list shows [type] badge and progress summary; JSON includes story_type and progress via serde."}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-2","relation":"child-of"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-3","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-4","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-7","relation":"blocks"}

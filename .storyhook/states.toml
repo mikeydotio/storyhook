@@ -3,5 +3,20 @@ slug = "todo"
 super = "OPEN"
 
 [[states]]
+slug = "in-progress"
+super = "OPEN"
+description = "Generator working on this story"
+
+[[states]]
+slug = "verifying"
+super = "OPEN"
+description = "Evaluator reviewing this story"
+
+[[states]]
+slug = "blocked"
+super = "OPEN"
+description = "Dependency unmet, decision needed, or max retries exhausted"
+
+[[states]]
 slug = "done"
 super = "CLOSED"

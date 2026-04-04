@@ -1,0 +1,7 @@
+{"kind":"StoryCreated","at":"2026-04-04T04:44:29Z","title":"T1.3: cli.rs — TypeAction, EpicAction, Invocation variants, parsers, flags","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-04T04:44:29Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-04T04:44:29Z","labels":["phase:1"]}
+{"kind":"StoryCommentAdded","at":"2026-04-04T04:44:29Z","text":"Requirements: R12, R13, R14, R15, R16, R29. Files: src/cli.rs.\nAC: TypeAction enum (List, Add, Remove); EpicAction enum (List, Show, Create, Add); Invocation::Type and ::Epic variants; story_type on New/List/SetFields; parse_invocation dispatches \"type\" and \"epic\"; --type flag on new/list/set; parse_type follows parse_state pattern; parse_epic parses all subcommands; HELP_TEXT updated; existing cli::tests pass; new parser tests."}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-2","relation":"child-of"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-5","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-6","relation":"blocks"}

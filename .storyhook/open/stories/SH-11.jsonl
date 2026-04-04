@@ -1,0 +1,8 @@
+{"kind":"StoryCreated","at":"2026-04-04T04:44:29Z","title":"T4.1: Full compilation and test pass","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-04T04:44:29Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-04T04:44:29Z","labels":["phase:5"]}
+{"kind":"StoryCommentAdded","at":"2026-04-04T04:44:29Z","text":"Requirements: R32, R33. Files: all modified.\nAC: cargo build with no errors; cargo test with 0 failures; cargo clippy with no errors."}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-2","relation":"child-of"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-8","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-9","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-10","relation":"blocked-by"}

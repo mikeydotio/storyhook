@@ -1,0 +1,7 @@
+{"kind":"StoryCreated","at":"2026-04-04T04:44:29Z","title":"T3.3: storage.rs + app.rs — Export/import types.toml, ImportStory type handling","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-04T04:44:29Z","priority":"medium"}
+{"kind":"StoryLabelsSet","at":"2026-04-04T04:44:29Z","labels":["phase:4"]}
+{"kind":"StoryCommentAdded","at":"2026-04-04T04:44:29Z","text":"Requirements: R34, R35. Files: src/storage.rs, src/app.rs, src/mcp.rs.\nAC: ProjectExport.types: Vec<TypeDef> with serde(default); export_project includes types; import_project restores types.toml; import writes StoryTypeSet for typed stories; bulk_create maps story_type; round-trip test passes."}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-2","relation":"child-of"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-7","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-04T04:44:29Z","other_id":"SH-11","relation":"blocks"}
