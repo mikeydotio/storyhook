@@ -758,6 +758,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         member_id: member.id,
                     });
                 }
+                if let Some(ref st) = import_story.story_type {
+                    events.push(StoryEvent::StoryTypeSet {
+                        at: now.clone(),
+                        story_type: st.clone(),
+                    });
+                }
                 if !events.is_empty() {
                     storage::write_story_events(root, &id, &events)?;
                 }
@@ -2815,6 +2821,12 @@ fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<ImportBa
             events.push(StoryEvent::StoryCommentAdded {
                 at: now.clone(),
                 text: description.clone(),
+            });
+        }
+        if let Some(ref st) = import_story.story_type {
+            events.push(StoryEvent::StoryTypeSet {
+                at: now.clone(),
+                story_type: st.clone(),
             });
         }
         if !events.is_empty() {

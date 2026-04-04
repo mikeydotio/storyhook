@@ -120,3 +120,62 @@ fn export_preserves_custom_prefix() {
         .success()
         .stdout(predicate::str::contains("API-2"));
 }
+
+#[test]
+fn export_and_import_roundtrip_with_types() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Define a custom type (not one of the defaults)
+    story(dir.path())
+        .args(["type", "add", "hotfix"])
+        .assert()
+        .success();
+
+    // Create a story with that type
+    story(dir.path())
+        .args(["new", "Fix crash on login", "--type", "hotfix"])
+        .assert()
+        .success();
+
+    // Verify the type is set on the story
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: hotfix"));
+
+    // Export
+    let output = story(dir.path()).args(["export"]).assert().success();
+    let export_json = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+
+    // Verify the export JSON contains the types field
+    assert!(export_json.contains("\"types\""));
+    assert!(export_json.contains("\"hotfix\""));
+
+    // Import into a new directory
+    let dir2 = tempdir().unwrap();
+    let export_file = dir2.path().join("export.json");
+    std::fs::write(&export_file, &export_json).unwrap();
+
+    story(dir2.path())
+        .args(["import-project", export_file.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported project with 1 stories"));
+
+    // Verify the story has the correct type in the imported project
+    story(dir2.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Fix crash on login"))
+        .stdout(predicate::str::contains("type: hotfix"));
+
+    // Verify types.toml was restored with the custom type:
+    // doctor should not flag "hotfix" as unknown
+    story(dir2.path())
+        .args(["doctor"])
+        .assert()
+        .success();
+}

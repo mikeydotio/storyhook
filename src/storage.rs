@@ -843,6 +843,8 @@ pub struct ProjectExport {
     pub schema: u32,
     pub prefix: Option<String>,
     pub states: Vec<StateDef>,
+    #[serde(default)]
+    pub types: Vec<TypeDef>,
     pub members: Vec<Member>,
     pub stories: Vec<ExportedStory>,
 }
@@ -862,6 +864,7 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
     let project: ProjectFile = toml::from_str(&raw)?;
 
     let states = load_states(root)?;
+    let types = load_types(root)?;
     let members = load_members(root)?;
     let mut stories = Vec::new();
 
@@ -909,6 +912,7 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
         schema: project.schema,
         prefix: project.prefix,
         states,
+        types,
         members,
         stories,
     })
@@ -930,6 +934,10 @@ pub fn import_project(root: &Path, export: &ProjectExport) -> Result<(), AppErro
     fs::write(paths.project_file(), toml::to_string_pretty(&project)?)?;
 
     save_states(root, &export.states)?;
+
+    if !export.types.is_empty() {
+        save_types(root, &export.types)?;
+    }
 
     // Write members
     fs::write(paths.members_file(), "")?;

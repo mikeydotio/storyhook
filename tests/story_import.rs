@@ -143,3 +143,41 @@ fn import_json_output() {
         .stdout(predicate::str::contains("\"result\": \"ok\""))
         .stdout(predicate::str::contains("\"id\": \"SH-1\""));
 }
+
+#[test]
+fn import_with_story_type() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let json = r#"[
+        {"title": "Login crash", "story_type": "bug"},
+        {"title": "New dashboard", "story_type": "story"},
+        {"title": "Plain task"}
+    ]"#;
+
+    story(dir.path())
+        .args(["import"])
+        .write_stdin(json)
+        .assert()
+        .success();
+
+    // Verify story_type is set for typed stories
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: bug"));
+
+    story(dir.path())
+        .args(["show", "SH-2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: story"));
+
+    // Verify untyped story has no type set
+    story(dir.path())
+        .args(["show", "SH-3"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: -"));
+}
