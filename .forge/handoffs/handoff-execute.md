@@ -1,16 +1,16 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-004
-- **Stories completed**: 1 (SH-6)
+- **Session**: session-execute-005
+- **Stories completed**: 1 (SH-7)
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 max_stories_per_session)
 
 ## What Happened
-Implemented SH-6 (output.rs — type + progress rendering). Generator-evaluator loop: pass on first attempt. All tests pass (383+ unit + integration). No new clippy warnings. Full autonomy (canary complete in prior session).
+Implemented SH-7 (app.rs — Type and Epic command handlers). Generator-evaluator loop: pass on first attempt. All tests pass (383+ unit + integration). No new clippy warnings. Full autonomy (canary complete in prior sessions).
 
 ## Stories Completed This Session
-- SH-6: output.rs — StoryView.progress, type + progress rendering — Added `progress: Option<ProgressRollup>` field with skip_serializing_if to StoryView. render_story shows type after priority ("-" fallback for None). Progress line after relationships when present (X/Y children done (Z%)). List shows [type] badge and (n/m) summary. JSON includes story_type and progress via serde. All 4 StoryView construction sites in app.rs updated with `progress: None`.
+- SH-7: app.rs — Type and Epic command handlers — Replaced stub Type/Epic handlers with full implementations. Type List/Add/Remove delegate to storage functions. Epic Create emits StoryCreated + StoryTypeSet in single lock. Epic Add replicates Relate parent-of logic. Epic List filters to type "epic". Epic Show delegates to story_view_by_id. New handler validates type via load_type_map and writes StoryTypeSet. SetFields validates and emits StoryTypeSet. List handler gains --type filter (including --type none for untyped stories). Unknown types return AppError::Validation with available types listed.
 
 ## Current Blockers
 None.
@@ -25,29 +25,41 @@ None.
 - `ensure_types_file` is the lazy auto-creation mechanism
 - `add_type` checks "none" reserved slug BEFORE loading types
 - `remove_type` uses `load_all_snapshots` (open + archived) to check for in-use types
-- **NEW**: `StoryView.progress: Option<ProgressRollup>` with `#[serde(default, skip_serializing_if = "Option::is_none")]`
-- **NEW**: render_story shows type after priority line: `type: {value}` or `type: -` when None
-- **NEW**: render_story shows progress after derived_relationships: `progress: X/Y children done (Z%)`
-- **NEW**: Division by zero guarded: children_total == 0 → "0/0 children done (0%)"
-- **NEW**: List format is now: `{id} [{state}]{priority}{type_badge} {title}{progress_summary}{labels}{flagged}{stale}`
-- **NEW**: type_badge in list: ` [epic]` when present, empty when None
-- **NEW**: progress_summary in list: ` (3/5)` when present, empty when None
-- **NEW**: All 4 StoryView construction sites in app.rs initialize `progress: None`
+- `StoryView.progress: Option<ProgressRollup>` with `#[serde(default, skip_serializing_if = "Option::is_none")]`
+- render_story shows type after priority line: `type: {value}` or `type: -` when None
+- List format: `{id} [{state}]{priority}{type_badge} {title}{progress_summary}{labels}{flagged}{stale}`
+- **NEW**: Type handlers follow StateAdd/StateRemove pattern (ensure_project + with_project_lock)
+- **NEW**: Epic Create validates "epic" type exists in types.toml before creating
+- **NEW**: Epic Add reuses validate_parent_constraints + relation_edges + has_relation pattern from Relate handler
+- **NEW**: Epic List uses build_story_views with retain filter, same as existing List handler
+- **NEW**: Type validation at write time (New, SetFields) uses `storage::load_type_map(root)` and returns `AppError::Validation` with available types listed
+- **NEW**: `--type none` in List filters to `story_type.is_none()`
+- **NEW**: `--type <slug>` in List filters to `story_type.as_deref() == Some(slug)`
+- **NEW**: SetFields story_type handling placed after `unblocked` block, before `json_patch` block
 
 ### Micro-Decisions
-- Type fallback in render_story uses "-" (consistent with assignee pattern), not "story" default — output.rs has no storage access; default resolution is SH-7/SH-8 responsibility
+- Type fallback in render_story uses "-" (consistent with assignee pattern), not "story" default — output.rs has no storage access; default resolution is SH-8 responsibility
 - Progress line only shown when progress is Some (not shown for non-parent stories)
 - Type badge in list is empty when story_type is None (no badge at all, not "[?]" or "[story]")
 - progress_summary uses compact format (n/m) in list, verbose format (n/m children done (Z%)) in detail view
+- **NEW**: Epic Create uses `story_view_response` (same as New handler) to return full story view with derived relationships
+- **NEW**: Epic Add returns `story_view_by_id(root, &epic_id)` — shows the epic after adding child
+- **NEW**: Epic Create does NOT fire event hooks for the create — only the New handler has hook firing. This is acceptable since epic create is sugar.
+- **NEW**: Type validation error message includes available types: `"unknown type \`{st}\`. Available types: bug, chore, epic, story, task"`
 
 ### Code Landmarks
-- `src/output.rs:3` — imports ProgressRollup from domain
-- `src/output.rs:23-25` — StoryView.progress field with serde attrs
-- `src/output.rs:253-265` — list rendering: type_badge and progress_summary computation
-- `src/output.rs:276-279` — list format string with type_badge and progress_summary
-- `src/output.rs:341-343` — render_story: type after priority
-- `src/output.rs:380-389` — render_story: progress after relationships
-- `src/app.rs:406,800,2106,2725` — StoryView construction sites with `progress: None`
+- `src/app.rs:4` — imports now include TypeAction and EpicAction
+- `src/app.rs:45-66` — Invocation::New with story_type extraction, validation, and StoryTypeSet emission
+- `src/app.rs:119-122` — Invocation::List with story_type extraction
+- `src/app.rs:174-182` — --type filter in List handler (after phase filter)
+- `src/app.rs:1736-1739` — Invocation::SetFields with story_type extraction
+- `src/app.rs:1816-1832` — story_type validation and StoryTypeSet emission in SetFields
+- `src/app.rs:1948-2061` — Full Type and Epic handler implementations
+- `src/app.rs:1951-1976` — Type List/Add/Remove handlers
+- `src/app.rs:1978-1998` — Epic Create (two-event pattern in single lock)
+- `src/app.rs:2000-2049` — Epic Add (parent-of relationship delegation)
+- `src/app.rs:2051-2056` — Epic List (filter to epic type)
+- `src/app.rs:2058-2061` — Epic Show (delegates to story_view_by_id)
 
 ### Test State
 - **Command**: `cargo test`
@@ -56,7 +68,9 @@ None.
 - **Flaky tests**: none detected
 
 ## What's Next
-- SH-7 (T2.1: app.rs — Type and Epic command handlers) is now unblocked (was blocked by SH-5 + SH-6, both done)
-- SH-8, SH-9, SH-10 are still blocked by SH-7
+- SH-8 (T3.1: app.rs — build_story_views progress rollup, Next parent skip, doctor type check) is now unblocked
+- SH-9 (T3.2: mcp.rs — story_type param on MCP tools) is now unblocked
+- SH-10 (T3.3: storage.rs + app.rs — Export/import types.toml) is now unblocked
+- SH-8, SH-9, SH-10 are all wave 4 (independent of each other)
 - SH-11 is blocked by SH-8, SH-9, SH-10
-- Recommended next: SH-7 (wave 3, app.rs — the big one)
+- Recommended next: story next will pick one of SH-8/SH-9/SH-10 based on priority
