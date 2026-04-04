@@ -25,11 +25,26 @@ pub enum PhaseAction {
     Create { phase: String, title: Option<String> },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeAction {
+    List,
+    Add { slug: String, description: Option<String> },
+    Remove { slug: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EpicAction {
+    List,
+    Show { id: String },
+    Create { title: String },
+    Add { epic_id: String, story_id: String },
+}
+
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
   story init [--prefix <PREFIX>] [--no-agents-md]
-  story new <title> [--state <slug>]
+  story new <title> [--state <slug>] [--type <slug>]
   story tui                                           (interactive terminal UI)
   story member add "<name <email>>"
   story member add -g <github-handle>
@@ -37,7 +52,7 @@ Usage:
   story state remove <state-slug>
   story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
              [--label <labels>] [--created-after <date>] [--updated-after <date>]
-             [--blocked] [--ready] [--stale <duration>] [--phase <N>]
+             [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
   story next [--count <n>] [--phase <N>]
   story summary
   story report [--html]
@@ -77,11 +92,18 @@ Usage:
   story delete <id> "<reason>"
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
                   [--assignee <member>] [--labels "<csv>"] [--blocked "<reason>"]
-                  [--unblocked] [--json "<json>"]
+                  [--unblocked] [--json "<json>"] [--type <slug>]
   story relate <a> <relationship-type> <b>
   story unrelate <a> <relationship-type> <b>
   story link <a> <relationship-type> <b>
   story unlink <a> <relationship-type> <b>
+  story type list
+  story type add <slug> [--description "<text>"]
+  story type remove <slug>
+  story epic list
+  story epic show <id>
+  story epic create "<title>"
+  story epic add <epic-id> <story-id>
 
 Global options:
   --json      Emit structured JSON
@@ -114,6 +136,7 @@ pub enum Invocation {
     New {
         title: String,
         state: Option<String>,
+        story_type: Option<String>,
     },
     MemberAdd {
         input: MemberInput,
@@ -138,6 +161,7 @@ pub enum Invocation {
         ready: bool,
         stale: Option<String>,
         phase: Option<String>,
+        story_type: Option<String>,
     },
     Search {
         query: String,
@@ -216,6 +240,12 @@ pub enum Invocation {
     Phase {
         action: PhaseAction,
     },
+    Type {
+        action: TypeAction,
+    },
+    Epic {
+        action: EpicAction,
+    },
     Graph {
         mode: GraphMode,
     },
@@ -229,6 +259,7 @@ pub enum Invocation {
         blocked: Option<String>,
         unblocked: bool,
         json: Option<String>,
+        story_type: Option<String>,
     },
     Relate {
         a: String,
@@ -310,6 +341,8 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "export" => Ok(Invocation::Export),
         "load-context" | "context" => parse_context(args),
         "phase" => parse_phase(args),
+        "type" => parse_type(args),
+        "epic" => parse_epic(args),
         "handoff" => parse_handoff(args),
         "graph" => parse_graph(args),
         "doctor" => parse_doctor(args),
@@ -371,9 +404,10 @@ fn parse_init(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     let mut state = None;
+    let mut story_type = None;
     let mut title_parts = Vec::new();
     let mut index = 1;
-    let usage = "usage: story new <title> [--state <slug>]";
+    let usage = "usage: story new <title> [--state <slug>] [--type <slug>]";
     while index < args.len() {
         match args[index].as_str() {
             "--state" => {
@@ -381,6 +415,13 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
                     .get(index + 1)
                     .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 state = Some(value.clone());
+                index += 2;
+            }
+            "--type" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                story_type = Some(value.clone());
                 index += 2;
             }
             _ => {
@@ -395,6 +436,7 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     Ok(Invocation::New {
         title: title_parts.join(" "),
         state,
+        story_type,
     })
 }
 
@@ -503,8 +545,9 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut ready = false;
     let mut stale = None;
     let mut phase = None;
+    let mut story_type = None;
     let mut index = 1;
-    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>]";
+    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -576,6 +619,13 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
                 phase = Some(value.clone());
                 index += 2;
             }
+            "--type" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                story_type = Some(value.clone());
+                index += 2;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
@@ -594,6 +644,7 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
         ready,
         stale,
         phase,
+        story_type,
     })
 }
 
@@ -812,6 +863,107 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
             };
             Ok(Invocation::Phase {
                 action: PhaseAction::Create { phase, title },
+            })
+        }
+        _ => Err(AppError::Usage(usage.to_string())),
+    }
+}
+
+fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story type list | story type add <slug> [--description \"<text>\"] | story type remove <slug>";
+    if args.len() < 2 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+
+    match args[1].as_str() {
+        "list" => Ok(Invocation::Type {
+            action: TypeAction::List,
+        }),
+        "add" => {
+            let slug = args
+                .get(2)
+                .ok_or_else(|| AppError::Usage("usage: story type add <slug> [--description \"<text>\"]".to_string()))?
+                .clone();
+            let mut description = None;
+            let mut index = 3;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--description" => {
+                        let value = args.get(index + 1).ok_or_else(|| {
+                            AppError::Usage("usage: story type add <slug> [--description \"<text>\"]".to_string())
+                        })?;
+                        description = Some(value.clone());
+                        index += 2;
+                    }
+                    _ => {
+                        return Err(AppError::Usage(
+                            "usage: story type add <slug> [--description \"<text>\"]".to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(Invocation::Type {
+                action: TypeAction::Add { slug, description },
+            })
+        }
+        "remove" => {
+            let slug = args
+                .get(2)
+                .ok_or_else(|| AppError::Usage("usage: story type remove <slug>".to_string()))?
+                .clone();
+            Ok(Invocation::Type {
+                action: TypeAction::Remove { slug },
+            })
+        }
+        _ => Err(AppError::Usage(usage.to_string())),
+    }
+}
+
+fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story epic list|show <id>|create \"<title>\"|add <epic-id> <story-id>";
+    if args.len() < 2 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    match args[1].as_str() {
+        "list" => Ok(Invocation::Epic {
+            action: EpicAction::List,
+        }),
+        "show" => {
+            let id = args
+                .get(2)
+                .ok_or_else(|| AppError::Usage("usage: story epic show <id>".to_string()))?
+                .clone();
+            Ok(Invocation::Epic {
+                action: EpicAction::Show { id },
+            })
+        }
+        "create" => {
+            if args.len() < 3 {
+                return Err(AppError::Usage(
+                    "usage: story epic create \"<title>\"".to_string(),
+                ));
+            }
+            let title = join_tokens(&args[2..]);
+            if title.is_empty() {
+                return Err(AppError::Usage(
+                    "usage: story epic create \"<title>\"".to_string(),
+                ));
+            }
+            Ok(Invocation::Epic {
+                action: EpicAction::Create { title },
+            })
+        }
+        "add" => {
+            if args.len() < 4 {
+                return Err(AppError::Usage(
+                    "usage: story epic add <epic-id> <story-id>".to_string(),
+                ));
+            }
+            Ok(Invocation::Epic {
+                action: EpicAction::Add {
+                    epic_id: args[2].clone(),
+                    story_id: args[3].clone(),
+                },
             })
         }
         _ => Err(AppError::Usage(usage.to_string())),
@@ -1216,8 +1368,9 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     let mut blocked = None;
     let mut unblocked = false;
     let mut json = None;
+    let mut story_type = None;
     let mut index = 2;
-    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--assignee <member>] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"]";
+    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--assignee <member>] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -1260,12 +1413,18 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
                 json = Some(value.clone());
                 index += 2;
             }
+            "--type" => {
+                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                story_type = Some(value.clone());
+                index += 2;
+            }
             _ => return Err(AppError::Usage(usage.to_string())),
         }
     }
 
     if title.is_none() && state.is_none() && priority.is_none() && assignee.is_none()
-        && labels.is_none() && blocked.is_none() && !unblocked && json.is_none() {
+        && labels.is_none() && blocked.is_none() && !unblocked && json.is_none()
+        && story_type.is_none() {
         return Err(AppError::Usage("no fields specified. Usage: story set <id> --<field> <value> ...".to_string()));
     }
 
@@ -1279,6 +1438,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
         blocked,
         unblocked,
         json,
+        story_type,
     })
 }
 
@@ -1288,7 +1448,7 @@ fn join_tokens(tokens: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Invocation, parse_invocation};
+    use super::{EpicAction, Invocation, TypeAction, parse_invocation};
 
     #[test]
     fn routes_move_command() {
@@ -1311,5 +1471,313 @@ mod tests {
     fn unknown_command_errors() {
         let result = parse_invocation(&["SH-1".to_string(), "is".to_string(), "done".to_string()]);
         assert!(result.is_err());
+    }
+
+    // --- Type subcommand tests ---
+
+    #[test]
+    fn type_list() {
+        let inv = parse_invocation(&["type".to_string(), "list".to_string()]).unwrap();
+        assert!(matches!(inv, Invocation::Type { action: TypeAction::List }));
+    }
+
+    #[test]
+    fn type_add_slug_only() {
+        let inv = parse_invocation(&["type".to_string(), "add".to_string(), "bug".to_string()]).unwrap();
+        match inv {
+            Invocation::Type { action: TypeAction::Add { slug, description } } => {
+                assert_eq!(slug, "bug");
+                assert_eq!(description, None);
+            }
+            other => panic!("expected Type::Add, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_add_with_description() {
+        let inv = parse_invocation(&[
+            "type".to_string(),
+            "add".to_string(),
+            "epic".to_string(),
+            "--description".to_string(),
+            "A large body of work".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::Type { action: TypeAction::Add { slug, description } } => {
+                assert_eq!(slug, "epic");
+                assert_eq!(description.as_deref(), Some("A large body of work"));
+            }
+            other => panic!("expected Type::Add, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_remove() {
+        let inv = parse_invocation(&["type".to_string(), "remove".to_string(), "bug".to_string()]).unwrap();
+        match inv {
+            Invocation::Type { action: TypeAction::Remove { slug } } => {
+                assert_eq!(slug, "bug");
+            }
+            other => panic!("expected Type::Remove, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_no_subcommand_errors() {
+        let result = parse_invocation(&["type".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn type_unknown_subcommand_errors() {
+        let result = parse_invocation(&["type".to_string(), "rename".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn type_add_missing_slug_errors() {
+        let result = parse_invocation(&["type".to_string(), "add".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn type_remove_missing_slug_errors() {
+        let result = parse_invocation(&["type".to_string(), "remove".to_string()]);
+        assert!(result.is_err());
+    }
+
+    // --- Epic subcommand tests ---
+
+    #[test]
+    fn epic_list() {
+        let inv = parse_invocation(&["epic".to_string(), "list".to_string()]).unwrap();
+        assert!(matches!(inv, Invocation::Epic { action: EpicAction::List }));
+    }
+
+    #[test]
+    fn epic_show() {
+        let inv = parse_invocation(&["epic".to_string(), "show".to_string(), "SH-1".to_string()]).unwrap();
+        match inv {
+            Invocation::Epic { action: EpicAction::Show { id } } => {
+                assert_eq!(id, "SH-1");
+            }
+            other => panic!("expected Epic::Show, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn epic_create() {
+        let inv = parse_invocation(&[
+            "epic".to_string(),
+            "create".to_string(),
+            "My Epic Title".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::Epic { action: EpicAction::Create { title } } => {
+                assert_eq!(title, "My Epic Title");
+            }
+            other => panic!("expected Epic::Create, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn epic_create_multi_word() {
+        let inv = parse_invocation(&[
+            "epic".to_string(),
+            "create".to_string(),
+            "My".to_string(),
+            "Epic".to_string(),
+            "Title".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::Epic { action: EpicAction::Create { title } } => {
+                assert_eq!(title, "My Epic Title");
+            }
+            other => panic!("expected Epic::Create, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn epic_add() {
+        let inv = parse_invocation(&[
+            "epic".to_string(),
+            "add".to_string(),
+            "SH-1".to_string(),
+            "SH-2".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::Epic { action: EpicAction::Add { epic_id, story_id } } => {
+                assert_eq!(epic_id, "SH-1");
+                assert_eq!(story_id, "SH-2");
+            }
+            other => panic!("expected Epic::Add, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn epic_no_subcommand_errors() {
+        let result = parse_invocation(&["epic".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn epic_unknown_subcommand_errors() {
+        let result = parse_invocation(&["epic".to_string(), "rename".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn epic_show_missing_id_errors() {
+        let result = parse_invocation(&["epic".to_string(), "show".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn epic_create_missing_title_errors() {
+        let result = parse_invocation(&["epic".to_string(), "create".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn epic_add_missing_story_id_errors() {
+        let result = parse_invocation(&[
+            "epic".to_string(),
+            "add".to_string(),
+            "SH-1".to_string(),
+        ]);
+        assert!(result.is_err());
+    }
+
+    // --- --type flag on new/list/set ---
+
+    #[test]
+    fn new_with_type_flag() {
+        let inv = parse_invocation(&[
+            "new".to_string(),
+            "My story".to_string(),
+            "--type".to_string(),
+            "bug".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::New { title, state, story_type } => {
+                assert_eq!(title, "My story");
+                assert_eq!(state, None);
+                assert_eq!(story_type.as_deref(), Some("bug"));
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn new_with_state_and_type() {
+        let inv = parse_invocation(&[
+            "new".to_string(),
+            "My story".to_string(),
+            "--state".to_string(),
+            "open".to_string(),
+            "--type".to_string(),
+            "epic".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::New { title, state, story_type } => {
+                assert_eq!(title, "My story");
+                assert_eq!(state.as_deref(), Some("open"));
+                assert_eq!(story_type.as_deref(), Some("epic"));
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn new_without_type_flag() {
+        let inv = parse_invocation(&[
+            "new".to_string(),
+            "My story".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::New { story_type, .. } => {
+                assert_eq!(story_type, None);
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn list_with_type_flag() {
+        let inv = parse_invocation(&[
+            "list".to_string(),
+            "--type".to_string(),
+            "epic".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::List { story_type, .. } => {
+                assert_eq!(story_type.as_deref(), Some("epic"));
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn list_without_type_flag() {
+        let inv = parse_invocation(&["list".to_string()]).unwrap();
+        match inv {
+            Invocation::List { story_type, .. } => {
+                assert_eq!(story_type, None);
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_with_type_flag() {
+        let inv = parse_invocation(&[
+            "set".to_string(),
+            "SH-1".to_string(),
+            "--type".to_string(),
+            "bug".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::SetFields { id, story_type, .. } => {
+                assert_eq!(id, "SH-1");
+                assert_eq!(story_type.as_deref(), Some("bug"));
+            }
+            other => panic!("expected SetFields, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_with_type_and_other_fields() {
+        let inv = parse_invocation(&[
+            "set".to_string(),
+            "SH-1".to_string(),
+            "--title".to_string(),
+            "New title".to_string(),
+            "--type".to_string(),
+            "feature".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::SetFields { id, title, story_type, .. } => {
+                assert_eq!(id, "SH-1");
+                assert_eq!(title.as_deref(), Some("New title"));
+                assert_eq!(story_type.as_deref(), Some("feature"));
+            }
+            other => panic!("expected SetFields, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_without_type_flag() {
+        let inv = parse_invocation(&[
+            "set".to_string(),
+            "SH-1".to_string(),
+            "--title".to_string(),
+            "New title".to_string(),
+        ]).unwrap();
+        match inv {
+            Invocation::SetFields { story_type, .. } => {
+                assert_eq!(story_type, None);
+            }
+            other => panic!("expected SetFields, got {:?}", other),
+        }
     }
 }

@@ -519,6 +519,7 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
             ready: get_bool(arguments, "ready"),
             stale: get_str(arguments, "stale"),
             phase: get_str(arguments, "phase"),
+            story_type: get_str(arguments, "story_type"),
         }),
         "storyhook_get_story" => {
             let id = get_str(arguments, "id").ok_or("missing required parameter: id")?;
@@ -527,7 +528,7 @@ fn build_invocation(tool_name: &str, arguments: &Value) -> Result<Invocation, St
         "storyhook_create_story" => {
             let title = get_str(arguments, "title").ok_or("missing required parameter: title")?;
             let state = get_str(arguments, "state");
-            Ok(Invocation::New { title, state })
+            Ok(Invocation::New { title, state, story_type: get_str(arguments, "story_type") })
         }
         "storyhook_update_story" => {
             let id = get_str(arguments, "id").ok_or("missing required parameter: id")?;

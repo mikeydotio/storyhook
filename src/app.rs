@@ -42,7 +42,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             Ok(Response::Message(msg))
         }
-        Invocation::New { title, state } => lock::with_project_lock(root, || {
+        Invocation::New { title, state, .. } => lock::with_project_lock(root, || {
             let story = storage::create_story(root, &title, state.as_deref())?;
             if !no_hooks
                 && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
@@ -98,6 +98,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             ready,
             stale,
             phase,
+            ..
         } => {
             storage::ensure_project(root)?;
             let mut views = build_story_views(root, false)?;
@@ -1705,6 +1706,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             blocked,
             unblocked,
             json: json_patch,
+            ..
         } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             ensure_open_story(root, &id)?;
@@ -1902,6 +1904,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 Ok(Response::Message(msg))
             }
         },
+        Invocation::Type { .. } => {
+            Err(crate::error::AppError::Usage("type management not yet implemented".to_string()))
+        }
+        Invocation::Epic { .. } => {
+            Err(crate::error::AppError::Usage("epic management not yet implemented".to_string()))
+        }
     };
 
     // After successful command, maybe auto-sync to GitHub
