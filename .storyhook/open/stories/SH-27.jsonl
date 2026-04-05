@@ -1,7 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-05T04:38:02Z","title":"T3.1: Full test suite validation (cargo test + clippy + release build)","state":"todo"}
-{"kind":"StoryLabelsSet","at":"2026-04-05T04:38:02Z","labels":["phase:3"]}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-21","relation":"child-of"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-24","relation":"blocked-by"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-25","relation":"blocked-by"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-26","relation":"blocked-by"}
-{"kind":"StoryCommentAdded","at":"2026-04-05T04:38:40Z","text":"Acceptance: (1) cargo test — 0 failures. (2) cargo clippy -- -D warnings — 0 errors. (3) cargo build --release — succeeds."}

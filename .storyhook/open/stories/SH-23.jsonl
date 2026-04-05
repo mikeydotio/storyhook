@@ -1,9 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-05T04:38:02Z","title":"T1.2: Add import validation for story_type against types.toml","state":"todo"}
-{"kind":"StoryPrioritySet","at":"2026-04-05T04:38:02Z","priority":"high"}
-{"kind":"StoryLabelsSet","at":"2026-04-05T04:38:02Z","labels":["phase:1"]}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-21","relation":"child-of"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-24","relation":"blocks"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-25","relation":"blocks"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-26","relation":"blocks"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:20Z","other_id":"SH-13","relation":"relates-to"}
-{"kind":"StoryCommentAdded","at":"2026-04-05T04:38:32Z","text":"Acceptance: (1) src/app.rs: before import loop (~L725-730), call load_type_map(root)?. (2) Collect and validate ALL import_story.story_type values before loop — invalid types cause early Err(AppError::Validation). (3) Error message lists ALL invalid types, e.g. \"unknown types: foo, bar. Available types: story, epic, bug, chore, task\". (4) Zero stories created on validation failure (all-or-nothing). (5) New tests: import_rejects_invalid_story_type, import_atomicity_on_type_error, import_accepts_valid_story_type."}

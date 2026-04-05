@@ -1,10 +1,10 @@
 {
-  "status": "paused",
-  "sessions_completed": 5,
-  "stories_attempted": 5,
+  "status": "complete",
+  "sessions_completed": 6,
+  "stories_attempted": 6,
   "total_retries": 0,
   "retry_counts": {},
   "storyhook_consecutive_failures": 0,
   "canary_remaining": 0,
-  "updated_at": "2026-04-05T14:01:00Z"
+  "updated_at": "2026-04-05T14:03:37Z"
 }

@@ -1,22 +1,21 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-escalate-fix-005
-- **Stories completed**: 1 (SH-26)
+- **Session**: session-escalate-fix-006
+- **Stories completed**: 1 (SH-27) + reconciled 6 stale stories (SH-12, SH-13, SH-15, SH-22, SH-23, SH-25)
 - **Stories attempted**: 1
-- **Status**: Session limit reached (1/1 stories per session)
-- **Canary remaining**: 0 (canary mode complete — full autonomy)
+- **Status**: All stories complete — transitioning to review + validate
 
 ## What Happened
-Resumed ESCALATE fix cycle execution. Completed SH-26 (Wave 2, T2.3) — add type breakdown to HTML report test. The implementation was already complete from SH-24 (build_type_section, HTML template section, app.rs type counting). Generator only needed to write the integration test `report_html_shows_type_breakdown`. Evaluator passed on first attempt.
+Resumed ESCALATE fix cycle execution. Found storyhook state drift: SH-22, SH-23, SH-25 had code committed from sessions 1-5 but storyhook state was stale (todo with code already merged). Reconciled by re-archiving. Fixed SH-20 archive DB corruption (state=todo with closed_at set).
 
-Wave 2 is now complete. SH-27 (full test suite validation) in Wave 3 is the final remaining story.
+Completed SH-27 (Wave 3, T3.1) — full test suite validation. Fixed 25 pre-existing clippy warnings across src/github/ and src/app.rs/domain.rs to achieve clean `cargo clippy -- -D warnings`. All three acceptance criteria satisfied.
 
 ## Stories Completed This Session
-- SH-26: Add type breakdown to HTML report — added `report_html_shows_type_breakdown` integration test that creates 3 stories (1 untyped/Default, 1 bug, 1 story), runs `report --html`, and asserts Type Breakdown section contains correct type counts
+- SH-27: Full test suite validation — fixed 25 clippy warnings (collapsible if/match, needless borrows, redundant closures, derivable impls, elided lifetimes, manual split_once, too_many_arguments allows)
 
 ## Current Blockers
-- None
+- None — all stories done
 
 ## Working Context
 
@@ -26,36 +25,33 @@ Wave 2 is now complete. SH-27 (full test suite validation) in Wave 3 is the fina
 - "Default" is the display string for untyped stories (hardcoded, not types.toml lookup)
 - JSON branch: `"by_type": type_counts` added to serde_json::json! object
 - Plain text: "## Type Distribution" section with `- {type_name}: {count}` lines
-- HTML: "Type Breakdown" section after Priority Breakdown using `build_type_section()` which renders `priority-badge priority-none` spans
-- Summary handler has `by_type: Vec<(String, usize)>` in SummaryView; Context handler keeps BTreeMap directly
-- Test pattern for HTML type breakdown: create stories with `--type` flag, assert `predicate::str::contains` on type names with counts
-- Default types from `story init`: "story", "bug", "epic", "task", "chore" (tests rely on "bug" and "story" existing)
+- HTML: "Type Breakdown" section after Priority Breakdown using `build_type_section()`
+- Import validation: all story_type values checked against load_type_map before import loop, all-or-nothing
+- Reserved slugs: "none" and "default" (case-insensitive) rejected in add_type
 
 ### Micro-Decisions
-- Type Breakdown section placed after Priority Breakdown in HTML report (consistent with plain text placement)
-- Empty type distribution still renders section header
-- Type badges use `priority-none` CSS class (neutral gray styling) for all types regardless of name
-- Test creates exactly 3 stories to verify 3 distinct type categories (Default, bug, story)
+- Clippy `too_many_arguments` handled with `#[allow]` on 2 functions in github/mod.rs (refactoring arg count is a separate concern)
+- `let if` chains used for collapsible if patterns throughout github/ module
+- `is_some_and` preferred over `map_or(false, ...)` per modern Rust idiom
+- `split_once` preferred over manual `splitn(2)` + `next()` chains
 
 ### Code Landmarks
-- `src/output.rs:536` — `build_type_section(summary)` call in render_html_report
-- `src/output.rs:648-651` — HTML template "Type Breakdown" section
-- `src/output.rs:732-744` — `build_type_section()` function
 - `src/output.rs:34` — `pub by_type: Vec<(String, usize)>` on SummaryView
+- `src/output.rs:342` — "Default" fallback for untyped stories in show
 - `src/output.rs:422-427` — render_summary "by type:" section
+- `src/output.rs:536` — `build_type_section(summary)` call in render_html_report
+- `src/output.rs:732-744` — `build_type_section()` function
 - `src/app.rs:233,244-245` — Summary handler type counting
-- `src/app.rs:298,309-310` — Report (plain) handler type counting
-- `src/app.rs:369,380-381` — Report (HTML) handler type counting
+- `src/app.rs:744-745` — Import validation against type_map
 - `src/app.rs:1060-1064` — Context handler type counting loop
-- `src/app.rs:1094` — JSON branch `by_type` field
-- `src/app.rs:1123-1126` — Plain text "## Type Distribution" section
+- `src/storage.rs:424` — "default" reserved slug check
 
 ### Test State
-- All tests pass: `cargo test` — 390 unit + all integration tests, 0 failures
-- Clippy: pre-existing warnings only, no errors in modified files
+- All tests pass: `cargo test` — 0 failures across all test suites
+- Clippy: `cargo clippy -- -D warnings` — 0 errors (clean)
+- Release build: `cargo build --release` — succeeds
 - Test command: `cargo test`
 - No flaky tests observed
 
 ## What's Next
-- Wave 3: SH-27 (full test suite validation — cargo test + clippy + release build) — this is the final story
-- After SH-27: all stories done → transition to review + validate
+- All stories done → transition to review + validate (parallel)

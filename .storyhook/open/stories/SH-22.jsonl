@@ -1,9 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-05T04:38:02Z","title":"T1.1: Display \"Default\" for untyped stories + reserve \"default\" slug","state":"todo"}
-{"kind":"StoryPrioritySet","at":"2026-04-05T04:38:02Z","priority":"high"}
-{"kind":"StoryLabelsSet","at":"2026-04-05T04:38:02Z","labels":["phase:1"]}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-21","relation":"child-of"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-24","relation":"blocks"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-25","relation":"blocks"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-26","relation":"blocks"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:20Z","other_id":"SH-12","relation":"relates-to"}
-{"kind":"StoryCommentAdded","at":"2026-04-05T04:38:27Z","text":"Acceptance: (1) src/output.rs:342 fallback changed from \"-\" to \"Default\" — story show prints type: Default for untyped stories. (2) src/output.rs:256-259 list view renders [Default] badge for story_type == None. (3) src/storage.rs add_type rejects slug \"default\" (case-insensitive) with AppError::Validation. (4) Update tests: story_types.rs and story_import.rs to assert \"Default\". (5) New test: type_add_rejects_reserved_default_slug. (6) No use of storage or types.toml added to output.rs."}
