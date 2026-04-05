@@ -1,5 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-05T04:00:20Z","title":"Add `story_type` to MCP update tool description","state":"todo"}
-{"kind":"StoryPrioritySet","at":"2026-04-05T04:00:20Z","priority":"high"}
-{"kind":"StoryLabelsSet","at":"2026-04-05T04:00:20Z","labels":["phase:1"]}
-{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:00:20Z","other_id":"SH-16","relation":"child-of"}
-{"kind":"StoryCommentAdded","at":"2026-04-05T04:00:25Z","text":"Acceptance: The `storyhook_update_story` tool description string includes `story_type` in the priority order list (state > priority > labels > assignee > awaiting > story_type). Files: `src/mcp.rs` (line 185, description string only)"}

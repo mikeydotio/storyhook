@@ -1,0 +1,9 @@
+{"kind":"StoryCreated","at":"2026-04-05T04:38:02Z","title":"T2.3: Add type breakdown to HTML report","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-05T04:38:02Z","priority":"medium"}
+{"kind":"StoryLabelsSet","at":"2026-04-05T04:38:02Z","labels":["phase:2"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-21","relation":"child-of"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-22","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-23","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-27","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:22Z","other_id":"SH-15","relation":"relates-to"}
+{"kind":"StoryCommentAdded","at":"2026-04-05T04:38:39Z","text":"Acceptance: (1) render_html_report in src/output.rs: new \"Type Breakdown\" section after Priority Breakdown. (2) New test: report_html_shows_type_breakdown. (3) cargo test --test story_report passes."}

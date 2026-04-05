@@ -1,0 +1,62 @@
+{
+  "plan_hash": "ff909981d3985c7c6a19ac7b5be01b11",
+  "project_story": "SH-21",
+  "fix_cycle": 1,
+  "escalate_stories": ["SH-12", "SH-13", "SH-15"],
+  "stories": {
+    "SH-22": {
+      "task_ref": "T1.1",
+      "wave": 1,
+      "title": "Display \"Default\" for untyped stories + reserve \"default\" slug",
+      "acceptance_criteria": "(1) src/output.rs:342 fallback changed from \"-\" to \"Default\". (2) src/output.rs:256-259 list view renders [Default] badge for story_type == None. (3) src/storage.rs add_type rejects slug \"default\" (case-insensitive). (4) Update tests: story_types.rs and story_import.rs. (5) New test: type_add_rejects_reserved_default_slug. (6) No use of storage or types.toml added to output.rs.",
+      "design_section": "### output.rs \u2014 Display Changes\n\n- **Purpose:** Render type and progress in human-readable and JSON output.\n- **Key decisions:**\n  - When displaying, `story_type: None` renders as the default type from `types.toml`\n  - JSON output includes raw `story_type` (may be `null` for old stories) and `progress` via serde\n\n### storage.rs \u2014 Config Loading & Persistence\n\n- `add_type(root, slug, description) -> Result<TypeDef>` \u2014 validates no duplicates, rejects reserved slugs (\"none\")\n- Reserved slugs: \"none\" is forbidden in `add_type`",
+      "files_expected": ["src/output.rs", "src/storage.rs", "tests/story_types.rs", "tests/story_import.rs"],
+      "relates_to": "SH-12"
+    },
+    "SH-23": {
+      "task_ref": "T1.2",
+      "wave": 1,
+      "title": "Add import validation for story_type against types.toml",
+      "acceptance_criteria": "(1) src/app.rs: before import loop (~L725-730), call load_type_map(root)?. (2) Collect and validate ALL import_story.story_type values before loop. (3) Error message lists ALL invalid types. (4) Zero stories created on validation failure. (5) New tests: import_rejects_invalid_story_type, import_atomicity_on_type_error, import_accepts_valid_story_type.",
+      "design_section": "### app.rs \u2014 Command Handlers\n\n- **Purpose:** Business logic for type/epic commands, progress rollup, list filtering, next-story parent skipping.\n- **Key decisions:**\n  - Type validation at write time: check slug exists in `load_type_map`\n\n### storage.rs \u2014 Config Loading & Persistence\n\n- `load_type_map(root) -> Result<BTreeMap<String, TypeDef>>` \u2014 keyed by slug",
+      "files_expected": ["src/app.rs", "tests/story_import.rs"],
+      "relates_to": "SH-13"
+    },
+    "SH-24": {
+      "task_ref": "T2.1",
+      "wave": 2,
+      "title": "Add type breakdown to SummaryView and Summary/Report handlers",
+      "acceptance_criteria": "(1) SummaryView gains pub by_type: Vec<(String, usize)>. (2) Summary handler counts types using \"Default\" for None. (3) Both Report handlers pass type counting. (4) render_summary renders \"by type:\" after \"by priority:\". (5) New test: summary_shows_type_breakdown.",
+      "design_section": "### output.rs \u2014 Display Changes\n\n- `StoryView` gains `progress: Option<ProgressRollup>` field\n- `render_story` displays type after priority line, progress after relationships\n- List rendering shows `[type]` badge and progress bar for parents\n\n### app.rs \u2014 Command Handlers\n\n- Summary/Report handlers compute type counts and pass to SummaryView",
+      "files_expected": ["src/output.rs", "src/app.rs", "tests/story_summary.rs"],
+      "relates_to": "SH-15"
+    },
+    "SH-25": {
+      "task_ref": "T2.2",
+      "wave": 2,
+      "title": "Add type breakdown to Context handler",
+      "acceptance_criteria": "(1) Context JSON branch: by_type BTreeMap in JSON output. (2) Context plain text: \"## Type Distribution\" section after \"## State Distribution\". (3) New tests: context_shows_type_distribution, context_json_includes_type_distribution.",
+      "design_section": "### app.rs \u2014 Command Handlers\n\n- Context handler JSON branch adds `by_type` BTreeMap\n- Context handler plain text branch adds \"## Type Distribution\" section",
+      "files_expected": ["src/app.rs", "tests/story_context.rs"],
+      "relates_to": "SH-15"
+    },
+    "SH-26": {
+      "task_ref": "T2.3",
+      "wave": 2,
+      "title": "Add type breakdown to HTML report",
+      "acceptance_criteria": "(1) render_html_report: new \"Type Breakdown\" section after Priority Breakdown. (2) New test: report_html_shows_type_breakdown.",
+      "design_section": "### output.rs \u2014 Display Changes\n\n- `render_html_report` renders type breakdown section\n- Type display uses same convention: None -> \"Default\"",
+      "files_expected": ["src/output.rs", "tests/story_report.rs"],
+      "relates_to": "SH-15"
+    },
+    "SH-27": {
+      "task_ref": "T3.1",
+      "wave": 3,
+      "title": "Full test suite validation",
+      "acceptance_criteria": "(1) cargo test \u2014 0 failures. (2) cargo clippy -- -D warnings \u2014 0 errors. (3) cargo build --release \u2014 succeeds.",
+      "design_section": "",
+      "files_expected": [],
+      "relates_to": null
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{"kind":"StoryCreated","at":"2026-04-05T04:38:02Z","title":"T2.1: Add type breakdown to SummaryView and Summary/Report handlers","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-05T04:38:02Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-05T04:38:02Z","labels":["phase:2"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-21","relation":"child-of"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-22","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-23","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:02Z","other_id":"SH-27","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:38:20Z","other_id":"SH-15","relation":"relates-to"}
+{"kind":"StoryCommentAdded","at":"2026-04-05T04:38:35Z","text":"Acceptance: (1) SummaryView in src/output.rs gains pub by_type: Vec<(String, usize)>. (2) Invocation::Summary handler counts types using \"Default\" for story_type == None, passes as by_type. (3) Both Report { html: false } and Report { html: true } handlers: same type counting. (4) render_summary renders \"by type:\" section after \"by priority:\". (5) New test: summary_shows_type_breakdown. (6) cargo test --test story_summary passes."}
