@@ -1,57 +1,47 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-escalate-fix-006
-- **Stories completed**: 1 (SH-27) + reconciled 6 stale stories (SH-12, SH-13, SH-15, SH-22, SH-23, SH-25)
+- **Session**: session-e504f47e
+- **Duration**: ~9 minutes
+- **Stories completed**: 1
 - **Stories attempted**: 1
-- **Status**: All stories complete — transitioning to review + validate
+- **Status**: Session limit reached (1/1 stories completed)
 
 ## What Happened
-Resumed ESCALATE fix cycle execution. Found storyhook state drift: SH-22, SH-23, SH-25 had code committed from sessions 1-5 but storyhook state was stale (todo with code already merged). Reconciled by re-archiving. Fixed SH-20 archive DB corruption (state=todo with closed_at set).
-
-Completed SH-27 (Wave 3, T3.1) — full test suite validation. Fixed 25 pre-existing clippy warnings across src/github/ and src/app.rs/domain.rs to achieve clean `cargo clippy -- -D warnings`. All three acceptance criteria satisfied.
+Executed SH-29 (fix cycle 3, story 1 of 2). Generator added the `story_type` match arm to the JSON patch dispatch table in app.rs. Also fixed a pre-existing bug in `split_global_flags` (cli.rs) that was consuming the `--json` token before the subcommand parser could use it for `story set --json '{...}'`. Evaluator passed on first attempt.
 
 ## Stories Completed This Session
-- SH-27: Full test suite validation — fixed 25 clippy warnings (collapsible if/match, needless borrows, redundant closures, derivable impls, elided lifetimes, manual split_once, too_many_arguments allows)
+- SH-29: Add story_type to JSON patch dispatch — added match arm mirroring --type flag behavior, fixed split_global_flags, updated cli_grammar test
 
 ## Current Blockers
-- None — all stories done
+None
 
 ## Working Context
 
 ### Patterns Established
-- Type counting pattern: `let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string(); *type_counts.entry(type_label).or_default() += 1;`
-- BTreeMap<String, usize> for type counts — sorted deterministically
-- "Default" is the display string for untyped stories (hardcoded, not types.toml lookup)
-- JSON branch: `"by_type": type_counts` added to serde_json::json! object
-- Plain text: "## Type Distribution" section with `- {type_name}: {count}` lines
-- HTML: "Type Breakdown" section after Priority Breakdown using `build_type_section()`
-- Import validation: all story_type values checked against load_type_map before import loop, all-or-nothing
-- Reserved slugs: "none" and "default" (case-insensitive) rejected in add_type
+- JSON patch dispatch arms in app.rs follow a consistent pattern: validate value type → load config/map → validate value → emit event → push change string
+- The `--type` flag handler (app.rs:1863-1876) and JSON patch `"story_type"` arm (app.rs:1948-1963) are structurally identical
+- `split_global_flags` now detects when `--json` is followed by a `{`-prefixed token and passes both through
 
 ### Micro-Decisions
-- Clippy `too_many_arguments` handled with `#[allow]` on 2 functions in github/mod.rs (refactoring arg count is a separate concern)
-- `let if` chains used for collapsible if patterns throughout github/ module
-- `is_some_and` preferred over `map_or(false, ...)` per modern Rust idiom
-- `split_once` preferred over manual `splitn(2)` + `next()` chains
+- The cli.rs fix was necessary for `--json '{...}'` to work at all — the generator correctly identified and fixed a pre-existing bug that would have made the acceptance criteria impossible to satisfy
+- The cli_grammar test was updated from documenting the broken behavior (asserting failure) to asserting the now-correct behavior (asserting success)
 
 ### Code Landmarks
-- `src/output.rs:34` — `pub by_type: Vec<(String, usize)>` on SummaryView
-- `src/output.rs:342` — "Default" fallback for untyped stories in show
-- `src/output.rs:422-427` — render_summary "by type:" section
-- `src/output.rs:536` — `build_type_section(summary)` call in render_html_report
-- `src/output.rs:732-744` — `build_type_section()` function
-- `src/app.rs:233,244-245` — Summary handler type counting
-- `src/app.rs:744-745` — Import validation against type_map
-- `src/app.rs:1060-1064` — Context handler type counting loop
-- `src/storage.rs:424` — "default" reserved slug check
+- `src/app.rs:1948-1963` — new story_type JSON patch arm
+- `src/app.rs:1863-1876` — --type flag handler (the pattern to mirror)
+- `src/cli.rs:309-331` — fixed split_global_flags with --json '{...}' detection
+- `tests/story_types.rs` — 3 SH-29 tests (pass), 3 SH-30 tests (pre-existing red)
+- `tests/cli_grammar.rs:323-344` — updated set_json_patch_applies_fields test
 
 ### Test State
-- All tests pass: `cargo test` — 0 failures across all test suites
-- Clippy: `cargo clippy -- -D warnings` — 0 errors (clean)
-- Release build: `cargo build --release` — succeeds
-- Test command: `cargo test`
-- No flaky tests observed
+- 35 tests pass, 3 fail (pre-existing SH-30 red tests: type_add_none_titlecase_rejected, type_add_none_uppercase_rejected, type_add_none_mixedcase_rejected)
+- Run command: `cargo test`
+- Clippy: 1 style warning in cli.rs (formatting suggestion), no errors
+- No env setup required
 
 ## What's Next
-- All stories done → transition to review + validate (parallel)
+- SH-30 (T1.2): Make reserved slug "none" check case-insensitive in storage.rs line 419
+  - Change `slug == "none"` to `slug.eq_ignore_ascii_case("none")`
+  - This will fix the 3 remaining red tests
+- After SH-30, all fix cycle 3 stories complete → transition to review+validate

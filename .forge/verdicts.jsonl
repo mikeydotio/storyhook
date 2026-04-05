@@ -25,3 +25,4 @@
 {"story":"SH-24","attempt":1,"verdict":"pass","failures":[],"timestamp":"2026-04-05T05:08:00Z"}
 {"story": "SH-25", "attempt": 1, "verdict": "pass", "failures": [], "timestamp": "2026-04-05T13:45:00Z"}
 {"story":"SH-26","attempt":1,"verdict":"pass","failures":[],"timestamp":"2026-04-05T14:01:00Z"}
+{"story":"SH-29","attempt":1,"verdict":"pass","failures":[],"timestamp":"2026-04-05T15:32:36Z"}
