@@ -320,12 +320,11 @@ fn set_batch_updates() {
 }
 
 #[test]
-fn set_json_flag_conflicts_with_global_json() {
-    // The `story set <id> --json '...'` flag is documented but currently
-    // conflicts with the global `--json` output flag: split_global_flags
-    // strips all `--json` tokens before parse_set sees them.
-    // This test documents the current behavior: the command fails with a
-    // usage error because the JSON body becomes a bare positional arg.
+fn set_json_patch_applies_fields() {
+    // `story set <id> --json '...'` applies a JSON patch to the story.
+    // split_global_flags detects that --json is followed by a value arg
+    // and keeps it for the subcommand parser instead of consuming it as
+    // the global JSON-output flag.
     let dir = tempdir().unwrap();
     init_and_create(dir.path());
 
@@ -337,8 +336,9 @@ fn set_json_flag_conflicts_with_global_json() {
             r#"{"title":"JSON title","priority":"critical"}"#,
         ])
         .assert()
-        .failure()
-        .code(2);
+        .success()
+        .stdout(predicate::str::contains("title -> JSON title"))
+        .stdout(predicate::str::contains("priority -> critical"));
 }
 
 #[test]

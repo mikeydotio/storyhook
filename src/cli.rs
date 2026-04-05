@@ -306,13 +306,28 @@ pub fn split_global_flags(args: &[String]) -> (bool, bool, bool, Vec<String>) {
     let mut no_hooks = false;
     let mut filtered = Vec::new();
 
-    for arg in args {
-        match arg.as_str() {
-            "--json" => json = true,
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                // If --json is followed by a JSON object literal, treat it as a
+                // subcommand-specific --json <value> (e.g. `story set SH-1 --json '{...}'`)
+                // rather than the global JSON-output flag.
+                if let Some(next) = args.get(i + 1) {
+                    if next.starts_with('{') {
+                        filtered.push(args[i].clone());
+                        filtered.push(next.clone());
+                        i += 2;
+                        continue;
+                    }
+                }
+                json = true;
+            }
             "--quiet" => quiet = true,
             "--no-hooks" => no_hooks = true,
-            _ => filtered.push(arg.clone()),
+            _ => filtered.push(args[i].clone()),
         }
+        i += 1;
     }
 
     (json, quiet, no_hooks, filtered)

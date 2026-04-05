@@ -1945,7 +1945,22 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                                 return Err(AppError::Validation("blocked must be a string or null".to_string()));
                             }
                         }
-                        other => return Err(AppError::Validation(format!("unknown field `{other}` in JSON. Valid fields: title, state, priority, assignee, labels, blocked"))),
+                        "story_type" => {
+                            let v = value.as_str().ok_or_else(|| AppError::Validation("story_type must be a string".to_string()))?;
+                            let type_map = storage::load_type_map(root)?;
+                            if !type_map.contains_key(v) {
+                                return Err(AppError::Validation(format!(
+                                    "unknown type `{v}`. Available types: {}",
+                                    type_map.keys().cloned().collect::<Vec<_>>().join(", ")
+                                )));
+                            }
+                            events.push(StoryEvent::StoryTypeSet {
+                                at: now.clone(),
+                                story_type: v.to_string(),
+                            });
+                            changes.push(format!("type -> {v}"));
+                        }
+                        other => return Err(AppError::Validation(format!("unknown field `{other}` in JSON. Valid fields: title, state, priority, assignee, labels, blocked, story_type"))),
                     }
                 }
             }
