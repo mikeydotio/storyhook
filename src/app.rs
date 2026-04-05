@@ -230,6 +230,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             let mut state_counts: BTreeMap<String, usize> = BTreeMap::new();
             let mut priority_counts: BTreeMap<String, usize> = BTreeMap::new();
+            let mut type_counts: BTreeMap<String, usize> = BTreeMap::new();
             let mut blocked_count = 0;
             let mut flagged_count = 0;
 
@@ -240,6 +241,8 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         .entry(view.story.priority.as_str().to_string())
                         .or_default() += 1;
                 }
+                let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string();
+                *type_counts.entry(type_label).or_default() += 1;
                 if !view.flagged_reasons.is_empty() {
                     flagged_count += 1;
                 }
@@ -263,12 +266,14 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             let by_state: Vec<(String, usize)> = state_counts.into_iter().collect();
             let by_priority: Vec<(String, usize)> = priority_counts.into_iter().collect();
+            let by_type: Vec<(String, usize)> = type_counts.into_iter().collect();
 
             Ok(Response::Summary(Box::new(SummaryView {
                 total_open,
                 total_closed,
                 by_state,
                 by_priority,
+                by_type,
                 blocked_count,
                 flagged_count,
                 ready_count,
@@ -293,6 +298,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
                 let mut state_counts: BTreeMap<String, usize> = BTreeMap::new();
                 let mut priority_counts: BTreeMap<String, usize> = BTreeMap::new();
+                let mut type_counts: BTreeMap<String, usize> = BTreeMap::new();
                 let mut blocked_count = 0;
                 let mut flagged_count = 0;
 
@@ -303,6 +309,8 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                             .entry(view.story.priority.as_str().to_string())
                             .or_default() += 1;
                     }
+                    let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string();
+                    *type_counts.entry(type_label).or_default() += 1;
                     if !view.flagged_reasons.is_empty() {
                         flagged_count += 1;
                     }
@@ -328,12 +336,14 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
                 let by_state: Vec<(String, usize)> = state_counts.into_iter().collect();
                 let by_priority: Vec<(String, usize)> = priority_counts.into_iter().collect();
+                let by_type: Vec<(String, usize)> = type_counts.into_iter().collect();
 
                 Ok(Response::Summary(Box::new(SummaryView {
                     total_open,
                     total_closed,
                     by_state,
                     by_priority,
+                    by_type,
                     blocked_count,
                     flagged_count,
                     ready_count,
@@ -356,6 +366,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
                 let mut state_counts: BTreeMap<String, usize> = BTreeMap::new();
                 let mut priority_counts: BTreeMap<String, usize> = BTreeMap::new();
+                let mut type_counts: BTreeMap<String, usize> = BTreeMap::new();
                 let mut blocked_count = 0;
                 let mut flagged_count = 0;
 
@@ -366,6 +377,8 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                             .entry(view.story.priority.as_str().to_string())
                             .or_default() += 1;
                     }
+                    let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string();
+                    *type_counts.entry(type_label).or_default() += 1;
                     if !view.flagged_reasons.is_empty() {
                         flagged_count += 1;
                     }
@@ -383,12 +396,14 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
                 let by_state: Vec<(String, usize)> = state_counts.into_iter().collect();
                 let by_priority: Vec<(String, usize)> = priority_counts.into_iter().collect();
+                let by_type: Vec<(String, usize)> = type_counts.into_iter().collect();
 
                 let summary = SummaryView {
                     total_open,
                     total_closed,
                     by_state,
                     by_priority,
+                    by_type,
                     blocked_count,
                     flagged_count,
                     ready_count,

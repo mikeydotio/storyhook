@@ -31,6 +31,7 @@ pub struct SummaryView {
     pub total_closed: usize,
     pub by_state: Vec<(String, usize)>,
     pub by_priority: Vec<(String, usize)>,
+    pub by_type: Vec<(String, usize)>,
     pub blocked_count: usize,
     pub flagged_count: usize,
     pub ready_count: usize,
@@ -418,6 +419,13 @@ fn render_summary(summary: &SummaryView) -> String {
         }
     }
 
+    if !summary.by_type.is_empty() {
+        body.push_str("by type:\n");
+        for (type_name, count) in &summary.by_type {
+            body.push_str(&format!("  {type_name}: {count}\n"));
+        }
+    }
+
     body.push_str(&format!("blocked: {}\n", summary.blocked_count));
     body.push_str(&format!("flagged: {}\n", summary.flagged_count));
     body.push_str(&format!("ready: {}\n", summary.ready_count));
@@ -525,6 +533,7 @@ pub fn render_html_report(
     let state_bar = build_state_bar(summary, total, &state_colors);
     let state_legend = build_state_legend(summary, total, &state_colors);
     let priority_html = build_priority_section(summary);
+    let type_html = build_type_section(summary);
     let table_rows = build_table_rows(stories, is_ready_fn, is_blocked_fn);
 
     let stories_table = if stories.is_empty() {
@@ -637,6 +646,11 @@ tbody tr:hover {{ background:var(--table-hover); }}
 </div>
 
 <div class="section">
+<div class="section-title">Type Breakdown</div>
+<div class="priorities">{type_html}</div>
+</div>
+
+<div class="section">
 <div class="section-title">Stories</div>
 {stories_table}
 </div>
@@ -653,6 +667,7 @@ tbody tr:hover {{ background:var(--table-hover); }}
         state_bar = state_bar,
         state_legend = state_legend,
         priority_html = priority_html,
+        type_html = type_html,
         stories_table = stories_table,
     )
 }
@@ -710,6 +725,20 @@ fn build_priority_section(summary: &SummaryView) -> String {
     }
     if html.is_empty() {
         html.push_str("<span class=\"muted\">No priorities set</span>");
+    }
+    html
+}
+
+fn build_type_section(summary: &SummaryView) -> String {
+    let mut html = String::new();
+    for (type_name, count) in &summary.by_type {
+        html.push_str(&format!(
+            "<span class=\"priority-badge priority-none\">{}: {count}</span>",
+            html_escape(type_name)
+        ));
+    }
+    if html.is_empty() {
+        html.push_str("<span class=\"muted\">No types set</span>");
     }
     html
 }

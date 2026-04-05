@@ -102,3 +102,42 @@ fn summary_empty_project() {
         .success()
         .stdout(predicate::str::contains("stories: 0 (0 open, 0 closed)"));
 }
+
+#[test]
+fn summary_shows_type_breakdown() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Create stories: 2 with no type (Default), 1 bug, 2 stories
+    // "bug" and "story" are default types from init
+    story(dir.path())
+        .args(["new", "Untyped A"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Untyped B"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Bug fix", "--type", "bug"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Story X", "--type", "story"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Story Y", "--type", "story"])
+        .assert()
+        .success();
+
+    // Verify summary shows type breakdown
+    story(dir.path())
+        .arg("summary")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("by type:"))
+        .stdout(predicate::str::contains("Default: 2"))
+        .stdout(predicate::str::contains("bug: 1"))
+        .stdout(predicate::str::contains("story: 2"));
+}
