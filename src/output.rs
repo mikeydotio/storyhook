@@ -378,15 +378,11 @@ fn render_story(view: &StoryView) -> String {
     }
 
     if let Some(ref progress) = view.progress {
-        if progress.children_total > 0 {
-            let pct = (progress.children_done as f64 / progress.children_total as f64 * 100.0) as u64;
-            body.push_str(&format!(
-                "progress: {}/{} children done ({}%)\n",
-                progress.children_done, progress.children_total, pct
-            ));
-        } else {
-            body.push_str("progress: 0/0 children done (0%)\n");
-        }
+        let pct = (progress.children_done as f64 / progress.children_total as f64 * 100.0) as u64;
+        body.push_str(&format!(
+            "progress: {}/{} children done ({}%)\n",
+            progress.children_done, progress.children_total, pct
+        ));
     }
 
     if !story.comments.is_empty() {
