@@ -109,7 +109,7 @@ pub fn issue_to_remote_snapshot(
                     let relationships: Vec<StoryRelation> = block
                         .relationships
                         .iter()
-                        .flat_map(|br| block_relationship_to_story_relations(br))
+                        .flat_map(block_relationship_to_story_relations)
                         .collect();
 
                     let text_opt = if text.is_empty() { None } else { Some(text) };

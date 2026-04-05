@@ -81,20 +81,19 @@ impl GithubClient {
         &self,
         response: &ureq::http::Response<ureq::Body>,
     ) -> Result<(), AppError> {
-        if let Some(remaining) = response.headers().get("x-ratelimit-remaining") {
-            if let Ok(s) = remaining.to_str() {
-                if let Ok(n) = s.parse::<u64>() {
-                    if n == 0 {
-                        return Err(AppError::GithubApi(
-                            "rate limit exceeded — wait for reset".into(),
-                        ));
-                    }
-                    if n < LOW_RATE_LIMIT_THRESHOLD {
-                        eprintln!(
-                            "warning: GitHub API rate limit low — {n} requests remaining"
-                        );
-                    }
-                }
+        if let Some(remaining) = response.headers().get("x-ratelimit-remaining")
+            && let Ok(s) = remaining.to_str()
+            && let Ok(n) = s.parse::<u64>()
+        {
+            if n == 0 {
+                return Err(AppError::GithubApi(
+                    "rate limit exceeded — wait for reset".into(),
+                ));
+            }
+            if n < LOW_RATE_LIMIT_THRESHOLD {
+                eprintln!(
+                    "warning: GitHub API rate limit low — {n} requests remaining"
+                );
             }
         }
         Ok(())
@@ -107,14 +106,13 @@ impl GithubClient {
         response: &mut ureq::http::Response<ureq::Body>,
     ) -> AppError {
         // Check for rate-limit exhaustion on 403
-        if status == 403 {
-            if let Some(remaining) = response.headers().get("x-ratelimit-remaining") {
-                if remaining.to_str().unwrap_or("") == "0" {
-                    return AppError::GithubApi(
-                        "rate limit exceeded — wait for reset".into(),
-                    );
-                }
-            }
+        if status == 403
+            && let Some(remaining) = response.headers().get("x-ratelimit-remaining")
+            && remaining.to_str().unwrap_or("") == "0"
+        {
+            return AppError::GithubApi(
+                "rate limit exceeded — wait for reset".into(),
+            );
         }
 
         let body_text = response
@@ -178,8 +176,8 @@ impl GithubClient {
             let mut req = self
                 .get(&path)
                 .query("state", state)
-                .query("per_page", &PER_PAGE.to_string())
-                .query("page", &page.to_string())
+                .query("per_page", PER_PAGE.to_string())
+                .query("page", page.to_string())
                 .query("sort", "updated")
                 .query("direction", "asc");
 
@@ -304,8 +302,8 @@ impl GithubClient {
             );
             let mut req = self
                 .get(&path)
-                .query("per_page", &PER_PAGE.to_string())
-                .query("page", &page.to_string());
+                .query("per_page", PER_PAGE.to_string())
+                .query("page", page.to_string());
 
             if let Some(since_val) = since {
                 req = req.query("since", since_val);
@@ -397,8 +395,8 @@ impl GithubClient {
             let req = self
                 .get(&path)
                 .header("Accept", "application/vnd.github.mockingbird-preview+json")
-                .query("per_page", &PER_PAGE.to_string())
-                .query("page", &page.to_string());
+                .query("per_page", PER_PAGE.to_string())
+                .query("page", page.to_string());
 
             let mut response = req.call().map_err(|e| {
                 AppError::GithubApi(e.to_string())

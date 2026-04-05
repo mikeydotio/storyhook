@@ -308,11 +308,11 @@ pub fn run_sync(
 
             // If the issue body has a storyhook block referencing a story that already
             // exists locally, skip it to avoid duplicates.
-            if let Some(ref sid) = remote_snap.story_id {
-                if open_stories.iter().any(|s| s.id == *sid) {
-                    report.skipped += 1;
-                    continue;
-                }
+            if let Some(ref sid) = remote_snap.story_id
+                && open_stories.iter().any(|s| s.id == *sid)
+            {
+                report.skipped += 1;
+                continue;
             }
 
             if dry_run {
@@ -403,6 +403,7 @@ pub fn run_sync(
 // sync_single_story
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn sync_single_story(
     root: &Path,
     client: &GithubClient,
@@ -599,6 +600,7 @@ fn sync_single_story(
 // Create story from GitHub issue
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn create_story_from_issue(
     root: &Path,
     client: &GithubClient,
@@ -711,20 +713,19 @@ fn create_story_from_issue(
     }
 
     // If the issue is closed, transition the story to a closed state
-    if remote_snap.superstate == crate::domain::SuperState::Closed {
-        if let Some(closed_state) = states
+    if remote_snap.superstate == crate::domain::SuperState::Closed
+        && let Some(closed_state) = states
             .iter()
             .find(|s| s.super_state == crate::domain::SuperState::Closed)
-        {
-            storage::write_story_events(
-                root,
-                &story_id,
-                &[StoryEvent::StoryStateChanged {
-                    at: storage::now(),
-                    state: closed_state.slug.clone(),
-                }],
-            )?;
-        }
+    {
+        storage::write_story_events(
+            root,
+            &story_id,
+            &[StoryEvent::StoryStateChanged {
+                at: storage::now(),
+                state: closed_state.slug.clone(),
+            }],
+        )?;
     }
 
     Ok(story_id)
@@ -794,15 +795,13 @@ fn apply_local_updates(
         });
     }
 
-    if let Some(ref assignee_opt) = updates.assignee {
-        if let Some(member_id) = assignee_opt {
-            events.push(StoryEvent::StoryAssigned {
-                at: now.clone(),
-                member_id: member_id.clone(),
-            });
-        }
+    if let Some(Some(member_id)) = &updates.assignee {
         // Note: the domain has no "unassign" event, so clearing an assignee
         // cannot be expressed. We skip the None case.
+        events.push(StoryEvent::StoryAssigned {
+            at: now.clone(),
+            member_id: member_id.clone(),
+        });
     }
 
     if let Some(ref priority) = updates.priority {

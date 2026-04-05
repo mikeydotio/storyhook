@@ -994,12 +994,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
                         if state_def.super_state == SuperState::Closed {
                             // Clear awaiting if set
-                            if let Ok(snapshot) = storage::load_open_story_snapshot(root, id) {
-                                if snapshot.awaiting.is_some() {
-                                    events.push(StoryEvent::StoryAwaitingCleared {
-                                        at: now.clone(),
-                                    });
-                                }
+                            if let Ok(snapshot) = storage::load_open_story_snapshot(root, id)
+                                && snapshot.awaiting.is_some()
+                            {
+                                events.push(StoryEvent::StoryAwaitingCleared {
+                                    at: now.clone(),
+                                });
                             }
                             events.push(StoryEvent::StoryClosedAndArchived {
                                 at: now,
@@ -2108,15 +2108,15 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
     // After successful command, maybe auto-sync to GitHub
     #[cfg(feature = "github-sync")]
-    if let Ok(ref resp) = response {
-        if !no_hooks {
-            let created_id = extract_created_story_id(resp);
-            crate::github::auto::maybe_auto_sync(
-                root,
-                &invocation_clone,
-                created_id.as_deref(),
-            );
-        }
+    if let Ok(ref resp) = response
+        && !no_hooks
+    {
+        let created_id = extract_created_story_id(resp);
+        crate::github::auto::maybe_auto_sync(
+            root,
+            &invocation_clone,
+            created_id.as_deref(),
+        );
     }
 
     response
@@ -2405,10 +2405,10 @@ fn doctor_report(root: &Path) -> Result<Response, AppError> {
             }
             issues.push(format!("{}: {}", view.story.id, issue));
         }
-        if let Some(ref slug) = view.story.story_type {
-            if !type_map.contains_key(slug) {
-                issues.push(format!("{}: unknown type `{}`", view.story.id, slug));
-            }
+        if let Some(ref slug) = view.story.story_type
+            && !type_map.contains_key(slug)
+        {
+            issues.push(format!("{}: unknown type `{}`", view.story.id, slug));
         }
     }
 

@@ -28,18 +28,13 @@ pub struct GithubRepo {
     pub repo: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SyncMode {
     Off,
+    #[default]
     Manual,
     Auto,
-}
-
-impl Default for SyncMode {
-    fn default() -> Self {
-        Self::Manual
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,10 +171,10 @@ pub fn find_mapping<'a>(
 }
 
 /// Find the mapping for a given GitHub issue number.
-pub fn find_mapping_by_issue<'a>(
-    config: &'a GithubSyncConfig,
+pub fn find_mapping_by_issue(
+    config: &GithubSyncConfig,
     issue_number: u64,
-) -> Option<&'a StoryIssueMapping> {
+) -> Option<&StoryIssueMapping> {
     config
         .mappings
         .iter()
@@ -202,9 +197,7 @@ pub fn parse_github_url(url: &str) -> Option<GithubRepo> {
     // SSH format: git@github.com:owner/repo.git
     if let Some(rest) = url.strip_prefix("git@github.com:") {
         let rest = rest.strip_suffix(".git").unwrap_or(rest);
-        let mut parts = rest.splitn(2, '/');
-        let owner = parts.next()?;
-        let repo = parts.next()?;
+        let (owner, repo) = rest.split_once('/')?;
         if owner.is_empty() || repo.is_empty() {
             return None;
         }
@@ -221,9 +214,7 @@ pub fn parse_github_url(url: &str) -> Option<GithubRepo> {
     {
         let rest = rest.strip_suffix(".git").unwrap_or(rest);
         let rest = rest.strip_suffix('/').unwrap_or(rest);
-        let mut parts = rest.splitn(2, '/');
-        let owner = parts.next()?;
-        let repo = parts.next()?;
+        let (owner, repo) = rest.split_once('/')?;
         if owner.is_empty() || repo.is_empty() {
             return None;
         }

@@ -545,7 +545,7 @@ pub fn compute_progress(
         .filter(|child_id| {
             all_stories
                 .get(**child_id)
-                .map_or(false, |s| s.superstate == SuperState::Closed)
+                .is_some_and(|s| s.superstate == SuperState::Closed)
         })
         .count();
 
