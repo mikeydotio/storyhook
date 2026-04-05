@@ -726,6 +726,20 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             if stories.is_empty() {
                 return Ok(Response::Message("no stories to import".to_string()));
             }
+            // Validate all story_type values before creating any stories
+            let type_map = storage::load_type_map(root)?;
+            let invalid_types: std::collections::BTreeSet<&str> = stories
+                .iter()
+                .filter_map(|s| s.story_type.as_deref())
+                .filter(|st| !type_map.contains_key(*st))
+                .collect();
+            if !invalid_types.is_empty() {
+                return Err(AppError::Validation(format!(
+                    "unknown types: {}. Available types: {}",
+                    invalid_types.into_iter().collect::<Vec<_>>().join(", "),
+                    type_map.keys().cloned().collect::<Vec<_>>().join(", ")
+                )));
+            }
             let mut created_ids: Vec<String> = Vec::new();
             for import_story in &stories {
                 let story = storage::create_story(root, &import_story.title, import_story.state.as_deref())?;
@@ -2782,6 +2796,20 @@ fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<ImportBa
             views: Vec::new(),
             relationship_lines: Vec::new(),
         });
+    }
+    // Validate all story_type values before creating any stories
+    let type_map = storage::load_type_map(root)?;
+    let invalid_types: std::collections::BTreeSet<&str> = stories
+        .iter()
+        .filter_map(|s| s.story_type.as_deref())
+        .filter(|st| !type_map.contains_key(*st))
+        .collect();
+    if !invalid_types.is_empty() {
+        return Err(AppError::Validation(format!(
+            "unknown types: {}. Available types: {}",
+            invalid_types.into_iter().collect::<Vec<_>>().join(", "),
+            type_map.keys().cloned().collect::<Vec<_>>().join(", ")
+        )));
     }
     let mut created_ids: Vec<String> = Vec::new();
     for import_story in stories {

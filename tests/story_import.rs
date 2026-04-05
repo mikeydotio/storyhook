@@ -181,3 +181,95 @@ fn import_with_story_type() {
         .success()
         .stdout(predicate::str::contains("type: Default"));
 }
+
+#[test]
+fn import_rejects_invalid_story_type() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let json = r#"[
+        {"title": "Valid story", "story_type": "bug"},
+        {"title": "Bad story", "story_type": "foo"},
+        {"title": "Also bad", "story_type": "bar"}
+    ]"#;
+
+    story(dir.path())
+        .args(["import"])
+        .write_stdin(json)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("unknown types: bar, foo"))
+        .stdout(predicate::str::contains("Available types:"));
+}
+
+#[test]
+fn import_atomicity_on_type_error() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let json = r#"[
+        {"title": "Good story", "story_type": "bug"},
+        {"title": "Bad story", "story_type": "nonexistent"}
+    ]"#;
+
+    // Import should fail
+    story(dir.path())
+        .args(["import"])
+        .write_stdin(json)
+        .assert()
+        .failure();
+
+    // No stories should have been created (all-or-nothing)
+    story(dir.path())
+        .args(["list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SH-1").not());
+}
+
+#[test]
+fn import_accepts_valid_story_type() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let json = r#"[
+        {"title": "A bug", "story_type": "bug"},
+        {"title": "A story", "story_type": "story"},
+        {"title": "A chore", "story_type": "chore"},
+        {"title": "An epic", "story_type": "epic"},
+        {"title": "A task", "story_type": "task"}
+    ]"#;
+
+    story(dir.path())
+        .args(["import"])
+        .write_stdin(json)
+        .assert()
+        .success();
+
+    // Verify all five were created with correct types
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: bug"));
+    story(dir.path())
+        .args(["show", "SH-2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: story"));
+    story(dir.path())
+        .args(["show", "SH-3"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: chore"));
+    story(dir.path())
+        .args(["show", "SH-4"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: epic"));
+    story(dir.path())
+        .args(["show", "SH-5"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: task"));
+}
