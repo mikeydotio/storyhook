@@ -1,0 +1,22 @@
+{
+  "plan_hash": "3a28411933ea7fe67c7fd9d8fc9c1b74",
+  "project_story": "SH-28",
+  "stories": {
+    "SH-29": {
+      "task_ref": "T1.1",
+      "wave": 1,
+      "title": "Add story_type arm to JSON patch dispatch table",
+      "acceptance_criteria": "story set <id> --json '{\"story_type\":\"...\"}' must work, mirror --type flag behavior. Error message must list story_type as valid field. Unknown story_type values in JSON patch must be rejected with validation error. Tests: json_patch_sets_story_type, json_patch_rejects_invalid_story_type, json_patch_unknown_field_error_lists_story_type in tests/story_types.rs pass.",
+      "design_section": "### app.rs — Command Handlers\n\n- Type validation at write time: check slug exists in `load_type_map`\n- `StoryTypeSet { at: String, story_type: String }` — new event variant mirroring `StoryPrioritySet`\n- Error: `AppError::Validation` — `type \\`{slug}\\` is not defined. Available types: ...`\n- JSON patch dispatch table in SetFields handler (app.rs:1884-1948)\n- The new arm validates the value is a string, loads the type map via `storage::load_type_map(root)?`, rejects unknown types, emits `StoryEvent::StoryTypeSet`, pushes change string `format!(\"type -> {v}\")`\n- Error message at line 1948 updated to include `story_type` in valid fields list",
+      "files_expected": ["src/app.rs", "tests/story_types.rs"]
+    },
+    "SH-30": {
+      "task_ref": "T1.2",
+      "wave": 1,
+      "title": "Make reserved slug 'none' check case-insensitive",
+      "acceptance_criteria": "story type add None and story type add NONE (any case variant) must be rejected as reserved. Existing lowercase 'none' rejection must continue working. Tests: type_add_none_titlecase_rejected, type_add_none_uppercase_rejected, type_add_none_mixedcase_rejected in tests/story_types.rs pass.",
+      "design_section": "### storage.rs — Config Loading & Persistence\n\n- `add_type(root, slug, description) -> Result<TypeDef>` — validates no duplicates, rejects reserved slugs (\"none\")\n- Reserved slugs: \"none\" is forbidden in `add_type`\n- Error: `AppError::Validation` — `type slug \\`none\\` is reserved`\n- Line 419: `slug == \"none\"` → change to `slug.eq_ignore_ascii_case(\"none\")`\n- No other lines in storage.rs should be modified (the \"default\" check at line 424 is already correct)",
+      "files_expected": ["src/storage.rs", "tests/story_types.rs"]
+    }
+  }
+}

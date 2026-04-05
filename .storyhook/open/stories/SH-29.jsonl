@@ -1,0 +1,4 @@
+{"kind":"StoryCreated","at":"2026-04-05T15:21:02Z","title":"Add `story_type` arm to JSON patch dispatch table — `story set <id> --json '{\"story_type\":\"...\"}'` must work, mirror `--type` flag behavior, update error message to list `story_type` as valid field, reject unknown types with validation error","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-05T15:21:02Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-05T15:21:02Z","labels":["phase:1"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T15:21:02Z","other_id":"SH-28","relation":"child-of"}

@@ -1,0 +1,4 @@
+{"kind":"StoryCreated","at":"2026-04-05T15:21:02Z","title":"Make reserved slug \"none\" check case-insensitive — `story type add None` and `story type add NONE` must be rejected as reserved, existing lowercase rejection must continue working","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-05T15:21:02Z","priority":"medium"}
+{"kind":"StoryLabelsSet","at":"2026-04-05T15:21:02Z","labels":["phase:1"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T15:21:02Z","other_id":"SH-28","relation":"child-of"}

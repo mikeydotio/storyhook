@@ -1,48 +1,37 @@
-# Handoff: Decompose Complete (Fix Cycle 1, ESCALATE stories)
+# Handoff: Decompose Complete (Fix Cycle 3)
 
 ## Timestamp
-2026-04-05T04:39:00Z
+2026-04-05T15:21:00Z
 
 ## Artifacts Produced
-- `.forge/plan-mapping.json` — 6 task stories + 1 parent mapped to PLAN.md and DESIGN.md
-- Storyhook stories: SH-21 (parent), SH-22–SH-27 (tasks)
+- `.forge/plan-mapping.json` (2 stories mapped to tasks)
 
 ## Key Decisions
-- Created 7 stories via `decompose_spec`: SH-21 (parent), SH-22-27 (tasks)
-- Deleted SH-20 (premature parent, replaced by SH-21 from decompose_spec)
-- Wave dependencies: W2 blocked-by W1, W3 blocked-by W2
-- Linked task stories to ESCALATE parents: SH-22���SH-12, SH-23→SH-13, SH-24/25/26→SH-15
-- DAG validated — no cycles, critical path: SH-23 → SH-24 → SH-27
+- Created 3 stories: SH-28 (parent), SH-29 (T1.1 JSON patch), SH-30 (T1.2 case-insensitive none)
+- Both child stories in wave 1 (parallel, no inter-dependencies)
+- DAG validated — no cycles detected
+- Design sections embedded in plan-mapping.json for execution context
 
 ## Context for Next Step
 
-### Story-to-Task Mapping
-| Story | Task | Wave | ESCALATE | Priority |
-|-------|------|------|----------|----------|
-| SH-22 | T1.1: Display "Default" + reserve slug | 1 | SH-12 | high |
-| SH-23 | T1.2: Import validation against types.toml | 1 | SH-13 | high |
-| SH-24 | T2.1: SummaryView + Summary/Report handlers | 2 | SH-15 | high |
-| SH-25 | T2.2: Context handler type breakdown | 2 | SH-15 | medium |
-| SH-26 | T2.3: HTML report type breakdown | 2 | SH-15 | medium |
-| SH-27 | T3.1: Full test suite validation | 3 | — | none |
+### SH-29 (T1.1): Add `story_type` to JSON patch dispatch
+- File: `src/app.rs`, lines 1884-1948
+- Add `"story_type"` match arm between `"blocked"` and `other =>`
+- Mirror `--type` flag handler (lines 1863-1875): load type map, validate slug, emit `StoryTypeSet`, push change string
+- Update error message at line 1948: add `story_type` to valid fields list
+- 3 red tests already written: `json_patch_sets_story_type`, `json_patch_rejects_invalid_story_type`, `json_patch_unknown_field_error_lists_story_type`
 
-### Wave Ordering
-- **Wave 1** (SH-22, SH-23): Independent, can run in parallel. SH-22 touches output.rs + storage.rs, SH-23 touches app.rs + story_import tests.
-- **Wave 2** (SH-24, SH-25, SH-26): All depend on W1. SH-24 adds SummaryView.by_type field that SH-26 depends on. SH-25 is independent of SH-24/26.
-- **Wave 3** (SH-27): Final validation — all tests, clippy, release build.
-
-### Key Implementation Details
-- T1.1: `unwrap_or("-")` → `unwrap_or("Default")` at output.rs:342, add "default" to reserved slugs in storage.rs
-- T1.2: `load_type_map(root)?` before import loop at app.rs:725-730, collect ALL invalid types before failing
-- T2.1: `SummaryView` gains `by_type: Vec<(String, usize)>`, 3 construction sites in app.rs
-- T2.2: JSON `by_type` BTreeMap + plain text "## Type Distribution" in Context handler
-- T2.3: HTML "Type Breakdown" section in render_html_report
-- All acceptance criteria embedded as comments on each story
+### SH-30 (T1.2): Case-insensitive "none" slug check
+- File: `src/storage.rs`, line 419
+- Change `slug == "none"` to `slug.eq_ignore_ascii_case("none")`
+- 3 red tests already written: `type_add_none_titlecase_rejected`, `type_add_none_uppercase_rejected`, `type_add_none_mixedcase_rejected`
 
 ## Pipeline State
-- Fix cycle: 1 / 3 max
+- Fix cycle: 3 / max 3 (final cycle)
 - Yolo mode: false
-- ESCALATE stories: SH-12, SH-13, SH-15 (todo, user decisions recorded)
+- All 27 original stories complete
+- 6 red tests awaiting fixes
+- 2 new stories (SH-29, SH-30) in todo state
 
 ## Open Questions
-- None — plan is fully decomposed with clear task boundaries
+None — both fixes are fully specified with pre-written tests.
