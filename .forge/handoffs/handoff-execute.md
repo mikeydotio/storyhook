@@ -1,19 +1,19 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-escalate-fix-002
-- **Stories completed**: 1 (SH-23)
+- **Session**: session-escalate-fix-003
+- **Stories completed**: 1 (SH-24)
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 stories per session)
-- **Canary remaining**: 1
+- **Canary remaining**: 0 (canary mode complete — full autonomy from here)
 
 ## What Happened
-Resumed ESCALATE fix cycle execution. Completed SH-23 (Wave 1, T1.2) — add import validation for story_type against types.toml. Evaluator passed on first attempt. Canary approved by user.
+Resumed ESCALATE fix cycle execution. Fixed SH-22 state inconsistency (code was committed but storyhook state never transitioned to done — manually fixed). Completed SH-24 (Wave 2, T2.1) — add type breakdown to SummaryView and Summary/Report handlers. Evaluator passed on first attempt. Last canary story approved by user.
 
-Wave 1 is now complete (SH-22 + SH-23 both done). Wave 2 (SH-24, SH-25, SH-26) is now unblocked.
+Wave 2 has 2 remaining stories: SH-25 (Context handler) and SH-26 (HTML report). Both are now unblocked.
 
 ## Stories Completed This Session
-- SH-23: Add import validation for story_type against types.toml — added pre-loop validation to both `Invocation::Import` and `import_stories_batch` using `load_type_map` + `BTreeSet` for collecting invalid types, all-or-nothing semantics, 3 new tests
+- SH-24: Add type breakdown to SummaryView and Summary/Report handlers — added `by_type: Vec<(String, usize)>` to SummaryView, type counting with "Default" fallback in all 3 handlers (Summary, Report plain, Report HTML), render_summary "by type:" section, HTML Type Breakdown section with html_escape, new integration test
 
 ## Current Blockers
 - None
@@ -21,25 +21,31 @@ Wave 1 is now complete (SH-22 + SH-23 both done). Wave 2 (SH-24, SH-25, SH-26) i
 ## Working Context
 
 ### Patterns Established
+- Type counting pattern: `let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string(); *type_counts.entry(type_label).or_default() += 1;`
+- BTreeMap<String, usize> for type counts, converted to Vec<(String, usize)> for SummaryView
+- "Default" is the display string for untyped stories (hardcoded, not types.toml lookup)
+- render_summary: "by type:" section after "by priority:", before blocked/flagged/ready
+- HTML report: Type Breakdown section uses `build_type_section()` with `priority-none` CSS class badges and `html_escape()` for XSS safety
 - Import type validation uses `BTreeSet<&str>` for deterministic sorted output of invalid types
-- Validation happens before any `create_story` call for all-or-nothing semantics
-- Error format: "unknown types: bar, foo. Available types: bug, chore, epic, story, task"
-- Both import paths (inline `Invocation::Import` and `import_stories_batch`) share identical validation logic
-- Reserved slug validation in `add_type` uses `eq_ignore_ascii_case` for "default" (from SH-22)
-- Untyped story display uses hardcoded "Default" string in output.rs (from SH-22)
+- Reserved slug validation in `add_type` uses `eq_ignore_ascii_case` for "default"
 
 ### Micro-Decisions
-- "Default" is capitalized for display consistency — it's a label, not a slug (from SH-22)
+- "Default" is capitalized for display consistency — it's a label, not a slug
+- HTML type badges use `priority-none` CSS class (neutral gray) — no per-type color mapping
+- `build_type_section` falls back to `<span class="muted">No types set</span>` when empty
 - The "none" slug's exact-match inconsistency was noted but intentionally left alone (out of scope)
-- Both import paths get identical validation — the AC only specified the inline handler, but we added it to `import_stories_batch` too for consistency
 
 ### Code Landmarks
+- `src/output.rs:34` — `pub by_type: Vec<(String, usize)>` field on SummaryView
+- `src/output.rs:422-427` — render_summary "by type:" section
+- `src/output.rs:729-743` — `build_type_section()` for HTML report
+- `src/output.rs:645-649` — HTML template Type Breakdown div
+- `src/app.rs:233,241-242` — Summary handler type counting
+- `src/app.rs:298,309-310` — Report (plain) handler type counting
+- `src/app.rs:366,377-378` — Report (HTML) handler type counting
 - `src/app.rs:728-741` — type validation block in `Invocation::Import` handler
-- `src/app.rs:2799-2812` — type validation block in `import_stories_batch`
-- `src/output.rs:341` — `unwrap_or("Default")` for story show type display (from SH-22)
-- `src/output.rs:256-259` — match expression for list view type badge (from SH-22)
-- `src/storage.rs:424-428` — "default" reserved slug validation (from SH-22)
-- `tests/story_import.rs:184-275` — three new import validation tests
+- `src/storage.rs:424-428` — "default" reserved slug validation
+- `tests/story_summary.rs:106-143` — summary_shows_type_breakdown test
 
 ### Test State
 - All tests pass: `cargo test` — 0 failures
@@ -48,6 +54,7 @@ Wave 1 is now complete (SH-22 + SH-23 both done). Wave 2 (SH-24, SH-25, SH-26) i
 - No flaky tests observed
 
 ## What's Next
-- Wave 2 is unblocked: SH-24 (type breakdown in Summary/Report), SH-25 (type breakdown in Context), SH-26 (type breakdown in HTML report)
+- Wave 2 remaining: SH-25 (type breakdown in Context handler), SH-26 (type breakdown in HTML report)
 - These are independent — can be executed in any order
-- Canary mode: 1 remaining approval needed
+- After Wave 2: SH-27 (full test suite validation) in Wave 3
+- Canary mode complete — all subsequent stories proceed without user approval
