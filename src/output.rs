@@ -253,10 +253,9 @@ fn render_human(response: &Response) -> String {
                 } else {
                     String::new()
                 };
-                let type_badge = if let Some(ref t) = story.story.story_type {
-                    format!(" [{}]", t)
-                } else {
-                    String::new()
+                let type_badge = match story.story.story_type.as_deref() {
+                    Some(t) => format!(" [{}]", t),
+                    None => " [Default]".to_string(),
                 };
                 let progress_summary = if let Some(ref p) = story.progress {
                     format!(" ({}/{})", p.children_done, p.children_total)
@@ -339,7 +338,7 @@ fn render_story(view: &StoryView) -> String {
     ));
     body.push_str(&format!("assignee: {assignee}\n"));
     body.push_str(&format!("priority: {}\n", story.priority.as_str()));
-    let type_display = story.story_type.as_deref().unwrap_or("-");
+    let type_display = story.story_type.as_deref().unwrap_or("Default");
     body.push_str(&format!("type: {type_display}\n"));
     if story.labels.is_empty() {
         body.push_str("labels: -\n");

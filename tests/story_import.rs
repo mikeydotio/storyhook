@@ -179,5 +179,5 @@ fn import_with_story_type() {
         .args(["show", "SH-3"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("type: -"));
+        .stdout(predicate::str::contains("type: Default"));
 }

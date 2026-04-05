@@ -421,6 +421,11 @@ pub fn add_type(root: &Path, slug: &str, description: Option<&str>) -> Result<Ty
             "type slug `none` is reserved and cannot be used".to_string(),
         ));
     }
+    if slug.eq_ignore_ascii_case("default") {
+        return Err(AppError::Validation(
+            "type slug `default` is reserved and cannot be used".to_string(),
+        ));
+    }
 
     let mut types = load_types(root)?;
     if types.iter().any(|t| t.slug == slug) {

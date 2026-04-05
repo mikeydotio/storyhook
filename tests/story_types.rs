@@ -71,6 +71,33 @@ fn type_add_none_slug_rejected() {
 }
 
 #[test]
+fn type_add_rejects_reserved_default_slug() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Lowercase "default" should be rejected
+    story(dir.path())
+        .args(["type", "add", "default"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("reserved"));
+
+    // Mixed-case "Default" should also be rejected (case-insensitive)
+    story(dir.path())
+        .args(["type", "add", "Default"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("reserved"));
+
+    // All-caps "DEFAULT" should also be rejected
+    story(dir.path())
+        .args(["type", "add", "DEFAULT"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("reserved"));
+}
+
+#[test]
 fn type_remove_unused_succeeds() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
@@ -192,7 +219,7 @@ fn set_unknown_type_rejected() {
 }
 
 #[test]
-fn untyped_story_shows_dash_for_type() {
+fn untyped_story_shows_default_for_type() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
@@ -205,7 +232,7 @@ fn untyped_story_shows_dash_for_type() {
         .args(["show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("type: -"));
+        .stdout(predicate::str::contains("type: Default"));
 }
 
 // ============================================================
