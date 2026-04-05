@@ -1,36 +1,43 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-execute-009
-- **Stories completed**: 1 (SH-11 — verification only)
+- **Session**: fix-cycle-1-session-1
+- **Duration**: ~2 minutes
+- **Stories completed**: 1 (SH-17)
 - **Stories attempted**: 1
-- **Status**: All stories complete (11/11)
+- **Status**: Session limit reached (1/1 stories per session)
 
 ## What Happened
-Resumed execution for final story SH-11 (full compilation and test pass). This was a verification-only story — no code changes. Ran cargo build (0 errors), cargo test (500+ tests, 0 failures), cargo clippy (25 pre-existing warnings, 0 errors). All acceptance criteria met. Closed parent stories SH-1 and SH-2 as all children complete.
+Executed fix cycle 1, story 1 of 3. SH-17 was a documentation-only change to `src/mcp.rs` — added `story_type` to the MCP `storyhook_update_story` tool description's priority order string. Generator passed on first attempt, evaluator confirmed pass.
 
-## Cumulative Execution Summary
-- **Total sessions**: 9
-- **Total stories**: 11 (9 leaf + 2 parent containers)
-- **Total retries**: 0
-- **Canary stories**: 3 (SH-3, SH-4, SH-5 — approved in sessions 1-3)
+## Stories Completed This Session
+- SH-17: Add `story_type` to MCP update tool description — single string edit in `src/mcp.rs:185`
 
-## Stories Completed (All)
-- SH-3: domain.rs — StoryTypeSet event, TypeDef, snapshot field, fold logic
-- SH-4: cli.rs — TypeAction, EpicAction, Invocation variants, parsers, flags
-- SH-5: storage.rs — types.toml config lifecycle
-- SH-6: output.rs — StoryView.progress, type + progress rendering
-- SH-7: app.rs — Type and Epic command handlers, type validation, --type filter, epic create
-- SH-8: app.rs — build_story_views progress rollup, Next parent skip, doctor type check
-- SH-9: mcp.rs — story_type param on MCP tools
-- SH-10: storage.rs + app.rs — Export/import types.toml, ImportStory type handling
-- SH-11: Full compilation and test pass (verification only)
+## Current Blockers
+None
 
-## Test State
-- **Command**: `cargo test`
-- **Result**: 500+ tests across all binaries, 0 failures
-- **Clippy**: 25 pre-existing warnings, 0 errors
-- **Build**: clean compilation
+## Working Context
+
+### Patterns Established
+- Fix cycle stories are small, targeted changes in separate files with no interdependencies
+- All 3 fix cycle stories are wave 1 (independent)
+- The project uses Rust with `cargo test` and `cargo clippy` for checks
+- 25 pre-existing clippy warnings (not introduced by fix cycle)
+
+### Micro-Decisions
+- No new tests needed for documentation-only changes (SH-17)
+
+### Code Landmarks
+- `src/mcp.rs` — MCP tool definitions, JSON-RPC handlers, tool schemas
+- `src/storage.rs` — Config loading (types.toml), CRUD for types, project paths
+- `src/output.rs` — Human-readable and JSON output rendering, StoryView, progress display
+
+### Test State
+- All 389 tests pass (unit + integration)
+- `cargo test` runs cleanly
+- `cargo clippy` shows 25 pre-existing warnings, no errors
+- No flaky tests observed
 
 ## What's Next
-All stories done. Pipeline should transition to review + validate.
+- **SH-18**: Guard against removing last type in `remove_type` (src/storage.rs) — add validation guard + unit test
+- **SH-19**: Remove dead code branch in progress rendering (src/output.rs) — delete unreachable else branch
