@@ -1,31 +1,62 @@
-# Handoff: Plan Complete (Fix Cycle 1)
+# Work Handoff
 
-## Timestamp
-2026-04-04T10:00:00Z
+## Session Summary
+- **Session**: plan (ESCALATE fix cycle)
+- **Pipeline step**: plan
+- **Status**: Plan approved
+- **Fix cycle**: 1
 
-## Artifacts Produced
-- `.forge/PLAN.md` (fix cycle 1 plan — 3 tasks, 1 wave)
-- `.forge/fix-cycles/cycle-0/` (archived original TRIAGE.md, PLAN.md, plan-mapping.json)
+## What Happened
 
-## Key Decisions
-- Plan approved for fix cycle 1 with 3 tasks in a single wave
-- All tasks independent — can be executed in any order
-- Only Task 1.2 (last-type guard) requires a new test
-- Tasks 1.1 and 1.3 are covered by existing tests or are documentation-only
+User reviewed all 4 ESCALATE stories (SH-12, SH-13, SH-14, SH-15):
+- SH-12: Show "Default" instead of "-" for untyped stories (custom decision)
+- SH-13: Add import validation against types.toml
+- SH-14: Accept compact format — closed as done, no work needed
+- SH-15: Implement type breakdown in summary/context
 
-## Context for Next Step
-The plan has 3 tasks in 1 wave, all independent:
+Planning agents (PM, QA, DA) produced a 6-task plan across 3 waves. DA identified two important risks that were incorporated:
+1. Reserve "default" slug (case-insensitive) to prevent collision with display string
+2. Import validation should collect ALL invalid types before failing
 
-1. **Task 1.1** — `src/mcp.rs:185`: Add `story_type` to the `storyhook_update_story` tool description priority order string. Change "state > priority > labels > assignee > awaiting" to "state > priority > labels > assignee > awaiting > story_type".
+## Plan Structure
 
-2. **Task 1.2** — `src/storage.rs:441`: Add guard at top of `remove_type` function: if `types.len() == 1`, return `AppError::Validation("cannot remove the last type")`. Add unit test `remove_type_rejects_last_type` after line 1210.
+| Wave | Tasks | Scope |
+|------|-------|-------|
+| Wave 1 (parallel) | T1.1 (SH-12: display + slug), T1.2 (SH-13: import validation) | Small each |
+| Wave 2 (parallel after W1) | T2.1 (SummaryView + handlers), T2.2 (Context handler), T2.3 (HTML report) | Medium / Small |
+| Wave 3 | T3.1 (full validation) | Small |
 
-3. **Task 1.3** — `src/output.rs:380-389`: Remove the `if progress.children_total > 0` conditional and its `else` branch. Keep only the body (the format! call for progress display), since `children_total` is always > 0 when `progress` is `Some`.
+## Key Implementation Details
+
+### T1.1 (SH-12)
+- `src/output.rs:342`: `unwrap_or("-")` → `unwrap_or("Default")`
+- `src/output.rs:256-259`: show `[Default]` badge for `story_type == None`
+- `src/storage.rs` `add_type`: reject "default" (case-insensitive) alongside "none"
+- Update 2 existing tests: `tests/story_types.rs`, `tests/story_import.rs`
+
+### T1.2 (SH-13)
+- `src/app.rs:725-730`: add `load_type_map` + collect all invalid types before loop
+- Error message lists ALL invalid types, not just first
+- All-or-nothing: zero stories created on failure
+
+### T2.1 (SH-15 - Summary)
+- `SummaryView` gains `by_type: Vec<(String, usize)>`
+- 3 construction sites in app.rs: Summary (~L217), Report text (~L278), Report HTML (~L342)
+- `render_summary` in output.rs: "by type:" section after "by priority:"
+- Stories with `story_type: None` counted as "Default"
+
+### T2.2 (SH-15 - Context)
+- JSON branch (~L1057): add `by_type` BTreeMap to JSON output
+- Plain text branch (~L1077): add "## Type Distribution" section
+
+### T2.3 (SH-15 - HTML)
+- `render_html_report`: add "Type Breakdown" section after Priority
 
 ## Pipeline State
-- Fix cycle: 1 / 3
-- Yolo mode: false
-- ESCALATE stories pending: 4 (SH-12, SH-13, SH-14, SH-15)
+- **Fix cycle**: 1 / 3 max
+- **Yolo mode**: false
+- **Stories to implement**: SH-12, SH-13, SH-15
+- **Stories closed**: SH-14 (accepted as-is)
 
-## Open Questions
-None
+## What's Next
+Dispatch to `decompose --orchestrated` to create storyhook stories from the plan tasks.
