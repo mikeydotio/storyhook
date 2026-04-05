@@ -1,0 +1,30 @@
+{
+  "plan_hash": "7ff4ac6b4e86d96925fff769e285ea00",
+  "project_story": "SH-16",
+  "stories": {
+    "SH-17": {
+      "task_ref": "Task 1.1",
+      "wave": 1,
+      "title": "Add `story_type` to MCP update tool description",
+      "acceptance_criteria": "The `storyhook_update_story` tool description string includes `story_type` in the priority order list (state > priority > labels > assignee > awaiting > story_type)",
+      "design_section": "### mcp.rs — MCP Tool Updates\n\n- **Purpose:** Expose type field in MCP tool schemas.\n- **Interfaces:**\n  - `storyhook_create_story` gains `story_type: Option<String>` param\n  - `storyhook_update_story` gains `story_type: Option<String>` param\n  - `storyhook_list_stories` gains `story_type: Option<String>` param\n  - `storyhook_bulk_create` gains `story_type` per item\n  - `storyhook_get_story` and `storyhook_get_next`: no schema change (type + progress auto-included via serde)\n- **Dependencies:** `cli::Invocation`, `app::run`\n- **Key decisions:** No new MCP tools. Story type is a parameter on existing tools, not a separate tool.",
+      "files_expected": ["src/mcp.rs"]
+    },
+    "SH-18": {
+      "task_ref": "Task 1.2",
+      "wave": 1,
+      "title": "Guard against removing last type in `remove_type`",
+      "acceptance_criteria": "`remove_type` returns `AppError::Validation` with a message containing \"last\" when called with the only remaining type in types.toml. New unit test `remove_type_rejects_last_type` passes.",
+      "design_section": "### storage.rs — Config Loading & Persistence\n\n- **Purpose:** Manage `types.toml` lifecycle: path resolution, loading, saving, CRUD, default creation, auto-migration.\n- **Interfaces:**\n  - `remove_type(root, slug) -> Result<()>` — rejects if any open story uses the type\n- **Key decisions:**\n  - `remove_type` checks for in-use types before allowing deletion\n  - Default types: story (default), epic, bug, chore, task\n  - Reserved slugs: \"none\" is forbidden in `add_type`",
+      "files_expected": ["src/storage.rs"]
+    },
+    "SH-19": {
+      "task_ref": "Task 1.3",
+      "wave": 1,
+      "title": "Remove dead code branch in progress rendering",
+      "acceptance_criteria": "The `else` branch at output.rs:387-389 (printing \"0/0 children done (0%)\") is removed. The `if progress.children_total > 0` conditional is simplified since it's always true when progress is `Some`. All existing tests pass.",
+      "design_section": "### output.rs — Display Changes\n\n- **Purpose:** Render type and progress in human-readable and JSON output.\n- **Interfaces:**\n  - `StoryView` gains `progress: Option<ProgressRollup>` field\n  - `render_story` displays type after priority line, progress after relationships\n  - List rendering shows `[type]` badge and progress bar for parents\n- **Key decisions:**\n  - When displaying, `story_type: None` renders as the default type from `types.toml`\n  - JSON output includes raw `story_type` (may be `null` for old stories) and `progress` via serde",
+      "files_expected": ["src/output.rs"]
+    }
+  }
+}

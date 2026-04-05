@@ -1,0 +1,5 @@
+{"kind":"StoryCreated","at":"2026-04-05T04:00:20Z","title":"Guard against removing last type in `remove_type`","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-05T04:00:20Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-05T04:00:20Z","labels":["phase:1"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:00:20Z","other_id":"SH-16","relation":"child-of"}
+{"kind":"StoryCommentAdded","at":"2026-04-05T04:00:26Z","text":"Acceptance: `remove_type` returns `AppError::Validation` with a message containing \"last\" when called with the only remaining type in types.toml. New unit test `remove_type_rejects_last_type` passes. Files: `src/storage.rs` (guard clause in `remove_type` at line 441 + new test after line 1210)"}

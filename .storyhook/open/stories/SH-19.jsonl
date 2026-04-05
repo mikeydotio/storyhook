@@ -1,0 +1,5 @@
+{"kind":"StoryCreated","at":"2026-04-05T04:00:20Z","title":"Remove dead code branch in progress rendering","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-05T04:00:20Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-05T04:00:20Z","labels":["phase:1"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-05T04:00:20Z","other_id":"SH-16","relation":"child-of"}
+{"kind":"StoryCommentAdded","at":"2026-04-05T04:00:27Z","text":"Acceptance: The `else` branch at output.rs:387-389 (printing \"0/0 children done (0%)\") is removed. The `if progress.children_total > 0` conditional is simplified since it's always true when progress is `Some`. All existing tests pass. Files: `src/output.rs` (lines 380-389)"}
