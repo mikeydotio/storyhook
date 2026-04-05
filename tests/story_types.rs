@@ -569,6 +569,45 @@ fn list_shows_type_badge_in_human_output() {
     assert!(stdout.contains("[bug]"));
 }
 
+#[test]
+fn list_shows_default_badge_for_untyped_story() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    story(dir.path())
+        .args(["new", "Untyped task"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .args(["list"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("[Default]"));
+}
+
+#[test]
+fn type_remove_last_type_rejected() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Remove all but one type
+    for slug in &["epic", "bug", "chore", "task"] {
+        story(dir.path())
+            .args(["type", "remove", slug])
+            .assert()
+            .success();
+    }
+
+    // Attempting to remove the last type should fail
+    story(dir.path())
+        .args(["type", "remove", "story"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("last"));
+}
+
 // ============================================================
 // JSON output includes story_type and progress
 // ============================================================

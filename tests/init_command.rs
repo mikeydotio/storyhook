@@ -13,6 +13,7 @@ fn init_creates_storyhook_layout() {
 
     assert!(dir.path().join(".storyhook/project.toml").exists());
     assert!(dir.path().join(".storyhook/states.toml").exists());
+    assert!(dir.path().join(".storyhook/types.toml").exists());
     assert!(dir.path().join(".storyhook/open/stories").exists());
     assert!(dir.path().join(".storyhook/archive/archive.db").exists());
 }

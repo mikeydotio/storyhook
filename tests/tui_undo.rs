@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use storyhook::domain::{Priority, StoryEvent, SuperState};
+use storyhook::domain::{Priority, StoryEvent};
 use storyhook::storage::ProjectPaths;
 use storyhook::tui::action::UndoEntry;
 use storyhook::tui::data::DataStore;
