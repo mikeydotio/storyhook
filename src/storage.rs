@@ -440,6 +440,11 @@ pub fn add_type(root: &Path, slug: &str, description: Option<&str>) -> Result<Ty
 
 pub fn remove_type(root: &Path, slug: &str) -> Result<(), AppError> {
     let types = load_types(root)?;
+    if types.len() <= 1 {
+        return Err(AppError::Validation(
+            "cannot remove the last type".to_string(),
+        ));
+    }
     if !types.iter().any(|t| t.slug == slug) {
         return Err(AppError::NotFound(format!("type `{slug}` not found")));
     }
@@ -1209,6 +1214,20 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("still used"));
+    }
+
+    #[test]
+    fn remove_type_rejects_last_type() {
+        let dir = setup_project();
+        let single = vec![TypeDef {
+            slug: "only".to_string(),
+            description: None,
+        }];
+        save_types(dir.path(), &single).unwrap();
+        let result = remove_type(dir.path(), "only");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("last"));
     }
 
     // --- default_type ---
