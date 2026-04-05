@@ -200,3 +200,33 @@ fn report_html_shows_priority() {
         .stdout(predicate::str::contains("Critical bug"))
         .stdout(predicate::str::contains("Low priority cleanup"));
 }
+
+#[test]
+fn report_html_shows_type_breakdown() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Create stories: 1 untyped (Default), 1 bug, 1 story
+    // "bug" and "story" are default types from init
+    story(dir.path())
+        .args(["new", "Untyped task"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Fix crash", "--type", "bug"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Add feature", "--type", "story"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["report", "--html"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Type Breakdown"))
+        .stdout(predicate::str::contains("Default: 1"))
+        .stdout(predicate::str::contains("bug: 1"))
+        .stdout(predicate::str::contains("story: 1"));
+}
