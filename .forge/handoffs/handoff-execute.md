@@ -1,17 +1,19 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-escalate-fix-001
-- **Stories completed**: 1 (SH-22)
+- **Session**: session-escalate-fix-002
+- **Stories completed**: 1 (SH-23)
 - **Stories attempted**: 1
 - **Status**: Session limit reached (1/1 stories per session)
-- **Canary remaining**: 2
+- **Canary remaining**: 1
 
 ## What Happened
-Started ESCALATE fix cycle execution. Completed SH-22 (Wave 1, T1.1) — display "Default" for untyped stories + reserve "default" slug. Evaluator passed on first attempt. Canary approved by user.
+Resumed ESCALATE fix cycle execution. Completed SH-23 (Wave 1, T1.2) — add import validation for story_type against types.toml. Evaluator passed on first attempt. Canary approved by user.
+
+Wave 1 is now complete (SH-22 + SH-23 both done). Wave 2 (SH-24, SH-25, SH-26) is now unblocked.
 
 ## Stories Completed This Session
-- SH-22: Display "Default" for untyped stories + reserve "default" slug — changed output.rs fallback from "-" to "Default" in both show and list views, added case-insensitive "default" slug reservation in storage.rs add_type, updated tests
+- SH-23: Add import validation for story_type against types.toml — added pre-loop validation to both `Invocation::Import` and `import_stories_batch` using `load_type_map` + `BTreeSet` for collecting invalid types, all-or-nothing semantics, 3 new tests
 
 ## Current Blockers
 - None
@@ -19,27 +21,33 @@ Started ESCALATE fix cycle execution. Completed SH-22 (Wave 1, T1.1) — display
 ## Working Context
 
 ### Patterns Established
-- Reserved slug validation in `add_type` uses `eq_ignore_ascii_case` for new reserved words (while "none" uses exact match — pre-existing)
-- Untyped story display uses hardcoded "Default" string in output.rs, keeping it independent of storage/types.toml
-- List view always shows a type badge: `[typename]` for typed, `[Default]` for untyped
+- Import type validation uses `BTreeSet<&str>` for deterministic sorted output of invalid types
+- Validation happens before any `create_story` call for all-or-nothing semantics
+- Error format: "unknown types: bar, foo. Available types: bug, chore, epic, story, task"
+- Both import paths (inline `Invocation::Import` and `import_stories_batch`) share identical validation logic
+- Reserved slug validation in `add_type` uses `eq_ignore_ascii_case` for "default" (from SH-22)
+- Untyped story display uses hardcoded "Default" string in output.rs (from SH-22)
 
 ### Micro-Decisions
-- "Default" is capitalized (not "default") for display consistency — it's a label, not a slug
-- The "none" slug's exact-match inconsistency was noted by the evaluator but intentionally left alone (out of scope)
+- "Default" is capitalized for display consistency — it's a label, not a slug (from SH-22)
+- The "none" slug's exact-match inconsistency was noted but intentionally left alone (out of scope)
+- Both import paths get identical validation — the AC only specified the inline handler, but we added it to `import_stories_batch` too for consistency
 
 ### Code Landmarks
-- `src/output.rs:341` — `unwrap_or("Default")` for story show type display
-- `src/output.rs:256-259` — match expression for list view type badge
-- `src/storage.rs:424-428` — "default" reserved slug validation in add_type
-- `tests/story_types.rs:73-98` — `type_add_rejects_reserved_default_slug` test (3 case variants)
+- `src/app.rs:728-741` — type validation block in `Invocation::Import` handler
+- `src/app.rs:2799-2812` — type validation block in `import_stories_batch`
+- `src/output.rs:341` — `unwrap_or("Default")` for story show type display (from SH-22)
+- `src/output.rs:256-259` — match expression for list view type badge (from SH-22)
+- `src/storage.rs:424-428` — "default" reserved slug validation (from SH-22)
+- `tests/story_import.rs:184-275` — three new import validation tests
 
 ### Test State
 - All tests pass: `cargo test` — 0 failures
-- Clippy has 25 pre-existing warnings (none in our modified files) — these are NOT from our changes
+- Clippy: no errors in modified files (pre-existing warnings only)
 - Test command: `cargo test`
 - No flaky tests observed
 
 ## What's Next
-- SH-23 (Wave 1, T1.2): Add import validation for story_type against types.toml — touches src/app.rs and tests/story_import.rs
-- After SH-23, Wave 1 is complete → Wave 2 unblocks (SH-24, SH-25, SH-26)
-- Canary mode: 2 remaining approvals needed
+- Wave 2 is unblocked: SH-24 (type breakdown in Summary/Report), SH-25 (type breakdown in Context), SH-26 (type breakdown in HTML report)
+- These are independent — can be executed in any order
+- Canary mode: 1 remaining approval needed
