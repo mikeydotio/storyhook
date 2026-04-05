@@ -1,42 +1,45 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: fix-cycle-1-session-2
-- **Stories completed**: 3 (SH-17, SH-18, SH-19)
-- **Stories attempted**: 3
-- **Total retries**: 0
-- **Status**: All fix cycle 1 stories complete (3/3)
+- **Session**: session-escalate-fix-001
+- **Stories completed**: 1 (SH-22)
+- **Stories attempted**: 1
+- **Status**: Session limit reached (1/1 stories per session)
+- **Canary remaining**: 2
 
 ## What Happened
-Executed all 3 fix cycle 1 stories. All passed on first attempt with zero retries:
-- SH-17: Documentation fix in MCP tool description (src/mcp.rs)
-- SH-18: Added last-type guard with unit test (src/storage.rs)
-- SH-19: Removed dead code branch (src/output.rs)
+Started ESCALATE fix cycle execution. Completed SH-22 (Wave 1, T1.1) — display "Default" for untyped stories + reserve "default" slug. Evaluator passed on first attempt. Canary approved by user.
 
-Parent story SH-16 (Fix Cycle 1) closed.
+## Stories Completed This Session
+- SH-22: Display "Default" for untyped stories + reserve "default" slug — changed output.rs fallback from "-" to "Default" in both show and list views, added case-insensitive "default" slug reservation in storage.rs add_type, updated tests
 
-## Stories Completed
-- SH-17: Add `story_type` to MCP update tool description — string edit in mcp.rs:185
-- SH-18: Guard against removing last type in `remove_type` — validation guard + test in storage.rs
-- SH-19: Remove dead code branch in progress rendering — simplified conditional in output.rs
+## Current Blockers
+- None
 
 ## Working Context
 
 ### Patterns Established
-- Fix cycle changes are small, independent, single-file edits
-- Guard clause pattern: check precondition before main logic (storage.rs remove_type)
-- Dead code removal: simplify when invariant guarantees branch unreachable
+- Reserved slug validation in `add_type` uses `eq_ignore_ascii_case` for new reserved words (while "none" uses exact match — pre-existing)
+- Untyped story display uses hardcoded "Default" string in output.rs, keeping it independent of storage/types.toml
+- List view always shows a type badge: `[typename]` for typed, `[Default]` for untyped
+
+### Micro-Decisions
+- "Default" is capitalized (not "default") for display consistency — it's a label, not a slug
+- The "none" slug's exact-match inconsistency was noted by the evaluator but intentionally left alone (out of scope)
 
 ### Code Landmarks
-- `src/mcp.rs:185` — storyhook_update_story tool description with full priority order
-- `src/storage.rs:443` — last-type guard in remove_type
-- `src/output.rs:380` — simplified progress rendering (no more dead else branch)
+- `src/output.rs:341` — `unwrap_or("Default")` for story show type display
+- `src/output.rs:256-259` — match expression for list view type badge
+- `src/storage.rs:424-428` — "default" reserved slug validation in add_type
+- `tests/story_types.rs:73-98` — `type_add_rejects_reserved_default_slug` test (3 case variants)
 
 ### Test State
-- All 390+ tests pass (unit + integration)
-- `cargo test` runs cleanly
-- `cargo clippy`: 25 pre-existing warnings, no errors
-- No flaky tests
+- All tests pass: `cargo test` — 0 failures
+- Clippy has 25 pre-existing warnings (none in our modified files) — these are NOT from our changes
+- Test command: `cargo test`
+- No flaky tests observed
 
 ## What's Next
-Fix cycle 1 complete. Pipeline should transition to document step (TRIAGE.md has no remaining FIX items). 4 ESCALATE stories remain (SH-12, SH-13, SH-14, SH-15) for user decision after documentation.
+- SH-23 (Wave 1, T1.2): Add import validation for story_type against types.toml — touches src/app.rs and tests/story_import.rs
+- After SH-23, Wave 1 is complete → Wave 2 unblocks (SH-24, SH-25, SH-26)
+- Canary mode: 2 remaining approvals needed
