@@ -1,39 +1,37 @@
-# Work Handoff — Validate
+# Work Handoff — Validate (Cycle 2)
 
 ## Session Summary
-- **Step**: validate
+- **Step**: validate (cycle 2)
 - **Duration**: Single session
-- **Status**: Complete — all tests passing, report written
+- **Status**: Complete -- all tests passing, zero warnings, report written
 
 ## What Happened
-Ran the full test suite (619 tests, all passing) as baseline. Analyzed test coverage against IDEA.md requirements and PLAN.md acceptance criteria by reading all source test modules and integration test files. Identified 8 findings (0 Critical, 4 Important, 4 Useful). Wrote 29 new integration tests in `tests/story_types.rs` covering all gaps at the Important severity level. Final test count: 648, all passing.
+Ran the full test suite after the cycle-1 fix execution (SH-22 through SH-27). All 657 tests pass. Clippy clean. Analyzed test coverage against IDEA.md requirements, PLAN.md acceptance criteria, and prior cycle-1 VALIDATE-REPORT.md findings. All prior Important findings have been resolved. Identified 4 remaining Useful-severity gaps and filled them.
 
-## Key Decisions
-1. **All findings are Useful or Important, no Critical gaps found.** The execute phase did a thorough job writing unit tests for each component. The gaps were primarily at the integration level — individual features had unit tests but lacked end-to-end CLI binary tests.
+## Changes Made
+1. **tests/story_types.rs**: Added `list_shows_default_badge_for_untyped_story` (verifies `[Default]` badge in list output) and `type_remove_last_type_rejected` (integration test for removing last type).
+2. **tests/init_command.rs**: Added `types.toml` assertion to `init_creates_storyhook_layout`.
+3. **tests/tui_undo.rs**: Removed unused `SuperState` import (eliminated last compiler warning).
 
-2. **`story_type` omitted (not null) in JSON for untyped stories.** This is by design (`skip_serializing_if = "Option::is_none"`) and consistent with other optional fields. Documented as Finding #7 with recommendation to keep current behavior.
+## Test Results
+- **Total**: 659 | Pass: 659 | Fail: 0 | Skip: 0
+- **Clippy**: Zero errors, zero warnings
+- **Compiler warnings**: Zero (was 1 before fix)
+- **Tests added**: 3 (2 new tests + 1 assertion on existing)
 
-3. **`story summary`/`story context` type breakdown deferred.** IDEA.md mentions this but PLAN.md scope boundaries explicitly defer it. Documented as Finding #8 for triage consideration.
+## Findings Summary
+All 4 findings are **Useful** severity (nothing broken, tests improve confidence):
+1. init test missing types.toml check -- FIXED
+2. No [Default] badge test for list view -- FIXED
+3. No integration test for last-type removal guard -- FIXED
+4. Unused import warning in tui_undo.rs -- FIXED
 
-4. **MCP update response format differs from create.** `storyhook_update_story` with `story_type` returns a `Response::Message` ("updated SH-1: type -> epic") not a `Response::Story`. This is correct behavior — SetFields returns a message. Tests adjusted accordingly.
-
-## Tests Written
-- `tests/story_types.rs` — 29 integration tests covering:
-  - Type CRUD (list/add/remove) CLI commands
-  - `--type` flag on new/set/list
-  - Epic subcommands (create/add/list/show)
-  - Progress rollup rendering
-  - JSON output for story_type
-  - MCP tools with story_type parameter
-  - Full E2E epic lifecycle
+## Requirement Coverage
+All 18 key requirements from IDEA.md now have integration test coverage. See VALIDATE-REPORT.md for the full requirement-to-test matrix.
 
 ## Artifacts
-- `.forge/VALIDATE-REPORT.md` — Full validation report with findings, requirement coverage matrix, and test inventory
-- `tests/story_types.rs` — New integration test file
+- `.forge/VALIDATE-REPORT.md` -- Full validation report (cycle 2)
+- Prior report archived at `.forge/fix-cycles/cycle-1/VALIDATE-REPORT.md`
 
 ## What's Next
-Triage should review 8 findings. The 4 Important findings have already been resolved (tests written). The 4 Useful findings need labeling as FIX or ESCALATE:
-- Finding #5 (progress rendering) — resolved
-- Finding #6 (E2E lifecycle) — resolved
-- Finding #7 (JSON null vs omit) — recommend ACCEPT (no action)
-- Finding #8 (summary/context type breakdown) — recommend ESCALATE as future work
+Triage should note: zero Critical or Important findings remain. All 4 Useful findings were resolved in this session. The feature is well-tested and ready for acceptance. No further fix cycles needed based on validation results.
