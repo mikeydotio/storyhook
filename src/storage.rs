@@ -416,7 +416,7 @@ pub fn save_types(root: &Path, types: &[TypeDef]) -> Result<(), AppError> {
 }
 
 pub fn add_type(root: &Path, slug: &str, description: Option<&str>) -> Result<TypeDef, AppError> {
-    if slug == "none" {
+    if slug.eq_ignore_ascii_case("none") {
         return Err(AppError::Validation(
             "type slug `none` is reserved and cannot be used".to_string(),
         ));
