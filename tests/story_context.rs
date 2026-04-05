@@ -81,3 +81,52 @@ fn context_empty_project() {
         .success()
         .stdout(predicate::str::contains("0 open"));
 }
+
+#[test]
+fn context_shows_type_distribution() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Fix login crash", "--type", "bug"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Add dashboard", "--type", "story"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Untyped task"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["context"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Type Distribution"))
+        .stdout(predicate::str::contains("- bug: 1"))
+        .stdout(predicate::str::contains("- story: 1"))
+        .stdout(predicate::str::contains("- Default: 1"));
+}
+
+#[test]
+fn context_json_includes_type_distribution() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Fix login crash", "--type", "bug"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Untyped task"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["context", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"by_type\""))
+        .stdout(predicate::str::contains("\"bug\": 1"))
+        .stdout(predicate::str::contains("\"Default\": 1"));
+}

@@ -1057,8 +1057,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             let total_closed = views.len() - total_open;
 
             let mut state_counts: BTreeMap<String, usize> = BTreeMap::new();
+            let mut type_counts: BTreeMap<String, usize> = BTreeMap::new();
             for view in &views {
                 *state_counts.entry(view.story.state.clone()).or_default() += 1;
+                let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string();
+                *type_counts.entry(type_label).or_default() += 1;
             }
 
             let blocked: Vec<&StoryView> = views
@@ -1088,6 +1091,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     "open": total_open,
                     "closed": total_closed,
                     "by_state": state_counts,
+                    "by_type": type_counts,
                     "blocked_count": blocked.len(),
                     "ready_count": ready_count,
                     "ready_stories": ready.iter().map(|v| {
@@ -1114,6 +1118,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 body.push_str("## State Distribution\n\n");
                 for (state, count) in &state_counts {
                     body.push_str(&format!("- {state}: {count}\n"));
+                }
+
+                body.push_str("\n## Type Distribution\n\n");
+                for (type_name, count) in &type_counts {
+                    body.push_str(&format!("- {type_name}: {count}\n"));
                 }
 
                 if !ready.is_empty() {
