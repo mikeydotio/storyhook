@@ -1,62 +1,36 @@
-# Work Handoff
+# Handoff: Plan Complete (Fix Cycle 3)
 
-## Session Summary
-- **Session**: plan (ESCALATE fix cycle)
-- **Pipeline step**: plan
-- **Status**: Plan approved
-- **Fix cycle**: 1
+## Timestamp
+2026-04-05T12:00:00Z
 
-## What Happened
+## Artifacts Produced
+- `.forge/PLAN.md` (fix cycle 3 — 2 tasks, 1 wave)
+- `tests/story_types.rs` (6 new red tests added by QA agent)
 
-User reviewed all 4 ESCALATE stories (SH-12, SH-13, SH-14, SH-15):
-- SH-12: Show "Default" instead of "-" for untyped stories (custom decision)
-- SH-13: Add import validation against types.toml
-- SH-14: Accept compact format — closed as done, no work needed
-- SH-15: Implement type breakdown in summary/context
+## Key Decisions
+- Plan approved by user — 2 FIX items, single parallel wave
+- QA pre-wrote 6 integration tests (3 for each fix) — all confirmed failing against current code
+- Both fixes are independent, no dependencies
 
-Planning agents (PM, QA, DA) produced a 6-task plan across 3 waves. DA identified two important risks that were incorporated:
-1. Reserve "default" slug (case-insensitive) to prevent collision with display string
-2. Import validation should collect ALL invalid types before failing
+## Context for Next Step
 
-## Plan Structure
+### T1.1: Add `story_type` to JSON patch dispatch
+- File: `src/app.rs`, lines 1884-1948
+- Add `"story_type"` match arm between `"blocked"` and `other =>`
+- Mirror the `--type` flag handler (lines 1863-1875): load type map, validate slug, emit `StoryTypeSet`, push change string
+- Update error message at line 1948: add `story_type` to valid fields list
+- Tests: `json_patch_sets_story_type`, `json_patch_rejects_invalid_story_type`, `json_patch_unknown_field_error_lists_story_type`
 
-| Wave | Tasks | Scope |
-|------|-------|-------|
-| Wave 1 (parallel) | T1.1 (SH-12: display + slug), T1.2 (SH-13: import validation) | Small each |
-| Wave 2 (parallel after W1) | T2.1 (SummaryView + handlers), T2.2 (Context handler), T2.3 (HTML report) | Medium / Small |
-| Wave 3 | T3.1 (full validation) | Small |
-
-## Key Implementation Details
-
-### T1.1 (SH-12)
-- `src/output.rs:342`: `unwrap_or("-")` → `unwrap_or("Default")`
-- `src/output.rs:256-259`: show `[Default]` badge for `story_type == None`
-- `src/storage.rs` `add_type`: reject "default" (case-insensitive) alongside "none"
-- Update 2 existing tests: `tests/story_types.rs`, `tests/story_import.rs`
-
-### T1.2 (SH-13)
-- `src/app.rs:725-730`: add `load_type_map` + collect all invalid types before loop
-- Error message lists ALL invalid types, not just first
-- All-or-nothing: zero stories created on failure
-
-### T2.1 (SH-15 - Summary)
-- `SummaryView` gains `by_type: Vec<(String, usize)>`
-- 3 construction sites in app.rs: Summary (~L217), Report text (~L278), Report HTML (~L342)
-- `render_summary` in output.rs: "by type:" section after "by priority:"
-- Stories with `story_type: None` counted as "Default"
-
-### T2.2 (SH-15 - Context)
-- JSON branch (~L1057): add `by_type` BTreeMap to JSON output
-- Plain text branch (~L1077): add "## Type Distribution" section
-
-### T2.3 (SH-15 - HTML)
-- `render_html_report`: add "Type Breakdown" section after Priority
+### T1.2: Case-insensitive "none" slug check
+- File: `src/storage.rs`, line 419
+- Change `slug == "none"` to `slug.eq_ignore_ascii_case("none")`
+- Tests: `type_add_none_titlecase_rejected`, `type_add_none_uppercase_rejected`, `type_add_none_mixedcase_rejected`
 
 ## Pipeline State
-- **Fix cycle**: 1 / 3 max
-- **Yolo mode**: false
-- **Stories to implement**: SH-12, SH-13, SH-15
-- **Stories closed**: SH-14 (accepted as-is)
+- Fix cycle: 3 / max 3 (final cycle)
+- Yolo mode: false
+- All 27 original stories complete
+- 6 new red tests awaiting fixes
 
-## What's Next
-Dispatch to `decompose --orchestrated` to create storyhook stories from the plan tasks.
+## Open Questions
+None — both fixes are fully specified.

@@ -71,6 +71,42 @@ fn type_add_none_slug_rejected() {
 }
 
 #[test]
+fn type_add_none_titlecase_rejected() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    story(dir.path())
+        .args(["type", "add", "None"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("reserved"));
+}
+
+#[test]
+fn type_add_none_uppercase_rejected() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    story(dir.path())
+        .args(["type", "add", "NONE"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("reserved"));
+}
+
+#[test]
+fn type_add_none_mixedcase_rejected() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    story(dir.path())
+        .args(["type", "add", "nOnE"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("reserved"));
+}
+
+#[test]
 fn type_add_rejects_reserved_default_slug() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
@@ -606,6 +642,68 @@ fn type_remove_last_type_rejected() {
         .assert()
         .failure()
         .stdout(predicate::str::contains("last"));
+}
+
+// ============================================================
+// JSON patch sets story_type via --json flag
+// ============================================================
+
+#[test]
+fn json_patch_sets_story_type() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    story(dir.path())
+        .args(["new", "Refactor auth module"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["set", "SH-1", "--json", r#"{"story_type":"epic"}"#])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type -> epic"));
+
+    // Verify the type actually changed on disk
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("type: epic"));
+}
+
+#[test]
+fn json_patch_rejects_invalid_story_type() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    story(dir.path())
+        .args(["new", "Migrate database"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["set", "SH-1", "--json", r#"{"story_type":"nonexistent"}"#])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("unknown type"));
+}
+
+#[test]
+fn json_patch_unknown_field_error_lists_story_type() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    story(dir.path())
+        .args(["new", "Add caching layer"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["set", "SH-1", "--json", r#"{"bogus":"value"}"#])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("story_type"));
 }
 
 // ============================================================
