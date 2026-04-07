@@ -238,3 +238,68 @@ fn init_generated_claude_md_does_not_mention_mcp() {
         ".storyhook/CLAUDE.md should not reference mcp-config"
     );
 }
+
+// ============================================================
+// session-start output does not reference MCP
+// ============================================================
+
+#[test]
+fn session_start_system_message_does_not_mention_mcp() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    // Use a title that does NOT contain "MCP" to avoid false positives
+    // from user-supplied story titles appearing in the systemMessage.
+    story(dir.path())
+        .args(["new", "Verify removed protocol is gone from session-start"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+
+    // Strip out the PROJECT STATE section (which includes user-supplied story titles)
+    // to avoid false positives. Only check the CLI reference portion.
+    let cli_ref_portion = if let Some(idx) = msg.find("PROJECT STATE") {
+        &msg[..idx]
+    } else {
+        msg
+    };
+
+    assert!(
+        !cli_ref_portion.contains("MCP"),
+        "session-start CLI reference should not reference MCP"
+    );
+    assert!(
+        !cli_ref_portion.contains("mcp-config"),
+        "session-start CLI reference should not reference mcp-config"
+    );
+    assert!(
+        !cli_ref_portion.contains("--mcp"),
+        "session-start CLI reference should not reference --mcp flag"
+    );
+}
+
+// ============================================================
+// Source code regression guard: no MCP file reintroduction
+// ============================================================
+
+#[test]
+fn no_mcp_source_files_exist() {
+    // Guard against accidentally re-adding mcp.rs or mcp_install.rs
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(
+        !manifest_dir.join("src/mcp.rs").exists(),
+        "src/mcp.rs must not exist after MCP removal"
+    );
+    assert!(
+        !manifest_dir.join("src/mcp_install.rs").exists(),
+        "src/mcp_install.rs must not exist after MCP removal"
+    );
+}

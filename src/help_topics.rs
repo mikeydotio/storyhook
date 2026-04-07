@@ -1239,4 +1239,109 @@ mod tests {
         let topics = super::list_topics();
         assert!(topics.contains(&"json-format"), "json-format should appear in topic list");
     }
+
+    // ================================================================
+    // compact_reference() contract tests
+    // ================================================================
+
+    #[test]
+    fn compact_reference_under_3000_chars() {
+        let text = super::compact_reference();
+        assert!(
+            text.len() < 3000,
+            "compact_reference must stay under 3000 chars (documented contract), got {} chars",
+            text.len()
+        );
+    }
+
+    #[test]
+    fn compact_reference_between_40_and_100_lines() {
+        let text = super::compact_reference();
+        let line_count = text.lines().count();
+        assert!(
+            line_count >= 40,
+            "compact_reference should have at least 40 lines, got {line_count}"
+        );
+        assert!(
+            line_count <= 100,
+            "compact_reference should have at most 100 lines, got {line_count}"
+        );
+    }
+
+    #[test]
+    fn compact_reference_contains_all_section_headers() {
+        let text = super::compact_reference();
+        assert!(text.contains("LIFECYCLE"), "must have LIFECYCLE section");
+        assert!(text.contains("QUERY"), "must have QUERY section");
+        assert!(text.contains("METADATA"), "must have METADATA section");
+        assert!(text.contains("BULK"), "must have BULK section");
+        assert!(text.contains("PROJECT MANAGEMENT"), "must have PROJECT MANAGEMENT section");
+        assert!(text.contains("GLOBAL FLAGS"), "must have GLOBAL FLAGS section");
+        assert!(text.contains("WORKFLOW TIPS"), "must have WORKFLOW TIPS section");
+    }
+
+    #[test]
+    fn compact_reference_contains_critical_commands() {
+        // These commands are essential for the LLM workflow and must
+        // survive any future edits to the compact reference.
+        let text = super::compact_reference();
+        for cmd in &[
+            "story init", "story new", "story show", "story move",
+            "story list", "story next", "story load-context",
+            "story comment", "story assign", "story prioritize",
+            "story decompose", "story handoff", "story commit-sync",
+            "story doctor", "--json",
+        ] {
+            assert!(
+                text.contains(cmd),
+                "compact_reference must contain '{cmd}' for LLM workflow"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_reference_does_not_reference_mcp() {
+        let text = super::compact_reference();
+        assert!(!text.contains("MCP"), "compact_reference must not mention MCP");
+        assert!(!text.contains("mcp"), "compact_reference must not mention mcp");
+    }
+
+    // ================================================================
+    // all_topics_text() contract tests
+    // ================================================================
+
+    #[test]
+    fn all_topics_text_does_not_include_alias_topics() {
+        let text = super::all_topics_text();
+        // Aliases should be excluded from the full dump to avoid duplication.
+        // We check that the "## awaits" header does NOT appear (aliases are
+        // redirects to canonical topics).
+        let aliases = ["awaits", "context", "is", "link", "priority", "sync-git"];
+        for alias in &aliases {
+            let header = format!("## {alias}\n");
+            assert!(
+                !text.contains(&header),
+                "all_topics_text should skip alias topic '{alias}'"
+            );
+        }
+    }
+
+    #[test]
+    fn all_topics_text_includes_canonical_topics() {
+        let text = super::all_topics_text();
+        for topic in &["init", "new", "list", "next", "show", "move", "decompose"] {
+            assert!(
+                text.contains(&format!("## {topic}")),
+                "all_topics_text must include canonical topic '{topic}'"
+            );
+        }
+    }
+
+    #[test]
+    fn all_topics_text_does_not_reference_mcp() {
+        let text = super::all_topics_text();
+        assert!(!text.contains("mcp-config"), "all_topics_text must not reference mcp-config");
+        // Note: the string "MCP" could appear generically in docs,
+        // but "mcp-config" is the specific command that was removed.
+    }
 }

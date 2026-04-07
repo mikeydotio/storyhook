@@ -49,12 +49,12 @@ fn help_compact_is_concise() {
     let line_count = stdout.lines().count();
 
     assert!(
-        line_count <= 80,
-        "compact help should be under 80 lines for LLM context efficiency, got {line_count}"
+        line_count <= 100,
+        "compact help should be at most 100 lines, got {line_count}"
     );
     assert!(
-        line_count >= 10,
-        "compact help should have at least 10 lines of useful content, got {line_count}"
+        line_count >= 40,
+        "compact help should have at least 40 lines of useful content, got {line_count}"
     );
 }
 
@@ -208,6 +208,77 @@ fn help_compact_with_json_flag_produces_json() {
     assert!(
         message.contains("new"),
         "JSON compact help message should contain key commands"
+    );
+}
+
+// ============================================================
+// --all with --json flag
+// ============================================================
+
+#[test]
+fn help_all_with_json_flag_produces_json() {
+    let dir = tempdir().unwrap();
+    let output = story(dir.path())
+        .args(["--json", "help", "--all"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+
+    // JSON output should be valid JSON
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("--all --json should produce valid JSON");
+    assert_eq!(
+        parsed["result"], "ok",
+        "JSON response should have result: ok"
+    );
+    // The message field should contain the full help content
+    let message = parsed["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("story init"),
+        "JSON --all help message should contain init topic"
+    );
+    assert!(
+        message.contains("story decompose"),
+        "JSON --all help message should contain decompose topic"
+    );
+}
+
+// ============================================================
+// Compact reference size contract (integration-level)
+// ============================================================
+
+#[test]
+fn help_compact_output_under_3000_chars() {
+    let dir = tempdir().unwrap();
+    let output = story(dir.path())
+        .args(["help", "--compact"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+
+    assert!(
+        stdout.len() < 3000,
+        "compact help output must stay under 3000 chars for LLM context windows, got {} chars",
+        stdout.len()
+    );
+}
+
+#[test]
+fn help_compact_does_not_reference_mcp() {
+    let dir = tempdir().unwrap();
+    let output = story(dir.path())
+        .args(["help", "--compact"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+
+    assert!(
+        !stdout.contains("MCP"),
+        "compact help must not reference MCP"
+    );
+    assert!(
+        !stdout.contains("mcp"),
+        "compact help must not reference mcp"
     );
 }
 

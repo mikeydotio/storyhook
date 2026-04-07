@@ -55,6 +55,48 @@ fn run_hook(cwd: &std::path::Path) -> (String, i32) {
 }
 
 // ============================================================
+// Hook script structure assertions
+// ============================================================
+
+#[test]
+fn hook_script_is_under_20_functional_lines() {
+    let script = std::fs::read_to_string(hook_script()).expect("hook script should exist");
+    let functional_lines = script
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && !trimmed.starts_with('#')
+        })
+        .count();
+    assert!(
+        functional_lines < 20,
+        "hook script should have fewer than 20 functional lines (excluding comments and blanks), got {functional_lines}"
+    );
+}
+
+#[test]
+fn hook_script_does_not_use_python3() {
+    let script = std::fs::read_to_string(hook_script()).expect("hook script should exist");
+    assert!(
+        !script.contains("python3"),
+        "hook script must not depend on python3"
+    );
+    assert!(
+        !script.contains("python"),
+        "hook script must not depend on python"
+    );
+}
+
+#[test]
+fn hook_script_calls_story_session_start() {
+    let script = std::fs::read_to_string(hook_script()).expect("hook script should exist");
+    assert!(
+        script.contains("story session-start"),
+        "hook script must delegate to 'story session-start'"
+    );
+}
+
+// ============================================================
 // No storyhook project -> empty JSON
 // ============================================================
 

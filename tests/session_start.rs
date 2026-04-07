@@ -520,3 +520,254 @@ fn session_start_next_story_shows_priority() {
         "should show priority for next story, got: {msg}"
     );
 }
+
+// ============================================================
+// Corrupted storyhook data -> graceful degradation
+// ============================================================
+
+#[test]
+fn session_start_corrupted_stories_dir_still_returns_json() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Corrupt the stories directory by replacing it with a file
+    let stories_dir = dir.path().join(".storyhook/open/stories");
+    std::fs::remove_dir_all(&stories_dir).unwrap();
+    std::fs::write(&stories_dir, "this is not a directory").unwrap();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+
+    // Should still exit 0 and produce valid JSON (possibly with degraded content)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    // Must be parseable JSON, even in error states
+    let result: Result<serde_json::Value, _> = serde_json::from_str(trimmed);
+    assert!(
+        result.is_ok(),
+        "session-start must produce valid JSON even with corrupted stories dir, got: {trimmed}"
+    );
+}
+
+#[test]
+fn session_start_missing_project_toml_still_returns_json() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Delete the project.toml but leave .storyhook/ directory intact
+    std::fs::remove_file(dir.path().join(".storyhook/project.toml")).unwrap();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    // Should produce valid JSON (either {} or {systemMessage: ...})
+    let result: Result<serde_json::Value, _> = serde_json::from_str(trimmed);
+    assert!(
+        result.is_ok(),
+        "session-start must produce valid JSON even with missing project.toml, got: {trimmed}"
+    );
+}
+
+// ============================================================
+// Plugin config parsing edge cases
+// ============================================================
+
+/// BUG FINDING: The plugin-config parser uses string matching ("= false")
+/// which requires exactly one space between `=` and `false`. TOML allows
+/// arbitrary whitespace around `=`, so `enabled  =   false` is valid TOML
+/// but fails to match. This test documents the current (broken) behavior.
+///
+/// To fix: use a proper TOML parser (toml crate) or normalize whitespace
+/// before matching. Filed as known issue.
+#[test]
+fn session_start_plugin_config_extra_whitespace_bug_documented() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Write config with extra whitespace around the value
+    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    std::fs::write(&config_path, "[plugin]\nenabled  =   false\ntracking = \"normal\"\n").unwrap();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+
+    // CURRENT BEHAVIOR (BUG): extra whitespace causes the "enabled = false"
+    // check to miss, so the plugin is treated as enabled. The correct behavior
+    // would be to output "{}", but currently it outputs a systemMessage.
+    // This test documents the bug so it can be tracked.
+    assert!(
+        parsed.get("systemMessage").is_some(),
+        "BUG: extra whitespace in plugin config causes enabled=false to be ignored. \
+         If this assertion fails, it means the bug has been FIXED -- update this test \
+         to assert_eq!(stdout.trim(), \"{{}}\") instead."
+    );
+}
+
+#[test]
+fn session_start_plugin_config_enabled_true_produces_system_message() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Test enabled true config"])
+        .assert()
+        .success();
+
+    // Write config with enabled = true explicitly
+    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    std::fs::write(&config_path, "[plugin]\nenabled = true\ntracking = \"normal\"\n").unwrap();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert!(
+        parsed.get("systemMessage").is_some(),
+        "enabled = true should produce systemMessage, got: {}",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn session_start_plugin_config_malformed_still_works() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Test malformed config"])
+        .assert()
+        .success();
+
+    // Write a completely malformed plugin config (not valid TOML)
+    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    std::fs::write(&config_path, "{{{{garbage not toml!!! %%%").unwrap();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    // Malformed config should NOT disable the plugin (fail open, not fail closed).
+    // If the config can't be read, plugin is considered enabled.
+    assert!(
+        parsed.get("systemMessage").is_some(),
+        "malformed plugin config should not disable the plugin, got: {}",
+        stdout.trim()
+    );
+}
+
+#[test]
+fn session_start_no_plugin_config_file_produces_system_message() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Test no plugin config"])
+        .assert()
+        .success();
+
+    // Ensure there's no plugin-config.toml (init shouldn't create one by default)
+    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    if config_path.exists() {
+        std::fs::remove_file(&config_path).unwrap();
+    }
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert!(
+        parsed.get("systemMessage").is_some(),
+        "missing plugin config should not disable the plugin, got: {}",
+        stdout.trim()
+    );
+}
+
+// ============================================================
+// Output structure contract: only two valid shapes
+// ============================================================
+
+#[test]
+fn session_start_output_is_one_of_two_valid_shapes() {
+    // The contract: output is either exactly `{}` or `{"systemMessage":"..."}`.
+    // No other keys should be present.
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Test output shape contract"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let obj = parsed.as_object().expect("output must be a JSON object");
+
+    // Valid keys are: none (empty {}) or exactly "systemMessage"
+    for key in obj.keys() {
+        assert_eq!(
+            key, "systemMessage",
+            "session-start output should only contain 'systemMessage' key, found: '{key}'"
+        );
+    }
+
+    if let Some(msg) = obj.get("systemMessage") {
+        assert!(
+            msg.is_string(),
+            "systemMessage value must be a string, got: {msg}"
+        );
+    }
+}
+
+// ============================================================
+// stderr is clean (no warnings or debug output)
+// ============================================================
+
+#[test]
+fn session_start_stderr_is_empty() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Test stderr cleanliness"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.is_empty(),
+        "session-start should not produce stderr output, got: {stderr}"
+    );
+}
