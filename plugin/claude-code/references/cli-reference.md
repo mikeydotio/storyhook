@@ -382,6 +382,20 @@ story graph --json
 
 ## Session and Sync
 
+### `story session-start`
+
+Emit a JSON object for editor-plugin session-start hooks.
+
+- Returns `{"systemMessage":"..."}` containing a compact CLI reference and current project state (open/ready counts, next recommended story)
+- Returns `{}` if no `.storyhook/` project exists, the plugin is disabled, or the `story` binary is unavailable
+- Output is designed to be consumed directly by plugin hooks (e.g., Claude Code's `session-start` hook)
+- **Use when**: automatically called by editor plugin hooks at session start; not normally invoked by hand
+- **Related**: `story load-context` (full context document for interactive use), `story summary` (compact overview)
+
+```bash
+story session-start
+```
+
 ### `story handoff [--since <duration>]`
 
 Generate a session handoff document summarizing recent activity.
