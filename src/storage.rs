@@ -259,7 +259,6 @@ Visualize relationships and spot bottlenecks:
 ```
 story graph                           # Full dependency overview
 story graph --blocked-by {prefix}-1   # Trace why a story is blocked
-story graph --tree {prefix}-1         # Show subtree rooted at a story
 ```
 
 Set priority on each story so `story next` surfaces the right work:
