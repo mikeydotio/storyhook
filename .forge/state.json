@@ -1,10 +1,6 @@
 {
-  "status": "paused",
-  "resume": {
-    "command": "/forge resume",
-    "handoff_file": "handoffs/handoff-execute.md",
-    "summary": "Execution paused — 1 story completed (SH-36). 1 story remaining."
-  },
+  "status": "running",
+  "resume": null,
   "sessions_completed": 5,
   "stories_attempted": 5,
   "total_retries": 1,
@@ -13,5 +9,5 @@
   },
   "storyhook_consecutive_failures": 0,
   "started_at": "2026-04-07T12:30:00Z",
-  "updated_at": "2026-04-07T13:32:35Z"
+  "updated_at": "2026-04-07T13:37:00Z"
 }

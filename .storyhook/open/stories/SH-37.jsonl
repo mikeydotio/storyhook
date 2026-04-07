@@ -1,7 +1,0 @@
-{"kind":"StoryCreated","at":"2026-04-07T12:20:24Z","title":"T4.1: Rewrite session-start hook — replace python3-based hook with story session-start call; under 20 lines; no python3 dependency; update cli-reference.md and workflow-patterns.md","state":"todo"}
-{"kind":"StoryPrioritySet","at":"2026-04-07T12:20:24Z","priority":"medium"}
-{"kind":"StoryLabelsSet","at":"2026-04-07T12:20:24Z","labels":["phase:4"]}
-{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-35","relation":"blocked-by"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-36","relation":"blocked-by"}
-{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:32Z","other_id":"SH-31","relation":"child-of"}
-{"kind":"StoryCommentAdded","at":"2026-04-07T12:21:06Z","text":"Acceptance: plugin/claude-code/hooks/session-start.sh rewritten to call story session-start (single CLI invocation, no python3); outputs JSON result directly; falls back to {} if story binary not found or command fails. Hook under 20 lines. No python3 dependency. Completes within 5-second hook timeout. plugin/claude-code/references/cli-reference.md documents story session-start. plugin/claude-code/references/workflow-patterns.md has no MCP references.\nFiles: plugin/claude-code/hooks/session-start.sh, plugin/claude-code/references/cli-reference.md, plugin/claude-code/references/workflow-patterns.md"}
