@@ -2773,6 +2773,8 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 | Phase progress | `story phase list` |
 | Session handoff | `story handoff --since 2h` |
 
+Run `story help --compact` for the full command reference.
+
 ## Important
 
 The `.storyhook/` directory is version-controlled project data. Do NOT add it to
@@ -2789,6 +2791,8 @@ fn generate_claude_md(_root: &std::path::Path) -> String {
 This project uses **storyhook** for task tracking. Full usage instructions are in `.storyhook/CLAUDE.md` — read that file before starting work.
 
 Quick start: run `story load-context` at session start, `story next` to pick a task.
+
+Run `story help <command>` for detailed usage on any command, or `story help --compact` for the full reference.
 "#
     .to_string()
 }
@@ -2825,6 +2829,8 @@ to manage tasks.
 - `story load-context` — full project context for LLM consumption
 - `story phase list` — phase progress overview
 - `story handoff --since <duration>` — recent changes summary
+
+Run `story help <command>` for detailed usage on any command.
 "#
     .to_string()
 }
