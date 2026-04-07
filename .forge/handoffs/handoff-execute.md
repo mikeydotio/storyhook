@@ -1,47 +1,54 @@
 # Work Handoff
 
 ## Session Summary
-- **Session**: session-5458d723
-- **Stories completed**: 2 (SH-29 in prior session, SH-30 in this session)
-- **Stories attempted**: 2
-- **Status**: All fix cycle 3 stories complete — transitioning to review+validate
+- **Session**: session-1775564606
+- **Stories completed**: 1
+- **Stories attempted**: 1
+- **Status**: Session limit reached (1/1 stories per session)
 
 ## What Happened
-Resumed execution of fix cycle 3 (2 stories). SH-29 was completed in the prior session. This session executed SH-30: changed `slug == "none"` to `slug.eq_ignore_ascii_case("none")` in storage.rs add_type function. Generator completed on first attempt, evaluator passed on first attempt.
+Executed SH-32 (Wave 1): Stripped MCP server from the Rust codebase. Deleted 4 files (src/mcp.rs, src/mcp_install.rs, tests/mcp_server.rs, tests/mcp_config.rs) and removed all MCP references from 6 remaining files. Generator passed on first attempt. Evaluator verified all 12 acceptance criteria with cited evidence.
 
 ## Stories Completed This Session
-- SH-30: Make reserved slug "none" check case-insensitive — one-line change mirroring the existing "default" slug check pattern
+- SH-32: Strip MCP server from Rust codebase — deleted 4 MCP files, removed references from lib.rs, main.rs, cli.rs, app.rs, help_topics.rs, tests/story_types.rs (1718 lines removed, 3 added)
 
 ## Current Blockers
-None
+None.
 
 ## Working Context
 
 ### Patterns Established
-- JSON patch dispatch arms in app.rs follow a consistent pattern: validate value type → load config/map → validate value → emit event → push change string
-- Reserved slug checks in storage.rs use `eq_ignore_ascii_case` for case-insensitive comparison (both "none" and "default")
-- The `--type` flag handler (app.rs:1863-1876) and JSON patch `"story_type"` arm (app.rs:1948-1963) are structurally identical
-- `split_global_flags` detects when `--json` is followed by a `{`-prefixed token and passes both through
+- This is a Rust project using `cargo build` and `cargo test`
+- MCP removal is a deletion task — no new code patterns introduced
+- Scaffold templates in app.rs (generate_storyhook_claude_md, generate_cursor_rules, generate_agents_md) were cleaned of MCP references
+- HELP_TEXT in cli.rs lists all available commands — mcp-config line removed
+- help_topics.rs stores topic content in a HashMap — topics can be added/removed by inserting/removing entries
+- json-format help topic documents the JSON envelope format — MCP/JSON-RPC section was removed
 
 ### Micro-Decisions
-- The cli.rs fix (SH-29) was necessary for `--json '{...}'` to work — `split_global_flags` was consuming the `--json` token before the subcommand parser could use it
-- Error message for "none" slug rejection uses lowercase "none" in backticks regardless of input case (matches existing pattern)
+- `dialoguer` crate kept in dependencies (used by github-sync, not just MCP)
+- `looks_like_story_id()` comment updated to remove MCP-specific reference
+- MCP Server sections removed from both storyhook CLAUDE.md and cursor-rules scaffold templates in app.rs
+- "or MCP server" changed to just "" in cursor-rules scaffold (line keeping just "to manage tasks")
 
 ### Code Landmarks
-- `src/storage.rs:419` — case-insensitive "none" check (SH-30)
-- `src/storage.rs:424` — case-insensitive "default" check (pre-existing pattern)
-- `src/app.rs:1948-1963` — story_type JSON patch arm (SH-29)
-- `src/app.rs:1863-1876` — --type flag handler
-- `src/cli.rs:309-331` — fixed split_global_flags with --json '{...}' detection (SH-29)
-- `tests/story_types.rs` — 6 SH-29 tests + 4 "none" slug tests (all pass)
-- `tests/cli_grammar.rs:323-344` — updated set_json_patch_applies_fields test (SH-29)
+- `src/cli.rs` — Command parsing, HELP_TEXT, Invocation enum, parse functions
+- `src/app.rs` — Main application logic, all command handlers, scaffold generators (generate_storyhook_claude_md, generate_agents_md, generate_cursor_rules)
+- `src/help_topics.rs` — Help topic content in HashMap, tests at bottom
+- `src/main.rs` — Entry point, global flag parsing, now 63 lines
+- `src/lib.rs` — Module declarations, now 18 lines
+- `tests/story_types.rs` — Integration tests for story types/epics, ~35 tests, 856 lines
+- `tests/mcp_removal.rs` — 12 regression tests verifying MCP removal (untracked, from planning)
+- `tests/help_new_flags.rs` — 12 tests for --compact/--all flags (for SH-34, currently failing as unimplemented)
+- `tests/session_start_hook.rs` — Tests for session-start hook (for SH-37)
 
 ### Test State
-- All tests pass: 390 unit + ~168 integration = 0 failures
+- 390 unit tests: all pass
+- Integration tests: all pass except tests/help_new_flags.rs (7 failures — pre-existing, testing unimplemented SH-34 features)
+- tests/mcp_removal.rs: 12 tests, all pass (validates SH-32 work)
 - Run command: `cargo test`
-- Clippy: 1 pre-existing style warning in cli.rs (formatting suggestion), no errors
-- No env setup required
+- No special environment setup needed
 
 ## What's Next
-- All fix cycle 3 stories complete → transition to review+validate (parallel)
-- This is fix cycle 3 of max 3 — review+validate should assess whether remaining issues need escalation
+- SH-33 (Wave 1): Remove MCP from documentation and plugin files — now ready
+- After SH-33: SH-34 (Wave 2) becomes unblocked
