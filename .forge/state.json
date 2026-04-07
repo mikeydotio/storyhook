@@ -1,13 +1,13 @@
 {
-  "status": "running",
+  "status": "complete",
   "resume": null,
-  "sessions_completed": 5,
-  "stories_attempted": 5,
+  "sessions_completed": 6,
+  "stories_attempted": 6,
   "total_retries": 1,
   "retry_counts": {
     "SH-34": 1
   },
   "storyhook_consecutive_failures": 0,
   "started_at": "2026-04-07T12:30:00Z",
-  "updated_at": "2026-04-07T13:37:00Z"
+  "updated_at": "2026-04-07T13:42:00Z"
 }

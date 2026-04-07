@@ -1,33 +1,34 @@
-# Work Handoff — Triage (Cycle 2)
+# Work Handoff
 
 ## Session Summary
-- **Step**: triage (cycle 2)
-- **Status**: Complete — 2 FIX, 0 ESCALATE
+- **Step**: Triage (FIX/ESCALATE deliberation)
+- **Agents**: triager, qa-engineer, devil's advocate (3 agents, parallel)
+- **Status**: Complete — TRIAGE.md written, 9 ESCALATE stories created
 
 ## Key Decisions
+- **Fix cycle**: 3 of 3 (max reached) — all FIX items promoted to ESCALATE
+- **Total findings**: 13 deduplicated from both reports
+- **ESCALATE**: 9 stories (SH-31 through SH-39)
+- **Noted (no action)**: 4 advisory items
+- **FIX**: 0 (all promoted)
 
-### FIX-1: `--json` Patch Missing `story_type`
-- Add `story_type` arm to JSON dispatch table in `src/app.rs:1884-1948`
-- Mirrors existing `--type` flag handler pattern
-- Also update error message to list `story_type` as valid field
-- Add integration test for `--json` path
+## ESCALATE Story IDs
+- SH-31: UTF-8 truncation panic (critical)
+- SH-32: TOML parsing bug (high)
+- SH-33: --quiet suppresses RawJson (high)
+- SH-34: HELP_TEXT missing flags (medium)
+- SH-35: Ghost --tree command (medium)
+- SH-36: VERSION/Cargo.toml drift (medium)
+- SH-37: compact_reference drift risk (low)
+- SH-38: No CHANGELOG entry (medium)
+- SH-39: Stale skill invocation (low)
 
-### FIX-2: Reserved Slug "none" Case Sensitivity
-- Change `slug == "none"` to `slug.eq_ignore_ascii_case("none")` at `src/storage.rs:419`
-- 1-line change for consistency with "default" handling
-- Extend test to cover `None`/`NONE` variants
+## Context for Next Step (Document)
+No FIX items remain (all promoted to ESCALATE due to max fix cycles). The pipeline should proceed to the Document step. After documentation, the ESCALATE review loop will present each story to the user for decisions.
 
-## Context for Next Step
-
-The orchestrator should:
-1. Archive current cycle artifacts (TRIAGE.md, PLAN.md, plan-mapping.json) to `.forge/fix-cycles/cycle-2/`
-2. Dispatch to `plan --orchestrated` with the 2 FIX items as input
-
-Both fixes are localized and independent. They should not require a cycle-3.
+The codebase is in good shape: 732/732 tests passing, clean build, thorough MCP removal with regression guards. The ESCALATE items include 3 real bugs (UTF-8 panic, TOML parsing, --quiet/RawJson), 2 doc fixes (HELP_TEXT, ghost --tree), and 4 hygiene items (version drift, drift risk test, CHANGELOG, skill message).
 
 ## Pipeline State
-- Fix cycle: 2 / max 3
-- Yolo: false
-- All 27 original stories complete
-- 659 tests passing, 0 clippy warnings
-- ESCALATE stories: none
+- Fix cycle: 3 / 3 (max)
+- Yolo mode: false
+- Stories pending ESCALATE review: 9
