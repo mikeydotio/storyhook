@@ -580,13 +580,9 @@ fn session_start_missing_project_toml_still_returns_json() {
 // Plugin config parsing edge cases
 // ============================================================
 
-/// BUG FINDING: The plugin-config parser uses string matching ("= false")
-/// which requires exactly one space between `=` and `false`. TOML allows
-/// arbitrary whitespace around `=`, so `enabled  =   false` is valid TOML
-/// but fails to match. This test documents the current (broken) behavior.
-///
-/// To fix: use a proper TOML parser (toml crate) or normalize whitespace
-/// before matching. Filed as known issue.
+/// Extra whitespace around `=` in TOML config is valid and must be handled.
+/// Previously this was a bug (string matching required exact spacing);
+/// now we use proper TOML parsing so any valid whitespace works.
 #[test]
 fn session_start_plugin_config_extra_whitespace_bug_documented() {
     let dir = tempdir().unwrap();
@@ -603,17 +599,10 @@ fn session_start_plugin_config_extra_whitespace_bug_documented() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-
-    // CURRENT BEHAVIOR (BUG): extra whitespace causes the "enabled = false"
-    // check to miss, so the plugin is treated as enabled. The correct behavior
-    // would be to output "{}", but currently it outputs a systemMessage.
-    // This test documents the bug so it can be tracked.
-    assert!(
-        parsed.get("systemMessage").is_some(),
-        "BUG: extra whitespace in plugin config causes enabled=false to be ignored. \
-         If this assertion fails, it means the bug has been FIXED -- update this test \
-         to assert_eq!(stdout.trim(), \"{{}}\") instead."
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "extra whitespace around = should not prevent detecting enabled=false"
     );
 }
 
@@ -672,6 +661,93 @@ fn session_start_plugin_config_malformed_still_works() {
         parsed.get("systemMessage").is_some(),
         "malformed plugin config should not disable the plugin, got: {}",
         stdout.trim()
+    );
+}
+
+// ============================================================
+// TOML parsing robustness tests
+// ============================================================
+
+#[test]
+fn session_start_plugin_config_no_space_enabled_equals_false() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Write config with no spaces around `=`
+    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    std::fs::write(&config_path, "enabled=false\n").unwrap();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "enabled=false (no spaces) should disable the plugin"
+    );
+}
+
+#[test]
+fn session_start_plugin_config_comments_and_extra_keys() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Write config with comments and extra keys
+    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    std::fs::write(
+        &config_path,
+        "# Plugin configuration\n\
+         [plugin]\n\
+         enabled = false  # disable the plugin\n\
+         tracking = \"normal\"\n\
+         custom_key = 42\n",
+    )
+    .unwrap();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "config with comments and extra keys should still detect enabled=false"
+    );
+}
+
+#[test]
+fn session_start_plugin_config_nested_table() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Write config with [plugin] nested table format
+    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    std::fs::write(
+        &config_path,
+        "[plugin]\n\
+         enabled = false\n\
+         tracking = \"verbose\"\n",
+    )
+    .unwrap();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "[plugin] nested table with enabled=false should disable the plugin"
     );
 }
 

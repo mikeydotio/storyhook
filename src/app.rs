@@ -2108,6 +2108,52 @@ fn extract_created_story_id(response: &Response) -> Option<String> {
     }
 }
 
+/// Determines whether the plugin is disabled based on TOML config content.
+///
+/// Supports two config formats:
+/// - Bare key: `enabled = false` or `enabled = "false"`
+/// - Nested table: `[plugin]\nenabled = false`
+///
+/// Returns `true` if the plugin is explicitly disabled.
+/// Returns `false` (fail-open) if the content is malformed or enabled is absent/true.
+fn plugin_config_disabled(content: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct PluginTable {
+        enabled: Option<toml::Value>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct PluginConfig {
+        enabled: Option<toml::Value>,
+        plugin: Option<PluginTable>,
+    }
+
+    fn is_disabled(val: &toml::Value) -> bool {
+        match val {
+            toml::Value::Boolean(b) => !b,
+            toml::Value::String(s) => s.eq_ignore_ascii_case("false"),
+            _ => false,
+        }
+    }
+
+    let config: PluginConfig = match toml::from_str(content) {
+        Ok(c) => c,
+        Err(_) => return false, // malformed → fail open (treat as enabled)
+    };
+
+    // Check nested [plugin].enabled first, then top-level enabled
+    if let Some(ref plugin) = config.plugin {
+        if let Some(ref val) = plugin.enabled {
+            return is_disabled(val);
+        }
+    }
+    if let Some(ref val) = config.enabled {
+        return is_disabled(val);
+    }
+
+    false // no enabled key found → treat as enabled
+}
+
 /// Handle `story session-start`. Outputs raw JSON suitable for shell hooks.
 /// Returns `{"systemMessage": "..."}` when a project exists and plugin is enabled,
 /// or `{}` otherwise.
@@ -2124,9 +2170,7 @@ fn session_start(root: &Path) -> Result<Response, AppError> {
     if config_path.exists()
         && let Ok(content) = std::fs::read_to_string(&config_path)
     {
-        // Check for enabled = false or enabled = "false"
-        let lower = content.to_lowercase();
-        if lower.contains("enabled") && (lower.contains("= false") || lower.contains("= \"false\"")) {
+        if plugin_config_disabled(&content) {
             return Ok(Response::RawJson("{}".to_string()));
         }
     }
