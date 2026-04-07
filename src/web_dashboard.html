@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storyhook Dashboard</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a2e;
+  --bg-card: #f8f9fa;
+  --border: #e2e8f0;
+  --muted: #94a3b8;
+  --row-blocked-bg: #fef2f2;
+  --row-ready-bg: #f0fdf4;
+  --row-blocked-border: #fca5a5;
+  --row-ready-border: #86efac;
+  --table-header-bg: #f1f5f9;
+  --table-hover: #f8fafc;
+  --accent: #3b82f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a;
+    --fg: #e2e8f0;
+    --bg-card: #1e293b;
+    --border: #334155;
+    --muted: #64748b;
+    --row-blocked-bg: #450a0a;
+    --row-ready-bg: #052e16;
+    --row-blocked-border: #991b1b;
+    --row-ready-border: #166534;
+    --table-header-bg: #1e293b;
+    --table-hover: #1e293b;
+    --accent: #60a5fa;
+  }
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.6; padding: 2rem; max-width: 1200px; margin: 0 auto; }
+h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.25rem; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+.header-left h1 { margin-bottom: 0; }
+.subtitle { color: var(--muted); font-size: 0.875rem; }
+.connection { display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; color: var(--muted); }
+.conn-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; }
+.conn-dot.live { background: #22c55e; }
+.conn-dot.disconnected { background: #ef4444; }
+
+/* Stats */
+.stats { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+.stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem 1.25rem; min-width: 120px; flex: 1; }
+.stat-value { font-size: 1.5rem; font-weight: 700; }
+.stat-label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* Sections */
+.section { margin-bottom: 1.5rem; }
+.section-title { font-size: 0.875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.5rem; }
+
+/* State bar */
+.bar-chart { display: flex; height: 1.5rem; border-radius: 0.375rem; overflow: hidden; margin-bottom: 0.5rem; }
+.bar-segment { min-width: 2px; transition: width 0.3s; }
+.legend { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.8125rem; }
+.legend-item { display: inline-flex; align-items: center; gap: 0.25rem; }
+.legend-dot { width: 0.625rem; height: 0.625rem; border-radius: 50%; display: inline-block; }
+
+/* Badges */
+.badges { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.badge { font-size: 0.75rem; padding: 0.125rem 0.5rem; border-radius: 9999px; font-weight: 500; }
+.badge-critical { background: #fef2f2; color: #dc2626; border: 1px solid #fca5a5; }
+.badge-high { background: #fff7ed; color: #ea580c; border: 1px solid #fdba74; }
+.badge-medium { background: #fefce8; color: #ca8a04; border: 1px solid #fde047; }
+.badge-low { background: #f0fdf4; color: #16a34a; border: 1px solid #86efac; }
+.badge-none { background: var(--bg-card); color: var(--muted); border: 1px solid var(--border); }
+.badge-type { background: var(--bg-card); color: var(--fg); border: 1px solid var(--border); }
+@media (prefers-color-scheme: dark) {
+  .badge-critical { background: #450a0a; color: #f87171; border-color: #991b1b; }
+  .badge-high { background: #431407; color: #fb923c; border-color: #9a3412; }
+  .badge-medium { background: #422006; color: #facc15; border-color: #854d0e; }
+  .badge-low { background: #052e16; color: #4ade80; border-color: #166534; }
+}
+
+/* Filters */
+.filters { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+.filter-input { padding: 0.375rem 0.75rem; border: 1px solid var(--border); border-radius: 0.375rem; background: var(--bg); color: var(--fg); font-size: 0.875rem; min-width: 200px; }
+.filter-input:focus { outline: none; border-color: var(--accent); }
+.filter-select { padding: 0.375rem 0.5rem; border: 1px solid var(--border); border-radius: 0.375rem; background: var(--bg); color: var(--fg); font-size: 0.8125rem; cursor: pointer; }
+
+/* Table */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+thead th { text-align: left; padding: 0.625rem 0.75rem; background: var(--table-header-bg); border-bottom: 2px solid var(--border); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); cursor: pointer; user-select: none; white-space: nowrap; }
+thead th:hover { color: var(--fg); }
+thead th .sort-arrow { margin-left: 0.25rem; font-size: 0.625rem; }
+tbody td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+tbody tr:hover { background: var(--table-hover); }
+.row-blocked { background: var(--row-blocked-bg); border-left: 3px solid var(--row-blocked-border); }
+.row-ready { background: var(--row-ready-bg); border-left: 3px solid var(--row-ready-border); }
+.col-id { font-family: ui-monospace, SFMono-Regular, monospace; white-space: nowrap; font-size: 0.8125rem; }
+.col-date { white-space: nowrap; color: var(--muted); font-size: 0.8125rem; }
+.label { display: inline-block; font-size: 0.6875rem; padding: 0.0625rem 0.375rem; border-radius: 9999px; background: var(--bg-card); border: 1px solid var(--border); margin-right: 0.25rem; }
+.empty { text-align: center; padding: 2rem; color: var(--muted); }
+
+/* Footer */
+.footer { margin-top: 1rem; text-align: center; font-size: 0.75rem; color: var(--muted); }
+
+/* Mobile */
+@media (max-width: 768px) {
+  body { padding: 1rem; }
+  .stats { flex-direction: column; }
+  .stat-card { min-width: auto; }
+  .filters { flex-direction: column; }
+  .filter-input { min-width: auto; width: 100%; }
+  .header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h1>Storyhook Dashboard</h1>
+    <span class="subtitle" id="subtitle">Loading...</span>
+  </div>
+  <div class="connection">
+    <span class="conn-dot" id="conn-dot"></span>
+    <span id="conn-text">Connecting...</span>
+  </div>
+</div>
+
+<div class="stats" id="stats"></div>
+
+<div class="section" id="state-section">
+  <div class="section-title">State Distribution</div>
+  <div class="bar-chart" id="state-bar"></div>
+  <div class="legend" id="state-legend"></div>
+</div>
+
+<div class="section" id="priority-section">
+  <div class="section-title">Priority Breakdown</div>
+  <div class="badges" id="priority-badges"></div>
+</div>
+
+<div class="section" id="type-section">
+  <div class="section-title">Type Breakdown</div>
+  <div class="badges" id="type-badges"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">Stories</div>
+  <div class="filters">
+    <input type="text" class="filter-input" id="search-input" placeholder="Search ID, title, labels...">
+    <select class="filter-select" id="state-filter" multiple title="Filter by state"><option value="">All States</option></select>
+    <select class="filter-select" id="priority-filter" multiple title="Filter by priority"><option value="">All Priorities</option></select>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th data-col="id">ID <span class="sort-arrow" id="sort-id"></span></th>
+          <th data-col="title">Title <span class="sort-arrow" id="sort-title"></span></th>
+          <th data-col="state">State <span class="sort-arrow" id="sort-state"></span></th>
+          <th data-col="priority">Priority <span class="sort-arrow" id="sort-priority"></span></th>
+          <th data-col="labels">Labels</th>
+          <th data-col="assignee">Assignee <span class="sort-arrow" id="sort-assignee"></span></th>
+          <th data-col="updated">Updated <span class="sort-arrow" id="sort-updated"></span></th>
+        </tr>
+      </thead>
+      <tbody id="story-body"></tbody>
+    </table>
+  </div>
+  <p class="empty" id="empty-msg" style="display:none">No stories match the current filters.</p>
+</div>
+
+<div class="footer" id="footer">Updated just now</div>
+
+<script>
+(function() {
+  "use strict";
+
+  var STATE_COLORS = [
+    "#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6",
+    "#ec4899","#06b6d4","#84cc16","#f97316","#6366f1"
+  ];
+  var PRIORITY_ORDER = {critical:0, high:1, medium:2, low:3, none:4};
+
+  // Filter/sort state — preserved across data refreshes
+  var searchText = "";
+  var stateFilters = [];
+  var priorityFilters = [];
+  var sortCol = "id";
+  var sortDir = 1; // 1 = asc, -1 = desc
+
+  var lastData = null;
+  var lastFetchTime = 0;
+  var fetchOk = false;
+
+  // Elements
+  var searchInput = document.getElementById("search-input");
+  var stateSelect = document.getElementById("state-filter");
+  var prioritySelect = document.getElementById("priority-filter");
+  var storyBody = document.getElementById("story-body");
+  var emptyMsg = document.getElementById("empty-msg");
+
+  // Event listeners for filters
+  searchInput.addEventListener("input", function() {
+    searchText = this.value.toLowerCase();
+    renderTable();
+  });
+  stateSelect.addEventListener("change", function() {
+    stateFilters = getSelectedValues(this);
+    renderTable();
+  });
+  prioritySelect.addEventListener("change", function() {
+    priorityFilters = getSelectedValues(this);
+    renderTable();
+  });
+
+  // Sort click handlers
+  document.querySelectorAll("thead th[data-col]").forEach(function(th) {
+    th.addEventListener("click", function() {
+      var col = this.getAttribute("data-col");
+      if (col === "labels") return; // not sortable
+      if (sortCol === col) {
+        sortDir *= -1;
+      } else {
+        sortCol = col;
+        sortDir = 1;
+      }
+      renderTable();
+    });
+  });
+
+  function getSelectedValues(sel) {
+    var vals = [];
+    for (var i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].selected && sel.options[i].value !== "") {
+        vals.push(sel.options[i].value);
+      }
+    }
+    return vals;
+  }
+
+  function esc(s) {
+    if (!s) return "";
+    var d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function fetchAndRender() {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "/api/data", true);
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      if (xhr.status === 200) {
+        try {
+          lastData = JSON.parse(xhr.responseText);
+          lastFetchTime = Date.now();
+          fetchOk = true;
+          renderAll();
+        } catch(e) {
+          fetchOk = false;
+        }
+      } else {
+        fetchOk = false;
+      }
+      updateConnection();
+    };
+    xhr.timeout = 8000;
+    xhr.ontimeout = function() { fetchOk = false; updateConnection(); };
+    xhr.onerror = function() { fetchOk = false; updateConnection(); };
+    xhr.send();
+  }
+
+  function updateConnection() {
+    var dot = document.getElementById("conn-dot");
+    var text = document.getElementById("conn-text");
+    if (fetchOk && (Date.now() - lastFetchTime) < 10000) {
+      dot.className = "conn-dot live";
+      text.textContent = "Live";
+    } else {
+      dot.className = "conn-dot disconnected";
+      text.textContent = "Disconnected";
+    }
+  }
+
+  function renderAll() {
+    if (!lastData) return;
+    var s = lastData.summary;
+    var total = s.total_open + s.total_closed;
+
+    document.getElementById("subtitle").textContent = total + " stories";
+
+    // Stats
+    document.getElementById("stats").innerHTML =
+      statCard(total, "Total") +
+      statCard(s.total_open, "Open") +
+      statCard(s.total_closed, "Closed") +
+      statCard(s.blocked_count, "Blocked") +
+      statCard(s.ready_count, "Ready");
+
+    // State bar
+    var barHtml = "";
+    var legendHtml = "";
+    if (total > 0) {
+      s.by_state.forEach(function(pair, i) {
+        var name = pair[0], count = pair[1];
+        var pct = (count / total * 100).toFixed(1);
+        var color = STATE_COLORS[i % STATE_COLORS.length];
+        barHtml += '<div class="bar-segment" style="width:' + pct + '%;background:' + color + '" title="' + esc(name) + ': ' + count + ' (' + Math.round(pct) + '%)"></div>';
+        legendHtml += '<span class="legend-item"><span class="legend-dot" style="background:' + color + '"></span>' + esc(name) + ' ' + count + ' (' + Math.round(pct) + '%)</span>';
+      });
+    }
+    document.getElementById("state-bar").innerHTML = barHtml;
+    document.getElementById("state-legend").innerHTML = legendHtml;
+
+    // Priority badges
+    var prioHtml = "";
+    s.by_priority.forEach(function(pair) {
+      var name = pair[0], count = pair[1];
+      if (count > 0) {
+        var cls = "badge badge-" + (name || "none");
+        prioHtml += '<span class="' + cls + '">' + esc(name) + ' ' + count + '</span>';
+      }
+    });
+    document.getElementById("priority-badges").innerHTML = prioHtml || '<span class="badge badge-none">No priorities set</span>';
+
+    // Type badges
+    var typeHtml = "";
+    s.by_type.forEach(function(pair) {
+      var name = pair[0], count = pair[1];
+      typeHtml += '<span class="badge badge-type">' + esc(name) + ' ' + count + '</span>';
+    });
+    document.getElementById("type-badges").innerHTML = typeHtml || '<span class="badge badge-type">No types</span>';
+
+    // Update filter dropdowns (preserve selection)
+    updateFilterOptions(stateSelect, s.by_state.map(function(p) { return p[0]; }), stateFilters);
+    updateFilterOptions(prioritySelect, s.by_priority.map(function(p) { return p[0]; }), priorityFilters);
+
+    renderTable();
+  }
+
+  function statCard(value, label) {
+    return '<div class="stat-card"><div class="stat-value">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+  }
+
+  function updateFilterOptions(sel, values, currentSelection) {
+    // Keep "All" option, rebuild the rest
+    var html = '<option value="">All ' + sel.title.replace("Filter by ", "") + '</option>';
+    values.forEach(function(v) {
+      var selected = currentSelection.indexOf(v) !== -1 ? " selected" : "";
+      html += '<option value="' + esc(v) + '"' + selected + '>' + esc(v) + '</option>';
+    });
+    sel.innerHTML = html;
+  }
+
+  function renderTable() {
+    if (!lastData) return;
+
+    var stories = lastData.stories.slice();
+    var readySet = {};
+    var blockedSet = {};
+    (lastData.ready_ids || []).forEach(function(id) { readySet[id] = true; });
+    (lastData.blocked_ids || []).forEach(function(id) { blockedSet[id] = true; });
+
+    // Filter
+    stories = stories.filter(function(v) {
+      var st = v.story;
+      if (searchText) {
+        var hay = (st.id + " " + st.title + " " + (st.labels || []).join(" ")).toLowerCase();
+        if (hay.indexOf(searchText) === -1) return false;
+      }
+      if (stateFilters.length > 0 && stateFilters.indexOf(st.state) === -1) return false;
+      if (priorityFilters.length > 0 && priorityFilters.indexOf(st.priority) === -1) return false;
+      return true;
+    });
+
+    // Sort
+    stories.sort(function(a, b) {
+      var av = getSortValue(a, sortCol);
+      var bv = getSortValue(b, sortCol);
+      var cmp = av < bv ? -1 : (av > bv ? 1 : 0);
+      return cmp * sortDir;
+    });
+
+    // Update sort arrows
+    document.querySelectorAll(".sort-arrow").forEach(function(el) { el.textContent = ""; });
+    var arrowEl = document.getElementById("sort-" + sortCol);
+    if (arrowEl) arrowEl.textContent = sortDir === 1 ? "\u25B2" : "\u25BC";
+
+    // Render rows
+    var html = "";
+    stories.forEach(function(v) {
+      var st = v.story;
+      var cls = "";
+      if (blockedSet[st.id]) cls = "row-blocked";
+      else if (readySet[st.id]) cls = "row-ready";
+
+      var labels = (st.labels || []).map(function(l) {
+        return '<span class="label">' + esc(l) + '</span>';
+      }).join("");
+
+      var updated = st.updated_at || "";
+      if (updated.length > 10) updated = updated.substring(0, 10);
+
+      html += '<tr class="' + cls + '">' +
+        '<td class="col-id">' + esc(st.id) + '</td>' +
+        '<td>' + esc(st.title) + '</td>' +
+        '<td>' + esc(st.state) + '</td>' +
+        '<td>' + priorityBadge(st.priority) + '</td>' +
+        '<td>' + (labels || '<span style="color:var(--muted)">-</span>') + '</td>' +
+        '<td>' + (st.assignee ? esc(st.assignee) : '<span style="color:var(--muted)">-</span>') + '</td>' +
+        '<td class="col-date">' + esc(updated) + '</td>' +
+        '</tr>';
+    });
+
+    storyBody.innerHTML = html;
+    emptyMsg.style.display = stories.length === 0 ? "block" : "none";
+  }
+
+  function getSortValue(v, col) {
+    var st = v.story;
+    switch (col) {
+      case "id": return st.id;
+      case "title": return (st.title || "").toLowerCase();
+      case "state": return st.state;
+      case "priority": return PRIORITY_ORDER[st.priority] !== undefined ? PRIORITY_ORDER[st.priority] : 99;
+      case "assignee": return st.assignee || "\uffff";
+      case "updated": return st.updated_at || "";
+      default: return "";
+    }
+  }
+
+  function priorityBadge(p) {
+    if (!p || p === "none") return '<span style="color:var(--muted)">-</span>';
+    var cls = "badge badge-" + p;
+    return '<span class="' + cls + '">' + esc(p) + '</span>';
+  }
+
+  // Update footer timer
+  function updateFooter() {
+    if (!lastFetchTime) return;
+    var ago = Math.round((Date.now() - lastFetchTime) / 1000);
+    var text = ago < 2 ? "Updated just now" : "Updated " + ago + "s ago";
+    document.getElementById("footer").textContent = text;
+    updateConnection();
+  }
+
+  // Initial fetch + polling
+  fetchAndRender();
+  setInterval(fetchAndRender, 3000);
+  setInterval(updateFooter, 1000);
+})();
+</script>
+
+</body>
+</html>

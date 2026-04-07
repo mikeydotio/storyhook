@@ -1,702 +1,432 @@
-# Project Documentation
+# Web Dashboard Documentation
 
 ## Overview
 
-Storyhook is a local-first, CLI-first story and issue tracker built for developers and AI coding agents. It stores project data in a `.storyhook/` directory that travels with the repository, using append-only JSONL event logs for open stories and SQLite for archived (closed) stories.
+The web dashboard is a read-only, live-updating browser interface for storyhook projects. It serves the same data as `story report --html` but refreshes automatically every 3 seconds, supports client-side filtering and sorting, and runs as a background daemon.
 
-The binary is called `story`. It provides short, pipeable commands with stable `--json` output and explicit exit codes, making it suitable for shell scripts, CI pipelines, and AI agent integrations. The project also ships a Claude Code plugin with session hooks and skill definitions.
+The dashboard is entirely local. The HTTP server binds to `127.0.0.1` only -- project data is never exposed on the network. There is no authentication because none is needed: only localhost can reach it.
 
-**Current version:** v0.12.0 (VERSION file) / 0.6.0 (Cargo.toml -- see Known Issues for drift).
-
-**Repository:** <https://github.com/mikeydotio/storyhook>
-
----
+Key properties:
+- Read-only. No mutations through the web UI.
+- Self-contained. Single embedded HTML file, no CDN, no framework, no build step.
+- Live. Polls `/api/data` every 3 seconds; filter and sort state survives refreshes.
+- Disposable. `story web start` / `story web stop`. Nothing to configure.
 
 ## Getting Started
 
-### Install
-
-**Quick install (Linux / macOS):**
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh
+# Initialize a storyhook project (if you haven't)
+story init
+
+# Start the dashboard (default port 3456)
+story web start
+
+# Open in browser
+open http://127.0.0.1:3456
+
+# Check status
+story web status
+
+# Stop when done
+story web stop
 ```
 
-**With Cargo:**
+To use a different port:
 
 ```bash
-cargo install storyhook
+story web start --port 8080
 ```
 
-**From source:**
+The dashboard updates live as you create and modify stories in another terminal:
 
 ```bash
-git clone https://github.com/mikeydotio/storyhook.git
-cd storyhook
-cargo install --path .
+story new "Implement login"
+story set SH-1 --priority high
+story move SH-1 in-progress
+# Dashboard reflects changes within 3-6 seconds
 ```
-
-### Initialize a project
-
-```bash
-cd your-repo
-story init                    # Creates .storyhook/ with default prefix "SH"
-story init --prefix API       # Custom prefix: API-1, API-2, ...
-```
-
-This creates the `.storyhook/` directory containing `project.toml`, `states.toml`, `types.toml`, `members.jsonl`, `next-id`, and subdirectories for open stories and the archive database. It also generates:
-
-- `.storyhook/CLAUDE.md` with workflow instructions for AI agents
-- `AGENTS.md` at the project root for universal AI agent discoverability
-
-### Create and work a story
-
-```bash
-story new "Implement user authentication"    # Creates SH-1
-story show SH-1                              # View details
-story move SH-1 in-progress                  # Transition state
-story comment SH-1 "Added login endpoint"    # Add progress note
-story move SH-1 done "Feature complete"      # Close (auto-archives)
-```
-
-### AI agent integration
-
-Three commands support AI coding sessions:
-
-- `story load-context` -- project overview with states, priorities, relationships, and ready work
-- `story next` -- highest-priority unblocked story (respects dependencies)
-- `story handoff --since 2h` -- session handoff summarizing recent changes
-
-For Claude Code, install the plugin:
-
-```bash
-story plugin install claude-code
-```
-
-This copies the plugin to `~/.claude/plugins/storyhook/` and creates `.storyhook/plugin-config.toml`. The plugin provides session hooks (context injection, git sync, auto-handoff) and 7 skills accessible via `/storyhook:context`, `/storyhook:work`, etc.
-
----
 
 ## Architecture
 
-### Event Sourcing Model
+### HTTP Server
 
-Storyhook uses event sourcing as its core data model. Each open story is a file (`SH-1.jsonl`) containing a sequence of events:
+The server uses `tiny_http`, a synchronous, minimal HTTP library. It runs in a single-threaded request loop with no async runtime. The entire server is ~120 lines in `src/web.rs`.
 
-```jsonl
-{"kind":"StoryCreated","at":"2026-04-01T12:00:00Z","title":"Build CLI","state":"todo"}
-{"kind":"StoryAssigned","at":"2026-04-01T12:05:00Z","member_id":"mikey"}
-{"kind":"StoryStateChanged","at":"2026-04-01T13:00:00Z","state":"in-progress"}
-{"kind":"StoryCommentAdded","at":"2026-04-01T14:00:00Z","text":"Parser skeleton done"}
-```
+Routes:
+- `GET /` -- serves the embedded HTML dashboard
+- `GET /api/data` -- returns project data as JSON
+- All other paths -- 404
+- All non-GET methods -- 405
 
-To read a story, the system replays (folds) all events into a `StorySnapshot` -- a materialized view of the current state. This fold is performed by `domain::fold_story()`.
-
-**Event types** (from `domain.rs`):
-
-| Event | Purpose |
-|-------|---------|
-| `StoryCreated` | Initial creation with title and starting state |
-| `StoryCommentAdded` | Progress note or context |
-| `StoryAssigned` | Assign to a team member |
-| `StoryStateChanged` | Transition between states |
-| `StoryAwaitingSet` | Mark as blocked with a reason |
-| `StoryAwaitingCleared` | Remove blocker |
-| `StoryRelationshipAdded` | Link to another story |
-| `StoryRelationshipRemoved` | Remove a link |
-| `StoryPrioritySet` | Set priority level |
-| `StoryTypeSet` | Set story type (story, epic, bug, etc.) |
-| `StoryLabelsSet` | Set labels |
-| `StoryTitleSet` | Rename a story |
-| `StoryClosedAndArchived` | Terminal event -- story moves to SQLite archive |
-| `StoryDeleted` | Soft-delete with required reason |
-
-### Module Overview
-
-| Module | Responsibility |
-|--------|---------------|
-| `main.rs` | Entry point. Parses args, dispatches to TUI or CLI pipeline. |
-| `cli.rs` | Command parsing. Splits global flags (`--json`, `--quiet`, `--no-hooks`), parses subcommands into an `Invocation` enum (40+ variants). No argument parsing library -- hand-rolled. |
-| `app.rs` | Business logic. The `run()` function matches on `Invocation` and executes command handlers. Largest module (~2700 lines). |
-| `domain.rs` | Core types: `StoryEvent`, `StorySnapshot`, `Priority`, `SuperState`, `StateDef`, `TypeDef`, `Member`. The `fold_story()` function, relationship validation, dependency graph analysis. |
-| `storage.rs` | File I/O layer. JSONL read/write, TOML config loading/saving, SQLite archive operations, project initialization, `ProjectPaths` struct for path resolution. |
-| `output.rs` | Display rendering. `Response` enum with variants (`Message`, `Story`, `Stories`, `Summary`, `Graph`, `RawJson`). `render_response()` handles human-readable and JSON output via a `JsonEnvelope`. |
-| `help_topics.rs` | Extended help system. `BTreeMap` of topic names to help text. `compact_reference()` produces an LLM-optimized summary under 3000 chars. `all_topics_text()` concatenates all topics. |
-| `plugin.rs` | Claude Code plugin install/uninstall. Copies bundled plugin from `plugin/claude-code/` to `~/.claude/plugins/storyhook/`. |
-| `lock.rs` | Project-scoped file locking. `with_project_lock()` acquires an exclusive lock on `.storyhook/lock` with a 5-second timeout and 50ms poll interval. |
-| `event_hooks.rs` | Event hook system. Loads `hooks-config.toml`, fires shell commands on story events (create, state change, close, etc.) with configurable timeouts. |
-| `hooks.rs` | Git hook management. Installs/uninstalls post-commit, post-merge, and prepare-commit-msg hooks into `.git/hooks/`. |
-| `decompose.rs` | Spec decomposition. Parses markdown or YAML spec files into `ImportStory` structs with relationships, supporting wave-based decomposition (`### Wave N` headings). |
-| `tui.rs` | Terminal UI module. Dashboard, board view, story detail modal, inline editing, filter bar. Built on `ratatui` + `crossterm`. |
-| `github.rs` | GitHub Issues sync (behind `github-sync` feature flag). Bidirectional sync with three-way merge conflict detection. Uses `ureq` (synchronous HTTP). |
-| `error.rs` | Error types. `AppError` enum with variants mapping to exit codes 2-8. |
+The HTML file (`src/web_dashboard.html`) is compiled into the binary via `include_str!`. There are no external files to serve.
 
 ### Data Flow
 
 ```
-User input
+Browser (3s poll)
     |
     v
-main.rs --> cli::split_global_flags() --> cli::parse_invocation()
-    |                                            |
-    v                                            v
-CliOptions { json, quiet, no_hooks, invocation: Invocation }
+GET /api/data
     |
     v
-app::run(root, options)
-    |
-    +-- lock::with_project_lock(root, || { ... })  (for write operations)
-    |       |
-    |       v
-    |   storage::* functions  (read/write JSONL, TOML, SQLite)
-    |       |
-    |       v
-    |   domain::fold_story()  (reconstruct snapshot from events)
+web::build_api_json(root)
     |
     v
-output::Response
+app::build_report_data(root)     <-- reads .storyhook/events/ from disk
     |
     v
-output::render_response(response, json, quiet)
+JSON response: { summary, stories, ready_ids, blocked_ids }
     |
     v
-stdout
+Browser JS: renderAll() with current filter/sort state
 ```
 
-### Storage Layout
+Each `/api/data` request reads the event log from disk and recomputes the full project state. This is intentionally simple -- there is no in-memory cache or file watcher. For typical project sizes (hundreds of stories), this adds negligible latency.
 
-```
-.storyhook/
-  project.toml          # Schema version, created_at, optional prefix, sync/doctor config
-  states.toml           # Workflow states with OPEN/CLOSED superstate mapping
-  types.toml            # Story types (story, epic, bug, chore, task)
-  members.jsonl         # Team members (one JSON object per line)
-  next-id               # Monotonic counter for story ID generation
-  lock                  # Exclusive file lock (gitignored)
-  plugin-config.toml    # Plugin settings (enabled, tracking verbosity)
-  hooks-config.toml     # Event hook definitions (optional)
-  CLAUDE.md             # AI agent instructions (auto-generated)
-  .gitignore            # Excludes lock, WAL/SHM files
-  open/
-    stories/
-      SH-1.jsonl        # Event log for open story SH-1
-      SH-2.jsonl
-    indexes/            # (Reserved for future use)
-  archive/
-    archive.db          # SQLite database for closed stories
-    archive.db-wal      # WAL file (gitignored)
-    archive.db-shm      # Shared memory file (gitignored)
-```
+### Daemon Lifecycle
 
----
+`story web start` does not run the server in the foreground. It spawns a detached child process:
+
+1. Acquires an exclusive `fs4` file lock on `.storyhook/web.lock`
+2. If the lock is held, reports "already running" with the existing PID and port
+3. Spawns `story web --serve --port N --root /path/to/project` as a background process
+4. Writes `{pid}\n{port}` to `.storyhook/web.pid`
+5. Redirects stderr to `.storyhook/web.log`
+6. If `web-serve` is in PATH (agentsmith environments), registers the port
+
+`story web stop`:
+1. Reads PID from `.storyhook/web.pid`
+2. Verifies the PID belongs to a `story` process (via `/proc/{pid}/cmdline` on Linux)
+3. Sends SIGTERM via `libc::kill`
+4. Removes PID and lock files
+5. If `web-serve` is in PATH, unregisters
+
+`story web status`:
+- Reports running/stopped based on PID file existence and process liveness
+- Automatically cleans up stale PID files from crashed daemons
+
+Files written to `.storyhook/`:
+
+| File | Purpose |
+|------|---------|
+| `web.pid` | `{pid}\n{port}` -- tracks running daemon |
+| `web.lock` | `fs4` exclusive lock -- prevents races |
+| `web.log` | stderr from the daemon process |
+
+### Security
+
+- **Localhost binding**: Server binds `127.0.0.1:{port}`. Network access is blocked at the socket level.
+- **Security headers**: All responses include `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Content-Security-Policy: default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'`.
+- **No authentication**: Unnecessary given localhost-only binding. The `web-serve` tool handles external access in agentsmith environments.
+- **XSS prevention**: The dashboard uses DOM `textContent` assignment for all user-controlled data (story titles, labels, etc.), preventing script injection. The API returns data as JSON, which serde escapes correctly.
+- **Strict routing**: Exact string match on URL paths. No path traversal possible.
+- **Method whitelist**: Only GET is accepted. Everything else returns 405.
 
 ## CLI Reference
 
-The `story` binary uses a verb-first grammar (since v0.11.0). Run `story help --compact` for an LLM-optimized reference or `story help --all` for comprehensive documentation of every command.
+### `story web start [--port <PORT>]`
 
-### Core Commands
+Start the dashboard as a background daemon.
 
-| Command | Purpose |
-|---------|---------|
-| `story init [--prefix P]` | Initialize project in current directory |
-| `story new "<title>" [--state S] [--type T]` | Create a story |
-| `story show <id>` | View story details |
-| `story comment <id> "<text>"` | Add a comment |
-| `story move <id> <state> ["comment"]` | Transition state |
-| `story assign <id> <member>` | Assign to a member |
-| `story block <id> "<reason>"` | Mark as blocked |
-| `story unblock <id>` | Clear blocked status |
-| `story prioritize <id> <level>` | Set priority (critical/high/medium/low/none) |
-| `story label <id> <csv>` | Add labels |
-| `story unlabel <id> <csv>` | Remove labels |
-| `story delete <id> "<reason>"` | Soft-delete with audit trail |
-| `story reopen <id>` | Reopen a closed story |
-| `story set <id> [--field val ...]` | Batch update multiple fields |
-| `story relate <a> <rel> <b>` | Add relationship |
-| `story unrelate <a> <rel> <b>` | Remove relationship |
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--port` | `u16` | `3456` | TCP port to bind. Must be 1-65535. |
 
-### Query Commands
+Requires an initialized storyhook project. Returns an error if:
+- Not in a storyhook project directory
+- Port is invalid (0, negative, >65535, non-numeric)
+- Port is already in use
+- Dashboard is already running
 
-| Command | Purpose |
-|---------|---------|
-| `story list [filters]` | List open stories with optional filters |
-| `story next [--count N]` | Highest-priority ready story |
-| `story search <query>` | Full-text search |
-| `story summary` | State/priority breakdown |
-| `story graph [mode]` | Dependency graph analysis |
+Output: `Web UI started at http://<ip>:<port> (PID <pid>)`
 
-### Project Management
+The displayed IP is the Tailscale IP if available, then the first non-loopback LAN IP, then `127.0.0.1`.
 
-| Command | Purpose |
-|---------|---------|
-| `story load-context [--format F]` | Project overview for AI sessions |
-| `story handoff [--since D]` | Session handoff document |
-| `story decompose <file> [--dry-run]` | Create stories from spec |
-| `story import / export` | Bulk JSON import/export |
-| `story doctor [--fix]` | Integrity checks and repair |
-| `story phase list/show/add/remove/create` | Phase management |
-| `story type list/add/remove` | Story type management |
-| `story epic list/show/create/add` | Epic sugar commands |
+### `story web stop`
 
-### Integration Commands
+Stop the running dashboard daemon.
 
-| Command | Purpose |
-|---------|---------|
-| `story plugin install/uninstall claude-code` | Manage Claude Code plugin |
-| `story scaffold agents-md/claude-md/cursor-rules` | Generate AI tool templates |
-| `story hooks install/uninstall/list/test` | Git hook management |
-| `story commit-sync [--since D]` | Sync git history with stories |
-| `story github-sync [<id>] [--dry-run]` | Bidirectional GitHub Issues sync |
-| `story session-start` | JSON output for plugin hooks |
-| `story tui` | Interactive terminal UI |
-| `story help [topic] [--compact] [--all]` | Help system |
+No flags. Safe to run when nothing is running -- prints "Web UI is not running". Cleans up stale PID files from crashed daemons.
 
-### Global Flags
+Output: `Web UI stopped (PID <pid>)`
 
-| Flag | Effect |
-|------|--------|
-| `--json` | Structured JSON output envelope |
-| `--quiet` | Suppress normal success output |
-| `--no-hooks` | Suppress event hook execution |
+### `story web status`
 
-### Exit Codes
+Check whether the dashboard is running.
 
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 2 | Usage or validation error |
-| 3 | Not found |
-| 4 | Lock timeout |
-| 5 | Integrity or storage error |
-| 6 | GitHub auth error |
-| 7 | GitHub API error |
-| 8 | Sync conflict |
+Output (when running): `Web UI running at http://<ip>:<port> (PID <pid>)`
+Output (when stopped): `Web UI is not running`
 
----
+### `story help web`
 
-## Plugin System
+Displays the web dashboard help topic with usage, examples, and how-it-works explanation.
 
-### Claude Code Plugin
+## Dashboard Features
 
-The plugin lives in `plugin/claude-code/` and is installed to `~/.claude/plugins/storyhook/` via `story plugin install claude-code`.
+### Summary Cards
 
-**Structure:**
+Five stat cards at the top: Total, Open, Closed, Blocked, Ready. Values update on every poll.
 
-```
-plugin/claude-code/
-  .claude-plugin/
-    plugin.json           # Plugin metadata (name, version, author)
-  hooks/
-    hooks.json            # Hook event bindings
-    session-start.sh      # SessionStart: injects CLI reference + project state
-    post-git.sh           # PostToolUse (Bash): syncs git commits with stories
-    stop-handoff.sh       # Stop: generates session handoff document
-  skills/
-    storyhook-setup/      # /storyhook:setup -- install and configure
-    storyhook-context/    # /storyhook:context -- project overview
-    storyhook-work/       # /storyhook:work -- start working on a story
-    storyhook-plan/       # /storyhook:plan -- decompose specs into stories
-    storyhook-handoff/    # /storyhook:handoff -- session handoff
-    storyhook-triage/     # /storyhook:triage -- triage and cleanup
-    storyhook-sync/       # /storyhook:sync -- git sync
-  references/
-    cli-reference.md      # Full CLI reference (available to skills)
-    workflow-patterns.md  # Common workflow patterns
-```
+### State Distribution Bar
 
-**Hooks:**
+Horizontal stacked bar chart showing story counts per state (e.g., todo, in-progress, done). Color-coded with a legend below.
 
-| Hook | Event | Behavior |
-|------|-------|----------|
-| `session-start.sh` | `SessionStart` | Runs `story session-start` to inject a systemMessage with CLI reference and project state. Pure bash, no python3 dependency. Falls back to `{}` on any failure. |
-| `post-git.sh` | `PostToolUse` (Bash) | Detects git commit/merge/push in tool output. Runs `story commit-sync --since 1h` if storyhook project exists and git hooks are not already installed. |
-| `stop-handoff.sh` | `Stop` | Generates `story handoff --since 4h` at session end. Outputs as systemMessage for the final response. |
+### Priority and Type Breakdowns
 
-**Plugin Configuration** (`.storyhook/plugin-config.toml`):
+Badge-style displays. Priority uses severity colors: critical (red), high (orange), medium (yellow), low (green). Types use neutral styling.
 
-```toml
-[plugin]
-enabled = true
-tracking = "normal"    # quiet | normal | verbose
-```
+### Story Table
 
-Setting `enabled = false` causes `session-start` to return `{}`, effectively disabling all proactive behavior.
+Columns: ID, Title, State, Priority, Labels, Assignee, Updated.
 
-### Scaffold Templates
+- **Row highlighting**: Blocked stories have a red-tinted background with a red left border. Ready stories have a green-tinted background with a green left border.
+- **Sorting**: Click any column header (except Labels) to sort. Click again to reverse. Sort direction shown with an arrow indicator. Sort state persists across data refreshes.
+- **Filtering**: Text search across ID, title, and labels. Multi-select dropdowns for state and priority. Filter state persists across data refreshes.
+- **Empty state**: Shows "No stories match the current filters" when all stories are filtered out.
 
-`story scaffold` generates instruction files for AI tools:
+### Auto-Refresh
 
-| Template | Output | Target Tool |
-|----------|--------|-------------|
-| `agents-md` | `AGENTS.md` | Any AI agent (universal format) |
-| `claude-md` | `.storyhook/CLAUDE.md` content | Claude Code |
-| `cursor-rules` | `.cursorrules` content | Cursor |
+The dashboard polls `GET /api/data` every 3 seconds via `setInterval`. The footer shows "Updated N seconds ago".
 
-These templates contain CLI command tables, workflow instructions, and relationship reference. They are generated MCP-free and CLI-first as of the latest pipeline.
+### Connection Indicator
 
-### Event Hooks
+Top-right corner. Green dot with "Live" when the last fetch succeeded within the past 10 seconds. Red dot with "Disconnected" when the server is unreachable (e.g., after `story web stop`).
 
-Separate from plugin hooks, storyhook supports event-driven hooks configured in `.storyhook/hooks-config.toml`:
+### Dark Mode
 
-```toml
-[settings]
-timeout_seconds = 10
-enabled = true
+Automatic via `@media (prefers-color-scheme: dark)`. Uses a slate color palette matching the static HTML report.
 
-[on_create]
-command = "echo 'Story created: $STORY_ID'"
+### Mobile Responsive
 
-[on_state_change]
-command = "notify-team.sh"
+Below 768px viewport width:
+- Stat cards stack vertically
+- Filter controls stack vertically
+- Story table scrolls horizontally
+- Header elements stack
 
-[on_close]
-command = "cleanup.sh"
+## API Reference
+
+### `GET /`
+
+Returns the dashboard HTML page.
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `text/html; charset=utf-8` |
+| `Cache-Control` | `no-cache` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `Content-Security-Policy` | `default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'` |
+
+### `GET /api/data`
+
+Returns the full project state as JSON.
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `application/json` |
+| `Cache-Control` | `no-cache` |
+| Security headers | Same as above |
+
+Response schema:
+
+```json
+{
+  "summary": {
+    "total_open": 5,
+    "total_closed": 3,
+    "by_state": [["done", 3], ["in-progress", 2], ["todo", 3]],
+    "by_priority": [["high", 2], ["medium", 1]],
+    "by_type": [["Default", 6], ["epic", 2]],
+    "blocked_count": 1,
+    "flagged_count": 0,
+    "ready_count": 4,
+    "ready_stories": []
+  },
+  "stories": [
+    {
+      "story": {
+        "id": "SH-1",
+        "title": "Implement login",
+        "state": "in-progress",
+        "superstate": "open",
+        "priority": "high",
+        "story_type": null,
+        "labels": ["backend", "auth"],
+        "assignee": "alice",
+        "awaiting": null,
+        "updated_at": "2026-04-07T12:00:00Z",
+        "closed_at": null,
+        "comments": [],
+        "relationships": []
+      },
+      "is_ready": true,
+      "is_blocked": false,
+      "derived_relationships": [],
+      "warnings": [],
+      "flagged_reasons": []
+    }
+  ],
+  "ready_ids": ["SH-1", "SH-3"],
+  "blocked_ids": ["SH-4"]
+}
 ```
 
-Supported events: `create`, `state_change`, `close`, `comment`, `priority_change`, `label_change`, `relationship_change`.
+Key details:
+- `by_state`, `by_priority`, `by_type` are arrays of `[name, count]` tuples
+- `is_ready` and `is_blocked` are injected per-story by the web module (not part of the core `StoryView` struct)
+- Empty projects return `total_open: 0`, `stories: []`, `ready_ids: []`, `blocked_ids: []`
+- On internal error, returns 500 with `{"error": "<message>"}`
 
-Hooks receive a JSON payload on stdin containing event details. They are suppressed with `--no-hooks`.
+### Other Paths
 
----
+- Any path not listed above returns `404 Not found` (plain text)
+- Any non-GET method returns `405 Method not allowed` (plain text)
+- Both include the same security headers as successful responses
 
 ## Configuration
 
-### project.toml
+| Setting | Source | Default | Description |
+|---------|--------|---------|-------------|
+| Port | `--port` flag | `3456` | TCP port for the HTTP server |
+| Bind address | Hardcoded | `127.0.0.1` | Not configurable (security) |
+| Poll interval | Hardcoded in JS | `3000` ms | Dashboard refresh interval |
+| Connection timeout | Hardcoded in JS | `8000` ms | XHR timeout per request |
+| Disconnect threshold | Hardcoded in JS | `10000` ms | Time before "Disconnected" indicator |
 
-Created by `story init`. Contains project metadata.
+### web-serve Integration
 
-```toml
-schema = 1
-created_at = "2026-04-01T00:00:00Z"
-prefix = "SH"                        # Optional custom ID prefix
-
-[sync]
-auto_transition = true               # Optional: auto-transition on git sync
-
-[doctor]
-stale_threshold = "7d"               # Optional: threshold for stale story warnings
-```
-
-### states.toml
-
-Defines workflow states. Each state maps to a superstate (`OPEN` or `CLOSED`).
-
-```toml
-[[states]]
-slug = "todo"
-super = "OPEN"
-
-[[states]]
-slug = "in-progress"
-super = "OPEN"
-role = "active"                      # Marks as the "working" state
-
-[[states]]
-slug = "done"
-super = "CLOSED"
-```
-
-Rules:
-- Must have at least one OPEN and one CLOSED state
-- Moving a story to a CLOSED state immediately archives it to SQLite
-- New projects default to: `todo` (OPEN), `in-progress` (OPEN, active), `done` (CLOSED)
-
-### types.toml
-
-Defines story types. Auto-created with defaults on first use.
-
-```toml
-[[types]]
-slug = "story"
-description = "A user story or feature"
-
-[[types]]
-slug = "epic"
-description = "A large initiative containing child stories"
-
-[[types]]
-slug = "bug"
-description = "A defect or regression"
-
-[[types]]
-slug = "chore"
-description = "Maintenance or infrastructure work"
-
-[[types]]
-slug = "task"
-description = "A discrete unit of work"
-```
-
-The first entry is the default type. Stories without an explicit type display as this type. The slug `none` is reserved.
-
-### plugin-config.toml
-
-Controls Claude Code plugin behavior.
-
-```toml
-[plugin]
-enabled = true
-tracking = "normal"
-```
-
-| Key | Values | Effect |
-|-----|--------|--------|
-| `enabled` | `true` / `false` | Enables/disables plugin hooks |
-| `tracking` | `quiet` / `normal` / `verbose` | Controls auto-comment verbosity in skills |
-
-### hooks-config.toml
-
-Configures event-driven shell hooks (see Event Hooks section above).
-
-### members.jsonl
-
-One JSON object per line. Created by `story member add`.
-
-```jsonl
-{"id":"mikey","display_name":"Mikey Ward","email":"mw@mikey.io","github":null,"created_at":"2026-04-01T00:00:00Z"}
-{"id":"octocat","display_name":"octocat","email":null,"github":"octocat","created_at":"2026-04-01T00:00:00Z"}
-```
-
----
-
-## Development
-
-### Prerequisites
-
-- Rust 1.89+ (edition 2024)
-- Standard Unix tools for hook tests (bash, sed, grep)
-
-### Building
-
-```bash
-cargo build                           # Debug build
-cargo build --release                 # Release build
-cargo build --no-default-features     # Without GitHub sync (drops ureq dependency)
-```
-
-### Testing
-
-```bash
-cargo test                            # Run all 732 tests
-cargo fmt -- --check                  # Check formatting
-cargo clippy --all-targets -- -D warnings   # Lint
-```
-
-**Test philosophy:** Zero mocks. Every test uses the real `story` binary (via `assert_cmd::Command::cargo_bin("story")`) and a real temporary filesystem (via `tempfile::tempdir()`). Hook tests execute real bash scripts.
-
-**Test files** (34 files in `tests/`):
-
-| File | Coverage Area |
-|------|--------------|
-| `story_flow.rs` | End-to-end story lifecycle |
-| `cli_grammar.rs` | Verb-first command parsing (22 tests) |
-| `relationships.rs` | All relationship types, inverses, cycles |
-| `story_types.rs` | Type management, epic commands |
-| `session_start.rs` | session-start JSON output, edge cases |
-| `mcp_removal.rs` | Guards against MCP reintroduction |
-| `help_new_flags.rs` | --compact and --all help modes |
-| `session_start_hook.rs` | Hook script contracts (size, no python3) |
-| `scaffold.rs` | Scaffold template generation |
-| `tui_integration.rs` | TUI integration tests |
-| `tui_undo.rs` | TUI undo/redo functionality |
-| `doctor.rs` | Integrity checks and repair |
-| `story_graph.rs` | Dependency graph analysis |
-
-### Project Structure
-
-```
-storyhook/
-  src/
-    main.rs             # Entry point
-    lib.rs              # Module declarations
-    app.rs              # Command handlers (~2700 lines)
-    cli.rs              # Argument parsing (~600 lines)
-    domain.rs           # Core types and event fold (~500 lines)
-    storage.rs          # File I/O and persistence (~500 lines)
-    output.rs           # Display rendering
-    help_topics.rs      # Help system content
-    plugin.rs           # Plugin install/uninstall
-    lock.rs             # File locking
-    event_hooks.rs      # Event hook execution
-    hooks.rs            # Git hook management
-    decompose.rs        # Spec parsing
-    tui.rs              # Terminal UI (module)
-    error.rs            # Error types
-    github.rs           # GitHub sync (feature-gated)
-  tests/                # 34 integration test files
-  plugin/
-    claude-code/        # Claude Code plugin bundle
-  install.sh            # Binary installer script
-  VERSION               # Semver-managed version
-  Cargo.toml            # Rust package manifest
-  CHANGELOG.md          # Curated changelog
-  AGENTS.md             # AI agent instructions
-```
-
-### Feature Flags
-
-| Flag | Default | Effect |
-|------|---------|--------|
-| `github-sync` | On | Enables `story github-sync` and the `ureq` HTTP dependency |
-
-Build without it: `cargo build --no-default-features`
-
-### Key Dependencies
-
-| Crate | Purpose |
-|-------|---------|
-| `serde` + `serde_json` | JSON serialization (events, snapshots, API output) |
-| `toml` | TOML config file parsing |
-| `chrono` | Timestamp generation (RFC 3339) |
-| `rusqlite` (bundled) | SQLite archive database |
-| `fs4` | Cross-platform file locking |
-| `ratatui` + `crossterm` | Terminal UI |
-| `ureq` (optional) | HTTP client for GitHub API |
-| `thiserror` | Error type derivation |
-| `assert_cmd` + `tempfile` (dev) | Integration testing |
-
----
+In agentsmith environments where `web-serve` is available in PATH:
+- `story web start` automatically runs `web-serve register <port>` after spawning the daemon
+- `story web stop` automatically runs `web-serve unregister` after killing the daemon
+- Registration failures are silent -- they do not prevent start/stop from succeeding
 
 ## Architecture Decision Records
 
-### ADR-001: CLI-First Over MCP
+### ADR-001: tiny_http Over Async Alternatives
 
-**Status:** Accepted (implemented in v0.12.0 pipeline)
+**Status**: Accepted
 
-**Context:** Storyhook originally provided an MCP (Model Context Protocol) server for AI tool integration, alongside the CLI. This created two parallel code paths for the same functionality. The MCP server added complexity (JSON-RPC framing, tool schema maintenance, a separate binary mode) while the CLI already provided everything agents needed via `--json` output and stable exit codes. Claude Code's plugin system supports shell command hooks natively, making MCP an unnecessary indirection layer.
+**Context**: The web dashboard needs an HTTP server. Options considered: `tiny_http` (synchronous, minimal), `actix-web` (async, full-featured), `axum` (async, tower-based), `warp` (async, filter-based).
 
-**Decision:** Remove the MCP server entirely. Replace it with:
-1. `story help --compact` / `story help --all` for LLM-consumable CLI documentation
-2. `story session-start` CLI command that outputs session context JSON
-3. A pure-bash session-start hook that delegates to `story session-start`
-4. CLI-first scaffold templates (no MCP references)
+**Decision**: Use `tiny_http`. It has no async runtime dependency, compiles fast, and adds minimal binary size. The server handles one request at a time, which is sufficient for a local dashboard with a single user.
 
-**Consequences:**
-- Simpler codebase: `mcp.rs`, `mcp_install.rs`, and associated tests deleted
-- Single code path: all functionality flows through the CLI
-- Easier testing: no JSON-RPC protocol to test; all tests use the real binary
-- Plugin hooks are pure bash, no python3 dependency for session-start
-- Breaking change for any users who relied on `story --mcp` or `story mcp-config`
-- AI agents interact exclusively through shell commands and `--json` output
+**Consequences**: No async code in the codebase. Thread pool handles concurrency transparently. If the server ever needs SSE or WebSocket, `tiny_http` would need to be replaced -- but that is an explicit non-goal for now.
 
-### ADR-002: Event Sourcing with JSONL
+### ADR-002: Client-Side Polling Over Server-Sent Events
 
-**Status:** Accepted (foundational design, v0.1.0+)
+**Status**: Accepted
 
-**Context:** Story trackers need to record changes over time. Options considered: (a) mutable state files (overwrite on each change), (b) a database (SQLite for everything), (c) append-only event logs.
+**Context**: The dashboard needs live data. Options: SSE (server pushes), WebSocket (bidirectional), client-side polling (browser pulls).
 
-**Decision:** Store open stories as append-only JSONL event streams. Each story is a single `.jsonl` file. The current state is reconstructed by folding (replaying) all events. Closed stories are archived into SQLite for compact storage.
+**Decision**: Use 3-second client-side polling via `setInterval` + XHR. `tiny_http`'s thread pool model makes long-lived SSE connections impractical -- each connection would consume a thread indefinitely, eventually exhausting the pool.
 
-**Consequences:**
-- Full audit trail: every change is preserved with timestamps, never overwritten
-- Simple writes: appending a line to a file is atomic and fast
-- Git-friendly: JSONL files diff cleanly and merge manually if needed
-- Concurrent safety: combined with file locking, append-only writes prevent corruption
-- Read cost: every `show` or `list` replays all events for each story. Acceptable for typical project sizes (hundreds of stories, not millions)
-- No query engine for open stories: filtering requires loading all snapshots into memory. Again, acceptable at expected scale
-- Closed stories move to SQLite for space efficiency and to keep the open story directory small
+**Consequences**: Slightly higher latency (up to 3 seconds) than push-based approaches. Slightly more load on disk (re-reads events on every poll). Both are negligible for local use. Polling is trivially debuggable -- open `/api/data` in a browser tab.
 
-### ADR-003: Zero-Mock Test Strategy
+### ADR-003: Embedded HTML via include_str!
 
-**Status:** Accepted (enforced since v0.1.0)
+**Status**: Accepted
 
-**Context:** The test suite needs to verify that the CLI works correctly end-to-end. Unit tests with mocked storage or domain logic would miss integration bugs (argument parsing edge cases, file permission issues, lock contention, JSON output formatting).
+**Context**: The dashboard is a single HTML page with inline CSS and JS. Options: embed in binary via `include_str!`, serve from a file on disk, use a template engine.
 
-**Decision:** All tests use the real compiled binary via `assert_cmd::Command::cargo_bin("story")` and real temporary directories via `tempfile::tempdir()`. No mocks, no in-process testing of `app::run()`, no fake filesystems.
+**Decision**: Embed via `include_str!("web_dashboard.html")`. The dashboard ships as part of the binary with zero runtime file dependencies.
 
-**Consequences:**
-- High confidence: tests exercise the exact code path a user would hit
-- Catches integration bugs: argument parsing, file I/O, lock behavior, JSON serialization
-- Slower than unit tests: each test spawns a process and creates temp files (~7 seconds for 732 tests, which is acceptable)
-- Harder to test internal edge cases: some domain logic is only reachable through specific CLI sequences
-- Tests are more verbose: setting up a project requires `story init` + `story new` + ... for each test
-- Real filesystem means tests are OS-dependent (Unix-only features like file permissions)
+**Consequences**: Changing the dashboard requires recompiling. This is acceptable because the dashboard is tightly coupled to the JSON API contract. No risk of file-not-found errors at runtime.
 
----
+### ADR-004: Localhost-Only Binding Without Authentication
 
-## Known Issues
+**Status**: Accepted
 
-Nine items escalated from the triage process. Listed by severity.
+**Context**: The dashboard exposes project data (story titles, assignees, comments). Options: bind all interfaces with auth, bind localhost only without auth, bind all interfaces without auth.
 
-### Critical
+**Decision**: Bind `127.0.0.1` only. No authentication. In agentsmith environments, `web-serve register` handles external access through the host's reverse proxy, which has its own access controls.
 
-**SH-31: UTF-8 Truncation Panic** -- `msg.truncate(3900)` at `src/app.rs:2186` panics if the truncation point lands mid-codepoint in a multi-byte UTF-8 string. Projects with CJK or emoji characters in story titles that push the systemMessage past 3900 bytes will crash the binary.
-- **Fix:** `msg.truncate(msg.floor_char_boundary(3900))` (one-line fix, stable since Rust 1.76).
+**Consequences**: Dashboard is inaccessible from other machines unless `web-serve` or SSH tunneling is used. This is the correct default -- project data should not be network-accessible without explicit opt-in.
 
-### High
+### ADR-005: fs4 File Locking for Daemon Lifecycle
 
-**SH-32: Fragile TOML Parsing in Plugin Config** -- `session_start()` at `src/app.rs:2129` uses `contains("= false")` to check `plugin-config.toml`. Fails on valid TOML with extra whitespace (e.g., `enabled  =   false`). False positives possible from comments.
-- **Fix:** Parse with the `toml` crate (already a dependency) into a proper struct.
+**Status**: Accepted
 
-**SH-33: --quiet Suppresses RawJson/session-start** -- In `render_response()` at `src/output.rs`, the `quiet` check runs before the `RawJson` bypass. Running `story --quiet session-start` silently returns empty instead of the expected JSON.
-- **Fix:** Move the `RawJson` check before the `quiet` check (3-line swap).
+**Context**: The daemon needs to prevent double-starts and detect stale PIDs. Options: PID file existence checks (simple, TOCTOU race), `fs4` advisory file locks (atomic, race-free), socket-based locking.
 
-### Medium
+**Decision**: Use `fs4::FileExt::try_lock_exclusive` on `.storyhook/web.lock`. The lock is held by the running daemon. If `story web start` cannot acquire the lock, it knows another instance is running. The codebase already uses this pattern in `src/lock.rs`.
 
-**SH-34: HELP_TEXT Missing --compact and --all Flags** -- `HELP_TEXT` at `src/cli.rs:78` shows `story help <command>` but omits `[--compact] [--all]`. Users cannot discover the LLM-optimized output modes from the main help text.
+**Consequences**: Atomic. No TOCTOU race between checking and starting. If the daemon crashes, the OS releases the lock automatically. PID file is still used for port and PID information, but the lock file is the source of truth for "is it running?".
 
-**SH-35: Ghost --tree Command in Scaffold Template** -- `generate_claude_md()` at `src/storage.rs:262` references non-existent `story graph --tree`. This command does not exist. The line should be removed or replaced with a valid flag.
+## Known Issues (Resolved)
 
-**SH-36: VERSION File vs Cargo.toml Drift** -- `VERSION` is `v0.12.0` but `Cargo.toml` is `0.6.0`. The semver plugin bumps VERSION but Cargo.toml is not tracked in `.semver/config.yaml`.
-- **Fix:** Add Cargo.toml to semver config and sync the versions.
+Five issues were found during review and fixed before merge.
 
-**SH-38: No CHANGELOG Entry for MCP Removal** -- The MCP removal is a breaking change with no CHANGELOG entry documenting the removal, the replacement approach, or migration path.
+### 1. Server Bound to 0.0.0.0 Instead of 127.0.0.1
 
-### Low
+**Severity**: Critical. The server was listening on all network interfaces, exposing project data to the LAN and Tailscale mesh without authentication.
 
-**SH-37: compact_reference() Drift Risk** -- The hand-curated `compact_reference()` function has no test to detect when new commands are added but not reflected in the compact output.
+**Resolution**: Changed bind address from `"0.0.0.0:{port}"` to `"127.0.0.1:{port}"` in `src/web.rs`.
 
-**SH-39: Stale Skill Invocation in Plugin Install Message** -- `plugin.rs:107` mentions `/storyhook:context` skill but not the CLI equivalent, inconsistent with the CLI-first direction.
+### 2. JSON Injection in Error Response
 
----
+**Severity**: Critical. The `/api/data` error path used `format!()` to build JSON, so error messages containing double quotes produced malformed JSON.
+
+**Resolution**: Replaced with `serde_json::json!({"error": e.to_string()}).to_string()`, which handles escaping correctly.
+
+### 3. Lock File Used Existence Check Instead of fs4 Flock
+
+**Severity**: Important. The daemon lifecycle used `lock_path.exists()` instead of `fs4::FileExt::try_lock_exclusive`, creating a TOCTOU race where two `story web start` commands could both think no server was running.
+
+**Resolution**: Implemented `fs4` exclusive locking, matching the existing pattern in `src/lock.rs`.
+
+### 4. Missing Security Headers
+
+**Severity**: Important. HTTP responses lacked standard security headers, leaving the dashboard vulnerable to clickjacking and MIME-sniffing.
+
+**Resolution**: Added `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Content-Security-Policy` to all responses.
+
+### 5. handle_stop Used Shell kill Instead of libc::kill
+
+**Severity**: Important. The stop handler shelled out to `/usr/bin/kill` instead of using `libc::kill`, which is less robust and PATH-dependent.
+
+**Resolution**: Changed to `unsafe { libc::kill(pid as i32, libc::SIGTERM) }` with `#[cfg(unix)]`, matching the plan specification.
+
+## Deferred Items
+
+Four items were identified during review and deferred as low-priority improvements.
+
+### 1. Daemon Spawner Does Not Verify Server Started
+
+`handle_start` returns success immediately after spawning the child process without verifying the server actually bound the port. If the child crashes immediately, the user sees "started" but the server is dead. Workaround: check `.storyhook/web.log` if the dashboard is unreachable.
+
+### 2. build_api_json Uses Mutable JSON Instead of Typed Struct
+
+The `build_api_json` function serializes `StoryView` to `serde_json::Value` then mutates the JSON object to inject `is_ready`/`is_blocked`. A typed `WebStoryView` wrapper would be cleaner. The current code works correctly.
+
+### 3. is_process_alive Only Checks /proc on Linux
+
+PID ownership verification reads `/proc/{pid}/cmdline`, which only works on Linux. The fallback (`kill -0`) checks process existence but not ownership, so PID reuse on macOS could theoretically target the wrong process. Per plan: "skip verification on other OS."
+
+### 4. reachable_ip() Uses Linux-Only Commands
+
+The `reachable_ip()` function shells out to `tailscale ip -4` and `hostname -I`, neither of which exist on macOS. Falls back to `127.0.0.1` safely. This is display-only and does not affect server behavior.
 
 ## Test Coverage
 
-**Total:** 732 tests, all passing. Zero failures, zero skipped.
-**Duration:** ~7 seconds.
-**Build:** Clean (no errors). One pre-existing clippy warning (cosmetic `collapsible_if` in `cli.rs:311`).
+**706 tests total** (390 lib + 41 web integration), all passing. Zero mocks -- all tests use real filesystem, real HTTP server, and real CLI binary.
 
-### Coverage by Area
+**24 tests added** during validation to close coverage gaps.
 
-| Area | Test Files | Key Assertions |
-|------|-----------|----------------|
-| Story lifecycle | `story_flow.rs`, `story_state_archive.rs`, `story_reopen.rs` | Create, transition, close, archive, reopen |
-| CLI grammar | `cli_grammar.rs` (22 tests) | All verb-first commands parse and execute correctly |
-| Relationships | `relationships.rs` | All 15 relationship types, inverse creation, cycle detection |
-| Story types & epics | `story_types.rs` | Type CRUD, epic sugar, progress rollup |
-| Filtering | `story_list_filters.rs`, `story_list_flagged.rs` | State, assignee, priority, label, blocked, ready, stale filters |
-| Dependencies | `story_graph.rs` | Critical path, blocked chains, parallel groups |
-| Help system | `cli_help.rs`, `help_new_flags.rs` | Topic lookup, --compact size/content, --all completeness |
-| Session start | `session_start.rs` (15+ tests) | JSON shape, edge cases, special characters, performance |
-| MCP removal | `mcp_removal.rs` | Guards against MCP file/code reintroduction |
-| Hook scripts | `session_start_hook.rs` | Script size, no python3, delegates to CLI |
-| Scaffolds | `scaffold.rs` | Template generation, no MCP references |
-| Decompose | `story_decompose.rs` | Markdown/YAML parsing, wave syntax, relationships |
-| TUI | `tui_integration.rs`, `tui_undo.rs` | Board view, undo/redo, 245 total TUI tests |
-| Doctor | `doctor.rs` | Integrity checks, auto-repair |
-| Import/Export | `story_import.rs`, `story_export.rs` | Bulk operations, round-trip |
-| Search | `story_search.rs` | Full-text search across titles and comments |
-| GitHub sync | (covered by `story_sync_git.rs`) | Commit-sync integration |
+### Requirement Coverage Summary
 
-### Contract Tests
+| Area | Coverage | Notes |
+|------|----------|-------|
+| CLI parsing (all subcommands, flags, errors) | Full | 13 tests |
+| HTTP routes (/, /api/data, 404, 405) | Full | 6 tests |
+| JSON API contract (matches dashboard JS) | Full | 1 dedicated contract test |
+| build_report_data correctness | Full | 5 tests (empty, mixed, blocked, priorities, types) |
+| Special characters and unicode | Full | 2 tests (XSS payload, CJK) |
+| Cache-Control headers | Full | 2 tests |
+| Concurrent requests | Full | 1 test (10 parallel) |
+| Port validation boundaries | Full | 6 tests (0, 1, 65535, 65536, negative, non-numeric) |
+| Daemon lifecycle (start/stop/status) | Partial | "Not running" paths tested; full spawn/kill cycle is manual-test-only |
+| Port-in-use error | Not tested | Race condition makes this flaky in CI |
+| web-serve registration | Not tested | External tool dependency |
 
-The test suite enforces several invariants:
-- `compact_reference()` output is under 3000 characters and between 40-100 lines
-- `session-start` output is one of exactly two valid shapes: `{}` or `{"systemMessage":"..."}`
-- `session-start` completes within 2 seconds
-- Session-start hook script is under 20 functional lines and contains no python3
-- No source file contains MCP-related code (regression guard)
-
----
-
-## Upcoming / Planned
-
-The **Story Types & Epics** feature (documented in `.forge/DESIGN.md` and `.forge/IDEA.md`) adds:
-- Configurable story types via `types.toml` (story, epic, bug, chore, task)
-- `story type list/add/remove` commands
-- `story epic list/show/create/add` sugar commands (delegating to existing primitives)
-- Progress rollup for parent stories (children done / children total)
-- `--type` filter on `story list` and `story next`
-- Type validation at write time, doctor integrity checks for unknown types
-
-This feature is partially implemented in the codebase (CLI parsing and domain types exist) but is not yet fully wired or tested. See DESIGN.md for the complete architecture specification.
+Accepted gaps are structural: daemon lifecycle testing requires building the binary and managing real processes, which is fragile in CI. The daemon code is straightforward and was thoroughly reviewed.

@@ -1102,6 +1102,52 @@ Related:
         );
 
         m.insert(
+            "web",
+            r#"story web start [--port <PORT>]
+story web stop
+story web status
+
+Launch a live-updating web dashboard for your storyhook project.
+The dashboard mirrors the HTML report with real-time updates,
+client-side filtering and sorting, and a mobile-responsive layout.
+
+The server binds to 127.0.0.1 (localhost only) for security.
+Default port is 3456. Data refreshes every 3 seconds via polling.
+
+Commands:
+  start   Start the dashboard as a background daemon.
+          --port <PORT>  Use a custom port (default: 3456).
+  stop    Stop the running dashboard daemon.
+  status  Check if the dashboard is running.
+
+When to use:
+  When you want a browser-based view of project status that updates
+  live as stories change. Useful during sprint planning, standups,
+  or while working on multiple stories in parallel.
+
+Examples:
+  story web start                # Start on default port 3456
+  story web start --port 8080    # Start on custom port
+  story web stop                 # Stop the dashboard
+  story web status               # Check if running
+
+How it works:
+  'story web start' spawns a background process that serves an HTML
+  dashboard at http://127.0.0.1:<port>. The dashboard polls /api/data
+  every 3 seconds for fresh project data. A PID file at
+  .storyhook/web.pid tracks the daemon. Logs go to .storyhook/web.log.
+
+  If the 'web-serve' tool is in PATH (coderig/agentsmith environments),
+  the port is automatically registered for external access.
+
+Related:
+  story report --html  — Generate a static HTML report (one-time snapshot)
+  story summary        — Quick text summary in the terminal
+  story tui            — Interactive terminal UI
+"#,
+        );
+
+        m.insert(
             "session-start",
             r#"story session-start
 

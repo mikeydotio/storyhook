@@ -39,6 +39,14 @@ pub struct SummaryView {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ReportData {
+    pub summary: SummaryView,
+    pub stories: Vec<StoryView>,
+    pub ready_ids: Vec<String>,
+    pub blocked_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct GraphView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub critical_path: Option<Vec<String>>,

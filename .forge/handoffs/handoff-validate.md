@@ -1,25 +1,36 @@
-# Work Handoff
+# Handoff: Validate → Triage
 
-## Session Summary
-- **Step**: Validate (test hardening)
-- **Agents**: validator, qa-engineer (2 agents, parallel)
-- **Status**: Complete — VALIDATE-REPORT.md written, 24 new tests added
+## Step Completed
+validate
+
+## Artifacts Produced
+- `.forge/VALIDATE-REPORT.md` — Test hardening report
+- 24 new tests in `tests/web_test.rs`
 
 ## Key Decisions
-- **Test baseline**: 708 tests -> 732 tests (24 new: 8 unit + 16 integration)
-- **All tests pass**: 732/732, zero failures, zero skips
-- **Build**: Clean, no errors
-- **Clippy**: 1 pre-existing warning (cosmetic)
-- **Coverage**: All acceptance criteria from PLAN.md have test coverage
-- **Bug found**: Plugin-config whitespace parsing documented with test
+- **24 tests written** covering: 405 method, special chars, unicode, cache headers, JSON contract, concurrent requests, ready/blocked correctness, CLI parsing units, build_report_data edge cases, port boundaries
+- **3 accepted gaps**: daemon lifecycle (process spawning fragile in CI), port-in-use (race condition), web-serve registration (external tool)
 
-## What Was Written
-- 8 unit tests in src/help_topics.rs for compact_reference and all_topics_text contracts
-- 8 integration tests in tests/session_start.rs for corrupted data, plugin config edge cases, output shape
-- 3 integration tests in tests/help_new_flags.rs for size contract and MCP regression
-- 2 integration tests in tests/mcp_removal.rs for session-start MCP guard and source file guard
-- 3 integration tests in tests/session_start_hook.rs for hook contract verification
-- Updated bounds on help_compact_is_concise to match spec (40-100 lines)
+## Context for Next Step
 
-## Context for Next Step (Triage)
-Validation found 2 critical items (TOML parsing bug, UTF-8 truncation) and 2 non-critical (tight size margin, hook line count ambiguity). All acceptance criteria have test coverage. The test suite is comprehensive with zero mocks. New tests guard against regression on size contracts, output shapes, MCP reintroduction, and plugin config edge cases.
+### Test Results
+- 706 total | 706 pass | 0 fail
+- All new tests pass, no regressions
+
+### Critical Findings
+1. **JSON API contract test was missing** — dashboard could silently break if field names changed. Now covered by `web_serve_api_json_structure_matches_dashboard`
+
+### Important Findings
+2. 405 method — now tested
+3. Special characters — now tested
+4. is_ready/is_blocked values — now verified (was only checking existence)
+5. Concurrent requests — now tested
+6. CLI parse_web unit tests — now added
+
+### Requirement Coverage
+- 22/26 plan requirements have automated tests
+- 4 gaps are accepted (daemon lifecycle, port conflict, web-serve, stale PID)
+
+## Pipeline State
+- Fix cycle: 0 / 3
+- Both reports exist → ready for triage
