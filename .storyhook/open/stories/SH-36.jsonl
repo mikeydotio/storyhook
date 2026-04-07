@@ -1,0 +1,7 @@
+{"kind":"StoryCreated","at":"2026-04-07T12:20:24Z","title":"T3.2: Update scaffold templates and CLAUDE.md — remove all MCP references from generate_storyhook_claude_md, generate_agents_md, generate_claude_md, generate_cursor_rules; update tests in scaffold.rs and init_command.rs","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-07T12:20:24Z","priority":"medium"}
+{"kind":"StoryLabelsSet","at":"2026-04-07T12:20:24Z","labels":["phase:3"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-34","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-37","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:31Z","other_id":"SH-31","relation":"child-of"}
+{"kind":"StoryCommentAdded","at":"2026-04-07T12:21:02Z","text":"Acceptance: generate_storyhook_claude_md() no MCP section, references story help <command> and story help --compact, more comprehensive (relationship types, decompose workflow, graph). generate_agents_md() no MCP, references story help --compact. generate_claude_md() no MCP. generate_cursor_rules() no MCP (removes \"or MCP server\" and \"MCP Server\" section), references story help <command>. story scaffold agents-md/cursor-rules/claude-md output contains no \"MCP\" or \"mcp\". story init creates .storyhook/CLAUDE.md without MCP references. Existing scaffold tests pass; new assertions check for MCP absence.\nFiles: src/app.rs, tests/scaffold.rs, tests/init_command.rs"}

@@ -1,0 +1,9 @@
+{"kind":"StoryCreated","at":"2026-04-07T12:20:24Z","title":"T2.1: Add --compact and --all flags to help system — story help --compact outputs 40-100 line LLM reference under 3000 chars; story help --all dumps all topics; JSON envelope support; backward compat preserved; new tests in cli_help.rs","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-07T12:20:24Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-07T12:20:24Z","labels":["phase:2"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-32","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-33","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-35","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-36","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:30Z","other_id":"SH-31","relation":"child-of"}
+{"kind":"StoryCommentAdded","at":"2026-04-07T12:20:54Z","text":"Acceptance: story help --compact outputs curated LLM-optimized CLI reference containing key commands (init, new, list, next, show, move, comment, assign, prioritize, label, block, unblock, relate, search, summary, context, decompose, graph, handoff, set, help); output 40-100 lines, under 3000 chars; includes \"when to use\" guidance and --json flag; no lengthy examples. story help --all outputs all help topics as single document, 3x+ longer than compact, with clear headers. story help --compact --json and --all --json output JSON envelope with \"message\" field. story help <topic> backward compat preserved. story help with no args lists topics. New tests verify size limits, key commands, all-topics inclusion.\nFiles: src/cli.rs, src/app.rs, tests/cli_help.rs"}

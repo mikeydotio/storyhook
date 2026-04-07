@@ -1421,54 +1421,6 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             Ok(Response::Graph(Box::new(graph_view)))
         }
-        Invocation::McpConfig {
-            scope,
-            install,
-            uninstall,
-            uninstall_all,
-        } => {
-            if let Some(provider) = install {
-                let msg = crate::mcp_install::run_install(&provider)?;
-                return Ok(Response::Message(msg));
-            }
-            if let Some(provider) = uninstall {
-                let msg = crate::mcp_install::run_uninstall(&provider)?;
-                return Ok(Response::Message(msg));
-            }
-            if uninstall_all {
-                let msg = crate::mcp_install::run_uninstall_all()?;
-                return Ok(Response::Message(msg));
-            }
-            let binary_path = resolve_binary_path();
-            if scope.as_deref() == Some("project") {
-                let config = serde_json::json!({
-                    "mcpServers": {
-                        "storyhook": {
-                            "command": binary_path,
-                            "args": ["--mcp"]
-                        }
-                    }
-                });
-                Ok(Response::Message(
-                    serde_json::to_string_pretty(&config).unwrap(),
-                ))
-            } else {
-                let config = serde_json::json!({
-                    "storyhook": {
-                        "command": binary_path,
-                        "args": ["--mcp"]
-                    }
-                });
-                let json_str = serde_json::to_string_pretty(&config).unwrap();
-                let msg = format!(
-                    "Add the following to your MCP client configuration:\n\n{}\n\n\
-                     For Claude Code: add to ~/.claude.json under \"mcpServers\"\n\
-                     For Cursor: add to .cursor/mcp.json under \"mcpServers\"",
-                    json_str
-                );
-                Ok(Response::Message(msg))
-            }
-        }
         Invocation::Scaffold { kind } => {
             let template = match kind.as_str() {
                 "agents-md" => generate_agents_md(root),
@@ -2494,19 +2446,6 @@ fn doctor_fix(root: &Path) -> Result<Response, AppError> {
     }
 }
 
-fn resolve_binary_path() -> String {
-    // Check if "story" is available in PATH
-    if let Ok(output) = std::process::Command::new("which").arg("story").output()
-        && output.status.success()
-    {
-        return "story".to_string();
-    }
-    // Fall back to the absolute path of the current executable
-    std::env::current_exe()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "story".to_string())
-}
-
 fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Response, AppError> {
     match action {
         PhaseAction::List => {
@@ -2746,14 +2685,6 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 
 The `.storyhook/` directory is version-controlled project data. Do NOT add it to
 `.gitignore`. It must be committed to git so that project state travels with the repository.
-
-## MCP Server
-
-This project uses the storyhook MCP server for native integration with AI tools.
-To configure, run:
-```
-story mcp-config
-```
 "#,
         done_state = done_state,
         prefix = prefix,
@@ -2774,7 +2705,7 @@ fn generate_cursor_rules() -> String {
     r#"# Cursor Rules — storyhook Integration
 
 This project uses **storyhook** as its issue tracker. Use the storyhook CLI
-or MCP server to manage tasks.
+to manage tasks.
 
 ## Task Management
 
@@ -2802,11 +2733,6 @@ or MCP server to manage tasks.
 - `story load-context` — full project context for LLM consumption
 - `story phase list` — phase progress overview
 - `story handoff --since <duration>` — recent changes summary
-
-## MCP Server
-
-storyhook provides an MCP server for native tool integration.
-Configure it with `story mcp-config`.
 "#
     .to_string()
 }

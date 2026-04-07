@@ -1,0 +1,6 @@
+{"kind":"StoryCreated","at":"2026-04-07T12:20:24Z","title":"T1.2: Remove MCP from documentation and plugin files — strip MCP sections from README.md, install.sh, cli-reference.md; no file outside .forge/ contains \"mcp-config\"","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-07T12:20:24Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-07T12:20:24Z","labels":["phase:1"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-34","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:29Z","other_id":"SH-31","relation":"child-of"}
+{"kind":"StoryCommentAdded","at":"2026-04-07T12:20:47Z","text":"Acceptance: README.md MCP Server section (lines ~287-325) removed; bullet \"MCP server for native AI tool integration\" removed; no remaining MCP references. install.sh MCP registration section (lines ~72-127) removed; post-install hint mentioning story mcp-config removed; install script still works for binary install + git hooks. plugin/claude-code/references/cli-reference.md story mcp-config section (lines ~463-477) removed. No file in the repository (outside .forge/) contains the string \"mcp-config\" (case-insensitive).\nFiles: README.md, install.sh, plugin/claude-code/references/cli-reference.md"}

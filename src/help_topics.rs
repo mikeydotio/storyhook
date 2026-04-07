@@ -466,35 +466,6 @@ Related:
         );
 
         m.insert(
-            "mcp-config",
-            r#"story mcp-config [options]
-
-Configure MCP (Model Context Protocol) server integration for AI coding
-tools. Supports Claude Code, Cursor, Codex CLI, and Antigravity.
-
-When to use:
-  To set up the storyhook MCP server in your AI tool. Run without
-  flags for an interactive setup wizard.
-
-Options:
-  (no flags)              Interactive multi-provider setup
-  --install <provider>    Install for: claude, cursor, codex, antigravity
-  --uninstall <provider>  Remove configuration
-  --uninstall-all         Remove from all providers
-  --scope project         Project-level config (vs user-level)
-
-Examples:
-  story mcp-config                    # Interactive setup
-  story mcp-config --install claude   # Install for Claude Code
-  story mcp-config --scope project    # Project-level config
-
-Related:
-  story --mcp     — Start MCP server directly (stdio)
-  story scaffold  — Alternative: instruction files instead of MCP
-"#,
-        );
-
-        m.insert(
             "tui",
             r#"story tui
 
@@ -728,7 +699,6 @@ Commands returning a message ("message" field):
   story scaffold              -> "message": "<template content>"
   story hooks install/...     -> "message": "<status text>"
   story commit-sync            -> "message": "scanned N commits..."
-  story mcp-config            -> "message": "<config json or instructions>"
   story next (no results)     -> "message": "no ready stories"
   story help <topic>          -> "message": "<help text>"
 
@@ -749,26 +719,6 @@ Errors produce:
   3  Not found (story ID does not exist)
   4  Lock timeout (another process holds the project lock)
   5  Integrity or storage error (corrupt data, I/O failure)
-
-== MCP (Model Context Protocol) ==
-
-The MCP server (story --mcp) wraps the same JSON envelope inside
-standard JSON-RPC 2.0 responses. Each tool call returns:
-
-  {
-    "jsonrpc": "2.0",
-    "id": <request-id>,
-    "result": {
-      "content": [{
-        "type": "text",
-        "text": "<storyhook JSON envelope as a string>"
-      }]
-    }
-  }
-
-The "text" field contains the serialized storyhook JSON envelope
-(the same format described above). Parse the text value as JSON to
-access the structured data.
 
 == Examples ==
 
@@ -1170,7 +1120,6 @@ mod tests {
         assert!(content.contains("\"issues\""), "should document issues field");
         assert!(content.contains("\"message\""), "should document message field");
         assert!(content.contains("exit_code"), "should document exit codes");
-        assert!(content.contains("JSON-RPC"), "should document MCP format");
     }
 
     #[test]

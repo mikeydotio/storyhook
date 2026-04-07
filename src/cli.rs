@@ -71,8 +71,6 @@ Usage:
   story phase create <N> ["<title>"]
   story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
   story doctor [--fix]
-  story mcp-config [--install <provider>] [--uninstall <provider>] [--uninstall-all]
-  story mcp-config [--scope project]
   story hooks install|uninstall|list|test <event_type>
   story commit-sync [--since <duration>]
   story github-sync [<id>] [--dry-run]
@@ -267,12 +265,6 @@ pub enum Invocation {
         b: String,
         remove: bool,
     },
-    McpConfig {
-        scope: Option<String>,
-        install: Option<String>,
-        uninstall: Option<String>,
-        uninstall_all: bool,
-    },
     Hooks {
         action: HooksAction,
     },
@@ -361,7 +353,6 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "handoff" => parse_handoff(args),
         "graph" => parse_graph(args),
         "doctor" => parse_doctor(args),
-        "mcp-config" => parse_mcp_config(args),
         "hooks" => parse_hooks(args),
         "scaffold" => parse_scaffold(args),
         "commit-sync" | "sync-git" => parse_commit_sync(args),
@@ -1047,61 +1038,6 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
     Err(AppError::Usage("usage: story doctor [--fix]".to_string()))
 }
 
-fn parse_mcp_config(args: &[String]) -> Result<Invocation, AppError> {
-    let mut scope = None;
-    let mut install = None;
-    let mut uninstall = None;
-    let mut uninstall_all = false;
-    let mut index = 1;
-    let usage = "usage: story mcp-config [--install <provider>] [--uninstall <provider>] [--uninstall-all] [--scope project]";
-    while index < args.len() {
-        match args[index].as_str() {
-            "--scope" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
-                scope = Some(value.clone());
-                index += 2;
-            }
-            "--install" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
-                install = Some(value.clone());
-                index += 2;
-            }
-            "--uninstall" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
-                uninstall = Some(value.clone());
-                index += 2;
-            }
-            "--uninstall-all" => {
-                uninstall_all = true;
-                index += 1;
-            }
-            _ => {
-                return Err(AppError::Usage(usage.to_string()));
-            }
-        }
-    }
-    // Mutual exclusivity: at most one of --install, --uninstall, --uninstall-all, --scope
-    let flag_count = scope.is_some() as u8
-        + install.is_some() as u8
-        + uninstall.is_some() as u8
-        + uninstall_all as u8;
-    if flag_count > 1 {
-        return Err(AppError::Usage(usage.to_string()));
-    }
-    Ok(Invocation::McpConfig {
-        scope,
-        install,
-        uninstall,
-        uninstall_all,
-    })
-}
-
 fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 2 {
         return Err(AppError::Usage(
@@ -1226,7 +1162,7 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
 fn looks_like_story_id(s: &str) -> bool {
     // Story IDs are PREFIX-DIGITS (e.g., SH-1, API-42).
     // Reject bare words that are clearly not IDs so typos like
-    // "story mcp-config" on an old binary produce a clear error.
+    // unknown hyphenated commands produce a clear error.
     if let Some(pos) = s.find('-') {
         let prefix = &s[..pos];
         let suffix = &s[pos + 1..];

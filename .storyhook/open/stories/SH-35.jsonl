@@ -1,0 +1,7 @@
+{"kind":"StoryCreated","at":"2026-04-07T12:20:24Z","title":"T3.1: Add story session-start CLI command — outputs JSON with systemMessage containing compact CLI reference + project state; handles missing/disabled project; special character safety; under 2s; new tests in session_start.rs","state":"todo"}
+{"kind":"StoryPrioritySet","at":"2026-04-07T12:20:24Z","priority":"high"}
+{"kind":"StoryLabelsSet","at":"2026-04-07T12:20:24Z","labels":["phase:3"]}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-34","relation":"blocked-by"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:24Z","other_id":"SH-37","relation":"blocks"}
+{"kind":"StoryRelationshipAdded","at":"2026-04-07T12:20:30Z","other_id":"SH-31","relation":"child-of"}
+{"kind":"StoryCommentAdded","at":"2026-04-07T12:20:57Z","text":"Acceptance: story session-start (when .storyhook/ exists, plugin enabled) outputs valid JSON with \"systemMessage\" string containing compact CLI reference + project state (open count, ready count, next story info); under 4000 chars. story session-start (no .storyhook/) outputs {}. story session-start (plugin disabled) outputs {}. story session-start (no stories) outputs JSON with CLI reference and \"0 open stories\". Handles special characters in story titles without breaking JSON. Completes in under 2 seconds. New integration tests verify all scenarios.\nFiles: src/cli.rs, src/app.rs, src/help_topics.rs, tests/session_start.rs"}
