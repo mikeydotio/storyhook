@@ -1643,6 +1643,7 @@ dependencies = [
  "crossterm 0.28.1",
  "dialoguer",
  "fs4",
+ "libc",
  "notify",
  "predicates",
  "ratatui 0.30.0",

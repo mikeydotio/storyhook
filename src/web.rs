@@ -1,8 +1,9 @@
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use fs4::FileExt;
 use tiny_http::{Header, Method, Response, Server};
 
 use crate::app::build_report_data;
@@ -11,8 +12,24 @@ use crate::storage;
 
 const DASHBOARD_HTML: &str = include_str!("web_dashboard.html");
 
+fn security_header_nosniff() -> Header {
+    Header::from_bytes("X-Content-Type-Options", "nosniff").unwrap()
+}
+
+fn security_header_frame() -> Header {
+    Header::from_bytes("X-Frame-Options", "DENY").unwrap()
+}
+
+fn security_header_csp() -> Header {
+    Header::from_bytes(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+    )
+    .unwrap()
+}
+
 pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
-    let addr = format!("0.0.0.0:{port}");
+    let addr = format!("127.0.0.1:{port}");
     let server = Server::http(&addr).map_err(|e| {
         if e.to_string().contains("Address already in use")
             || e.to_string().contains("AddrInUse")
@@ -37,7 +54,10 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
                 .with_status_code(405)
                 .with_header(
                     Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
-                );
+                )
+                .with_header(security_header_nosniff())
+                .with_header(security_header_frame())
+                .with_header(security_header_csp());
             let _ = request.respond(resp);
             continue;
         }
@@ -48,20 +68,26 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
                     .with_header(
                         Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap(),
                     )
-                    .with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap());
+                    .with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap())
+                    .with_header(security_header_nosniff())
+                    .with_header(security_header_frame())
+                    .with_header(security_header_csp());
                 let _ = request.respond(resp);
             }
             "/api/data" => {
                 let json = match build_api_json(root) {
                     Ok(j) => j,
                     Err(e) => {
-                        let body = format!("{{\"error\": \"{}\"}}", e);
+                        let body = serde_json::json!({"error": e.to_string()}).to_string();
                         let resp = Response::from_string(body)
                             .with_status_code(500)
                             .with_header(
                                 Header::from_bytes("Content-Type", "application/json")
                                     .unwrap(),
-                            );
+                            )
+                            .with_header(security_header_nosniff())
+                            .with_header(security_header_frame())
+                            .with_header(security_header_csp());
                         let _ = request.respond(resp);
                         continue;
                     }
@@ -70,7 +96,10 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
                     .with_header(
                         Header::from_bytes("Content-Type", "application/json").unwrap(),
                     )
-                    .with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap());
+                    .with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap())
+                    .with_header(security_header_nosniff())
+                    .with_header(security_header_frame())
+                    .with_header(security_header_csp());
                 let _ = request.respond(resp);
             }
             _ => {
@@ -78,7 +107,10 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
                     .with_status_code(404)
                     .with_header(
                         Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
-                    );
+                    )
+                    .with_header(security_header_nosniff())
+                    .with_header(security_header_frame())
+                    .with_header(security_header_csp());
                 let _ = request.respond(resp);
             }
         }
@@ -163,24 +195,40 @@ fn has_web_serve() -> bool {
 pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
     storage::ensure_project(root)?;
 
-    // Check for existing running instance
+    // Acquire exclusive lock to prevent race conditions
     let lock_path = lock_file(root);
-    if lock_path.exists() {
-        // Try to verify via PID
-        if let Some((pid, existing_port)) = read_pid_file(root) {
-            if is_process_alive(pid) {
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| AppError::Storage(format!("Failed to open lock file: {e}")))?;
+
+    match lock.try_lock_exclusive() {
+        Ok(()) => {} // Lock acquired — no other instance running
+        Err(_) => {
+            // Lock held by another process — check PID for user message
+            if let Some((pid, existing_port)) = read_pid_file(root) {
                 return Err(AppError::Usage(format!(
                     "Web UI already running (PID {pid} on port {existing_port}). Run 'story web stop' first."
                 )));
             }
-            // Stale — clean up
-            let _ = fs::remove_file(pid_file(root));
-            let _ = fs::remove_file(&lock_path);
+            return Err(AppError::Usage(
+                "Web UI already running. Run 'story web stop' first.".to_string(),
+            ));
         }
     }
 
-    // Create lock file
-    let _ = fs::write(&lock_path, "");
+    // Check for stale PID file (lock acquired but PID file exists from a crashed instance)
+    if let Some((pid, _)) = read_pid_file(root) {
+        if !is_process_alive(pid) {
+            let _ = fs::remove_file(pid_file(root));
+        }
+    }
+
+    // Release lock before spawning child (child will acquire its own lock)
+    let _ = lock.unlock();
 
     // Spawn background server process
     let exe = env::current_exe().map_err(|e| {
@@ -247,10 +295,20 @@ pub fn handle_stop(root: &Path) -> Result<String, AppError> {
         return Ok("Cleaned up stale PID file".to_string());
     }
 
-    // Kill the process
-    let _ = Command::new("kill")
-        .arg(pid.to_string())
-        .output();
+    // Send SIGTERM to the process
+    #[cfg(unix)]
+    {
+        // SAFETY: libc::kill with a valid PID and SIGTERM is safe
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = Command::new("kill")
+            .arg(pid.to_string())
+            .output();
+    }
 
     let _ = fs::remove_file(&pid_path);
     let _ = fs::remove_file(lock_file(root));
