@@ -114,13 +114,13 @@ struct JsonEnvelope<'a> {
 }
 
 pub fn render_response(response: &Response, json: bool, quiet: bool) -> String {
-    if quiet {
-        return String::new();
-    }
-
-    // RawJson always outputs directly, regardless of --json flag
+    // RawJson always outputs directly, regardless of --json or --quiet flags
     if let Response::RawJson(raw) = response {
         return format!("{raw}\n");
+    }
+
+    if quiet {
+        return String::new();
     }
 
     if json {

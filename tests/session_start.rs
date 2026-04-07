@@ -904,3 +904,46 @@ fn session_start_utf8_safe_truncation_with_multibyte_titles() {
         "output should contain systemMessage field after truncation"
     );
 }
+
+// ============================================================
+// --quiet does NOT suppress RawJson output (SH-33)
+// ============================================================
+
+#[test]
+fn session_start_quiet_flag_still_outputs_json() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Test quiet flag bypass"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .args(["--quiet", "session-start"])
+        .output()
+        .expect("failed to run story --quiet session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    // RawJson output must NOT be suppressed by --quiet
+    assert!(
+        !trimmed.is_empty(),
+        "story --quiet session-start should still produce output (RawJson bypasses quiet)"
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(trimmed).expect("output should be valid JSON");
+
+    assert!(
+        parsed.get("systemMessage").is_some(),
+        "output should contain systemMessage key even with --quiet, got: {trimmed}"
+    );
+
+    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    assert!(
+        !msg.is_empty(),
+        "systemMessage should not be empty with --quiet"
+    );
+}
