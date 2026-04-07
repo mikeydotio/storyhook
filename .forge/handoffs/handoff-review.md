@@ -1,34 +1,21 @@
-# Review Handoff — Cycle 2
+# Work Handoff
 
-## Summary
+## Session Summary
+- **Step**: Review (static analysis)
+- **Agents**: reviewer, software-architect, devil's advocate (3 agents, parallel)
+- **Status**: Complete — REVIEW-REPORT.md written
 
-Static analysis of the Story Types & Epics implementation after the fix cycle is complete. All prior findings from cycle 0 have been verified as resolved. Two new findings were identified — one Important and one Useful. No critical defects.
+## Key Decisions
+- **Design Alignment**: ALIGNED — all 6 stories match the plan
+- **Critical findings**: 1 (UTF-8 truncation panic in session-start)
+- **Important findings**: 6 (--quiet suppresses RawJson, fragile TOML parsing, HELP_TEXT missing flags, ghost command in init template, version drift, compact reference drift risk)
+- **Useful findings**: 5 (no CHANGELOG, stale skill invocation, python3 in other hooks, sed parsing, tight size margin)
+- **Total findings**: 12
 
-## Key Decisions for Triage
+## Context for Next Step (Triage)
+The review found the codebase is well-implemented with one real bug (UTF-8 truncation panic) and several quality improvements. The fragile TOML parsing was flagged by all 5 agents (review + validate) as a convergent concern. Design alignment is confirmed ALIGNED with no drift. MCP removal is thorough with regression guards.
 
-### Finding 1 — `--json` Patch Missing `story_type` (Important)
-The `story set <id> --json '{"story_type":"epic"}'` fails with "unknown field" because the JSON patch dispatch table in the SetFields handler doesn't include a `story_type` arm. The `--type` flag works fine. This affects programmatic callers using the JSON patch interface. Recommended fix: add a `story_type` arm to the match block (~10 lines, follows existing pattern).
-
-### Finding 2 — "none" Slug Check Case Sensitivity (Useful)
-`add_type` checks "none" with exact match but "default" with case-insensitive match. `story type add None` would succeed and collide with `--type none` filter semantics. Recommended fix: change to `eq_ignore_ascii_case` (1-line change).
-
-## Alignment Assessment
-
-**ALIGNED** — All prior drift items from cycle 0 have been resolved:
-- Default display: "Default" instead of "-" (SH-12)
-- Import validation: all-or-nothing against types.toml (SH-13)
-- Progress format: compact (done/total) accepted (SH-14)
-- Type breakdown: in summary, context, and HTML report (SH-15)
-- MCP description: story_type listed in priority order
-- Last-type guard: prevents removing the last type
-- Dead code: unreachable branch removed
-
-## Verification State
-
-- `cargo test` — 0 failures
-- `cargo clippy -- -D warnings` — 0 errors
-- `cargo build --release` — succeeds
-
-## What's Next
-
-Triage should label each finding as FIX or ESCALATE. Both have low-cost recommended options. VALIDATE-REPORT.md does not yet exist (validator has not completed).
+Key convergent findings between review and validate that triage should deduplicate:
+- TOML parsing fragility (flagged by all agents)
+- UTF-8 truncation risk (flagged by reviewer + skeptic + validator)
+- Compact reference drift risk (flagged by skeptic + qa-engineer)
