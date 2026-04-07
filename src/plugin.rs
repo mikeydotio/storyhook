@@ -104,7 +104,7 @@ pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
         msg.push_str("created .storyhook/plugin-config.toml with default settings\n");
     }
     msg.push_str("\nThe plugin adds session hooks and workflow skills to Claude Code.\n\
-                   Use /storyhook:context to get started.");
+                   Use /storyhook:context to get started (or run story load-context directly).");
     Ok(msg)
 }
 
