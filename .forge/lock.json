@@ -1,6 +1,5 @@
 {
-  "session_id": "session-resume-2026-04-07-s3",
-  "acquired_at": "2026-04-07T12:43:00Z",
-  "heartbeat": "2026-04-07T12:43:00Z",
-  "pid": $$
+  "holder": "session-resume-2026-04-07-s4",
+  "acquired_at": "2026-04-07T13:07:53Z",
+  "heartbeat_at": "2026-04-07T13:07:53Z"
 }
