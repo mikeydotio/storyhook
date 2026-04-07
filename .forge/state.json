@@ -3,13 +3,13 @@
   "resume": {
     "command": "/forge resume",
     "handoff_file": "handoffs/handoff-execute.md",
-    "summary": "Execution paused — 1 story completed (SH-33). 4 stories remaining."
+    "summary": "Execution paused — 1 story completed (SH-34). 3 stories remaining."
   },
-  "sessions_completed": 2,
-  "stories_attempted": 2,
-  "total_retries": 0,
-  "retry_counts": {},
+  "sessions_completed": 3,
+  "stories_attempted": 3,
+  "total_retries": 1,
+  "retry_counts": {"SH-34": 1},
   "storyhook_consecutive_failures": 0,
   "started_at": "2026-04-07T12:30:00Z",
-  "updated_at": "2026-04-07T12:41:31Z"
+  "updated_at": "2026-04-07T12:59:00Z"
 }

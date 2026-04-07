@@ -30,3 +30,4 @@
 {"story":"SH-32","attempt":1,"verdict":"pass","failures":[],"timestamp":"2026-04-07T12:32:39Z"}
 "{\"story\":\"SH-33\",\"attempt\":1,\"verdict\":\"pass\",\"failures\":[],\"timestamp\":\"2026-04-07T12:41:01Z\"}"
 {"story":"SH-33","attempt":1,"verdict":"pass","failures":[],"timestamp":"2026-04-07T12:41:01Z"}
+{"story":"SH-34","attempt":2,"verdict":"pass","failures":[],"timestamp":"2026-04-07T12:56:00Z"}
