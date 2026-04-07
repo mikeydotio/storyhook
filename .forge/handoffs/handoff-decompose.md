@@ -1,45 +1,52 @@
-# Handoff: Decompose → Execute
+# Handoff: Decompose → Execute (FIX Cycle 4)
 
 ## Step Completed
-decompose
+decompose (FIX cycle 4 — plan → decompose)
 
 ## Artifacts Produced
-- `.forge/plan-mapping.json` — 6 task stories (SH-32 through SH-37) across 4 waves, parent SH-31
+- `.forge/plan-mapping.json` — 8 stories mapped to plan tasks, parent SH-40
 
 ## Key Decisions
-- **Flat decomposition** — Created parent story SH-31 manually, then used `storyhook_decompose_spec` for wave structure. Avoids unnecessary two-level hierarchy.
-- **Stale artifacts cleaned** — Removed old `state.json` from previous pipeline (Story Types & Epics fix cycle 3). Old `plan-mapping.json` overwritten with new mapping.
-- **No DESIGN.md for new pipeline** — The `.forge/DESIGN.md` is from the old Story Types & Epics pipeline. Implementation context embedded directly in `plan-mapping.json` design_section fields from the detailed PLAN.md.
-- **DAG validated** — No cycles. Critical path: SH-33 → SH-34 → SH-35 → SH-37 (4 stories).
+- Created parent story SH-40 "Fix Cycle 4" with parent-of relationships to all 8 fix stories
+- No new stories created — mapped existing ESCALATE stories (SH-31–SH-39, excluding done SH-37) to plan tasks
+- DAG validated: no cycles, all 8 stories are independent roots (Wave 1)
+- Design sections embedded from PLAN.md fix descriptions (not DESIGN.md — this is a fix cycle, not feature work)
 
 ## Story-to-Task Mapping
 
 | Story | Task | Wave | Priority | Title |
 |-------|------|------|----------|-------|
-| SH-32 | T1.1 | 1 | high | Strip MCP from Rust codebase |
-| SH-33 | T1.2 | 1 | high | Remove MCP from docs/plugin files |
-| SH-34 | T2.1 | 2 | high | Add --compact and --all help flags |
-| SH-35 | T3.1 | 3 | high | Add session-start CLI command |
-| SH-36 | T3.2 | 3 | medium | Update scaffold templates (MCP-free) |
-| SH-37 | T4.1 | 4 | medium | Rewrite session-start hook |
+| SH-31 | T1.1 | 1 | critical | UTF-8 safe truncation |
+| SH-32 | T1.2 | 1 | high | Proper TOML parsing for plugin config |
+| SH-33 | T1.3 | 1 | high | RawJson bypasses --quiet |
+| SH-34 | T1.4 | 1 | medium | Fix HELP_TEXT |
+| SH-35 | T1.5 | 1 | medium | Remove ghost --tree reference |
+| SH-36 | T1.6 | 1 | medium | Sync VERSION and Cargo.toml versions |
+| SH-38 | T1.7 | 1 | medium | Add CHANGELOG entry for MCP removal |
+| SH-39 | T1.8 | 1 | low | Add CLI alternative to plugin install message |
 
 ## Wave Dependencies
-- Wave 1 (SH-32, SH-33): No dependencies, parallel
-- Wave 2 (SH-34): Blocked by SH-32, SH-33
-- Wave 3 (SH-35, SH-36): Blocked by SH-34, parallel
-- Wave 4 (SH-37): Blocked by SH-35, SH-36
+- Wave 1 (all 8 stories): No cross-dependencies, all independent
 
-## Context for Next Step
-- 6 stories, all in `todo` state, ready for execution
-- Wave 1 has 2 ready stories (SH-32, SH-33) — can start immediately
-- This is fix_cycle 0 (fresh pipeline, not a fix loop)
-- All test infrastructure from previous pipeline is in place (states.toml has in-progress, verifying, blocked)
-- 3 untracked test files exist from previous plan work: tests/help_new_flags.rs, tests/mcp_removal.rs, tests/session_start_hook.rs
+## Context for Next Step (Execute)
+
+### Critical Implementation Notes
+- **SH-31 + SH-32 both modify src/app.rs** — assign to same generator to avoid merge conflicts
+- **SH-32**: Must handle both bare-key (`enabled = "false"`) AND [plugin] table formats; preserve fail-open behavior
+- **SH-32**: Existing bug-documenting test needs updating to assert fixed behavior
+- **SH-36**: Use .semver/hooks/post-bump/ hook scripts (semver plugin has no tracked_files config key)
+
+### Test Expectations
+- 6 new tests, 1 updated test
+- SH-31: 1 new (multi-byte UTF-8 truncation)
+- SH-32: 3 new (no-space, comments, nested table) + 1 updated (whitespace bug → fixed)
+- SH-33: 1 new (--quiet with session-start)
+- SH-36: 1 new (version sync)
 
 ## Pipeline State
-- Fix cycle: 0
+- Fix cycle: 4 (3 prior cycles archived in fix-cycles/)
+- Parent story: SH-40
 - Yolo mode: false
-- ESCALATE stories pending: 0
 
 ## Open Questions
 None — stories decomposed, DAG valid, ready for execution.

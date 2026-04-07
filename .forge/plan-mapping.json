@@ -1,0 +1,70 @@
+{
+  "plan_hash": "2cbb021c3822aba76546256b7ad5ffaa",
+  "project_story": "SH-40",
+  "stories": {
+    "SH-31": {
+      "task_ref": "T1.1",
+      "wave": 1,
+      "title": "UTF-8 safe truncation",
+      "acceptance_criteria": "msg.truncate(3900) does not appear in src/app.rs; floor_char_boundary appears in the truncation block; New test: create stories with multi-byte UTF-8 titles (CJK/emoji) that push systemMessage past 3900 bytes — assert exit 0, valid JSON, systemMessage present; cargo test passes",
+      "design_section": "Replace `msg.truncate(3900)` with `msg.truncate(msg.floor_char_boundary(3900))` at `src/app.rs:2186`. One-line fix using floor_char_boundary (stable since Rust 1.76, project requires 1.89). Note: after truncation, appending '...(truncated)' (17 bytes) plus JSON envelope could push total over 4000 chars — the 3900 limit works but the margin is tight.",
+      "files_expected": ["src/app.rs", "tests/session_start.rs"]
+    },
+    "SH-32": {
+      "task_ref": "T1.2",
+      "wave": 1,
+      "title": "Proper TOML parsing for plugin config",
+      "acceptance_criteria": "contains(\"= false\") and contains(\"= \\\"false\\\"\") do not appear in src/app.rs; toml::from_str or toml::de appears in plugin config section; Existing test session_start_plugin_config_extra_whitespace_bug_documented updated to assert {} (fixed behavior); New tests: (a) no-space enabled=false, (b) comments + extra keys, (c) [plugin] nested table; Existing tests for enabled=true, enabled=false, enabled=\"false\", malformed all pass; cargo test passes",
+      "design_section": "Replace `contains(\"= false\")` string matching at `src/app.rs:2127-2131` with `toml` crate parsing. CRITICAL: Must handle BOTH config formats — with section: `[plugin]\\nenabled = false\\n` (written by `story plugin install`) AND bare key: `enabled = \"false\"\\n` (used in tests at session_start.rs:60 and session_start_hook.rs:127). Recommended struct: top-level `enabled` + optional `plugin.enabled`, check both. Must preserve fail-open behavior: malformed/missing config treated as enabled.",
+      "files_expected": ["src/app.rs", "tests/session_start.rs"]
+    },
+    "SH-33": {
+      "task_ref": "T1.3",
+      "wave": 1,
+      "title": "RawJson bypasses --quiet",
+      "acceptance_criteria": "In render_response(), Response::RawJson arm appears before the if quiet check; New test: story --quiet session-start on a valid project returns non-empty valid JSON with systemMessage key; cargo test passes",
+      "design_section": "In `render_response()` at `src/output.rs:117-119`, move the RawJson match arm before the `if quiet` early return. RawJson is structured data output (like session-start JSON) that should always be emitted regardless of quiet mode.",
+      "files_expected": ["src/output.rs", "tests/session_start.rs"]
+    },
+    "SH-34": {
+      "task_ref": "T1.4",
+      "wave": 1,
+      "title": "Fix HELP_TEXT",
+      "acceptance_criteria": "story help <command> (without brackets) does not appear in HELP_TEXT; --compact and --all appear in the help line; cargo build succeeds",
+      "design_section": "Update `story help <command>` to `story help [<command>] [--compact] [--all]` in HELP_TEXT at `src/cli.rs:78`. Text-only change, no logic impact.",
+      "files_expected": ["src/cli.rs"]
+    },
+    "SH-35": {
+      "task_ref": "T1.5",
+      "wave": 1,
+      "title": "Remove ghost --tree reference",
+      "acceptance_criteria": "--tree does not appear in src/storage.rs; cargo test passes",
+      "design_section": "Remove the line referencing `story graph --tree` at `src/storage.rs:262`. Do not replace. The --tree flag does not exist — this is a ghost reference in the scaffold init template.",
+      "files_expected": ["src/storage.rs"]
+    },
+    "SH-36": {
+      "task_ref": "T1.6",
+      "wave": 1,
+      "title": "Sync VERSION and Cargo.toml versions",
+      "acceptance_criteria": "Cargo.toml contains version = \"0.12.0\"; .semver/hooks/post-bump/sync-cargo-toml.sh exists, is executable, references Cargo.toml; cargo build succeeds; New test: VERSION and Cargo.toml versions match (after stripping v prefix)",
+      "design_section": "Two changes: (1) Update Cargo.toml version from \"0.6.0\" to \"0.12.0\" (matching VERSION file, no v prefix). (2) Create post-bump hook at `.semver/hooks/post-bump/sync-cargo-toml.sh` that strips the v prefix from $NEW_VERSION and updates Cargo.toml version field, then `git add Cargo.toml && git commit --amend --no-edit`. Semver plugin uses post-bump hooks (not config keys) for tracking additional files.",
+      "files_expected": ["Cargo.toml", ".semver/hooks/post-bump/sync-cargo-toml.sh", "tests/version_sync.rs"]
+    },
+    "SH-38": {
+      "task_ref": "T1.7",
+      "wave": 1,
+      "title": "Add CHANGELOG entry for MCP removal",
+      "acceptance_criteria": "CHANGELOG.md contains ### Removed under ## [v0.12.0]; Entry mentions MCP and describes the removal; Entry references replacement: story load-context or session hooks or story plugin install",
+      "design_section": "Add a `### Removed` section under the v0.12.0 entry in CHANGELOG.md documenting MCP removal. Include: what was removed (--mcp flag, mcp-config command, all storyhook_* MCP tools), replacement (session hooks via `story plugin install claude-code` + `story load-context`), and migration path.",
+      "files_expected": ["CHANGELOG.md"]
+    },
+    "SH-39": {
+      "task_ref": "T1.8",
+      "wave": 1,
+      "title": "Add CLI alternative to plugin install message",
+      "acceptance_criteria": "src/plugin.rs contains both story load-context and storyhook:context in the install message; cargo build succeeds; cargo test passes",
+      "design_section": "At `src/plugin.rs:106-107`, update the install success message to mention both the skill and CLI command. Change `\"Use /storyhook:context to get started.\"` to include `story load-context` as an alternative.",
+      "files_expected": ["src/plugin.rs"]
+    }
+  }
+}
