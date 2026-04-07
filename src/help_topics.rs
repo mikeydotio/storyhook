@@ -1104,6 +1104,85 @@ Related:
         m
     });
 
+/// LLM-optimized compact CLI reference. Hand-curated, 40-100 lines, <3000 chars.
+/// No verbose examples or "When to use:" sections.
+pub fn compact_reference() -> &'static str {
+    r#"storyhook — CLI story tracker for AI-assisted development
+
+LIFECYCLE
+  story init [--prefix P]         Initialize project (.storyhook/ directory)
+  story new "<title>"             Create a story, returns assigned ID
+  story show <id>                 Full details for a single story
+  story move <id> <state>         Transition state (e.g., todo → in-progress → done)
+  story reopen <id>               Reopen a closed story
+  story delete <id> "<reason>"    Soft-delete with required reason
+
+QUERY & NAVIGATION
+  story list [filters]            List open stories (--ready, --blocked, --state, --priority, etc.)
+  story next [--count N]          Highest-priority ready story/stories
+  story search "<query>"          Full-text search across all stories
+  story summary                   Counts by state and priority
+  story load-context              Comprehensive session-start context document
+  story graph [--critical-path]   Dependency graph analysis
+
+STORY METADATA
+  story comment <id> "<text>"     Add timestamped comment
+  story assign <id> <member>      Assign to team member
+  story prioritize <id> <level>   Set priority: critical|high|medium|low|none
+  story label <id> <csv>          Add comma-separated labels
+  story unlabel <id> <csv>        Remove labels
+  story block <id> "<reason>"     Mark as blocked
+  story unblock <id>              Clear blocked status
+  story relate <a> <rel> <b>      Add relationship (blocks, parent-of, relates-to, etc.)
+  story unrelate <a> <rel> <b>    Remove relationship
+  story set <id> [--field val]    Update multiple fields at once
+
+BULK & INTEGRATION
+  story decompose <file>          Parse spec into stories with dependencies
+  story import [file]             Bulk import from JSON
+  story export                    Export all stories as JSON
+  story commit-sync               Link git commits to stories
+  story github-sync               Bidirectional GitHub Issues sync
+  story handoff                   End-of-session summary document
+
+PROJECT MANAGEMENT
+  story phase list|show|add|remove  Manage story phases
+  story doctor [--fix]            Integrity checks and repair
+  story report [--html]           Generate project report
+  story scaffold <variant>        Generate agent instruction files
+  story hooks install|uninstall   Manage git hooks
+  story tui                       Interactive terminal UI
+
+GLOBAL FLAGS
+  --json          Machine-readable JSON output (works with every command)
+  --quiet         Suppress non-essential output
+  --no-hooks      Skip event hooks for this invocation
+
+WORKFLOW TIPS
+  Start a session:   story load-context → story next → story move <id> in-progress
+  End a session:     story commit-sync → story handoff
+  Explore backlog:   story list --ready   or   story summary
+  Use --json for structured output suitable for piping and automation.
+
+Run 'story help <command>' for detailed usage of any command.
+Run 'story help --all' for the complete reference.
+"#
+}
+
+/// Concatenate all help topics into a single document with clear headers.
+pub fn all_topics_text() -> String {
+    let mut out = String::from("# storyhook — Complete CLI Reference\n\n");
+    // Use BTreeMap ordering (alphabetical) and skip aliases
+    let aliases = ["awaits", "context", "is", "link", "priority", "sync-git"];
+    for (name, content) in TOPICS.iter() {
+        if aliases.contains(name) {
+            continue;
+        }
+        out.push_str(&format!("## {}\n\n{}\n\n", name, content.trim()));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::get_help_topic;

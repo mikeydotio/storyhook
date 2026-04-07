@@ -1722,6 +1722,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 }
             }
         }
+        Invocation::HelpCompact => {
+            Ok(Response::Message(crate::help_topics::compact_reference().to_string()))
+        }
+        Invocation::HelpAll => {
+            Ok(Response::Message(crate::help_topics::all_topics_text()))
+        }
         Invocation::SetFields {
             id,
             title,

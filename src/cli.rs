@@ -281,6 +281,8 @@ pub enum Invocation {
     HelpTopic {
         topic: String,
     },
+    HelpCompact,
+    HelpAll,
     Plugin {
         action: PluginAction,
     },
@@ -1128,12 +1130,27 @@ fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() < 2 {
-        return Ok(Invocation::Help);
+    let flags: Vec<&str> = args.iter().skip(1).filter(|a| a.starts_with("--")).map(|a| a.as_str()).collect();
+    let positional: Vec<&str> = args.iter().skip(1).filter(|a| !a.starts_with("--")).map(|a| a.as_str()).collect();
+
+    let has_compact = flags.contains(&"--compact");
+    let has_all = flags.contains(&"--all");
+
+    // If both flags given, --compact wins (no crash)
+    if has_compact {
+        return Ok(Invocation::HelpCompact);
     }
-    Ok(Invocation::HelpTopic {
-        topic: args[1].clone(),
-    })
+    if has_all {
+        return Ok(Invocation::HelpAll);
+    }
+
+    if let Some(topic) = positional.first() {
+        return Ok(Invocation::HelpTopic {
+            topic: topic.to_string(),
+        });
+    }
+
+    Ok(Invocation::Help)
 }
 
 fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
