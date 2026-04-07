@@ -1,11 +1,1 @@
-{
-  "status": "complete",
-  "resume": null,
-  "sessions_completed": 4,
-  "stories_attempted": 8,
-  "total_retries": 0,
-  "retry_counts": {},
-  "storyhook_consecutive_failures": 0,
-  "started_at": "2026-04-07T15:00:00Z",
-  "updated_at": "2026-04-07T20:25:00Z"
-}
+{}
