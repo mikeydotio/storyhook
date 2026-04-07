@@ -1,13 +1,15 @@
 {
-  "status": "complete",
-  "resume": null,
-  "sessions_completed": 6,
-  "stories_attempted": 6,
-  "total_retries": 1,
-  "retry_counts": {
-    "SH-34": 1
+  "status": "paused",
+  "resume": {
+    "command": "/forge resume",
+    "handoff_file": "handoffs/handoff-execute.md",
+    "summary": "Execution paused — 1 story completed (SH-31). 7 remaining."
   },
+  "sessions_completed": 1,
+  "stories_attempted": 1,
+  "total_retries": 0,
+  "retry_counts": {},
   "storyhook_consecutive_failures": 0,
-  "started_at": "2026-04-07T12:30:00Z",
-  "updated_at": "2026-04-07T13:42:00Z"
+  "started_at": "2026-04-07T15:00:00Z",
+  "updated_at": "2026-04-07T15:03:00Z"
 }

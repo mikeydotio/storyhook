@@ -1,67 +1,49 @@
-# Work Handoff
+# Work Handoff: Execute (FIX Cycle 4)
 
 ## Session Summary
-- **Session**: session-resume-2026-04-07-s6
-- **Stories completed**: 1 (SH-37)
+- **Session**: session-fix-cycle-4
+- **Duration**: ~3 minutes
+- **Stories completed**: 1 (SH-31)
 - **Stories attempted**: 1
-- **Status**: All stories complete — transitioning to review+validate
+- **Status**: Session limit reached (max_stories_per_session: 1)
 
 ## What Happened
-Executed SH-37 (Wave 4): Rewrote the session-start.sh hook from a 106-line python3-dependent script to a 16-line bash wrapper that delegates to `story session-start`. Added documentation for `story session-start` to cli-reference.md. Verified workflow-patterns.md already had no MCP references.
-
-Also fixed stale storyhook states: SH-32 (verifying→done), SH-34 (todo→done), SH-35 (todo→done), SH-31 (todo→done as parent epic) — all had committed code but states kept reverting due to `git checkout .` touching tracked .storyhook/ files.
+Executed SH-31 (UTF-8 safe truncation) — the critical-priority fix. Generator produced a one-line fix in `src/app.rs` replacing `msg.truncate(3900)` with `msg.truncate(msg.floor_char_boundary(3900))`, plus one new integration test. Evaluator passed on first attempt. All tests pass.
 
 ## Stories Completed This Session
-- SH-37: Rewrite session-start hook — replaced python3-based hook with `story session-start` CLI call. 2 files changed, 22 insertions, 87 deletions.
-
-## All Stories Complete
-- SH-32 (Wave 1): Strip MCP server from Rust codebase
-- SH-33 (Wave 1): Remove MCP from documentation and plugin files
-- SH-34 (Wave 2): Add --compact and --all flags to help system
-- SH-35 (Wave 3): Add story session-start CLI command
-- SH-36 (Wave 3): Update scaffold templates and CLAUDE.md
-- SH-37 (Wave 4): Rewrite session-start hook
+- SH-31: UTF-8 safe truncation — replaced unsafe `msg.truncate(3900)` with `msg.truncate(msg.floor_char_boundary(3900))` at `src/app.rs:2186`. Added test with CJK/emoji titles.
 
 ## Current Blockers
-None — all stories done.
+None.
 
 ## Working Context
 
 ### Patterns Established
-- This is a Rust project using `cargo build` and `cargo test`
-- Help flags parsed in parse_help() with --compact winning over --all when both given
-- compact_reference() is a hand-curated &'static str (not generated from topic list)
-- Response::Message auto-wraps in JSON envelope when --json is active
-- Response::RawJson outputs directly, bypassing JSON envelope regardless of --json flag
-- session-start uses early return in run() match arm to bypass auto-sync hook
-- Plugin config checked via lowercase string matching for enabled = false / "false"
-- serde_json::json! macro used for safe JSON construction in session-start
-- generate_storyhook_claude_md() is in storage.rs (NOT app.rs)
-- Hook delegates to `story session-start` which handles all logic internally
-- cwd extraction from stdin JSON uses sed (no python3)
+- Fix cycle stories are small, targeted fixes with tight acceptance criteria
+- Generator-evaluator loop working cleanly — SH-31 passed on first attempt
+- Tests use `assert_cmd::Command::cargo_bin("story")` + `tempfile::tempdir()` pattern (zero mocks)
+- New tests follow the existing section-comment style in `tests/session_start.rs`
 
 ### Micro-Decisions
-- Response::RawJson added to output.rs rather than special-casing in main.rs
-- session_start() uses early return from run() to avoid GitHub auto-sync after command
-- Truncation at 3900 chars (not 4000) to leave room for JSON wrapper
-- Hook suppresses stderr from story session-start (2>/dev/null) — correct for hook context
+- Pre-existing clippy errors in `src/github/field_map.rs` (field_reassign_with_default) — not introduced by fix cycle, should be ignored during pre-checks
+- `std::iter::repeat_n` used in test (stable in Rust 1.89+, matches project MSRV)
+- state.json is tracked by git (should be gitignored per spec but isn't) — must write state AFTER `git checkout .`, not before
 
 ### Code Landmarks
-- `src/cli.rs` — Command parsing, HELP_TEXT, Invocation enum with SessionStart/HelpCompact/HelpAll
-- `src/app.rs` — Command handlers; session_start() at ~line 2111; generate_agents_md() at ~line 2719
-- `src/output.rs` — Response enum with RawJson variant
-- `src/help_topics.rs` — Help topics BTreeMap; compact_reference() and all_topics_text()
-- `src/storage.rs` — generate_storyhook_claude_md() (the init template)
-- `plugin/claude-code/hooks/session-start.sh` — 16-line hook delegating to story session-start
-- `plugin/claude-code/references/cli-reference.md` — Full CLI docs including session-start
+- `src/app.rs:2183-2188` — truncation block (now uses `floor_char_boundary`)
+- `src/app.rs:2127-2131` — plugin config check (SH-32 target, uses fragile `contains()`)
+- `src/output.rs:117-124` — render_response quiet/RawJson order (SH-33 target)
+- `tests/session_start.rs` — 25+ session-start integration tests
+- `src/cli.rs:78` — HELP_TEXT (SH-34 target)
+- `src/storage.rs:262` — ghost --tree reference (SH-35 target)
+- `src/plugin.rs:106-107` — plugin install message (SH-39 target)
 
 ### Test State
-- 390 unit tests: all pass
-- 171 integration tests across 20 test files: all pass
-- 561 total tests: zero failures
-- 1 pre-existing clippy warning (collapsible_if in cli.rs), no errors
-- Run command: `cargo test`
-- No special environment setup needed
+- All tests pass (733+ tests, ~7 seconds)
+- `cargo test` is the run command, no special env setup needed
+- Pre-existing clippy errors in `src/github/field_map.rs` only (not in scope)
 
 ## What's Next
-- All stories complete → transition to review+validate
+- SH-32 (high): Proper TOML parsing for plugin config — also modifies `src/app.rs` (lines 2127-2131). CRITICAL: must handle both `[plugin]\nenabled = false` and bare `enabled = "false"` formats. Must preserve fail-open. Update bug-documenting test.
+- SH-33 (high): RawJson bypasses --quiet — modifies `src/output.rs`
+- 5 more stories after that (SH-34, SH-35, SH-36, SH-38, SH-39)
