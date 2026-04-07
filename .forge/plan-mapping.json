@@ -1,0 +1,47 @@
+{
+  "plan_hash": "21ac3a7fc46754997d3d9158ec882412",
+  "project_story": "SH-40",
+  "fix_cycle": 5,
+  "stories": {
+    "SH-34": {
+      "task_ref": "Task 1.1",
+      "wave": 1,
+      "title": "ESCALATE: HELP_TEXT missing --compact and --all flags",
+      "acceptance_criteria": "src/cli.rs HELP_TEXT contains 'story help [<command>] [--compact] [--all]'; cargo build succeeds",
+      "design_section": "Update HELP_TEXT line at src/cli.rs:78. Change 'story help <command>' to 'story help [<command>] [--compact] [--all]'. Single string change, zero risk.",
+      "files_expected": ["src/cli.rs"]
+    },
+    "SH-35": {
+      "task_ref": "Task 1.2",
+      "wave": 1,
+      "title": "ESCALATE: Ghost command --tree in scaffold init template",
+      "acceptance_criteria": "'story graph --tree' does not appear anywhere in src/storage.rs; remaining code block is well-formed with 2 examples; cargo build succeeds",
+      "design_section": "Remove the --tree example line entirely from generate_claude_md() in src/storage.rs:262. Do NOT replace with --blocked-by (wrong semantics). Keep other graph examples intact.",
+      "files_expected": ["src/storage.rs"]
+    },
+    "SH-36": {
+      "task_ref": "Task 1.3",
+      "wave": 1,
+      "title": "ESCALATE: VERSION file vs Cargo.toml version drift",
+      "acceptance_criteria": "Cargo.toml contains version = \"0.12.0\"; .semver/hooks/post-bump/sync-cargo-toml.sh exists, is executable, strips v prefix from $NEW_VERSION and updates Cargo.toml version field; cargo build succeeds",
+      "design_section": "Two changes: (1) Sync Cargo.toml version to 0.12.0. (2) Create .semver/hooks/post-bump/sync-cargo-toml.sh that strips 'v' prefix from $NEW_VERSION and updates Cargo.toml version field. Semver plugin uses post-bump hook scripts, not a tracked_files config key.",
+      "files_expected": ["Cargo.toml", ".semver/hooks/post-bump/sync-cargo-toml.sh"]
+    },
+    "SH-38": {
+      "task_ref": "Task 1.4",
+      "wave": 1,
+      "title": "ESCALATE: No CHANGELOG entry for MCP removal breaking change",
+      "acceptance_criteria": "CHANGELOG.md has a '### Removed' section under '## [v0.12.0]'; entry documents MCP server removed, --mcp flag gone, mcp-config command gone; entry documents replacement via session hooks and 'story plugin install claude-code'; '### Removed' placed after '### Changed' and before '_[manual]_' marker",
+      "design_section": "Add CHANGELOG entry under ## [v0.12.0] with ### Removed section. Document: MCP server removed, story --mcp and story mcp-config no longer available, session hooks via 'story session-start' are the replacement, 'story plugin install claude-code' sets up hooks automatically. Place ### Removed after ### Changed and before _[manual]_ marker.",
+      "files_expected": ["CHANGELOG.md"]
+    },
+    "SH-39": {
+      "task_ref": "Task 1.5",
+      "wave": 1,
+      "title": "ESCALATE: Stale skill invocation in plugin install message",
+      "acceptance_criteria": "src/plugin.rs install success message contains both '/storyhook:context' and 'story load-context'; cargo build succeeds",
+      "design_section": "Update plugin.rs:107 install success message. Change to: 'Use /storyhook:context to get started (or run story load-context directly).' Additive change covering both skill and CLI paths.",
+      "files_expected": ["src/plugin.rs"]
+    }
+  }
+}

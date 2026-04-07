@@ -1,52 +1,36 @@
-# Handoff: Decompose → Execute (FIX Cycle 4)
+# Handoff: Decompose → Execute (Fix Cycle 5)
 
-## Step Completed
-decompose (FIX cycle 4 — plan → decompose)
-
-## Artifacts Produced
-- `.forge/plan-mapping.json` — 8 stories mapped to plan tasks, parent SH-40
+## Summary
+Decomposition complete. 5 ESCALATE stories already existed from triage — built plan-mapping.json linking them to PLAN.md tasks. All stories are in `todo` state, single wave, no dependencies.
 
 ## Key Decisions
-- Created parent story SH-40 "Fix Cycle 4" with parent-of relationships to all 8 fix stories
-- No new stories created — mapped existing ESCALATE stories (SH-31–SH-39, excluding done SH-37) to plan tasks
-- DAG validated: no cycles, all 8 stories are independent roots (Wave 1)
-- Design sections embedded from PLAN.md fix descriptions (not DESIGN.md — this is a fix cycle, not feature work)
-
-## Story-to-Task Mapping
-
-| Story | Task | Wave | Priority | Title |
-|-------|------|------|----------|-------|
-| SH-31 | T1.1 | 1 | critical | UTF-8 safe truncation |
-| SH-32 | T1.2 | 1 | high | Proper TOML parsing for plugin config |
-| SH-33 | T1.3 | 1 | high | RawJson bypasses --quiet |
-| SH-34 | T1.4 | 1 | medium | Fix HELP_TEXT |
-| SH-35 | T1.5 | 1 | medium | Remove ghost --tree reference |
-| SH-36 | T1.6 | 1 | medium | Sync VERSION and Cargo.toml versions |
-| SH-38 | T1.7 | 1 | medium | Add CHANGELOG entry for MCP removal |
-| SH-39 | T1.8 | 1 | low | Add CLI alternative to plugin install message |
-
-## Wave Dependencies
-- Wave 1 (all 8 stories): No cross-dependencies, all independent
+- Stories pre-existed from ESCALATE review (SH-34, SH-35, SH-36, SH-38, SH-39)
+- Parent story: SH-40
+- No new stories created — mapping only
+- DAG validated: 0 dependency edges, no cycles, all stories independent
+- Design sections sourced from story comments (user decisions) rather than DESIGN.md (which covers types/epics feature, not fix cycle work)
 
 ## Context for Next Step (Execute)
+- 5 stories, all in wave 1 (parallel, no dependencies between them)
+- All touch different files — no merge conflict risk
+- All are text/config changes — no new logic paths
+- Test strategy: `cargo build` + `cargo test` + grep checks per acceptance criteria
+- SH-36 is the most complex (2 files: Cargo.toml sync + new post-bump hook script)
+
+### Story → File Mapping
+| Story | Files |
+|-------|-------|
+| SH-34 | src/cli.rs |
+| SH-35 | src/storage.rs |
+| SH-36 | Cargo.toml, .semver/hooks/post-bump/sync-cargo-toml.sh |
+| SH-38 | CHANGELOG.md |
+| SH-39 | src/plugin.rs |
 
 ### Critical Implementation Notes
-- **SH-31 + SH-32 both modify src/app.rs** — assign to same generator to avoid merge conflicts
-- **SH-32**: Must handle both bare-key (`enabled = "false"`) AND [plugin] table formats; preserve fail-open behavior
-- **SH-32**: Existing bug-documenting test needs updating to assert fixed behavior
-- **SH-36**: Use .semver/hooks/post-bump/ hook scripts (semver plugin has no tracked_files config key)
-
-### Test Expectations
-- 6 new tests, 1 updated test
-- SH-31: 1 new (multi-byte UTF-8 truncation)
-- SH-32: 3 new (no-space, comments, nested table) + 1 updated (whitespace bug → fixed)
-- SH-33: 1 new (--quiet with session-start)
-- SH-36: 1 new (version sync)
-
-## Pipeline State
-- Fix cycle: 4 (3 prior cycles archived in fix-cycles/)
-- Parent story: SH-40
-- Yolo mode: false
+- SH-35: Remove the --tree line, do NOT replace with --blocked-by (wrong semantics)
+- SH-36: Use post-bump hook, NOT config.yaml tracked_files (doesn't exist)
+- SH-36: Hook must strip `v` prefix from $NEW_VERSION
+- SH-38: ### Removed goes after ### Changed, before _[manual]_ marker
 
 ## Open Questions
-None — stories decomposed, DAG valid, ready for execution.
+None — all decisions made during ESCALATE review and plan approval.
