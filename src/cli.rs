@@ -75,7 +75,7 @@ Usage:
   story commit-sync [--since <duration>]
   story github-sync [<id>] [--dry-run]
   story scaffold agents-md|claude-md|cursor-rules
-  story help <command>
+  story help [<command>] [--compact] [--all]
   story plugin install|uninstall <target>
   story show <id>
   story comment <id> "<text>"
