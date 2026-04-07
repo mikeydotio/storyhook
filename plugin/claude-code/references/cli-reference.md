@@ -460,22 +460,6 @@ story hooks test post-commit
 story hooks uninstall
 ```
 
-### `story mcp-config [options]`
-
-Configure MCP (Model Context Protocol) server integration.
-
-- No flags: interactive setup (terminal only)
-- `--install <provider>`: install MCP config for a provider
-- `--uninstall <provider>`: remove MCP config for a provider
-- `--uninstall-all`: remove all MCP configurations
-- `--scope project`: generate project-scoped config
-
-```bash
-story mcp-config
-story mcp-config --install claude
-story mcp-config --scope project
-```
-
 ### `story scaffold agents-md|claude-md|cursor-rules`
 
 Generate agent instruction templates for integration with AI coding tools.
