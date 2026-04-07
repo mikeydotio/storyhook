@@ -23,6 +23,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - `story context` renamed to `story load-context` (old name kept as alias)
 - Phase counting uses state roles instead of hardcoded "in-progress" — works with custom active states
 
+### Removed
+- **MCP server removed** — the built-in JSON-RPC server is no longer part of storyhook
+- `story --mcp` flag — no longer available; the MCP server process cannot be launched
+- `story mcp-config` command — MCP configuration is no longer needed
+- **Migration path**: session hooks via `story session-start` replace MCP for AI agent integration. Run `story plugin install claude-code` to set up hooks automatically.
+
 _[manual]_
 
 ## [v0.11.0] - 2026-03-31
