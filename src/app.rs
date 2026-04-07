@@ -2183,7 +2183,7 @@ fn session_start(root: &Path) -> Result<Response, AppError> {
 
     // Truncate to under 4000 characters if needed
     if msg.len() > 3900 {
-        msg.truncate(3900);
+        msg.truncate(msg.floor_char_boundary(3900));
         msg.push_str("\n...(truncated)\n");
     }
 

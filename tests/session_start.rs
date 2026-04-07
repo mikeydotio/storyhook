@@ -771,3 +771,60 @@ fn session_start_stderr_is_empty() {
         "session-start should not produce stderr output, got: {stderr}"
     );
 }
+
+// ============================================================
+// UTF-8 safe truncation: multi-byte titles past 3900 bytes
+// ============================================================
+
+#[test]
+fn session_start_utf8_safe_truncation_with_multibyte_titles() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // The compact CLI reference is ~2800 bytes. We need to push systemMessage
+    // past 3900 bytes total. The "Next:" line includes the full title, so a
+    // single story with a very long CJK/emoji title will do it.
+    //
+    // Each CJK character is 3 bytes in UTF-8, each emoji is 4 bytes.
+    // We need ~1200 bytes of multi-byte content to push past 3900.
+    // 400 CJK chars = 1200 bytes, plus we add emoji for good measure.
+    let cjk_block: String = std::iter::repeat_n('\u{6D4B}', 200) // CJK char (3 bytes each = 600 bytes)
+        .chain(std::iter::repeat_n('\u{1F680}', 200)) // Rocket emoji (4 bytes each = 800 bytes)
+        .collect();
+    let title = format!("Long UTF-8 title {cjk_block}");
+
+    story(dir.path())
+        .args(["new", &title])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+
+    // AC: exit code 0
+    assert!(
+        output.status.success(),
+        "should exit 0 even when truncation hits multi-byte UTF-8 boundary, status: {}",
+        output.status
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+
+    // AC: valid JSON
+    let result: Result<serde_json::Value, _> = serde_json::from_str(trimmed);
+    assert!(
+        result.is_ok(),
+        "output must be valid JSON after UTF-8 safe truncation, got: {}",
+        &trimmed[..trimmed.len().min(200)]
+    );
+
+    // AC: systemMessage present
+    let parsed = result.unwrap();
+    assert!(
+        parsed.get("systemMessage").is_some(),
+        "output should contain systemMessage field after truncation"
+    );
+}
