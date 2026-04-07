@@ -1,0 +1,19 @@
+[[types]]
+slug = "story"
+description = "A user story or feature"
+
+[[types]]
+slug = "epic"
+description = "A large initiative containing child stories"
+
+[[types]]
+slug = "bug"
+description = "A defect or regression"
+
+[[types]]
+slug = "chore"
+description = "Maintenance or infrastructure work"
+
+[[types]]
+slug = "task"
+description = "A discrete unit of work"

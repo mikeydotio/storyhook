@@ -52,11 +52,3 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 
 The `.storyhook/` directory is version-controlled project data. Do NOT add it to
 `.gitignore`. It must be committed to git so that project state travels with the repository.
-
-## MCP Server
-
-This project uses the storyhook MCP server for native integration with AI tools.
-To configure, run:
-```
-story mcp-config
-```

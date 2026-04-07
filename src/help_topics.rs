@@ -466,35 +466,6 @@ Related:
         );
 
         m.insert(
-            "mcp-config",
-            r#"story mcp-config [options]
-
-Configure MCP (Model Context Protocol) server integration for AI coding
-tools. Supports Claude Code, Cursor, Codex CLI, and Antigravity.
-
-When to use:
-  To set up the storyhook MCP server in your AI tool. Run without
-  flags for an interactive setup wizard.
-
-Options:
-  (no flags)              Interactive multi-provider setup
-  --install <provider>    Install for: claude, cursor, codex, antigravity
-  --uninstall <provider>  Remove configuration
-  --uninstall-all         Remove from all providers
-  --scope project         Project-level config (vs user-level)
-
-Examples:
-  story mcp-config                    # Interactive setup
-  story mcp-config --install claude   # Install for Claude Code
-  story mcp-config --scope project    # Project-level config
-
-Related:
-  story --mcp     — Start MCP server directly (stdio)
-  story scaffold  — Alternative: instruction files instead of MCP
-"#,
-        );
-
-        m.insert(
             "tui",
             r#"story tui
 
@@ -728,7 +699,6 @@ Commands returning a message ("message" field):
   story scaffold              -> "message": "<template content>"
   story hooks install/...     -> "message": "<status text>"
   story commit-sync            -> "message": "scanned N commits..."
-  story mcp-config            -> "message": "<config json or instructions>"
   story next (no results)     -> "message": "no ready stories"
   story help <topic>          -> "message": "<help text>"
 
@@ -749,26 +719,6 @@ Errors produce:
   3  Not found (story ID does not exist)
   4  Lock timeout (another process holds the project lock)
   5  Integrity or storage error (corrupt data, I/O failure)
-
-== MCP (Model Context Protocol) ==
-
-The MCP server (story --mcp) wraps the same JSON envelope inside
-standard JSON-RPC 2.0 responses. Each tool call returns:
-
-  {
-    "jsonrpc": "2.0",
-    "id": <request-id>,
-    "result": {
-      "content": [{
-        "type": "text",
-        "text": "<storyhook JSON envelope as a string>"
-      }]
-    }
-  }
-
-The "text" field contains the serialized storyhook JSON envelope
-(the same format described above). Parse the text value as JSON to
-access the structured data.
 
 == Examples ==
 
@@ -1197,8 +1147,120 @@ Related:
 "#,
         );
 
+        m.insert(
+            "session-start",
+            r#"story session-start
+
+Output a JSON object with a systemMessage field containing a compact CLI
+reference and current project state. Designed for use by editor plugins
+and shell hooks at session start.
+
+Output format:
+  {"systemMessage": "..."}   — when project exists and plugin is enabled
+  {}                          — when no project, or plugin is disabled
+
+The systemMessage includes the compact CLI reference (same as
+story help --compact) plus a project state summary: open story count,
+ready story count, and the next recommended story if one exists.
+
+The output is always valid JSON, uses serde_json for safety with
+special characters, and the systemMessage is kept under 4000 chars.
+
+When to use:
+  Automatically called by editor plugin hooks at session start. Not
+  normally invoked by hand.
+
+Examples:
+  story session-start         # Output JSON for plugin consumption
+
+Related:
+  story help --compact  — Just the CLI reference portion
+  story load-context    — Full context document for interactive use
+  story next            — Get the highest-priority ready story
+"#,
+        );
+
         m
     });
+
+/// LLM-optimized compact CLI reference. Hand-curated, 40-100 lines, <3000 chars.
+/// No verbose examples or "When to use:" sections.
+pub fn compact_reference() -> &'static str {
+    r#"storyhook — CLI story tracker for AI-assisted development
+
+LIFECYCLE
+  story init [--prefix P]         Initialize project (.storyhook/ directory)
+  story new "<title>"             Create a story, returns assigned ID
+  story show <id>                 Full details for a single story
+  story move <id> <state>         Transition state (e.g., todo → in-progress → done)
+  story reopen <id>               Reopen a closed story
+  story delete <id> "<reason>"    Soft-delete with required reason
+
+QUERY & NAVIGATION
+  story list [filters]            List open stories (--ready, --blocked, --state, --priority, etc.)
+  story next [--count N]          Highest-priority ready story/stories
+  story search "<query>"          Full-text search across all stories
+  story summary                   Counts by state and priority
+  story load-context              Comprehensive session-start context document
+  story graph [--critical-path]   Dependency graph analysis
+
+STORY METADATA
+  story comment <id> "<text>"     Add timestamped comment
+  story assign <id> <member>      Assign to team member
+  story prioritize <id> <level>   Set priority: critical|high|medium|low|none
+  story label <id> <csv>          Add comma-separated labels
+  story unlabel <id> <csv>        Remove labels
+  story block <id> "<reason>"     Mark as blocked
+  story unblock <id>              Clear blocked status
+  story relate <a> <rel> <b>      Add relationship (blocks, parent-of, relates-to, etc.)
+  story unrelate <a> <rel> <b>    Remove relationship
+  story set <id> [--field val]    Update multiple fields at once
+
+BULK & INTEGRATION
+  story decompose <file>          Parse spec into stories with dependencies
+  story import [file]             Bulk import from JSON
+  story export                    Export all stories as JSON
+  story commit-sync               Link git commits to stories
+  story github-sync               Bidirectional GitHub Issues sync
+  story handoff                   End-of-session summary document
+
+PROJECT MANAGEMENT
+  story phase list|show|add|remove  Manage story phases
+  story doctor [--fix]            Integrity checks and repair
+  story report [--html]           Generate project report
+  story scaffold <variant>        Generate agent instruction files
+  story hooks install|uninstall   Manage git hooks
+  story tui                       Interactive terminal UI
+
+GLOBAL FLAGS
+  --json          Machine-readable JSON output (works with every command)
+  --quiet         Suppress non-essential output
+  --no-hooks      Skip event hooks for this invocation
+
+WORKFLOW TIPS
+  Start a session:   story load-context → story next → story move <id> in-progress
+  End a session:     story commit-sync → story handoff
+  Explore backlog:   story list --ready   or   story summary
+  Use --json for structured output suitable for piping and automation.
+
+Run 'story help <command>' for detailed usage of any command.
+Run 'story help --all' for the complete reference.
+"#
+}
+
+/// Concatenate all help topics into a single document with clear headers.
+pub fn all_topics_text() -> String {
+    let mut out = String::from("# storyhook — Complete CLI Reference\n\n");
+    // Use BTreeMap ordering (alphabetical) and skip aliases
+    let aliases = ["awaits", "context", "is", "link", "priority", "sync-git"];
+    for (name, content) in TOPICS.iter() {
+        if aliases.contains(name) {
+            continue;
+        }
+        out.push_str(&format!("## {}\n\n{}\n\n", name, content.trim()));
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -1216,12 +1278,116 @@ mod tests {
         assert!(content.contains("\"issues\""), "should document issues field");
         assert!(content.contains("\"message\""), "should document message field");
         assert!(content.contains("exit_code"), "should document exit codes");
-        assert!(content.contains("JSON-RPC"), "should document MCP format");
     }
 
     #[test]
     fn json_format_topic_listed() {
         let topics = super::list_topics();
         assert!(topics.contains(&"json-format"), "json-format should appear in topic list");
+    }
+
+    // ================================================================
+    // compact_reference() contract tests
+    // ================================================================
+
+    #[test]
+    fn compact_reference_under_3000_chars() {
+        let text = super::compact_reference();
+        assert!(
+            text.len() < 3000,
+            "compact_reference must stay under 3000 chars (documented contract), got {} chars",
+            text.len()
+        );
+    }
+
+    #[test]
+    fn compact_reference_between_40_and_100_lines() {
+        let text = super::compact_reference();
+        let line_count = text.lines().count();
+        assert!(
+            line_count >= 40,
+            "compact_reference should have at least 40 lines, got {line_count}"
+        );
+        assert!(
+            line_count <= 100,
+            "compact_reference should have at most 100 lines, got {line_count}"
+        );
+    }
+
+    #[test]
+    fn compact_reference_contains_all_section_headers() {
+        let text = super::compact_reference();
+        assert!(text.contains("LIFECYCLE"), "must have LIFECYCLE section");
+        assert!(text.contains("QUERY"), "must have QUERY section");
+        assert!(text.contains("METADATA"), "must have METADATA section");
+        assert!(text.contains("BULK"), "must have BULK section");
+        assert!(text.contains("PROJECT MANAGEMENT"), "must have PROJECT MANAGEMENT section");
+        assert!(text.contains("GLOBAL FLAGS"), "must have GLOBAL FLAGS section");
+        assert!(text.contains("WORKFLOW TIPS"), "must have WORKFLOW TIPS section");
+    }
+
+    #[test]
+    fn compact_reference_contains_critical_commands() {
+        // These commands are essential for the LLM workflow and must
+        // survive any future edits to the compact reference.
+        let text = super::compact_reference();
+        for cmd in &[
+            "story init", "story new", "story show", "story move",
+            "story list", "story next", "story load-context",
+            "story comment", "story assign", "story prioritize",
+            "story decompose", "story handoff", "story commit-sync",
+            "story doctor", "--json",
+        ] {
+            assert!(
+                text.contains(cmd),
+                "compact_reference must contain '{cmd}' for LLM workflow"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_reference_does_not_reference_mcp() {
+        let text = super::compact_reference();
+        assert!(!text.contains("MCP"), "compact_reference must not mention MCP");
+        assert!(!text.contains("mcp"), "compact_reference must not mention mcp");
+    }
+
+    // ================================================================
+    // all_topics_text() contract tests
+    // ================================================================
+
+    #[test]
+    fn all_topics_text_does_not_include_alias_topics() {
+        let text = super::all_topics_text();
+        // Aliases should be excluded from the full dump to avoid duplication.
+        // We check that the "## awaits" header does NOT appear (aliases are
+        // redirects to canonical topics).
+        let aliases = ["awaits", "context", "is", "link", "priority", "sync-git"];
+        for alias in &aliases {
+            let header = format!("## {alias}\n");
+            assert!(
+                !text.contains(&header),
+                "all_topics_text should skip alias topic '{alias}'"
+            );
+        }
+    }
+
+    #[test]
+    fn all_topics_text_includes_canonical_topics() {
+        let text = super::all_topics_text();
+        for topic in &["init", "new", "list", "next", "show", "move", "decompose"] {
+            assert!(
+                text.contains(&format!("## {topic}")),
+                "all_topics_text must include canonical topic '{topic}'"
+            );
+        }
+    }
+
+    #[test]
+    fn all_topics_text_does_not_reference_mcp() {
+        let text = super::all_topics_text();
+        assert!(!text.contains("mcp-config"), "all_topics_text must not reference mcp-config");
+        // Note: the string "MCP" could appear generically in docs,
+        // but "mcp-config" is the specific command that was removed.
     }
 }

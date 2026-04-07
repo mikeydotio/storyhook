@@ -1316,54 +1316,6 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             Ok(Response::Graph(Box::new(graph_view)))
         }
-        Invocation::McpConfig {
-            scope,
-            install,
-            uninstall,
-            uninstall_all,
-        } => {
-            if let Some(provider) = install {
-                let msg = crate::mcp_install::run_install(&provider)?;
-                return Ok(Response::Message(msg));
-            }
-            if let Some(provider) = uninstall {
-                let msg = crate::mcp_install::run_uninstall(&provider)?;
-                return Ok(Response::Message(msg));
-            }
-            if uninstall_all {
-                let msg = crate::mcp_install::run_uninstall_all()?;
-                return Ok(Response::Message(msg));
-            }
-            let binary_path = resolve_binary_path();
-            if scope.as_deref() == Some("project") {
-                let config = serde_json::json!({
-                    "mcpServers": {
-                        "storyhook": {
-                            "command": binary_path,
-                            "args": ["--mcp"]
-                        }
-                    }
-                });
-                Ok(Response::Message(
-                    serde_json::to_string_pretty(&config).unwrap(),
-                ))
-            } else {
-                let config = serde_json::json!({
-                    "storyhook": {
-                        "command": binary_path,
-                        "args": ["--mcp"]
-                    }
-                });
-                let json_str = serde_json::to_string_pretty(&config).unwrap();
-                let msg = format!(
-                    "Add the following to your MCP client configuration:\n\n{}\n\n\
-                     For Claude Code: add to ~/.claude.json under \"mcpServers\"\n\
-                     For Cursor: add to .cursor/mcp.json under \"mcpServers\"",
-                    json_str
-                );
-                Ok(Response::Message(msg))
-            }
-        }
         Invocation::Scaffold { kind } => {
             let template = match kind.as_str() {
                 "agents-md" => generate_agents_md(root),
@@ -1664,6 +1616,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     )))
                 }
             }
+        }
+        Invocation::HelpCompact => {
+            Ok(Response::Message(crate::help_topics::compact_reference().to_string()))
+        }
+        Invocation::HelpAll => {
+            Ok(Response::Message(crate::help_topics::all_topics_text()))
         }
         Invocation::SetFields {
             id,
@@ -2032,6 +1990,9 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 unreachable!("web --serve is dispatched in main.rs")
             }
         },
+        Invocation::SessionStart => {
+            return session_start(root);
+        }
     };
 
     // After successful command, maybe auto-sync to GitHub
@@ -2058,6 +2019,133 @@ fn extract_created_story_id(response: &Response) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Determines whether the plugin is disabled based on TOML config content.
+///
+/// Supports two config formats:
+/// - Bare key: `enabled = false` or `enabled = "false"`
+/// - Nested table: `[plugin]\nenabled = false`
+///
+/// Returns `true` if the plugin is explicitly disabled.
+/// Returns `false` (fail-open) if the content is malformed or enabled is absent/true.
+fn plugin_config_disabled(content: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct PluginTable {
+        enabled: Option<toml::Value>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct PluginConfig {
+        enabled: Option<toml::Value>,
+        plugin: Option<PluginTable>,
+    }
+
+    fn is_disabled(val: &toml::Value) -> bool {
+        match val {
+            toml::Value::Boolean(b) => !b,
+            toml::Value::String(s) => s.eq_ignore_ascii_case("false"),
+            _ => false,
+        }
+    }
+
+    let config: PluginConfig = match toml::from_str(content) {
+        Ok(c) => c,
+        Err(_) => return false, // malformed → fail open (treat as enabled)
+    };
+
+    // Check nested [plugin].enabled first, then top-level enabled
+    if let Some(ref plugin) = config.plugin {
+        if let Some(ref val) = plugin.enabled {
+            return is_disabled(val);
+        }
+    }
+    if let Some(ref val) = config.enabled {
+        return is_disabled(val);
+    }
+
+    false // no enabled key found → treat as enabled
+}
+
+/// Handle `story session-start`. Outputs raw JSON suitable for shell hooks.
+/// Returns `{"systemMessage": "..."}` when a project exists and plugin is enabled,
+/// or `{}` otherwise.
+fn session_start(root: &Path) -> Result<Response, AppError> {
+    let storyhook_dir = root.join(".storyhook");
+
+    // No project → {}
+    if !storyhook_dir.exists() {
+        return Ok(Response::RawJson("{}".to_string()));
+    }
+
+    // Check plugin config — disabled → {}
+    let config_path = storyhook_dir.join("plugin-config.toml");
+    if config_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&config_path)
+    {
+        if plugin_config_disabled(&content) {
+            return Ok(Response::RawJson("{}".to_string()));
+        }
+    }
+
+    // Build the system message
+    let mut msg = String::new();
+
+    // 1. Compact CLI reference
+    msg.push_str(crate::help_topics::compact_reference());
+
+    // 2. Project state
+    msg.push_str("PROJECT STATE\n");
+
+    let open_stories = match storage::load_all_open_snapshots(root) {
+        Ok(stories) => stories,
+        Err(_) => {
+            // If we can't load stories, still output CLI reference
+            msg.push_str("  Unable to load project state.\n");
+            let json = serde_json::json!({ "systemMessage": msg });
+            return Ok(Response::RawJson(json.to_string()));
+        }
+    };
+
+    let story_map: BTreeMap<String, StorySnapshot> = open_stories
+        .iter()
+        .map(|s| (s.id.clone(), s.clone()))
+        .collect();
+
+    let open_count = open_stories.len();
+    let ready_stories: Vec<&StorySnapshot> = open_stories
+        .iter()
+        .filter(|s| is_ready(s, &story_map) && !has_children(s))
+        .collect();
+    let ready_count = ready_stories.len();
+
+    msg.push_str(&format!("  {open_count} open stories, {ready_count} ready\n"));
+
+    // Find the highest-priority ready story for "Next" info
+    if !ready_stories.is_empty() {
+        let mut sorted_ready: Vec<&StorySnapshot> = ready_stories;
+        sorted_ready.sort_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then_with(|| a.created_at.cmp(&b.created_at))
+        });
+        let next = sorted_ready[0];
+        let pri = if next.priority != Priority::None {
+            format!(" ({})", next.priority.as_str())
+        } else {
+            String::new()
+        };
+        msg.push_str(&format!("  Next: {} — {}{}\n", next.id, next.title, pri));
+    }
+
+    // Truncate to under 4000 characters if needed
+    if msg.len() > 3900 {
+        msg.truncate(msg.floor_char_boundary(3900));
+        msg.push_str("\n...(truncated)\n");
+    }
+
+    let json = serde_json::json!({ "systemMessage": msg });
+    Ok(Response::RawJson(json.to_string()))
 }
 
 fn build_member(root: &Path, input: MemberInput) -> Result<Member, AppError> {
@@ -2483,19 +2571,6 @@ fn doctor_fix(root: &Path) -> Result<Response, AppError> {
     }
 }
 
-fn resolve_binary_path() -> String {
-    // Check if "story" is available in PATH
-    if let Ok(output) = std::process::Command::new("which").arg("story").output()
-        && output.status.success()
-    {
-        return "story".to_string();
-    }
-    // Fall back to the absolute path of the current executable
-    std::env::current_exe()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "story".to_string())
-}
-
 fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Response, AppError> {
     match action {
         PhaseAction::List => {
@@ -2731,18 +2806,12 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 | Phase progress | `story phase list` |
 | Session handoff | `story handoff --since 2h` |
 
+Run `story help --compact` for the full command reference.
+
 ## Important
 
 The `.storyhook/` directory is version-controlled project data. Do NOT add it to
 `.gitignore`. It must be committed to git so that project state travels with the repository.
-
-## MCP Server
-
-This project uses the storyhook MCP server for native integration with AI tools.
-To configure, run:
-```
-story mcp-config
-```
 "#,
         done_state = done_state,
         prefix = prefix,
@@ -2755,6 +2824,8 @@ fn generate_claude_md(_root: &std::path::Path) -> String {
 This project uses **storyhook** for task tracking. Full usage instructions are in `.storyhook/CLAUDE.md` — read that file before starting work.
 
 Quick start: run `story load-context` at session start, `story next` to pick a task.
+
+Run `story help <command>` for detailed usage on any command, or `story help --compact` for the full reference.
 "#
     .to_string()
 }
@@ -2763,7 +2834,7 @@ fn generate_cursor_rules() -> String {
     r#"# Cursor Rules — storyhook Integration
 
 This project uses **storyhook** as its issue tracker. Use the storyhook CLI
-or MCP server to manage tasks.
+to manage tasks.
 
 ## Task Management
 
@@ -2792,10 +2863,7 @@ or MCP server to manage tasks.
 - `story phase list` — phase progress overview
 - `story handoff --since <duration>` — recent changes summary
 
-## MCP Server
-
-storyhook provides an MCP server for native tool integration.
-Configure it with `story mcp-config`.
+Run `story help <command>` for detailed usage on any command.
 "#
     .to_string()
 }

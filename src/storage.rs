@@ -222,13 +222,43 @@ story new "Phase 2: Implement API endpoints"
 story new "Phase 3: Add authentication middleware"
 ```
 
+### Decompose workflow
+
+For larger specs, use `story decompose` to parse a markdown or YAML file into stories
+with relationships, priorities, and labels automatically:
+
+```
+story decompose spec.md --dry-run    # Preview without creating
+story decompose spec.md              # Create stories from spec
+cat spec.md | story decompose --stdin
+```
+
+### Relationship types
+
 Define relationships between stories to express dependencies and structure:
+
+| Relation | Inverse | Purpose |
+|---|---|---|
+| `blocks` | `blocked-by` | Task dependencies — `story next` respects these |
+| `parent-of` | `child-of` | Hierarchy — group subtasks under a parent |
+| `relates-to` | `relates-to` | General link between related stories |
+| `duplicate-of` | `duplicate-of` | Mark a story as a duplicate |
+| `obviates` | `obviated-by` | One story makes another unnecessary |
 
 ```
 story relate {prefix}-1 parent-of {prefix}-2
 story relate {prefix}-2 blocks {prefix}-3
 story relate {prefix}-5 relates-to {prefix}-2
 story relate {prefix}-6 obviates {prefix}-7
+```
+
+### Dependency graph
+
+Visualize relationships and spot bottlenecks:
+
+```
+story graph                           # Full dependency overview
+story graph --blocked-by {prefix}-1   # Trace why a story is blocked
 ```
 
 Set priority on each story so `story next` surfaces the right work:
@@ -265,11 +295,14 @@ story prioritize {prefix}-6 medium
 | Add a label | `story label {prefix}-<n> <label>` |
 | Set multiple fields | `story set {prefix}-<n> --priority high --state in-progress` |
 | Add relationship | `story relate {prefix}-1 blocks {prefix}-2` |
+| Decompose a spec | `story decompose spec.md` |
 | Search | `story search "<query>"` |
 | Summary stats | `story summary` |
 | Dependency graph | `story graph` |
 | Interactive TUI | `story tui` |
 | Session handoff | `story handoff --since 2h` |
+
+Run `story help <command>` for detailed usage on any command, or `story help --compact` for the full reference.
 "#,
         prefix = prefix,
         done_state = done_state,

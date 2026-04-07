@@ -11,8 +11,6 @@ pub mod github;
 pub mod help_topics;
 pub mod hooks;
 pub mod lock;
-pub mod mcp;
-pub mod mcp_install;
 pub mod output;
 pub mod plugin;
 pub mod storage;

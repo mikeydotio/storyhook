@@ -33,7 +33,6 @@ It keeps active work in project-local JSON event logs, archives closed work into
 - Dependency graph analysis (critical path, blocked chains, parallel groups)
 - Configurable project ID prefix
 - Run integrity checks with `story doctor` and best-effort repair with `story doctor --fix`
-- MCP server for native AI tool integration
 
 ## Install
 
@@ -283,46 +282,6 @@ Three commands support AI coding agent workflows:
 - `story context` -- generates a project overview document (states, priorities, relationships, and ready work) suitable for the start of an AI session. Use `--format json` for structured output.
 - `story next` -- surfaces the highest-priority unblocked story so an agent can pick up work without manual triage. Use `--count <n>` to get multiple candidates.
 - `story handoff --since <duration>` -- generates a session handoff document summarizing what changed during a work session (e.g. `--since 2h`). Useful when passing context between agents or between an agent and a human.
-
-## MCP Server
-
-storyhook includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server for native integration with AI tools.
-
-Start the server:
-
-```bash
-story --mcp
-```
-
-This runs a stdio JSON-RPC server that exposes the following tools:
-
-| Tool | Description |
-|------|-------------|
-| `storyhook_list_stories` | List stories with optional filters |
-| `storyhook_get_story` | Get a story by ID |
-| `storyhook_create_story` | Create a new story |
-| `storyhook_update_story` | Update story state, priority, labels, or assignee |
-| `storyhook_add_comment` | Add a comment to a story |
-| `storyhook_get_summary` | Get project summary with counts and ready stories |
-| `storyhook_get_next` | Get the next ready story/stories to work on |
-| `storyhook_search` | Search stories by title, comments, or labels |
-| `storyhook_get_graph` | Get dependency graph analysis |
-| `storyhook_bulk_create` | Create multiple stories from a JSON array |
-
-### Setup for Claude Code / Cursor
-
-Add this to your MCP configuration:
-
-```json
-{
-  "storyhook": {
-    "command": "story",
-    "args": ["--mcp"]
-  }
-}
-```
-
-You can also run `story mcp-config` to generate this configuration automatically.
 
 ## Integrity checks
 

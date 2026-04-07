@@ -93,6 +93,9 @@ pub enum Response {
     Graph(Box<GraphView>),
     Issues(Vec<String>),
     PhaseList(Vec<PhaseView>),
+    /// Raw JSON output — bypasses normal envelope wrapping.
+    /// Used by session-start and similar commands that need exact JSON control.
+    RawJson(String),
 }
 
 #[derive(Serialize)]
@@ -119,6 +122,11 @@ struct JsonEnvelope<'a> {
 }
 
 pub fn render_response(response: &Response, json: bool, quiet: bool) -> String {
+    // RawJson always outputs directly, regardless of --json or --quiet flags
+    if let Response::RawJson(raw) = response {
+        return format!("{raw}\n");
+    }
+
     if quiet {
         return String::new();
     }
@@ -231,6 +239,10 @@ fn render_json(response: &Response) -> String {
             warnings: &[],
             flagged_reasons: &[],
         }),
+        Response::RawJson(raw) => {
+            // Should not reach here — render_response handles RawJson before calling render_json.
+            return format!("{raw}\n");
+        }
     }
     .expect("response should serialize");
 
@@ -331,6 +343,10 @@ fn render_human(response: &Response) -> String {
                 ));
             }
             body
+        }
+        Response::RawJson(raw) => {
+            // Should not reach here — render_response handles RawJson before calling render_human.
+            format!("{raw}\n")
         }
     }
 }

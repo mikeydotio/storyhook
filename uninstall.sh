@@ -13,10 +13,6 @@ fi
 
 echo "Uninstalling storyhook..."
 
-# Deregister MCP from all providers
-echo "  Removing MCP registrations..."
-"$BINARY_PATH" mcp-config --uninstall-all 2>/dev/null | sed 's/^/  /' || true
-
 # Remove git hooks (if in a git repo)
 if git rev-parse --git-dir >/dev/null 2>&1; then
   echo "  Removing git hooks..."
