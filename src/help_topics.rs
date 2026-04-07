@@ -1101,6 +1101,39 @@ Related:
 "#,
         );
 
+        m.insert(
+            "session-start",
+            r#"story session-start
+
+Output a JSON object with a systemMessage field containing a compact CLI
+reference and current project state. Designed for use by editor plugins
+and shell hooks at session start.
+
+Output format:
+  {"systemMessage": "..."}   — when project exists and plugin is enabled
+  {}                          — when no project, or plugin is disabled
+
+The systemMessage includes the compact CLI reference (same as
+story help --compact) plus a project state summary: open story count,
+ready story count, and the next recommended story if one exists.
+
+The output is always valid JSON, uses serde_json for safety with
+special characters, and the systemMessage is kept under 4000 chars.
+
+When to use:
+  Automatically called by editor plugin hooks at session start. Not
+  normally invoked by hand.
+
+Examples:
+  story session-start         # Output JSON for plugin consumption
+
+Related:
+  story help --compact  — Just the CLI reference portion
+  story load-context    — Full context document for interactive use
+  story next            — Get the highest-priority ready story
+"#,
+        );
+
         m
     });
 

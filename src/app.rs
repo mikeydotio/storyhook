@@ -2077,6 +2077,9 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 story_view_by_id(root, &id)
             }
         },
+        Invocation::SessionStart => {
+            return session_start(root);
+        }
     };
 
     // After successful command, maybe auto-sync to GitHub
@@ -2103,6 +2106,89 @@ fn extract_created_story_id(response: &Response) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Handle `story session-start`. Outputs raw JSON suitable for shell hooks.
+/// Returns `{"systemMessage": "..."}` when a project exists and plugin is enabled,
+/// or `{}` otherwise.
+fn session_start(root: &Path) -> Result<Response, AppError> {
+    let storyhook_dir = root.join(".storyhook");
+
+    // No project → {}
+    if !storyhook_dir.exists() {
+        return Ok(Response::RawJson("{}".to_string()));
+    }
+
+    // Check plugin config — disabled → {}
+    let config_path = storyhook_dir.join("plugin-config.toml");
+    if config_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&config_path)
+    {
+        // Check for enabled = false or enabled = "false"
+        let lower = content.to_lowercase();
+        if lower.contains("enabled") && (lower.contains("= false") || lower.contains("= \"false\"")) {
+            return Ok(Response::RawJson("{}".to_string()));
+        }
+    }
+
+    // Build the system message
+    let mut msg = String::new();
+
+    // 1. Compact CLI reference
+    msg.push_str(crate::help_topics::compact_reference());
+
+    // 2. Project state
+    msg.push_str("PROJECT STATE\n");
+
+    let open_stories = match storage::load_all_open_snapshots(root) {
+        Ok(stories) => stories,
+        Err(_) => {
+            // If we can't load stories, still output CLI reference
+            msg.push_str("  Unable to load project state.\n");
+            let json = serde_json::json!({ "systemMessage": msg });
+            return Ok(Response::RawJson(json.to_string()));
+        }
+    };
+
+    let story_map: BTreeMap<String, StorySnapshot> = open_stories
+        .iter()
+        .map(|s| (s.id.clone(), s.clone()))
+        .collect();
+
+    let open_count = open_stories.len();
+    let ready_stories: Vec<&StorySnapshot> = open_stories
+        .iter()
+        .filter(|s| is_ready(s, &story_map) && !has_children(s))
+        .collect();
+    let ready_count = ready_stories.len();
+
+    msg.push_str(&format!("  {open_count} open stories, {ready_count} ready\n"));
+
+    // Find the highest-priority ready story for "Next" info
+    if !ready_stories.is_empty() {
+        let mut sorted_ready: Vec<&StorySnapshot> = ready_stories;
+        sorted_ready.sort_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then_with(|| a.created_at.cmp(&b.created_at))
+        });
+        let next = sorted_ready[0];
+        let pri = if next.priority != Priority::None {
+            format!(" ({})", next.priority.as_str())
+        } else {
+            String::new()
+        };
+        msg.push_str(&format!("  Next: {} — {}{}\n", next.id, next.title, pri));
+    }
+
+    // Truncate to under 4000 characters if needed
+    if msg.len() > 3900 {
+        msg.truncate(3900);
+        msg.push_str("\n...(truncated)\n");
+    }
+
+    let json = serde_json::json!({ "systemMessage": msg });
+    Ok(Response::RawJson(json.to_string()))
 }
 
 fn build_member(root: &Path, input: MemberInput) -> Result<Member, AppError> {

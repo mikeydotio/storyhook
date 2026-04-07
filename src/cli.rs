@@ -286,6 +286,7 @@ pub enum Invocation {
     Plugin {
         action: PluginAction,
     },
+    SessionStart,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -374,6 +375,7 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         "set" => parse_set(args),
         "relate" | "link" => parse_relate(args),
         "unrelate" | "unlink" => parse_unrelate(args),
+        "session-start" => Ok(Invocation::SessionStart),
         _ => Err(AppError::Usage(format!(
             "unknown command `{}`. Run `story --help` for usage.",
             args[0]
