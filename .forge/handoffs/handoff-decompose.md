@@ -1,37 +1,45 @@
-# Handoff: Decompose Complete (Fix Cycle 3)
+# Handoff: Decompose → Execute
 
-## Timestamp
-2026-04-05T15:21:00Z
+## Step Completed
+decompose
 
 ## Artifacts Produced
-- `.forge/plan-mapping.json` (2 stories mapped to tasks)
+- `.forge/plan-mapping.json` — 6 task stories (SH-32 through SH-37) across 4 waves, parent SH-31
 
 ## Key Decisions
-- Created 3 stories: SH-28 (parent), SH-29 (T1.1 JSON patch), SH-30 (T1.2 case-insensitive none)
-- Both child stories in wave 1 (parallel, no inter-dependencies)
-- DAG validated — no cycles detected
-- Design sections embedded in plan-mapping.json for execution context
+- **Flat decomposition** — Created parent story SH-31 manually, then used `storyhook_decompose_spec` for wave structure. Avoids unnecessary two-level hierarchy.
+- **Stale artifacts cleaned** — Removed old `state.json` from previous pipeline (Story Types & Epics fix cycle 3). Old `plan-mapping.json` overwritten with new mapping.
+- **No DESIGN.md for new pipeline** — The `.forge/DESIGN.md` is from the old Story Types & Epics pipeline. Implementation context embedded directly in `plan-mapping.json` design_section fields from the detailed PLAN.md.
+- **DAG validated** — No cycles. Critical path: SH-33 → SH-34 → SH-35 → SH-37 (4 stories).
+
+## Story-to-Task Mapping
+
+| Story | Task | Wave | Priority | Title |
+|-------|------|------|----------|-------|
+| SH-32 | T1.1 | 1 | high | Strip MCP from Rust codebase |
+| SH-33 | T1.2 | 1 | high | Remove MCP from docs/plugin files |
+| SH-34 | T2.1 | 2 | high | Add --compact and --all help flags |
+| SH-35 | T3.1 | 3 | high | Add session-start CLI command |
+| SH-36 | T3.2 | 3 | medium | Update scaffold templates (MCP-free) |
+| SH-37 | T4.1 | 4 | medium | Rewrite session-start hook |
+
+## Wave Dependencies
+- Wave 1 (SH-32, SH-33): No dependencies, parallel
+- Wave 2 (SH-34): Blocked by SH-32, SH-33
+- Wave 3 (SH-35, SH-36): Blocked by SH-34, parallel
+- Wave 4 (SH-37): Blocked by SH-35, SH-36
 
 ## Context for Next Step
-
-### SH-29 (T1.1): Add `story_type` to JSON patch dispatch
-- File: `src/app.rs`, lines 1884-1948
-- Add `"story_type"` match arm between `"blocked"` and `other =>`
-- Mirror `--type` flag handler (lines 1863-1875): load type map, validate slug, emit `StoryTypeSet`, push change string
-- Update error message at line 1948: add `story_type` to valid fields list
-- 3 red tests already written: `json_patch_sets_story_type`, `json_patch_rejects_invalid_story_type`, `json_patch_unknown_field_error_lists_story_type`
-
-### SH-30 (T1.2): Case-insensitive "none" slug check
-- File: `src/storage.rs`, line 419
-- Change `slug == "none"` to `slug.eq_ignore_ascii_case("none")`
-- 3 red tests already written: `type_add_none_titlecase_rejected`, `type_add_none_uppercase_rejected`, `type_add_none_mixedcase_rejected`
+- 6 stories, all in `todo` state, ready for execution
+- Wave 1 has 2 ready stories (SH-32, SH-33) — can start immediately
+- This is fix_cycle 0 (fresh pipeline, not a fix loop)
+- All test infrastructure from previous pipeline is in place (states.toml has in-progress, verifying, blocked)
+- 3 untracked test files exist from previous plan work: tests/help_new_flags.rs, tests/mcp_removal.rs, tests/session_start_hook.rs
 
 ## Pipeline State
-- Fix cycle: 3 / max 3 (final cycle)
+- Fix cycle: 0
 - Yolo mode: false
-- All 27 original stories complete
-- 6 red tests awaiting fixes
-- 2 new stories (SH-29, SH-30) in todo state
+- ESCALATE stories pending: 0
 
 ## Open Questions
-None — both fixes are fully specified with pre-written tests.
+None — stories decomposed, DAG valid, ready for execution.
