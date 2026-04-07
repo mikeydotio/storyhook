@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::cli::{CliOptions, EpicAction, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput, PhaseAction, PluginAction, TypeAction};
+use crate::cli::{CliOptions, EpicAction, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput, PhaseAction, PluginAction, TypeAction, WebAction};
 use crate::domain::{
     DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
     compute_integrity_issues, compute_progress, derive_family_relationships, extract_story_ids,
@@ -10,8 +10,8 @@ use crate::domain::{
 use crate::error::AppError;
 use crate::lock;
 use crate::output::{
-    BlockedChainView, GraphOverview, GraphView, PhaseView, Response, StaleInfo, StoryView,
-    SummaryView, render_html_report,
+    BlockedChainView, GraphOverview, GraphView, PhaseView, ReportData, Response, StaleInfo,
+    StoryView, SummaryView, render_html_report,
 };
 use crate::storage;
 
@@ -282,48 +282,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         }
         Invocation::Report { html } => {
             if !html {
-                // Plain text report delegates to Summary logic
-                storage::ensure_project(root)?;
-                let views = build_story_views(root, false)?;
-                let story_map: BTreeMap<String, StorySnapshot> = views
-                    .iter()
-                    .map(|v| (v.story.id.clone(), v.story.clone()))
-                    .collect();
-
-                let total_open = views
-                    .iter()
-                    .filter(|v| v.story.superstate == SuperState::Open)
-                    .count();
-                let total_closed = views.len() - total_open;
-
-                let mut state_counts: BTreeMap<String, usize> = BTreeMap::new();
-                let mut priority_counts: BTreeMap<String, usize> = BTreeMap::new();
-                let mut type_counts: BTreeMap<String, usize> = BTreeMap::new();
-                let mut blocked_count = 0;
-                let mut flagged_count = 0;
-
-                for view in &views {
-                    *state_counts.entry(view.story.state.clone()).or_default() += 1;
-                    if view.story.priority != Priority::None {
-                        *priority_counts
-                            .entry(view.story.priority.as_str().to_string())
-                            .or_default() += 1;
-                    }
-                    let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string();
-                    *type_counts.entry(type_label).or_default() += 1;
-                    if !view.flagged_reasons.is_empty() {
-                        flagged_count += 1;
-                    }
-                    if view.story.superstate == SuperState::Open
-                        && !is_ready(&view.story, &story_map)
-                    {
-                        blocked_count += 1;
-                    }
-                }
-
-                let mut ready: Vec<StoryView> = views
+                let data = build_report_data(root)?;
+                let mut ready: Vec<StoryView> = data
+                    .stories
                     .into_iter()
-                    .filter(|v| is_ready(&v.story, &story_map))
+                    .filter(|v| data.ready_ids.contains(&v.story.id))
                     .collect();
                 ready.sort_by(|a, b| {
                     a.story
@@ -334,91 +297,23 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 let ready_count = ready.len();
                 ready.truncate(5);
 
-                let by_state: Vec<(String, usize)> = state_counts.into_iter().collect();
-                let by_priority: Vec<(String, usize)> = priority_counts.into_iter().collect();
-                let by_type: Vec<(String, usize)> = type_counts.into_iter().collect();
+                let mut summary = data.summary;
+                summary.ready_count = ready_count;
+                summary.ready_stories = ready;
 
-                Ok(Response::Summary(Box::new(SummaryView {
-                    total_open,
-                    total_closed,
-                    by_state,
-                    by_priority,
-                    by_type,
-                    blocked_count,
-                    flagged_count,
-                    ready_count,
-                    ready_stories: ready,
-                })))
+                Ok(Response::Summary(Box::new(summary)))
             } else {
-                // HTML report
-                storage::ensure_project(root)?;
-                let views = build_story_views(root, false)?;
-                let story_map: BTreeMap<String, StorySnapshot> = views
-                    .iter()
-                    .map(|v| (v.story.id.clone(), v.story.clone()))
-                    .collect();
-
-                let total_open = views
-                    .iter()
-                    .filter(|v| v.story.superstate == SuperState::Open)
-                    .count();
-                let total_closed = views.len() - total_open;
-
-                let mut state_counts: BTreeMap<String, usize> = BTreeMap::new();
-                let mut priority_counts: BTreeMap<String, usize> = BTreeMap::new();
-                let mut type_counts: BTreeMap<String, usize> = BTreeMap::new();
-                let mut blocked_count = 0;
-                let mut flagged_count = 0;
-
-                for view in &views {
-                    *state_counts.entry(view.story.state.clone()).or_default() += 1;
-                    if view.story.priority != Priority::None {
-                        *priority_counts
-                            .entry(view.story.priority.as_str().to_string())
-                            .or_default() += 1;
-                    }
-                    let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string();
-                    *type_counts.entry(type_label).or_default() += 1;
-                    if !view.flagged_reasons.is_empty() {
-                        flagged_count += 1;
-                    }
-                    if view.story.superstate == SuperState::Open
-                        && !is_ready(&view.story, &story_map)
-                    {
-                        blocked_count += 1;
-                    }
-                }
-
-                let ready_count = views
-                    .iter()
-                    .filter(|v| is_ready(&v.story, &story_map))
-                    .count();
-
-                let by_state: Vec<(String, usize)> = state_counts.into_iter().collect();
-                let by_priority: Vec<(String, usize)> = priority_counts.into_iter().collect();
-                let by_type: Vec<(String, usize)> = type_counts.into_iter().collect();
-
-                let summary = SummaryView {
-                    total_open,
-                    total_closed,
-                    by_state,
-                    by_priority,
-                    by_type,
-                    blocked_count,
-                    flagged_count,
-                    ready_count,
-                    ready_stories: Vec::new(),
-                };
+                let data = build_report_data(root)?;
+                let ready_set: BTreeSet<&str> =
+                    data.ready_ids.iter().map(|s| s.as_str()).collect();
+                let blocked_set: BTreeSet<&str> =
+                    data.blocked_ids.iter().map(|s| s.as_str()).collect();
 
                 let html_output = render_html_report(
-                    &summary,
-                    &views,
-                    &|id| story_map.get(id).is_some_and(|s| is_ready(s, &story_map)),
-                    &|id| {
-                        story_map.get(id).is_some_and(|s| {
-                            s.superstate == SuperState::Open && !is_ready(s, &story_map)
-                        })
-                    },
+                    &data.summary,
+                    &data.stories,
+                    &|id| ready_set.contains(id),
+                    &|id| blocked_set.contains(id),
                 );
 
                 Ok(Response::Message(html_output))
@@ -2119,6 +2014,24 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 story_view_by_id(root, &id)
             }
         },
+        Invocation::Web { action } => match action {
+            WebAction::Start { port } => {
+                let msg = crate::web::handle_start(root, port)?;
+                Ok(Response::Message(msg))
+            }
+            WebAction::Stop => {
+                let msg = crate::web::handle_stop(root)?;
+                Ok(Response::Message(msg))
+            }
+            WebAction::Status => {
+                let msg = crate::web::handle_status(root)?;
+                Ok(Response::Message(msg))
+            }
+            WebAction::Serve { .. } => {
+                // Handled in main.rs before app::run
+                unreachable!("web --serve is dispatched in main.rs")
+            }
+        },
     };
 
     // After successful command, maybe auto-sync to GitHub
@@ -2322,6 +2235,82 @@ fn build_story_views(root: &Path, include_derived: bool) -> Result<Vec<StoryView
     }
 
     Ok(views)
+}
+
+pub fn build_report_data(root: &Path) -> Result<ReportData, AppError> {
+    storage::ensure_project(root)?;
+    let views = build_story_views(root, false)?;
+    let story_map: BTreeMap<String, StorySnapshot> = views
+        .iter()
+        .map(|v| (v.story.id.clone(), v.story.clone()))
+        .collect();
+
+    let total_open = views
+        .iter()
+        .filter(|v| v.story.superstate == SuperState::Open)
+        .count();
+    let total_closed = views.len() - total_open;
+
+    let mut state_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut priority_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut type_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut blocked_count = 0;
+    let mut flagged_count = 0;
+
+    let mut ready_ids: Vec<String> = Vec::new();
+    let mut blocked_ids: Vec<String> = Vec::new();
+
+    for view in &views {
+        *state_counts.entry(view.story.state.clone()).or_default() += 1;
+        if view.story.priority != Priority::None {
+            *priority_counts
+                .entry(view.story.priority.as_str().to_string())
+                .or_default() += 1;
+        }
+        let type_label = view
+            .story
+            .story_type
+            .as_deref()
+            .unwrap_or("Default")
+            .to_string();
+        *type_counts.entry(type_label).or_default() += 1;
+        if !view.flagged_reasons.is_empty() {
+            flagged_count += 1;
+        }
+        if view.story.superstate == SuperState::Open {
+            if is_ready(&view.story, &story_map) {
+                ready_ids.push(view.story.id.clone());
+            } else {
+                blocked_count += 1;
+                blocked_ids.push(view.story.id.clone());
+            }
+        }
+    }
+
+    let ready_count = ready_ids.len();
+
+    let by_state: Vec<(String, usize)> = state_counts.into_iter().collect();
+    let by_priority: Vec<(String, usize)> = priority_counts.into_iter().collect();
+    let by_type: Vec<(String, usize)> = type_counts.into_iter().collect();
+
+    let summary = SummaryView {
+        total_open,
+        total_closed,
+        by_state,
+        by_priority,
+        by_type,
+        blocked_count,
+        flagged_count,
+        ready_count,
+        ready_stories: Vec::new(),
+    };
+
+    Ok(ReportData {
+        summary,
+        stories: views,
+        ready_ids,
+        blocked_ids,
+    })
 }
 
 fn story_view_by_id(root: &Path, id: &str) -> Result<Response, AppError> {

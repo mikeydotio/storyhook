@@ -2,7 +2,7 @@ use std::env;
 use std::process;
 
 use storyhook::app;
-use storyhook::cli::{self, CliOptions, Invocation};
+use storyhook::cli::{self, CliOptions, Invocation, WebAction};
 use storyhook::output;
 
 fn main() {
@@ -41,6 +41,19 @@ fn main() {
             process::exit(error.exit_code());
         }
     };
+
+    // Web server foreground mode: `story web --serve --port N --root /path`
+    // Runs the HTTP server directly (used by the daemon spawner).
+    if let Invocation::Web {
+        action: WebAction::Serve { port, ref root },
+    } = invocation
+    {
+        if let Err(e) = storyhook::web::start_server(root, port) {
+            eprintln!("error: {e}");
+            process::exit(e.exit_code());
+        }
+        return;
+    }
 
     // Interactive mcp-config: when running in a terminal (not piped, not --json),
     // show an interactive multi-select UI. Otherwise fall through to app::run
