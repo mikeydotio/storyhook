@@ -2,10 +2,10 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::domain::{Priority, SuperState};
 use crate::tui::action::Action;
@@ -368,8 +368,7 @@ impl Component for Board {
                 // Double-click detection: same row within 300ms
                 let now = Instant::now();
                 let is_double_click = if let Some((last_time, last_row)) = self.last_click {
-                    last_row == row_index
-                        && now.duration_since(last_time).as_millis() < 300
+                    last_row == row_index && now.duration_since(last_time).as_millis() < 300
                 } else {
                     false
                 };
@@ -494,8 +493,7 @@ impl Component for Board {
                 theme.section_count,
             ));
             frame.render_widget(
-                Paragraph::new(empty_msg)
-                    .alignment(ratatui::layout::Alignment::Center),
+                Paragraph::new(empty_msg).alignment(ratatui::layout::Alignment::Center),
                 area,
             );
             self.hit_regions.clear();
@@ -510,8 +508,7 @@ impl Component for Board {
                 theme.section_count,
             ));
             frame.render_widget(
-                Paragraph::new(empty_msg)
-                    .alignment(ratatui::layout::Alignment::Center),
+                Paragraph::new(empty_msg).alignment(ratatui::layout::Alignment::Center),
                 area,
             );
             self.hit_regions.clear();
@@ -522,13 +519,14 @@ impl Component for Board {
         // scroll_offset is kept in sync by handle_key and on_state_change.
         // Compute a local adjustment in case the viewport size changed since
         // the last key event (e.g., terminal resize).
-        let scroll_offset = if viewport_height > 0 && self.cursor >= self.scroll_offset + viewport_height {
-            self.cursor - viewport_height + 1
-        } else if self.cursor < self.scroll_offset {
-            self.cursor
-        } else {
-            self.scroll_offset
-        };
+        let scroll_offset =
+            if viewport_height > 0 && self.cursor >= self.scroll_offset + viewport_height {
+                self.cursor - viewport_height + 1
+            } else if self.cursor < self.scroll_offset {
+                self.cursor
+            } else {
+                self.scroll_offset
+            };
 
         let width = area.width as usize;
         let mut lines: Vec<Line> = Vec::with_capacity(viewport_height);
@@ -558,14 +556,15 @@ impl Component for Board {
             // Register hit region for this visible row
             let row_rect = Rect::new(area.x, area.y + vi as u16, area.width, 1);
             let target = match row {
-                RowItem::SectionHeader { slug, .. } => {
-                    HitTarget::SectionHeader { state_slug: slug.clone() }
-                }
-                RowItem::StoryRow { id } => {
-                    HitTarget::StoryRow { id: id.clone() }
-                }
+                RowItem::SectionHeader { slug, .. } => HitTarget::SectionHeader {
+                    state_slug: slug.clone(),
+                },
+                RowItem::StoryRow { id } => HitTarget::StoryRow { id: id.clone() },
             };
-            self.hit_regions.push(HitRegion { rect: row_rect, target });
+            self.hit_regions.push(HitRegion {
+                rect: row_rect,
+                target,
+            });
 
             match row {
                 RowItem::SectionHeader {
@@ -575,14 +574,8 @@ impl Component for Board {
                     expanded,
                 } => {
                     let is_drag_target = drag_target_slug.as_deref() == Some(slug);
-                    let mut line = render_section_header(
-                        name,
-                        *count,
-                        *expanded,
-                        is_selected,
-                        width,
-                        &theme,
-                    );
+                    let mut line =
+                        render_section_header(name, *count, *expanded, is_selected, width, &theme);
                     if is_drag_target {
                         for span in &mut line.spans {
                             span.style = theme.drag_target;
@@ -637,10 +630,7 @@ fn render_section_header(
     let fill: String = "\u{2500}".repeat(fill_len);
 
     let mut spans = vec![
-        Span::styled(
-            format!("{triangle} "),
-            theme.disclosure,
-        ),
+        Span::styled(format!("{triangle} "), theme.disclosure),
         Span::styled(
             name.to_string(),
             if is_selected {
@@ -686,8 +676,10 @@ fn render_story_row(
     }
 
     // Assignee (compute first to know fixed overhead)
-    let assignee_part: Option<(String, ratatui::style::Style)> =
-        story.assignee.as_ref().map(|a| (format!(" @{a}"), theme.assignee));
+    let assignee_part: Option<(String, ratatui::style::Style)> = story
+        .assignee
+        .as_ref()
+        .map(|a| (format!(" @{a}"), theme.assignee));
     let blocked_part: Option<(String, ratatui::style::Style)> = if story.awaiting.is_some() {
         Some((" BLK".to_string(), theme.blocked_badge))
     } else {
@@ -695,7 +687,10 @@ fn render_story_row(
     };
 
     // Calculate non-label right-side width to figure out label budget
-    let non_label_right: usize = right_parts.iter().map(|(s, _)| s.chars().count()).sum::<usize>()
+    let non_label_right: usize = right_parts
+        .iter()
+        .map(|(s, _)| s.chars().count())
+        .sum::<usize>()
         + assignee_part.as_ref().map_or(0, |(s, _)| s.chars().count())
         + blocked_part.as_ref().map_or(0, |(s, _)| s.chars().count());
 
@@ -747,7 +742,11 @@ fn render_story_row(
     let title_budget = width.saturating_sub(fixed_width);
 
     let title = if story.title.chars().count() > title_budget {
-        let truncated: String = story.title.chars().take(title_budget.saturating_sub(1)).collect();
+        let truncated: String = story
+            .title
+            .chars()
+            .take(title_budget.saturating_sub(1))
+            .collect();
         format!("{truncated}\u{2026}")
     } else {
         // Pad title to fill available space
@@ -760,7 +759,11 @@ fn render_story_row(
     // Cursor marker
     spans.push(Span::styled(
         cursor_mark.to_string(),
-        if is_selected { theme.cursor } else { theme.story_id },
+        if is_selected {
+            theme.cursor
+        } else {
+            theme.story_id
+        },
     ));
 
     // Story ID
@@ -889,12 +892,18 @@ mod tests {
 
         // 3 open state headers (todo, in-progress, review) + 3 story rows
         assert_eq!(rows.len(), 6);
-        assert!(matches!(&rows[0], RowItem::SectionHeader { slug, count: 2, expanded: true, .. } if slug == "todo"));
+        assert!(
+            matches!(&rows[0], RowItem::SectionHeader { slug, count: 2, expanded: true, .. } if slug == "todo")
+        );
         assert!(matches!(&rows[1], RowItem::StoryRow { id } if id == "SH-1"));
         assert!(matches!(&rows[2], RowItem::StoryRow { id } if id == "SH-2"));
-        assert!(matches!(&rows[3], RowItem::SectionHeader { slug, count: 1, expanded: true, .. } if slug == "in-progress"));
+        assert!(
+            matches!(&rows[3], RowItem::SectionHeader { slug, count: 1, expanded: true, .. } if slug == "in-progress")
+        );
         assert!(matches!(&rows[4], RowItem::StoryRow { id } if id == "SH-3"));
-        assert!(matches!(&rows[5], RowItem::SectionHeader { slug, count: 0, expanded: true, .. } if slug == "review"));
+        assert!(
+            matches!(&rows[5], RowItem::SectionHeader { slug, count: 0, expanded: true, .. } if slug == "review")
+        );
     }
 
     #[test]
@@ -916,20 +925,21 @@ mod tests {
 
         // todo header (collapsed, no stories) + in-progress header + 1 story + review header
         assert_eq!(rows.len(), 4);
-        assert!(matches!(&rows[0], RowItem::SectionHeader { slug, count: 2, expanded: false, .. } if slug == "todo"));
-        assert!(matches!(&rows[1], RowItem::SectionHeader { slug, count: 1, expanded: true, .. } if slug == "in-progress"));
+        assert!(
+            matches!(&rows[0], RowItem::SectionHeader { slug, count: 2, expanded: false, .. } if slug == "todo")
+        );
+        assert!(
+            matches!(&rows[1], RowItem::SectionHeader { slug, count: 1, expanded: true, .. } if slug == "in-progress")
+        );
         assert!(matches!(&rows[2], RowItem::StoryRow { id } if id == "SH-3"));
-        assert!(matches!(&rows[3], RowItem::SectionHeader { slug, count: 0, expanded: true, .. } if slug == "review"));
+        assert!(
+            matches!(&rows[3], RowItem::SectionHeader { slug, count: 0, expanded: true, .. } if slug == "review")
+        );
     }
 
     #[test]
     fn visible_rows_empty_project() {
-        let data = DataStore::from_test_data(
-            test_states(),
-            vec![],
-            "SH".to_string(),
-            vec![],
-        );
+        let data = DataStore::from_test_data(test_states(), vec![], "SH".to_string(), vec![]);
         let state = make_state(data);
         let board = Board::new();
         let rows = board.build_visible_rows(&state);
@@ -1134,10 +1144,7 @@ mod tests {
         let mut board = Board::new();
         board.cursor = 1; // on SH-1 story row
 
-        let actions = board.handle_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &state,
-        );
+        let actions = board.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state);
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], Action::OpenDetail(id) if id == "SH-1"));
     }
@@ -1154,10 +1161,7 @@ mod tests {
         let mut board = Board::new();
         board.cursor = 0; // on header
 
-        let actions = board.handle_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &state,
-        );
+        let actions = board.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state);
         assert!(actions.is_empty());
     }
 
@@ -1283,9 +1287,7 @@ mod tests {
     fn mouse_double_click_opens_detail() {
         let data = DataStore::from_test_data(
             test_states(),
-            vec![
-                test_snapshot("SH-1", "todo", "First"),
-            ],
+            vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
             vec![],
         );
@@ -1314,9 +1316,7 @@ mod tests {
     fn mouse_double_click_on_header_does_not_open_detail() {
         let data = DataStore::from_test_data(
             test_states(),
-            vec![
-                test_snapshot("SH-1", "todo", "First"),
-            ],
+            vec![test_snapshot("SH-1", "todo", "First")],
             "SH".to_string(),
             vec![],
         );
@@ -1507,9 +1507,7 @@ mod tests {
                 && row < r.rect.y + r.rect.height
         });
         assert!(matched.is_some());
-        assert!(
-            matches!(&matched.unwrap().target, HitTarget::StoryRow { id } if id == "SH-1")
-        );
+        assert!(matches!(&matched.unwrap().target, HitTarget::StoryRow { id } if id == "SH-1"));
 
         // Click at (10, 1) should match todo header
         let row = 1u16;
@@ -1603,8 +1601,12 @@ mod tests {
 
         // After filter: 3 headers + 1 story = 4 rows. Cursor must clamp.
         let new_rows = board.build_visible_rows(&state);
-        assert!(board.cursor < new_rows.len(),
-            "cursor {} must be < row count {}", board.cursor, new_rows.len());
+        assert!(
+            board.cursor < new_rows.len(),
+            "cursor {} must be < row count {}",
+            board.cursor,
+            new_rows.len()
+        );
     }
 
     #[test]
@@ -1787,10 +1789,7 @@ mod tests {
         assert_eq!(board.cursor, 2);
 
         // Enter on header should do nothing (no story)
-        let actions = board.handle_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &state,
-        );
+        let actions = board.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state);
         assert!(actions.is_empty());
 
         // > on header should do nothing (no story)
@@ -1829,10 +1828,7 @@ mod tests {
             KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
             &state,
         );
-        board.handle_key(
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            &state,
-        );
+        board.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &state);
         board.handle_key(
             KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
             &state,
@@ -1904,13 +1900,11 @@ mod tests {
         // Project with only closed states (weird but possible)
         use crate::domain::StateDef;
         let data = DataStore::from_test_data(
-            vec![
-                StateDef {
-                    slug: "done".to_string(),
-                    super_state: SuperState::Closed,
-                    role: None,
-                },
-            ],
+            vec![StateDef {
+                slug: "done".to_string(),
+                super_state: SuperState::Closed,
+                role: None,
+            }],
             vec![],
             "SH".to_string(),
             vec![],
@@ -1976,7 +1970,10 @@ mod tests {
         );
         // After collapse: [0] todo hdr, [1] in-progress hdr, [2] SH-3, [3] review hdr
         assert!(board.collapsed.contains("todo"));
-        assert!(board.cursor < 4, "cursor should be clamped to new row count");
+        assert!(
+            board.cursor < 4,
+            "cursor should be clamped to new row count"
+        );
     }
 
     // =======================================================================
@@ -2014,12 +2011,7 @@ mod tests {
                 &format!("Story {i}"),
             ));
         }
-        let data = DataStore::from_test_data(
-            test_states(),
-            stories,
-            "SH".to_string(),
-            vec![],
-        );
+        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![]);
         let mut state = make_state(data);
         state.terminal_size = (80, 10); // small viewport
 
@@ -2288,10 +2280,7 @@ mod tests {
             current_target_section: Some("in-progress".to_string()),
         };
 
-        let actions = board.handle_key(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            &state,
-        );
+        let actions = board.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &state);
         assert!(actions.is_empty());
         assert_eq!(board.drag_state, DragState::Idle);
     }
@@ -2356,7 +2345,10 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
         let actions = board.handle_mouse(up, &state);
-        assert!(actions.is_empty(), "simple click-release should not emit actions");
+        assert!(
+            actions.is_empty(),
+            "simple click-release should not emit actions"
+        );
         assert_eq!(board.drag_state, DragState::Idle);
         assert_eq!(board.cursor, 2, "cursor should remain on clicked row");
     }

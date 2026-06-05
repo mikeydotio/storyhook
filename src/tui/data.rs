@@ -46,10 +46,7 @@ impl DataStore {
         prefix: String,
         members: Vec<Member>,
     ) -> Self {
-        let state_map = states
-            .iter()
-            .map(|s| (s.slug.clone(), s.clone()))
-            .collect();
+        let state_map = states.iter().map(|s| (s.slug.clone(), s.clone())).collect();
         Self {
             states,
             state_map,
@@ -317,10 +314,7 @@ mod tests {
     fn stories_by_state_excludes_closed() {
         let store = DataStore::from_test_data(
             test_states(),
-            vec![
-                test_snapshot("SH-1", "done"),
-                test_snapshot("SH-2", "todo"),
-            ],
+            vec![test_snapshot("SH-1", "done"), test_snapshot("SH-2", "todo")],
             "SH".to_string(),
             vec![],
         );
@@ -446,8 +440,24 @@ mod tests {
     #[test]
     fn filter_by_text_matches_title() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "Fix login flow", Priority::None, vec![], None, None),
-            make_rich_snapshot("SH-2", "todo", "Add search", Priority::None, vec![], None, None),
+            make_rich_snapshot(
+                "SH-1",
+                "todo",
+                "Fix login flow",
+                Priority::None,
+                vec![],
+                None,
+                None,
+            ),
+            make_rich_snapshot(
+                "SH-2",
+                "todo",
+                "Add search",
+                Priority::None,
+                vec![],
+                None,
+                None,
+            ),
         ];
         let filters = vec![FilterSpec {
             text: Some("login".to_string()),
@@ -475,9 +485,15 @@ mod tests {
 
     #[test]
     fn filter_by_text_is_case_insensitive() {
-        let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "Fix Login Flow", Priority::None, vec![], None, None),
-        ];
+        let stories = vec![make_rich_snapshot(
+            "SH-1",
+            "todo",
+            "Fix Login Flow",
+            Priority::None,
+            vec![],
+            None,
+            None,
+        )];
         let filters = vec![FilterSpec {
             text: Some("fix login".to_string()),
             ..Default::default()
@@ -490,7 +506,15 @@ mod tests {
     fn filter_by_state() {
         let stories = vec![
             make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
-            make_rich_snapshot("SH-2", "in-progress", "Second", Priority::None, vec![], None, None),
+            make_rich_snapshot(
+                "SH-2",
+                "in-progress",
+                "Second",
+                Priority::None,
+                vec![],
+                None,
+                None,
+            ),
         ];
         let filters = vec![FilterSpec {
             state: Some("todo".to_string()),
@@ -504,8 +528,24 @@ mod tests {
     #[test]
     fn filter_by_assignee() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], Some("mikey"), None),
-            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], Some("bob"), None),
+            make_rich_snapshot(
+                "SH-1",
+                "todo",
+                "First",
+                Priority::None,
+                vec![],
+                Some("mikey"),
+                None,
+            ),
+            make_rich_snapshot(
+                "SH-2",
+                "todo",
+                "Second",
+                Priority::None,
+                vec![],
+                Some("bob"),
+                None,
+            ),
             make_rich_snapshot("SH-3", "todo", "Third", Priority::None, vec![], None, None),
         ];
         let filters = vec![FilterSpec {
@@ -537,8 +577,24 @@ mod tests {
     #[test]
     fn filter_by_label() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec!["bug", "tui"], None, None),
-            make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec!["feature"], None, None),
+            make_rich_snapshot(
+                "SH-1",
+                "todo",
+                "First",
+                Priority::None,
+                vec!["bug", "tui"],
+                None,
+                None,
+            ),
+            make_rich_snapshot(
+                "SH-2",
+                "todo",
+                "Second",
+                Priority::None,
+                vec!["feature"],
+                None,
+                None,
+            ),
             make_rich_snapshot("SH-3", "todo", "Third", Priority::None, vec![], None, None),
         ];
         let filters = vec![FilterSpec {
@@ -552,9 +608,15 @@ mod tests {
 
     #[test]
     fn filter_by_label_is_case_insensitive() {
-        let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec!["BUG"], None, None),
-        ];
+        let stories = vec![make_rich_snapshot(
+            "SH-1",
+            "todo",
+            "First",
+            Priority::None,
+            vec!["BUG"],
+            None,
+            None,
+        )];
         let filters = vec![FilterSpec {
             label: Some("bug".to_string()),
             ..Default::default()
@@ -566,7 +628,15 @@ mod tests {
     #[test]
     fn filter_by_blocked() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, Some("waiting for deploy")),
+            make_rich_snapshot(
+                "SH-1",
+                "todo",
+                "First",
+                Priority::None,
+                vec![],
+                None,
+                Some("waiting for deploy"),
+            ),
             make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
         ];
         let filters = vec![FilterSpec {
@@ -581,7 +651,15 @@ mod tests {
     #[test]
     fn filter_by_ready() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, Some("waiting")),
+            make_rich_snapshot(
+                "SH-1",
+                "todo",
+                "First",
+                Priority::None,
+                vec![],
+                None,
+                Some("waiting"),
+            ),
             make_rich_snapshot("SH-2", "todo", "Second", Priority::None, vec![], None, None),
         ];
         let filters = vec![FilterSpec {
@@ -596,9 +674,33 @@ mod tests {
     #[test]
     fn multiple_filters_and_together() {
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "Fix login", Priority::High, vec!["bug"], Some("mikey"), None),
-            make_rich_snapshot("SH-2", "todo", "Fix signup", Priority::High, vec!["bug"], Some("bob"), None),
-            make_rich_snapshot("SH-3", "todo", "Add search", Priority::Low, vec!["feature"], Some("mikey"), None),
+            make_rich_snapshot(
+                "SH-1",
+                "todo",
+                "Fix login",
+                Priority::High,
+                vec!["bug"],
+                Some("mikey"),
+                None,
+            ),
+            make_rich_snapshot(
+                "SH-2",
+                "todo",
+                "Fix signup",
+                Priority::High,
+                vec!["bug"],
+                Some("bob"),
+                None,
+            ),
+            make_rich_snapshot(
+                "SH-3",
+                "todo",
+                "Add search",
+                Priority::Low,
+                vec!["feature"],
+                Some("mikey"),
+                None,
+            ),
         ];
         // state:todo AND p:high AND @mikey
         let filters = vec![
@@ -632,9 +734,15 @@ mod tests {
 
     #[test]
     fn no_match_returns_empty() {
-        let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "First", Priority::None, vec![], None, None),
-        ];
+        let stories = vec![make_rich_snapshot(
+            "SH-1",
+            "todo",
+            "First",
+            Priority::None,
+            vec![],
+            None,
+            None,
+        )];
         let filters = vec![FilterSpec {
             assignee: Some("nobody".to_string()),
             ..Default::default()
@@ -649,12 +757,7 @@ mod tests {
 
     #[test]
     fn filtered_stories_by_state_empty_project() {
-        let store = DataStore::from_test_data(
-            test_states(),
-            vec![],
-            "SH".to_string(),
-            vec![],
-        );
+        let store = DataStore::from_test_data(test_states(), vec![], "SH".to_string(), vec![]);
         let result = store.filtered_stories_by_state(&[]);
         // Should still have 2 open state groups (todo, in-progress) with 0 stories each
         assert_eq!(result.len(), 2);
@@ -718,7 +821,15 @@ mod tests {
     fn blocked_and_ready_together_matches_nothing() {
         // A story can't be both blocked (awaiting.is_some()) and ready (awaiting.is_none())
         let stories = vec![
-            make_rich_snapshot("SH-1", "todo", "A", Priority::None, vec![], None, Some("waiting")),
+            make_rich_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::None,
+                vec![],
+                None,
+                Some("waiting"),
+            ),
             make_rich_snapshot("SH-2", "todo", "B", Priority::None, vec![], None, None),
         ];
         let filters = vec![

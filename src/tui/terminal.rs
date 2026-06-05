@@ -1,7 +1,7 @@
 use std::io::stdout;
 
-use crossterm::execute;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::execute;
 use ratatui::DefaultTerminal;
 
 use crate::error::AppError;

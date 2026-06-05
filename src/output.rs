@@ -289,13 +289,24 @@ fn render_human(response: &Response) -> String {
                     format!(" [{}]", story.story.labels.join(", "))
                 };
                 let stale = if let Some(ref info) = story.stale_info {
-                    format!(" [stale {}d, last: {}]", info.days_stale, info.last_activity_type)
+                    format!(
+                        " [stale {}d, last: {}]",
+                        info.days_stale, info.last_activity_type
+                    )
                 } else {
                     String::new()
                 };
                 body.push_str(&format!(
                     "{} [{}]{}{} {}{}{}{}{}\n",
-                    story.story.id, story.story.state, priority, type_badge, story.story.title, progress_summary, labels, flagged, stale
+                    story.story.id,
+                    story.story.state,
+                    priority,
+                    type_badge,
+                    story.story.title,
+                    progress_summary,
+                    labels,
+                    flagged,
+                    stale
                 ));
             }
             body

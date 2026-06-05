@@ -93,7 +93,11 @@ pub fn render_block(body_text: &str, block: &StoryhookBlock) -> String {
     let yaml = yaml.strip_prefix("---\n").unwrap_or(&yaml);
     let yaml = yaml.trim_end();
 
-    format!("{}\n\n---\n\n```storyhook\n{}\n```\n", base.trim_end(), yaml)
+    format!(
+        "{}\n\n---\n\n```storyhook\n{}\n```\n",
+        base.trim_end(),
+        yaml
+    )
 }
 
 #[cfg(test)]
@@ -206,13 +210,15 @@ mod tests {
         let original_text = "Some description text.";
         let block = sample_block();
         let rendered = render_block(original_text, &block);
-        let (extracted_text, extracted_block) =
-            extract_block(&rendered).expect("should roundtrip");
+        let (extracted_text, extracted_block) = extract_block(&rendered).expect("should roundtrip");
         assert_eq!(extracted_text, original_text);
         assert_eq!(extracted_block.story_id, block.story_id);
         assert_eq!(extracted_block.priority, block.priority);
         assert_eq!(extracted_block.awaiting, block.awaiting);
-        assert_eq!(extracted_block.relationships.len(), block.relationships.len());
+        assert_eq!(
+            extracted_block.relationships.len(),
+            block.relationships.len()
+        );
         assert_eq!(extracted_block.sync_version, block.sync_version);
     }
 
@@ -276,8 +282,7 @@ mod tests {
 
     #[test]
     fn extra_whitespace_around_block() {
-        let body =
-            "Description.\n\n  ---  \n\n  ```storyhook\nstory_id: SH-1\n```  \n\n";
+        let body = "Description.\n\n  ---  \n\n  ```storyhook\nstory_id: SH-1\n```  \n\n";
         let result = extract_block(body);
         // The opening fence must start at the beginning of a line conceptually,
         // but rfind will find it even with leading whitespace. The key requirement

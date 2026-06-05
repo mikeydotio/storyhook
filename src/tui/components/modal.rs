@@ -1,6 +1,6 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::widgets::{Block, Borders, Clear};
-use ratatui::Frame;
 
 use crate::tui::theme::Theme;
 

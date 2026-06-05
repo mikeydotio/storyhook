@@ -166,7 +166,10 @@ mod tests {
             KeyContext::Help,
         ] {
             let action = map_key(key_ctrl('c'), ctx);
-            assert!(matches!(action, Some(Action::Quit)), "Ctrl+C should quit in {ctx:?}");
+            assert!(
+                matches!(action, Some(Action::Quit)),
+                "Ctrl+C should quit in {ctx:?}"
+            );
         }
     }
 

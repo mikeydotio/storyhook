@@ -462,10 +462,7 @@ fn phase_add_and_list() {
         .success();
 
     // List phases
-    let output = story(dir.path())
-        .args(["phase", "list"])
-        .assert()
-        .success();
+    let output = story(dir.path()).args(["phase", "list"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("Phase 1"), "should show Phase 1");
     assert!(stdout.contains("Phase 2"), "should show Phase 2");

@@ -98,6 +98,8 @@ pub enum Action {
     // System
     RefreshData,
     Notify(String),
-    OpenEditor { id: String },
+    OpenEditor {
+        id: String,
+    },
     Quit,
 }

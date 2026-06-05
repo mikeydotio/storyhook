@@ -1269,21 +1269,39 @@ mod tests {
     #[test]
     fn json_format_topic_exists_and_covers_key_concepts() {
         let content = get_help_topic("json-format").expect("json-format topic should exist");
-        assert!(content.contains("\"result\""), "should document result field");
+        assert!(
+            content.contains("\"result\""),
+            "should document result field"
+        );
         assert!(content.contains("--json"), "should document --json flag");
         assert!(content.contains("\"story\""), "should document story field");
-        assert!(content.contains("\"stories\""), "should document stories field");
-        assert!(content.contains("\"summary\""), "should document summary field");
+        assert!(
+            content.contains("\"stories\""),
+            "should document stories field"
+        );
+        assert!(
+            content.contains("\"summary\""),
+            "should document summary field"
+        );
         assert!(content.contains("\"graph\""), "should document graph field");
-        assert!(content.contains("\"issues\""), "should document issues field");
-        assert!(content.contains("\"message\""), "should document message field");
+        assert!(
+            content.contains("\"issues\""),
+            "should document issues field"
+        );
+        assert!(
+            content.contains("\"message\""),
+            "should document message field"
+        );
         assert!(content.contains("exit_code"), "should document exit codes");
     }
 
     #[test]
     fn json_format_topic_listed() {
         let topics = super::list_topics();
-        assert!(topics.contains(&"json-format"), "json-format should appear in topic list");
+        assert!(
+            topics.contains(&"json-format"),
+            "json-format should appear in topic list"
+        );
     }
 
     // ================================================================
@@ -1321,9 +1339,18 @@ mod tests {
         assert!(text.contains("QUERY"), "must have QUERY section");
         assert!(text.contains("METADATA"), "must have METADATA section");
         assert!(text.contains("BULK"), "must have BULK section");
-        assert!(text.contains("PROJECT MANAGEMENT"), "must have PROJECT MANAGEMENT section");
-        assert!(text.contains("GLOBAL FLAGS"), "must have GLOBAL FLAGS section");
-        assert!(text.contains("WORKFLOW TIPS"), "must have WORKFLOW TIPS section");
+        assert!(
+            text.contains("PROJECT MANAGEMENT"),
+            "must have PROJECT MANAGEMENT section"
+        );
+        assert!(
+            text.contains("GLOBAL FLAGS"),
+            "must have GLOBAL FLAGS section"
+        );
+        assert!(
+            text.contains("WORKFLOW TIPS"),
+            "must have WORKFLOW TIPS section"
+        );
     }
 
     #[test]
@@ -1332,11 +1359,21 @@ mod tests {
         // survive any future edits to the compact reference.
         let text = super::compact_reference();
         for cmd in &[
-            "story init", "story new", "story show", "story move",
-            "story list", "story next", "story load-context",
-            "story comment", "story assign", "story prioritize",
-            "story decompose", "story handoff", "story commit-sync",
-            "story doctor", "--json",
+            "story init",
+            "story new",
+            "story show",
+            "story move",
+            "story list",
+            "story next",
+            "story load-context",
+            "story comment",
+            "story assign",
+            "story prioritize",
+            "story decompose",
+            "story handoff",
+            "story commit-sync",
+            "story doctor",
+            "--json",
         ] {
             assert!(
                 text.contains(cmd),
@@ -1348,8 +1385,14 @@ mod tests {
     #[test]
     fn compact_reference_does_not_reference_mcp() {
         let text = super::compact_reference();
-        assert!(!text.contains("MCP"), "compact_reference must not mention MCP");
-        assert!(!text.contains("mcp"), "compact_reference must not mention mcp");
+        assert!(
+            !text.contains("MCP"),
+            "compact_reference must not mention MCP"
+        );
+        assert!(
+            !text.contains("mcp"),
+            "compact_reference must not mention mcp"
+        );
     }
 
     // ================================================================
@@ -1386,7 +1429,10 @@ mod tests {
     #[test]
     fn all_topics_text_does_not_reference_mcp() {
         let text = super::all_topics_text();
-        assert!(!text.contains("mcp-config"), "all_topics_text must not reference mcp-config");
+        assert!(
+            !text.contains("mcp-config"),
+            "all_topics_text must not reference mcp-config"
+        );
         // Note: the string "MCP" could appear generically in docs,
         // but "mcp-config" is the specific command that was removed.
     }

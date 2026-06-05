@@ -119,12 +119,7 @@ fn resolve_hook(config: &HooksConfig, event_type: HookEventType) -> Option<&Hook
     }
 }
 
-pub fn fire_hook(
-    root: &Path,
-    config: &HooksConfig,
-    event_type: HookEventType,
-    payload_json: &str,
-) {
+pub fn fire_hook(root: &Path, config: &HooksConfig, event_type: HookEventType, payload_json: &str) {
     if !config.settings.enabled {
         return;
     }
@@ -225,9 +220,7 @@ pub fn list_hooks(root: &Path) -> String {
             ];
             for (name, hook) in events {
                 if let Some(h) = hook {
-                    let timeout = h
-                        .timeout_seconds
-                        .unwrap_or(config.settings.timeout_seconds);
+                    let timeout = h.timeout_seconds.unwrap_or(config.settings.timeout_seconds);
                     lines.push(format!(
                         "{name}: {cmd} (timeout: {timeout}s)",
                         cmd = h.command

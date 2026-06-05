@@ -16,16 +16,17 @@ use crate::output::Response;
 use crate::storage;
 
 use self::client::GithubClient;
-use self::conflict::{resolve_conflicts_interactive, Resolution, ResolvedConflict};
-use self::diff::{three_way_merge, FieldConflict, FieldUpdates, MergeResult};
+use self::conflict::{Resolution, ResolvedConflict, resolve_conflicts_interactive};
+use self::diff::{FieldConflict, FieldUpdates, MergeResult, three_way_merge};
 use self::field_map::{
-    format_comment_for_github, github_comment_to_story, is_sync_generated_comment,
-    issue_to_remote_snapshot, story_to_create_request, updates_to_issue_request, RemoteSnapshot,
+    RemoteSnapshot, format_comment_for_github, github_comment_to_story, is_sync_generated_comment,
+    issue_to_remote_snapshot, story_to_create_request, updates_to_issue_request,
 };
 use self::initial::{get_github_token, run_initial_setup};
 use self::sync_state::{
-    create_backup, find_mapping, find_mapping_by_issue, load_base_snapshot, load_sync_config,
-    save_base_snapshot, save_sync_config, GithubSyncConfig, StoryIssueMapping, SyncMode,
+    GithubSyncConfig, StoryIssueMapping, SyncMode, create_backup, find_mapping,
+    find_mapping_by_issue, load_base_snapshot, load_sync_config, save_base_snapshot,
+    save_sync_config,
 };
 
 // ---------------------------------------------------------------------------
@@ -77,10 +78,7 @@ impl SyncReport {
         }
 
         if !self.pulled.is_empty() {
-            lines.push(format!(
-                "Pulled {} stories from GitHub:",
-                self.pulled.len()
-            ));
+            lines.push(format!("Pulled {} stories from GitHub:", self.pulled.len()));
             for id in &self.pulled {
                 lines.push(format!("  {id}"));
             }
@@ -150,11 +148,7 @@ enum SyncStoryResult {
 
 /// Run GitHub sync. If `story_id` is Some, sync only that story.
 /// If `dry_run` is true, preview changes without applying them.
-pub fn run_sync(
-    root: &Path,
-    story_id: Option<&str>,
-    dry_run: bool,
-) -> Result<Response, AppError> {
+pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Response, AppError> {
     // 1. Load sync config
     let mut config = match load_sync_config(root)? {
         Some(cfg) => {
@@ -199,15 +193,19 @@ pub fn run_sync(
 
     // 4. Single-story sync
     if let Some(sid) = story_id {
-        let story = open_stories
-            .iter()
-            .find(|s| s.id == sid)
-            .ok_or_else(|| {
-                AppError::NotFound(format!("story `{sid}` not found in open stories"))
-            })?;
+        let story = open_stories.iter().find(|s| s.id == sid).ok_or_else(|| {
+            AppError::NotFound(format!("story `{sid}` not found in open stories"))
+        })?;
 
         match sync_single_story(
-            root, &client, &mut config, story, &states, &members, &prefix, dry_run,
+            root,
+            &client,
+            &mut config,
+            story,
+            &states,
+            &members,
+            &prefix,
+            dry_run,
         ) {
             Ok(result) => record_result(&mut report, &story.id, result),
             Err(e) => report.errors.push((story.id.clone(), e.to_string())),
@@ -244,8 +242,7 @@ pub fn run_sync(
             // Skip placeholder mappings (story_id is empty -- from initial import)
             if story_id_owned.is_empty() {
                 // This is a placeholder from initial setup "Import all" -- treat as unmapped
-                let remote_snap =
-                    issue_to_remote_snapshot(issue, &states, &members, &prefix);
+                let remote_snap = issue_to_remote_snapshot(issue, &states, &members, &prefix);
 
                 if dry_run {
                     eprintln!(
@@ -291,7 +288,14 @@ pub fn run_sync(
             };
 
             match sync_single_story(
-                root, &client, &mut config, story, &states, &members, &prefix, dry_run,
+                root,
+                &client,
+                &mut config,
+                story,
+                &states,
+                &members,
+                &prefix,
+                dry_run,
             ) {
                 Ok(result) => {
                     synced_story_ids.push(story.id.clone());
@@ -359,7 +363,14 @@ pub fn run_sync(
         if find_mapping(&config, &story.id).is_some() {
             // Mapped but not in pull results -- check for local-only changes to push
             match sync_single_story(
-                root, &client, &mut config, story, &states, &members, &prefix, dry_run,
+                root,
+                &client,
+                &mut config,
+                story,
+                &states,
+                &members,
+                &prefix,
+                dry_run,
             ) {
                 Ok(result) => record_result(&mut report, &story.id, result),
                 Err(e) => report.errors.push((story.id.clone(), e.to_string())),
@@ -376,7 +387,13 @@ pub fn run_sync(
             }
 
             match create_issue_from_story(
-                root, &client, &mut config, story, &states, &members, &prefix,
+                root,
+                &client,
+                &mut config,
+                story,
+                &states,
+                &members,
+                &prefix,
             ) {
                 Ok(issue_number) => {
                     report.created_issues.push((story.id.clone(), issue_number));
@@ -427,16 +444,17 @@ fn sync_single_story(
     let remote_snap = issue_to_remote_snapshot(&issue, states, members, prefix);
 
     // Build a StorySnapshot from the remote data for diffing
-    let remote_as_story =
-        remote_snapshot_to_story_snapshot(&remote_snap, &issue, &story.id);
+    let remote_as_story = remote_snapshot_to_story_snapshot(&remote_snap, &issue, &story.id);
 
     // Load base snapshot (falls back to current local state for first sync)
     let base = load_base_snapshot(root, &story.id)?.unwrap_or_else(|| story.clone());
 
     // Fetch remote comments
     let remote_comments = client.list_comments(mapping.issue_number, None)?;
-    let remote_story_comments: Vec<crate::domain::StoryComment> =
-        remote_comments.iter().map(github_comment_to_story).collect();
+    let remote_story_comments: Vec<crate::domain::StoryComment> = remote_comments
+        .iter()
+        .map(github_comment_to_story)
+        .collect();
 
     // Attach remote comments for merge
     let mut remote_for_merge = remote_as_story;
@@ -480,8 +498,7 @@ fn sync_single_story(
     let mut unresolved_conflicts: Vec<FieldConflict> = Vec::new();
 
     if has_conflicts {
-        let resolutions =
-            resolve_conflicts_interactive(&story.id, &merge_result.conflicts);
+        let resolutions = resolve_conflicts_interactive(&story.id, &merge_result.conflicts);
         for (conflict, resolved) in merge_result.conflicts.iter().zip(resolutions.iter()) {
             match resolved.resolution {
                 Resolution::Skip => unresolved_conflicts.push(conflict.clone()),
@@ -874,8 +891,7 @@ fn apply_conflict_locally(
             }
         }
         "priority" => {
-            let priority =
-                Priority::parse(&conflict.remote_value).unwrap_or(Priority::None);
+            let priority = Priority::parse(&conflict.remote_value).unwrap_or(Priority::None);
             StoryEvent::StoryPrioritySet { at: now, priority }
         }
         "awaiting" => {
@@ -933,8 +949,7 @@ fn apply_conflict_remotely(
             }
         }
         "priority" => {
-            let priority =
-                Priority::parse(&conflict.local_value).unwrap_or(Priority::None);
+            let priority = Priority::parse(&conflict.local_value).unwrap_or(Priority::None);
             updates.priority = Some(priority);
         }
         "awaiting" => {

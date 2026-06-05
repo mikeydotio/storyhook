@@ -174,8 +174,5 @@ fn export_and_import_roundtrip_with_types() {
 
     // Verify types.toml was restored with the custom type:
     // doctor should not flag "hotfix" as unknown
-    story(dir2.path())
-        .args(["doctor"])
-        .assert()
-        .success();
+    story(dir2.path()).args(["doctor"]).assert().success();
 }
