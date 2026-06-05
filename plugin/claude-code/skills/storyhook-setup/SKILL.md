@@ -13,12 +13,10 @@ Set up storyhook CLI and project configuration.
 
 ### 1. Check CLI availability
 
-Run `which story` to see if the CLI is installed.
+Run `command -v story` to see if the CLI is installed.
 
-- **If missing**, ask the user which install method they prefer:
-  - `cargo install storyhook` (requires Rust toolchain)
-  - Binary download: `curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | bash`
-- After install, verify with `story --help`
+- **If missing**, follow the `storyhook-install` skill to install and verify the `story` CLI. It asks the user's permission and offers the official installer or cargo. Do not continue until `story --help` works.
+- **If present**, continue to the next step.
 
 ### 2. Initialize the project
 
@@ -67,4 +65,4 @@ Ask if the user wants git hooks installed for automatic story syncing.
 
 ### 6. Next steps
 
-Suggest running `/storyhook:context` to see the current project state and start working.
+Suggest running `/storyhook:storyhook-context` to see the current project state and start working.
