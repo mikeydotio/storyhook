@@ -78,6 +78,35 @@ Available targets:
 - `story-x86_64-apple-darwin.tar.gz` — macOS Intel
 - `story-aarch64-apple-darwin.tar.gz` — macOS Apple Silicon
 
+### Claude Code plugin
+
+storyhook ships a Claude Code plugin (`plugin/claude-code/`) that adds workflow skills
+(`/storyhook:storyhook-context`, `/storyhook:storyhook-work`, …) and session hooks. There
+are two ways to install it; both register it properly so Claude Code loads the
+`/storyhook:*` commands.
+
+**CLI-first** — if you already installed the `story` CLI (above):
+
+```bash
+story plugin install claude-code
+```
+
+This registers `mikeydotio/storyhook` as a marketplace and installs the plugin through the
+`claude` CLI. It requires the `claude` CLI on your PATH.
+
+**Marketplace-first** — if you prefer to install the plugin before the CLI:
+
+```text
+/plugin marketplace add mikeydotio/storyhook
+/plugin install storyhook@storyhook
+```
+
+The marketplace route installs the plugin but not the `story` CLI. Once the plugin loads,
+run `/storyhook:storyhook-install` and the plugin will install and verify the CLI for you.
+
+> After installing the plugin (either route), start a new Claude Code session so the
+> `/storyhook:*` commands load.
+
 ## Uninstall
 
 If installed via the install script or manual download:
@@ -91,6 +120,15 @@ If installed via Cargo:
 ```bash
 cargo uninstall storyhook
 ```
+
+To remove the Claude Code plugin:
+
+```bash
+story plugin uninstall claude-code
+```
+
+This unregisters the plugin via the `claude` CLI, cleans up project-local config, and
+removes any legacy plugin directory left by older versions.
 
 ## Quick start
 
