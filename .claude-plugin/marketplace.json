@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "storyhook",
+  "description": "Storyhook — AI-native project management for coding agents.",
+  "owner": { "name": "mikeydotio" },
+  "plugins": [
+    {
+      "name": "storyhook",
+      "description": "AI-native project management for coding agents. Proactive story tracking, session handoffs, and dependency-aware task selection via the storyhook CLI.",
+      "source": "./plugin/claude-code",
+      "version": "0.1.0",
+      "author": { "name": "mikeydotio" },
+      "homepage": "https://github.com/mikeydotio/storyhook"
+    }
+  ]
+}
