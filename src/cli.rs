@@ -19,17 +19,32 @@ pub enum GraphMode {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PhaseAction {
     List,
-    Show { phase: String },
-    Add { id: String, phase: String },
-    Remove { id: String },
-    Create { phase: String, title: Option<String> },
+    Show {
+        phase: String,
+    },
+    Add {
+        id: String,
+        phase: String,
+    },
+    Remove {
+        id: String,
+    },
+    Create {
+        phase: String,
+        title: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeAction {
     List,
-    Add { slug: String, description: Option<String> },
-    Remove { slug: String },
+    Add {
+        slug: String,
+        description: Option<String>,
+    },
+    Remove {
+        slug: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -321,13 +336,13 @@ pub fn split_global_flags(args: &[String]) -> (bool, bool, bool, Vec<String>) {
                 // If --json is followed by a JSON object literal, treat it as a
                 // subcommand-specific --json <value> (e.g. `story set SH-1 --json '{...}'`)
                 // rather than the global JSON-output flag.
-                if let Some(next) = args.get(i + 1) {
-                    if next.starts_with('{') {
-                        filtered.push(args[i].clone());
-                        filtered.push(next.clone());
-                        i += 2;
-                        continue;
-                    }
+                if let Some(next) = args.get(i + 1)
+                    && next.starts_with('{')
+                {
+                    filtered.push(args[i].clone());
+                    filtered.push(next.clone());
+                    i += 2;
+                    continue;
                 }
                 json = true;
             }
@@ -508,7 +523,8 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
                     "--super" => {
                         let value = args.get(index + 1).ok_or_else(|| {
                             AppError::Usage(
-                                "usage: story state add <slug> --super OPEN|CLOSED [--role active]".to_string(),
+                                "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
+                                    .to_string(),
                             )
                         })?;
                         superstate = Some(value.clone());
@@ -521,7 +537,8 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
                     "--role" => {
                         let value = args.get(index + 1).ok_or_else(|| {
                             AppError::Usage(
-                                "usage: story state add <slug> --super OPEN|CLOSED [--role active]".to_string(),
+                                "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
+                                    .to_string(),
                             )
                         })?;
                         role = Some(value.clone());
@@ -533,7 +550,8 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
                     }
                     _ => {
                         return Err(AppError::Usage(
-                            "usage: story state add <slug> --super OPEN|CLOSED [--role active]".to_string(),
+                            "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
+                                .to_string(),
                         ));
                     }
                 }
@@ -542,7 +560,10 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
             Ok(Invocation::StateAdd {
                 slug,
                 superstate: superstate.ok_or_else(|| {
-                    AppError::Usage("usage: story state add <slug> --super OPEN|CLOSED [--role active]".to_string())
+                    AppError::Usage(
+                        "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
+                            .to_string(),
+                    )
                 })?,
                 role,
             })
@@ -681,9 +702,9 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
     while index < args.len() {
         match args[index].as_str() {
             "--count" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage(usage.to_string())
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 count = value.parse::<usize>().map_err(|_| {
                     AppError::Usage("--count must be a positive integer".to_string())
                 })?;
@@ -695,9 +716,9 @@ fn parse_next(args: &[String]) -> Result<Invocation, AppError> {
                 index += 2;
             }
             "--phase" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage(usage.to_string())
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 phase = Some(value.clone());
                 index += 2;
             }
@@ -800,9 +821,9 @@ fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
     while index < args.len() {
         match args[index].as_str() {
             "--format" => {
-                let value = args.get(index + 1).ok_or_else(|| {
-                    AppError::Usage(usage.to_string())
-                })?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 format = Some(value.clone());
                 index += 2;
             }
@@ -827,7 +848,8 @@ fn validate_phase_number(s: &str) -> Result<(), AppError> {
 }
 
 fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story phase list|show <N>|add <id> <N>|remove <id>|create <N> [\"<title>\"]";
+    let usage =
+        "usage: story phase list|show <N>|add <id> <N>|remove <id>|create <N> [\"<title>\"]";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -862,9 +884,7 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
         "remove" => {
             let id = args
                 .get(2)
-                .ok_or_else(|| {
-                    AppError::Usage("usage: story phase remove <id>".to_string())
-                })?
+                .ok_or_else(|| AppError::Usage("usage: story phase remove <id>".to_string()))?
                 .clone();
             Ok(Invocation::Phase {
                 action: PhaseAction::Remove { id },
@@ -874,9 +894,7 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
             let phase = args
                 .get(2)
                 .ok_or_else(|| {
-                    AppError::Usage(
-                        "usage: story phase create <N> [\"<title>\"]".to_string(),
-                    )
+                    AppError::Usage("usage: story phase create <N> [\"<title>\"]".to_string())
                 })?
                 .clone();
             validate_phase_number(&phase)?;
@@ -906,7 +924,11 @@ fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
         "add" => {
             let slug = args
                 .get(2)
-                .ok_or_else(|| AppError::Usage("usage: story type add <slug> [--description \"<text>\"]".to_string()))?
+                .ok_or_else(|| {
+                    AppError::Usage(
+                        "usage: story type add <slug> [--description \"<text>\"]".to_string(),
+                    )
+                })?
                 .clone();
             let mut description = None;
             let mut index = 3;
@@ -914,7 +936,10 @@ fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
                 match args[index].as_str() {
                     "--description" => {
                         let value = args.get(index + 1).ok_or_else(|| {
-                            AppError::Usage("usage: story type add <slug> [--description \"<text>\"]".to_string())
+                            AppError::Usage(
+                                "usage: story type add <slug> [--description \"<text>\"]"
+                                    .to_string(),
+                            )
                         })?;
                         description = Some(value.clone());
                         index += 2;
@@ -1146,8 +1171,18 @@ fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
-    let flags: Vec<&str> = args.iter().skip(1).filter(|a| a.starts_with("--")).map(|a| a.as_str()).collect();
-    let positional: Vec<&str> = args.iter().skip(1).filter(|a| !a.starts_with("--")).map(|a| a.as_str()).collect();
+    let flags: Vec<&str> = args
+        .iter()
+        .skip(1)
+        .filter(|a| a.starts_with("--"))
+        .map(|a| a.as_str())
+        .collect();
+    let positional: Vec<&str> = args
+        .iter()
+        .skip(1)
+        .filter(|a| !a.starts_with("--"))
+        .map(|a| a.as_str())
+        .collect();
 
     let has_compact = flags.contains(&"--compact");
     let has_all = flags.contains(&"--all");
@@ -1208,9 +1243,9 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
                         let value = args.get(index + 1).ok_or_else(|| {
                             AppError::Usage("--port requires a value".to_string())
                         })?;
-                        port = value.parse::<u16>().map_err(|_| {
-                            AppError::Usage(format!("invalid port: {value}"))
-                        })?;
+                        port = value
+                            .parse::<u16>()
+                            .map_err(|_| AppError::Usage(format!("invalid port: {value}")))?;
                         if port == 0 {
                             return Err(AppError::Usage("invalid port: 0".to_string()));
                         }
@@ -1240,9 +1275,9 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
                         let value = args.get(index + 1).ok_or_else(|| {
                             AppError::Usage("--port requires a value".to_string())
                         })?;
-                        port = value.parse::<u16>().map_err(|_| {
-                            AppError::Usage(format!("invalid port: {value}"))
-                        })?;
+                        port = value
+                            .parse::<u16>()
+                            .map_err(|_| AppError::Usage(format!("invalid port: {value}")))?;
                         index += 2;
                     }
                     "--root" => {
@@ -1255,9 +1290,8 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
                     _ => return Err(AppError::Usage(usage.to_string())),
                 }
             }
-            let root = root.ok_or_else(|| {
-                AppError::Usage("--serve requires --root".to_string())
-            })?;
+            let root =
+                root.ok_or_else(|| AppError::Usage("--serve requires --root".to_string()))?;
             Ok(Invocation::Web {
                 action: WebAction::Serve { port, root },
             })
@@ -1286,12 +1320,16 @@ fn parse_show(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
         return Err(AppError::Usage("usage: story show <id>".to_string()));
     }
-    Ok(Invocation::Show { id: args[1].clone() })
+    Ok(Invocation::Show {
+        id: args[1].clone(),
+    })
 }
 
 fn parse_comment(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage("usage: story comment <id> \"<text>\"".to_string()));
+        return Err(AppError::Usage(
+            "usage: story comment <id> \"<text>\"".to_string(),
+        ));
     }
     Ok(Invocation::Comment {
         id: args[1].clone(),
@@ -1301,7 +1339,9 @@ fn parse_comment(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_assign(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage("usage: story assign <id> <member>".to_string()));
+        return Err(AppError::Usage(
+            "usage: story assign <id> <member>".to_string(),
+        ));
     }
     Ok(Invocation::Assign {
         id: args[1].clone(),
@@ -1311,18 +1351,26 @@ fn parse_assign(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage("usage: story move <id> <state> [\"<comment>\"]".to_string()));
+        return Err(AppError::Usage(
+            "usage: story move <id> <state> [\"<comment>\"]".to_string(),
+        ));
     }
     Ok(Invocation::SetState {
         id: args[1].clone(),
         state: args[2].clone(),
-        comment: if args.len() > 3 { Some(join_tokens(&args[3..])) } else { None },
+        comment: if args.len() > 3 {
+            Some(join_tokens(&args[3..]))
+        } else {
+            None
+        },
     })
 }
 
 fn parse_block(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage("usage: story block <id> \"<reason>\"".to_string()));
+        return Err(AppError::Usage(
+            "usage: story block <id> \"<reason>\"".to_string(),
+        ));
     }
     Ok(Invocation::SetAwaiting {
         id: args[1].clone(),
@@ -1334,12 +1382,16 @@ fn parse_unblock(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
         return Err(AppError::Usage("usage: story unblock <id>".to_string()));
     }
-    Ok(Invocation::ClearAwaiting { id: args[1].clone() })
+    Ok(Invocation::ClearAwaiting {
+        id: args[1].clone(),
+    })
 }
 
 fn parse_prioritize(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage("usage: story prioritize <id> <level>".to_string()));
+        return Err(AppError::Usage(
+            "usage: story prioritize <id> <level>".to_string(),
+        ));
     }
     Ok(Invocation::SetPriority {
         id: args[1].clone(),
@@ -1349,9 +1401,15 @@ fn parse_prioritize(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_label(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage("usage: story label <id> <labels-csv>".to_string()));
+        return Err(AppError::Usage(
+            "usage: story label <id> <labels-csv>".to_string(),
+        ));
     }
-    let add: Vec<String> = args[2].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let add: Vec<String> = args[2]
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     Ok(Invocation::SetLabels {
         id: args[1].clone(),
         add,
@@ -1361,9 +1419,15 @@ fn parse_label(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_unlabel(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 3 {
-        return Err(AppError::Usage("usage: story unlabel <id> <labels-csv>".to_string()));
+        return Err(AppError::Usage(
+            "usage: story unlabel <id> <labels-csv>".to_string(),
+        ));
     }
-    let remove: Vec<String> = args[2].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let remove: Vec<String> = args[2]
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     Ok(Invocation::SetLabels {
         id: args[1].clone(),
         add: Vec::new(),
@@ -1375,23 +1439,34 @@ fn parse_reopen_verb(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 2 {
         return Err(AppError::Usage("usage: story reopen <id>".to_string()));
     }
-    Ok(Invocation::Reopen { id: args[1].clone() })
+    Ok(Invocation::Reopen {
+        id: args[1].clone(),
+    })
 }
 
 fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage("usage: story delete <id> \"<reason>\"".to_string()));
+        return Err(AppError::Usage(
+            "usage: story delete <id> \"<reason>\"".to_string(),
+        ));
     }
     let reason = join_tokens(&args[2..]);
     if reason.is_empty() {
-        return Err(AppError::Usage("usage: story delete <id> \"<reason>\"".to_string()));
+        return Err(AppError::Usage(
+            "usage: story delete <id> \"<reason>\"".to_string(),
+        ));
     }
-    Ok(Invocation::Delete { id: args[1].clone(), reason })
+    Ok(Invocation::Delete {
+        id: args[1].clone(),
+        reason,
+    })
 }
 
 fn parse_relate(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 4 {
-        return Err(AppError::Usage("usage: story relate <a> <relationship-type> <b>".to_string()));
+        return Err(AppError::Usage(
+            "usage: story relate <a> <relationship-type> <b>".to_string(),
+        ));
     }
     Ok(Invocation::Relate {
         a: args[1].clone(),
@@ -1403,7 +1478,9 @@ fn parse_relate(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_unrelate(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() != 4 {
-        return Err(AppError::Usage("usage: story unrelate <a> <relationship-type> <b>".to_string()));
+        return Err(AppError::Usage(
+            "usage: story unrelate <a> <relationship-type> <b>".to_string(),
+        ));
     }
     Ok(Invocation::Relate {
         a: args[1].clone(),
@@ -1415,7 +1492,9 @@ fn parse_unrelate(args: &[String]) -> Result<Invocation, AppError> {
 
 fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
-        return Err(AppError::Usage("usage: story set <id> [--field value ...]".to_string()));
+        return Err(AppError::Usage(
+            "usage: story set <id> [--field value ...]".to_string(),
+        ));
     }
     let id = args[1].clone();
     let mut title = None;
@@ -1433,32 +1512,44 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     while index < args.len() {
         match args[index].as_str() {
             "--title" => {
-                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 title = Some(value.clone());
                 index += 2;
             }
             "--state" => {
-                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 state = Some(value.clone());
                 index += 2;
             }
             "--priority" => {
-                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 priority = Some(value.clone());
                 index += 2;
             }
             "--assignee" => {
-                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 assignee = Some(value.clone());
                 index += 2;
             }
             "--labels" => {
-                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 labels = Some(value.clone());
                 index += 2;
             }
             "--blocked" => {
-                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 blocked = Some(value.clone());
                 index += 2;
             }
@@ -1467,12 +1558,16 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
                 index += 1;
             }
             "--json" => {
-                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 json = Some(value.clone());
                 index += 2;
             }
             "--type" => {
-                let value = args.get(index + 1).ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
                 story_type = Some(value.clone());
                 index += 2;
             }
@@ -1480,10 +1575,19 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
         }
     }
 
-    if title.is_none() && state.is_none() && priority.is_none() && assignee.is_none()
-        && labels.is_none() && blocked.is_none() && !unblocked && json.is_none()
-        && story_type.is_none() {
-        return Err(AppError::Usage("no fields specified. Usage: story set <id> --<field> <value> ...".to_string()));
+    if title.is_none()
+        && state.is_none()
+        && priority.is_none()
+        && assignee.is_none()
+        && labels.is_none()
+        && blocked.is_none()
+        && !unblocked
+        && json.is_none()
+        && story_type.is_none()
+    {
+        return Err(AppError::Usage(
+            "no fields specified. Usage: story set <id> --<field> <value> ...".to_string(),
+        ));
     }
 
     Ok(Invocation::SetFields {
@@ -1536,14 +1640,22 @@ mod tests {
     #[test]
     fn type_list() {
         let inv = parse_invocation(&["type".to_string(), "list".to_string()]).unwrap();
-        assert!(matches!(inv, Invocation::Type { action: TypeAction::List }));
+        assert!(matches!(
+            inv,
+            Invocation::Type {
+                action: TypeAction::List
+            }
+        ));
     }
 
     #[test]
     fn type_add_slug_only() {
-        let inv = parse_invocation(&["type".to_string(), "add".to_string(), "bug".to_string()]).unwrap();
+        let inv =
+            parse_invocation(&["type".to_string(), "add".to_string(), "bug".to_string()]).unwrap();
         match inv {
-            Invocation::Type { action: TypeAction::Add { slug, description } } => {
+            Invocation::Type {
+                action: TypeAction::Add { slug, description },
+            } => {
                 assert_eq!(slug, "bug");
                 assert_eq!(description, None);
             }
@@ -1559,9 +1671,12 @@ mod tests {
             "epic".to_string(),
             "--description".to_string(),
             "A large body of work".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match inv {
-            Invocation::Type { action: TypeAction::Add { slug, description } } => {
+            Invocation::Type {
+                action: TypeAction::Add { slug, description },
+            } => {
                 assert_eq!(slug, "epic");
                 assert_eq!(description.as_deref(), Some("A large body of work"));
             }
@@ -1571,9 +1686,12 @@ mod tests {
 
     #[test]
     fn type_remove() {
-        let inv = parse_invocation(&["type".to_string(), "remove".to_string(), "bug".to_string()]).unwrap();
+        let inv = parse_invocation(&["type".to_string(), "remove".to_string(), "bug".to_string()])
+            .unwrap();
         match inv {
-            Invocation::Type { action: TypeAction::Remove { slug } } => {
+            Invocation::Type {
+                action: TypeAction::Remove { slug },
+            } => {
                 assert_eq!(slug, "bug");
             }
             other => panic!("expected Type::Remove, got {:?}", other),
@@ -1609,14 +1727,22 @@ mod tests {
     #[test]
     fn epic_list() {
         let inv = parse_invocation(&["epic".to_string(), "list".to_string()]).unwrap();
-        assert!(matches!(inv, Invocation::Epic { action: EpicAction::List }));
+        assert!(matches!(
+            inv,
+            Invocation::Epic {
+                action: EpicAction::List
+            }
+        ));
     }
 
     #[test]
     fn epic_show() {
-        let inv = parse_invocation(&["epic".to_string(), "show".to_string(), "SH-1".to_string()]).unwrap();
+        let inv = parse_invocation(&["epic".to_string(), "show".to_string(), "SH-1".to_string()])
+            .unwrap();
         match inv {
-            Invocation::Epic { action: EpicAction::Show { id } } => {
+            Invocation::Epic {
+                action: EpicAction::Show { id },
+            } => {
                 assert_eq!(id, "SH-1");
             }
             other => panic!("expected Epic::Show, got {:?}", other),
@@ -1629,9 +1755,12 @@ mod tests {
             "epic".to_string(),
             "create".to_string(),
             "My Epic Title".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match inv {
-            Invocation::Epic { action: EpicAction::Create { title } } => {
+            Invocation::Epic {
+                action: EpicAction::Create { title },
+            } => {
                 assert_eq!(title, "My Epic Title");
             }
             other => panic!("expected Epic::Create, got {:?}", other),
@@ -1646,9 +1775,12 @@ mod tests {
             "My".to_string(),
             "Epic".to_string(),
             "Title".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match inv {
-            Invocation::Epic { action: EpicAction::Create { title } } => {
+            Invocation::Epic {
+                action: EpicAction::Create { title },
+            } => {
                 assert_eq!(title, "My Epic Title");
             }
             other => panic!("expected Epic::Create, got {:?}", other),
@@ -1662,9 +1794,12 @@ mod tests {
             "add".to_string(),
             "SH-1".to_string(),
             "SH-2".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match inv {
-            Invocation::Epic { action: EpicAction::Add { epic_id, story_id } } => {
+            Invocation::Epic {
+                action: EpicAction::Add { epic_id, story_id },
+            } => {
                 assert_eq!(epic_id, "SH-1");
                 assert_eq!(story_id, "SH-2");
             }
@@ -1698,11 +1833,7 @@ mod tests {
 
     #[test]
     fn epic_add_missing_story_id_errors() {
-        let result = parse_invocation(&[
-            "epic".to_string(),
-            "add".to_string(),
-            "SH-1".to_string(),
-        ]);
+        let result = parse_invocation(&["epic".to_string(), "add".to_string(), "SH-1".to_string()]);
         assert!(result.is_err());
     }
 
@@ -1715,9 +1846,14 @@ mod tests {
             "My story".to_string(),
             "--type".to_string(),
             "bug".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match inv {
-            Invocation::New { title, state, story_type } => {
+            Invocation::New {
+                title,
+                state,
+                story_type,
+            } => {
                 assert_eq!(title, "My story");
                 assert_eq!(state, None);
                 assert_eq!(story_type.as_deref(), Some("bug"));
@@ -1735,9 +1871,14 @@ mod tests {
             "open".to_string(),
             "--type".to_string(),
             "epic".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match inv {
-            Invocation::New { title, state, story_type } => {
+            Invocation::New {
+                title,
+                state,
+                story_type,
+            } => {
                 assert_eq!(title, "My story");
                 assert_eq!(state.as_deref(), Some("open"));
                 assert_eq!(story_type.as_deref(), Some("epic"));
@@ -1748,10 +1889,7 @@ mod tests {
 
     #[test]
     fn new_without_type_flag() {
-        let inv = parse_invocation(&[
-            "new".to_string(),
-            "My story".to_string(),
-        ]).unwrap();
+        let inv = parse_invocation(&["new".to_string(), "My story".to_string()]).unwrap();
         match inv {
             Invocation::New { story_type, .. } => {
                 assert_eq!(story_type, None);
@@ -1762,11 +1900,8 @@ mod tests {
 
     #[test]
     fn list_with_type_flag() {
-        let inv = parse_invocation(&[
-            "list".to_string(),
-            "--type".to_string(),
-            "epic".to_string(),
-        ]).unwrap();
+        let inv = parse_invocation(&["list".to_string(), "--type".to_string(), "epic".to_string()])
+            .unwrap();
         match inv {
             Invocation::List { story_type, .. } => {
                 assert_eq!(story_type.as_deref(), Some("epic"));
@@ -1793,7 +1928,8 @@ mod tests {
             "SH-1".to_string(),
             "--type".to_string(),
             "bug".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match inv {
             Invocation::SetFields { id, story_type, .. } => {
                 assert_eq!(id, "SH-1");
@@ -1812,9 +1948,15 @@ mod tests {
             "New title".to_string(),
             "--type".to_string(),
             "feature".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match inv {
-            Invocation::SetFields { id, title, story_type, .. } => {
+            Invocation::SetFields {
+                id,
+                title,
+                story_type,
+                ..
+            } => {
                 assert_eq!(id, "SH-1");
                 assert_eq!(title.as_deref(), Some("New title"));
                 assert_eq!(story_type.as_deref(), Some("feature"));
@@ -1830,7 +1972,8 @@ mod tests {
             "SH-1".to_string(),
             "--title".to_string(),
             "New title".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match inv {
             Invocation::SetFields { story_type, .. } => {
                 assert_eq!(story_type, None);

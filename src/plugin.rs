@@ -21,14 +21,22 @@ fn bundled_plugin_source() -> Option<PathBuf> {
         // Development: repo/plugin/claude-code/
         if let Some(repo_root) = exe.parent().and_then(|p| p.parent()) {
             let candidate = repo_root.join("plugin").join("claude-code");
-            if candidate.join(".claude-plugin").join("plugin.json").exists() {
+            if candidate
+                .join(".claude-plugin")
+                .join("plugin.json")
+                .exists()
+            {
                 return Some(candidate);
             }
         }
         // Installed: next to binary in plugin/claude-code/
         if let Some(bin_dir) = exe.parent() {
             let candidate = bin_dir.join("plugin").join("claude-code");
-            if candidate.join(".claude-plugin").join("plugin.json").exists() {
+            if candidate
+                .join(".claude-plugin")
+                .join("plugin.json")
+                .exists()
+            {
                 return Some(candidate);
             }
         }
@@ -36,7 +44,11 @@ fn bundled_plugin_source() -> Option<PathBuf> {
 
     // Check relative to CWD (for development)
     let candidate = PathBuf::from("plugin/claude-code");
-    if candidate.join(".claude-plugin").join("plugin.json").exists() {
+    if candidate
+        .join(".claude-plugin")
+        .join("plugin.json")
+        .exists()
+    {
         return Some(candidate);
     }
 
@@ -103,8 +115,10 @@ pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
     if config_path.exists() {
         msg.push_str("created .storyhook/plugin-config.toml with default settings\n");
     }
-    msg.push_str("\nThe plugin adds session hooks and workflow skills to Claude Code.\n\
-                   Use /storyhook:context to get started (or run story load-context directly).");
+    msg.push_str(
+        "\nThe plugin adds session hooks and workflow skills to Claude Code.\n\
+                   Use /storyhook:context to get started (or run story load-context directly).",
+    );
     Ok(msg)
 }
 

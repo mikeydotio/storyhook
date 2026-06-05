@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -67,12 +67,8 @@ impl EventSource {
                         if let Ok(ct_event) = crossterm::event::read() {
                             let event = match ct_event {
                                 crossterm::event::Event::Key(key) => Some(Event::Key(key)),
-                                crossterm::event::Event::Mouse(mouse) => {
-                                    Some(Event::Mouse(mouse))
-                                }
-                                crossterm::event::Event::Resize(w, h) => {
-                                    Some(Event::Resize(w, h))
-                                }
+                                crossterm::event::Event::Mouse(mouse) => Some(Event::Mouse(mouse)),
+                                crossterm::event::Event::Resize(w, h) => Some(Event::Resize(w, h)),
                                 _ => None,
                             };
                             if let Some(e) = event
@@ -105,11 +101,13 @@ impl EventSource {
 
         let tx_notify = tx.clone();
         let debounce_ms = 200u128;
-        let last_event = Arc::new(std::sync::Mutex::new(Instant::now() - Duration::from_secs(1)));
+        let last_event = Arc::new(std::sync::Mutex::new(
+            Instant::now() - Duration::from_secs(1),
+        ));
 
         let last_event_clone = Arc::clone(&last_event);
-        let mut watcher = match notify::recommended_watcher(
-            move |res: Result<notify::Event, notify::Error>| {
+        let mut watcher =
+            match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                 if res.is_ok() {
                     let mut last = last_event_clone.lock().unwrap();
                     let now = Instant::now();
@@ -118,11 +116,10 @@ impl EventSource {
                         let _ = tx_notify.send(Event::DataChanged);
                     }
                 }
-            },
-        ) {
-            Ok(w) => w,
-            Err(_) => return, // If watcher creation fails, silently give up
-        };
+            }) {
+                Ok(w) => w,
+                Err(_) => return, // If watcher creation fails, silently give up
+            };
 
         // Watch the stories directory if it exists
         if watch_path.exists() {

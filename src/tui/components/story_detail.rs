@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::domain::{Priority, SuperState};
@@ -431,7 +431,11 @@ impl Component for StoryDetail {
         if self.mode == DetailMode::EditingPriority && self.selected_field == 2 {
             lines.push(render_label_span("Priority", true, label_width, &theme));
             for (i, p) in PRIORITY_OPTIONS.iter().enumerate() {
-                let marker = if i == self.priority_cursor { "> " } else { "  " };
+                let marker = if i == self.priority_cursor {
+                    "> "
+                } else {
+                    "  "
+                };
                 let style = if i == self.priority_cursor {
                     theme.cursor
                 } else {
@@ -544,10 +548,7 @@ impl Component for StoryDetail {
         if self.mode == DetailMode::AddingComment {
             lines.push(Line::from(vec![
                 Span::raw(" ".repeat(label_width)),
-                Span::styled(
-                    format!("> {}", self.comment_input.value()),
-                    theme.cursor,
-                ),
+                Span::styled(format!("> {}", self.comment_input.value()), theme.cursor),
             ]));
         }
 
@@ -594,7 +595,11 @@ impl Component for StoryDetail {
             0
         };
 
-        let visible_lines: Vec<Line> = lines.into_iter().skip(scroll).take(visible_height).collect();
+        let visible_lines: Vec<Line> = lines
+            .into_iter()
+            .skip(scroll)
+            .take(visible_height)
+            .collect();
 
         frame.render_widget(Paragraph::new(visible_lines), inner);
     }
@@ -696,12 +701,10 @@ mod tests {
             superstate: SuperState::Open,
             assignee: Some("mikey".to_string()),
             awaiting: None,
-            comments: vec![
-                StoryComment {
-                    at: "2026-01-02T00:00:00Z".to_string(),
-                    text: "First comment".to_string(),
-                },
-            ],
+            comments: vec![StoryComment {
+                at: "2026-01-02T00:00:00Z".to_string(),
+                text: "First comment".to_string(),
+            }],
             relationships: vec![],
             priority: Priority::High,
             labels: vec!["bug".to_string(), "tui".to_string()],
@@ -711,12 +714,7 @@ mod tests {
     }
 
     fn make_state(stories: Vec<StorySnapshot>) -> AppState {
-        let data = DataStore::from_test_data(
-            test_states(),
-            stories,
-            "SH".to_string(),
-            vec![],
-        );
+        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![]);
         AppState {
             data,
             focus: FocusStack::new(FocusTarget::Board),
@@ -831,10 +829,7 @@ mod tests {
         detail.handle_key(key(KeyCode::Char('e')), &state);
         assert_eq!(detail.mode, DetailMode::EditingPriority);
         // Should be positioned on High (current priority)
-        assert_eq!(
-            PRIORITY_OPTIONS[detail.priority_cursor],
-            Priority::High
-        );
+        assert_eq!(PRIORITY_OPTIONS[detail.priority_cursor], Priority::High);
     }
 
     #[test]
@@ -1004,7 +999,10 @@ mod tests {
 
         // Enter immediately (empty reason)
         let actions = detail.handle_key(key(KeyCode::Enter), &state);
-        assert!(actions.is_empty(), "Empty awaiting reason should be rejected");
+        assert!(
+            actions.is_empty(),
+            "Empty awaiting reason should be rejected"
+        );
     }
 
     // =======================================================================

@@ -51,8 +51,14 @@ fn scaffold_agents_md_no_mcp_references() {
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(!stdout.contains("MCP"), "agents-md scaffold must not contain 'MCP'");
-    assert!(!stdout.contains("mcp"), "agents-md scaffold must not contain 'mcp'");
+    assert!(
+        !stdout.contains("MCP"),
+        "agents-md scaffold must not contain 'MCP'"
+    );
+    assert!(
+        !stdout.contains("mcp"),
+        "agents-md scaffold must not contain 'mcp'"
+    );
 }
 
 #[test]
@@ -83,8 +89,14 @@ fn scaffold_cursor_rules_no_mcp_references() {
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(!stdout.contains("MCP"), "cursor-rules scaffold must not contain 'MCP'");
-    assert!(!stdout.contains("mcp"), "cursor-rules scaffold must not contain 'mcp'");
+    assert!(
+        !stdout.contains("MCP"),
+        "cursor-rules scaffold must not contain 'MCP'"
+    );
+    assert!(
+        !stdout.contains("mcp"),
+        "cursor-rules scaffold must not contain 'mcp'"
+    );
 }
 
 #[test]
@@ -106,8 +118,14 @@ fn scaffold_claude_md_no_mcp_references() {
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(!stdout.contains("MCP"), "claude-md scaffold must not contain 'MCP'");
-    assert!(!stdout.contains("mcp"), "claude-md scaffold must not contain 'mcp'");
+    assert!(
+        !stdout.contains("MCP"),
+        "claude-md scaffold must not contain 'MCP'"
+    );
+    assert!(
+        !stdout.contains("mcp"),
+        "claude-md scaffold must not contain 'mcp'"
+    );
 }
 
 #[test]

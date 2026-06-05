@@ -34,7 +34,13 @@ fn type_add_and_list_shows_new_type() {
     story(dir.path()).arg("init").assert().success();
 
     story(dir.path())
-        .args(["type", "add", "spike", "--description", "Time-boxed investigation"])
+        .args([
+            "type",
+            "add",
+            "spike",
+            "--description",
+            "Time-boxed investigation",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("added type spike"));
@@ -145,10 +151,7 @@ fn type_remove_unused_succeeds() {
         .stdout(predicate::str::contains("removed type chore"));
 
     // Verify it's gone from the list
-    let output = story(dir.path())
-        .args(["type", "list"])
-        .assert()
-        .success();
+    let output = story(dir.path()).args(["type", "list"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(!stdout.contains("chore"));
 }
@@ -220,10 +223,7 @@ fn set_type_changes_story_type() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    story(dir.path())
-        .args(["new", "A task"])
-        .assert()
-        .success();
+    story(dir.path()).args(["new", "A task"]).assert().success();
 
     story(dir.path())
         .args(["set", "SH-1", "--type", "epic"])
@@ -242,10 +242,7 @@ fn set_unknown_type_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    story(dir.path())
-        .args(["new", "A task"])
-        .assert()
-        .success();
+    story(dir.path()).args(["new", "A task"]).assert().success();
 
     story(dir.path())
         .args(["set", "SH-1", "--type", "nonexistent"])
@@ -446,10 +443,7 @@ fn epic_list_shows_only_epics_with_progress() {
         .assert()
         .success();
 
-    let output = story(dir.path())
-        .args(["epic", "list"])
-        .assert()
-        .success();
+    let output = story(dir.path()).args(["epic", "list"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     // Should show the epic with progress
     assert!(stdout.contains("SH-1"));
@@ -497,7 +491,9 @@ fn epic_show_displays_progress() {
         .args(["epic", "show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("progress: 1/2 children done (50%)"));
+        .stdout(predicate::str::contains(
+            "progress: 1/2 children done (50%)",
+        ));
 }
 
 #[test]
@@ -544,10 +540,7 @@ fn show_displays_progress_in_human_output() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    story(dir.path())
-        .args(["new", "Parent"])
-        .assert()
-        .success();
+    story(dir.path()).args(["new", "Parent"]).assert().success();
     story(dir.path())
         .args(["new", "Child A"])
         .assert()
@@ -584,7 +577,9 @@ fn show_displays_progress_in_human_output() {
         .args(["show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("progress: 1/2 children done (50%)"));
+        .stdout(predicate::str::contains(
+            "progress: 1/2 children done (50%)",
+        ));
 }
 
 #[test]
@@ -597,10 +592,7 @@ fn list_shows_type_badge_in_human_output() {
         .assert()
         .success();
 
-    let output = story(dir.path())
-        .args(["list"])
-        .assert()
-        .success();
+    let output = story(dir.path()).args(["list"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("[bug]"));
 }
@@ -615,10 +607,7 @@ fn list_shows_default_badge_for_untyped_story() {
         .assert()
         .success();
 
-    let output = story(dir.path())
-        .args(["list"])
-        .assert()
-        .success();
+    let output = story(dir.path()).args(["list"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("[Default]"));
 }
@@ -815,7 +804,9 @@ fn full_epic_lifecycle() {
         .args(["epic", "show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("progress: 1/3 children done (33%)"));
+        .stdout(predicate::str::contains(
+            "progress: 1/3 children done (33%)",
+        ));
 
     // 8. Complete remaining children
     story(dir.path())
@@ -832,13 +823,12 @@ fn full_epic_lifecycle() {
         .args(["epic", "show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("progress: 3/3 children done (100%)"));
+        .stdout(predicate::str::contains(
+            "progress: 3/3 children done (100%)",
+        ));
 
     // 10. epic list shows the complete epic
-    let output = story(dir.path())
-        .args(["epic", "list"])
-        .assert()
-        .success();
+    let output = story(dir.path()).args(["epic", "list"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("SH-1"));
     assert!(stdout.contains("(3/3)"));

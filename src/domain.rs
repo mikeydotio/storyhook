@@ -453,10 +453,7 @@ pub fn inverse_relation(relation: &str) -> Option<&'static str> {
 }
 
 pub fn is_mutual_relation(relation: &str) -> bool {
-    matches!(
-        relation,
-        "relates-to" | "duplicate-of"
-    )
+    matches!(relation, "relates-to" | "duplicate-of")
 }
 
 pub fn compute_integrity_issues(
@@ -1074,9 +1071,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        Priority, StateDef, StoryEvent, StoryRelation, StorySnapshot, SuperState,
-        compute_progress, derive_family_relationships, fold_story, has_children,
-        last_activity_type, validate_state_defs, would_create_parent_cycle,
+        Priority, StateDef, StoryEvent, StoryRelation, StorySnapshot, SuperState, compute_progress,
+        derive_family_relationships, fold_story, has_children, last_activity_type,
+        validate_state_defs, would_create_parent_cycle,
     };
 
     #[test]

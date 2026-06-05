@@ -9,8 +9,8 @@ pub mod status_bar;
 pub mod story_detail;
 
 use crossterm::event::{KeyEvent, MouseEvent};
-use ratatui::layout::Rect;
 use ratatui::Frame;
+use ratatui::layout::Rect;
 
 use super::action::Action;
 use super::state::AppState;

@@ -43,7 +43,6 @@ fn main() {
         return;
     }
 
-
     let options = CliOptions {
         json,
         quiet,

@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::tui::action::Action;
 use crate::tui::components::modal::render_modal;
@@ -64,7 +64,11 @@ impl Component for Help {
         let max_scroll = total.saturating_sub(visible_height);
         let scroll = (self.scroll_offset as usize).min(max_scroll);
 
-        let visible: Vec<Line> = lines.into_iter().skip(scroll).take(visible_height).collect();
+        let visible: Vec<Line> = lines
+            .into_iter()
+            .skip(scroll)
+            .take(visible_height)
+            .collect();
         frame.render_widget(Paragraph::new(visible), inner);
     }
 }
@@ -94,7 +98,12 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     key_row(&mut lines, "l", "Jump to next section header", theme);
     key_row(&mut lines, "g", "Jump to first row", theme);
     key_row(&mut lines, "G", "Jump to last row", theme);
-    key_row(&mut lines, "Space", "Toggle section collapsed/expanded", theme);
+    key_row(
+        &mut lines,
+        "Space",
+        "Toggle section collapsed/expanded",
+        theme,
+    );
     key_row(&mut lines, "Enter", "Open story detail", theme);
     key_row(&mut lines, "> / L", "Move story to next state", theme);
     key_row(&mut lines, "< / H", "Move story to previous state", theme);
@@ -107,7 +116,12 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     key_row(&mut lines, "Text input", "Type filter query", theme);
     key_row(&mut lines, "Enter", "Apply filter", theme);
     key_row(&mut lines, "Tab", "Accept suggestion", theme);
-    key_row(&mut lines, "Backspace", "Remove last chip (when empty)", theme);
+    key_row(
+        &mut lines,
+        "Backspace",
+        "Remove last chip (when empty)",
+        theme,
+    );
     key_row(&mut lines, "Esc", "Unfocus, return to board", theme);
     key_row(&mut lines, "Ctrl+U", "Clear all filters", theme);
     lines.push(Line::from(""));
@@ -123,7 +137,12 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     key_row(&mut lines, "Ctrl+E", "Open $EDITOR", theme);
     key_row(&mut lines, ">", "Move to next state", theme);
     key_row(&mut lines, "<", "Move to previous state", theme);
-    key_row(&mut lines, "Tab / Shift+Tab", "Cycle fields (during edit)", theme);
+    key_row(
+        &mut lines,
+        "Tab / Shift+Tab",
+        "Cycle fields (during edit)",
+        theme,
+    );
     lines.push(Line::from(""));
 
     // Create Form
@@ -139,7 +158,12 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     key_row(&mut lines, "k / Up", "Previous row", theme);
     key_row(&mut lines, "g", "Jump to first row", theme);
     key_row(&mut lines, "G", "Jump to last row", theme);
-    key_row(&mut lines, "Tab / m", "Cycle modes (Tree/Deps/Critical/Focus)", theme);
+    key_row(
+        &mut lines,
+        "Tab / m",
+        "Cycle modes (Tree/Deps/Critical/Focus)",
+        theme,
+    );
     key_row(&mut lines, "Enter", "Open detail or set focus story", theme);
     key_row(&mut lines, "Esc", "Exit focus mode", theme);
     key_row(&mut lines, "n", "Open create form", theme);
@@ -255,13 +279,40 @@ mod tests {
 
         // Check all design-specified keys
         let design_keys = vec![
-            "q", "Ctrl+C", "?", "1", "2", "3", "r", "Ctrl+Z", "Ctrl+Y",
-            "j / Down", "k / Up", "h", "l", "g", "G",
-            "Space", "Enter", "> / L", "< / H", "n", "/",
-            "Tab", "Backspace", "Esc", "Ctrl+U",
-            "e", "c", "Ctrl+E", ">", "<",
-            "Tab / Shift+Tab", "Tab / m",
-            "Esc / q / ?", "j / k",
+            "q",
+            "Ctrl+C",
+            "?",
+            "1",
+            "2",
+            "3",
+            "r",
+            "Ctrl+Z",
+            "Ctrl+Y",
+            "j / Down",
+            "k / Up",
+            "h",
+            "l",
+            "g",
+            "G",
+            "Space",
+            "Enter",
+            "> / L",
+            "< / H",
+            "n",
+            "/",
+            "Tab",
+            "Backspace",
+            "Esc",
+            "Ctrl+U",
+            "e",
+            "c",
+            "Ctrl+E",
+            ">",
+            "<",
+            "Tab / Shift+Tab",
+            "Tab / m",
+            "Esc / q / ?",
+            "j / k",
         ];
 
         for key in &design_keys {
@@ -288,12 +339,30 @@ mod tests {
             .join("\n");
 
         assert!(full_text.contains("Global"), "Missing Global section");
-        assert!(full_text.contains("Board View"), "Missing Board View section");
-        assert!(full_text.contains("Filter Bar"), "Missing Filter Bar section");
-        assert!(full_text.contains("Story Detail"), "Missing Story Detail section");
-        assert!(full_text.contains("Create Form"), "Missing Create Form section");
-        assert!(full_text.contains("Graph View"), "Missing Graph View section");
-        assert!(full_text.contains("Help Overlay"), "Missing Help Overlay section");
+        assert!(
+            full_text.contains("Board View"),
+            "Missing Board View section"
+        );
+        assert!(
+            full_text.contains("Filter Bar"),
+            "Missing Filter Bar section"
+        );
+        assert!(
+            full_text.contains("Story Detail"),
+            "Missing Story Detail section"
+        );
+        assert!(
+            full_text.contains("Create Form"),
+            "Missing Create Form section"
+        );
+        assert!(
+            full_text.contains("Graph View"),
+            "Missing Graph View section"
+        );
+        assert!(
+            full_text.contains("Help Overlay"),
+            "Missing Help Overlay section"
+        );
     }
 
     #[test]
@@ -304,21 +373,30 @@ mod tests {
 
         // j scrolls down
         help.handle_key(
-            crossterm::event::KeyEvent::new(KeyCode::Char('j'), crossterm::event::KeyModifiers::NONE),
+            crossterm::event::KeyEvent::new(
+                KeyCode::Char('j'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
             &state,
         );
         assert_eq!(help.scroll_offset, 1);
 
         // k scrolls up
         help.handle_key(
-            crossterm::event::KeyEvent::new(KeyCode::Char('k'), crossterm::event::KeyModifiers::NONE),
+            crossterm::event::KeyEvent::new(
+                KeyCode::Char('k'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
             &state,
         );
         assert_eq!(help.scroll_offset, 0);
 
         // k at 0 stays at 0 (saturating)
         help.handle_key(
-            crossterm::event::KeyEvent::new(KeyCode::Char('k'), crossterm::event::KeyModifiers::NONE),
+            crossterm::event::KeyEvent::new(
+                KeyCode::Char('k'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
             &state,
         );
         assert_eq!(help.scroll_offset, 0);

@@ -124,9 +124,17 @@ fn web_serve_and_query_root() {
     wait_for_server(port);
 
     // GET / should return HTML
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/")).call().unwrap();
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get("Content-Type").unwrap().to_str().unwrap().to_string();
+    let ct = resp
+        .headers()
+        .get("Content-Type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     assert!(ct.contains("text/html"));
     let body = resp.into_body().read_to_string().unwrap();
     assert!(body.contains("Storyhook"));
@@ -150,7 +158,13 @@ fn web_serve_api_data_empty_project() {
         .call()
         .unwrap();
     assert_eq!(resp.status(), 200);
-    let ct = resp.headers().get("Content-Type").unwrap().to_str().unwrap().to_string();
+    let ct = resp
+        .headers()
+        .get("Content-Type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
     assert!(ct.contains("application/json"));
 
     let body = resp.into_body().read_to_string().unwrap();
@@ -390,7 +404,9 @@ fn web_serve_root_has_no_cache_header() {
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/")).call().unwrap();
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
     let cc = resp
         .headers()
         .get("Cache-Control")
@@ -464,8 +480,14 @@ fn web_serve_api_json_structure_matches_dashboard() {
     // Summary fields the dashboard reads
     let s = &json["summary"];
     assert!(s["total_open"].is_number(), "missing summary.total_open");
-    assert!(s["total_closed"].is_number(), "missing summary.total_closed");
-    assert!(s["blocked_count"].is_number(), "missing summary.blocked_count");
+    assert!(
+        s["total_closed"].is_number(),
+        "missing summary.total_closed"
+    );
+    assert!(
+        s["blocked_count"].is_number(),
+        "missing summary.blocked_count"
+    );
     assert!(s["ready_count"].is_number(), "missing summary.ready_count");
     assert!(s["by_state"].is_array(), "missing summary.by_state");
     assert!(s["by_priority"].is_array(), "missing summary.by_priority");
@@ -485,14 +507,23 @@ fn web_serve_api_json_structure_matches_dashboard() {
     assert!(st["story"]["title"].is_string(), "missing story.title");
     assert!(st["story"]["state"].is_string(), "missing story.state");
     assert!(!st["story"]["priority"].is_null(), "missing story.priority");
-    assert!(st["story"]["updated_at"].is_string(), "missing story.updated_at");
+    assert!(
+        st["story"]["updated_at"].is_string(),
+        "missing story.updated_at"
+    );
     // labels should be present (non-empty for this story)
     assert!(st["story"]["labels"].is_array(), "missing story.labels");
-    assert!(st["story"]["labels"].as_array().unwrap().len() > 0, "labels should contain 'backend'");
+    assert!(
+        !st["story"]["labels"].as_array().unwrap().is_empty(),
+        "labels should contain 'backend'"
+    );
 
     // is_ready and is_blocked per story
     assert!(st.get("is_ready").is_some(), "missing is_ready on story");
-    assert!(st.get("is_blocked").is_some(), "missing is_blocked on story");
+    assert!(
+        st.get("is_blocked").is_some(),
+        "missing is_blocked on story"
+    );
 }
 
 // --- build_report_data with blocked stories ---
@@ -518,8 +549,14 @@ fn build_report_data_with_blocked_story() {
     let data = storyhook::app::build_report_data(dir.path()).unwrap();
     assert_eq!(data.summary.total_open, 2);
     // SH-1 should be ready, SH-2 should be blocked
-    assert!(data.ready_ids.contains(&"SH-1".to_string()), "SH-1 should be ready");
-    assert!(data.blocked_ids.contains(&"SH-2".to_string()), "SH-2 should be blocked");
+    assert!(
+        data.ready_ids.contains(&"SH-1".to_string()),
+        "SH-1 should be ready"
+    );
+    assert!(
+        data.blocked_ids.contains(&"SH-2".to_string()),
+        "SH-2 should be blocked"
+    );
     assert_eq!(data.summary.blocked_count, 1);
     assert_eq!(data.summary.ready_count, 1);
 }
@@ -571,9 +608,20 @@ fn build_report_data_counts_types() {
         .success();
 
     let data = storyhook::app::build_report_data(dir.path()).unwrap();
-    let type_names: Vec<&str> = data.summary.by_type.iter().map(|(n, _)| n.as_str()).collect();
-    assert!(type_names.contains(&"epic"), "should have 'epic' type count");
-    assert!(type_names.contains(&"Default"), "should have 'Default' type count");
+    let type_names: Vec<&str> = data
+        .summary
+        .by_type
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect();
+    assert!(
+        type_names.contains(&"epic"),
+        "should have 'epic' type count"
+    );
+    assert!(
+        type_names.contains(&"Default"),
+        "should have 'Default' type count"
+    );
 }
 
 // --- Concurrent requests don't hang ---
@@ -671,8 +719,7 @@ fn web_parse_start_with_custom_port() {
 
 #[test]
 fn web_parse_stop() {
-    let inv =
-        storyhook::cli::parse_invocation(&["web".to_string(), "stop".to_string()]).unwrap();
+    let inv = storyhook::cli::parse_invocation(&["web".to_string(), "stop".to_string()]).unwrap();
     assert!(matches!(
         inv,
         storyhook::cli::Invocation::Web {
@@ -683,8 +730,7 @@ fn web_parse_stop() {
 
 #[test]
 fn web_parse_status() {
-    let inv =
-        storyhook::cli::parse_invocation(&["web".to_string(), "status".to_string()]).unwrap();
+    let inv = storyhook::cli::parse_invocation(&["web".to_string(), "status".to_string()]).unwrap();
     assert!(matches!(
         inv,
         storyhook::cli::Invocation::Web {
@@ -865,7 +911,10 @@ fn web_serve_api_data_ready_and_blocked_flags_correct() {
 fn build_report_data_non_project_errors() {
     let dir = tempdir().unwrap();
     let result = storyhook::app::build_report_data(dir.path());
-    assert!(result.is_err(), "build_report_data on non-project dir should error");
+    assert!(
+        result.is_err(),
+        "build_report_data on non-project dir should error"
+    );
 }
 
 // --- Utilities ---

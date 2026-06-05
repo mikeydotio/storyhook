@@ -8,7 +8,7 @@ use crate::storage;
 
 use super::client::GithubClient;
 use super::sync_state::{
-    GithubSyncConfig, SyncMode, SyncSettings, StoryIssueMapping, detect_github_remote,
+    GithubSyncConfig, StoryIssueMapping, SyncMode, SyncSettings, detect_github_remote,
     save_sync_config,
 };
 use super::types::GithubIssue;
@@ -39,11 +39,7 @@ pub fn run_initial_setup(root: &Path) -> Result<GithubSyncConfig, AppError> {
 
     // 2. Validate token
     let token = get_github_token()?;
-    let client = GithubClient::new(
-        token,
-        github_repo.owner.clone(),
-        github_repo.repo.clone(),
-    );
+    let client = GithubClient::new(token, github_repo.owner.clone(), github_repo.repo.clone());
     eprintln!(
         "Validating token for {}/{}...",
         github_repo.owner, github_repo.repo
@@ -56,8 +52,10 @@ pub fn run_initial_setup(root: &Path) -> Result<GithubSyncConfig, AppError> {
     eprintln!("Fetching issues from GitHub...");
     let github_issues: Vec<GithubIssue> = client.list_issues(None, "open")?;
     // Filter out pull requests (list_issues already does this, but be defensive)
-    let github_issues: Vec<&GithubIssue> =
-        github_issues.iter().filter(|i| !i.is_pull_request()).collect();
+    let github_issues: Vec<&GithubIssue> = github_issues
+        .iter()
+        .filter(|i| !i.is_pull_request())
+        .collect();
 
     eprintln!();
     eprintln!(
@@ -173,7 +171,10 @@ fn handle_match_by_title(
             .iter()
             .filter(|issue| {
                 // Skip issues already mapped
-                if mappings.iter().any(|m: &StoryIssueMapping| m.issue_number == issue.number) {
+                if mappings
+                    .iter()
+                    .any(|m: &StoryIssueMapping| m.issue_number == issue.number)
+                {
                     return false;
                 }
                 let issue_title_lower = issue.title.to_lowercase();

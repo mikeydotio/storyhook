@@ -82,8 +82,7 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
                         let resp = Response::from_string(body)
                             .with_status_code(500)
                             .with_header(
-                                Header::from_bytes("Content-Type", "application/json")
-                                    .unwrap(),
+                                Header::from_bytes("Content-Type", "application/json").unwrap(),
                             )
                             .with_header(security_header_nosniff())
                             .with_header(security_header_frame())
@@ -93,9 +92,7 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
                     }
                 };
                 let resp = Response::from_string(json)
-                    .with_header(
-                        Header::from_bytes("Content-Type", "application/json").unwrap(),
-                    )
+                    .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
                     .with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap())
                     .with_header(security_header_nosniff())
                     .with_header(security_header_frame())
@@ -160,23 +157,23 @@ fn is_process_alive(pid: u32) -> bool {
 /// Get the best reachable IP: Tailscale IP if available, otherwise LAN IP, fallback to 127.0.0.1.
 fn reachable_ip() -> String {
     // Try tailscale IPv4 first
-    if let Ok(output) = Command::new("tailscale").args(["ip", "-4"]).output() {
-        if output.status.success() {
-            let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !ip.is_empty() {
-                return ip;
-            }
+    if let Ok(output) = Command::new("tailscale").args(["ip", "-4"]).output()
+        && output.status.success()
+    {
+        let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !ip.is_empty() {
+            return ip;
         }
     }
 
     // Fallback: first non-loopback IPv4 from hostname -I
-    if let Ok(output) = Command::new("hostname").arg("-I").output() {
-        if output.status.success() {
-            let ips = String::from_utf8_lossy(&output.stdout);
-            for tok in ips.split_whitespace() {
-                if !tok.starts_with("127.") && !tok.contains(':') {
-                    return tok.to_string();
-                }
+    if let Ok(output) = Command::new("hostname").arg("-I").output()
+        && output.status.success()
+    {
+        let ips = String::from_utf8_lossy(&output.stdout);
+        for tok in ips.split_whitespace() {
+            if !tok.starts_with("127.") && !tok.contains(':') {
+                return tok.to_string();
             }
         }
     }
@@ -221,27 +218,25 @@ pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
     }
 
     // Check for stale PID file (lock acquired but PID file exists from a crashed instance)
-    if let Some((pid, _)) = read_pid_file(root) {
-        if !is_process_alive(pid) {
-            let _ = fs::remove_file(pid_file(root));
-        }
+    if let Some((pid, _)) = read_pid_file(root)
+        && !is_process_alive(pid)
+    {
+        let _ = fs::remove_file(pid_file(root));
     }
 
     // Release lock before spawning child (child will acquire its own lock)
     let _ = lock.unlock();
 
     // Spawn background server process
-    let exe = env::current_exe().map_err(|e| {
-        AppError::Storage(format!("Failed to find current executable: {e}"))
-    })?;
+    let exe = env::current_exe()
+        .map_err(|e| AppError::Storage(format!("Failed to find current executable: {e}")))?;
 
     let root_abs = root
         .canonicalize()
         .map_err(|e| AppError::Storage(format!("Failed to resolve project path: {e}")))?;
 
-    let log = fs::File::create(log_file(root)).map_err(|e| {
-        AppError::Storage(format!("Failed to create web log file: {e}"))
-    })?;
+    let log = fs::File::create(log_file(root))
+        .map_err(|e| AppError::Storage(format!("Failed to create web log file: {e}")))?;
 
     let child = Command::new(exe)
         .args([
@@ -261,9 +256,8 @@ pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
     let pid = child.id();
 
     // Write PID file
-    fs::write(pid_file(root), format!("{pid}\n{port}")).map_err(|e| {
-        AppError::Storage(format!("Failed to write PID file: {e}"))
-    })?;
+    fs::write(pid_file(root), format!("{pid}\n{port}"))
+        .map_err(|e| AppError::Storage(format!("Failed to write PID file: {e}")))?;
 
     // Register with web-serve if available
     if has_web_serve() {
@@ -273,9 +267,7 @@ pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
     }
 
     let ip = reachable_ip();
-    Ok(format!(
-        "Web UI started at http://{ip}:{port} (PID {pid})"
-    ))
+    Ok(format!("Web UI started at http://{ip}:{port} (PID {pid})"))
 }
 
 pub fn handle_stop(root: &Path) -> Result<String, AppError> {
@@ -284,9 +276,8 @@ pub fn handle_stop(root: &Path) -> Result<String, AppError> {
         return Ok("Web UI is not running".to_string());
     }
 
-    let (pid, _port) = read_pid_file(root).ok_or_else(|| {
-        AppError::Storage("Failed to read PID file".to_string())
-    })?;
+    let (pid, _port) = read_pid_file(root)
+        .ok_or_else(|| AppError::Storage("Failed to read PID file".to_string()))?;
 
     if !is_process_alive(pid) {
         // Stale PID
@@ -305,9 +296,7 @@ pub fn handle_stop(root: &Path) -> Result<String, AppError> {
     }
     #[cfg(not(unix))]
     {
-        let _ = Command::new("kill")
-            .arg(pid.to_string())
-            .output();
+        let _ = Command::new("kill").arg(pid.to_string()).output();
     }
 
     let _ = fs::remove_file(&pid_path);
@@ -327,9 +316,8 @@ pub fn handle_status(root: &Path) -> Result<String, AppError> {
         return Ok("Web UI is not running".to_string());
     }
 
-    let (pid, port) = read_pid_file(root).ok_or_else(|| {
-        AppError::Storage("Failed to read PID file".to_string())
-    })?;
+    let (pid, port) = read_pid_file(root)
+        .ok_or_else(|| AppError::Storage("Failed to read PID file".to_string()))?;
 
     if !is_process_alive(pid) {
         let _ = fs::remove_file(&pid_path);
@@ -338,9 +326,7 @@ pub fn handle_status(root: &Path) -> Result<String, AppError> {
     }
 
     let ip = reachable_ip();
-    Ok(format!(
-        "Web UI running at http://{ip}:{port} (PID {pid})"
-    ))
+    Ok(format!("Web UI running at http://{ip}:{port} (PID {pid})"))
 }
 
 fn build_api_json(root: &Path) -> Result<String, AppError> {

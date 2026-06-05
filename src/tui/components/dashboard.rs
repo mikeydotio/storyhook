@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::domain::{Priority, StorySnapshot, SuperState};
 use crate::tui::action::{Action, View};
@@ -180,14 +180,8 @@ impl Component for Dashboard {
         let total_open = state.data.stories.len();
 
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("  {project_name}"),
-                theme.section_header,
-            ),
-            Span::styled(
-                format!("  {total_open} open stories"),
-                theme.section_count,
-            ),
+            Span::styled(format!("  {project_name}"), theme.section_header),
+            Span::styled(format!("  {total_open} open stories"), theme.section_count),
         ]));
         lines.push(Line::from(""));
 
@@ -244,10 +238,7 @@ impl Component for Dashboard {
         )));
         let ready = ready_stories(&state.data.stories);
         if ready.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "    (none)",
-                theme.section_count,
-            )));
+            lines.push(Line::from(Span::styled("    (none)", theme.section_count)));
         } else {
             // Track the line index where ready stories start so we can check cursor
             let ready_start = lines.len();
@@ -266,10 +257,7 @@ impl Component for Dashboard {
         )));
         let recent = recent_stories(&state.data.stories);
         if recent.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "    (none)",
-                theme.section_count,
-            )));
+            lines.push(Line::from(Span::styled("    (none)", theme.section_count)));
         } else {
             for (i, story) in recent.iter().take(5).enumerate() {
                 let is_selected = self.is_recent_story_selected(state, i);
@@ -365,11 +353,7 @@ impl Dashboard {
 }
 
 /// Render a story as a dashboard line.
-fn render_story_line<'a>(
-    story: &StorySnapshot,
-    is_selected: bool,
-    theme: &Theme,
-) -> Line<'a> {
+fn render_story_line<'a>(story: &StorySnapshot, is_selected: bool, theme: &Theme) -> Line<'a> {
     let cursor_mark = if is_selected { "  > " } else { "    " };
     let priority_sym = match story.priority {
         Priority::Critical => "!!! ",
@@ -382,17 +366,15 @@ fn render_story_line<'a>(
     let mut spans = vec![
         Span::styled(
             cursor_mark.to_string(),
-            if is_selected { theme.cursor } else { theme.story_id },
+            if is_selected {
+                theme.cursor
+            } else {
+                theme.story_id
+            },
         ),
-        Span::styled(
-            format!("{:<8}", story.id),
-            theme.story_id,
-        ),
+        Span::styled(format!("{:<8}", story.id), theme.story_id),
         Span::raw(" "),
-        Span::styled(
-            story.title.clone(),
-            theme.story_title,
-        ),
+        Span::styled(story.title.clone(), theme.story_title),
         Span::raw("  "),
         Span::styled(
             priority_sym.to_string(),
@@ -534,9 +516,30 @@ mod tests {
     #[test]
     fn stories_per_state_counts_correctly() {
         let stories = vec![
-            make_snapshot("SH-1", "todo", "A", Priority::None, None, "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-2", "todo", "B", Priority::None, None, "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-3", "in-progress", "C", Priority::None, None, "2026-01-01T00:00:00Z"),
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "B",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-3",
+                "in-progress",
+                "C",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
         ];
         let states = test_states();
         let counts = stories_per_state(&stories, &states);
@@ -548,10 +551,38 @@ mod tests {
     #[test]
     fn priority_breakdown_counts_correctly() {
         let stories = vec![
-            make_snapshot("SH-1", "todo", "A", Priority::Critical, None, "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-2", "todo", "B", Priority::High, None, "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-3", "todo", "C", Priority::High, None, "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-4", "todo", "D", Priority::None, None, "2026-01-01T00:00:00Z"),
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::Critical,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "B",
+                Priority::High,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-3",
+                "todo",
+                "C",
+                Priority::High,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-4",
+                "todo",
+                "D",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
         ];
         let b = priority_breakdown(&stories);
         assert_eq!(b.critical, 1);
@@ -564,9 +595,30 @@ mod tests {
     #[test]
     fn ready_stories_excludes_blocked() {
         let stories = vec![
-            make_snapshot("SH-1", "todo", "A", Priority::High, None, "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-2", "todo", "B", Priority::Low, Some("waiting"), "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-3", "todo", "C", Priority::Critical, None, "2026-01-01T00:00:00Z"),
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::High,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "B",
+                Priority::Low,
+                Some("waiting"),
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-3",
+                "todo",
+                "C",
+                Priority::Critical,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
         ];
         let ready = ready_stories(&stories);
         assert_eq!(ready.len(), 2);
@@ -578,8 +630,22 @@ mod tests {
     #[test]
     fn ready_stories_excludes_closed() {
         let stories = vec![
-            make_snapshot("SH-1", "todo", "A", Priority::High, None, "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-2", "done", "B", Priority::Low, None, "2026-01-01T00:00:00Z"),
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::High,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "done",
+                "B",
+                Priority::Low,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
         ];
         let ready = ready_stories(&stories);
         assert_eq!(ready.len(), 1);
@@ -589,9 +655,30 @@ mod tests {
     #[test]
     fn recent_stories_sorted_by_updated_at() {
         let stories = vec![
-            make_snapshot("SH-1", "todo", "A", Priority::None, None, "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-2", "todo", "B", Priority::None, None, "2026-01-03T00:00:00Z"),
-            make_snapshot("SH-3", "todo", "C", Priority::None, None, "2026-01-02T00:00:00Z"),
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "B",
+                Priority::None,
+                None,
+                "2026-01-03T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-3",
+                "todo",
+                "C",
+                Priority::None,
+                None,
+                "2026-01-02T00:00:00Z",
+            ),
         ];
         let recent = recent_stories(&stories);
         assert_eq!(recent.len(), 3);
@@ -625,12 +712,7 @@ mod tests {
         use crate::tui::action::View;
         use crate::tui::data::DataStore;
         use crate::tui::focus::{FocusStack, FocusTarget};
-        let data = DataStore::from_test_data(
-            test_states(),
-            stories,
-            "SH".to_string(),
-            vec![],
-        );
+        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![]);
         crate::tui::state::AppState {
             data,
             focus: FocusStack::new(FocusTarget::Dashboard),
@@ -687,8 +769,22 @@ mod tests {
     #[test]
     fn all_blocked_means_no_ready_stories() {
         let stories = vec![
-            make_snapshot("SH-1", "todo", "A", Priority::High, Some("waiting for API"), "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-2", "in-progress", "B", Priority::Critical, Some("blocked by deploy"), "2026-01-02T00:00:00Z"),
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::High,
+                Some("waiting for API"),
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "in-progress",
+                "B",
+                Priority::Critical,
+                Some("blocked by deploy"),
+                "2026-01-02T00:00:00Z",
+            ),
         ];
         let ready = ready_stories(&stories);
         assert!(ready.is_empty());
@@ -696,15 +792,17 @@ mod tests {
 
     #[test]
     fn dashboard_view_board_action_from_keyboard() {
-        let state = make_app_state(vec![
-            make_snapshot("SH-1", "todo", "A", Priority::None, None, "2026-01-01T00:00:00Z"),
-        ]);
+        let state = make_app_state(vec![make_snapshot(
+            "SH-1",
+            "todo",
+            "A",
+            Priority::None,
+            None,
+            "2026-01-01T00:00:00Z",
+        )]);
         let mut dashboard = Dashboard::new();
 
-        let actions = dashboard.handle_key(
-            key(crossterm::event::KeyCode::Char('2')),
-            &state,
-        );
+        let actions = dashboard.handle_key(key(crossterm::event::KeyCode::Char('2')), &state);
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], Action::SwitchView(View::Board)));
     }
@@ -715,9 +813,14 @@ mod tests {
 
     #[test]
     fn dashboard_enter_on_story_opens_detail() {
-        let state = make_app_state(vec![
-            make_snapshot("SH-1", "todo", "Alpha", Priority::High, None, "2026-01-01T00:00:00Z"),
-        ]);
+        let state = make_app_state(vec![make_snapshot(
+            "SH-1",
+            "todo",
+            "Alpha",
+            Priority::High,
+            None,
+            "2026-01-01T00:00:00Z",
+        )]);
         let mut dashboard = Dashboard::new();
 
         // Navigate to find a story item
@@ -725,15 +828,13 @@ mod tests {
         dashboard.build_items(&state);
 
         // Find the first selectable story index
-        let story_idx = dashboard.items.iter().position(|item| {
-            matches!(item, DashboardItem::Story { .. })
-        });
+        let story_idx = dashboard
+            .items
+            .iter()
+            .position(|item| matches!(item, DashboardItem::Story { .. }));
         if let Some(idx) = story_idx {
             dashboard.cursor = idx;
-            let actions = dashboard.handle_key(
-                key(crossterm::event::KeyCode::Enter),
-                &state,
-            );
+            let actions = dashboard.handle_key(key(crossterm::event::KeyCode::Enter), &state);
             assert_eq!(actions.len(), 1);
             assert!(matches!(&actions[0], Action::OpenDetail(id) if id == "SH-1"));
         }
@@ -742,9 +843,30 @@ mod tests {
     #[test]
     fn dashboard_on_state_change_clamps_cursor() {
         let state = make_app_state(vec![
-            make_snapshot("SH-1", "todo", "A", Priority::None, None, "2026-01-01T00:00:00Z"),
-            make_snapshot("SH-2", "todo", "B", Priority::None, None, "2026-01-02T00:00:00Z"),
-            make_snapshot("SH-3", "todo", "C", Priority::None, None, "2026-01-03T00:00:00Z"),
+            make_snapshot(
+                "SH-1",
+                "todo",
+                "A",
+                Priority::None,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-2",
+                "todo",
+                "B",
+                Priority::None,
+                None,
+                "2026-01-02T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-3",
+                "todo",
+                "C",
+                Priority::None,
+                None,
+                "2026-01-03T00:00:00Z",
+            ),
         ]);
         let mut dashboard = Dashboard::new();
         dashboard.build_items(&state);

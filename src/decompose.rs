@@ -138,11 +138,8 @@ fn extract_labels(text: &str) -> (String, Vec<String>) {
     for token in text.split_whitespace() {
         if token.starts_with('#') && token.len() > 1 {
             let tag = &token[1..];
-            if tag
-                .starts_with(|c: char| c.is_ascii_alphabetic())
-                && tag
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
+            if tag.starts_with(|c: char| c.is_ascii_alphabetic())
+                && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
             {
                 labels.push(tag.to_string());
                 continue;
@@ -383,7 +380,10 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
         } else if !trimmed.is_empty() {
             // Body text: accumulate as description for most recent story
             if let Some(idx) = last_story_index {
-                descriptions.entry(idx).or_default().push(trimmed.to_string());
+                descriptions
+                    .entry(idx)
+                    .or_default()
+                    .push(trimmed.to_string());
             }
         }
     }
@@ -400,9 +400,7 @@ pub fn decompose_spec(content: &str) -> Vec<ImportStory> {
         ) {
             for &curr_idx in curr_tasks {
                 for &prev_idx in prev_tasks {
-                    let rels = stories[curr_idx]
-                        .relationships
-                        .get_or_insert_with(Vec::new);
+                    let rels = stories[curr_idx].relationships.get_or_insert_with(Vec::new);
                     rels.push(ImportRelationship {
                         relation: "blocked-by".to_string(),
                         ref_index: Some(prev_idx),
@@ -714,7 +712,10 @@ stories:
         assert_eq!(rels_c.len(), 3); // child-of + follows Task A + follows Task B
         assert_eq!(rels_c[0].relation, "child-of");
         assert_eq!(rels_c[0].ref_index, Some(0));
-        let follows_c: Vec<_> = rels_c.iter().filter(|r| r.relation == "blocked-by").collect();
+        let follows_c: Vec<_> = rels_c
+            .iter()
+            .filter(|r| r.relation == "blocked-by")
+            .collect();
         assert_eq!(follows_c.len(), 2);
         let follow_indices: Vec<_> = follows_c.iter().map(|r| r.ref_index.unwrap()).collect();
         assert!(follow_indices.contains(&1)); // Task A
@@ -722,7 +723,10 @@ stories:
 
         let rels_d = stories[4].relationships.as_ref().unwrap();
         assert_eq!(rels_d.len(), 3);
-        let follows_d: Vec<_> = rels_d.iter().filter(|r| r.relation == "blocked-by").collect();
+        let follows_d: Vec<_> = rels_d
+            .iter()
+            .filter(|r| r.relation == "blocked-by")
+            .collect();
         assert_eq!(follows_d.len(), 2);
     }
 
@@ -795,10 +799,16 @@ stories:
         // Build API: child-of Feature Alpha + follows Setup database
         let rels_api = stories[2].relationships.as_ref().unwrap();
         assert_eq!(rels_api.len(), 2);
-        let child_of: Vec<_> = rels_api.iter().filter(|r| r.relation == "child-of").collect();
+        let child_of: Vec<_> = rels_api
+            .iter()
+            .filter(|r| r.relation == "child-of")
+            .collect();
         assert_eq!(child_of.len(), 1);
         assert_eq!(child_of[0].ref_index, Some(0));
-        let follows: Vec<_> = rels_api.iter().filter(|r| r.relation == "blocked-by").collect();
+        let follows: Vec<_> = rels_api
+            .iter()
+            .filter(|r| r.relation == "blocked-by")
+            .collect();
         assert_eq!(follows.len(), 1);
         assert_eq!(follows[0].ref_index, Some(1));
     }

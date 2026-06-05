@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::domain::Priority;
@@ -59,17 +59,11 @@ impl Component for FilterBar {
                     None => vec![Action::Notify(format!("Unknown filter: {raw}"))],
                 }
             }
-            KeyCode::Backspace => {
-                if self.input.value().is_empty() {
-                    // Remove last chip
-                    if !state.filters.is_empty() {
-                        vec![Action::ClearFilter(state.filters.len() - 1)]
-                    } else {
-                        vec![]
-                    }
+            KeyCode::Backspace if self.input.value().is_empty() => {
+                // Remove last chip
+                if !state.filters.is_empty() {
+                    vec![Action::ClearFilter(state.filters.len() - 1)]
                 } else {
-                    self.input
-                        .handle_event(&crossterm::event::Event::Key(key));
                     vec![]
                 }
             }
@@ -78,8 +72,7 @@ impl Component for FilterBar {
                 vec![]
             }
             _ => {
-                self.input
-                    .handle_event(&crossterm::event::Event::Key(key));
+                self.input.handle_event(&crossterm::event::Event::Key(key));
                 vec![]
             }
         }

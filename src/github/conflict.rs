@@ -76,8 +76,8 @@ pub fn resolve_conflicts_batch(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::diff::FieldConflict;
+    use super::*;
 
     fn sample_conflicts() -> Vec<FieldConflict> {
         vec![

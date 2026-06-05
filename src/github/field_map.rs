@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use crate::domain::{Member, Priority, StateDef, StoryComment, StoryRelation, StorySnapshot, SuperState};
-use crate::github::body_block::{extract_block, render_block, BlockRelationship, StoryhookBlock};
-use crate::github::diff::FieldUpdates;
-use crate::github::types::{
-    CreateIssueRequest, GithubComment, GithubIssue, UpdateIssueRequest,
+use crate::domain::{
+    Member, Priority, StateDef, StoryComment, StoryRelation, StorySnapshot, SuperState,
 };
+use crate::github::body_block::{BlockRelationship, StoryhookBlock, extract_block, render_block};
+use crate::github::diff::FieldUpdates;
+use crate::github::types::{CreateIssueRequest, GithubComment, GithubIssue, UpdateIssueRequest};
 
 /// Native relationship types that use GitHub's own APIs (sub-issues, task lists)
 /// and should NOT be stored in the storyhook body block.
@@ -114,7 +114,13 @@ pub fn issue_to_remote_snapshot(
 
                     let text_opt = if text.is_empty() { None } else { Some(text) };
 
-                    (text_opt, Some(block.story_id), priority, block.awaiting, relationships)
+                    (
+                        text_opt,
+                        Some(block.story_id),
+                        priority,
+                        block.awaiting,
+                        relationships,
+                    )
                 }
                 None => {
                     let text = if body.trim().is_empty() {
@@ -173,15 +179,11 @@ pub fn updates_to_issue_request(
         }
     });
 
-    let assignees = updates.assignee.as_ref().map(|opt| {
-        match opt {
-            Some(member_id) => {
-                resolve_github_handle(member_id, members)
-                    .map(|h| vec![h])
-                    .unwrap_or_default()
-            }
-            None => vec![],
-        }
+    let assignees = updates.assignee.as_ref().map(|opt| match opt {
+        Some(member_id) => resolve_github_handle(member_id, members)
+            .map(|h| vec![h])
+            .unwrap_or_default(),
+        None => vec![],
     });
 
     let labels = updates.labels.clone();
@@ -527,10 +529,13 @@ mod tests {
             body: Some(body),
             state: "open".to_string(),
             state_reason: None,
-            labels: vec![
-                GithubLabel { name: "bug".to_string(), color: None },
-            ],
-            assignees: vec![GithubUser { login: "alicegithub".to_string() }],
+            labels: vec![GithubLabel {
+                name: "bug".to_string(),
+                color: None,
+            }],
+            assignees: vec![GithubUser {
+                login: "alicegithub".to_string(),
+            }],
             milestone: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-02T00:00:00Z".to_string(),
@@ -548,7 +553,10 @@ mod tests {
         assert_eq!(snap.priority, Priority::High);
         assert_eq!(snap.awaiting.as_deref(), Some("code review"));
         assert_eq!(snap.labels, vec!["bug".to_string()]);
-        assert_eq!(snap.body_text.as_deref(), Some("Human-written description."));
+        assert_eq!(
+            snap.body_text.as_deref(),
+            Some("Human-written description.")
+        );
         assert_eq!(snap.story_id, Some("SH-42".to_string()));
         assert_eq!(snap.non_native_relationships.len(), 2);
         assert!(snap.non_native_relationships.contains(&StoryRelation {
@@ -756,9 +764,11 @@ mod tests {
 
     #[test]
     fn updates_to_issue_request_title_and_state() {
-        let mut updates = FieldUpdates::default();
-        updates.title = Some("New title".to_string());
-        updates.state = Some("done".to_string());
+        let updates = FieldUpdates {
+            title: Some("New title".to_string()),
+            state: Some("done".to_string()),
+            ..Default::default()
+        };
 
         let story = test_story();
         let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
@@ -770,8 +780,10 @@ mod tests {
 
     #[test]
     fn updates_to_issue_request_assignee_set() {
-        let mut updates = FieldUpdates::default();
-        updates.assignee = Some(Some("bob".to_string()));
+        let updates = FieldUpdates {
+            assignee: Some(Some("bob".to_string())),
+            ..Default::default()
+        };
 
         let story = test_story();
         let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
@@ -781,8 +793,10 @@ mod tests {
 
     #[test]
     fn updates_to_issue_request_assignee_cleared() {
-        let mut updates = FieldUpdates::default();
-        updates.assignee = Some(None);
+        let updates = FieldUpdates {
+            assignee: Some(None),
+            ..Default::default()
+        };
 
         let story = test_story();
         let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
@@ -792,8 +806,10 @@ mod tests {
 
     #[test]
     fn updates_to_issue_request_priority_triggers_body_update() {
-        let mut updates = FieldUpdates::default();
-        updates.priority = Some(Priority::Critical);
+        let updates = FieldUpdates {
+            priority: Some(Priority::Critical),
+            ..Default::default()
+        };
 
         let story = test_story();
         let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
@@ -804,8 +820,10 @@ mod tests {
 
     #[test]
     fn updates_to_issue_request_awaiting_triggers_body_update() {
-        let mut updates = FieldUpdates::default();
-        updates.awaiting = Some(Some("design review".to_string()));
+        let updates = FieldUpdates {
+            awaiting: Some(Some("design review".to_string())),
+            ..Default::default()
+        };
 
         let story = test_story();
         let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
@@ -829,8 +847,10 @@ mod tests {
 
     #[test]
     fn updates_to_issue_request_open_state() {
-        let mut updates = FieldUpdates::default();
-        updates.state = Some("todo".to_string());
+        let updates = FieldUpdates {
+            state: Some("todo".to_string()),
+            ..Default::default()
+        };
 
         let story = test_story();
         let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());

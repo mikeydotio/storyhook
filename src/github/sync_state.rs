@@ -105,10 +105,7 @@ pub fn save_sync_config(root: &Path, config: &GithubSyncConfig) -> Result<(), Ap
 
 /// Load a base snapshot from `.storyhook/github-sync/bases/{story_id}.json`.
 /// Returns `None` if no snapshot exists for this story.
-pub fn load_base_snapshot(
-    root: &Path,
-    story_id: &str,
-) -> Result<Option<StorySnapshot>, AppError> {
+pub fn load_base_snapshot(root: &Path, story_id: &str) -> Result<Option<StorySnapshot>, AppError> {
     let path = bases_dir(root).join(format!("{story_id}.json"));
     if !path.exists() {
         return Ok(None);
@@ -303,10 +300,7 @@ mod tests {
             serde_json::to_string(&SyncMode::Manual).unwrap(),
             r#""manual""#
         );
-        assert_eq!(
-            serde_json::to_string(&SyncMode::Auto).unwrap(),
-            r#""auto""#
-        );
+        assert_eq!(serde_json::to_string(&SyncMode::Auto).unwrap(), r#""auto""#);
 
         // Deserialize
         let off: SyncMode = serde_json::from_str(r#""off""#).unwrap();

@@ -207,7 +207,10 @@ fn new_action_clears_redo() {
     });
     state.redo_stack.clear();
 
-    assert!(state.redo_stack.is_empty(), "redo stack should be cleared after new action");
+    assert!(
+        state.redo_stack.is_empty(),
+        "redo stack should be cleared after new action"
+    );
     assert_eq!(state.undo_stack.len(), 1);
 }
 
@@ -225,10 +228,7 @@ fn undo_empty_stack_notifies() {
         state.notification = Some(("Nothing to undo".to_string(), Instant::now()));
     }
 
-    assert_eq!(
-        state.notification.as_ref().unwrap().0,
-        "Nothing to undo"
-    );
+    assert_eq!(state.notification.as_ref().unwrap().0, "Nothing to undo");
 }
 
 // ─── Test 6: Close/archive not undoable ─────────────────────────────

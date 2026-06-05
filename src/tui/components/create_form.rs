@@ -1,8 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::domain::Priority;
@@ -70,9 +70,7 @@ impl CreateForm {
     fn submit(&self) -> Vec<Action> {
         let title = self.title_input.value().trim().to_string();
         if title.is_empty() {
-            return vec![Action::Notify(
-                "Title is required".to_string(),
-            )];
+            return vec![Action::Notify("Title is required".to_string())];
         }
 
         let priority = if self.priority_cursor == 0 {
@@ -139,15 +137,13 @@ impl Component for CreateForm {
                             .handle_event(&crossterm::event::Event::Key(key));
                     }
                     CreateField::Priority => match key.code {
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            if self.priority_cursor + 1 < PRIORITY_OPTIONS.len() {
-                                self.priority_cursor += 1;
-                            }
+                        KeyCode::Char('j') | KeyCode::Down
+                            if self.priority_cursor + 1 < PRIORITY_OPTIONS.len() =>
+                        {
+                            self.priority_cursor += 1;
                         }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            if self.priority_cursor > 0 {
-                                self.priority_cursor -= 1;
-                            }
+                        KeyCode::Char('k') | KeyCode::Up if self.priority_cursor > 0 => {
+                            self.priority_cursor -= 1;
                         }
                         _ => {}
                     },
@@ -190,7 +186,11 @@ impl Component for CreateForm {
         if self.focused_field == 1 {
             // Show all options
             for (i, p) in PRIORITY_OPTIONS.iter().enumerate() {
-                let marker = if i == self.priority_cursor { "> " } else { "  " };
+                let marker = if i == self.priority_cursor {
+                    "> "
+                } else {
+                    "  "
+                };
                 let label = if i == 0 {
                     format!("{:<width$}", "Priority", width = label_width)
                 } else {
@@ -570,10 +570,7 @@ mod tests {
         let mut form = CreateForm::new();
         assert_eq!(form.focused_field, 0);
 
-        form.handle_key(
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT),
-            &state,
-        );
+        form.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT), &state);
         assert_eq!(form.focused_field, CREATE_FIELDS.len() - 1);
     }
 
