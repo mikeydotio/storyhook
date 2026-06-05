@@ -2,7 +2,7 @@
 name: storyhook-handoff
 description: "Use when ending a work session or switching contexts. Generates a comprehensive handoff document showing what was accomplished, what changed, and what remains. Also runs automatically when sessions end via the stop hook."
 user-invocable: true
-allowed-tools: Bash(story *)
+allowed-tools: Bash(story *), Bash(command -v *), AskUserQuestion
 argument-hint: "[--since <duration>]"
 ---
 
@@ -12,9 +12,13 @@ Generate a session handoff document for continuity across sessions.
 
 ## Steps
 
+### 0. Ensure the storyhook CLI is available
+
+Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `storyhook-install` skill before continuing. Do not run `story` commands until this check passes.
+
 ### 1. Generate handoff
 
-Run `story handoff --since <duration>` where duration defaults to `2h`. If the user provided a different duration (e.g., `/storyhook:handoff --since 4h`), use that value.
+Run `story handoff --since <duration>` where duration defaults to `2h`. If the user provided a different duration (e.g., `/storyhook:storyhook-handoff --since 4h`), use that value.
 
 The handoff command analyzes:
 - Stories that changed state during the time window

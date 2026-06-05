@@ -2,7 +2,7 @@
 name: storyhook-work
 description: "Use when starting work on a specific story or picking the next available task. Transitions the story to in-progress, shows full context, and sets up the working session. Call with a story ID to work on a specific story, or with no arguments to auto-pick the next ready story."
 user-invocable: true
-allowed-tools: Bash(story *), AskUserQuestion
+allowed-tools: Bash(story *), Bash(command -v *), AskUserQuestion
 argument-hint: "[STORY-ID]"
 ---
 
@@ -12,11 +12,15 @@ Start working on a story.
 
 ## Steps
 
+### 0. Ensure the storyhook CLI is available
+
+Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `storyhook-install` skill before continuing. Do not run `story` commands until this check passes.
+
 ### 1. Select a story
 
-- **If a story ID was provided** (e.g., `/storyhook:work SH-3`), use that story
+- **If a story ID was provided** (e.g., `/storyhook:storyhook-work SH-3`), use that story
 - **If no story ID**, run `story next --json` to automatically pick the highest-priority ready story
-- If `next` returns nothing, inform the user that all stories are either done or blocked, and suggest running `/storyhook:triage`
+- If `next` returns nothing, inform the user that all stories are either done or blocked, and suggest running `/storyhook:storyhook-triage`
 
 ### 2. Show story details
 
