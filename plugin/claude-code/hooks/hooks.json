@@ -1,23 +1,41 @@
 {
-  "hooks": [
-    {
-      "event": "SessionStart",
-      "type": "command",
-      "command": "bash \"${PLUGIN_DIR}/hooks/session-start.sh\"",
-      "timeout": 5000
-    },
-    {
-      "event": "PostToolUse",
-      "matcher": { "tool_name": "Bash" },
-      "type": "command",
-      "command": "bash \"${PLUGIN_DIR}/hooks/post-git.sh\"",
-      "timeout": 10000
-    },
-    {
-      "event": "Stop",
-      "type": "command",
-      "command": "bash \"${PLUGIN_DIR}/hooks/stop-handoff.sh\"",
-      "timeout": 15000
-    }
-  ]
+  "description": "storyhook session hooks: startup context, post-git sync, and session handoff.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/post-git.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-handoff.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
 }
