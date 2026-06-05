@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
-use crate::domain::{derive_family_relationships, Priority, StorySnapshot};
+use crate::domain::{Priority, StorySnapshot, derive_family_relationships};
 use crate::tui::action::Action;
 use crate::tui::state::AppState;
 use crate::tui::theme::Theme;
@@ -382,10 +382,7 @@ impl GraphComponent {
 
         let story = stories[&focused_id];
         let mut lines = vec![GraphLine::SectionHeader {
-            text: format!(
-                "Focus: {} \u{2014} {}",
-                story.id, story.title
-            ),
+            text: format!("Focus: {} \u{2014} {}", story.id, story.title),
         }];
 
         // Direct relationships
@@ -514,12 +511,10 @@ impl GraphComponent {
                 Span::styled(cursor_marker.to_string(), cursor_style),
                 Span::styled(text.clone(), theme.section_header),
             ]),
-            GraphLine::Empty => {
-                Line::from(Span::styled(
-                    "  No relationships found. Stories need parent-of, blocks, or other relationships to appear here.",
-                    theme.story_id,
-                ))
-            }
+            GraphLine::Empty => Line::from(Span::styled(
+                "  No relationships found. Stories need parent-of, blocks, or other relationships to appear here.",
+                theme.story_id,
+            )),
         }
     }
 }
@@ -616,10 +611,7 @@ impl Component for GraphComponent {
         let theme = Theme::from_env();
 
         if self.cached_lines.is_empty() {
-            let msg = Line::from(Span::styled(
-                "No stories found.",
-                theme.story_id,
-            ));
+            let msg = Line::from(Span::styled("No stories found.", theme.story_id));
             frame.render_widget(Paragraph::new(vec![msg]), area);
             return;
         }
@@ -648,9 +640,7 @@ impl Component for GraphComponent {
                             width: area.width,
                             height: 1,
                         },
-                        target: HitTarget::StoryRow {
-                            id: id.to_string(),
-                        },
+                        target: HitTarget::StoryRow { id: id.to_string() },
                     });
                 }
 
@@ -695,10 +685,7 @@ fn stories_btree_map(stories: &[StorySnapshot]) -> BTreeMap<String, StorySnapsho
 }
 
 /// Find the longest path starting from `start` in a DAG via DFS.
-fn longest_path_from(
-    start: &str,
-    adjacency: &BTreeMap<String, Vec<String>>,
-) -> Vec<String> {
+fn longest_path_from(start: &str, adjacency: &BTreeMap<String, Vec<String>>) -> Vec<String> {
     let mut best = vec![start.to_string()];
     let mut stack: Vec<(String, Vec<String>)> = vec![(start.to_string(), vec![start.to_string()])];
 
@@ -770,12 +757,7 @@ mod tests {
 
     fn make_state(stories: Vec<StorySnapshot>) -> AppState {
         AppState {
-            data: DataStore::from_test_data(
-                test_states(),
-                stories,
-                "SH".to_string(),
-                vec![],
-            ),
+            data: DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![]),
             focus: FocusStack::new(FocusTarget::Graph),
             view: View::Graph,
             filters: Vec::new(),
@@ -799,7 +781,12 @@ mod tests {
     #[test]
     fn tree_mode_renders_hierarchy() {
         let stories = vec![
-            snapshot("SH-1", "Parent story", "todo", vec![rel("parent-of", "SH-2")]),
+            snapshot(
+                "SH-1",
+                "Parent story",
+                "todo",
+                vec![rel("parent-of", "SH-2")],
+            ),
             snapshot("SH-2", "Child story", "todo", vec![]),
             snapshot("SH-3", "Orphan story", "todo", vec![]),
         ];
@@ -826,10 +813,7 @@ mod tests {
             .collect();
         let pos_1 = ids.iter().position(|id| *id == "SH-1").unwrap();
         let pos_2 = ids.iter().position(|id| *id == "SH-2").unwrap();
-        assert!(
-            pos_1 < pos_2,
-            "Parent SH-1 should appear before child SH-2"
-        );
+        assert!(pos_1 < pos_2, "Parent SH-1 should appear before child SH-2");
 
         // SH-2 should have an indented connector (contains box-drawing chars)
         if let GraphLine::StoryNode { connector, .. } = &graph.cached_lines[pos_2 + 1] {
@@ -865,11 +849,7 @@ mod tests {
             .filter(|l| matches!(l, GraphLine::RelationRow { .. }))
             .collect();
         // SH-1 parent-of SH-2, SH-1 blocks SH-3, SH-3 blocked-by SH-1
-        assert_eq!(
-            relation_rows.len(),
-            3,
-            "Should have 3 relationship rows"
-        );
+        assert_eq!(relation_rows.len(), 3, "Should have 3 relationship rows");
     }
 
     // 3. Focus mode shows transitive
@@ -990,7 +970,10 @@ mod tests {
             .cached_lines
             .iter()
             .any(|l| matches!(l, GraphLine::Empty));
-        assert!(has_empty, "Dependencies mode with no relationships should show empty message");
+        assert!(
+            has_empty,
+            "Dependencies mode with no relationships should show empty message"
+        );
     }
 
     // 7. Enter on story emits OpenDetail

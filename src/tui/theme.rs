@@ -43,7 +43,9 @@ impl Theme {
     pub fn colored() -> Self {
         Self {
             story_id: Style::default().fg(Color::DarkGray),
-            story_title: Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            story_title: Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
             priority_critical: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             priority_high: Style::default().fg(Color::Yellow),
             priority_medium: Style::default().fg(Color::Blue),
@@ -51,13 +53,19 @@ impl Theme {
             labels: Style::default().fg(Color::Cyan),
             assignee: Style::default().fg(Color::Green),
             blocked_badge: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            section_header: Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            section_header: Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
             section_count: Style::default().fg(Color::DarkGray),
-            cursor: Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            cursor: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
             selected_row: Style::default().bg(Color::DarkGray),
             filter_chip: Style::default().fg(Color::Black).bg(Color::Cyan),
             status_bar: Style::default().fg(Color::DarkGray),
-            status_bar_keys: Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            status_bar_keys: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
             modal_border: Style::default().fg(Color::Cyan),
             disclosure: Style::default().fg(Color::DarkGray),
             drag_source: Style::default().add_modifier(Modifier::DIM),
@@ -81,14 +89,18 @@ impl Theme {
             section_header: Style::default().fg(reset).add_modifier(Modifier::BOLD),
             section_count: Style::default().fg(reset).add_modifier(Modifier::DIM),
             cursor: Style::default().fg(reset).add_modifier(Modifier::BOLD),
-            selected_row: Style::default().fg(reset).add_modifier(Modifier::UNDERLINED),
+            selected_row: Style::default()
+                .fg(reset)
+                .add_modifier(Modifier::UNDERLINED),
             filter_chip: Style::default().fg(reset).add_modifier(Modifier::BOLD),
             status_bar: Style::default().fg(reset).add_modifier(Modifier::DIM),
             status_bar_keys: Style::default().fg(reset).add_modifier(Modifier::BOLD),
             modal_border: Style::default().fg(reset),
             disclosure: Style::default().fg(reset).add_modifier(Modifier::DIM),
             drag_source: Style::default().add_modifier(Modifier::DIM),
-            drag_target: Style::default().fg(reset).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            drag_target: Style::default()
+                .fg(reset)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         }
     }
 }
@@ -125,7 +137,12 @@ mod tests {
         let theme = Theme::no_color();
         assert!(theme.story_title.add_modifier.contains(Modifier::BOLD));
         assert!(theme.story_id.add_modifier.contains(Modifier::DIM));
-        assert!(theme.selected_row.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(
+            theme
+                .selected_row
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
         assert!(theme.status_bar_keys.add_modifier.contains(Modifier::BOLD));
     }
 }

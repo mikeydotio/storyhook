@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use crate::cli::{CliOptions, EpicAction, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput, PhaseAction, PluginAction, TypeAction, WebAction};
+use crate::cli::{
+    CliOptions, EpicAction, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput,
+    PhaseAction, PluginAction, TypeAction, WebAction,
+};
 use crate::domain::{
     DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
     compute_integrity_issues, compute_progress, derive_family_relationships, extract_story_ids,
@@ -23,12 +26,15 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
     let response = match options.invocation {
         Invocation::Help => Ok(Response::Message(HELP_TEXT.to_string())),
-        Invocation::Init { prefix, no_agents_md } => {
+        Invocation::Init {
+            prefix,
+            no_agents_md,
+        } => {
             storage::init_project(root, prefix.as_deref())?;
             let mut msg = "initialized story project\n\n\
                  The .storyhook/ directory contains your project data.\n\
                  Remember to commit it to git — it should travel with the repository."
-                    .to_string();
+                .to_string();
 
             // Generate AGENTS.md by default unless opted out
             if !no_agents_md {
@@ -42,7 +48,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             Ok(Response::Message(msg))
         }
-        Invocation::New { title, state, story_type } => lock::with_project_lock(root, || {
+        Invocation::New {
+            title,
+            state,
+            story_type,
+        } => lock::with_project_lock(root, || {
             // Validate story_type before creating the story
             if let Some(ref st) = story_type {
                 let type_map = storage::load_type_map(root)?;
@@ -65,9 +75,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     }],
                 )?;
             }
-            if !no_hooks
-                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
-            {
+            if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
                 let payload = serde_json::json!({
                     "event_type": "create",
                     "story_id": &story.id,
@@ -90,7 +98,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             storage::store_member(root, &member)?;
             Ok(Response::Message(format!("added member {}", member.id)))
         }),
-        Invocation::StateAdd { slug, superstate, role } => lock::with_project_lock(root, || {
+        Invocation::StateAdd {
+            slug,
+            superstate,
+            role,
+        } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             let superstate = SuperState::parse(&superstate).ok_or_else(|| {
                 AppError::Validation("superstate must be OPEN or CLOSED".to_string())
@@ -201,8 +213,8 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     if let Ok(updated) =
                         chrono::DateTime::parse_from_rfc3339(&view.story.updated_at)
                     {
-                        let days = (chrono::Utc::now() - updated.with_timezone(&chrono::Utc))
-                            .num_days();
+                        let days =
+                            (chrono::Utc::now() - updated.with_timezone(&chrono::Utc)).num_days();
                         view.stale_info = Some(StaleInfo {
                             last_activity_at: view.story.updated_at.clone(),
                             last_activity_type: activity_type.to_string(),
@@ -241,7 +253,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         .entry(view.story.priority.as_str().to_string())
                         .or_default() += 1;
                 }
-                let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string();
+                let type_label = view
+                    .story
+                    .story_type
+                    .as_deref()
+                    .unwrap_or("Default")
+                    .to_string();
                 *type_counts.entry(type_label).or_default() += 1;
                 if !view.flagged_reasons.is_empty() {
                     flagged_count += 1;
@@ -304,8 +321,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 Ok(Response::Summary(Box::new(summary)))
             } else {
                 let data = build_report_data(root)?;
-                let ready_set: BTreeSet<&str> =
-                    data.ready_ids.iter().map(|s| s.as_str()).collect();
+                let ready_set: BTreeSet<&str> = data.ready_ids.iter().map(|s| s.as_str()).collect();
                 let blocked_set: BTreeSet<&str> =
                     data.blocked_ids.iter().map(|s| s.as_str()).collect();
 
@@ -373,9 +389,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     text,
                 }],
             )?;
-            if !no_hooks
-                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
-            {
+            if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
                 let snapshot = storage::load_open_story_snapshot(root, &id)?;
                 let payload = serde_json::json!({
                     "event_type": "comment",
@@ -470,9 +484,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             storage::write_story_events(root, &id, &events)?;
 
-            if !no_hooks
-                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
-            {
+            if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
                 let payload = serde_json::json!({
                     "event_type": "state_change",
                     "story_id": &id,
@@ -531,9 +543,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     labels,
                 }],
             )?;
-            if !no_hooks
-                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
-            {
+            if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
                 let snapshot = storage::load_open_story_snapshot(root, &id)?;
                 let payload = serde_json::json!({
                     "event_type": "label_change",
@@ -568,9 +578,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     priority,
                 }],
             )?;
-            if !no_hooks
-                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
-            {
+            if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
                 let snapshot = storage::load_open_story_snapshot(root, &id)?;
                 let payload = serde_json::json!({
                     "event_type": "priority_change",
@@ -652,7 +660,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             let mut created_ids: Vec<String> = Vec::new();
             for import_story in &stories {
-                let story = storage::create_story(root, &import_story.title, import_story.state.as_deref())?;
+                let story = storage::create_story(
+                    root,
+                    &import_story.title,
+                    import_story.state.as_deref(),
+                )?;
                 let id = story.id.clone();
                 let now = storage::now();
                 let mut events = Vec::new();
@@ -805,7 +817,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     story_count,
                     if story_count == 1 { "story" } else { "stories" },
                     rel_count,
-                    if rel_count == 1 { "relationship" } else { "relationships" },
+                    if rel_count == 1 {
+                        "relationship"
+                    } else {
+                        "relationships"
+                    },
                 );
                 if !result.relationship_lines.is_empty() {
                     summary.push(':');
@@ -839,9 +855,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     state: default_state.slug,
                 }],
             )?;
-            if !no_hooks
-                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
-            {
+            if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
                 let snapshot = storage::load_open_story_snapshot(root, &id)?;
                 let payload = serde_json::json!({
                     "event_type": "state_change",
@@ -892,9 +906,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                             if let Ok(snapshot) = storage::load_open_story_snapshot(root, id)
                                 && snapshot.awaiting.is_some()
                             {
-                                events.push(StoryEvent::StoryAwaitingCleared {
-                                    at: now.clone(),
-                                });
+                                events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
                             }
                             events.push(StoryEvent::StoryClosedAndArchived {
                                 at: now,
@@ -955,7 +967,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             let mut type_counts: BTreeMap<String, usize> = BTreeMap::new();
             for view in &views {
                 *state_counts.entry(view.story.state.clone()).or_default() += 1;
-                let type_label = view.story.story_type.as_deref().unwrap_or("Default").to_string();
+                let type_label = view
+                    .story
+                    .story_type
+                    .as_deref()
+                    .unwrap_or("Default")
+                    .to_string();
                 *type_counts.entry(type_label).or_default() += 1;
             }
 
@@ -1087,16 +1104,19 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                             .count();
 
                         // Look for a phase title from a grouping story
-                        let title_suffix = phase_stories.iter().find_map(|v| {
-                            let prefix = format!("Phase {}:", phase_num);
-                            if v.story.title.starts_with(&prefix) {
-                                let rest = v.story.title[prefix.len()..].trim();
-                                if !rest.is_empty() {
-                                    return Some(format!(": {rest}"));
+                        let title_suffix = phase_stories
+                            .iter()
+                            .find_map(|v| {
+                                let prefix = format!("Phase {}:", phase_num);
+                                if v.story.title.starts_with(&prefix) {
+                                    let rest = v.story.title[prefix.len()..].trim();
+                                    if !rest.is_empty() {
+                                        return Some(format!(": {rest}"));
+                                    }
                                 }
-                            }
-                            None
-                        }).unwrap_or_default();
+                                None
+                            })
+                            .unwrap_or_default();
 
                         let mut status_parts = Vec::new();
                         status_parts.push(format!("{done_count}/{total} done"));
@@ -1109,7 +1129,9 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
                         body.push_str(&format!(
                             "- Phase {}{} -- {}\n",
-                            phase_num, title_suffix, status_parts.join(", ")
+                            phase_num,
+                            title_suffix,
+                            status_parts.join(", ")
                         ));
                     }
                 }
@@ -1216,12 +1238,10 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     let mut total_edges = 0;
                     for story in &open_stories {
                         for rel in &story.relationships {
-                            if matches!(
-                                rel.relation.as_str(),
-                                "blocks" | "blocked-by"
-                            ) && story_map
-                                .get(&rel.other_id)
-                                .is_some_and(|s| s.superstate == SuperState::Open)
+                            if matches!(rel.relation.as_str(), "blocks" | "blocked-by")
+                                && story_map
+                                    .get(&rel.other_id)
+                                    .is_some_and(|s| s.superstate == SuperState::Open)
                             {
                                 total_edges += 1;
                             }
@@ -1434,9 +1454,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 storage::write_story_events(root, &b, &b_events)?;
             }
 
-            if !no_hooks
-                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
-            {
+            if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
                 let snapshot_a = storage::load_open_story_snapshot(root, &a)?;
                 let payload = serde_json::json!({
                     "event_type": "relationship_change",
@@ -1572,11 +1590,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     stories_touched.insert(story_id.clone());
 
                     // Auto-transition from initial state to active state
-                    if auto_transition_enabled
-                        && let Some(ref active) = active_state
-                    {
+                    if auto_transition_enabled && let Some(ref active) = active_state {
                         let snapshot = storage::load_open_story_snapshot(root, &story_id)?;
-                        if snapshot.state == default_open.slug && !transitions.iter().any(|(tid, _, _, _)| tid == &story_id) {
+                        if snapshot.state == default_open.slug
+                            && !transitions.iter().any(|(tid, _, _, _)| tid == &story_id)
+                        {
                             storage::write_story_events(
                                 root,
                                 &story_id,
@@ -1598,31 +1616,31 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
 
             let mut msg = format!(
                 "scanned {} commits, added {} comments to {} stories",
-                commits_scanned, comments_added, stories_touched.len()
+                commits_scanned,
+                comments_added,
+                stories_touched.len()
             );
             for (id, from, to, hash) in &transitions {
-                msg.push_str(&format!("\n{id}: {from} \u{2192} {to} (referenced in {hash})"));
+                msg.push_str(&format!(
+                    "\n{id}: {from} \u{2192} {to} (referenced in {hash})"
+                ));
             }
             Ok(Response::Message(msg))
         }),
-        Invocation::HelpTopic { topic } => {
-            match crate::help_topics::get_help_topic(&topic) {
-                Some(text) => Ok(Response::Message(text.to_string())),
-                None => {
-                    let topics = crate::help_topics::list_topics();
-                    Err(AppError::Usage(format!(
-                        "unknown help topic `{topic}`. Available: {}",
-                        topics.join(", ")
-                    )))
-                }
+        Invocation::HelpTopic { topic } => match crate::help_topics::get_help_topic(&topic) {
+            Some(text) => Ok(Response::Message(text.to_string())),
+            None => {
+                let topics = crate::help_topics::list_topics();
+                Err(AppError::Usage(format!(
+                    "unknown help topic `{topic}`. Available: {}",
+                    topics.join(", ")
+                )))
             }
-        }
-        Invocation::HelpCompact => {
-            Ok(Response::Message(crate::help_topics::compact_reference().to_string()))
-        }
-        Invocation::HelpAll => {
-            Ok(Response::Message(crate::help_topics::all_topics_text()))
-        }
+        },
+        Invocation::HelpCompact => Ok(Response::Message(
+            crate::help_topics::compact_reference().to_string(),
+        )),
+        Invocation::HelpAll => Ok(Response::Message(crate::help_topics::all_topics_text())),
         Invocation::SetFields {
             id,
             title,
@@ -1651,9 +1669,9 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             if let Some(ref s) = state {
                 let states = storage::load_state_map(root)?;
-                let state_def = states.get(s).ok_or_else(|| {
-                    AppError::Validation(format!("state `{s}` is not defined"))
-                })?;
+                let state_def = states
+                    .get(s)
+                    .ok_or_else(|| AppError::Validation(format!("state `{s}` is not defined")))?;
                 events.push(StoryEvent::StoryStateChanged {
                     at: now.clone(),
                     state: s.clone(),
@@ -1670,9 +1688,8 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 changes.push(format!("state -> {s}"));
             }
             if let Some(ref p) = priority {
-                let level = Priority::parse(p).ok_or_else(|| {
-                    AppError::Validation(format!("invalid priority `{p}`"))
-                })?;
+                let level = Priority::parse(p)
+                    .ok_or_else(|| AppError::Validation(format!("invalid priority `{p}`")))?;
                 events.push(StoryEvent::StoryPrioritySet {
                     at: now.clone(),
                     priority: level,
@@ -1681,9 +1698,10 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             if let Some(ref a) = assignee {
                 let members = storage::load_members(root)?;
-                let member = members.iter().find(|m| m.id == *a || m.github.as_deref() == Some(a)).ok_or_else(|| {
-                    AppError::Validation(format!("member `{a}` not found"))
-                })?;
+                let member = members
+                    .iter()
+                    .find(|m| m.id == *a || m.github.as_deref() == Some(a))
+                    .ok_or_else(|| AppError::Validation(format!("member `{a}` not found")))?;
                 events.push(StoryEvent::StoryAssigned {
                     at: now.clone(),
                     member_id: member.id.clone(),
@@ -1691,7 +1709,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 changes.push(format!("assignee -> {a}"));
             }
             if let Some(ref l) = labels {
-                let add: Vec<String> = l.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let add: Vec<String> = l
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 let mut current_labels: BTreeSet<String> = story.labels.iter().cloned().collect();
                 for label in &add {
                     current_labels.insert(label.clone());
@@ -1728,38 +1750,60 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 changes.push(format!("type -> {st}"));
             }
             if let Some(ref j) = json_patch {
-                let patch: serde_json::Value = serde_json::from_str(j).map_err(|e| {
-                    AppError::Validation(format!("invalid JSON: {e}"))
-                })?;
-                let obj = patch.as_object().ok_or_else(|| {
-                    AppError::Validation("JSON must be an object".to_string())
-                })?;
+                let patch: serde_json::Value = serde_json::from_str(j)
+                    .map_err(|e| AppError::Validation(format!("invalid JSON: {e}")))?;
+                let obj = patch
+                    .as_object()
+                    .ok_or_else(|| AppError::Validation("JSON must be an object".to_string()))?;
                 for (key, value) in obj {
                     match key.as_str() {
                         "title" => {
-                            let v = value.as_str().ok_or_else(|| AppError::Validation("title must be a string".to_string()))?;
+                            let v = value.as_str().ok_or_else(|| {
+                                AppError::Validation("title must be a string".to_string())
+                            })?;
                             if !v.is_empty() {
-                                events.push(StoryEvent::StoryTitleSet { at: now.clone(), title: v.to_string() });
+                                events.push(StoryEvent::StoryTitleSet {
+                                    at: now.clone(),
+                                    title: v.to_string(),
+                                });
                                 changes.push(format!("title -> {v}"));
                             }
                         }
                         "state" => {
-                            let v = value.as_str().ok_or_else(|| AppError::Validation("state must be a string".to_string()))?;
+                            let v = value.as_str().ok_or_else(|| {
+                                AppError::Validation("state must be a string".to_string())
+                            })?;
                             let states = storage::load_state_map(root)?;
-                            let state_def = states.get(v).ok_or_else(|| AppError::Validation(format!("state `{v}` is not defined")))?;
-                            events.push(StoryEvent::StoryStateChanged { at: now.clone(), state: v.to_string() });
+                            let state_def = states.get(v).ok_or_else(|| {
+                                AppError::Validation(format!("state `{v}` is not defined"))
+                            })?;
+                            events.push(StoryEvent::StoryStateChanged {
+                                at: now.clone(),
+                                state: v.to_string(),
+                            });
                             if state_def.super_state == SuperState::Closed {
                                 if story.awaiting.is_some() {
-                                    events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
+                                    events
+                                        .push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
                                 }
-                                events.push(StoryEvent::StoryClosedAndArchived { at: now.clone(), state: v.to_string() });
+                                events.push(StoryEvent::StoryClosedAndArchived {
+                                    at: now.clone(),
+                                    state: v.to_string(),
+                                });
                             }
                             changes.push(format!("state -> {v}"));
                         }
                         "priority" => {
-                            let v = value.as_str().ok_or_else(|| AppError::Validation("priority must be a string".to_string()))?;
-                            let level = Priority::parse(v).ok_or_else(|| AppError::Validation(format!("invalid priority `{v}`")))?;
-                            events.push(StoryEvent::StoryPrioritySet { at: now.clone(), priority: level });
+                            let v = value.as_str().ok_or_else(|| {
+                                AppError::Validation("priority must be a string".to_string())
+                            })?;
+                            let level = Priority::parse(v).ok_or_else(|| {
+                                AppError::Validation(format!("invalid priority `{v}`"))
+                            })?;
+                            events.push(StoryEvent::StoryPrioritySet {
+                                at: now.clone(),
+                                priority: level,
+                            });
                             changes.push(format!("priority -> {v}"));
                         }
                         "assignee" => {
@@ -1769,17 +1813,32 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                                 if v.is_empty() {
                                     changes.push("assignee cleared".to_string());
                                 } else {
-                                    events.push(StoryEvent::StoryAssigned { at: now.clone(), member_id: v.to_string() });
+                                    events.push(StoryEvent::StoryAssigned {
+                                        at: now.clone(),
+                                        member_id: v.to_string(),
+                                    });
                                     changes.push(format!("assignee -> {v}"));
                                 }
                             } else {
-                                return Err(AppError::Validation("assignee must be a string or null".to_string()));
+                                return Err(AppError::Validation(
+                                    "assignee must be a string or null".to_string(),
+                                ));
                             }
                         }
                         "labels" => {
-                            let arr = value.as_array().ok_or_else(|| AppError::Validation("labels must be an array of strings".to_string()))?;
-                            let new_labels: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-                            events.push(StoryEvent::StoryLabelsSet { at: now.clone(), labels: new_labels.clone() });
+                            let arr = value.as_array().ok_or_else(|| {
+                                AppError::Validation(
+                                    "labels must be an array of strings".to_string(),
+                                )
+                            })?;
+                            let new_labels: Vec<String> = arr
+                                .iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect();
+                            events.push(StoryEvent::StoryLabelsSet {
+                                at: now.clone(),
+                                labels: new_labels.clone(),
+                            });
                             changes.push(format!("labels -> [{}]", new_labels.join(", ")));
                         }
                         "blocked" => {
@@ -1788,18 +1847,26 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                                 changes.push("unblocked".to_string());
                             } else if let Some(v) = value.as_str() {
                                 if v.is_empty() {
-                                    events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
+                                    events
+                                        .push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
                                     changes.push("unblocked".to_string());
                                 } else {
-                                    events.push(StoryEvent::StoryAwaitingSet { at: now.clone(), awaiting: v.to_string() });
+                                    events.push(StoryEvent::StoryAwaitingSet {
+                                        at: now.clone(),
+                                        awaiting: v.to_string(),
+                                    });
                                     changes.push(format!("blocked: {v}"));
                                 }
                             } else {
-                                return Err(AppError::Validation("blocked must be a string or null".to_string()));
+                                return Err(AppError::Validation(
+                                    "blocked must be a string or null".to_string(),
+                                ));
                             }
                         }
                         "story_type" => {
-                            let v = value.as_str().ok_or_else(|| AppError::Validation("story_type must be a string".to_string()))?;
+                            let v = value.as_str().ok_or_else(|| {
+                                AppError::Validation("story_type must be a string".to_string())
+                            })?;
                             let type_map = storage::load_type_map(root)?;
                             if !type_map.contains_key(v) {
                                 return Err(AppError::Validation(format!(
@@ -1813,7 +1880,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                             });
                             changes.push(format!("type -> {v}"));
                         }
-                        other => return Err(AppError::Validation(format!("unknown field `{other}` in JSON. Valid fields: title, state, priority, assignee, labels, blocked, story_type"))),
+                        other => {
+                            return Err(AppError::Validation(format!(
+                                "unknown field `{other}` in JSON. Valid fields: title, state, priority, assignee, labels, blocked, story_type"
+                            )));
+                        }
                     }
                 }
             }
@@ -1825,21 +1896,32 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             storage::write_story_events(root, &id, &events)?;
 
             // Archive if state changed to CLOSED
-            let needs_archive = state.as_ref().map(|s| {
-                storage::load_state_map(root)
-                    .ok()
-                    .and_then(|m| m.get(s).map(|d| d.super_state == SuperState::Closed))
-                    .unwrap_or(false)
-            }).unwrap_or(false)
-            || json_patch.as_ref().map(|j| {
-                serde_json::from_str::<serde_json::Value>(j).ok()
-                    .and_then(|v| v.get("state")?.as_str().map(|s| s.to_string()))
-                    .map(|s| storage::load_state_map(root)
+            let needs_archive = state
+                .as_ref()
+                .map(|s| {
+                    storage::load_state_map(root)
                         .ok()
-                        .and_then(|m| m.get(&s).map(|d| d.super_state == SuperState::Closed))
-                        .unwrap_or(false))
-                    .unwrap_or(false)
-            }).unwrap_or(false);
+                        .and_then(|m| m.get(s).map(|d| d.super_state == SuperState::Closed))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+                || json_patch
+                    .as_ref()
+                    .map(|j| {
+                        serde_json::from_str::<serde_json::Value>(j)
+                            .ok()
+                            .and_then(|v| v.get("state")?.as_str().map(|s| s.to_string()))
+                            .map(|s| {
+                                storage::load_state_map(root)
+                                    .ok()
+                                    .and_then(|m| {
+                                        m.get(&s).map(|d| d.super_state == SuperState::Closed)
+                                    })
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
 
             if needs_archive {
                 storage::archive_story(root, &id)?;
@@ -1923,7 +2005,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 let stories = load_story_map(root)?;
 
                 validate_parent_constraints(
-                    &stories, &epic_id, &story_id, "parent-of", &a_story, &b_story,
+                    &stories,
+                    &epic_id,
+                    &story_id,
+                    "parent-of",
+                    &a_story,
+                    &b_story,
                 )?;
 
                 let edges = relation_edges("parent-of").ok_or_else(|| {
@@ -2001,11 +2088,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         && !no_hooks
     {
         let created_id = extract_created_story_id(resp);
-        crate::github::auto::maybe_auto_sync(
-            root,
-            &invocation_clone,
-            created_id.as_deref(),
-        );
+        crate::github::auto::maybe_auto_sync(root, &invocation_clone, created_id.as_deref());
     }
 
     response
@@ -2055,10 +2138,10 @@ fn plugin_config_disabled(content: &str) -> bool {
     };
 
     // Check nested [plugin].enabled first, then top-level enabled
-    if let Some(ref plugin) = config.plugin {
-        if let Some(ref val) = plugin.enabled {
-            return is_disabled(val);
-        }
+    if let Some(ref plugin) = config.plugin
+        && let Some(ref val) = plugin.enabled
+    {
+        return is_disabled(val);
     }
     if let Some(ref val) = config.enabled {
         return is_disabled(val);
@@ -2082,10 +2165,9 @@ fn session_start(root: &Path) -> Result<Response, AppError> {
     let config_path = storyhook_dir.join("plugin-config.toml");
     if config_path.exists()
         && let Ok(content) = std::fs::read_to_string(&config_path)
+        && plugin_config_disabled(&content)
     {
-        if plugin_config_disabled(&content) {
-            return Ok(Response::RawJson("{}".to_string()));
-        }
+        return Ok(Response::RawJson("{}".to_string()));
     }
 
     // Build the system message
@@ -2119,7 +2201,9 @@ fn session_start(root: &Path) -> Result<Response, AppError> {
         .collect();
     let ready_count = ready_stories.len();
 
-    msg.push_str(&format!("  {open_count} open stories, {ready_count} ready\n"));
+    msg.push_str(&format!(
+        "  {open_count} open stories, {ready_count} ready\n"
+    ));
 
     // Find the highest-priority ready story for "Next" info
     if !ready_stories.is_empty() {
@@ -2140,7 +2224,13 @@ fn session_start(root: &Path) -> Result<Response, AppError> {
 
     // Truncate to under 4000 characters if needed
     if msg.len() > 3900 {
-        msg.truncate(msg.floor_char_boundary(3900));
+        // Find the largest char boundary at or below 3900 so we never split a
+        // multi-byte UTF-8 character (avoids `floor_char_boundary`, MSRV 1.91).
+        let mut end = 3900;
+        while end > 0 && !msg.is_char_boundary(end) {
+            end -= 1;
+        }
+        msg.truncate(end);
         msg.push_str("\n...(truncated)\n");
     }
 
@@ -2290,9 +2380,7 @@ fn build_story_views(root: &Path, include_derived: bool) -> Result<Vec<StoryView
 
     let progress_map: BTreeMap<String, _> = stories
         .values()
-        .filter_map(|story| {
-            compute_progress(story, &stories).map(|p| (story.id.clone(), p))
-        })
+        .filter_map(|story| compute_progress(story, &stories).map(|p| (story.id.clone(), p)))
         .collect();
 
     let mut views = Vec::new();
@@ -2466,19 +2554,15 @@ fn validate_parent_constraints(
     }
 
     match relation {
-        "parent-of" => {
-            if would_create_parent_cycle(stories, a, b) {
-                return Err(AppError::Validation(format!(
-                    "adding `parent-of` from `{a}` to `{b}` would create a cycle"
-                )));
-            }
+        "parent-of" if would_create_parent_cycle(stories, a, b) => {
+            return Err(AppError::Validation(format!(
+                "adding `parent-of` from `{a}` to `{b}` would create a cycle"
+            )));
         }
-        "child-of" => {
-            if would_create_parent_cycle(stories, b, a) {
-                return Err(AppError::Validation(format!(
-                    "adding `child-of` from `{a}` to `{b}` would create a cycle"
-                )));
-            }
+        "child-of" if would_create_parent_cycle(stories, b, a) => {
+            return Err(AppError::Validation(format!(
+                "adding `child-of` from `{a}` to `{b}` would create a cycle"
+            )));
         }
         _ => {}
     }
@@ -2678,9 +2762,7 @@ fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Resp
                     labels,
                 }],
             )?;
-            if !no_hooks
-                && let Some(ref config) = crate::event_hooks::load_hooks_config(root)
-            {
+            if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
                 let snapshot = storage::load_open_story_snapshot(root, &id)?;
                 let payload = serde_json::json!({
                     "event_type": "label_change",
@@ -2696,9 +2778,7 @@ fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Resp
                     &payload.to_string(),
                 );
             }
-            Ok(Response::Message(format!(
-                "assigned {id} to phase {phase}"
-            )))
+            Ok(Response::Message(format!("assigned {id} to phase {phase}")))
         }),
         PhaseAction::Remove { id } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
@@ -2708,9 +2788,7 @@ fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Resp
             let had_phase = labels.iter().any(|l| l.starts_with("phase:"));
             labels.retain(|l| !l.starts_with("phase:"));
             if !had_phase {
-                return Ok(Response::Message(format!(
-                    "{id} has no phase assignment"
-                )));
+                return Ok(Response::Message(format!("{id} has no phase assignment")));
             }
             let labels: Vec<String> = labels.into_iter().collect();
             storage::write_story_events(
@@ -2886,7 +2964,10 @@ struct ImportBatchResult {
     relationship_lines: Vec<String>,
 }
 
-fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<ImportBatchResult, AppError> {
+fn import_stories_batch(
+    root: &Path,
+    stories: &[ImportStory],
+) -> Result<ImportBatchResult, AppError> {
     if stories.is_empty() {
         return Ok(ImportBatchResult {
             views: Vec::new(),
@@ -2909,7 +2990,8 @@ fn import_stories_batch(root: &Path, stories: &[ImportStory]) -> Result<ImportBa
     }
     let mut created_ids: Vec<String> = Vec::new();
     for import_story in stories {
-        let story = storage::create_story(root, &import_story.title, import_story.state.as_deref())?;
+        let story =
+            storage::create_story(root, &import_story.title, import_story.state.as_deref())?;
         let id = story.id.clone();
         let now = storage::now();
         let mut events = Vec::new();

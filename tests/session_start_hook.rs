@@ -32,14 +32,17 @@ fn run_hook(cwd: &std::path::Path) -> (String, i32) {
         .stdin(process::Stdio::piped())
         .stdout(process::Stdio::piped())
         .stderr(process::Stdio::piped())
-        .env("PATH", format!(
-            "{}:{}",
-            std::path::Path::new(env!("CARGO_BIN_EXE_story"))
-                .parent()
-                .unwrap()
-                .display(),
-            std::env::var("PATH").unwrap_or_default()
-        ))
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                std::path::Path::new(env!("CARGO_BIN_EXE_story"))
+                    .parent()
+                    .unwrap()
+                    .display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
@@ -257,8 +260,8 @@ fn hook_handles_empty_project_gracefully() {
     assert_eq!(code, 0, "hook should not fail on empty project");
 
     // Should still produce valid JSON
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("hook should produce valid JSON for empty project");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .expect("hook should produce valid JSON for empty project");
 
     // Either empty JSON or a systemMessage is acceptable
     if let Some(msg) = parsed.get("systemMessage") {

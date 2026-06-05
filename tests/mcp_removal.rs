@@ -39,8 +39,8 @@ fn mcp_flag_no_longer_accepted() {
     // a) produce an error (non-zero exit), OR
     // b) be treated as an unknown flag and show help/error, OR
     // c) not produce a valid MCP initialize response
-    let looks_like_mcp_response = stdout.contains("protocolVersion")
-        && stdout.contains("serverInfo");
+    let looks_like_mcp_response =
+        stdout.contains("protocolVersion") && stdout.contains("serverInfo");
     assert!(
         !looks_like_mcp_response,
         "--mcp should not produce a valid MCP initialize response after removal, got: {stdout}"
@@ -117,7 +117,7 @@ fn help_topic_list_does_not_include_mcp_config() {
             .map(|t| t.trim())
             .collect();
         assert!(
-            !topics.iter().any(|t| *t == "mcp-config"),
+            !topics.contains(&"mcp-config"),
             "mcp-config should not appear in the available topics list"
         );
     }
@@ -126,10 +126,7 @@ fn help_topic_list_does_not_include_mcp_config() {
 #[test]
 fn help_output_does_not_mention_mcp_config() {
     let dir = tempdir().unwrap();
-    let output = story(dir.path())
-        .arg("--help")
-        .assert()
-        .success();
+    let output = story(dir.path()).arg("--help").assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     assert!(
         !stdout.contains("mcp-config"),

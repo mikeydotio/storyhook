@@ -1,8 +1,8 @@
-/// Fix cycle 5 regression tests for SH-34 through SH-39.
-///
-/// These stories are all text/config changes. The tests verify the
-/// *before state* (detecting each bug) and will pass once the fix is applied.
-/// Each test exercises real CLI output or real file content — no mocks.
+//! Fix cycle 5 regression tests for SH-34 through SH-39.
+//!
+//! These stories are all text/config changes. The tests verify the
+//! *before state* (detecting each bug) and will pass once the fix is applied.
+//! Each test exercises real CLI output or real file content — no mocks.
 
 use assert_cmd::Command;
 use tempfile::tempdir;
@@ -150,12 +150,12 @@ fn sh35_init_claude_md_graph_section_only_has_valid_flags() {
 #[test]
 fn sh36_cargo_toml_version_matches_version_file() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let version_content = std::fs::read_to_string(manifest_dir.join("VERSION"))
-        .expect("VERSION file should exist");
+    let version_content =
+        std::fs::read_to_string(manifest_dir.join("VERSION")).expect("VERSION file should exist");
     let version_str = version_content.trim().trim_start_matches('v');
 
-    let cargo_toml = std::fs::read_to_string(manifest_dir.join("Cargo.toml"))
-        .expect("Cargo.toml should exist");
+    let cargo_toml =
+        std::fs::read_to_string(manifest_dir.join("Cargo.toml")).expect("Cargo.toml should exist");
     let cargo_parsed: toml::Value =
         toml::from_str(&cargo_toml).expect("Cargo.toml should be valid TOML");
     let cargo_version = cargo_parsed["package"]["version"]
@@ -178,17 +178,13 @@ fn sh36_post_bump_hook_syncs_cargo_toml() {
         ".semver/hooks/post-bump/sync-cargo-toml.sh should exist"
     );
 
-    let hook = std::fs::read_to_string(&hook_path)
-        .expect("should be able to read hook script");
+    let hook = std::fs::read_to_string(&hook_path).expect("should be able to read hook script");
 
     assert!(
         hook.contains("NEW_VERSION#v"),
         "hook should strip v prefix from $NEW_VERSION"
     );
-    assert!(
-        hook.contains("Cargo.toml"),
-        "hook should update Cargo.toml"
-    );
+    assert!(hook.contains("Cargo.toml"), "hook should update Cargo.toml");
 }
 
 // ============================================================
@@ -243,8 +239,7 @@ fn sh38_changelog_mcp_removal_mentions_migration_path() {
     // Simplest check: somewhere in the changelog, a "Removed" section
     // or a removal line should mention the migration path.
     let has_migration_note = changelog.contains("story plugin install claude-code")
-        || (changelog.contains("### Removed")
-            && changelog.contains("session hook"));
+        || (changelog.contains("### Removed") && changelog.contains("session hook"));
 
     assert!(
         has_migration_note,

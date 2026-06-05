@@ -25,7 +25,11 @@ fn session_start_no_project_outputs_empty_json() {
         .expect("failed to run story session-start");
     assert!(output.status.success(), "should exit 0 with no project");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "{}", "should output empty JSON when no .storyhook/ exists");
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "should output empty JSON when no .storyhook/ exists"
+    );
 }
 
 // ============================================================
@@ -39,7 +43,11 @@ fn session_start_plugin_disabled_outputs_empty_json() {
 
     // Disable the plugin
     let config_path = dir.path().join(".storyhook/plugin-config.toml");
-    std::fs::write(&config_path, "[plugin]\nenabled = false\ntracking = \"normal\"\n").unwrap();
+    std::fs::write(
+        &config_path,
+        "[plugin]\nenabled = false\ntracking = \"normal\"\n",
+    )
+    .unwrap();
 
     let output = story(dir.path())
         .arg("session-start")
@@ -47,7 +55,11 @@ fn session_start_plugin_disabled_outputs_empty_json() {
         .expect("failed to run story session-start");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "{}", "should output empty JSON when plugin is disabled");
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "should output empty JSON when plugin is disabled"
+    );
 }
 
 #[test]
@@ -65,7 +77,11 @@ fn session_start_plugin_disabled_string_value_outputs_empty_json() {
         .expect("failed to run story session-start");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "{}", "should output empty JSON when plugin disabled via string");
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "should output empty JSON when plugin disabled via string"
+    );
 }
 
 // ============================================================
@@ -124,11 +140,26 @@ fn session_start_contains_cli_reference() {
     let msg = parsed["systemMessage"].as_str().unwrap_or("");
 
     // Verify key commands from the compact reference appear
-    assert!(msg.contains("story next"), "should contain 'story next' command");
-    assert!(msg.contains("story load-context"), "should contain 'story load-context' command");
-    assert!(msg.contains("story new"), "should contain 'story new' command");
-    assert!(msg.contains("story list"), "should contain 'story list' command");
-    assert!(msg.contains("LIFECYCLE"), "should contain LIFECYCLE section header");
+    assert!(
+        msg.contains("story next"),
+        "should contain 'story next' command"
+    );
+    assert!(
+        msg.contains("story load-context"),
+        "should contain 'story load-context' command"
+    );
+    assert!(
+        msg.contains("story new"),
+        "should contain 'story new' command"
+    );
+    assert!(
+        msg.contains("story list"),
+        "should contain 'story list' command"
+    );
+    assert!(
+        msg.contains("LIFECYCLE"),
+        "should contain LIFECYCLE section header"
+    );
 }
 
 // ============================================================
@@ -201,10 +232,7 @@ fn session_start_contains_next_story_info() {
         msg.contains("SH-1") && msg.contains("Deploy monitoring dashboard"),
         "should contain next story ID and title, got: {msg}"
     );
-    assert!(
-        msg.contains("Next:"),
-        "should have Next: label, got: {msg}"
-    );
+    assert!(msg.contains("Next:"), "should have Next: label, got: {msg}");
 }
 
 // ============================================================
@@ -295,7 +323,10 @@ fn session_start_unicode_in_story_title() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let result: Result<serde_json::Value, _> = serde_json::from_str(stdout.trim());
-    assert!(result.is_ok(), "output must be valid JSON with unicode titles");
+    assert!(
+        result.is_ok(),
+        "output must be valid JSON with unicode titles"
+    );
 }
 
 #[test]
@@ -349,7 +380,10 @@ fn session_start_output_is_valid_json_object() {
     assert!(result.is_ok(), "output must be valid JSON, got: {trimmed}");
 
     let value = result.unwrap();
-    assert!(value.is_object(), "output must be a JSON object, got: {trimmed}");
+    assert!(
+        value.is_object(),
+        "output must be a JSON object, got: {trimmed}"
+    );
 }
 
 // ============================================================
@@ -364,7 +398,13 @@ fn session_start_system_message_under_4000_chars() {
     // Create several stories to populate project state
     for i in 0..20 {
         story(dir.path())
-            .args(["new", &format!("Story number {} with a reasonably long title for testing", i)])
+            .args([
+                "new",
+                &format!(
+                    "Story number {} with a reasonably long title for testing",
+                    i
+                ),
+            ])
             .assert()
             .success();
     }
@@ -476,7 +516,11 @@ fn session_start_no_project_with_json_flag() {
         .expect("failed to run story session-start --json");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "{}", "should output empty JSON even with --json flag");
+    assert_eq!(
+        stdout.trim(),
+        "{}",
+        "should output empty JSON even with --json flag"
+    );
 }
 
 // ============================================================
@@ -590,7 +634,11 @@ fn session_start_plugin_config_extra_whitespace_bug_documented() {
 
     // Write config with extra whitespace around the value
     let config_path = dir.path().join(".storyhook/plugin-config.toml");
-    std::fs::write(&config_path, "[plugin]\nenabled  =   false\ntracking = \"normal\"\n").unwrap();
+    std::fs::write(
+        &config_path,
+        "[plugin]\nenabled  =   false\ntracking = \"normal\"\n",
+    )
+    .unwrap();
 
     let output = story(dir.path())
         .arg("session-start")
@@ -617,7 +665,11 @@ fn session_start_plugin_config_enabled_true_produces_system_message() {
 
     // Write config with enabled = true explicitly
     let config_path = dir.path().join(".storyhook/plugin-config.toml");
-    std::fs::write(&config_path, "[plugin]\nenabled = true\ntracking = \"normal\"\n").unwrap();
+    std::fs::write(
+        &config_path,
+        "[plugin]\nenabled = true\ntracking = \"normal\"\n",
+    )
+    .unwrap();
 
     let output = story(dir.path())
         .arg("session-start")
@@ -869,10 +921,7 @@ fn session_start_utf8_safe_truncation_with_multibyte_titles() {
         .collect();
     let title = format!("Long UTF-8 title {cjk_block}");
 
-    story(dir.path())
-        .args(["new", &title])
-        .assert()
-        .success();
+    story(dir.path()).args(["new", &title]).assert().success();
 
     let output = story(dir.path())
         .arg("session-start")

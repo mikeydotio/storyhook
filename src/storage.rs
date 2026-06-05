@@ -174,7 +174,10 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
     let claude_md_path = paths.storyhook_dir().join("CLAUDE.md");
     if !claude_md_path.exists() {
         let effective_prefix = prefix.unwrap_or("SH");
-        fs::write(&claude_md_path, generate_claude_md(effective_prefix, "done"))?;
+        fs::write(
+            &claude_md_path,
+            generate_claude_md(effective_prefix, "done"),
+        )?;
     }
 
     // If a .gitignore exists, append a comment clarifying that .storyhook/
@@ -347,7 +350,12 @@ pub fn save_states(root: &Path, states: &[StateDef]) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn add_state(root: &Path, slug: &str, superstate: SuperState, role: Option<String>) -> Result<StateDef, AppError> {
+pub fn add_state(
+    root: &Path,
+    slug: &str,
+    superstate: SuperState,
+    role: Option<String>,
+) -> Result<StateDef, AppError> {
     let mut states = load_states(root)?;
     if states.iter().any(|state| state.slug == slug) {
         return Err(AppError::Validation(format!(
@@ -620,7 +628,9 @@ pub fn create_story(
     let id = next_story_id(root)?;
     let state_slug = if let Some(slug) = initial_state {
         let states = load_states(root)?;
-        let valid = states.iter().any(|s| s.slug == slug && s.super_state == SuperState::Open);
+        let valid = states
+            .iter()
+            .any(|s| s.slug == slug && s.super_state == SuperState::Open);
         if !valid {
             return Err(AppError::Validation(format!(
                 "'{slug}' is not a valid OPEN state. Available OPEN states: {}",
@@ -1077,7 +1087,10 @@ mod tests {
     #[test]
     fn types_file_returns_correct_path() {
         let paths = ProjectPaths::new(Path::new("/tmp/test"));
-        assert_eq!(paths.types_file(), PathBuf::from("/tmp/test/.storyhook/types.toml"));
+        assert_eq!(
+            paths.types_file(),
+            PathBuf::from("/tmp/test/.storyhook/types.toml")
+        );
     }
 
     // --- ensure_types_file ---
@@ -1102,8 +1115,14 @@ mod tests {
         let dir = setup_project();
         // Save a custom types file with only 2 entries
         let custom = vec![
-            TypeDef { slug: "alpha".to_string(), description: None },
-            TypeDef { slug: "beta".to_string(), description: None },
+            TypeDef {
+                slug: "alpha".to_string(),
+                description: None,
+            },
+            TypeDef {
+                slug: "beta".to_string(),
+                description: None,
+            },
         ];
         save_types(dir.path(), &custom).unwrap();
         ensure_types_file(dir.path()).unwrap();
@@ -1155,7 +1174,10 @@ mod tests {
         assert!(map.contains_key("bug"));
         assert!(map.contains_key("chore"));
         assert!(map.contains_key("task"));
-        assert_eq!(map["story"].description.as_deref(), Some("A user story or feature"));
+        assert_eq!(
+            map["story"].description.as_deref(),
+            Some("A user story or feature")
+        );
     }
 
     // --- save_types ---
@@ -1163,9 +1185,10 @@ mod tests {
     #[test]
     fn save_types_writes_file() {
         let dir = setup_project();
-        let custom = vec![
-            TypeDef { slug: "feature".to_string(), description: Some("A feature".to_string()) },
-        ];
+        let custom = vec![TypeDef {
+            slug: "feature".to_string(),
+            description: Some("A feature".to_string()),
+        }];
         save_types(dir.path(), &custom).unwrap();
         let types = load_types(dir.path()).unwrap();
         assert_eq!(types.len(), 1);
@@ -1180,7 +1203,10 @@ mod tests {
         let dir = setup_project();
         let result = add_type(dir.path(), "spike", Some("A time-boxed investigation")).unwrap();
         assert_eq!(result.slug, "spike");
-        assert_eq!(result.description.as_deref(), Some("A time-boxed investigation"));
+        assert_eq!(
+            result.description.as_deref(),
+            Some("A time-boxed investigation")
+        );
         let types = load_types(dir.path()).unwrap();
         assert_eq!(types.len(), 6);
         assert_eq!(types[5].slug, "spike");
@@ -1281,8 +1307,14 @@ mod tests {
     fn default_type_returns_first_after_custom_save() {
         let dir = setup_project();
         let custom = vec![
-            TypeDef { slug: "zeta".to_string(), description: None },
-            TypeDef { slug: "alpha".to_string(), description: None },
+            TypeDef {
+                slug: "zeta".to_string(),
+                description: None,
+            },
+            TypeDef {
+                slug: "alpha".to_string(),
+                description: None,
+            },
         ];
         save_types(dir.path(), &custom).unwrap();
         let dt = default_type(dir.path()).unwrap();
@@ -1304,15 +1336,26 @@ mod tests {
     #[test]
     fn types_file_round_trips_through_toml() {
         let types = vec![
-            TypeDef { slug: "story".to_string(), description: Some("A user story".to_string()) },
-            TypeDef { slug: "bug".to_string(), description: None },
+            TypeDef {
+                slug: "story".to_string(),
+                description: Some("A user story".to_string()),
+            },
+            TypeDef {
+                slug: "bug".to_string(),
+                description: None,
+            },
         ];
-        let types_file = TypesFile { types: types.clone() };
+        let types_file = TypesFile {
+            types: types.clone(),
+        };
         let serialized = toml::to_string_pretty(&types_file).unwrap();
         let deserialized: TypesFile = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.types.len(), 2);
         assert_eq!(deserialized.types[0].slug, "story");
-        assert_eq!(deserialized.types[0].description.as_deref(), Some("A user story"));
+        assert_eq!(
+            deserialized.types[0].description.as_deref(),
+            Some("A user story")
+        );
         assert_eq!(deserialized.types[1].slug, "bug");
         assert_eq!(deserialized.types[1].description, None);
     }

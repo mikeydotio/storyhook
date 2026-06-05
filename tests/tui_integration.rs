@@ -442,19 +442,18 @@ fn stale_modal_detected_after_story_archived() {
     {
         let stale_id = story_id.clone();
         state.focus.pop_modal();
-        state.notification = Some((
-            format!("Story {stale_id} no longer open"),
-            Instant::now(),
-        ));
+        state.notification = Some((format!("Story {stale_id} no longer open"), Instant::now()));
     }
 
     assert!(!state.focus.has_modal(), "stale modal should be closed");
+    assert!(state.notification.is_some(), "notification should be set");
     assert!(
-        state.notification.is_some(),
-        "notification should be set"
-    );
-    assert!(
-        state.notification.as_ref().unwrap().0.contains("no longer open"),
+        state
+            .notification
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("no longer open"),
         "notification should mention the story is gone"
     );
 }
@@ -489,11 +488,14 @@ fn collapsed_sections_hide_story_rows() {
     assert_eq!(story_count_collapsed, 0);
 
     // The section header should still be there
-    let header = rows.iter().find(|r| {
-        matches!(r, RowItem::SectionHeader { slug, .. } if slug == "todo")
-    });
+    let header = rows
+        .iter()
+        .find(|r| matches!(r, RowItem::SectionHeader { slug, .. } if slug == "todo"));
     assert!(header.is_some());
-    if let Some(RowItem::SectionHeader { count, expanded, .. }) = header {
+    if let Some(RowItem::SectionHeader {
+        count, expanded, ..
+    }) = header
+    {
         assert_eq!(*count, 2, "count should still reflect actual stories");
         assert!(!expanded, "section should be marked as collapsed");
     }
@@ -589,10 +591,7 @@ fn view_switching_preserves_board_state() {
 
     // Filters should be preserved
     assert_eq!(state.filters.len(), 1);
-    assert_eq!(
-        state.filters[0].text.as_deref(),
-        Some("test")
-    );
+    assert_eq!(state.filters[0].text.as_deref(), Some("test"));
 }
 
 // ─── Test 11: Data refresh after external write ─────────────────────
@@ -657,10 +656,7 @@ fn story_deleted_externally_closes_modal_with_notification() {
     {
         let stale_id = story_id.clone();
         state.focus.pop_modal();
-        state.notification = Some((
-            format!("Story {stale_id} no longer open"),
-            Instant::now(),
-        ));
+        state.notification = Some((format!("Story {stale_id} no longer open"), Instant::now()));
     }
 
     assert!(!state.focus.has_modal());
@@ -678,7 +674,10 @@ fn empty_states_file_produces_validation_error() {
 
     // DataStore::load should return an error, not panic
     let result = DataStore::load(&root);
-    assert!(result.is_err(), "empty states should produce a validation error");
+    assert!(
+        result.is_err(),
+        "empty states should produce a validation error"
+    );
     let err_msg = format!("{}", result.err().unwrap());
     assert!(
         err_msg.contains("OPEN") || err_msg.contains("state"),
@@ -703,7 +702,8 @@ fn very_long_title_does_not_panic_in_board() {
     let board = Board::new();
     let rows = board.build_visible_rows(&state);
     assert!(
-        rows.iter().any(|r| matches!(r, RowItem::StoryRow { id } if id == "LT-1")),
+        rows.iter()
+            .any(|r| matches!(r, RowItem::StoryRow { id } if id == "LT-1")),
         "long-titled story should appear in board rows"
     );
 }
@@ -754,8 +754,8 @@ fn unicode_content_handled_gracefully() {
                 at: storyhook::storage::now(),
                 labels: vec![
                     "\u{2705} done".to_string(),
-                    "\u{00E9}t\u{00E9}".to_string(),    // "ete" with accents
-                    "\u{4F60}\u{597D}".to_string(),       // Chinese: "hello"
+                    "\u{00E9}t\u{00E9}".to_string(), // "ete" with accents
+                    "\u{4F60}\u{597D}".to_string(),  // Chinese: "hello"
                 ],
             },
             StoryEvent::StoryCommentAdded {
@@ -802,7 +802,10 @@ fn incomplete_trailing_json_line_tolerated() {
     // DataStore::load should succeed, skipping the incomplete line
     let store = DataStore::load(&root).unwrap();
     assert_eq!(store.story_count(), 1);
-    assert_eq!(store.find_story(&id).unwrap().title, "Concurrent write test");
+    assert_eq!(
+        store.find_story(&id).unwrap().title,
+        "Concurrent write test"
+    );
 }
 
 // ─── Edge 7: Refresh after state removal from states.toml ───────────

@@ -2,13 +2,14 @@ use std::path::Path;
 use std::time::Instant;
 
 use crossterm::event::{MouseButton, MouseEventKind};
-use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
 
 use crate::domain::{StoryEvent, SuperState};
 use crate::error::AppError;
 
 use super::action::{Action, UndoEntry, View};
+use super::components::Component;
 use super::components::board::Board;
 use super::components::create_form::CreateForm;
 use super::components::dashboard::Dashboard;
@@ -17,7 +18,6 @@ use super::components::graph::GraphComponent;
 use super::components::help::Help;
 use super::components::status_bar::StatusBar;
 use super::components::story_detail::StoryDetail;
-use super::components::Component;
 use super::data::DataStore;
 use super::event::{Event, EventSource};
 use super::focus::{FocusTarget, Modal};
@@ -117,7 +117,15 @@ fn main_loop(
             state.terminal_size = (*w, *h);
         }
 
-        let actions = route_event(event, state, board, filter_bar, dashboard, graph, modal_components);
+        let actions = route_event(
+            event,
+            state,
+            board,
+            filter_bar,
+            dashboard,
+            graph,
+            modal_components,
+        );
 
         for action in actions {
             dispatch(action, state, root, term, board, graph, modal_components)?;
@@ -246,12 +254,8 @@ fn route_event(
                     // Then check board
                     board.handle_mouse(mouse, state)
                 }
-                View::Dashboard => {
-                    dashboard.handle_mouse(mouse, state)
-                }
-                View::Graph => {
-                    graph.handle_mouse(mouse, state)
-                }
+                View::Dashboard => dashboard.handle_mouse(mouse, state),
+                View::Graph => graph.handle_mouse(mouse, state),
             }
         }
         Event::Resize(_w, _h) => {
@@ -353,9 +357,7 @@ fn dispatch(
 
         Action::OpenDetail(id) => {
             modal_components.story_detail = Some(StoryDetail::new(id.clone()));
-            state
-                .focus
-                .push_modal(Modal::StoryDetail { story_id: id });
+            state.focus.push_modal(Modal::StoryDetail { story_id: id });
         }
 
         Action::OpenCreateForm => {
@@ -402,15 +404,12 @@ fn dispatch(
                         let id = story_id.clone();
                         state.focus.pop_modal();
                         modal_components.story_detail = None;
-                        state.notification = Some((
-                            format!("Story {id} no longer open"),
-                            Instant::now(),
-                        ));
+                        state.notification =
+                            Some((format!("Story {id} no longer open"), Instant::now()));
                     }
                 }
                 Err(e) => {
-                    state.notification =
-                        Some((format!("Refresh failed: {e}"), Instant::now()));
+                    state.notification = Some((format!("Refresh failed: {e}"), Instant::now()));
                 }
             }
         }
@@ -515,10 +514,8 @@ fn dispatch(
                                 Some(("Editor exited with error".to_string(), Instant::now()));
                         }
                         Err(e) => {
-                            state.notification = Some((
-                                format!("Failed to run editor: {e}"),
-                                Instant::now(),
-                            ));
+                            state.notification =
+                                Some((format!("Failed to run editor: {e}"), Instant::now()));
                         }
                     }
                     // Clean up temp file
@@ -573,8 +570,7 @@ fn dispatch(
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
-                    state.notification =
-                        Some((format!("Created {id}"), Instant::now()));
+                    state.notification = Some((format!("Created {id}"), Instant::now()));
                     // Close create form modal
                     if let Some(Modal::CreateForm) = state.focus.top_modal() {
                         state.focus.pop_modal();
@@ -582,8 +578,7 @@ fn dispatch(
                     }
                 }
                 Err(e) => {
-                    state.notification =
-                        Some((format!("Create failed: {e}"), Instant::now()));
+                    state.notification = Some((format!("Create failed: {e}"), Instant::now()));
                 }
             }
         }
@@ -651,8 +646,7 @@ fn dispatch(
                     graph.on_state_change(state);
                 }
                 Err(e) => {
-                    state.notification =
-                        Some((format!("Move failed: {e}"), Instant::now()));
+                    state.notification = Some((format!("Move failed: {e}"), Instant::now()));
                 }
             }
         }
@@ -671,16 +665,19 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
-                    push_undo(state, format!("{id} title updated"), id.clone(), events_before);
+                    push_undo(
+                        state,
+                        format!("{id} title updated"),
+                        id.clone(),
+                        events_before,
+                    );
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
-                    state.notification =
-                        Some((format!("{id} title updated"), Instant::now()));
+                    state.notification = Some((format!("{id} title updated"), Instant::now()));
                 }
                 Err(e) => {
-                    state.notification =
-                        Some((format!("Update failed: {e}"), Instant::now()));
+                    state.notification = Some((format!("Update failed: {e}"), Instant::now()));
                 }
             }
         }
@@ -699,12 +696,16 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
-                    push_undo(state, format!("{id} priority set to {}", priority.as_str()), id.clone(), events_before);
+                    push_undo(
+                        state,
+                        format!("{id} priority set to {}", priority.as_str()),
+                        id.clone(),
+                        events_before,
+                    );
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
-                    state.notification =
-                        Some((format!("{id} priority set"), Instant::now()));
+                    state.notification = Some((format!("{id} priority set"), Instant::now()));
                 }
                 Err(e) => {
                     state.notification =
@@ -727,12 +728,16 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
-                    push_undo(state, format!("{id} labels updated"), id.clone(), events_before);
+                    push_undo(
+                        state,
+                        format!("{id} labels updated"),
+                        id.clone(),
+                        events_before,
+                    );
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
-                    state.notification =
-                        Some((format!("{id} labels updated"), Instant::now()));
+                    state.notification = Some((format!("{id} labels updated"), Instant::now()));
                 }
                 Err(e) => {
                     state.notification =
@@ -755,7 +760,12 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
-                    push_undo(state, format!("{id} assigned to {assignee}"), id.clone(), events_before);
+                    push_undo(
+                        state,
+                        format!("{id} assigned to {assignee}"),
+                        id.clone(),
+                        events_before,
+                    );
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
@@ -763,8 +773,7 @@ fn dispatch(
                         Some((format!("{id} assigned to {assignee}"), Instant::now()));
                 }
                 Err(e) => {
-                    state.notification =
-                        Some((format!("Assign failed: {e}"), Instant::now()));
+                    state.notification = Some((format!("Assign failed: {e}"), Instant::now()));
                 }
             }
         }
@@ -783,16 +792,19 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
-                    push_undo(state, format!("{id} comment added"), id.clone(), events_before);
+                    push_undo(
+                        state,
+                        format!("{id} comment added"),
+                        id.clone(),
+                        events_before,
+                    );
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
-                    state.notification =
-                        Some((format!("{id} comment added"), Instant::now()));
+                    state.notification = Some((format!("{id} comment added"), Instant::now()));
                 }
                 Err(e) => {
-                    state.notification =
-                        Some((format!("Comment failed: {e}"), Instant::now()));
+                    state.notification = Some((format!("Comment failed: {e}"), Instant::now()));
                 }
             }
         }
@@ -811,12 +823,16 @@ fn dispatch(
             });
             match result {
                 Ok(()) => {
-                    push_undo(state, format!("{id} awaiting: {reason}"), id.clone(), events_before);
+                    push_undo(
+                        state,
+                        format!("{id} awaiting: {reason}"),
+                        id.clone(),
+                        events_before,
+                    );
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
-                    state.notification =
-                        Some((format!("{id} awaiting: {reason}"), Instant::now()));
+                    state.notification = Some((format!("{id} awaiting: {reason}"), Instant::now()));
                 }
                 Err(e) => {
                     state.notification =
@@ -842,8 +858,7 @@ fn dispatch(
                     state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
-                    state.notification =
-                        Some((format!("{id} unblocked"), Instant::now()));
+                    state.notification = Some((format!("{id} unblocked"), Instant::now()));
                 }
                 Err(e) => {
                     state.notification =
@@ -892,8 +907,7 @@ fn dispatch(
                     Err(e) => {
                         // Put entry back on undo stack since undo failed
                         state.undo_stack.push(entry);
-                        state.notification =
-                            Some((format!("Undo failed: {e}"), Instant::now()));
+                        state.notification = Some((format!("Undo failed: {e}"), Instant::now()));
                     }
                 }
             } else {
@@ -941,8 +955,7 @@ fn dispatch(
                     Err(e) => {
                         // Put entry back on redo stack since redo failed
                         state.redo_stack.push(entry);
-                        state.notification =
-                            Some((format!("Redo failed: {e}"), Instant::now()));
+                        state.notification = Some((format!("Redo failed: {e}"), Instant::now()));
                     }
                 }
             } else {
@@ -978,8 +991,7 @@ fn render(
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ));
         frame.render_widget(
-            ratatui::widgets::Paragraph::new(msg)
-                .alignment(ratatui::layout::Alignment::Center),
+            ratatui::widgets::Paragraph::new(msg).alignment(ratatui::layout::Alignment::Center),
             area,
         );
         return;
@@ -1099,8 +1111,11 @@ mod tests {
 
         // With the bug fixed, Help modal should capture input
         let ctx = determine_key_context(&state);
-        assert_eq!(ctx, KeyContext::Help,
-            "Modal must take priority over filter_bar_focused");
+        assert_eq!(
+            ctx,
+            KeyContext::Help,
+            "Modal must take priority over filter_bar_focused"
+        );
     }
 
     #[test]
@@ -1157,7 +1172,10 @@ mod tests {
         state.view = View::Dashboard; // filter bar only active on Board
 
         let ctx = determine_key_context(&state);
-        assert_eq!(ctx, KeyContext::Global,
-            "filter_bar_focused should be ignored on Dashboard view");
+        assert_eq!(
+            ctx,
+            KeyContext::Global,
+            "filter_bar_focused should be ignored on Dashboard view"
+        );
     }
 }

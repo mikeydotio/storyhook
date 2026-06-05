@@ -27,11 +27,26 @@ fn help_compact_produces_output_with_key_commands() {
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
     // Must contain the core workflow commands
-    assert!(stdout.contains("new"), "compact help should mention 'new' command");
-    assert!(stdout.contains("list"), "compact help should mention 'list' command");
-    assert!(stdout.contains("next"), "compact help should mention 'next' command");
-    assert!(stdout.contains("move"), "compact help should mention 'move' command");
-    assert!(stdout.contains("show"), "compact help should mention 'show' command");
+    assert!(
+        stdout.contains("new"),
+        "compact help should mention 'new' command"
+    );
+    assert!(
+        stdout.contains("list"),
+        "compact help should mention 'list' command"
+    );
+    assert!(
+        stdout.contains("next"),
+        "compact help should mention 'next' command"
+    );
+    assert!(
+        stdout.contains("move"),
+        "compact help should mention 'move' command"
+    );
+    assert!(
+        stdout.contains("show"),
+        "compact help should mention 'show' command"
+    );
     assert!(
         stdout.contains("load-context"),
         "compact help should mention 'load-context' command"
@@ -81,10 +96,7 @@ fn help_compact_does_not_include_full_topic_explanations() {
 #[test]
 fn help_all_produces_all_topics() {
     let dir = tempdir().unwrap();
-    let output = story(dir.path())
-        .args(["help", "--all"])
-        .assert()
-        .success();
+    let output = story(dir.path()).args(["help", "--all"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
     // Should contain content from multiple distinct topics
@@ -118,10 +130,7 @@ fn help_all_is_much_longer_than_compact() {
         .success();
     let compact = String::from_utf8(compact_output.get_output().stdout.clone()).unwrap();
 
-    let all_output = story(dir.path())
-        .args(["help", "--all"])
-        .assert()
-        .success();
+    let all_output = story(dir.path()).args(["help", "--all"]).assert().success();
     let all = String::from_utf8(all_output.get_output().stdout.clone()).unwrap();
 
     let compact_lines = compact.lines().count();
@@ -136,10 +145,7 @@ fn help_all_is_much_longer_than_compact() {
 #[test]
 fn help_all_does_not_mention_mcp_after_removal() {
     let dir = tempdir().unwrap();
-    let output = story(dir.path())
-        .args(["help", "--all"])
-        .assert()
-        .success();
+    let output = story(dir.path()).args(["help", "--all"]).assert().success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
     assert!(

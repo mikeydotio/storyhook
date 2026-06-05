@@ -225,9 +225,8 @@ fn merge_optional(
             if local == remote {
                 // Converged
             } else {
-                let fmt = |v: &Option<String>| -> String {
-                    v.as_deref().unwrap_or("<none>").to_string()
-                };
+                let fmt =
+                    |v: &Option<String>| -> String { v.as_deref().unwrap_or("<none>").to_string() };
                 conflicts.push(FieldConflict {
                     field: field.to_string(),
                     base_value: fmt(base),
@@ -444,10 +443,7 @@ mod tests {
 
         let result = three_way_merge(&base, &local, &remote);
 
-        assert_eq!(
-            result.remote_updates.state.as_deref(),
-            Some("in-progress")
-        );
+        assert_eq!(result.remote_updates.state.as_deref(), Some("in-progress"));
         assert!(result.local_updates.state.is_none());
     }
 
@@ -681,10 +677,7 @@ mod tests {
         let result = three_way_merge(&base, &local, &remote);
 
         assert!(result.local_updates.labels.is_none());
-        assert_eq!(
-            result.remote_updates.labels,
-            Some(vec!["bug".to_string()])
-        );
+        assert_eq!(result.remote_updates.labels, Some(vec!["bug".to_string()]));
     }
 
     #[test]
@@ -821,10 +814,7 @@ mod tests {
 
         // Remote changes should pull to local
         assert_eq!(result.local_updates.state.as_deref(), Some("done"));
-        assert_eq!(
-            result.local_updates.assignee,
-            Some(Some("bob".to_string()))
-        );
+        assert_eq!(result.local_updates.assignee, Some(Some("bob".to_string())));
 
         assert!(result.conflicts.is_empty());
     }
@@ -837,15 +827,19 @@ mod tests {
 
     #[test]
     fn field_updates_not_empty_with_title() {
-        let mut updates = FieldUpdates::default();
-        updates.title = Some("test".to_string());
+        let updates = FieldUpdates {
+            title: Some("test".to_string()),
+            ..Default::default()
+        };
         assert!(!updates.is_empty());
     }
 
     #[test]
     fn field_updates_not_empty_with_labels() {
-        let mut updates = FieldUpdates::default();
-        updates.labels = Some(vec!["bug".to_string()]);
+        let updates = FieldUpdates {
+            labels: Some(vec!["bug".to_string()]),
+            ..Default::default()
+        };
         assert!(!updates.is_empty());
     }
 }
