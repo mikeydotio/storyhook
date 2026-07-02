@@ -2,7 +2,7 @@
 name: storyhook-setup
 description: "Use when setting up storyhook in a new project, when the 'story' command is not found, or when asked to configure storyhook integration. Detects CLI availability, installs if missing, initializes project, and configures plugin behavior."
 user-invocable: true
-allowed-tools: Read, Write, Bash(which *), Bash(story *), Bash(cargo *), Bash(curl *), AskUserQuestion
+allowed-tools: Read, Write, Bash(command -v *), Bash(story *), Bash(cargo *), Bash(curl *), AskUserQuestion
 ---
 
 # Storyhook Setup
