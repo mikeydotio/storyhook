@@ -1,6 +1,6 @@
 # Storyhook Workflow Patterns
 
-Common workflow patterns for using storyhook with AI coding agents. Each pattern includes the purpose, when to use it, and concrete command sequences.
+Common workflow patterns for using storyhook with AI coding agents. Each pattern includes the purpose, when to use it, and concrete command sequences. All commands below use the real verb-first CLI — see `cli-reference.md` for the full syntax and JSON shapes of every command used here.
 
 ---
 
@@ -12,31 +12,31 @@ The standard pattern for every coding session: understand context, pick work, ex
 
 ```bash
 # 1. Understand current state
-story context
+story load-context
 
 # 2. Find the best task to work on
 story next --count 3
 
 # 3. Start working on a story
-story SH-3 is in-progress
-story SH-3 "Starting work on this story"
+story move SH-3 in-progress
+story comment SH-3 "Starting work on this story"
 
 # 4. Log progress as you go
-story SH-3 "Implemented the database migration"
-story SH-3 "Added unit tests for the new schema"
+story comment SH-3 "Implemented the database migration"
+story comment SH-3 "Added unit tests for the new schema"
 
 # 5. Complete the story
-story SH-3 is done "Feature complete with tests"
+story move SH-3 done "Feature complete with tests"
 
 # 6. Hand off at session end
 story handoff --since 2h
 ```
 
 **Key points**:
-- Always run `story context` at session start -- it prevents duplicate work and surfaces blockers early
-- Use `story next` instead of manually picking -- it respects priorities and dependencies
+- Always run `story load-context` at session start -- it prevents duplicate work and surfaces blockers early
+- Use `story next` instead of manually picking -- it respects priorities and `blocks`/`blocked-by` dependencies
 - Add comments as you work so the next session has context
-- The stop hook automatically generates a handoff, but you can also do it manually
+- `story move <id> <state> "<comment>"` can log the completion comment in the same call as the transition
 
 ---
 
@@ -54,14 +54,14 @@ story decompose feature-spec.md --dry-run
 story decompose feature-spec.md
 
 # 3. Review and adjust priorities
-story SH-10 priority critical
-story SH-11 priority high
-story SH-12 priority medium
+story prioritize SH-10 critical
+story prioritize SH-11 high
+story prioritize SH-12 medium
 
 # 4. Add labels for categorization
-story SH-10 label backend,database
-story SH-11 label backend,api
-story SH-12 label frontend
+story label SH-10 backend,database
+story label SH-11 backend,api
+story label SH-12 frontend
 
 # 5. View the dependency graph
 story graph --critical-path
@@ -75,6 +75,7 @@ story next
 
 **Key points**:
 - Always use `--dry-run` first to review before creating stories
+- `story decompose` parses `### Wave N` headings into `blocked-by` edges automatically -- prefer structuring the spec that way over manually relating every story afterward
 - Set priorities on all stories so `story next` gives good recommendations
 - Use `story graph --critical-path` to identify which stories unblock the most work
 - Label stories to make filtering easy later
@@ -98,28 +99,28 @@ story graph --critical-path
 story graph --parallel-groups
 
 # 4. Work on first parallel group
-story SH-1 is in-progress
+story move SH-1 in-progress
 # ... do the work ...
-story SH-1 is done "Database schema created"
+story move SH-1 done "Database schema created"
 
-story SH-2 is in-progress
+story move SH-2 in-progress
 # ... do the work ...
-story SH-2 is done "Config module implemented"
+story move SH-2 done "Config module implemented"
 
 # 5. Check what's unblocked now
 story next --count 5
 
 # 6. Continue with the next group
-story SH-3 is in-progress
+story move SH-3 in-progress
 # ... do the work ...
-story SH-3 is done "API endpoints implemented"
+story move SH-3 done "API endpoints implemented"
 
 # 7. Verify progress
 story summary
 ```
 
 **Key points**:
-- `--parallel-groups` shows which stories have no dependencies between them and can be done in any order
+- `--parallel-groups` shows which stories have no `blocks`/`blocked-by` dependency between them and can be done in any order
 - After completing a story, check `story next` -- previously blocked stories may now be ready
 - Use `story summary` periodically to see overall progress
 
@@ -142,21 +143,21 @@ story doctor --fix
 story list --stale 7d
 
 # 4. Decide on each stale story
-story SH-5 is done "No longer needed after architecture change"
-story SH-6 priority low
-story SH-7 "Still relevant, updating priority"
-story SH-7 priority high
+story move SH-5 done "No longer needed after architecture change"
+story prioritize SH-6 low
+story comment SH-7 "Still relevant, updating priority"
+story prioritize SH-7 high
 
 # 5. Check blocked stories
 story list --blocked
 
 # 6. Clear resolved blockers
-story SH-8 awaits --clear
-story SH-8 is in-progress
+story unblock SH-8
+story move SH-8 in-progress
 
 # 7. Re-prioritize
-story SH-9 priority critical
-story SH-10 priority medium
+story prioritize SH-9 critical
+story prioritize SH-10 medium
 
 # 8. Verify the backlog is clean
 story summary
@@ -164,8 +165,9 @@ story next --count 5
 ```
 
 **Key points**:
-- Run `story doctor` first -- it catches structural issues like orphaned files or invalid states
+- Run `story doctor` first -- it catches structural issues like invalid states or orphaned relationships
 - Be aggressive about closing stale stories -- if nobody has touched it in a week, it may not be needed
+- `story block`/`story unblock` are for external blockers; a story stuck behind an unfinished dependency is controlled by `blocked-by` relationships instead (see Pattern 6)
 - After cleanup, verify `story next` gives sensible recommendations
 
 ---
@@ -178,32 +180,33 @@ Manage work across team members with assignments and handoffs.
 
 ```bash
 # 1. Register team members
-story member add "Alice Smith <alice@example.com>"
+story member add "Alice <alice@example.com>"
 story member add -g bob-dev
 
 # 2. Assign stories
-story SH-1 assign alice
-story SH-2 assign alice
-story SH-3 assign bob-dev
+story assign SH-1 alice
+story assign SH-2 alice
+story assign SH-3 bob-dev
 
 # 3. View assignments
 story list --assignee alice
 story list --assignee bob-dev
 
 # 4. Track progress
-story SH-1 is in-progress
-story SH-1 "Working on database schema"
+story move SH-1 in-progress
+story comment SH-1 "Working on database schema"
 
 # 5. Hand off between sessions
 story handoff --since 4h
 
 # 6. Next session picks up context
-story context
+story load-context
 story list --assignee alice --state in-progress
 ```
 
 **Key points**:
 - Use `story member add -g <handle>` for GitHub users (fetches name/email automatically)
+- A registered member's assignable ID is derived from their name (e.g. `"Bob Dev"` -> `bob-dev`) -- use `story list --json` or `story show <id> --json` to confirm the exact slug if unsure
 - Assign all in-progress work so it is clear who owns what
 - Use `story handoff` at session boundaries for continuity
 
@@ -211,34 +214,38 @@ story list --assignee alice --state in-progress
 
 ## 6. Blocker Management
 
-Track and resolve dependencies and external blockers.
+Track and resolve dependencies and external blockers. Storyhook distinguishes two different things that both read as "blocked":
+
+- **External blockers** (`story block`/`story unblock`) -- something outside the graph (a person, a decision, an API) that has nothing to do with another story
+- **Internal dependencies** (`blocks`/`blocked-by` relationships) -- one story genuinely cannot start until another story closes
 
 **When to use**: When work is stuck waiting on something.
 
 ```bash
-# 1. Mark a story as blocked
-story SH-3 awaits "Need API spec from design team"
+# 1. Mark a story as externally blocked
+story block SH-3 "Need API spec from design team"
 
-# 2. Set up dependency relationships
-story SH-3 follows SH-1
-story SH-4 follows SH-3
+# 2. Set up dependency relationships between stories
+story relate SH-1 blocks SH-3
+story relate SH-3 blocks SH-4
 
 # 3. See what's blocked and why
 story list --blocked
 story graph --blocked-by SH-1
 
-# 4. When the blocker is resolved
-story SH-3 awaits --clear
-story SH-3 is in-progress
+# 4. When the external blocker is resolved
+story unblock SH-3
+story move SH-3 in-progress
 
 # 5. Check what else is now unblocked
 story next --count 5
 ```
 
 **Key points**:
-- Use `awaits` for external blockers (waiting on a person, a decision, an API)
-- Use `follows`/`precedes` for internal dependencies (story A must finish before story B)
-- `story graph --blocked-by SH-1` shows the full transitive impact of a single blocker
+- Use `story block`/`story unblock` for external blockers (waiting on a person, a decision, an API)
+- Use `story relate <a> blocks <b>` (equivalently `story relate <b> blocked-by <a>`) for internal dependencies -- `story next`, `story list --ready`, and `story graph` all read `blocks`/`blocked-by` edges to compute readiness
+- There is no `precedes`/`follows` in this CLI -- `blocks`/`blocked-by` are the only relations that gate execution order
+- `story graph --blocked-by SH-1` shows the full transitive impact of a single blocking story
 
 ---
 
@@ -250,7 +257,7 @@ Keep stories synchronized with git activity.
 
 ```bash
 # 1. Sync recent git history
-story sync-git --since 7d
+story commit-sync --since 7d
 
 # 2. Install git hooks for automatic syncing
 story hooks install
@@ -267,11 +274,11 @@ git commit -m "Add login endpoint for SH-3"
 git merge feature-branch
 
 # 6. Check sync results
-story SH-3
+story show SH-3
 ```
 
 **Key points**:
 - Reference story IDs in commit messages (e.g., `SH-3`) to automatically link commits
-- `story hooks install` sets up post-commit hooks for real-time syncing
-- Use `story sync-git` for bulk sync after pulling or rebasing
+- `story hooks install` sets up git hooks (`post-commit`, `post-merge`, `prepare-commit-msg`) for real-time syncing
+- Use `story commit-sync` for bulk sync after pulling or rebasing (previously named `sync-git`; that alias still works)
 - The plugin's post-git hook also runs sync automatically after detected git operations
