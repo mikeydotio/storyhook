@@ -19,16 +19,18 @@ Before running any `story` command, confirm the CLI is installed by running `com
 ### 1. Select a story
 
 - **If a story ID was provided** (e.g., `/storyhook:storyhook-work SH-3`), use that story
-- **If no story ID**, run `story next --json` to automatically pick the highest-priority ready story
-- If `next` returns nothing, inform the user that all stories are either done or blocked, and suggest running `/storyhook:storyhook-triage`
+- **If no story ID**, run `story next --json` to automatically pick the highest-priority ready story. The response is double-nested: a single ready story is at `.story.story.id` (NOT `.story.id`). If nothing is ready, there is no `.story` key at all — check `.message` for `"no ready stories"`.
+- If nothing is ready, inform the user that all stories are either done or blocked, and suggest running `/storyhook:storyhook-triage`
 
 ### 2. Show story details
 
-Run `story <id> --json` to get the full story details including:
+Run `story show <id> --json` to get the full story details including:
 - Title, priority, labels
-- Current state and any awaiting status
+- Current state and any blocked status
 - Comments and history
 - Relationships (blockers, parent/child, related stories)
+
+The story fields are under `.story.story` (e.g. `.story.story.state`), not `.story` directly.
 
 Present this information clearly so the context is understood before starting work.
 
@@ -43,7 +45,7 @@ Default to `normal` if the config file does not exist or the key is missing.
 
 ### 4. Transition to in-progress
 
-Run `story <id> is in-progress` to mark the story as active.
+Run `story move <id> in-progress` to mark the story as active.
 
 If the project uses custom states (check `.storyhook/states.toml` for a state with `role = "active"`), use that state slug instead of `in-progress`. If there is no active-role state and `in-progress` does not exist, inform the user and ask which state to use.
 
@@ -51,7 +53,7 @@ If the project uses custom states (check `.storyhook/states.toml` for a state wi
 
 If tracking mode is `normal` or `verbose`:
 
-Run `story <id> "Starting work on this story"` to log the session start.
+Run `story comment <id> "Starting work on this story"` to log the session start.
 
 ### 6. Present working context
 
