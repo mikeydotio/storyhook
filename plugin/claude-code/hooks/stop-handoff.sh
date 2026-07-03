@@ -22,6 +22,16 @@ if [[ ! -d ".storyhook" ]]; then
   exit 0
 fi
 
+# Check if a forge pipeline is active for this project. forge's own Stop
+# hook (and freshen's) already fire on every pipeline step and forge writes
+# its own handoff artifact, so generating a storyhook handoff here too is a
+# redundant, duplicate injection on every forge step transition. forge owns
+# handoff generation while it is managing this project's pipeline.
+if [[ -d ".forge" ]]; then
+  printf '{}'
+  exit 0
+fi
+
 # Check if plugin is enabled
 enabled=$(read_plugin_config "enabled" "true")
 if [[ "$enabled" == "false" ]]; then
