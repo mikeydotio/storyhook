@@ -27,6 +27,21 @@ if [[ -z "$stdin_json" ]]; then
   exit 0
 fi
 
+# Cheap pre-filter on the raw JSON text, before paying a python3 interpreter
+# startup for every single Bash tool call this hook fires on. JSON encoders
+# only escape structural characters (quotes, backslashes, control chars) —
+# plain ASCII words like "git commit" survive intact in the raw payload, so
+# a literal substring check here has no false negatives for the patterns we
+# care about. This hook only needs to actually parse tool_input (below) for
+# the rare call that plausibly touches git.
+case "$stdin_json" in
+  *"git commit"*|*"git merge"*|*"git push"*) ;;
+  *)
+    printf '{}'
+    exit 0
+    ;;
+esac
+
 # Extract the command string from tool_input
 command_str=$(printf '%s' "$stdin_json" | python3 -c "
 import sys, json
@@ -38,7 +53,9 @@ else:
     print(tool_input.get('command', ''))
 " 2>/dev/null || echo "")
 
-# Fast check: only act on git commit/merge/push commands
+# Confirm the match wasn't a false positive from the cheap pre-filter (e.g.
+# the literal text appearing somewhere other than the actual command, or
+# JSON parsing failing) before treating this as a real git commit/merge/push.
 if [[ "$command_str" != *"git commit"* && "$command_str" != *"git merge"* && "$command_str" != *"git push"* ]]; then
   printf '{}'
   exit 0
@@ -73,9 +90,14 @@ fi
 sync_output=$(story sync-git --since 1h --quiet 2>/dev/null || echo "")
 
 if [[ -n "$sync_output" ]]; then
-  # Escape for JSON
-  escaped=$(printf '%s' "$sync_output" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | tr '\n' ' ')
-  printf '{"systemMessage":"[storyhook] Git sync: %s"}' "$escaped"
+  # Build the JSON with python3's json.dumps rather than manual sed escaping,
+  # which only handled backslash/quote/newline and would emit invalid JSON
+  # on other control characters (e.g. a tab in $sync_output).
+  printf '%s' "$sync_output" | python3 -c "
+import sys, json
+msg = '[storyhook] Git sync: ' + sys.stdin.read().strip()
+print(json.dumps({'systemMessage': msg}))
+"
 else
   printf '{}'
 fi
