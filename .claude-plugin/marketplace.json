@@ -8,7 +8,7 @@
       "name": "storyhook",
       "description": "AI-native project management for coding agents. Proactive story tracking, session handoffs, and dependency-aware task selection via the storyhook CLI.",
       "source": "./plugin/claude-code",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": { "name": "mikeydotio" },
       "homepage": "https://github.com/mikeydotio/storyhook"
     }
