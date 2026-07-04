@@ -1180,6 +1180,39 @@ Related:
 "#,
         );
 
+        m.insert(
+            "update",
+            r#"story update [--check] [--force]
+
+Update the story binary in place to the latest GitHub release. Downloads the
+release asset for your platform, verifies it runs, and atomically replaces the
+running executable.
+
+When to use:
+  Periodically, to pick up new releases. Run 'story update --check' first to
+  see whether a newer version is available without changing anything.
+
+Flags:
+  --check    Report whether an update is available; do not download or install.
+  --force    Reinstall the latest release even if already up to date.
+
+Examples:
+  story update            # Update to the latest release if newer
+  story update --check    # Just report whether an update is available
+  story --version         # Print the currently installed version
+
+Notes:
+  - Requires the 'github-sync' build feature (enabled by default).
+  - Installs into the directory of the current binary; if that directory is
+    not writable (e.g. /usr/local/bin), re-run with elevated privileges or use
+    the installer at https://github.com/mikeydotio/storyhook.
+  - Set STORYHOOK_GITHUB_TOKEN to raise the GitHub API rate limit (optional).
+
+Related:
+  story doctor  — Check project integrity
+"#,
+        );
+
         m
     });
 
