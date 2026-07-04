@@ -3,6 +3,43 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.14.0] - 2026-07-03
+
+### Added
+- add storyhook-update skill (cba8213)
+- add `story update` self-update command and `--version` flag (0b57ccf)
+- add storyhook-install skill and CLI-presence guards (ae8d2de)
+- register via Claude Code marketplace instead of copying (5274a65)
+- implement web dashboard (story web start/stop/status) (5b6afe9)
+
+### Fixed
+- avoid a python3 spawn on every non-git Bash call (F074) (7cba1d6)
+- no-op Stop-hook handoff when a forge pipeline is active (F072) (995b6e1)
+- allowlist command -v in storyhook-setup skill (F073) (a11a7a9)
+- storyhook-triage emits real verb-first mutations (d2287bf)
+- storyhook-work emits real verb-first mutations (2de7edb)
+- correct hooks.json to valid Claude Code schema (55f232c)
+- address all 5 triage FIX items for web dashboard (2542fb8)
+
+### Changed
+- Merge pull request #3 from mikeydotio/worktree-web-ui (0c806ff)
+- integrate origin/main into web-ui branch (ec801fe)
+- project documentation for web dashboard (24f7488)
+- 5 FIX, 0 ESCALATE — all findings have clear solutions (37b5dc7)
+- static analysis and test hardening complete (63633e6)
+- web dashboard implementation plan approved (9e147c7)
+
+### Documentation
+- fix workflow-patterns.md to verb-first command grammar (1636303)
+- rewrite cli-reference.md to the real verb-first CLI (5aa6f6d)
+- document Claude Code plugin install routes (5beae1c)
+
+### Maintenance
+- add Makefile mirroring CI checks (7cdf175)
+- satisfy fmt + clippy on current stable toolchain (2801271)
+
+_[manual]_
+
 ## [v0.13.0] - 2026-04-07
 
 ### Added
