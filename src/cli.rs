@@ -88,6 +88,7 @@ Usage:
   story phase create <N> ["<title>"]
   story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
   story doctor [--fix]
+  story update [--check] [--force]                 (self-update the story binary)
   story hooks install|uninstall|list|test <event_type>
   story commit-sync [--since <duration>]
   story github-sync [<id>] [--dry-run]
@@ -121,10 +122,11 @@ Usage:
   story epic add <epic-id> <story-id>
 
 Global options:
-  --json      Emit structured JSON
-  --quiet     Suppress success output
-  --no-hooks  Suppress event hook execution
+  --json          Emit structured JSON
+  --quiet         Suppress success output
+  --no-hooks      Suppress event hook execution
   -h, --help
+  -V, --version   Print the installed story version
 "#;
 
 #[derive(Clone, Debug)]
@@ -307,6 +309,11 @@ pub enum Invocation {
         action: WebAction,
     },
     SessionStart,
+    Update {
+        check: bool,
+        force: bool,
+    },
+    Version,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -363,7 +370,9 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
 
     match args[0].as_str() {
         "-h" | "--help" => Ok(Invocation::Help),
+        "-V" | "--version" => Ok(Invocation::Version),
         "help" => parse_help(args),
+        "update" => parse_update(args),
         "init" => parse_init(args),
         "new" => parse_new(args),
         "member" => parse_member(args),
@@ -1079,6 +1088,34 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
     }
 
     Err(AppError::Usage("usage: story doctor [--fix]".to_string()))
+}
+
+fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story update [--check] [--force]";
+    let mut check = false;
+    let mut force = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--check" => {
+                check = true;
+                index += 1;
+            }
+            "--force" => {
+                force = true;
+                index += 1;
+            }
+            _ => {
+                return Err(AppError::Usage(usage.to_string()));
+            }
+        }
+    }
+    if check && force {
+        return Err(AppError::Usage(format!(
+            "{usage} (--check and --force are mutually exclusive)"
+        )));
+    }
+    Ok(Invocation::Update { check, force })
 }
 
 fn parse_hooks(args: &[String]) -> Result<Invocation, AppError> {
