@@ -1151,20 +1151,23 @@ Related:
             "session-start",
             r#"story session-start
 
-Output a JSON object with a systemMessage field containing a compact CLI
-reference and current project state. Designed for use by editor plugins
-and shell hooks at session start.
+Output a JSON object carrying a compact CLI reference and current project
+state as SessionStart hook context. Designed for use by editor plugins and
+shell hooks at session start.
 
 Output format:
-  {"systemMessage": "..."}   — when project exists and plugin is enabled
+  {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}
+                              — when project exists and plugin is enabled
   {}                          — when no project, or plugin is disabled
 
-The systemMessage includes the compact CLI reference (same as
-story help --compact) plus a project state summary: open story count,
+The context is delivered via `additionalContext`, which Claude Code injects
+silently into the model's context (it is NOT shown to the user as a visible
+block, unlike `systemMessage`). It includes the compact CLI reference (same
+as story help --compact) plus a project state summary: open story count,
 ready story count, and the next recommended story if one exists.
 
 The output is always valid JSON, uses serde_json for safety with
-special characters, and the systemMessage is kept under 4000 chars.
+special characters, and the context is kept under 4000 chars.
 
 When to use:
   Automatically called by editor plugin hooks at session start. Not

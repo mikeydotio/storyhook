@@ -259,7 +259,7 @@ story graph --parallel-groups --json
 
 ### `story session-start`
 
-Emit `{"systemMessage": "..."}` for editor/agent session-start hooks (compact CLI reference + open/ready counts + next recommended story). Not normally invoked by hand.
+Emit `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}` for editor/agent session-start hooks (compact CLI reference + open/ready counts + next recommended story). The context is injected silently into the model's context, not shown to the user. Not normally invoked by hand.
 
 ```bash
 story session-start
