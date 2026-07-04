@@ -2080,6 +2080,27 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         Invocation::SessionStart => {
             return session_start(root);
         }
+        Invocation::Version => Ok(Response::Message(format!(
+            "story {}",
+            env!("CARGO_PKG_VERSION")
+        ))),
+        Invocation::Update { check, force } => {
+            #[cfg(feature = "github-sync")]
+            {
+                Ok(Response::Message(crate::update::run(check, force)?))
+            }
+            #[cfg(not(feature = "github-sync"))]
+            {
+                let _ = (check, force);
+                return Err(AppError::Usage(
+                    "self-update requires the `github-sync` feature. \
+                     Reinstall via the official installer \
+                     (curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh) \
+                     or rebuild with: cargo install storyhook --features github-sync"
+                        .to_string(),
+                ));
+            }
+        }
     };
 
     // After successful command, maybe auto-sync to GitHub
