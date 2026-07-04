@@ -5,4 +5,6 @@
 set -euo pipefail
 
 VERSION="${NEW_VERSION#v}"
-sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+# Portable in-place edit: `sed -i` without a suffix is GNU-only and fails on
+# BSD/macOS sed. `-i.bak` works on both; delete the backup afterward.
+sed -i.bak "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml && rm -f Cargo.toml.bak
