@@ -245,7 +245,7 @@ fn session_start_system_message_does_not_mention_mcp() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
     // Use a title that does NOT contain "MCP" to avoid false positives
-    // from user-supplied story titles appearing in the systemMessage.
+    // from user-supplied story titles appearing in the injected context.
     story(dir.path())
         .args(["new", "Verify removed protocol is gone from session-start"])
         .assert()
@@ -259,7 +259,9 @@ fn session_start_system_message_does_not_mention_mcp() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = parsed["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or("");
 
     // Strip out the PROJECT STATE section (which includes user-supplied story titles)
     // to avoid false positives. Only check the CLI reference portion.

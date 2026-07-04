@@ -18,9 +18,16 @@ if [[ -n "$stdin_json" ]]; then
   fi
 fi
 
-# Delegate to story session-start; fall back to {} on any failure.
+# Delegate to story session-start; emit only a JSON envelope, never leaked text.
+#
+# The CLI writes usage/error output to stdout (not stderr), so a stale `story`
+# binary that predates the `session-start` subcommand would otherwise dump
+# "error: unknown command `session-start`. Run `story --help` for usage." into
+# the session. Capture stdout and pass it through only when it is JSON (starts
+# with `{`); a non-zero exit blanks it and anything else collapses to `{}`.
 if command -v story &>/dev/null; then
-  story session-start 2>/dev/null || printf '{}'
+  out=$(story session-start 2>/dev/null) || out=""
+  case "$out" in "{"*) printf '%s' "$out" ;; *) printf '{}' ;; esac
 else
   printf '{}'
 fi
