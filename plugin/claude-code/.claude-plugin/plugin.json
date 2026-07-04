@@ -1,7 +1,7 @@
 {
   "name": "storyhook",
   "description": "AI-native project management for coding agents. Proactive story tracking, session handoffs, and dependency-aware task selection via the storyhook CLI.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": { "name": "mikeydotio" },
   "repository": "https://github.com/mikeydotio/storyhook"
 }
