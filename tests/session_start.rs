@@ -1,8 +1,12 @@
 /// Tests for the `story session-start` CLI command.
 ///
 /// This command is designed for use by editor plugins and shell hooks.
-/// It outputs raw JSON: `{"systemMessage":"..."}` when a project exists
-/// and plugin is enabled, or `{}` when no project or plugin is disabled.
+/// It outputs raw JSON: the Claude Code SessionStart envelope
+/// `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`
+/// when a project exists and the plugin is enabled, or `{}` when there is no
+/// project or the plugin is disabled. `additionalContext` is injected silently
+/// into the model's context (it is NOT rendered to the user, unlike the
+/// previously-used `systemMessage` field).
 use assert_cmd::Command;
 use tempfile::tempdir;
 
@@ -10,6 +14,21 @@ fn story(dir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("story").unwrap();
     cmd.current_dir(dir);
     cmd
+}
+
+/// Extract the SessionStart `additionalContext` string from a parsed
+/// `story session-start` envelope, or "" if it is absent (e.g. `{}`).
+fn context(parsed: &serde_json::Value) -> &str {
+    parsed["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or("")
+}
+
+/// True when the output carries a well-formed SessionStart context envelope:
+/// `hookEventName == "SessionStart"` and a string `additionalContext`.
+fn has_session_context(parsed: &serde_json::Value) -> bool {
+    parsed["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+        && parsed["hookSpecificOutput"]["additionalContext"].is_string()
 }
 
 // ============================================================
@@ -85,7 +104,7 @@ fn session_start_plugin_disabled_string_value_outputs_empty_json() {
 }
 
 // ============================================================
-// Valid project with stories -> systemMessage JSON
+// Valid project with stories -> SessionStart context envelope
 // ============================================================
 
 #[test]
@@ -108,16 +127,70 @@ fn session_start_valid_project_outputs_system_message() {
         serde_json::from_str(stdout.trim()).expect("output should be valid JSON");
 
     assert!(
-        parsed.get("systemMessage").is_some(),
-        "output should contain systemMessage field"
+        has_session_context(&parsed),
+        "output should contain the SessionStart context envelope"
     );
 
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
-    assert!(!msg.is_empty(), "systemMessage should not be empty");
+    let msg = context(&parsed);
+    assert!(!msg.is_empty(), "additionalContext should not be empty");
 }
 
 // ============================================================
-// systemMessage contains CLI reference
+// Regression: context ships via additionalContext, NOT systemMessage.
+//
+// The session-start context is meant to prime the model, not to be shown to
+// the user. `systemMessage` is Claude Code's user-visible field and some
+// versions render it as a visible block at every session start / clear. The
+// context must instead ride in hookSpecificOutput.additionalContext, which is
+// injected silently. This guards against regressing to the visible field.
+// ============================================================
+
+#[test]
+fn session_start_uses_additional_context_not_system_message() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Prime the model silently"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .arg("session-start")
+        .output()
+        .expect("failed to run story session-start");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+
+    // Must NOT use the user-visible systemMessage field, anywhere.
+    assert!(
+        parsed.get("systemMessage").is_none(),
+        "session-start must not emit a top-level systemMessage (it is user-visible), got: {}",
+        stdout.trim()
+    );
+    assert!(
+        parsed["hookSpecificOutput"].get("systemMessage").is_none(),
+        "session-start must not nest a systemMessage inside hookSpecificOutput, got: {}",
+        stdout.trim()
+    );
+
+    // Must use the silent SessionStart context envelope with the correct event.
+    assert_eq!(
+        parsed["hookSpecificOutput"]["hookEventName"],
+        "SessionStart",
+        "hookEventName must be SessionStart, got: {}",
+        stdout.trim()
+    );
+    assert!(
+        context(&parsed).contains("storyhook"),
+        "additionalContext should carry the CLI reference, got: {}",
+        stdout.trim()
+    );
+}
+
+// ============================================================
+// additionalContext contains CLI reference
 // ============================================================
 
 #[test]
@@ -137,7 +210,7 @@ fn session_start_contains_cli_reference() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
     // Verify key commands from the compact reference appear
     assert!(
@@ -163,7 +236,7 @@ fn session_start_contains_cli_reference() {
 }
 
 // ============================================================
-// systemMessage contains project state
+// additionalContext contains project state
 // ============================================================
 
 #[test]
@@ -191,7 +264,7 @@ fn session_start_contains_project_state() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
     // Should mention 2 open stories
     assert!(
@@ -206,7 +279,7 @@ fn session_start_contains_project_state() {
 }
 
 // ============================================================
-// systemMessage contains next story info
+// additionalContext contains next story info
 // ============================================================
 
 #[test]
@@ -226,7 +299,7 @@ fn session_start_contains_next_story_info() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
     assert!(
         msg.contains("SH-1") && msg.contains("Deploy monitoring dashboard"),
@@ -236,7 +309,7 @@ fn session_start_contains_next_story_info() {
 }
 
 // ============================================================
-// Empty project (0 stories) -> systemMessage with CLI ref and "0 open"
+// Empty project (0 stories) -> context with CLI ref and "0 open"
 // ============================================================
 
 #[test]
@@ -254,7 +327,7 @@ fn session_start_empty_project_zero_stories() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("should be valid JSON");
 
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
     // Should still contain CLI reference
     assert!(
@@ -301,8 +374,8 @@ fn session_start_special_characters_in_title() {
     let parsed = result.unwrap();
     assert!(parsed.is_object(), "output must be a JSON object");
     assert!(
-        parsed.get("systemMessage").is_some(),
-        "should have systemMessage field"
+        has_session_context(&parsed),
+        "should have the SessionStart context envelope"
     );
 }
 
@@ -387,7 +460,7 @@ fn session_start_output_is_valid_json_object() {
 }
 
 // ============================================================
-// systemMessage under 4000 characters
+// additionalContext under 4000 characters
 // ============================================================
 
 #[test]
@@ -417,11 +490,11 @@ fn session_start_system_message_under_4000_chars() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
     assert!(
         msg.len() < 4000,
-        "systemMessage should be under 4000 chars, got {} chars",
+        "additionalContext should be under 4000 chars, got {} chars",
         msg.len()
     );
 }
@@ -484,14 +557,14 @@ fn session_start_ignores_json_flag() {
     let stdout_json = String::from_utf8_lossy(&output_json.stdout);
     let stdout_plain = String::from_utf8_lossy(&output_plain.stdout);
 
-    // Both should produce the same raw JSON output (systemMessage),
-    // not wrapped in {"result":"ok","message":"..."} envelope
+    // Both should produce the same raw SessionStart envelope, not wrapped in a
+    // {"result":"ok","message":"..."} CLI envelope.
     let parsed_json: serde_json::Value = serde_json::from_str(stdout_json.trim()).unwrap();
     let parsed_plain: serde_json::Value = serde_json::from_str(stdout_plain.trim()).unwrap();
 
     assert!(
-        parsed_json.get("systemMessage").is_some(),
-        "with --json should still have systemMessage, not envelope"
+        has_session_context(&parsed_json),
+        "with --json should still emit the SessionStart context envelope"
     );
     assert!(
         parsed_json.get("result").is_none(),
@@ -552,7 +625,7 @@ fn session_start_next_story_shows_priority() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
     // The next story should be SH-2 (critical priority sorts first)
     assert!(
@@ -612,7 +685,7 @@ fn session_start_missing_project_toml_still_returns_json() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let trimmed = stdout.trim();
 
-    // Should produce valid JSON (either {} or {systemMessage: ...})
+    // Should produce valid JSON (either {} or a SessionStart context envelope)
     let result: Result<serde_json::Value, _> = serde_json::from_str(trimmed);
     assert!(
         result.is_ok(),
@@ -680,8 +753,8 @@ fn session_start_plugin_config_enabled_true_produces_system_message() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert!(
-        parsed.get("systemMessage").is_some(),
-        "enabled = true should produce systemMessage, got: {}",
+        has_session_context(&parsed),
+        "enabled = true should produce a SessionStart context envelope, got: {}",
         stdout.trim()
     );
 }
@@ -710,7 +783,7 @@ fn session_start_plugin_config_malformed_still_works() {
     // Malformed config should NOT disable the plugin (fail open, not fail closed).
     // If the config can't be read, plugin is considered enabled.
     assert!(
-        parsed.get("systemMessage").is_some(),
+        has_session_context(&parsed),
         "malformed plugin config should not disable the plugin, got: {}",
         stdout.trim()
     );
@@ -827,7 +900,7 @@ fn session_start_no_plugin_config_file_produces_system_message() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     assert!(
-        parsed.get("systemMessage").is_some(),
+        has_session_context(&parsed),
         "missing plugin config should not disable the plugin, got: {}",
         stdout.trim()
     );
@@ -839,8 +912,9 @@ fn session_start_no_plugin_config_file_produces_system_message() {
 
 #[test]
 fn session_start_output_is_one_of_two_valid_shapes() {
-    // The contract: output is either exactly `{}` or `{"systemMessage":"..."}`.
-    // No other keys should be present.
+    // The contract: output is either exactly `{}` or a SessionStart envelope
+    // `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`.
+    // No top-level `systemMessage` key should ever be present.
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
@@ -858,18 +932,18 @@ fn session_start_output_is_one_of_two_valid_shapes() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let obj = parsed.as_object().expect("output must be a JSON object");
 
-    // Valid keys are: none (empty {}) or exactly "systemMessage"
+    // The only valid top-level key is "hookSpecificOutput" (empty {} has none).
     for key in obj.keys() {
         assert_eq!(
-            key, "systemMessage",
-            "session-start output should only contain 'systemMessage' key, found: '{key}'"
+            key, "hookSpecificOutput",
+            "session-start output should only contain 'hookSpecificOutput' key, found: '{key}'"
         );
     }
 
-    if let Some(msg) = obj.get("systemMessage") {
+    if obj.contains_key("hookSpecificOutput") {
         assert!(
-            msg.is_string(),
-            "systemMessage value must be a string, got: {msg}"
+            has_session_context(&parsed),
+            "hookSpecificOutput must carry hookEventName=SessionStart and a string additionalContext, got: {parsed}"
         );
     }
 }
@@ -909,7 +983,7 @@ fn session_start_utf8_safe_truncation_with_multibyte_titles() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    // The compact CLI reference is ~2800 bytes. We need to push systemMessage
+    // The compact CLI reference is ~2800 bytes. We need to push the context
     // past 3900 bytes total. The "Next:" line includes the full title, so a
     // single story with a very long CJK/emoji title will do it.
     //
@@ -946,11 +1020,11 @@ fn session_start_utf8_safe_truncation_with_multibyte_titles() {
         &trimmed[..trimmed.len().min(200)]
     );
 
-    // AC: systemMessage present
+    // AC: SessionStart context envelope present
     let parsed = result.unwrap();
     assert!(
-        parsed.get("systemMessage").is_some(),
-        "output should contain systemMessage field after truncation"
+        has_session_context(&parsed),
+        "output should contain additionalContext after truncation"
     );
 }
 
@@ -986,13 +1060,13 @@ fn session_start_quiet_flag_still_outputs_json() {
         serde_json::from_str(trimmed).expect("output should be valid JSON");
 
     assert!(
-        parsed.get("systemMessage").is_some(),
-        "output should contain systemMessage key even with --quiet, got: {trimmed}"
+        has_session_context(&parsed),
+        "output should contain the SessionStart context envelope even with --quiet, got: {trimmed}"
     );
 
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
     assert!(
         !msg.is_empty(),
-        "systemMessage should not be empty with --quiet"
+        "additionalContext should not be empty with --quiet"
     );
 }

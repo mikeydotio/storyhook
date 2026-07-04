@@ -2171,9 +2171,23 @@ fn plugin_config_disabled(content: &str) -> bool {
     false // no enabled key found → treat as enabled
 }
 
+/// Wrap a session-start context string in the Claude Code SessionStart hook
+/// envelope. `additionalContext` is injected silently into Claude's context and
+/// is *not* rendered as a user-visible block (unlike `systemMessage`), so the
+/// CLI reference and project state prime the model without spamming the user.
+fn session_context_json(msg: String) -> Response {
+    let json = serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": msg,
+        }
+    });
+    Response::RawJson(json.to_string())
+}
+
 /// Handle `story session-start`. Outputs raw JSON suitable for shell hooks.
-/// Returns `{"systemMessage": "..."}` when a project exists and plugin is enabled,
-/// or `{}` otherwise.
+/// Returns `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`
+/// when a project exists and the plugin is enabled, or `{}` otherwise.
 fn session_start(root: &Path) -> Result<Response, AppError> {
     let storyhook_dir = root.join(".storyhook");
 
@@ -2205,8 +2219,7 @@ fn session_start(root: &Path) -> Result<Response, AppError> {
         Err(_) => {
             // If we can't load stories, still output CLI reference
             msg.push_str("  Unable to load project state.\n");
-            let json = serde_json::json!({ "systemMessage": msg });
-            return Ok(Response::RawJson(json.to_string()));
+            return Ok(session_context_json(msg));
         }
     };
 
@@ -2255,8 +2268,7 @@ fn session_start(root: &Path) -> Result<Response, AppError> {
         msg.push_str("\n...(truncated)\n");
     }
 
-    let json = serde_json::json!({ "systemMessage": msg });
-    Ok(Response::RawJson(json.to_string()))
+    Ok(session_context_json(msg))
 }
 
 fn build_member(root: &Path, input: MemberInput) -> Result<Member, AppError> {

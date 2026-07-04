@@ -2,7 +2,9 @@
 ///
 /// The hook at plugin/claude-code/hooks/session-start.sh reads stdin JSON
 /// (with a `cwd` field), checks for a storyhook project, gathers state,
-/// and emits a JSON response with a `systemMessage` field.
+/// and emits a JSON response carrying the context in
+/// `hookSpecificOutput.additionalContext` (the silent SessionStart field),
+/// or `{}` when there is no project / the plugin is disabled.
 ///
 /// These tests exercise the hook against real storyhook project directories
 /// using the actual `story` binary and the actual shell script.
@@ -22,6 +24,21 @@ fn story(dir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("story").unwrap();
     cmd.current_dir(dir);
     cmd
+}
+
+/// Extract the SessionStart `additionalContext` string from a parsed hook
+/// envelope, or "" if it is absent (e.g. `{}`).
+fn context(parsed: &serde_json::Value) -> &str {
+    parsed["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or("")
+}
+
+/// True when the hook output carries a well-formed SessionStart context
+/// envelope: `hookEventName == "SessionStart"` and a string `additionalContext`.
+fn has_session_context(parsed: &serde_json::Value) -> bool {
+    parsed["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+        && parsed["hookSpecificOutput"]["additionalContext"].is_string()
 }
 
 /// Run the hook with the given cwd as stdin JSON.
@@ -139,7 +156,7 @@ fn hook_outputs_empty_json_when_plugin_disabled() {
 }
 
 // ============================================================
-// Valid project -> systemMessage with content
+// Valid project -> context envelope with content
 // ============================================================
 
 #[test]
@@ -158,14 +175,14 @@ fn hook_outputs_system_message_for_valid_project() {
     let parsed: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("hook output should be valid JSON");
     assert!(
-        parsed.get("systemMessage").is_some(),
-        "hook output should contain systemMessage field"
+        has_session_context(&parsed),
+        "hook output should contain the SessionStart context envelope"
     );
 
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
     assert!(
         !msg.is_empty(),
-        "systemMessage should not be empty for an active project"
+        "additionalContext should not be empty for an active project"
     );
 }
 
@@ -184,14 +201,14 @@ fn hook_system_message_contains_story_count() {
 
     let (stdout, _) = run_hook(dir.path());
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
     // Should mention open story count (there are 2) or at minimum
     // reference "open" or "stories" in some form. The rewrite should
     // include accurate counts parsed from `story summary --json`.
     assert!(
         msg.contains("2") || msg.contains("open") || msg.contains("stories"),
-        "systemMessage should reference open story count or stories: got {msg}"
+        "context should reference open story count or stories: got {msg}"
     );
 }
 
@@ -206,9 +223,9 @@ fn hook_system_message_contains_next_story_info() {
 
     let (stdout, _) = run_hook(dir.path());
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
-    // After the hook rewrite, systemMessage should contain the next story's
+    // After the hook rewrite, the context should contain the next story's
     // ID or title. The hook needs to correctly parse `story next --json`
     // output which returns `{"result":"ok","story":{"story":{"id":"SH-1",...}}}`.
     //
@@ -217,7 +234,7 @@ fn hook_system_message_contains_next_story_info() {
     // object. The rewrite must fix this.
     assert!(
         msg.contains("SH-1") || msg.contains("Deploy monitoring") || msg.contains("Next:"),
-        "systemMessage should mention the next story or have a Next: section: got {msg}"
+        "context should mention the next story or have a Next: section: got {msg}"
     );
 }
 
@@ -263,12 +280,12 @@ fn hook_handles_empty_project_gracefully() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .expect("hook should produce valid JSON for empty project");
 
-    // Either empty JSON or a systemMessage is acceptable
-    if let Some(msg) = parsed.get("systemMessage") {
-        let text = msg.as_str().unwrap_or("");
+    // Either empty JSON or a SessionStart context envelope is acceptable
+    if parsed.get("hookSpecificOutput").is_some() {
+        let text = context(&parsed);
         assert!(
             text.contains("0") || text.contains("storyhook"),
-            "systemMessage for empty project should indicate zero stories or mention storyhook"
+            "context for empty project should indicate zero stories or mention storyhook"
         );
     }
     // If it's just {}, that's fine too
@@ -306,13 +323,13 @@ fn hook_output_is_strictly_valid_json() {
 }
 
 // ============================================================
-// NEW: systemMessage should contain CLI reference after rewrite
+// context should contain CLI reference
 // ============================================================
 
 #[test]
 fn hook_system_message_contains_cli_reference() {
-    // After the rewrite, the systemMessage should inject a concise CLI
-    // reference so the LLM knows how to use storyhook commands.
+    // The context should inject a concise CLI reference so the LLM knows how
+    // to use storyhook commands.
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
@@ -324,19 +341,19 @@ fn hook_system_message_contains_cli_reference() {
     assert_eq!(code, 0);
 
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
     // The CLI reference should mention key commands
     assert!(
         msg.contains("story next") || msg.contains("story load-context"),
-        "systemMessage should contain CLI reference with key commands: got {msg}"
+        "context should contain CLI reference with key commands: got {msg}"
     );
 }
 
 #[test]
 fn hook_system_message_contains_project_state() {
-    // After the rewrite, systemMessage should include project state info
-    // (not just a one-line status, but enough for the LLM to orient).
+    // The context should include project state info (not just a one-line
+    // status, but enough for the LLM to orient).
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
@@ -356,17 +373,17 @@ fn hook_system_message_contains_project_state() {
     assert_eq!(code, 0);
 
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    let msg = parsed["systemMessage"].as_str().unwrap_or("");
+    let msg = context(&parsed);
 
     // Should contain some project state info
     assert!(
         msg.contains("open") || msg.contains("stories") || msg.contains("storyhook"),
-        "systemMessage should contain project state info: got {msg}"
+        "context should contain project state info: got {msg}"
     );
 }
 
 // ============================================================
-// systemMessage with special characters in story titles
+// context with special characters in story titles
 // ============================================================
 
 #[test]
