@@ -159,6 +159,19 @@ pub struct StorySnapshot {
     pub story_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<String>,
+    /// `true` when the story was removed via `story delete` rather than
+    /// closed through the normal state machine. A deleted story is always
+    /// folded to `superstate: CLOSED` regardless of its `state` slug.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deleted: bool,
+    /// The reason passed to `story delete`, when [`deleted`](Self::deleted)
+    /// is `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_reason: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -280,6 +293,8 @@ pub fn fold_story(
     let mut comments = Vec::new();
     let mut relationships = BTreeSet::new();
     let mut closed_at = None;
+    let mut deleted = false;
+    let mut deleted_reason = None;
 
     for event in events {
         match event {
@@ -380,7 +395,9 @@ pub fn fold_story(
                 state = Some(story_state.clone());
                 updated_at = Some(at.clone());
             }
-            StoryEvent::StoryDeleted { at, .. } => {
+            StoryEvent::StoryDeleted { at, reason } => {
+                deleted = true;
+                deleted_reason = Some(reason.clone());
                 updated_at = Some(at.clone());
                 if closed_at.is_none() {
                     closed_at = Some(at.clone());
@@ -394,13 +411,22 @@ pub fn fold_story(
     let created_at = created_at
         .ok_or_else(|| AppError::Integrity(format!("story {id} is missing created_at")))?;
     let updated_at = updated_at.unwrap_or_else(|| created_at.clone());
-    let superstate = states
-        .get(&state)
-        .ok_or_else(|| {
-            AppError::Validation(format!("story {id} references undefined state `{state}`"))
-        })?
-        .super_state
-        .clone();
+    // A deleted story is always CLOSED regardless of its last `state` slug —
+    // deletion is a terminal act independent of the normal state machine, and
+    // forcing this here (rather than trusting the state map) also keeps a
+    // deleted story's superstate correct even if its state slug is later
+    // removed from the project's configured state set.
+    let superstate = if deleted {
+        SuperState::Closed
+    } else {
+        states
+            .get(&state)
+            .ok_or_else(|| {
+                AppError::Validation(format!("story {id} references undefined state `{state}`"))
+            })?
+            .super_state
+            .clone()
+    };
 
     Ok(StorySnapshot {
         id: id.to_string(),
@@ -417,6 +443,8 @@ pub fn fold_story(
         comments,
         relationships: relationships.into_iter().collect(),
         closed_at,
+        deleted,
+        deleted_reason,
     })
 }
 
@@ -1072,7 +1100,7 @@ mod tests {
 
     use super::{
         Priority, StateDef, StoryEvent, StoryRelation, StorySnapshot, SuperState, compute_progress,
-        derive_family_relationships, fold_story, has_children, last_activity_type,
+        derive_family_relationships, fold_story, has_children, is_ready, last_activity_type,
         validate_state_defs, would_create_parent_cycle,
     };
 
@@ -1166,6 +1194,143 @@ mod tests {
 
         assert_eq!(story.awaiting, None);
         assert_eq!(story.closed_at.as_deref(), Some("2026-03-13T00:02:02Z"));
+    }
+
+    #[test]
+    fn fold_story_deleted_forces_closed_superstate() {
+        // Regression test for #18: deleting a story left `state`/`superstate`
+        // unchanged, so a story deleted while `todo` (OPEN) stayed OPEN.
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Deleted while open".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryCommentAdded {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    text: "[deleted] created in error".to_string(),
+                },
+                StoryEvent::StoryDeleted {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    reason: "created in error".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.superstate, SuperState::Closed);
+        assert!(story.deleted);
+        assert_eq!(story.deleted_reason.as_deref(), Some("created in error"));
+        // The state slug itself is preserved as a truthful record of what the
+        // story was when it was deleted — only superstate is forced CLOSED.
+        assert_eq!(story.state, "todo");
+        assert_eq!(story.closed_at.as_deref(), Some("2026-03-13T00:01:00Z"));
+    }
+
+    #[test]
+    fn fold_story_deleted_while_closed_keeps_original_closed_at() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Deleted after closing".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryDeleted {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                    reason: "cleaning up archive".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.superstate, SuperState::Closed);
+        assert!(story.deleted);
+        // `closed_at` reflects the original close, not the later deletion —
+        // `fold_story` only backfills `closed_at` when it was never set.
+        assert_eq!(story.closed_at.as_deref(), Some("2026-03-13T00:01:00Z"));
+    }
+
+    #[test]
+    fn is_ready_returns_false_for_deleted_story() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Deleted".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryDeleted {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    reason: "created in error".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert!(!is_ready(&story, &BTreeMap::new()));
+    }
+
+    #[test]
+    fn deleted_blocker_no_longer_blocks_dependent() {
+        // Regression test for #18: before the fix, a deleted `blocked-by`
+        // blocker still had `superstate: OPEN`, so `is_ready` kept treating
+        // its dependent as blocked forever.
+        let blocker = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Blocker".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryDeleted {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    reason: "no longer needed".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        let dependent = fold_story(
+            "SH-2",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Dependent".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryRelationshipAdded {
+                    at: "2026-03-13T00:00:01Z".to_string(),
+                    other_id: "SH-1".to_string(),
+                    relation: "blocked-by".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        let mut all_stories = BTreeMap::new();
+        all_stories.insert(blocker.id.clone(), blocker);
+        all_stories.insert(dependent.id.clone(), dependent.clone());
+
+        assert!(is_ready(&dependent, &all_stories));
     }
 
     #[test]
@@ -1281,6 +1446,8 @@ mod tests {
                     other_id: "SH-2".to_string(),
                 }],
                 closed_at: None,
+                deleted: false,
+                deleted_reason: None,
             },
             StorySnapshot {
                 id: "SH-2".to_string(),
@@ -1306,6 +1473,8 @@ mod tests {
                     },
                 ],
                 closed_at: None,
+                deleted: false,
+                deleted_reason: None,
             },
             StorySnapshot {
                 id: "SH-3".to_string(),
@@ -1325,6 +1494,8 @@ mod tests {
                     other_id: "SH-2".to_string(),
                 }],
                 closed_at: None,
+                deleted: false,
+                deleted_reason: None,
             },
             StorySnapshot {
                 id: "SH-4".to_string(),
@@ -1341,6 +1512,8 @@ mod tests {
                 comments: Vec::new(),
                 relationships: Vec::new(),
                 closed_at: None,
+                deleted: false,
+                deleted_reason: None,
             },
         ];
 

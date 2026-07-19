@@ -759,13 +759,17 @@ pub fn archive_story(root: &Path, id: &str) -> Result<StorySnapshot, AppError> {
 
 pub fn delete_story(root: &Path, id: &str, reason: &str) -> Result<(), AppError> {
     let paths = ProjectPaths::new(root);
-    let story_file = paths.open_story_file(id);
-    if !story_file.exists() {
+    if !paths.open_story_file(id).exists() {
         return Err(AppError::NotFound(format!("story `{id}` not found")));
     }
-    let states = load_state_map(root)?;
 
-    // Append deletion events
+    // Append deletion events, then archive exactly like an ordinary close —
+    // `fold_story` forces `superstate: CLOSED` whenever `StoryDeleted` is
+    // present, so `archive_story`'s normal fold-and-insert already produces
+    // a correctly CLOSED, `deleted: true` snapshot. No bespoke archival
+    // logic (or a separate `deleted_reason` SQLite column — the reason now
+    // round-trips through `snapshot_json` via `StorySnapshot::deleted_reason`
+    // instead) is needed here.
     let ts = now();
     write_story_events(
         root,
@@ -782,28 +786,7 @@ pub fn delete_story(root: &Path, id: &str, reason: &str) -> Result<(), AppError>
         ],
     )?;
 
-    // Reload and fold
-    let events = load_open_story_events(root, id)?;
-    let snapshot = fold_story(id, &events, &states)?;
-
-    // Archive to SQLite with deleted_reason
-    let mut connection = open_archive_connection(root)?;
-    let transaction = connection.transaction()?;
-    transaction.execute(
-        "INSERT OR REPLACE INTO closed_stories (id, snapshot_json, events_json, closed_at, state, deleted_reason) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            snapshot.id,
-            serde_json::to_string(&snapshot)?,
-            serde_json::to_string(&events)?,
-            snapshot.closed_at.as_deref().unwrap_or(""),
-            snapshot.state,
-            Some(reason),
-        ],
-    )?;
-    transaction.commit()?;
-
-    // Remove the JSONL file
-    fs::remove_file(&story_file)?;
+    archive_story(root, id)?;
     Ok(())
 }
 
@@ -880,15 +863,94 @@ pub fn unarchive_story(root: &Path, id: &str) -> Result<(), AppError> {
         .map_err(|_| AppError::NotFound(format!("story `{id}` not found in archive")))?;
 
     let events: Vec<StoryEvent> = serde_json::from_str(&events_json)?;
-    // Filter out the close event so the story reopens cleanly
+    // Filter out the close/delete markers so the story reopens cleanly as a
+    // normal open story — `StoryDeleted` is stripped too so that "undeleting"
+    // a soft-deleted story (see `Invocation::Reopen`) folds back to
+    // `deleted: false` rather than staying CLOSED. The `[deleted] <reason>`
+    // comment added by `delete_story` is left in place as audit history.
     let events: Vec<StoryEvent> = events
         .into_iter()
-        .filter(|e| !matches!(e, StoryEvent::StoryClosedAndArchived { .. }))
+        .filter(|e| {
+            !matches!(
+                e,
+                StoryEvent::StoryClosedAndArchived { .. } | StoryEvent::StoryDeleted { .. }
+            )
+        })
         .collect();
 
     rewrite_story_events(root, id, &events)?;
     connection.execute("DELETE FROM closed_stories WHERE id = ?1", [id])?;
     Ok(())
+}
+
+/// Outcome of [`repair_archived_snapshots`]: which archived stories' cached
+/// snapshots were rewritten, and which could not be re-folded at all.
+pub struct ArchiveRepairReport {
+    /// IDs of archived stories whose cached `snapshot_json` was stale and has
+    /// been rewritten to match a fresh fold of their event log.
+    pub repaired: Vec<String>,
+    /// Human-readable notes for archived stories that failed to re-fold
+    /// (e.g. their event log references a state slug no longer configured),
+    /// left untouched rather than overwritten with a broken snapshot.
+    pub issues: Vec<String>,
+}
+
+/// Re-folds every archived story's cached `snapshot_json` from its
+/// authoritative `events_json` and rewrites the cache when the two differ.
+///
+/// Unlike open stories (re-folded on every load, see
+/// [`load_all_open_snapshots`]), archived snapshots are cached in SQLite and
+/// read back verbatim (see [`load_all_archived_snapshots`]) — so a change to
+/// `fold_story`'s behavior (for example, #18's fix making `StoryDeleted`
+/// force `superstate: CLOSED`) does not retroactively apply to stories
+/// archived before the change. `story doctor --fix` calls this to self-heal
+/// those stale caches from the event log, which remains the source of truth.
+pub fn repair_archived_snapshots(root: &Path) -> Result<ArchiveRepairReport, AppError> {
+    let states = load_state_map(root)?;
+    let connection = open_archive_connection(root)?;
+    let mut statement = connection
+        .prepare("SELECT id, snapshot_json, events_json FROM closed_stories ORDER BY id ASC")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    let mut report = ArchiveRepairReport {
+        repaired: Vec::new(),
+        issues: Vec::new(),
+    };
+    for row in rows {
+        let (id, cached_snapshot_json, events_json) = row?;
+        let events: Vec<StoryEvent> = serde_json::from_str(&events_json)?;
+        let refolded = match fold_story(&id, &events, &states) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                report
+                    .issues
+                    .push(format!("{id}: {error} (archive repair skipped)"));
+                continue;
+            }
+        };
+
+        let refolded_json = serde_json::to_string(&refolded)?;
+        if refolded_json != cached_snapshot_json {
+            connection.execute(
+                "UPDATE closed_stories SET snapshot_json = ?1, closed_at = ?2, state = ?3 WHERE id = ?4",
+                params![
+                    refolded_json,
+                    refolded.closed_at.as_deref().unwrap_or(""),
+                    refolded.state,
+                    id,
+                ],
+            )?;
+            report.repaired.push(id);
+        }
+    }
+
+    Ok(report)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

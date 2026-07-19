@@ -356,6 +356,8 @@ mod tests {
             labels: Vec::new(),
             story_type: None,
             closed_at: None,
+            deleted: false,
+            deleted_reason: None,
         }
     }
 
