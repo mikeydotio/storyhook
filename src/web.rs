@@ -672,25 +672,11 @@ fn trusted_hosts_from_env() -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
-    let addr = format!("127.0.0.1:{port}");
-    let server = Server::http(&addr).map_err(|e| {
-        if e.to_string().contains("Address already in use")
-            || e.to_string().contains("AddrInUse")
-            || e.to_string().contains("address already in use")
-        {
-            AppError::Usage(format!(
-                "Port {port} already in use. Try a different port with --port."
-            ))
-        } else {
-            AppError::Storage(format!("Failed to start web server: {e}"))
-        }
-    })?;
-
-    eprintln!("Storyhook dashboard: http://127.0.0.1:{port}");
-
-    let trusted_hosts = trusted_hosts_from_env();
-
+/// Runs the request-accept loop for one bound `Server`, dispatching each
+/// request through [`route`]/[`finish`]. Shared between the primary
+/// (loopback) listener and the optional tailnet listener started by
+/// [`start_server`] — both serve identical logic against the same project.
+fn accept_loop(server: Server, root: PathBuf, trusted_hosts: Vec<String>) {
     for mut request in server.incoming_requests() {
         let method = request.method().clone();
         let path = request_path(request.url()).to_string();
@@ -711,10 +697,66 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
             String::new()
         };
 
-        let reply = route(root, &method, &path, &headers, &body, &trusted_hosts);
+        let reply = route(&root, &method, &path, &headers, &body, &trusted_hosts);
         finish(request, reply);
     }
+}
 
+/// Binds the dashboard's listeners and serves forever.
+///
+/// The primary listener is always `127.0.0.1` — hardcoded, never
+/// configurable — so the dashboard can never become reachable from beyond
+/// this machine by accident. If the `tailscale` CLI reports an IP, a
+/// second listener is bound to that address (best-effort: a failure here
+/// is logged to stderr and does not stop the primary listener from
+/// serving), making the dashboard reachable from the rest of the tailnet
+/// without a third-party reverse proxy. Nothing is ever bound to `0.0.0.0`
+/// or any other wildcard/public-facing address, and no plain LAN IP is
+/// bound either — only loopback and, when present, the tailnet.
+pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
+    let loopback_addr = format!("127.0.0.1:{port}");
+    let loopback_server = Server::http(&loopback_addr).map_err(|e| {
+        if e.to_string().contains("Address already in use")
+            || e.to_string().contains("AddrInUse")
+            || e.to_string().contains("address already in use")
+        {
+            AppError::Usage(format!(
+                "Port {port} already in use. Try a different port with --port."
+            ))
+        } else {
+            AppError::Storage(format!("Failed to start web server: {e}"))
+        }
+    })?;
+
+    eprintln!("Storyhook dashboard: http://127.0.0.1:{port}");
+
+    let mut trusted_hosts = trusted_hosts_from_env();
+
+    if let Some(tailnet_ip) = tailscale_ip() {
+        let tailnet_addr = format!("{tailnet_ip}:{port}");
+        match Server::http(&tailnet_addr) {
+            Ok(tailnet_server) => {
+                eprintln!("Storyhook dashboard (tailnet): http://{tailnet_addr}");
+                // We deliberately bound this interface ourselves, so trust
+                // it for mutations too — the same standing as loopback —
+                // without requiring STORYHOOK_WEB_TRUSTED_HOSTS.
+                trusted_hosts.push(tailnet_ip);
+                let tailnet_root = root.to_path_buf();
+                let tailnet_trusted = trusted_hosts.clone();
+                std::thread::spawn(move || {
+                    accept_loop(tailnet_server, tailnet_root, tailnet_trusted)
+                });
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: could not bind tailnet interface {tailnet_addr}: {e}; \
+                     the dashboard is only reachable via localhost"
+                );
+            }
+        }
+    }
+
+    accept_loop(loopback_server, root.to_path_buf(), trusted_hosts);
     Ok(())
 }
 
@@ -756,31 +798,24 @@ fn is_process_alive(pid: u32) -> bool {
     }
 }
 
-/// Get the best reachable IP: Tailscale IP if available, otherwise LAN IP, fallback to 127.0.0.1.
+/// This machine's Tailscale IPv4 address, if the `tailscale` CLI is present
+/// and reports one. Used both to decide whether to bind a second,
+/// tailnet-reachable listener and to display its URL — deliberately not a
+/// generic LAN IP: the dashboard must only ever be reachable via loopback or
+/// the tailnet, never a bare local-network address that might itself be
+/// exposed further (e.g. by router port-forwarding).
+fn tailscale_ip() -> Option<String> {
+    let output = Command::new("tailscale").args(["ip", "-4"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if ip.is_empty() { None } else { Some(ip) }
+}
+
+/// The best reachable IP for display: the Tailscale IP if bound, else loopback.
 fn reachable_ip() -> String {
-    // Try tailscale IPv4 first
-    if let Ok(output) = Command::new("tailscale").args(["ip", "-4"]).output()
-        && output.status.success()
-    {
-        let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !ip.is_empty() {
-            return ip;
-        }
-    }
-
-    // Fallback: first non-loopback IPv4 from hostname -I
-    if let Ok(output) = Command::new("hostname").arg("-I").output()
-        && output.status.success()
-    {
-        let ips = String::from_utf8_lossy(&output.stdout);
-        for tok in ips.split_whitespace() {
-            if !tok.starts_with("127.") && !tok.contains(':') {
-                return tok.to_string();
-            }
-        }
-    }
-
-    "127.0.0.1".to_string()
+    tailscale_ip().unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 /// Check if web-serve is available in PATH

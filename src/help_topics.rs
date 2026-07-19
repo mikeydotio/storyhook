@@ -1112,7 +1112,9 @@ kanban board with drag-and-drop, a filterable/sortable list view, and
 a detail drawer for full editing — all live-updating and backed by
 the same validated write path the CLI uses.
 
-The server binds to 127.0.0.1 (localhost only) for security.
+The server always binds 127.0.0.1, and also binds your Tailscale IP
+if the 'tailscale' CLI reports one — reachable from localhost and
+your tailnet only, never the public internet or a plain LAN address.
 Default port is 3456. Data refreshes every 3 seconds via polling.
 
 Commands:
@@ -1147,23 +1149,27 @@ Views:
 Security:
   Mutating requests (create/move/edit/delete) require a same-origin
   request (a custom header a cross-site request can't replicate) and
-  a Host header resolving to 127.0.0.1/localhost/::1 — this stops
-  DNS-rebinding, which the header check alone can't catch. Read
-  requests are unauthenticated. To allow writes through a reverse
-  proxy under a different hostname (e.g. web-serve on a tailnet), set
-  STORYHOOK_WEB_TRUSTED_HOSTS to a comma-separated allowlist before
-  starting the server — this only widens the Host allowlist, the bind
-  address stays 127.0.0.1.
+  a Host header resolving to 127.0.0.1/localhost/::1 or the tailnet
+  IP this instance bound itself — this stops DNS-rebinding, which the
+  header check alone can't catch. Read requests are unauthenticated
+  (but still only reachable where the socket is bound — localhost and
+  your tailnet). To allow writes through a reverse proxy under a
+  different hostname (e.g. web-serve), set STORYHOOK_WEB_TRUSTED_HOSTS
+  to a comma-separated allowlist before starting the server — this
+  only widens the Host allowlist for writes, it does not change what
+  the server binds.
 
 How it works:
-  'story web start' spawns a background process that serves the
-  dashboard at http://127.0.0.1:<port>. It polls /api/data every 3
+  'story web start' spawns a background process that binds 127.0.0.1
+  and, if available, your Tailscale IP (never 0.0.0.0, never a plain
+  LAN address — best-effort: a failed tailnet bind just falls back to
+  localhost-only, logged as a warning). It polls /api/data every 3
   seconds for fresh project data and calls /api/story/... routes for
   mutations. A PID file at .storyhook/web.pid tracks the daemon. Logs
   go to .storyhook/web.log.
 
   If the 'web-serve' tool is in PATH (coderig/agentsmith environments),
-  the port is automatically registered for external access.
+  the port is additionally registered with it on top of the above.
 
 Related:
   story report --html  — Generate a static HTML report (one-time snapshot)
