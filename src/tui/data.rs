@@ -285,6 +285,8 @@ mod tests {
             labels: vec![],
             story_type: None,
             closed_at: None,
+            deleted: false,
+            deleted_reason: None,
         }
     }
 
@@ -434,6 +436,8 @@ mod tests {
             labels: labels.into_iter().map(|s| s.to_string()).collect(),
             story_type: None,
             closed_at: None,
+            deleted: false,
+            deleted_reason: None,
         }
     }
 

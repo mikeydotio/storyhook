@@ -42,7 +42,7 @@ fn extract_affected_story_id(invocation: &Invocation) -> Option<String> {
         | Invocation::SetAwaiting { id, .. }
         | Invocation::ClearAwaiting { id }
         | Invocation::SetPriority { id, .. }
-        | Invocation::Reopen { id } => Some(id.clone()),
+        | Invocation::Reopen { id, .. } => Some(id.clone()),
         Invocation::SetLabels { id, .. } => Some(id.clone()),
         Invocation::Relate { a, .. } => Some(a.clone()),
         _ => None,

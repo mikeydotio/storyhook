@@ -833,7 +833,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 Ok(Response::Stories(result.views, Some(summary)))
             })
         }
-        Invocation::Reopen { id } => lock::with_project_lock(root, || {
+        Invocation::Reopen { id, force } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             if storage::open_story_exists(root, &id) {
                 return Err(AppError::Validation(format!(
@@ -842,6 +842,18 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }
             if !storage::is_archived(root, &id)? {
                 return Err(AppError::NotFound(format!("story `{id}` not found")));
+            }
+            // Reopening a soft-deleted story is an undelete, not an ordinary
+            // reopen — guard it so a stray `reopen` doesn't silently restore
+            // something someone meant to remove. Ordinarily-closed stories
+            // (deleted == false) skip this entirely.
+            if !force {
+                let archived = storage::load_archived_story(root, &id)?;
+                if archived.deleted && !confirm_undelete(&id, archived.deleted_reason.as_deref())? {
+                    return Ok(Response::Message(format!(
+                        "reopen aborted: `{id}` was not undeleted"
+                    )));
+                }
             }
             storage::unarchive_story(root, &id)?;
             let default_state = storage::default_open_state(root)?;
@@ -2522,6 +2534,37 @@ pub fn build_report_data(root: &Path) -> Result<ReportData, AppError> {
     })
 }
 
+/// Guards `story reopen` on a soft-deleted story (undelete). At an
+/// interactive terminal, warns and asks for confirmation, returning whether
+/// the user agreed to proceed. Non-interactively (pipes, scripts, tests)
+/// there is no one to prompt, so it fails outright and tells the caller to
+/// pass `--force` instead of hanging on a read that will never resolve.
+fn confirm_undelete(id: &str, reason: Option<&str>) -> Result<bool, AppError> {
+    use std::io::{IsTerminal, Write};
+
+    let reason = reason.unwrap_or("no reason given");
+    if !std::io::stdin().is_terminal() {
+        return Err(AppError::Validation(format!(
+            "story `{id}` was deleted (reason: {reason}); re-run with --force to undelete"
+        )));
+    }
+
+    println!("story `{id}` was deleted (reason: {reason}).");
+    print!("Reopen (undelete) this deleted story? [y/N] ");
+    std::io::stdout()
+        .flush()
+        .map_err(|e| AppError::Storage(format!("failed to write prompt: {e}")))?;
+
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| AppError::Storage(format!("failed to read confirmation: {e}")))?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
 fn story_view_by_id(root: &Path, id: &str) -> Result<Response, AppError> {
     let story = storage::load_story_snapshot(root, id)?;
     story_view_response(root, story)
@@ -2673,16 +2716,33 @@ fn doctor_fix(root: &Path) -> Result<Response, AppError> {
         }
     }
 
+    // Re-fold archived snapshots from their event log so stories archived
+    // before a `fold_story` behavior change (e.g. #18: deletion now forces
+    // `superstate: CLOSED`) self-heal instead of keeping a stale cache.
+    let archive_repair = storage::repair_archived_snapshots(root)?;
+    touched.extend(archive_repair.repaired);
+
     let result = doctor_report(root);
     match result {
         Ok(_) => {
-            if touched.is_empty() {
-                Ok(Response::Message("doctor found nothing to fix".to_string()))
+            let mut message = if touched.is_empty() {
+                "doctor found nothing to fix".to_string()
             } else {
-                Ok(Response::Message(
-                    "doctor repaired supported integrity issues".to_string(),
-                ))
+                "doctor repaired supported integrity issues".to_string()
+            };
+            if !archive_repair.issues.is_empty() {
+                message.push_str(&format!(
+                    "\n{} archived stor{} could not be repaired:\n{}",
+                    archive_repair.issues.len(),
+                    if archive_repair.issues.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    },
+                    archive_repair.issues.join("\n")
+                ));
             }
+            Ok(Response::Message(message))
         }
         Err(error) => Err(error),
     }

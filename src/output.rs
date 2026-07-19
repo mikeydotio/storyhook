@@ -296,8 +296,13 @@ fn render_human(response: &Response) -> String {
                 } else {
                     String::new()
                 };
+                let deleted = if story.story.deleted {
+                    " [deleted]"
+                } else {
+                    ""
+                };
                 body.push_str(&format!(
-                    "{} [{}]{}{} {}{}{}{}{}\n",
+                    "{} [{}]{}{} {}{}{}{}{}{}\n",
                     story.story.id,
                     story.story.state,
                     priority,
@@ -305,6 +310,7 @@ fn render_human(response: &Response) -> String {
                     story.story.title,
                     progress_summary,
                     labels,
+                    deleted,
                     flagged,
                     stale
                 ));
@@ -367,8 +373,9 @@ fn render_story(view: &StoryView) -> String {
     let assignee = story.assignee.as_deref().unwrap_or("-");
     let mut body = String::new();
     body.push_str(&format!("{} {}\n", story.id, story.title));
+    let deleted_marker = if story.deleted { ", deleted" } else { "" };
     body.push_str(&format!(
-        "state: {} ({})\n",
+        "state: {} ({}{deleted_marker})\n",
         story.state,
         story.superstate.as_str()
     ));
@@ -387,6 +394,10 @@ fn render_story(view: &StoryView) -> String {
 
     if let Some(closed_at) = &story.closed_at {
         body.push_str(&format!("closed_at: {closed_at}\n"));
+    }
+
+    if let Some(reason) = &story.deleted_reason {
+        body.push_str(&format!("deleted_reason: {reason}\n"));
     }
 
     if view.flagged_reasons.is_empty() {
