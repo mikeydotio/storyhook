@@ -1121,11 +1121,14 @@ Related:
 story web stop
 story web status
 
-Launch a live-updating web dashboard for your storyhook project.
-The dashboard mirrors the HTML report with real-time updates,
-client-side filtering and sorting, and a mobile-responsive layout.
+Launch an interactive web dashboard for your storyhook project: a
+kanban board with drag-and-drop, a filterable/sortable list view, and
+a detail drawer for full editing — all live-updating and backed by
+the same validated write path the CLI uses.
 
-The server binds to 127.0.0.1 (localhost only) for security.
+The server always binds 127.0.0.1, and also binds your Tailscale IP
+if the 'tailscale' CLI reports one — reachable from localhost and
+your tailnet only, never the public internet or a plain LAN address.
 Default port is 3456. Data refreshes every 3 seconds via polling.
 
 Commands:
@@ -1136,8 +1139,11 @@ Commands:
 
 When to use:
   When you want a browser-based view of project status that updates
-  live as stories change. Useful during sprint planning, standups,
-  or while working on multiple stories in parallel.
+  live as stories change, or want to triage/edit stories visually —
+  drag cards between states, edit fields, comment, block/unblock,
+  link relationships — without leaving the browser. Useful during
+  sprint planning, standups, or while working on multiple stories in
+  parallel.
 
 Examples:
   story web start                # Start on default port 3456
@@ -1145,14 +1151,39 @@ Examples:
   story web stop                 # Stop the dashboard
   story web status               # Check if running
 
+Views:
+  Board   One column per project state (states.toml order). Drag a
+          card to a different column to move it; dropping onto a
+          CLOSED state archives the story in place.
+  List    A filterable, sortable table.
+  Drawer  Click any card or row for full detail: title, state,
+          priority, assignee, type, labels, block/unblock, comments,
+          relationships, reopen, and delete.
+
+Security:
+  Mutating requests (create/move/edit/delete) require a same-origin
+  request (a custom header a cross-site request can't replicate) and
+  a Host header resolving to 127.0.0.1/localhost/::1 or the tailnet
+  IP this instance bound itself — this stops DNS-rebinding, which the
+  header check alone can't catch. Read requests are unauthenticated
+  (but still only reachable where the socket is bound — localhost and
+  your tailnet). To allow writes through a reverse proxy under a
+  different hostname (e.g. web-serve), set STORYHOOK_WEB_TRUSTED_HOSTS
+  to a comma-separated allowlist before starting the server — this
+  only widens the Host allowlist for writes, it does not change what
+  the server binds.
+
 How it works:
-  'story web start' spawns a background process that serves an HTML
-  dashboard at http://127.0.0.1:<port>. The dashboard polls /api/data
-  every 3 seconds for fresh project data. A PID file at
-  .storyhook/web.pid tracks the daemon. Logs go to .storyhook/web.log.
+  'story web start' spawns a background process that binds 127.0.0.1
+  and, if available, your Tailscale IP (never 0.0.0.0, never a plain
+  LAN address — best-effort: a failed tailnet bind just falls back to
+  localhost-only, logged as a warning). It polls /api/data every 3
+  seconds for fresh project data and calls /api/story/... routes for
+  mutations. A PID file at .storyhook/web.pid tracks the daemon. Logs
+  go to .storyhook/web.log.
 
   If the 'web-serve' tool is in PATH (coderig/agentsmith environments),
-  the port is automatically registered for external access.
+  the port is additionally registered with it on top of the above.
 
 Related:
   story report --html  — Generate a static HTML report (one-time snapshot)

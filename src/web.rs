@@ -1,16 +1,43 @@
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use fs4::FileExt;
-use tiny_http::{Header, Method, Response, Server};
+use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::app::build_report_data;
+use crate::app::{self, build_report_data};
+use crate::cli::{CliOptions, Invocation};
+use crate::domain::Priority;
 use crate::error::AppError;
+use crate::output::{render_error, render_response};
 use crate::storage;
 
 const DASHBOARD_HTML: &str = include_str!("web_dashboard.html");
+
+/// All priority levels, in the order the frontend should offer them.
+const PRIORITIES: [Priority; 5] = [
+    Priority::Critical,
+    Priority::High,
+    Priority::Medium,
+    Priority::Low,
+    Priority::None,
+];
+
+/// All relationship kinds a story can be linked with, in canonical form (not
+/// including the `related-to` alias of `relates-to`). See
+/// `domain::relation_edges` for the authoritative parser.
+const RELATIONS: [&str; 8] = [
+    "relates-to",
+    "blocks",
+    "blocked-by",
+    "parent-of",
+    "child-of",
+    "duplicate-of",
+    "obviates",
+    "obviated-by",
+];
 
 fn security_header_nosniff() -> Header {
     Header::from_bytes("X-Content-Type-Options", "nosniff").unwrap()
@@ -28,9 +55,667 @@ fn security_header_csp() -> Header {
     .unwrap()
 }
 
+fn content_type_header(value: &str) -> Header {
+    Header::from_bytes("Content-Type", value).unwrap()
+}
+
+/// A fully-formed HTTP response, decoupled from `tiny_http`'s request type so
+/// routing decisions stay pure and easy to reason about (and test) apart from
+/// the network layer. Every `Reply` — success or error — flows through
+/// [`finish`], which attaches the security headers exactly once, in exactly
+/// one place, so no response path can accidentally omit them.
+struct Reply {
+    status: u16,
+    content_type: &'static str,
+    body: String,
+    no_cache: bool,
+    retry_after: Option<u32>,
+}
+
+impl Reply {
+    fn new(status: u16, content_type: &'static str, body: impl Into<String>) -> Self {
+        Reply {
+            status,
+            content_type,
+            body: body.into(),
+            no_cache: false,
+            retry_after: None,
+        }
+    }
+
+    /// Marks this reply as dynamic content that must never be cached by the browser.
+    fn no_cache(mut self) -> Self {
+        self.no_cache = true;
+        self
+    }
+
+    /// Advises the client to retry after `secs` seconds (used for 409
+    /// LockTimeout, where a concurrent writer briefly held the project lock).
+    fn retry_after(mut self, secs: u32) -> Self {
+        self.retry_after = Some(secs);
+        self
+    }
+}
+
+fn text_reply(status: u16, body: impl Into<String>) -> Reply {
+    Reply::new(status, "text/plain; charset=utf-8", body)
+}
+
+fn json_reply(status: u16, body: impl Into<String>) -> Reply {
+    Reply::new(status, "application/json", body)
+}
+
+fn html_reply(body: impl Into<String>) -> Reply {
+    Reply::new(200, "text/html; charset=utf-8", body)
+}
+
+/// Attaches the shared security headers to `reply` and sends it on `request`.
+fn finish(request: Request, reply: Reply) {
+    let mut resp = Response::from_string(reply.body)
+        .with_status_code(reply.status)
+        .with_header(content_type_header(reply.content_type))
+        .with_header(security_header_nosniff())
+        .with_header(security_header_frame())
+        .with_header(security_header_csp());
+    if reply.no_cache {
+        resp = resp.with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap());
+    }
+    if let Some(secs) = reply.retry_after {
+        resp = resp.with_header(Header::from_bytes("Retry-After", secs.to_string()).unwrap());
+    }
+    let _ = request.respond(resp);
+}
+
+/// Strips any query string from a request URL, leaving just the path.
+fn request_path(url: &str) -> &str {
+    url.split('?').next().unwrap_or(url)
+}
+
+/// Splits a request path into non-empty segments, e.g. `/api/story/SH-1` →
+/// `["api", "story", "SH-1"]`. A bare `/` (or `""`) yields an empty slice.
+fn path_segments(path: &str) -> Vec<&str> {
+    path.split('/').filter(|s| !s.is_empty()).collect()
+}
+
+/// Maps an application error to the HTTP status code that best represents it
+/// for API consumers, mirroring the severity ordering in `AppError::exit_code`.
+fn status_for(error: &AppError) -> u16 {
+    match error {
+        AppError::Usage(_) => 400,
+        AppError::Validation(_) => 422,
+        AppError::NotFound(_) => 404,
+        AppError::LockTimeout(_) => 409,
+        AppError::Integrity(_) | AppError::Storage(_) => 500,
+        AppError::GithubAuth(_) | AppError::GithubApi(_) => 502,
+        AppError::SyncConflict(_) => 409,
+    }
+}
+
+/// Renders an `AppError` as the standard `{"result":"error",...}` JSON
+/// envelope, at the status code `status_for` derives from its variant.
+fn error_reply(error: &AppError) -> Reply {
+    let reply = json_reply(status_for(error), render_error(error, true));
+    match error {
+        // The project write lock was held by another process; the client
+        // can safely retry shortly once that writer releases it.
+        AppError::LockTimeout(_) => reply.retry_after(1),
+        _ => reply,
+    }
+}
+
+/// Dispatches `invocation` through `app::run` — the same entrypoint the CLI
+/// uses — and renders the result as a `Reply` at `status` on success, or the
+/// standard error envelope on failure. Centralizing this means every
+/// mutation route gets locking, validation, event-hook firing, and
+/// CLOSED-state archiving for free, identically to its CLI counterpart.
+fn run_and_reply(root: &Path, status: u16, invocation: Invocation) -> Reply {
+    let options = CliOptions {
+        json: true,
+        quiet: false,
+        no_hooks: false,
+        invocation,
+    };
+    match app::run(root, options) {
+        Ok(response) => json_reply(status, render_response(&response, true, false)),
+        Err(e) => error_reply(&e),
+    }
+}
+
+/// Like [`run_and_reply`], but for invocations (namely `SetFields`, which
+/// backs `PATCH`) that report success as a plain text `Response::Message`
+/// rather than the updated story. Every mutation route's success body should
+/// be the story so the frontend can reconcile optimistic UI state uniformly,
+/// so on success this re-fetches `id` via a second, independent `app::run`
+/// call (its own lock acquired and released in turn — never nested inside
+/// the first) and returns that instead.
+fn run_mutation_and_reply_with_story(root: &Path, id: &str, invocation: Invocation) -> Reply {
+    let options = CliOptions {
+        json: true,
+        quiet: false,
+        no_hooks: false,
+        invocation,
+    };
+    match app::run(root, options) {
+        Ok(_) => run_and_reply(root, 200, Invocation::Show { id: id.to_string() }),
+        Err(e) => error_reply(&e),
+    }
+}
+
+/// Decides how to respond to a request. GET routes are unauthenticated reads;
+/// every other method mutates project state and must pass [`guarded`] (or
+/// [`guarded_no_body`]) first.
+fn route(
+    root: &Path,
+    method: &Method,
+    path: &str,
+    headers: &[Header],
+    body: &str,
+    trusted_hosts: &[String],
+) -> Reply {
+    match path_segments(path).as_slice() {
+        [] => match method {
+            Method::Get => html_reply(DASHBOARD_HTML).no_cache(),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["api", "data"] => match method {
+            Method::Get => match build_api_json(root) {
+                Ok(json) => json_reply(200, json).no_cache(),
+                Err(e) => error_reply(&e),
+            },
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["api", "story"] => match method {
+            Method::Post => guarded(headers, trusted_hosts, body, |b| {
+                route_create_story(root, b)
+            }),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["api", "story", id] => match method {
+            Method::Get => run_and_reply(
+                root,
+                200,
+                Invocation::Show {
+                    id: (*id).to_string(),
+                },
+            ),
+            Method::Patch => guarded(headers, trusted_hosts, body, |b| {
+                route_patch_story(root, id, b)
+            }),
+            Method::Delete => guarded(headers, trusted_hosts, body, |b| {
+                route_delete_story(root, id, b)
+            }),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["api", "story", id, action] => match (method, *action) {
+            (Method::Post, "move") => guarded(headers, trusted_hosts, body, |b| {
+                route_move_story(root, id, b)
+            }),
+            (Method::Post, "comment") => guarded(headers, trusted_hosts, body, |b| {
+                route_comment_story(root, id, b)
+            }),
+            (Method::Post, "priority") => guarded(headers, trusted_hosts, body, |b| {
+                route_priority_story(root, id, b)
+            }),
+            (Method::Post, "assign") => guarded(headers, trusted_hosts, body, |b| {
+                route_assign_story(root, id, b)
+            }),
+            (Method::Post, "labels") => guarded(headers, trusted_hosts, body, |b| {
+                route_labels_story(root, id, b)
+            }),
+            (Method::Post, "block") => guarded(headers, trusted_hosts, body, |b| {
+                route_block_story(root, id, b)
+            }),
+            (Method::Post, "unblock") => {
+                guarded_no_body(headers, trusted_hosts, || route_unblock_story(root, id))
+            }
+            (Method::Post, "reopen") => {
+                guarded_no_body(headers, trusted_hosts, || route_reopen_story(root, id))
+            }
+            (Method::Post, _) => text_reply(404, "Not found"),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["api", "relate"] => match method {
+            Method::Post => guarded(headers, trusted_hosts, body, |b| {
+                route_relate(root, b, false)
+            }),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["api", "unrelate"] => match method {
+            Method::Post => guarded(headers, trusted_hosts, body, |b| {
+                route_relate(root, b, true)
+            }),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        _ => text_reply(404, "Not found"),
+    }
+}
+
+// --- Mutation guard (CSRF / DNS-rebinding) ---
+
+/// Looks up a header's value by name (case-insensitive), as `tiny_http`
+/// itself compares header field names.
+fn header_value<'a>(headers: &'a [Header], name: &'static str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|h| h.field.equiv(name))
+        .map(|h| h.value.as_str())
+}
+
+/// Strips an optional `:port` suffix from a `Host` header value, correctly
+/// handling bracketed IPv6 literals (`[::1]:3456` and `[::1]` both -> `::1`).
+fn host_without_port(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        host.rsplit_once(':').map_or(host, |(h, _)| h)
+    }
+}
+
+/// A `Host` is trusted if it's a loopback address, or explicitly listed in
+/// `STORYHOOK_WEB_TRUSTED_HOSTS` (for a `web-serve`-style reverse proxy).
+fn host_is_trusted(host: &str, trusted_hosts: &[String]) -> bool {
+    let host_only = host_without_port(host).to_ascii_lowercase();
+    matches!(host_only.as_str(), "127.0.0.1" | "localhost" | "::1")
+        || trusted_hosts.contains(&host_only)
+}
+
+/// Localhost-only CSRF / DNS-rebinding guard for mutating requests. Both
+/// checks must pass:
+///
+/// 1. A custom `X-Storyhook` header must be present. Setting a custom header
+///    forces a CORS preflight on any cross-origin `fetch`, which this server
+///    never answers with `Access-Control-Allow-*`, so the browser blocks the
+///    real request — and an HTML `<form>` cannot set custom headers at all.
+/// 2. `Host` must resolve to a loopback address (or an explicitly trusted
+///    host). `Host` is a forbidden header a page cannot set itself, so a
+///    DNS-rebinding attack — where an attacker-controlled domain starts
+///    resolving to 127.0.0.1 after the browser's same-origin check passes —
+///    still fails here, even though check 1 alone can't stop it (a rebound
+///    page is same-origin and so *can* set custom headers).
+fn mutation_guard_ok(headers: &[Header], trusted_hosts: &[String]) -> bool {
+    if header_value(headers, "X-Storyhook").is_none() {
+        return false;
+    }
+    match header_value(headers, "Host") {
+        Some(host) => host_is_trusted(host, trusted_hosts),
+        None => false,
+    }
+}
+
+/// A request declares a JSON body if its `Content-Type` is `application/json`
+/// (ignoring any `; charset=...` parameter).
+fn content_type_is_json(headers: &[Header]) -> bool {
+    header_value(headers, "Content-Type").is_some_and(|ct| {
+        ct.split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("application/json")
+    })
+}
+
+/// Runs `handler(body)` only if the request passes [`mutation_guard_ok`] and
+/// declares a JSON content type; otherwise returns 403 or 415.
+fn guarded(
+    headers: &[Header],
+    trusted_hosts: &[String],
+    body: &str,
+    handler: impl FnOnce(&str) -> Reply,
+) -> Reply {
+    if !mutation_guard_ok(headers, trusted_hosts) {
+        return text_reply(403, "Forbidden");
+    }
+    if !content_type_is_json(headers) {
+        return text_reply(415, "Content-Type must be application/json");
+    }
+    handler(body)
+}
+
+/// Like [`guarded`], for routes that take no request body (so the
+/// `Content-Type` check doesn't apply).
+fn guarded_no_body(
+    headers: &[Header],
+    trusted_hosts: &[String],
+    handler: impl FnOnce() -> Reply,
+) -> Reply {
+    if !mutation_guard_ok(headers, trusted_hosts) {
+        return text_reply(403, "Forbidden");
+    }
+    handler()
+}
+
+// --- Request body parsing helpers ---
+
+/// Parses `body` as a JSON object. An empty (or all-whitespace) body is
+/// treated as an empty object, so field-level validation below produces a
+/// clear "`x` is required" error rather than a raw JSON-parse error.
+fn parse_json_object(body: &str) -> Result<serde_json::Map<String, serde_json::Value>, AppError> {
+    if body.trim().is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    match serde_json::from_str(body) {
+        Ok(serde_json::Value::Object(map)) => Ok(map),
+        Ok(_) => Err(AppError::Usage(
+            "request body must be a JSON object".to_string(),
+        )),
+        Err(e) => Err(AppError::Usage(format!("invalid JSON body: {e}"))),
+    }
+}
+
+fn get_str<'a>(obj: &'a serde_json::Map<String, serde_json::Value>, key: &str) -> Option<&'a str> {
+    obj.get(key).and_then(|v| v.as_str())
+}
+
+fn require_str<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<&'a str, AppError> {
+    match get_str(obj, key) {
+        Some(s) if !s.is_empty() => Ok(s),
+        _ => Err(AppError::Usage(format!(
+            "`{key}` is required and must be a non-empty string"
+        ))),
+    }
+}
+
+fn get_str_array(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Vec<String> {
+    obj.get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// --- Mutation route handlers ---
+//
+// Each parses its JSON body, builds the matching `Invocation`, and dispatches
+// through `run_and_reply` — the same validation, locking, and event-hook path
+// the CLI uses. Body-parsing failures short-circuit to `error_reply` via the
+// `?`-in-a-closure pattern below.
+
+/// `POST /api/story` — create a new story.
+fn route_create_story(root: &Path, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let title = require_str(&obj, "title")?.to_string();
+        let state = get_str(&obj, "state").map(str::to_string);
+        let story_type = get_str(&obj, "type").map(str::to_string);
+        Ok(run_and_reply(
+            root,
+            201,
+            Invocation::New {
+                title,
+                state,
+                story_type,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `PATCH /api/story/{id}` — update title/state/priority/assignee/type.
+/// Label changes go through the dedicated `/labels` route instead: `SetFields`
+/// only ever *adds* labels via this field, which would be a confusing PATCH
+/// semantic (callers would reasonably expect a full replace).
+fn route_patch_story(root: &Path, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let invocation = Invocation::SetFields {
+            id: id.to_string(),
+            title: get_str(&obj, "title").map(str::to_string),
+            state: get_str(&obj, "state").map(str::to_string),
+            priority: get_str(&obj, "priority").map(str::to_string),
+            assignee: get_str(&obj, "assignee").map(str::to_string),
+            labels: None,
+            blocked: None,
+            unblocked: false,
+            json: None,
+            story_type: get_str(&obj, "type").map(str::to_string),
+        };
+        Ok(run_mutation_and_reply_with_story(root, id, invocation))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `POST /api/story/{id}/move` — the board's drag-and-drop endpoint. Moving
+/// into a CLOSED state archives the story (handled inside `SetState`).
+fn route_move_story(root: &Path, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let state = require_str(&obj, "state")?.to_string();
+        let comment = get_str(&obj, "comment").map(str::to_string);
+        Ok(run_and_reply(
+            root,
+            200,
+            Invocation::SetState {
+                id: id.to_string(),
+                state,
+                comment,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+fn route_comment_story(root: &Path, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let text = require_str(&obj, "text")?.to_string();
+        Ok(run_and_reply(
+            root,
+            200,
+            Invocation::Comment {
+                id: id.to_string(),
+                text,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+fn route_priority_story(root: &Path, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let priority = require_str(&obj, "priority")?.to_string();
+        Ok(run_and_reply(
+            root,
+            200,
+            Invocation::SetPriority {
+                id: id.to_string(),
+                priority,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+fn route_assign_story(root: &Path, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let member = require_str(&obj, "member")?.to_string();
+        Ok(run_and_reply(
+            root,
+            200,
+            Invocation::Assign {
+                id: id.to_string(),
+                member,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+fn route_labels_story(root: &Path, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let add = get_str_array(&obj, "add");
+        let remove = get_str_array(&obj, "remove");
+        if add.is_empty() && remove.is_empty() {
+            return Err(AppError::Usage(
+                "request body must include a non-empty `add` or `remove` array".to_string(),
+            ));
+        }
+        Ok(run_and_reply(
+            root,
+            200,
+            Invocation::SetLabels {
+                id: id.to_string(),
+                add,
+                remove,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+fn route_block_story(root: &Path, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let awaiting = require_str(&obj, "reason")?.to_string();
+        Ok(run_and_reply(
+            root,
+            200,
+            Invocation::SetAwaiting {
+                id: id.to_string(),
+                awaiting,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+fn route_unblock_story(root: &Path, id: &str) -> Reply {
+    run_and_reply(root, 200, Invocation::ClearAwaiting { id: id.to_string() })
+}
+
+fn route_reopen_story(root: &Path, id: &str) -> Reply {
+    run_and_reply(root, 200, Invocation::Reopen { id: id.to_string() })
+}
+
+/// `DELETE /api/story/{id}` — a required, non-empty `reason` is enforced the
+/// same way the CLI's `story delete` requires one.
+fn route_delete_story(root: &Path, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let reason = require_str(&obj, "reason")?.to_string();
+        Ok(run_and_reply(
+            root,
+            200,
+            Invocation::Delete {
+                id: id.to_string(),
+                reason,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// Backs both `POST /api/relate` (`remove: false`) and `POST /api/unrelate`
+/// (`remove: true`).
+fn route_relate(root: &Path, body: &str, remove: bool) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let a = require_str(&obj, "a")?.to_string();
+        let relation = require_str(&obj, "relation")?.to_string();
+        let b = require_str(&obj, "b")?.to_string();
+        Ok(run_and_reply(
+            root,
+            200,
+            Invocation::Relate {
+                a,
+                relation,
+                b,
+                remove,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// Maximum request body size accepted from a mutation route. Well above any
+/// legitimate story field (titles, comments, label lists), while bounding
+/// how much a single request can force the server to buffer.
+const MAX_BODY_BYTES: u64 = 64 * 1024;
+
+/// Reads a request body up to `MAX_BODY_BYTES`. Reads one byte past the cap
+/// so an oversized body is *detected* (and rejected with 400) rather than
+/// silently truncated.
+fn read_body(request: &mut Request) -> Option<String> {
+    let mut buf = Vec::new();
+    request
+        .as_reader()
+        .take(MAX_BODY_BYTES + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() as u64 > MAX_BODY_BYTES {
+        return None;
+    }
+    String::from_utf8(buf).ok()
+}
+
+/// Parses `STORYHOOK_WEB_TRUSTED_HOSTS` into a lowercase host allowlist for
+/// the mutation guard, used to permit a `web-serve`-style reverse proxy to
+/// reach the write API under its own (non-loopback) hostname. Read-only
+/// requests are never subject to this check.
+fn trusted_hosts_from_env() -> Vec<String> {
+    env::var("STORYHOOK_WEB_TRUSTED_HOSTS")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Runs the request-accept loop for one bound `Server`, dispatching each
+/// request through [`route`]/[`finish`]. Shared between the primary
+/// (loopback) listener and the optional tailnet listener started by
+/// [`start_server`] — both serve identical logic against the same project.
+fn accept_loop(server: Server, root: PathBuf, trusted_hosts: Vec<String>) {
+    for mut request in server.incoming_requests() {
+        let method = request.method().clone();
+        let path = request_path(request.url()).to_string();
+        let headers = request.headers().to_vec();
+
+        let body = if matches!(method, Method::Post | Method::Patch | Method::Delete) {
+            match read_body(&mut request) {
+                Some(b) => b,
+                None => {
+                    finish(
+                        request,
+                        text_reply(400, "request body invalid or too large"),
+                    );
+                    continue;
+                }
+            }
+        } else {
+            String::new()
+        };
+
+        let reply = route(&root, &method, &path, &headers, &body, &trusted_hosts);
+        finish(request, reply);
+    }
+}
+
+/// Binds the dashboard's listeners and serves forever.
+///
+/// The primary listener is always `127.0.0.1` — hardcoded, never
+/// configurable — so the dashboard can never become reachable from beyond
+/// this machine by accident. If the `tailscale` CLI reports an IP, a
+/// second listener is bound to that address (best-effort: a failure here
+/// is logged to stderr and does not stop the primary listener from
+/// serving), making the dashboard reachable from the rest of the tailnet
+/// without a third-party reverse proxy. Nothing is ever bound to `0.0.0.0`
+/// or any other wildcard/public-facing address, and no plain LAN IP is
+/// bound either — only loopback and, when present, the tailnet.
 pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
-    let addr = format!("127.0.0.1:{port}");
-    let server = Server::http(&addr).map_err(|e| {
+    let loopback_addr = format!("127.0.0.1:{port}");
+    let loopback_server = Server::http(&loopback_addr).map_err(|e| {
         if e.to_string().contains("Address already in use")
             || e.to_string().contains("AddrInUse")
             || e.to_string().contains("address already in use")
@@ -45,74 +730,33 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
 
     eprintln!("Storyhook dashboard: http://127.0.0.1:{port}");
 
-    for request in server.incoming_requests() {
-        let method = request.method().clone();
-        let url = request.url().to_string();
+    let mut trusted_hosts = trusted_hosts_from_env();
 
-        if method != Method::Get {
-            let resp = Response::from_string("Method not allowed")
-                .with_status_code(405)
-                .with_header(
-                    Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
-                )
-                .with_header(security_header_nosniff())
-                .with_header(security_header_frame())
-                .with_header(security_header_csp());
-            let _ = request.respond(resp);
-            continue;
-        }
-
-        match url.as_str() {
-            "/" => {
-                let resp = Response::from_string(DASHBOARD_HTML)
-                    .with_header(
-                        Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap(),
-                    )
-                    .with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap())
-                    .with_header(security_header_nosniff())
-                    .with_header(security_header_frame())
-                    .with_header(security_header_csp());
-                let _ = request.respond(resp);
+    if let Some(tailnet_ip) = tailscale_ip() {
+        let tailnet_addr = format!("{tailnet_ip}:{port}");
+        match Server::http(&tailnet_addr) {
+            Ok(tailnet_server) => {
+                eprintln!("Storyhook dashboard (tailnet): http://{tailnet_addr}");
+                // We deliberately bound this interface ourselves, so trust
+                // it for mutations too — the same standing as loopback —
+                // without requiring STORYHOOK_WEB_TRUSTED_HOSTS.
+                trusted_hosts.push(tailnet_ip);
+                let tailnet_root = root.to_path_buf();
+                let tailnet_trusted = trusted_hosts.clone();
+                std::thread::spawn(move || {
+                    accept_loop(tailnet_server, tailnet_root, tailnet_trusted)
+                });
             }
-            "/api/data" => {
-                let json = match build_api_json(root) {
-                    Ok(j) => j,
-                    Err(e) => {
-                        let body = serde_json::json!({"error": e.to_string()}).to_string();
-                        let resp = Response::from_string(body)
-                            .with_status_code(500)
-                            .with_header(
-                                Header::from_bytes("Content-Type", "application/json").unwrap(),
-                            )
-                            .with_header(security_header_nosniff())
-                            .with_header(security_header_frame())
-                            .with_header(security_header_csp());
-                        let _ = request.respond(resp);
-                        continue;
-                    }
-                };
-                let resp = Response::from_string(json)
-                    .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
-                    .with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap())
-                    .with_header(security_header_nosniff())
-                    .with_header(security_header_frame())
-                    .with_header(security_header_csp());
-                let _ = request.respond(resp);
-            }
-            _ => {
-                let resp = Response::from_string("Not found")
-                    .with_status_code(404)
-                    .with_header(
-                        Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
-                    )
-                    .with_header(security_header_nosniff())
-                    .with_header(security_header_frame())
-                    .with_header(security_header_csp());
-                let _ = request.respond(resp);
+            Err(e) => {
+                eprintln!(
+                    "warning: could not bind tailnet interface {tailnet_addr}: {e}; \
+                     the dashboard is only reachable via localhost"
+                );
             }
         }
     }
 
+    accept_loop(loopback_server, root.to_path_buf(), trusted_hosts);
     Ok(())
 }
 
@@ -154,31 +798,24 @@ fn is_process_alive(pid: u32) -> bool {
     }
 }
 
-/// Get the best reachable IP: Tailscale IP if available, otherwise LAN IP, fallback to 127.0.0.1.
+/// This machine's Tailscale IPv4 address, if the `tailscale` CLI is present
+/// and reports one. Used both to decide whether to bind a second,
+/// tailnet-reachable listener and to display its URL — deliberately not a
+/// generic LAN IP: the dashboard must only ever be reachable via loopback or
+/// the tailnet, never a bare local-network address that might itself be
+/// exposed further (e.g. by router port-forwarding).
+fn tailscale_ip() -> Option<String> {
+    let output = Command::new("tailscale").args(["ip", "-4"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if ip.is_empty() { None } else { Some(ip) }
+}
+
+/// The best reachable IP for display: the Tailscale IP if bound, else loopback.
 fn reachable_ip() -> String {
-    // Try tailscale IPv4 first
-    if let Ok(output) = Command::new("tailscale").args(["ip", "-4"]).output()
-        && output.status.success()
-    {
-        let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !ip.is_empty() {
-            return ip;
-        }
-    }
-
-    // Fallback: first non-loopback IPv4 from hostname -I
-    if let Ok(output) = Command::new("hostname").arg("-I").output()
-        && output.status.success()
-    {
-        let ips = String::from_utf8_lossy(&output.stdout);
-        for tok in ips.split_whitespace() {
-            if !tok.starts_with("127.") && !tok.contains(':') {
-                return tok.to_string();
-            }
-        }
-    }
-
-    "127.0.0.1".to_string()
+    tailscale_ip().unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 /// Check if web-serve is available in PATH
@@ -357,8 +994,51 @@ fn build_api_json(root: &Path) -> Result<String, AppError> {
         "stories": stories_json,
         "ready_ids": data.ready_ids,
         "blocked_ids": data.blocked_ids,
+        "meta": build_meta_json(root)?,
     });
 
     serde_json::to_string(&response)
         .map_err(|e| AppError::Storage(format!("JSON serialization failed: {e}")))
+}
+
+/// Builds the `meta` object describing the project's configuration — states
+/// (in `states.toml` order, which the board's columns must follow),
+/// types, members, and the fixed priority/relation vocabularies — so the
+/// frontend never has to hardcode anything project-specific.
+fn build_meta_json(root: &Path) -> Result<serde_json::Value, AppError> {
+    let states: Vec<serde_json::Value> = storage::load_states(root)?
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "slug": s.slug,
+                "super_state": s.super_state.as_str(),
+            })
+        })
+        .collect();
+
+    let types: Vec<serde_json::Value> = storage::load_types(root)?
+        .into_iter()
+        .map(|t| serde_json::json!({ "slug": t.slug, "description": t.description }))
+        .collect();
+
+    let members: Vec<serde_json::Value> = storage::load_members(root)?
+        .into_iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "display_name": m.display_name,
+                "github": m.github,
+            })
+        })
+        .collect();
+
+    let priorities: Vec<&str> = PRIORITIES.iter().map(Priority::as_str).collect();
+
+    Ok(serde_json::json!({
+        "states": states,
+        "types": types,
+        "members": members,
+        "priorities": priorities,
+        "relations": RELATIONS,
+    }))
 }

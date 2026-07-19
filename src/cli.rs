@@ -323,6 +323,10 @@ pub enum PluginAction {
     Uninstall { target: String },
 }
 
+/// Default TCP port for the web dashboard, used by both `story web start`
+/// and the internal `story web --serve` daemon entrypoint.
+pub const DEFAULT_WEB_PORT: u16 = 3456;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WebAction {
     Start { port: u16 },
@@ -1273,7 +1277,7 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
 
     match args[1].as_str() {
         "start" => {
-            let mut port: u16 = 3456;
+            let mut port: u16 = DEFAULT_WEB_PORT;
             let mut index = 2;
             while index < args.len() {
                 match args[index].as_str() {
@@ -1304,7 +1308,7 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         }),
         "--serve" => {
             // Internal: story web --serve --port N --root /path
-            let mut port: u16 = 3456;
+            let mut port: u16 = DEFAULT_WEB_PORT;
             let mut root = None;
             let mut index = 2;
             while index < args.len() {

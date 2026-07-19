@@ -142,6 +142,48 @@ fn web_serve_and_query_root() {
     drop(handle); // server thread runs until process dies — that's OK for test
 }
 
+/// The redesigned dashboard is still a single self-contained embedded file
+/// (no build step, no CDN) with a Board view, a List view, a detail drawer,
+/// and a create-story modal. These markers guard against a future edit
+/// accidentally dropping one of those surfaces.
+#[test]
+fn web_serve_root_html_has_board_list_drawer_markers() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+
+    // Single embedded file: exactly one <style> and one <script>, no
+    // external assets (CSP is script-src/style-src 'unsafe-inline' only).
+    assert_eq!(body.matches("<style>").count(), 1);
+    assert_eq!(body.matches("<script>").count(), 1);
+    assert!(!body.contains("<link"), "no external stylesheet links");
+    assert!(!body.contains("cdn."), "no CDN references");
+
+    // Board + List + view toggle
+    assert!(body.contains(r#"id="board-view""#));
+    assert!(body.contains(r#"id="list-view""#));
+    assert!(body.contains(r#"id="view-toggle""#));
+    // Detail drawer
+    assert!(body.contains(r#"id="drawer""#));
+    assert!(body.contains(r#"id="drawer-body""#));
+    // Create-story modal
+    assert!(body.contains(r#"id="create-modal""#));
+    assert!(body.contains(r#"id="create-title""#));
+    // Mutation API call sites carry the CSRF guard header
+    assert!(body.contains("X-Storyhook"));
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let dir = tempdir().unwrap();
@@ -524,6 +566,1038 @@ fn web_serve_api_json_structure_matches_dashboard() {
         st.get("is_blocked").is_some(),
         "missing is_blocked on story"
     );
+}
+
+// --- /api/data meta object ---
+
+#[test]
+fn web_serve_api_data_meta_states_are_ordered() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    // Append a state whose slug sorts alphabetically first ("archived" < "done"
+    // < "in-progress" < "todo"), so an alphabetical (e.g. BTreeMap-derived)
+    // ordering bug would put it first instead of last.
+    story(dir.path())
+        .args(["state", "add", "archived", "--super", "CLOSED"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let states: Vec<&str> = json["meta"]["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["slug"].as_str().unwrap())
+        .collect();
+    // Must match .storyhook/states.toml insertion order, not alphabetical.
+    assert_eq!(
+        states,
+        vec!["todo", "in-progress", "done", "archived"],
+        "states must be in states.toml order, not alphabetical"
+    );
+
+    let done = json["meta"]["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["slug"] == "done")
+        .unwrap();
+    assert_eq!(done["super_state"], "CLOSED");
+    let todo = json["meta"]["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["slug"] == "todo")
+        .unwrap();
+    assert_eq!(todo["super_state"], "OPEN");
+}
+
+#[test]
+fn web_serve_api_data_meta_has_types_priorities_relations_members() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let types: Vec<&str> = json["meta"]["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["slug"].as_str().unwrap())
+        .collect();
+    assert!(types.contains(&"bug"));
+    assert!(types.contains(&"epic"));
+
+    let priorities: Vec<&str> = json["meta"]["priorities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        priorities,
+        vec!["critical", "high", "medium", "low", "none"]
+    );
+
+    let relations: Vec<&str> = json["meta"]["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap())
+        .collect();
+    assert!(relations.contains(&"blocks"));
+    assert!(relations.contains(&"parent-of"));
+
+    // Fresh project has no members yet.
+    assert_eq!(json["meta"]["members"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn web_serve_api_data_meta_includes_members() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["member", "add", "Alice"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let member_ids: Vec<&str> = json["meta"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert!(member_ids.contains(&"alice"));
+}
+
+// --- GET /api/story/{id} ---
+
+#[test]
+fn web_serve_get_story_by_id() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Fetch me"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/story/SH-1"))
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("Content-Type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(ct.contains("application/json"));
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["result"], "ok");
+    // StoryView nests the snapshot under its own "story" key, so the id/title
+    // live at story.story.*, matching the shape /api/data's stories[] use.
+    assert_eq!(json["story"]["story"]["id"], "SH-1");
+    assert_eq!(json["story"]["story"]["title"], "Fetch me");
+}
+
+#[test]
+fn web_serve_get_story_by_id_unknown_returns_404() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = ureq::get(&format!("http://127.0.0.1:{port}/api/story/SH-999"))
+        .call()
+        .unwrap_err();
+    let status = match err {
+        ureq::Error::StatusCode(code) => code,
+        other => panic!("expected status code error, got: {other}"),
+    };
+    assert_eq!(status, 404);
+}
+
+// --- API error responses use the standard envelope + security headers ---
+
+#[test]
+fn web_serve_error_reply_has_security_headers() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    // Disable ureq's default "non-2xx is an Err" behavior so we can inspect
+    // the 404 response's headers and body directly.
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-999"))
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    for header in [
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "Content-Security-Policy",
+    ] {
+        assert!(
+            resp.headers().get(header).is_some(),
+            "missing security header: {header}"
+        );
+    }
+}
+
+#[test]
+fn web_serve_error_reply_uses_standard_envelope() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-999"))
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["result"], "error");
+    assert!(json["error"].is_string());
+    assert!(json["exit_code"].is_number());
+}
+
+// --- Mutation API: helpers ---
+
+/// Sends a guarded POST with a JSON body — every real mutation request must
+/// set both of these for `mutation_guard_ok` to pass.
+fn post_json(url: &str, body: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    ureq::post(url)
+        .header("X-Storyhook", "1")
+        .content_type("application/json")
+        .send(body)
+}
+
+fn patch_json(url: &str, body: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    ureq::patch(url)
+        .header("X-Storyhook", "1")
+        .content_type("application/json")
+        .send(body)
+}
+
+fn delete_json(url: &str, body: &str) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    ureq::delete(url)
+        .header("X-Storyhook", "1")
+        .force_send_body()
+        .content_type("application/json")
+        .send(body)
+}
+
+/// Same as `post_json` but without the guard header, for guard-rejection tests.
+fn post_json_unguarded(
+    url: &str,
+    body: &str,
+) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    ureq::post(url).content_type("application/json").send(body)
+}
+
+fn status_of(err: ureq::Error) -> u16 {
+    match err {
+        ureq::Error::StatusCode(code) => code,
+        other => panic!("expected status code error, got: {other}"),
+    }
+}
+
+fn story_field(json: &serde_json::Value, field: &str) -> serde_json::Value {
+    json["story"]["story"][field].clone()
+}
+
+// --- Mutation API: create ---
+
+#[test]
+fn web_create_story_returns_201_and_story() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story"),
+        r#"{"title":"New via web","type":"bug"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(story_field(&json, "id"), "SH-1");
+    assert_eq!(story_field(&json, "title"), "New via web");
+
+    // Shows up in /api/data.
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    let data_json: serde_json::Value =
+        serde_json::from_str(&data.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(data_json["summary"]["total_open"], 1);
+}
+
+#[test]
+fn web_create_story_missing_title_is_400() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json(&format!("http://127.0.0.1:{port}/api/story"), r#"{}"#).unwrap_err();
+    assert_eq!(status_of(err), 400);
+}
+
+// --- Mutation API: move (board drag-and-drop) ---
+
+#[test]
+fn web_move_story_changes_state() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Movable"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        r#"{"state":"in-progress"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "state"), "in-progress");
+}
+
+#[test]
+fn web_move_story_to_closed_state_archives() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Will be archived"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        r#"{"state":"done"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    let data_json: serde_json::Value =
+        serde_json::from_str(&data.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(data_json["summary"]["total_open"], 0);
+    assert_eq!(data_json["summary"]["total_closed"], 1);
+    // Archived stories still appear in stories[] so the board's Closed
+    // column can render the card instead of it vanishing.
+    let stories = data_json["stories"].as_array().unwrap();
+    assert_eq!(stories.len(), 1);
+    assert_eq!(stories[0]["story"]["state"], "done");
+}
+
+#[test]
+fn web_move_story_invalid_state_is_422() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        r#"{"state":"nonexistent"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 422);
+}
+
+#[test]
+fn web_move_unknown_story_is_404() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-999/move"),
+        r#"{"state":"in-progress"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 404);
+}
+
+// --- Mutation API: comment, priority, assign, labels, block/unblock, reopen ---
+
+#[test]
+fn web_comment_story_appends_comment() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/comment"),
+        r#"{"text":"hello from web"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    let comments = json["story"]["story"]["comments"].as_array().unwrap();
+    assert!(comments.iter().any(|c| c["text"] == "hello from web"));
+}
+
+#[test]
+fn web_priority_story_sets_priority() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/priority"),
+        r#"{"priority":"critical"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "priority"), "critical");
+}
+
+#[test]
+fn web_assign_story_to_valid_member_succeeds() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+    story(dir.path())
+        .args(["member", "add", "Alice"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/assign"),
+        r#"{"member":"alice"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "assignee"), "alice");
+}
+
+#[test]
+fn web_assign_story_to_missing_member_is_404() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    // storage::find_member returns AppError::NotFound (not Validation) for
+    // an unknown member id, matching `story assign <id> <unknown-member>`
+    // on the CLI (exit code 3, not 2).
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/assign"),
+        r#"{"member":"nobody"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 404);
+}
+
+#[test]
+fn web_labels_add_and_remove() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/labels"),
+        r#"{"add":["backend","urgent"]}"#,
+    )
+    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    let labels: Vec<&str> = json["story"]["story"]["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .collect();
+    assert!(labels.contains(&"backend"));
+    assert!(labels.contains(&"urgent"));
+
+    let resp2 = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/labels"),
+        r#"{"remove":["urgent"]}"#,
+    )
+    .unwrap();
+    let json2: serde_json::Value =
+        serde_json::from_str(&resp2.into_body().read_to_string().unwrap()).unwrap();
+    let labels2: Vec<&str> = json2["story"]["story"]["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .collect();
+    assert!(labels2.contains(&"backend"));
+    assert!(!labels2.contains(&"urgent"));
+}
+
+#[test]
+fn web_labels_empty_body_is_400() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/labels"),
+        r#"{}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 400);
+}
+
+#[test]
+fn web_block_and_unblock_story() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/block"),
+        r#"{"reason":"waiting on design"}"#,
+    )
+    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "awaiting"), "waiting on design");
+
+    let resp2 = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/unblock"),
+        "",
+    )
+    .unwrap();
+    let json2: serde_json::Value =
+        serde_json::from_str(&resp2.into_body().read_to_string().unwrap()).unwrap();
+    assert!(story_field(&json2, "awaiting").is_null());
+}
+
+#[test]
+fn web_reopen_archived_story() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+    story(dir.path())
+        .args(["move", "SH-1", "done"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        "",
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "superstate"), "OPEN");
+}
+
+// --- Mutation API: PATCH multi-field ---
+
+#[test]
+fn web_patch_story_updates_multiple_fields() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = patch_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1"),
+        r#"{"title":"Retitled","priority":"high"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "title"), "Retitled");
+    assert_eq!(story_field(&json, "priority"), "high");
+}
+
+#[test]
+fn web_patch_story_no_fields_is_400() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = patch_json(&format!("http://127.0.0.1:{port}/api/story/SH-1"), r#"{}"#).unwrap_err();
+    assert_eq!(status_of(err), 400);
+}
+
+// --- Mutation API: relate / unrelate ---
+
+#[test]
+fn web_relate_and_unrelate_stories() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "A"]).assert().success();
+    story(dir.path()).args(["new", "B"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/relate"),
+        r#"{"a":"SH-1","relation":"blocks","b":"SH-2"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    let relationships = json["story"]["story"]["relationships"].as_array().unwrap();
+    assert!(
+        relationships
+            .iter()
+            .any(|r| r["relation"] == "blocks" && r["other_id"] == "SH-2")
+    );
+
+    let resp2 = post_json(
+        &format!("http://127.0.0.1:{port}/api/unrelate"),
+        r#"{"a":"SH-1","relation":"blocks","b":"SH-2"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp2.status(), 200);
+    let json2: serde_json::Value =
+        serde_json::from_str(&resp2.into_body().read_to_string().unwrap()).unwrap();
+    let relationships2 = json2["story"]["story"]["relationships"].as_array().unwrap();
+    assert!(
+        !relationships2
+            .iter()
+            .any(|r| r["relation"] == "blocks" && r["other_id"] == "SH-2")
+    );
+}
+
+// --- Mutation API: delete ---
+
+#[test]
+fn web_delete_story_soft_deletes_it() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = delete_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1"),
+        r#"{"reason":"duplicate"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(json["result"], "ok");
+    assert!(json["message"].as_str().unwrap().contains("deleted"));
+
+    // `story delete` is a soft delete (see cli_grammar.rs::delete_soft_deletes):
+    // the story is archived with a "[deleted] <reason>" comment rather than
+    // erased, so it remains fetchable for audit purposes.
+    let show = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-1"))
+        .call()
+        .unwrap();
+    let show_json: serde_json::Value =
+        serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
+    let comments = show_json["story"]["story"]["comments"].as_array().unwrap();
+    assert!(comments.iter().any(|c| {
+        c["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("[deleted] duplicate"))
+    }));
+}
+
+#[test]
+fn web_delete_story_without_reason_is_400() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = delete_json(&format!("http://127.0.0.1:{port}/api/story/SH-1"), r#"{}"#).unwrap_err();
+    assert_eq!(status_of(err), 400);
+}
+
+// --- Mutation API: malformed body ---
+
+#[test]
+fn web_move_story_malformed_json_is_400() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        "not json",
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 400);
+}
+
+// --- Mutation guard: CSRF header + Host allowlist ---
+
+#[test]
+fn web_mutation_without_guard_header_is_403() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json_unguarded(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        r#"{"state":"in-progress"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 403);
+
+    // The story must not have moved.
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    let data_json: serde_json::Value =
+        serde_json::from_str(&data.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(data_json["stories"][0]["story"]["state"], "todo");
+}
+
+#[test]
+fn web_mutation_with_spoofed_host_is_403() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = ureq::post(format!("http://127.0.0.1:{port}/api/story/SH-1/move"))
+        .header("X-Storyhook", "1")
+        .header("Host", "evil.example")
+        .content_type("application/json")
+        .send(r#"{"state":"in-progress"}"#)
+        .unwrap_err();
+    assert_eq!(status_of(err), 403);
+}
+
+#[test]
+fn web_mutation_wrong_content_type_is_415() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = ureq::post(format!("http://127.0.0.1:{port}/api/story/SH-1/move"))
+        .header("X-Storyhook", "1")
+        .content_type("text/plain")
+        .send(r#"{"state":"in-progress"}"#)
+        .unwrap_err();
+    assert_eq!(status_of(err), 415);
+}
+
+#[test]
+fn web_put_on_story_path_is_405() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = ureq::put(format!("http://127.0.0.1:{port}/api/story/SH-1"))
+        .header("X-Storyhook", "1")
+        .content_type("application/json")
+        .send(r#"{"title":"x"}"#)
+        .unwrap_err();
+    assert_eq!(status_of(err), 405);
+}
+
+// --- Mutation guard: security headers on writes ---
+
+#[test]
+fn web_mutation_success_has_security_headers() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/priority"),
+        r#"{"priority":"low"}"#,
+    )
+    .unwrap();
+    for header in [
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "Content-Security-Policy",
+    ] {
+        assert!(
+            resp.headers().get(header).is_some(),
+            "missing security header: {header}"
+        );
+    }
+}
+
+#[test]
+fn web_mutation_guard_reject_has_security_headers() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::post(format!("http://127.0.0.1:{port}/api/story/SH-1/priority"))
+        .content_type("application/json")
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send(r#"{"priority":"low"}"#)
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    for header in [
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "Content-Security-Policy",
+    ] {
+        assert!(
+            resp.headers().get(header).is_some(),
+            "missing security header: {header}"
+        );
+    }
+}
+
+// --- CLI DEFAULT_WEB_PORT constant ---
+
+#[test]
+fn default_web_port_constant_is_3456() {
+    assert_eq!(storyhook::cli::DEFAULT_WEB_PORT, 3456);
 }
 
 // --- build_report_data with blocked stories ---
@@ -915,6 +1989,147 @@ fn build_report_data_non_project_errors() {
         result.is_err(),
         "build_report_data on non-project dir should error"
     );
+}
+
+// --- Tailnet dual-bind (skips gracefully where `tailscale` isn't available) ---
+
+/// Mirrors `web::tailscale_ip()`'s own detection so the test can decide
+/// whether to skip without depending on a private function.
+fn test_env_tailscale_ip() -> Option<String> {
+    let output = std::process::Command::new("tailscale")
+        .args(["ip", "-4"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if ip.is_empty() { None } else { Some(ip) }
+}
+
+#[test]
+fn web_serve_binds_tailnet_ip_when_available() {
+    let Some(tailnet_ip) = test_env_tailscale_ip() else {
+        eprintln!("skipping: no tailscale IP available in this environment");
+        return;
+    };
+
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Reachable via tailnet"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+    // Give the (best-effort, separately-threaded) tailnet listener a moment
+    // to come up after the primary loopback listener starts accepting.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Loopback still works.
+    let loopback = ureq::get(format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    assert_eq!(loopback.status(), 200);
+
+    // The tailnet interface is also bound and serves the same data.
+    let tailnet_url = format!("http://{tailnet_ip}:{port}/api/data");
+    let resp = ureq::get(&tailnet_url).call().unwrap_or_else(|e| {
+        panic!("expected the dashboard to be reachable via its own tailnet IP {tailnet_url}: {e}")
+    });
+    assert_eq!(resp.status(), 200);
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["summary"]["total_open"], 1);
+}
+
+#[test]
+fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
+    let Some(tailnet_ip) = test_env_tailscale_ip() else {
+        eprintln!("skipping: no tailscale IP available in this environment");
+        return;
+    };
+
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Move me from the tailnet"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+    std::thread::sleep(Duration::from_millis(200));
+
+    // No STORYHOOK_WEB_TRUSTED_HOSTS is set — the server itself decided to
+    // bind this interface, so mutations through it must be trusted by
+    // default, the same way loopback is.
+    let url = format!("http://{tailnet_ip}:{port}/api/story/SH-1/move");
+    let resp = ureq::post(&url)
+        .header("X-Storyhook", "1")
+        .content_type("application/json")
+        .send(r#"{"state":"in-progress"}"#)
+        .unwrap_or_else(|e| panic!("expected the tailnet interface to be auto-trusted: {e}"));
+    assert_eq!(resp.status(), 200);
+}
+
+#[test]
+fn web_serve_never_binds_wildcard_address() {
+    // Regression guard: inspect the OS's actual LISTEN sockets for this port
+    // (via `lsof`) and assert every one of them is 127.0.0.1 or a real,
+    // specific tailnet IP — never 0.0.0.0, ::, or `*` (a wildcard bind would
+    // make the dashboard reachable from any interface, including a public
+    // one). Skips gracefully if `lsof` isn't available.
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+    std::thread::sleep(Duration::from_millis(200));
+
+    let Ok(output) = std::process::Command::new("lsof")
+        .args(["-iTCP", "-sTCP:LISTEN", "-P", "-n"])
+        .output()
+    else {
+        eprintln!("skipping: lsof not available in this environment");
+        return;
+    };
+    if !output.status.success() {
+        eprintln!("skipping: lsof failed in this environment");
+        return;
+    }
+
+    let listing = String::from_utf8_lossy(&output.stdout);
+    let bound_addrs: Vec<&str> = listing
+        .lines()
+        .filter(|line| line.contains(&format!(":{port} ")))
+        .collect();
+
+    assert!(
+        !bound_addrs.is_empty(),
+        "expected at least one LISTEN socket on port {port}, got none from lsof:\n{listing}"
+    );
+    for line in &bound_addrs {
+        assert!(
+            !line.contains(&format!("*:{port}"))
+                && !line.contains(&format!("0.0.0.0:{port}"))
+                && !line.contains(&format!(":::{port}")),
+            "found a wildcard bind on port {port}, this must never happen: {line}"
+        );
+    }
 }
 
 // --- Utilities ---
