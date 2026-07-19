@@ -1991,6 +1991,147 @@ fn build_report_data_non_project_errors() {
     );
 }
 
+// --- Tailnet dual-bind (skips gracefully where `tailscale` isn't available) ---
+
+/// Mirrors `web::tailscale_ip()`'s own detection so the test can decide
+/// whether to skip without depending on a private function.
+fn test_env_tailscale_ip() -> Option<String> {
+    let output = std::process::Command::new("tailscale")
+        .args(["ip", "-4"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if ip.is_empty() { None } else { Some(ip) }
+}
+
+#[test]
+fn web_serve_binds_tailnet_ip_when_available() {
+    let Some(tailnet_ip) = test_env_tailscale_ip() else {
+        eprintln!("skipping: no tailscale IP available in this environment");
+        return;
+    };
+
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Reachable via tailnet"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+    // Give the (best-effort, separately-threaded) tailnet listener a moment
+    // to come up after the primary loopback listener starts accepting.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Loopback still works.
+    let loopback = ureq::get(format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    assert_eq!(loopback.status(), 200);
+
+    // The tailnet interface is also bound and serves the same data.
+    let tailnet_url = format!("http://{tailnet_ip}:{port}/api/data");
+    let resp = ureq::get(&tailnet_url).call().unwrap_or_else(|e| {
+        panic!("expected the dashboard to be reachable via its own tailnet IP {tailnet_url}: {e}")
+    });
+    assert_eq!(resp.status(), 200);
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["summary"]["total_open"], 1);
+}
+
+#[test]
+fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
+    let Some(tailnet_ip) = test_env_tailscale_ip() else {
+        eprintln!("skipping: no tailscale IP available in this environment");
+        return;
+    };
+
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Move me from the tailnet"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+    std::thread::sleep(Duration::from_millis(200));
+
+    // No STORYHOOK_WEB_TRUSTED_HOSTS is set — the server itself decided to
+    // bind this interface, so mutations through it must be trusted by
+    // default, the same way loopback is.
+    let url = format!("http://{tailnet_ip}:{port}/api/story/SH-1/move");
+    let resp = ureq::post(&url)
+        .header("X-Storyhook", "1")
+        .content_type("application/json")
+        .send(r#"{"state":"in-progress"}"#)
+        .unwrap_or_else(|e| panic!("expected the tailnet interface to be auto-trusted: {e}"));
+    assert_eq!(resp.status(), 200);
+}
+
+#[test]
+fn web_serve_never_binds_wildcard_address() {
+    // Regression guard: inspect the OS's actual LISTEN sockets for this port
+    // (via `lsof`) and assert every one of them is 127.0.0.1 or a real,
+    // specific tailnet IP — never 0.0.0.0, ::, or `*` (a wildcard bind would
+    // make the dashboard reachable from any interface, including a public
+    // one). Skips gracefully if `lsof` isn't available.
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+    std::thread::sleep(Duration::from_millis(200));
+
+    let Ok(output) = std::process::Command::new("lsof")
+        .args(["-iTCP", "-sTCP:LISTEN", "-P", "-n"])
+        .output()
+    else {
+        eprintln!("skipping: lsof not available in this environment");
+        return;
+    };
+    if !output.status.success() {
+        eprintln!("skipping: lsof failed in this environment");
+        return;
+    }
+
+    let listing = String::from_utf8_lossy(&output.stdout);
+    let bound_addrs: Vec<&str> = listing
+        .lines()
+        .filter(|line| line.contains(&format!(":{port} ")))
+        .collect();
+
+    assert!(
+        !bound_addrs.is_empty(),
+        "expected at least one LISTEN socket on port {port}, got none from lsof:\n{listing}"
+    );
+    for line in &bound_addrs {
+        assert!(
+            !line.contains(&format!("*:{port}"))
+                && !line.contains(&format!("0.0.0.0:{port}"))
+                && !line.contains(&format!(":::{port}")),
+            "found a wildcard bind on port {port}, this must never happen: {line}"
+        );
+    }
+}
+
 // --- Utilities ---
 
 use std::sync::atomic::{AtomicU16, Ordering};
