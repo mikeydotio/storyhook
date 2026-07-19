@@ -6,11 +6,37 @@ use std::process::Command;
 use fs4::FileExt;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::app::build_report_data;
+use crate::app::{self, build_report_data};
+use crate::cli::{CliOptions, Invocation};
+use crate::domain::Priority;
 use crate::error::AppError;
+use crate::output::{render_error, render_response};
 use crate::storage;
 
 const DASHBOARD_HTML: &str = include_str!("web_dashboard.html");
+
+/// All priority levels, in the order the frontend should offer them.
+const PRIORITIES: [Priority; 5] = [
+    Priority::Critical,
+    Priority::High,
+    Priority::Medium,
+    Priority::Low,
+    Priority::None,
+];
+
+/// All relationship kinds a story can be linked with, in canonical form (not
+/// including the `related-to` alias of `relates-to`). See
+/// `domain::relation_edges` for the authoritative parser.
+const RELATIONS: [&str; 8] = [
+    "relates-to",
+    "blocks",
+    "blocked-by",
+    "parent-of",
+    "child-of",
+    "duplicate-of",
+    "obviates",
+    "obviated-by",
+];
 
 fn security_header_nosniff() -> Header {
     Header::from_bytes("X-Content-Type-Options", "nosniff").unwrap()
@@ -92,24 +118,65 @@ fn request_path(url: &str) -> &str {
     url.split('?').next().unwrap_or(url)
 }
 
-/// Decides how to respond to a request. GET-only for now — write routes are
-/// added on top of this scaffold in a follow-up commit.
+/// Splits a request path into non-empty segments, e.g. `/api/story/SH-1` →
+/// `["api", "story", "SH-1"]`. A bare `/` (or `""`) yields an empty slice.
+fn path_segments(path: &str) -> Vec<&str> {
+    path.split('/').filter(|s| !s.is_empty()).collect()
+}
+
+/// Maps an application error to the HTTP status code that best represents it
+/// for API consumers, mirroring the severity ordering in `AppError::exit_code`.
+fn status_for(error: &AppError) -> u16 {
+    match error {
+        AppError::Usage(_) => 400,
+        AppError::Validation(_) => 422,
+        AppError::NotFound(_) => 404,
+        AppError::LockTimeout(_) => 409,
+        AppError::Integrity(_) | AppError::Storage(_) => 500,
+        AppError::GithubAuth(_) | AppError::GithubApi(_) => 502,
+        AppError::SyncConflict(_) => 409,
+    }
+}
+
+/// Renders an `AppError` as the standard `{"result":"error",...}` JSON
+/// envelope, at the status code `status_for` derives from its variant.
+fn error_reply(error: &AppError) -> Reply {
+    json_reply(status_for(error), render_error(error, true))
+}
+
+/// Decides how to respond to a request. Only GET routes exist so far — write
+/// routes are added on top of this scaffold in a follow-up commit.
 fn route(root: &Path, method: &Method, path: &str) -> Reply {
     if *method != Method::Get {
         return text_reply(405, "Method not allowed");
     }
 
-    match path {
-        "/" => html_reply(DASHBOARD_HTML).no_cache(),
-        "/api/data" => match build_api_json(root) {
+    match path_segments(path).as_slice() {
+        [] => html_reply(DASHBOARD_HTML).no_cache(),
+        ["api", "data"] => match build_api_json(root) {
             Ok(json) => json_reply(200, json).no_cache(),
-            Err(e) => {
-                let body = serde_json::json!({"error": e.to_string()}).to_string();
-                json_reply(500, body)
-            }
+            Err(e) => error_reply(&e),
+        },
+        ["api", "story", id] => match show_story_json(root, id) {
+            Ok(json) => json_reply(200, json),
+            Err(e) => error_reply(&e),
         },
         _ => text_reply(404, "Not found"),
     }
+}
+
+/// Renders a single story as the standard JSON envelope, dispatching through
+/// `app::run` with `Invocation::Show` so the web API sees exactly the same
+/// validation and shape as `story show <id>` on the CLI.
+fn show_story_json(root: &Path, id: &str) -> Result<String, AppError> {
+    let options = CliOptions {
+        json: true,
+        quiet: false,
+        no_hooks: false,
+        invocation: Invocation::Show { id: id.to_string() },
+    };
+    let response = app::run(root, options)?;
+    Ok(render_response(&response, true, false))
 }
 
 pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
@@ -380,8 +447,51 @@ fn build_api_json(root: &Path) -> Result<String, AppError> {
         "stories": stories_json,
         "ready_ids": data.ready_ids,
         "blocked_ids": data.blocked_ids,
+        "meta": build_meta_json(root)?,
     });
 
     serde_json::to_string(&response)
         .map_err(|e| AppError::Storage(format!("JSON serialization failed: {e}")))
+}
+
+/// Builds the `meta` object describing the project's configuration — states
+/// (in `states.toml` order, which the board's columns must follow),
+/// types, members, and the fixed priority/relation vocabularies — so the
+/// frontend never has to hardcode anything project-specific.
+fn build_meta_json(root: &Path) -> Result<serde_json::Value, AppError> {
+    let states: Vec<serde_json::Value> = storage::load_states(root)?
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "slug": s.slug,
+                "super_state": s.super_state.as_str(),
+            })
+        })
+        .collect();
+
+    let types: Vec<serde_json::Value> = storage::load_types(root)?
+        .into_iter()
+        .map(|t| serde_json::json!({ "slug": t.slug, "description": t.description }))
+        .collect();
+
+    let members: Vec<serde_json::Value> = storage::load_members(root)?
+        .into_iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "display_name": m.display_name,
+                "github": m.github,
+            })
+        })
+        .collect();
+
+    let priorities: Vec<&str> = PRIORITIES.iter().map(Priority::as_str).collect();
+
+    Ok(serde_json::json!({
+        "states": states,
+        "types": types,
+        "members": members,
+        "priorities": priorities,
+        "relations": RELATIONS,
+    }))
 }
