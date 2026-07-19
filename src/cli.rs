@@ -104,7 +104,7 @@ Usage:
   story prioritize <id> <critical|high|medium|low|none>
   story label <id> <labels-csv>
   story unlabel <id> <labels-csv>
-  story reopen <id>
+  story reopen <id> [--force]
   story delete <id> "<reason>"
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
                   [--assignee <member>] [--labels "<csv>"] [--blocked "<reason>"]
@@ -228,6 +228,7 @@ pub enum Invocation {
     },
     Reopen {
         id: String,
+        force: bool,
     },
     Delete {
         id: String,
@@ -1473,12 +1474,19 @@ fn parse_unlabel(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_reopen_verb(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() != 2 {
-        return Err(AppError::Usage("usage: story reopen <id>".to_string()));
+    let usage = "usage: story reopen <id> [--force]";
+    if args.len() < 2 {
+        return Err(AppError::Usage(usage.to_string()));
     }
-    Ok(Invocation::Reopen {
-        id: args[1].clone(),
-    })
+    let id = args[1].clone();
+    let mut force = false;
+    for arg in &args[2..] {
+        match arg.as_str() {
+            "--force" => force = true,
+            _ => return Err(AppError::Usage(usage.to_string())),
+        }
+    }
+    Ok(Invocation::Reopen { id, force })
 }
 
 fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {
