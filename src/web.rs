@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use fs4::FileExt;
-use tiny_http::{Header, Method, Response, Server};
+use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::app::build_report_data;
 use crate::error::AppError;
@@ -28,6 +28,90 @@ fn security_header_csp() -> Header {
     .unwrap()
 }
 
+fn content_type_header(value: &str) -> Header {
+    Header::from_bytes("Content-Type", value).unwrap()
+}
+
+/// A fully-formed HTTP response, decoupled from `tiny_http`'s request type so
+/// routing decisions stay pure and easy to reason about (and test) apart from
+/// the network layer. Every `Reply` — success or error — flows through
+/// [`finish`], which attaches the security headers exactly once, in exactly
+/// one place, so no response path can accidentally omit them.
+struct Reply {
+    status: u16,
+    content_type: &'static str,
+    body: String,
+    no_cache: bool,
+}
+
+impl Reply {
+    fn new(status: u16, content_type: &'static str, body: impl Into<String>) -> Self {
+        Reply {
+            status,
+            content_type,
+            body: body.into(),
+            no_cache: false,
+        }
+    }
+
+    /// Marks this reply as dynamic content that must never be cached by the browser.
+    fn no_cache(mut self) -> Self {
+        self.no_cache = true;
+        self
+    }
+}
+
+fn text_reply(status: u16, body: impl Into<String>) -> Reply {
+    Reply::new(status, "text/plain; charset=utf-8", body)
+}
+
+fn json_reply(status: u16, body: impl Into<String>) -> Reply {
+    Reply::new(status, "application/json", body)
+}
+
+fn html_reply(body: impl Into<String>) -> Reply {
+    Reply::new(200, "text/html; charset=utf-8", body)
+}
+
+/// Attaches the shared security headers to `reply` and sends it on `request`.
+fn finish(request: Request, reply: Reply) {
+    let mut resp = Response::from_string(reply.body)
+        .with_status_code(reply.status)
+        .with_header(content_type_header(reply.content_type))
+        .with_header(security_header_nosniff())
+        .with_header(security_header_frame())
+        .with_header(security_header_csp());
+    if reply.no_cache {
+        resp = resp.with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap());
+    }
+    let _ = request.respond(resp);
+}
+
+/// Strips any query string from a request URL, leaving just the path.
+fn request_path(url: &str) -> &str {
+    url.split('?').next().unwrap_or(url)
+}
+
+/// Decides how to respond to a request. GET-only for now — write routes are
+/// added on top of this scaffold in a follow-up commit.
+fn route(root: &Path, method: &Method, path: &str) -> Reply {
+    if *method != Method::Get {
+        return text_reply(405, "Method not allowed");
+    }
+
+    match path {
+        "/" => html_reply(DASHBOARD_HTML).no_cache(),
+        "/api/data" => match build_api_json(root) {
+            Ok(json) => json_reply(200, json).no_cache(),
+            Err(e) => {
+                let body = serde_json::json!({"error": e.to_string()}).to_string();
+                json_reply(500, body)
+            }
+        },
+        _ => text_reply(404, "Not found"),
+    }
+}
+
 pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
     let addr = format!("127.0.0.1:{port}");
     let server = Server::http(&addr).map_err(|e| {
@@ -47,70 +131,9 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
 
     for request in server.incoming_requests() {
         let method = request.method().clone();
-        let url = request.url().to_string();
-
-        if method != Method::Get {
-            let resp = Response::from_string("Method not allowed")
-                .with_status_code(405)
-                .with_header(
-                    Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
-                )
-                .with_header(security_header_nosniff())
-                .with_header(security_header_frame())
-                .with_header(security_header_csp());
-            let _ = request.respond(resp);
-            continue;
-        }
-
-        match url.as_str() {
-            "/" => {
-                let resp = Response::from_string(DASHBOARD_HTML)
-                    .with_header(
-                        Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap(),
-                    )
-                    .with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap())
-                    .with_header(security_header_nosniff())
-                    .with_header(security_header_frame())
-                    .with_header(security_header_csp());
-                let _ = request.respond(resp);
-            }
-            "/api/data" => {
-                let json = match build_api_json(root) {
-                    Ok(j) => j,
-                    Err(e) => {
-                        let body = serde_json::json!({"error": e.to_string()}).to_string();
-                        let resp = Response::from_string(body)
-                            .with_status_code(500)
-                            .with_header(
-                                Header::from_bytes("Content-Type", "application/json").unwrap(),
-                            )
-                            .with_header(security_header_nosniff())
-                            .with_header(security_header_frame())
-                            .with_header(security_header_csp());
-                        let _ = request.respond(resp);
-                        continue;
-                    }
-                };
-                let resp = Response::from_string(json)
-                    .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
-                    .with_header(Header::from_bytes("Cache-Control", "no-cache").unwrap())
-                    .with_header(security_header_nosniff())
-                    .with_header(security_header_frame())
-                    .with_header(security_header_csp());
-                let _ = request.respond(resp);
-            }
-            _ => {
-                let resp = Response::from_string("Not found")
-                    .with_status_code(404)
-                    .with_header(
-                        Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
-                    )
-                    .with_header(security_header_nosniff())
-                    .with_header(security_header_frame())
-                    .with_header(security_header_csp());
-                let _ = request.respond(resp);
-            }
-        }
+        let path = request_path(request.url()).to_string();
+        let reply = route(root, &method, &path);
+        finish(request, reply);
     }
 
     Ok(())
