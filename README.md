@@ -213,6 +213,9 @@ story context [--format markdown|json]
 story handoff [--since <duration>]
 story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
 story doctor [--fix]
+story web start [--port <PORT>]
+story web stop
+story web status
 story <id>
 story <id> "<comment>"
 story <id> assign <member-id|handle>
@@ -287,6 +290,55 @@ Behavior:
 - Closed stories are archived into SQLite.
 - The story ID counter is project-local and monotonic: `SH-1`, `SH-2`, `SH-3`, ...
 - Every write acquires a project-scoped file lock before mutating state.
+
+## Web dashboard
+
+`story` includes a local web dashboard for browsing and triaging stories visually, alongside the CLI.
+
+```bash
+story web start [--port <PORT>]   # start the dashboard (default port 3456)
+story web stop                    # stop it
+story web status                  # check whether it's running
+```
+
+Open the URL printed on start — always `http://127.0.0.1:<port>`, plus a tailnet URL too if you have Tailscale (see Network exposure below). The dashboard offers:
+
+- **Board** — a kanban view with one column per project state, in `states.toml` order. Drag a card to a different column to move the story; dropping onto a `CLOSED` state archives it in place, and it stays visible in that column rather than vanishing.
+- **List** — a filterable, sortable table view.
+- **Detail drawer** — click any card or row to view and edit a story's full detail: title, state, priority, assignee, type, labels, block/unblock, comments, and relationships, plus reopen and delete.
+- Faceted filters (priority, assignee, type, state) and free-text search, shared between both views.
+- Live updates via 3-second polling; dark mode follows your system theme.
+
+It's a single self-contained page with no external dependencies (no CDN, no build step) and no mocked data — every action goes through the same validated, event-sourced write path as the CLI.
+
+The dashboard runs as a background daemon (PID file, lock file, and log at `.storyhook/web.pid` / `.storyhook/web.lock` / `.storyhook/web.log`).
+
+### Network exposure
+
+The dashboard is reachable from **localhost and your tailnet only — never the public internet, never a plain LAN address**:
+
+- It always binds `127.0.0.1`. This is hardcoded and not configurable.
+- If the `tailscale` CLI is installed and reports an IP, it *also* binds that tailnet IP, so other devices on your tailnet can reach it directly — no reverse proxy needed. This is best-effort: if the bind fails for any reason, the dashboard keeps serving on localhost and logs a warning.
+- It never binds `0.0.0.0` or any other wildcard/public-facing address, and it never binds a generic LAN IP.
+
+If the `web-serve` tool is present on your `PATH` (coderig/agentsmith environments), `story web start`/`stop` additionally register/unregister the port with it — that tool's own access controls govern any exposure beyond what's described above.
+
+### Security
+
+Mutating requests (creating, moving, editing, or deleting stories) require:
+
+- a same-origin request — the dashboard's own page sets a custom `X-Storyhook` header that a cross-site request cannot replicate without triggering a CORS preflight the server never answers;
+- a `Host` header that resolves to `127.0.0.1`, `localhost`, `::1`, or the tailnet IP this instance bound itself — this is what stops DNS-rebinding, which the header check alone can't catch.
+
+Read-only requests (`GET /`, `GET /api/data`, `GET /api/story/<id>`) have no such restriction — they're reachable (but not writable) from anywhere the socket itself is reachable, i.e. localhost and your tailnet.
+
+If you reverse-proxy the dashboard under a different hostname (e.g. via `web-serve`) and want writes to work there too, set `STORYHOOK_WEB_TRUSTED_HOSTS` to a comma-separated allowlist before starting the server:
+
+```bash
+STORYHOOK_WEB_TRUSTED_HOSTS=my-tailnet-host story web start
+```
+
+This only widens the `Host` allowlist for writes — it does not change what the server binds. Only set it to hostnames that are themselves no more exposed than your tailnet.
 
 ## Automation and scripting
 
