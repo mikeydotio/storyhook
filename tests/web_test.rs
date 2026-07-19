@@ -526,6 +526,266 @@ fn web_serve_api_json_structure_matches_dashboard() {
     );
 }
 
+// --- /api/data meta object ---
+
+#[test]
+fn web_serve_api_data_meta_states_are_ordered() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    // Append a state whose slug sorts alphabetically first ("archived" < "done"
+    // < "in-progress" < "todo"), so an alphabetical (e.g. BTreeMap-derived)
+    // ordering bug would put it first instead of last.
+    story(dir.path())
+        .args(["state", "add", "archived", "--super", "CLOSED"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let states: Vec<&str> = json["meta"]["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["slug"].as_str().unwrap())
+        .collect();
+    // Must match .storyhook/states.toml insertion order, not alphabetical.
+    assert_eq!(
+        states,
+        vec!["todo", "in-progress", "done", "archived"],
+        "states must be in states.toml order, not alphabetical"
+    );
+
+    let done = json["meta"]["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["slug"] == "done")
+        .unwrap();
+    assert_eq!(done["super_state"], "CLOSED");
+    let todo = json["meta"]["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["slug"] == "todo")
+        .unwrap();
+    assert_eq!(todo["super_state"], "OPEN");
+}
+
+#[test]
+fn web_serve_api_data_meta_has_types_priorities_relations_members() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let types: Vec<&str> = json["meta"]["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["slug"].as_str().unwrap())
+        .collect();
+    assert!(types.contains(&"bug"));
+    assert!(types.contains(&"epic"));
+
+    let priorities: Vec<&str> = json["meta"]["priorities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        priorities,
+        vec!["critical", "high", "medium", "low", "none"]
+    );
+
+    let relations: Vec<&str> = json["meta"]["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap())
+        .collect();
+    assert!(relations.contains(&"blocks"));
+    assert!(relations.contains(&"parent-of"));
+
+    // Fresh project has no members yet.
+    assert_eq!(json["meta"]["members"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn web_serve_api_data_meta_includes_members() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["member", "add", "Alice"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let member_ids: Vec<&str> = json["meta"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert!(member_ids.contains(&"alice"));
+}
+
+// --- GET /api/story/{id} ---
+
+#[test]
+fn web_serve_get_story_by_id() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Fetch me"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/story/SH-1"))
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("Content-Type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(ct.contains("application/json"));
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["result"], "ok");
+    // StoryView nests the snapshot under its own "story" key, so the id/title
+    // live at story.story.*, matching the shape /api/data's stories[] use.
+    assert_eq!(json["story"]["story"]["id"], "SH-1");
+    assert_eq!(json["story"]["story"]["title"], "Fetch me");
+}
+
+#[test]
+fn web_serve_get_story_by_id_unknown_returns_404() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = ureq::get(&format!("http://127.0.0.1:{port}/api/story/SH-999"))
+        .call()
+        .unwrap_err();
+    let status = match err {
+        ureq::Error::StatusCode(code) => code,
+        other => panic!("expected status code error, got: {other}"),
+    };
+    assert_eq!(status, 404);
+}
+
+// --- API error responses use the standard envelope + security headers ---
+
+#[test]
+fn web_serve_error_reply_has_security_headers() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    // Disable ureq's default "non-2xx is an Err" behavior so we can inspect
+    // the 404 response's headers and body directly.
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-999"))
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    for header in [
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "Content-Security-Policy",
+    ] {
+        assert!(
+            resp.headers().get(header).is_some(),
+            "missing security header: {header}"
+        );
+    }
+}
+
+#[test]
+fn web_serve_error_reply_uses_standard_envelope() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-999"))
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["result"], "error");
+    assert!(json["error"].is_string());
+    assert!(json["exit_code"].is_number());
+}
+
 // --- build_report_data with blocked stories ---
 
 #[test]
