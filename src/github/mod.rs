@@ -1000,6 +1000,10 @@ fn remote_snapshot_to_story_snapshot(
         labels: remote.labels.clone(),
         story_type: None,
         closed_at: issue.closed_at.clone(),
+        // GitHub issues have no notion of storyhook's soft-delete; a synced
+        // remote issue is never considered "deleted" for diffing purposes.
+        deleted: false,
+        deleted_reason: None,
     }
 }
 

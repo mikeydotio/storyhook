@@ -710,6 +710,8 @@ mod tests {
             labels: vec!["bug".to_string(), "tui".to_string()],
             story_type: None,
             closed_at: None,
+            deleted: false,
+            deleted_reason: None,
         }
     }
 

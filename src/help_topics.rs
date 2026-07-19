@@ -640,6 +640,10 @@ Commands returning a single story ("story" field):
       "stale_info": null
     }
 
+  A story removed via `story delete` also carries "deleted": true and
+  "deleted_reason": "<reason>" (omitted entirely for non-deleted stories).
+  Its "superstate" is always "CLOSED", regardless of "state".
+
 Commands returning a story list ("stories" field):
   story list [filters]        -> "stories": [StoryView, ...]
   story search <query>        -> "stories": [StoryView, ...]
@@ -1063,16 +1067,23 @@ Related:
 
         m.insert(
             "reopen",
-            r#"story reopen <id>
+            r#"story reopen <id> [--force]
 
 Reopen a closed/archived story, returning it to an open state.
 
+Reopening a story that was soft-deleted (`story delete`) undeletes it: at
+an interactive terminal you'll be prompted to confirm; in scripts/CI (no
+TTY) or to skip the prompt, pass --force. Reopening an ordinarily-closed
+story needs no confirmation.
+
 When to use:
-  When a completed story needs more work, or was closed by mistake.
+  When a completed story needs more work, was closed by mistake, or was
+  deleted in error.
 
 Examples:
   story reopen SH-5
   story reopen SH-12
+  story reopen SH-7 --force
 
 Related:
   story move <id> <state>  — Transition to a specific state
@@ -1084,9 +1095,12 @@ Related:
             "delete",
             r#"story delete <id> "<reason>"
 
-Soft-delete a story with a required reason. The story is archived
-with a deletion flag — never truly lost. Deleted stories won't appear
-in list results but can be found via search.
+Soft-delete a story with a required reason. The story is archived with
+a deletion flag — never truly lost — and its superstate becomes CLOSED,
+so it no longer counts as open, ready, or a blocker for other stories.
+Like any closed story it still appears in `story list` (marked deleted)
+and can be found via search; `--json`/`show` expose "deleted": true and
+"deleted_reason": "<reason>".
 
 When to use:
   For duplicate, erroneous, or abandoned stories.
@@ -1096,8 +1110,8 @@ Examples:
   story delete SH-7 "created in error"
 
 Related:
-  story reopen <id>  — Reopen a closed story
-  story search       — Find deleted stories
+  story reopen <id> [--force]  — Undelete (reopen a deleted story)
+  story search                 — Find deleted stories
 "#,
         );
 
