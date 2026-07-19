@@ -142,6 +142,48 @@ fn web_serve_and_query_root() {
     drop(handle); // server thread runs until process dies — that's OK for test
 }
 
+/// The redesigned dashboard is still a single self-contained embedded file
+/// (no build step, no CDN) with a Board view, a List view, a detail drawer,
+/// and a create-story modal. These markers guard against a future edit
+/// accidentally dropping one of those surfaces.
+#[test]
+fn web_serve_root_html_has_board_list_drawer_markers() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+
+    // Single embedded file: exactly one <style> and one <script>, no
+    // external assets (CSP is script-src/style-src 'unsafe-inline' only).
+    assert_eq!(body.matches("<style>").count(), 1);
+    assert_eq!(body.matches("<script>").count(), 1);
+    assert!(!body.contains("<link"), "no external stylesheet links");
+    assert!(!body.contains("cdn."), "no CDN references");
+
+    // Board + List + view toggle
+    assert!(body.contains(r#"id="board-view""#));
+    assert!(body.contains(r#"id="list-view""#));
+    assert!(body.contains(r#"id="view-toggle""#));
+    // Detail drawer
+    assert!(body.contains(r#"id="drawer""#));
+    assert!(body.contains(r#"id="drawer-body""#));
+    // Create-story modal
+    assert!(body.contains(r#"id="create-modal""#));
+    assert!(body.contains(r#"id="create-title""#));
+    // Mutation API call sites carry the CSRF guard header
+    assert!(body.contains("X-Storyhook"));
+}
+
 #[test]
 fn web_serve_api_data_empty_project() {
     let dir = tempdir().unwrap();
