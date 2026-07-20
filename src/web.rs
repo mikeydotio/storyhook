@@ -1,10 +1,18 @@
+use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use fs4::FileExt;
+use notify::Watcher;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::app::{self, build_report_data};
@@ -48,12 +56,14 @@ fn security_header_frame() -> Header {
     Header::from_bytes("X-Frame-Options", "DENY").unwrap()
 }
 
+/// The dashboard's Content-Security-Policy, shared between every normal
+/// response (via [`finish`]) and the hand-rolled `GET /api/events` response
+/// head, which bypasses `finish` entirely (see [`write_sse_head`]) — so the
+/// two paths can never drift apart.
+const CSP: &str = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'";
+
 fn security_header_csp() -> Header {
-    Header::from_bytes(
-        "Content-Security-Policy",
-        "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
-    )
-    .unwrap()
+    Header::from_bytes("Content-Security-Policy", CSP).unwrap()
 }
 
 fn content_type_header(value: &str) -> Header {
@@ -769,6 +779,414 @@ fn route_relate(root: &Path, body: &str, remove: bool) -> Reply {
     .unwrap_or_else(|e| error_reply(&e))
 }
 
+// --- Live updates: Server-Sent Events (`GET /api/events`) ---
+//
+// Every other endpoint is intentionally stateless — `/data` and `/api/repos`
+// re-read from disk on every request (see `build_api_json`,
+// `build_repos_json`) — so "live" here means telling connected browsers
+// *when* to re-fetch, not pushing story data itself. A single filesystem
+// watcher (`spawn_change_watcher`) observes every registered repo's
+// open-stories directory plus the registry file itself, and publishes a
+// coarse event — which repo id changed, or "the registry changed" — to every
+// subscriber. The browser already holds the last snapshot it fetched, so it
+// diffs the fresh one against it client-side to decide *what* changed and
+// pick the matching animation (see `diffSnapshots` in web_dashboard.html).
+
+/// A message pushed to every connected `/api/events` client. Deliberately
+/// coarse — never a server-computed diff — so the server stays as stateless
+/// about UI concerns as every other endpoint.
+#[derive(Clone, Debug)]
+enum SseEvent {
+    /// A registered repo's stories changed; `id` matches `RegisteredRepo::id`.
+    RepoChanged(String),
+    /// The registry itself changed (a repo was registered or deregistered).
+    ReposChanged,
+    /// Keep-alive comment. A failed write while sending this is how a
+    /// connection that vanished without a clean close (sleep, network drop)
+    /// is detected and its subscriber pruned, rather than lingering forever.
+    Ping,
+}
+
+#[derive(Default)]
+struct BroadcastState {
+    next_id: u64,
+    subs: Vec<(u64, Sender<SseEvent>)>,
+}
+
+/// The live set of connected `/api/events` clients, shared — every clone
+/// refers to the same underlying list — between the change watcher (which
+/// publishes), the heartbeat thread (which publishes), and every
+/// `accept_loop`'s `GET /api/events` handler (which subscribes).
+#[derive(Clone, Default)]
+struct Broadcaster {
+    inner: Arc<Mutex<BroadcastState>>,
+}
+
+impl Broadcaster {
+    /// Registers a new subscriber, returning its id (pass to [`Self::unsubscribe`]
+    /// once the connection ends) and the receiver it should block on.
+    fn subscribe(&self) -> (u64, Receiver<SseEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let mut state = self.inner.lock().unwrap();
+        let id = state.next_id;
+        state.next_id += 1;
+        state.subs.push((id, tx));
+        (id, rx)
+    }
+
+    /// Removes a subscriber by id. A no-op if it's already gone — e.g. a
+    /// concurrent [`Self::publish`] already pruned it because its receiver
+    /// had dropped.
+    fn unsubscribe(&self, id: u64) {
+        self.inner
+            .lock()
+            .unwrap()
+            .subs
+            .retain(|(sub, _)| *sub != id);
+    }
+
+    /// Sends `event` to every subscriber, dropping any whose receiver is
+    /// gone. This is a backstop alongside each connection's own
+    /// `Drop`-guard unsubscribe (see `serve_sse`) — either alone prevents a
+    /// leak, but a failed send here also notices a dead connection
+    /// immediately rather than waiting on that connection's own cleanup.
+    fn publish(&self, event: SseEvent) {
+        let mut state = self.inner.lock().unwrap();
+        state.subs.retain(|(_, tx)| tx.send(event.clone()).is_ok());
+    }
+
+    /// Number of connected clients, so the watcher can skip publishing
+    /// (cheaply) when nobody is listening.
+    fn subscriber_count(&self) -> usize {
+        self.inner.lock().unwrap().subs.len()
+    }
+}
+
+/// Writes the fixed HTTP/1.1 response head for a `GET /api/events`
+/// connection. This bypasses [`finish`] entirely — an SSE body is written
+/// frame-by-frame over the connection's lifetime rather than as one `Reply`
+/// — so it re-emits the same security headers (and the shared [`CSP`]) by
+/// hand to keep the two paths from drifting apart. `Transfer-Encoding:
+/// chunked` lets the body stay open indefinitely while remaining correctly
+/// framed for HTTP/1.1.
+fn write_sse_head(w: &mut dyn Write) -> io::Result<()> {
+    write!(
+        w,
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: text/event-stream\r\n\
+         Cache-Control: no-cache\r\n\
+         Connection: keep-alive\r\n\
+         Transfer-Encoding: chunked\r\n\
+         X-Content-Type-Options: nosniff\r\n\
+         X-Frame-Options: DENY\r\n\
+         Content-Security-Policy: {CSP}\r\n\
+         \r\n"
+    )
+}
+
+/// Writes `payload` as a single HTTP chunk and flushes immediately.
+/// Flushing after every frame — rather than trusting any buffering layer to
+/// do it eventually — is what makes this genuinely live: a small SSE frame
+/// left sitting unflushed until a buffer happens to fill would defeat the
+/// entire feature (this is exactly the trap `Response`'s
+/// `chunked_transfer::Encoder` falls into, which is why this connection
+/// writes directly to `Request::into_writer`'s raw socket instead).
+fn write_sse_frame(w: &mut dyn Write, payload: &str) -> io::Result<()> {
+    write!(w, "{:x}\r\n{payload}\r\n", payload.len())?;
+    w.flush()
+}
+
+/// Formats one [`SseEvent`] as a complete SSE message (event name + `data:`
+/// line, or a `:`-prefixed comment for [`SseEvent::Ping`]), terminated by
+/// the blank line that tells the client's `EventSource` the message is
+/// complete.
+fn format_sse_event(event: &SseEvent) -> String {
+    match event {
+        SseEvent::Ping => ": ping\n\n".to_string(),
+        SseEvent::ReposChanged => "event: repos-changed\ndata: {}\n\n".to_string(),
+        SseEvent::RepoChanged(id) => format!(
+            "event: repo-changed\ndata: {}\n\n",
+            serde_json::json!({ "repo_id": id })
+        ),
+    }
+}
+
+/// Serves one `GET /api/events` connection for its entire lifetime, on its
+/// own thread (spawned by `accept_loop`, which immediately moves on to the
+/// next request — see the comment there; `tiny_http`'s internal task pool
+/// means this never stalls other clients). Subscribes to `broadcaster`,
+/// streams every event it receives as an SSE frame until a write fails (the
+/// client disconnected), then unsubscribes.
+fn serve_sse(request: Request, broadcaster: Broadcaster) {
+    let (id, rx) = broadcaster.subscribe();
+
+    // Unsubscribes on drop — including an early `return` below — so a
+    // connection that ends can never leak its subscriber slot.
+    struct UnsubscribeGuard {
+        broadcaster: Broadcaster,
+        id: u64,
+    }
+    impl Drop for UnsubscribeGuard {
+        fn drop(&mut self) {
+            self.broadcaster.unsubscribe(self.id);
+        }
+    }
+    let _guard = UnsubscribeGuard { broadcaster, id };
+
+    let mut writer = request.into_writer();
+    if write_sse_head(&mut writer).is_err() {
+        return;
+    }
+    // `retry: 3000` tells the browser's `EventSource` how long to wait
+    // before auto-reconnecting after a drop; the leading comment gives the
+    // client an immediate, distinguishable "connected" frame to act on (see
+    // `connectEvents`'s `onopen` resync in web_dashboard.html).
+    if write_sse_frame(&mut writer, "retry: 3000\n: connected\n\n").is_err() {
+        return;
+    }
+
+    while let Ok(event) = rx.recv() {
+        if write_sse_frame(&mut writer, &format_sse_event(&event)).is_err() {
+            break;
+        }
+    }
+    // `_guard` drops here, unsubscribing; `writer` drops, closing the socket.
+}
+
+/// Debounce window for a single repo's (or the registry's) change events:
+/// several rapid filesystem events — e.g. a `story move` appending one JSONL
+/// line, or several stories mutated back-to-back — collapse into one
+/// `publish` rather than one per underlying `notify::Event`. Matches the
+/// TUI's file watcher (`tui/event.rs`).
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
+
+/// How often a heartbeat `Ping` is published to every connected client, so a
+/// connection that vanished without a clean close (laptop sleep, network
+/// drop) is noticed — its next write fails — rather than lingering forever.
+/// Overridable via `STORYHOOK_SSE_HEARTBEAT_MS` so integration tests don't
+/// have to wait out the production interval.
+fn heartbeat_interval() -> Duration {
+    env::var("STORYHOOK_SSE_HEARTBEAT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(20))
+}
+
+/// Publishes a [`SseEvent::Ping`] on [`heartbeat_interval`] until `stop` is
+/// signaled.
+fn spawn_heartbeat(broadcaster: Broadcaster, stop: Arc<AtomicBool>) -> JoinHandle<()> {
+    thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            thread::sleep(heartbeat_interval());
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            broadcaster.publish(SseEvent::Ping);
+        }
+    })
+}
+
+/// Returns `true` (and records `Instant::now()`) the first time it's called
+/// for `key` in longer than `window`; otherwise returns `false`. Used to
+/// collapse a burst of filesystem events for the same repo (or the
+/// registry, keyed by `""`) into a single published event.
+fn debounce(clocks: &Mutex<HashMap<String, Instant>>, key: &str, window: Duration) -> bool {
+    let mut clocks = clocks.lock().unwrap();
+    let now = Instant::now();
+    let fires = match clocks.get(key) {
+        Some(last) => now.duration_since(*last) >= window,
+        None => true,
+    };
+    if fires {
+        clocks.insert(key.to_string(), now);
+    }
+    fires
+}
+
+/// Runs the single filesystem watcher backing every `/api/events`
+/// connection, for the lifetime of the process (`stop` exists for symmetry
+/// with `tui::event::EventSource` and for tests; production never signals
+/// it, since the dashboard daemon has no clean-shutdown path today — `story
+/// web stop` sends `SIGTERM` to the whole process). Watches every registered
+/// repo's open-stories directory — creating, appending to, or deleting a
+/// file there covers every story mutation (create, any field change, close,
+/// reopen; see `storage::write_story_events`/`archive_story`/
+/// `unarchive_story`) — plus the registry file's parent directory, so
+/// registering or deregistering a repo at runtime is itself detected and
+/// triggers a re-scan.
+///
+/// `ready_tx` is signaled once the *initial* scan has established a watch
+/// on every currently-registered repo (or the watcher failed to start at
+/// all) — see `start_server`, which blocks on the matching receiver before
+/// it starts serving any request. On the FSEvents backend (macOS), every
+/// individual `watch()` call tears down and rebuilds the *entire* event
+/// stream (see the deadlock-avoidance comment on the rescan channel below),
+/// so setting up N registered repos takes N real, not-instant stream
+/// restarts; without this handshake, a client could connect and mutate a
+/// repo before its watch is actually live, and permanently miss that
+/// change — FSEvents doesn't replay history for a stream once it starts.
+fn spawn_change_watcher(
+    registry_path: PathBuf,
+    broadcaster: Broadcaster,
+    stop: Arc<AtomicBool>,
+    ready_tx: Sender<()>,
+) -> JoinHandle<()> {
+    thread::spawn(move || run_change_watcher(registry_path, broadcaster, stop, ready_tx))
+}
+
+/// Rebuilds `watched` (open-stories dir -> repo id) from the registry at
+/// `registry_path`, `watch`-ing every directory newly present and
+/// `unwatch`-ing every one no longer registered. A single repo whose
+/// directory is missing or otherwise unwatchable (moved, deleted, permission
+/// error) is skipped rather than aborting the whole rescan — one bad repo
+/// must never break live updates for the others.
+fn rescan_watched_repos(
+    registry_path: &Path,
+    watcher: &mut notify::RecommendedWatcher,
+    watched: &Mutex<HashMap<PathBuf, String>>,
+) {
+    let repos = match registry::Registry::load_from(registry_path) {
+        Ok(r) => r.repos,
+        Err(_) => return, // Registry momentarily unreadable (e.g. mid-write); the next change event retries.
+    };
+
+    let mut watched = watched.lock().unwrap();
+    let desired: HashMap<PathBuf, String> = repos
+        .into_iter()
+        .map(|r| (storage::ProjectPaths::new(&r.path).open_stories_dir(), r.id))
+        .collect();
+
+    for dir in watched.keys() {
+        if !desired.contains_key(dir) {
+            let _ = watcher.unwatch(dir);
+        }
+    }
+    for dir in desired.keys() {
+        if !watched.contains_key(dir) {
+            let _ = watcher.watch(dir, notify::RecursiveMode::NonRecursive);
+        }
+    }
+    *watched = desired;
+}
+
+fn run_change_watcher(
+    registry_path: PathBuf,
+    broadcaster: Broadcaster,
+    stop: Arc<AtomicBool>,
+    ready_tx: Sender<()>,
+) {
+    // open-stories dir -> repo id, kept in sync with the registry by
+    // `rescan_watched_repos`, and consulted by the event callback below to
+    // attribute a raw filesystem path to the repo it belongs to.
+    let watched: Arc<Mutex<HashMap<PathBuf, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let debounce_clocks: Arc<Mutex<HashMap<String, Instant>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    let registry_dir = registry_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let registry_file_name: Option<OsString> = registry_path.file_name().map(|n| n.to_os_string());
+
+    // A registry-file change means the set of watched repo directories must
+    // be rescanned — but the callback below must NEVER call `watch`/
+    // `unwatch` itself: on the FSEvents backend (macOS), those calls block
+    // until the event stream quiesces, which can't happen until the *very
+    // callback invocation making the call* returns — a self-deadlock. So
+    // the callback only *signals* a rescan over this channel; the plain
+    // `notify::RecommendedWatcher` value below is owned solely by this
+    // function's own control loop, which is the only place that ever calls
+    // `watch`/`unwatch` on it.
+    let (rescan_tx, rescan_rx) = mpsc::channel::<()>();
+
+    let cb_watched = Arc::clone(&watched);
+    let cb_debounce = Arc::clone(&debounce_clocks);
+    let cb_broadcaster = broadcaster.clone();
+    let cb_registry_file_name = registry_file_name.clone();
+    let cb_rescan_tx = rescan_tx.clone();
+
+    let make_watcher =
+        notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+            let Ok(event) = res else { return };
+            for path in &event.paths {
+                let is_registry_file = cb_registry_file_name
+                    .as_deref()
+                    .is_some_and(|name| path.file_name() == Some(name));
+                if is_registry_file {
+                    if debounce(&cb_debounce, "", WATCH_DEBOUNCE) {
+                        // Wake the control loop to actually rescan/re-watch;
+                        // never touch the watcher from this thread. The
+                        // control loop publishes `ReposChanged` itself, only
+                        // once the rescan has finished — publishing it here
+                        // instead would tell a client to refetch (and, for
+                        // a brand new repo, start expecting live updates
+                        // from it) before that repo's directory is actually
+                        // being watched yet.
+                        let _ = cb_rescan_tx.send(());
+                    }
+                    continue;
+                }
+                if cb_broadcaster.subscriber_count() == 0 {
+                    continue;
+                }
+                let repo_id = cb_watched
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(dir, _)| path.starts_with(dir))
+                    .map(|(_, id)| id.clone());
+                if let Some(id) = repo_id
+                    && debounce(&cb_debounce, &id, WATCH_DEBOUNCE)
+                {
+                    cb_broadcaster.publish(SseEvent::RepoChanged(id));
+                }
+            }
+        });
+
+    let mut watcher = match make_watcher {
+        Ok(w) => w,
+        // No live-update capability if the watcher itself can't be created
+        // (e.g. the platform's file-event backend is unavailable) — the
+        // dashboard still functions via its slower safety poll. Still
+        // signal readiness so `start_server` doesn't block forever waiting
+        // for a watcher that will never come.
+        Err(_) => {
+            let _ = ready_tx.send(());
+            return;
+        }
+    };
+
+    rescan_watched_repos(&registry_path, &mut watcher, &watched);
+    let _ = watcher.watch(&registry_dir, notify::RecursiveMode::NonRecursive);
+    // Every currently-registered repo (and the registry itself) is now
+    // being watched — safe for `start_server` to start serving.
+    let _ = ready_tx.send(());
+
+    // Control loop: the sole owner of `watcher` for its entire lifetime.
+    // Wakes on a rescan signal from the callback above, or every 250ms to
+    // check `stop` — the same keep-alive cadence as `tui::event::EventSource`.
+    // `ReposChanged` is published from *here*, after `rescan_watched_repos`
+    // returns, so a client never sees the event before the repos it
+    // describes are actually being watched.
+    loop {
+        match rescan_rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(()) => {
+                rescan_watched_repos(&registry_path, &mut watcher, &watched);
+                if broadcaster.subscriber_count() > 0 {
+                    broadcaster.publish(SseEvent::ReposChanged);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+    }
+    drop(watcher);
+}
+
 /// Maximum request body size accepted from a mutation route. Well above any
 /// legitimate story field (titles, comments, label lists), while bounding
 /// how much a single request can force the server to buffer.
@@ -811,10 +1229,31 @@ fn trusted_hosts_from_env() -> Vec<String> {
 /// (loopback) listener and the optional tailnet listener started by
 /// [`start_server`] — both serve identical logic against the same registry
 /// (and, through it, every repo registered in it).
-fn accept_loop(server: Server, registry_path: PathBuf, trusted_hosts: Vec<String>) {
+///
+/// `GET /api/events` is intercepted here, before body-reading or `route`,
+/// and handed off to its own thread ([`serve_sse`]) rather than answered
+/// inline: it's a long-lived streaming connection, and this loop must move
+/// on to the next request immediately rather than block on it for as long
+/// as the browser tab stays open. `tiny_http`'s `Server` already reads
+/// connections into an internal queue on its own thread pool, so detaching
+/// this one `Request` and `continue`-ing costs nothing to the requests
+/// behind it.
+fn accept_loop(
+    server: Server,
+    registry_path: PathBuf,
+    trusted_hosts: Vec<String>,
+    broadcaster: Broadcaster,
+) {
     for mut request in server.incoming_requests() {
         let method = request.method().clone();
         let path = request_path(request.url()).to_string();
+
+        if method == Method::Get && path == "/api/events" {
+            let broadcaster = broadcaster.clone();
+            thread::spawn(move || serve_sse(request, broadcaster));
+            continue;
+        }
+
         let headers = request.headers().to_vec();
 
         let body = if matches!(method, Method::Post | Method::Patch | Method::Delete) {
@@ -877,31 +1316,81 @@ pub fn start_server(registry_path: &Path, port: u16) -> Result<(), AppError> {
 
     let mut trusted_hosts = trusted_hosts_from_env();
 
-    if let Some(tailnet_ip) = tailscale_ip() {
+    // One broadcaster and one filesystem watcher for the whole process,
+    // shared by every listener (loopback and, if bound, tailnet) — a repo
+    // change should reach every connected browser regardless of which
+    // interface it's connected through. `stop` is never signaled in
+    // production (the daemon's only shutdown path is `SIGTERM` to the whole
+    // process via `story web stop`); it exists so tests can tear background
+    // threads down cleanly.
+    let broadcaster = Broadcaster::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (watcher_ready_tx, watcher_ready_rx) = mpsc::channel::<()>();
+    spawn_change_watcher(
+        registry_path.to_path_buf(),
+        broadcaster.clone(),
+        stop.clone(),
+        watcher_ready_tx,
+    );
+    spawn_heartbeat(broadcaster.clone(), stop);
+
+    // Bind the tailnet listener (if any) right away, same as before this
+    // server ever waited on the watcher below — only *serving* on it is
+    // gated on watcher readiness, not the bind (and the diagnostic it
+    // prints either way), so a slow watcher setup can't delay reporting
+    // where the dashboard will be reachable.
+    let tailnet_listener = tailscale_ip().and_then(|tailnet_ip| {
         let tailnet_addr = format!("{tailnet_ip}:{port}");
         match Server::http(&tailnet_addr) {
-            Ok(tailnet_server) => {
+            Ok(server) => {
                 eprintln!("Storyhook dashboard (tailnet): http://{tailnet_addr}");
                 // We deliberately bound this interface ourselves, so trust
                 // it for mutations too — the same standing as loopback —
                 // without requiring STORYHOOK_WEB_TRUSTED_HOSTS.
                 trusted_hosts.push(tailnet_ip);
-                let tailnet_registry_path = registry_path.to_path_buf();
-                let tailnet_trusted = trusted_hosts.clone();
-                std::thread::spawn(move || {
-                    accept_loop(tailnet_server, tailnet_registry_path, tailnet_trusted)
-                });
+                Some(server)
             }
             Err(e) => {
                 eprintln!(
                     "warning: could not bind tailnet interface {tailnet_addr}: {e}; \
                      the dashboard is only reachable via localhost"
                 );
+                None
             }
         }
+    });
+
+    // Block until every currently-registered repo's watch is actually
+    // established before either listener accepts a single request —
+    // otherwise a client could connect and mutate a repo in the gap while
+    // the watcher (still working through its one-time, per-repo FSEvents
+    // stream setup — see `spawn_change_watcher`'s doc comment) hasn't
+    // gotten to it yet, and silently miss that change forever. `recv()`
+    // only ever returns `Err` if the watcher thread's sender dropped
+    // without sending — i.e. it's already given up — so there's nothing to
+    // keep waiting for either way.
+    let _ = watcher_ready_rx.recv();
+
+    if let Some(tailnet_server) = tailnet_listener {
+        let tailnet_registry_path = registry_path.to_path_buf();
+        let tailnet_trusted = trusted_hosts.clone();
+        let tailnet_broadcaster = broadcaster.clone();
+        std::thread::spawn(move || {
+            accept_loop(
+                tailnet_server,
+                tailnet_registry_path,
+                tailnet_trusted,
+                tailnet_broadcaster,
+            )
+        });
     }
 
-    accept_loop(loopback_server, registry_path.to_path_buf(), trusted_hosts);
+    accept_loop(
+        loopback_server,
+        registry_path.to_path_buf(),
+        trusted_hosts,
+        broadcaster,
+    );
     Ok(())
 }
 

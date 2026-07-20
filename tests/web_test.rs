@@ -2640,9 +2640,11 @@ fn web_serve_binds_tailnet_ip_when_available() {
         storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
-    // Give the (best-effort, separately-threaded) tailnet listener a moment
-    // to come up after the primary loopback listener starts accepting.
-    std::thread::sleep(Duration::from_millis(200));
+    // The tailnet listener binds promptly (same as loopback) but doesn't
+    // start *serving* until the watcher's own setup finishes — poll for a
+    // clear failure message if it never comes up at all; the `ureq::get`
+    // call below blocks for the real response regardless.
+    wait_for_addr(&format!("{tailnet_ip}:{port}"));
 
     // Loopback still works.
     let loopback = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
@@ -2681,7 +2683,12 @@ fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
         storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
-    std::thread::sleep(Duration::from_millis(200));
+    // The tailnet listener binds promptly (same as loopback), but doesn't
+    // start *serving* until the watcher's own setup finishes — poll for a
+    // clear failure message if it never comes up at all; the `ureq::post`
+    // call below blocks for the real response regardless, so nothing here
+    // needs to guess how long that setup actually takes.
+    wait_for_addr(&format!("{tailnet_ip}:{port}"));
 
     // No STORYHOOK_WEB_TRUSTED_HOSTS is set — the server itself decided to
     // bind this interface, so mutations through it must be trusted by
@@ -2745,6 +2752,362 @@ fn web_serve_never_binds_wildcard_address() {
     }
 }
 
+// --- Server-Sent Events (`GET /api/events`, live/near-live updates) ---
+//
+// These use a raw `TcpStream` (via `connect_sse`/`read_sse_until` in
+// `// --- Utilities ---` below) rather than `ureq`, since the response
+// never completes — it's a long-lived `text/event-stream` connection — and
+// `ureq` isn't built for reading an indefinitely-open body. The tests don't
+// bother decoding `Transfer-Encoding: chunked` framing: they just search
+// the raw accumulated bytes for the expected SSE substrings, which is safe
+// because the small hex chunk-size prefixes `write_sse_frame` inserts never
+// collide with those substrings.
+//
+// Every test in this group starts its own `notify`-backed filesystem
+// watcher (via `start_server`/`spawn_change_watcher`). On the FSEvents
+// backend (macOS), `notify::Watcher::watch`/`unwatch` tear down and rebuild
+// the *entire* underlying event stream on every call (confirmed in `notify`
+// 7.0's `watch_inner`: it unconditionally calls `self.stop()` before
+// reconfiguring) — several of these restarting at once under `cargo test`'s
+// default thread parallelism was observed to intermittently delay or drop
+// events past even a generous wait budget, made worse by every `start_server`
+// call in this file leaving its background threads running for the rest of
+// the test binary's process (see `web_serve_and_query_root`'s comment).
+// `sse_test_lock` below serializes just this group of tests against each
+// other — not the rest of the suite, which doesn't touch the filesystem
+// watcher at all — so they stay reliable under `make test`'s default
+// parallel `cargo test` run without slowing everything else down.
+static SSE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Acquires [`SSE_TEST_LOCK`] for the calling test's scope, recovering from
+/// poisoning (a prior `sse_*` test panicking while holding it) rather than
+/// cascading that failure into every test after it.
+fn sse_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    SSE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Connecting and immediately mutating the registered repo delivers a
+/// `repo-changed` event carrying that repo's id — the core "live" path.
+#[test]
+fn sse_delivers_repo_changed_on_story_mutation() {
+    let _sse_guard = sse_test_lock();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let mut sse = connect_sse(port);
+    story(dir.path())
+        .args(["new", "Live update smoke test"])
+        .assert()
+        .success();
+
+    let received = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    assert!(
+        received.contains("event: repo-changed"),
+        "expected a repo-changed event, got: {received}"
+    );
+    assert!(
+        received.contains(&format!("\"repo_id\":\"{repo_id}\"")),
+        "expected the changed repo's id `{repo_id}` in the event payload, got: {received}"
+    );
+}
+
+/// Several mutations fired back-to-back collapse into fewer published
+/// events than mutations performed, proving the watcher's per-repo 200ms
+/// debounce window is actually coalescing rather than publishing once per
+/// underlying filesystem event.
+#[test]
+fn sse_coalesces_rapid_mutations_within_debounce_window() {
+    let _sse_guard = sse_test_lock();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    story(dir.path())
+        .args(["new", "Debounce target"])
+        .assert()
+        .success();
+
+    let mut sse = connect_sse(port);
+    const MUTATIONS: usize = 6;
+    // Mutate via `app::run` directly (in-process) rather than spawning
+    // `story` subprocesses: subprocess spawn latency is too variable under
+    // the CPU load this whole suite generates to reliably land all of them
+    // inside the 200ms debounce window, which would make this assertion
+    // flaky for reasons that have nothing to do with the debounce logic
+    // under test. A tight in-process loop does.
+    for _ in 0..MUTATIONS {
+        storyhook::app::run(
+            dir.path(),
+            storyhook::cli::CliOptions {
+                json: true,
+                quiet: true,
+                no_hooks: false,
+                invocation: storyhook::cli::Invocation::Comment {
+                    id: "SH-1".to_string(),
+                    text: "rapid update".to_string(),
+                },
+            },
+        )
+        .expect("comment mutation must succeed");
+    }
+
+    // Give the debounce window (200ms) and one more publish cycle to settle,
+    // then count how many `repo-changed` events actually arrived. Adaptive
+    // rather than a fixed sleep, since this whole suite can run with other
+    // test binaries hammering the CPU in parallel under `cargo test`'s
+    // default concurrency.
+    let received =
+        read_sse_until_quiet(&mut sse, Duration::from_millis(500), Duration::from_secs(8));
+    let occurrences = received.matches("event: repo-changed").count();
+    assert!(
+        occurrences >= 1,
+        "expected at least one repo-changed event, got none: {received}"
+    );
+    assert!(
+        occurrences < MUTATIONS,
+        "expected debouncing to coalesce {MUTATIONS} rapid mutations into fewer than \
+         {MUTATIONS} events, got {occurrences}: {received}"
+    );
+}
+
+/// Dropping an SSE connection must not wedge the broadcaster or the server:
+/// a second connection, opened after the first is gone, still receives
+/// live events, and the registry/data endpoints keep responding normally.
+#[test]
+fn sse_disconnect_does_not_break_server_for_other_clients() {
+    let _sse_guard = sse_test_lock();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    {
+        let _first = connect_sse(port); // subscribes, then drops at end of this block
+    }
+    // Give the dropped connection's writer thread a moment to notice the
+    // closed socket and unsubscribe.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // The server must still serve ordinary requests fine.
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // And a fresh SSE subscriber must still receive live events.
+    let mut second = connect_sse(port);
+    story(dir.path())
+        .args(["new", "After disconnect"])
+        .assert()
+        .success();
+    let received = read_sse_until(&mut second, "event: repo-changed", Duration::from_secs(8));
+    assert!(
+        received.contains("event: repo-changed"),
+        "expected the second connection to still receive live events, got: {received}"
+    );
+}
+
+/// Registering a repo *after* the server (and an SSE client) has already
+/// started is itself detected (`repos-changed`), and the newly-registered
+/// repo is watched from then on (its own `repo-changed` on mutation) —
+/// without restarting the dashboard.
+#[test]
+fn sse_detects_runtime_repo_registration_and_watches_it() {
+    let _sse_guard = sse_test_lock();
+    let dir_a = tempdir().unwrap();
+    story(dir_a.path()).arg("init").assert().success();
+    let (_registry_dir, registry_path, _repo_a_id) = register_repo(dir_a.path());
+    let port = pick_port();
+    {
+        let registry_path = registry_path.clone();
+        std::thread::spawn(move || {
+            storyhook::web::start_server(&registry_path, port).ok();
+        });
+    }
+    wait_for_server(port);
+
+    let mut sse = connect_sse(port);
+
+    let dir_b = tempdir().unwrap();
+    story(dir_b.path()).arg("init").assert().success();
+    let repo_b = storyhook::registry::with_lock_at(&registry_path, |r| {
+        r.register(dir_b.path(), Some("repo-b"))
+    })
+    .expect("registering repo B at runtime must succeed");
+
+    let after_register = read_sse_until(&mut sse, "event: repos-changed", Duration::from_secs(8));
+    assert!(
+        after_register.contains("event: repos-changed"),
+        "expected repos-changed after a runtime registration, got: {after_register}"
+    );
+
+    // `ReposChanged` is only published by `run_change_watcher`'s control
+    // loop *after* `rescan_watched_repos` returns (see its comment), so
+    // seeing the event here is itself proof repo B's directory is already
+    // being watched — no settle delay needed before mutating it.
+    story(dir_b.path())
+        .args(["new", "In the newly-registered repo"])
+        .assert()
+        .success();
+    let after_mutation = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    assert!(
+        after_mutation.contains(&format!("\"repo_id\":\"{}\"", repo_b.id)),
+        "expected a repo-changed event for the newly-registered repo `{}`, got: {after_mutation}",
+        repo_b.id
+    );
+}
+
+/// A registered repo whose directory vanishes from disk (moved, deleted)
+/// *after* it was already being watched must not prevent the watcher from
+/// continuing to serve every other registered repo. This deliberately
+/// disrupts an already-established watch (the realistic "a user deleted a
+/// registered repo's folder" scenario) rather than racing the watcher's own
+/// startup scan with the deletion — the FSEvents backend rebuilds its whole
+/// stream on every `watch`/`unwatch` call (see `run_change_watcher`'s
+/// deadlock-avoidance comment), so which of two repos gets watched first
+/// during that scan is unspecified (`HashMap` iteration order), and
+/// deleting one concurrently with it would make this test's own setup
+/// racy rather than proving anything about `rescan_watched_repos`.
+#[test]
+fn sse_one_unreachable_repo_does_not_break_stream_for_others() {
+    let _sse_guard = sse_test_lock();
+    let dir_broken = tempdir().unwrap();
+    story(dir_broken.path()).arg("init").assert().success();
+    let (_registry_dir, registry_path, broken_id) = register_repo(dir_broken.path());
+
+    let dir_healthy = tempdir().unwrap();
+    story(dir_healthy.path()).arg("init").assert().success();
+    let healthy = storyhook::registry::with_lock_at(&registry_path, |r| {
+        r.register(dir_healthy.path(), Some("healthy"))
+    })
+    .expect("registering the healthy repo must succeed");
+
+    let port = pick_port();
+    {
+        let registry_path = registry_path.clone();
+        std::thread::spawn(move || {
+            storyhook::web::start_server(&registry_path, port).ok();
+        });
+    }
+    wait_for_server(port);
+
+    let mut sse = connect_sse(port);
+
+    // Baseline: confirm the about-to-break repo is actually being watched
+    // before disrupting anything.
+    story(dir_broken.path())
+        .args(["new", "before break"])
+        .assert()
+        .success();
+    let baseline = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    assert!(
+        baseline.contains(&format!("\"repo_id\":\"{broken_id}\"")),
+        "expected the soon-to-be-broken repo's watch to be live first, got: {baseline}"
+    );
+
+    // Now its directory vanishes out from under that already-established
+    // watch.
+    std::fs::remove_dir_all(dir_broken.path()).unwrap();
+
+    story(dir_healthy.path())
+        .args(["new", "Still alive"])
+        .assert()
+        .success();
+
+    let received = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    assert!(
+        received.contains(&format!("\"repo_id\":\"{}\"", healthy.id)),
+        "expected the healthy repo's change to still arrive despite the broken repo, got: {received}"
+    );
+}
+
+/// A heartbeat `: ping` comment arrives even with no story changes at all,
+/// so a client can tell "connected and idle" apart from "silently dead".
+/// Runs the server as the real daemon subprocess (`web start`) rather than
+/// in-thread, so `STORYHOOK_SSE_HEARTBEAT_MS` — process-wide env state —
+/// is scoped to that child process instead of leaking into this test
+/// binary's own environment, where it could affect other tests running
+/// concurrently in the same `cargo test` process.
+#[test]
+fn sse_heartbeat_ping_arrives_without_any_story_changes() {
+    let _sse_guard = sse_test_lock();
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let port = pick_port();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .env("STORYHOOK_SSE_HEARTBEAT_MS", "300")
+        .args(["web", "start", "--port", &port.to_string()])
+        .assert()
+        .success();
+    wait_for_server(port);
+
+    let mut sse = connect_sse(port);
+    let received = read_sse_until(&mut sse, ": ping", Duration::from_secs(8));
+    assert!(
+        received.contains(": ping"),
+        "expected a heartbeat ping, got: {received}"
+    );
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
+/// Holding an SSE connection open must not stall the accept loop: an
+/// ordinary request made while the connection is live still returns
+/// promptly, proving the `GET /api/events` handoff to its own thread (see
+/// `accept_loop`) actually frees the loop rather than blocking it.
+#[test]
+fn sse_connection_does_not_block_other_requests() {
+    let _sse_guard = sse_test_lock();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let _sse = connect_sse(port); // held open for the rest of the test
+
+    let start = Instant::now();
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    // A blocked accept loop would hang for as long as the SSE connection
+    // stays open (i.e. indefinitely, since this test never closes it) —
+    // this threshold only needs to rule that out, not assert sub-second
+    // latency, so it's generous enough to tolerate CPU contention from the
+    // rest of this suite running in parallel.
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "a normal request took {:?} while an SSE connection was open — the accept loop \
+         may be blocked on it",
+        start.elapsed()
+    );
+}
+
 // --- Utilities ---
 
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -2758,14 +3121,137 @@ fn pick_port() -> u16 {
 }
 
 fn wait_for_server(port: u16) {
+    wait_for_addr(&format!("127.0.0.1:{port}"));
+}
+
+/// Like [`wait_for_server`], but against an arbitrary `host:port` — for the
+/// tailnet listener, which `start_server` no longer starts *serving* until
+/// its filesystem watcher's one-time setup finishes (see `web.rs`'s
+/// `watcher_ready_rx` handshake), so a fixed sleep after `wait_for_server`
+/// (loopback-only) isn't a reliable proxy for "the tailnet listener is
+/// accepting requests too" under load.
+fn wait_for_addr(addr: &str) {
     let start = Instant::now();
     loop {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+        if std::net::TcpStream::connect(addr).is_ok() {
             return;
         }
         if start.elapsed() > Duration::from_secs(5) {
-            panic!("Server on port {port} did not start within 5 seconds");
+            panic!("{addr} did not start accepting connections within 5 seconds");
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Opens a raw `GET /api/events` connection and reads past the response
+/// head (status line + headers, through the blank line that terminates
+/// them), leaving the returned `BufReader` positioned at the start of the
+/// SSE body. A short per-read socket timeout (rather than one long one)
+/// lets `read_sse_until`/`read_sse_until_quiet` poll their own wall-clock
+/// deadline instead of blocking on a single slow `read`.
+fn connect_sse(port: u16) -> std::io::BufReader<std::net::TcpStream> {
+    use std::io::{BufRead, BufReader, Write};
+
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+        .expect("connecting to /api/events");
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    write!(
+        stream,
+        "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"
+    )
+    .expect("writing the SSE request line");
+
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut line = String::new();
+        // A per-read timeout surfaces as an `Err`, not an `Ok(0)`, so retry
+        // on timeout rather than treating it as a closed connection.
+        match reader.read_line(&mut line) {
+            Ok(0) => panic!("connection closed while reading the SSE response head"),
+            Ok(_) if line == "\r\n" => break,
+            Ok(_) => {}
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => panic!("reading the SSE response head: {e}"),
+        }
+    }
+    reader
+}
+
+/// Reads from an SSE connection (opened by [`connect_sse`]) until `needle`
+/// appears in the accumulated bytes, or `timeout` elapses — whichever
+/// happens first — returning everything read so far (lossily decoded, since
+/// the raw bytes include `Transfer-Encoding: chunked` framing this suite
+/// doesn't bother stripping).
+fn read_sse_until(
+    reader: &mut std::io::BufReader<std::net::TcpStream>,
+    needle: &str,
+    timeout: Duration,
+) -> String {
+    use std::io::Read;
+
+    let start = Instant::now();
+    let mut acc = Vec::new();
+    let mut buf = [0u8; 4096];
+    while start.elapsed() < timeout {
+        match reader.read(&mut buf) {
+            Ok(0) => break, // connection closed
+            Ok(n) => {
+                acc.extend_from_slice(&buf[..n]);
+                if String::from_utf8_lossy(&acc).contains(needle) {
+                    break;
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => panic!("reading the SSE stream: {e}"),
+        }
+    }
+    String::from_utf8_lossy(&acc).into_owned()
+}
+
+/// Reads from an SSE connection until `quiet_for` elapses with no new bytes
+/// arriving, or `overall_timeout` elapses — whichever comes first. Used
+/// where the assertion is about *how many* events arrived (e.g. debounce
+/// coalescing) rather than whether one particular event did, so there's no
+/// single needle to watch for. Adaptive rather than a fixed sleep: under
+/// system load, scheduling the watcher/heartbeat/writer threads involved
+/// can be slow, so this waits up to `overall_timeout` for the *first* byte,
+/// then only `quiet_for` past whatever activity actually happens — fast in
+/// the common case, tolerant in a contended one.
+fn read_sse_until_quiet(
+    reader: &mut std::io::BufReader<std::net::TcpStream>,
+    quiet_for: Duration,
+    overall_timeout: Duration,
+) -> String {
+    use std::io::Read;
+
+    let start = Instant::now();
+    let mut last_activity: Option<Instant> = None;
+    let mut acc = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        if start.elapsed() > overall_timeout {
+            break;
+        }
+        if last_activity.is_some_and(|t| t.elapsed() > quiet_for) {
+            break;
+        }
+        match reader.read(&mut buf) {
+            Ok(0) => break, // connection closed
+            Ok(n) => {
+                acc.extend_from_slice(&buf[..n]);
+                last_activity = Some(Instant::now());
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => panic!("reading the SSE stream: {e}"),
+        }
+    }
+    String::from_utf8_lossy(&acc).into_owned()
 }
