@@ -4,3 +4,6 @@
 
 # .storyhook/ is version-controlled project data — do not ignore
 .worktrees
+
+# issue per-issue git worktrees (ephemeral — never commit)
+.claude/worktrees/
