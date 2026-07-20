@@ -722,7 +722,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   function buildFilterDropdown(key, options) {
     var container = $(FILTER_DROPDOWNS[key].container);
-    var fingerprint = options.map(function(o) { return o.value; }).join(" ");
+    var fingerprint = options.map(function(o) { return o.value; }).join(" ");
     if (container.dataset.fingerprint === fingerprint) { syncFilterDropdownLabel(key); return; }
     container.dataset.fingerprint = fingerprint;
     clear(container);
