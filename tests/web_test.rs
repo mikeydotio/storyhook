@@ -228,6 +228,12 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // Create-story modal
     assert!(body.contains(r#"id="create-modal""#));
     assert!(body.contains(r#"id="create-title""#));
+    // Multi-repo screens (#20): repo selector, home dashboard, settings
+    assert!(body.contains(r#"id="repo-select""#));
+    assert!(body.contains(r#"id="home-view""#));
+    assert!(body.contains(r#"id="settings-view""#));
+    assert!(body.contains(r#"id="home-btn""#));
+    assert!(body.contains(r#"id="settings-btn""#));
     // Mutation API call sites carry the CSRF guard header
     assert!(body.contains("X-Storyhook"));
 }

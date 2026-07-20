@@ -1,5 +1,6 @@
 /target
 .DS_Store
+.playwright-mcp/
 
 # .storyhook/ is version-controlled project data — do not ignore
 .worktrees
