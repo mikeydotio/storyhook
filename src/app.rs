@@ -2073,15 +2073,33 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         },
         Invocation::Web { action } => match action {
             WebAction::Start { port } => {
-                let msg = crate::web::handle_start(root, port)?;
+                let msg = crate::web::handle_start(port)?;
                 Ok(Response::Message(msg))
             }
             WebAction::Stop => {
-                let msg = crate::web::handle_stop(root)?;
+                let msg = crate::web::handle_stop()?;
                 Ok(Response::Message(msg))
             }
             WebAction::Status => {
-                let msg = crate::web::handle_status(root)?;
+                let msg = crate::web::handle_status()?;
+                Ok(Response::Message(msg))
+            }
+            // A relative `path` resolves against this process's actual
+            // working directory (same as any other relative CLI path
+            // argument) via `Path::canonicalize` inside `Registry::register`
+            // — `root` itself is exactly that directory, so no manual join
+            // against it is needed here.
+            WebAction::Register { path, name } => {
+                let msg = crate::web::handle_register(&path, name.as_deref())?;
+                Ok(Response::Message(msg))
+            }
+            // Registry-only: works from anywhere, not just inside a project.
+            WebAction::Deregister { target } => {
+                let msg = crate::web::handle_deregister(&target)?;
+                Ok(Response::Message(msg))
+            }
+            WebAction::List => {
+                let msg = crate::web::handle_list()?;
                 Ok(Response::Message(msg))
             }
             WebAction::Serve { .. } => {
