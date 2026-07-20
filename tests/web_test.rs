@@ -8,6 +8,21 @@ fn story(dir: &std::path::Path) -> Command {
     cmd
 }
 
+/// Registers `dir` (a fresh, already-`story init`-ed project directory) in a
+/// brand-new temp registry file, returning the registry's own `TempDir`
+/// guard (bind this to a local for the rest of the test, exactly the way
+/// `dir` itself is held, so the file isn't deleted before the server reads
+/// it), the registry's path (pass to `start_server`), and the id
+/// `Registry::register` minted for `dir` (use to build `/api/repos/<id>/...`
+/// URLs).
+fn register_repo(dir: &std::path::Path) -> (tempfile::TempDir, std::path::PathBuf, String) {
+    let registry_dir = tempdir().unwrap();
+    let registry_path = registry_dir.path().join("registry.toml");
+    let repo = storyhook::registry::with_lock_at(&registry_path, |r| r.register(dir, None))
+        .expect("registering the test repo must succeed");
+    (registry_dir, registry_path, repo.id)
+}
+
 // --- CLI parsing tests ---
 
 #[test]
@@ -71,13 +86,19 @@ fn web_start_port_missing_value() {
 }
 
 // --- Status tests ---
+//
+// `web status`/`web stop` are now registry-scoped (one global daemon, not
+// one per repo), so they read `~/.storyhook/web.pid` — isolate `$HOME` to a
+// temp dir so these never touch the developer's real dashboard state.
 
 #[test]
 fn web_status_not_running() {
     let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
     story(dir.path())
+        .env("HOME", home.path())
         .args(["web", "status"])
         .assert()
         .success()
@@ -87,23 +108,43 @@ fn web_status_not_running() {
 #[test]
 fn web_stop_when_not_running() {
     let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
     story(dir.path())
+        .env("HOME", home.path())
         .args(["web", "stop"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Web UI is not running"));
 }
 
+/// `story web start` now launches the single *global* dashboard daemon — it
+/// no longer requires being run from inside a storyhook project (repos are
+/// added afterwards via `story web register`). `$HOME` is isolated so the
+/// real background process this test spawns (and its pid/lock/log files)
+/// never touches the developer's actual `~/.storyhook/`; `web stop` at the
+/// end cleans it up so the test doesn't leak a bound port.
 #[test]
-fn web_start_requires_project() {
-    let dir = tempdir().unwrap();
+fn web_start_succeeds_outside_a_project() {
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap(); // deliberately NOT a storyhook project
+    let port = pick_port();
+
     story(dir.path())
-        .args(["web", "start"])
+        .env("HOME", home.path())
+        .args(["web", "start", "--port", &port.to_string()])
         .assert()
-        .failure()
-        .stdout(predicate::str::contains("not initialized"));
+        .success()
+        .stdout(predicate::str::contains("Web UI started"));
+
+    wait_for_server(port);
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
 }
 
 // --- Server integration tests ---
@@ -114,10 +155,10 @@ fn web_serve_and_query_root() {
     story(dir.path()).arg("init").assert().success();
 
     // Start server in foreground in a thread
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
     let port = pick_port();
     let handle = std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
 
     // Wait for server to start
@@ -151,10 +192,10 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
@@ -169,6 +210,13 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert_eq!(body.matches("<script>").count(), 1);
     assert!(!body.contains("<link"), "no external stylesheet links");
     assert!(!body.contains("cdn."), "no CDN references");
+    // Regression guard: web_dashboard.html once had a stray raw NUL byte
+    // (a `.join("\0")` where a space belonged), which made the file look
+    // binary to naive tooling and shipped a NUL into the served page.
+    assert!(
+        !body.contains('\0'),
+        "served dashboard HTML must never contain a raw NUL byte"
+    );
 
     // Board + List + view toggle
     assert!(body.contains(r#"id="board-view""#));
@@ -180,6 +228,12 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // Create-story modal
     assert!(body.contains(r#"id="create-modal""#));
     assert!(body.contains(r#"id="create-title""#));
+    // Multi-repo screens (#20): repo selector, home dashboard, settings
+    assert!(body.contains(r#"id="repo-select""#));
+    assert!(body.contains(r#"id="home-view""#));
+    assert!(body.contains(r#"id="settings-view""#));
+    assert!(body.contains(r#"id="home-btn""#));
+    assert!(body.contains(r#"id="settings-btn""#));
     // Mutation API call sites carry the CSRF guard header
     assert!(body.contains("X-Storyhook"));
 }
@@ -189,14 +243,14 @@ fn web_serve_api_data_empty_project() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -230,14 +284,14 @@ fn web_serve_api_data_with_stories() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
@@ -260,10 +314,10 @@ fn web_serve_404_unknown_route() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
@@ -356,14 +410,14 @@ fn web_serve_post_returns_405() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let err = ureq::post(&format!("http://127.0.0.1:{port}/api/data"))
+    let err = ureq::post(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .send(&[] as &[u8])
         .unwrap_err();
     let status = match err {
@@ -384,14 +438,14 @@ fn web_serve_api_data_special_chars_in_title() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
@@ -414,14 +468,14 @@ fn web_serve_api_data_unicode_title() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
@@ -439,10 +493,10 @@ fn web_serve_root_has_no_cache_header() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
@@ -464,14 +518,14 @@ fn web_serve_api_data_has_no_cache_header() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let cc = resp
@@ -500,14 +554,14 @@ fn web_serve_api_json_structure_matches_dashboard() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
@@ -582,14 +636,14 @@ fn web_serve_api_data_meta_states_are_ordered() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
@@ -629,14 +683,14 @@ fn web_serve_api_data_meta_has_types_priorities_relations_members() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
@@ -684,14 +738,14 @@ fn web_serve_api_data_meta_includes_members() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
@@ -706,7 +760,7 @@ fn web_serve_api_data_meta_includes_members() {
     assert!(member_ids.contains(&"alice"));
 }
 
-// --- GET /api/story/{id} ---
+// --- GET /api/repos/{id}/story/{sid} ---
 
 #[test]
 fn web_serve_get_story_by_id() {
@@ -717,16 +771,18 @@ fn web_serve_get_story_by_id() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/story/SH-1"))
-        .call()
-        .unwrap();
+    let resp = ureq::get(&format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+    ))
+    .call()
+    .unwrap();
     assert_eq!(resp.status(), 200);
     let ct = resp
         .headers()
@@ -750,16 +806,18 @@ fn web_serve_get_story_by_id_unknown_returns_404() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let err = ureq::get(&format!("http://127.0.0.1:{port}/api/story/SH-999"))
-        .call()
-        .unwrap_err();
+    let err = ureq::get(&format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999"
+    ))
+    .call()
+    .unwrap_err();
     let status = match err {
         ureq::Error::StatusCode(code) => code,
         other => panic!("expected status code error, got: {other}"),
@@ -774,21 +832,23 @@ fn web_serve_error_reply_has_security_headers() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     // Disable ureq's default "non-2xx is an Err" behavior so we can inspect
     // the 404 response's headers and body directly.
-    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-999"))
-        .config()
-        .http_status_as_error(false)
-        .build()
-        .call()
-        .unwrap();
+    let resp = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999"
+    ))
+    .config()
+    .http_status_as_error(false)
+    .build()
+    .call()
+    .unwrap();
     assert_eq!(resp.status(), 404);
     for header in [
         "X-Content-Type-Options",
@@ -807,19 +867,21 @@ fn web_serve_error_reply_uses_standard_envelope() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-999"))
-        .config()
-        .http_status_as_error(false)
-        .build()
-        .call()
-        .unwrap();
+    let resp = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999"
+    ))
+    .config()
+    .http_status_as_error(false)
+    .build()
+    .call()
+    .unwrap();
     assert_eq!(resp.status(), 404);
     let body = resp.into_body().read_to_string().unwrap();
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -880,15 +942,15 @@ fn web_create_story_returns_201_and_story() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
         r#"{"title":"New via web","type":"bug"}"#,
     )
     .unwrap();
@@ -898,8 +960,8 @@ fn web_create_story_returns_201_and_story() {
     assert_eq!(story_field(&json, "id"), "SH-1");
     assert_eq!(story_field(&json, "title"), "New via web");
 
-    // Shows up in /api/data.
-    let data = ureq::get(format!("http://127.0.0.1:{port}/api/data"))
+    // Shows up in /api/repos/{id}/data.
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let data_json: serde_json::Value =
@@ -912,14 +974,18 @@ fn web_create_story_missing_title_is_400() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let err = post_json(&format!("http://127.0.0.1:{port}/api/story"), r#"{}"#).unwrap_err();
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{}"#,
+    )
+    .unwrap_err();
     assert_eq!(status_of(err), 400);
 }
 
@@ -934,15 +1000,15 @@ fn web_move_story_changes_state() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
         r#"{"state":"in-progress"}"#,
     )
     .unwrap();
@@ -961,21 +1027,21 @@ fn web_move_story_to_closed_state_archives() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
         r#"{"state":"done"}"#,
     )
     .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let data = ureq::get(format!("http://127.0.0.1:{port}/api/data"))
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let data_json: serde_json::Value =
@@ -995,15 +1061,15 @@ fn web_move_story_invalid_state_is_422() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let err = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
         r#"{"state":"nonexistent"}"#,
     )
     .unwrap_err();
@@ -1015,15 +1081,15 @@ fn web_move_unknown_story_is_404() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let err = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-999/move"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999/move"),
         r#"{"state":"in-progress"}"#,
     )
     .unwrap_err();
@@ -1038,15 +1104,15 @@ fn web_comment_story_appends_comment() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/comment"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/comment"),
         r#"{"text":"hello from web"}"#,
     )
     .unwrap();
@@ -1063,15 +1129,15 @@ fn web_priority_story_sets_priority() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/priority"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/priority"),
         r#"{"priority":"critical"}"#,
     )
     .unwrap();
@@ -1091,15 +1157,15 @@ fn web_assign_story_to_valid_member_succeeds() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/assign"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/assign"),
         r#"{"member":"alice"}"#,
     )
     .unwrap();
@@ -1115,10 +1181,10 @@ fn web_assign_story_to_missing_member_is_404() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
@@ -1126,7 +1192,7 @@ fn web_assign_story_to_missing_member_is_404() {
     // an unknown member id, matching `story assign <id> <unknown-member>`
     // on the CLI (exit code 3, not 2).
     let err = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/assign"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/assign"),
         r#"{"member":"nobody"}"#,
     )
     .unwrap_err();
@@ -1139,15 +1205,15 @@ fn web_labels_add_and_remove() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/labels"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/labels"),
         r#"{"add":["backend","urgent"]}"#,
     )
     .unwrap();
@@ -1163,7 +1229,7 @@ fn web_labels_add_and_remove() {
     assert!(labels.contains(&"urgent"));
 
     let resp2 = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/labels"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/labels"),
         r#"{"remove":["urgent"]}"#,
     )
     .unwrap();
@@ -1185,15 +1251,15 @@ fn web_labels_empty_body_is_400() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let err = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/labels"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/labels"),
         r#"{}"#,
     )
     .unwrap_err();
@@ -1206,15 +1272,15 @@ fn web_block_and_unblock_story() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/block"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/block"),
         r#"{"reason":"waiting on design"}"#,
     )
     .unwrap();
@@ -1223,7 +1289,7 @@ fn web_block_and_unblock_story() {
     assert_eq!(story_field(&json, "awaiting"), "waiting on design");
 
     let resp2 = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/unblock"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/unblock"),
         "",
     )
     .unwrap();
@@ -1242,15 +1308,15 @@ fn web_reopen_archived_story() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
         "",
     )
     .unwrap();
@@ -1276,23 +1342,25 @@ fn web_reopen_deleted_story_without_force_is_422() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let err = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
         "",
     )
     .unwrap_err();
     assert_eq!(status_of(err), 422);
 
-    let show = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-1"))
-        .call()
-        .unwrap();
+    let show = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+    ))
+    .call()
+    .unwrap();
     let show_json: serde_json::Value =
         serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
     assert_eq!(story_field(&show_json, "superstate"), "CLOSED");
@@ -1311,15 +1379,15 @@ fn web_reopen_deleted_story_with_force_undeletes() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
         r#"{"force":true}"#,
     )
     .unwrap();
@@ -1340,19 +1408,62 @@ fn web_reopen_malformed_json_is_400() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let err = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
         "not json",
     )
     .unwrap_err();
     assert_eq!(status_of(err), 400);
+}
+
+/// Regression test for a defect where `route_reopen_story` constructed
+/// `Invocation::Reopen` without the `force` field `story reopen --force`
+/// added on the CLI side, which failed to compile at all. The fix passes
+/// `force: false`, so this route must keep behaving like an un-forced CLI
+/// `story reopen`: reopening a *soft-deleted* story is rejected with a clear
+/// error rather than silently undeleting it (see `app.rs`'s `Invocation::
+/// Reopen` handler) — and, since the server has no TTY to prompt at, this
+/// must fail cleanly rather than hang waiting on stdin confirmation.
+#[test]
+fn web_reopen_soft_deleted_story_is_rejected_without_force() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let del = delete_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
+        r#"{"reason":"duplicate"}"#,
+    )
+    .unwrap();
+    assert_eq!(del.status(), 200);
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
+        "",
+    )
+    .unwrap_err();
+    let status = match err {
+        ureq::Error::StatusCode(code) => code,
+        other => panic!("expected status code error, got: {other}"),
+    };
+    assert_eq!(
+        status, 422,
+        "soft-deleted reopen must be rejected, not silently undeleted or hung"
+    );
 }
 
 // --- Mutation API: PATCH multi-field ---
@@ -1363,15 +1474,15 @@ fn web_patch_story_updates_multiple_fields() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = patch_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
         r#"{"title":"Retitled","priority":"high"}"#,
     )
     .unwrap();
@@ -1388,14 +1499,18 @@ fn web_patch_story_no_fields_is_400() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let err = patch_json(&format!("http://127.0.0.1:{port}/api/story/SH-1"), r#"{}"#).unwrap_err();
+    let err = patch_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
+        r#"{}"#,
+    )
+    .unwrap_err();
     assert_eq!(status_of(err), 400);
 }
 
@@ -1408,15 +1523,15 @@ fn web_relate_and_unrelate_stories() {
     story(dir.path()).args(["new", "A"]).assert().success();
     story(dir.path()).args(["new", "B"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/relate"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/relate"),
         r#"{"a":"SH-1","relation":"blocks","b":"SH-2"}"#,
     )
     .unwrap();
@@ -1431,7 +1546,7 @@ fn web_relate_and_unrelate_stories() {
     );
 
     let resp2 = post_json(
-        &format!("http://127.0.0.1:{port}/api/unrelate"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/unrelate"),
         r#"{"a":"SH-1","relation":"blocks","b":"SH-2"}"#,
     )
     .unwrap();
@@ -1454,15 +1569,15 @@ fn web_delete_story_soft_deletes_it() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = delete_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
         r#"{"reason":"duplicate"}"#,
     )
     .unwrap();
@@ -1475,9 +1590,11 @@ fn web_delete_story_soft_deletes_it() {
     // `story delete` is a soft delete (see cli_grammar.rs::delete_soft_deletes):
     // the story is archived with a "[deleted] <reason>" comment rather than
     // erased, so it remains fetchable for audit purposes.
-    let show = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-1"))
-        .call()
-        .unwrap();
+    let show = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+    ))
+    .call()
+    .unwrap();
     let show_json: serde_json::Value =
         serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
     let comments = show_json["story"]["story"]["comments"].as_array().unwrap();
@@ -1494,14 +1611,18 @@ fn web_delete_story_without_reason_is_400() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let err = delete_json(&format!("http://127.0.0.1:{port}/api/story/SH-1"), r#"{}"#).unwrap_err();
+    let err = delete_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
+        r#"{}"#,
+    )
+    .unwrap_err();
     assert_eq!(status_of(err), 400);
 }
 
@@ -1513,15 +1634,15 @@ fn web_move_story_malformed_json_is_400() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let err = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
         "not json",
     )
     .unwrap_err();
@@ -1536,22 +1657,22 @@ fn web_mutation_without_guard_header_is_403() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let err = post_json_unguarded(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/move"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
         r#"{"state":"in-progress"}"#,
     )
     .unwrap_err();
     assert_eq!(status_of(err), 403);
 
     // The story must not have moved.
-    let data = ureq::get(format!("http://127.0.0.1:{port}/api/data"))
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let data_json: serde_json::Value =
@@ -1565,19 +1686,21 @@ fn web_mutation_with_spoofed_host_is_403() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let err = ureq::post(format!("http://127.0.0.1:{port}/api/story/SH-1/move"))
-        .header("X-Storyhook", "1")
-        .header("Host", "evil.example")
-        .content_type("application/json")
-        .send(r#"{"state":"in-progress"}"#)
-        .unwrap_err();
+    let err = ureq::post(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
+    ))
+    .header("X-Storyhook", "1")
+    .header("Host", "evil.example")
+    .content_type("application/json")
+    .send(r#"{"state":"in-progress"}"#)
+    .unwrap_err();
     assert_eq!(status_of(err), 403);
 }
 
@@ -1587,18 +1710,20 @@ fn web_mutation_wrong_content_type_is_415() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let err = ureq::post(format!("http://127.0.0.1:{port}/api/story/SH-1/move"))
-        .header("X-Storyhook", "1")
-        .content_type("text/plain")
-        .send(r#"{"state":"in-progress"}"#)
-        .unwrap_err();
+    let err = ureq::post(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
+    ))
+    .header("X-Storyhook", "1")
+    .content_type("text/plain")
+    .send(r#"{"state":"in-progress"}"#)
+    .unwrap_err();
     assert_eq!(status_of(err), 415);
 }
 
@@ -1608,18 +1733,20 @@ fn web_put_on_story_path_is_405() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let err = ureq::put(format!("http://127.0.0.1:{port}/api/story/SH-1"))
-        .header("X-Storyhook", "1")
-        .content_type("application/json")
-        .send(r#"{"title":"x"}"#)
-        .unwrap_err();
+    let err = ureq::put(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+    ))
+    .header("X-Storyhook", "1")
+    .content_type("application/json")
+    .send(r#"{"title":"x"}"#)
+    .unwrap_err();
     assert_eq!(status_of(err), 405);
 }
 
@@ -1631,15 +1758,15 @@ fn web_mutation_success_has_security_headers() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/priority"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/priority"),
         r#"{"priority":"low"}"#,
     )
     .unwrap();
@@ -1661,20 +1788,22 @@ fn web_mutation_guard_reject_has_security_headers() {
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::post(format!("http://127.0.0.1:{port}/api/story/SH-1/priority"))
-        .content_type("application/json")
-        .config()
-        .http_status_as_error(false)
-        .build()
-        .send(r#"{"priority":"low"}"#)
-        .unwrap();
+    let resp = ureq::post(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/priority"
+    ))
+    .content_type("application/json")
+    .config()
+    .http_status_as_error(false)
+    .build()
+    .send(r#"{"priority":"low"}"#)
+    .unwrap();
     assert_eq!(resp.status(), 403);
     for header in [
         "X-Content-Type-Options",
@@ -1686,6 +1815,340 @@ fn web_mutation_guard_reject_has_security_headers() {
             "missing security header: {header}"
         );
     }
+}
+
+// --- Registry API: GET/POST /api/repos, DELETE /api/repos/<id> ---
+
+#[test]
+fn web_serve_repos_list_reports_available_repo_with_summary() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let repos = json.as_array().unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0]["id"], repo_id);
+    assert_eq!(repos[0]["available"], true);
+    assert_eq!(repos[0]["summary"]["total_open"], 1);
+}
+
+/// A repo that was registered but whose `.storyhook/` later vanished (moved,
+/// deleted) must be reported as `available: false` with an `error`, never
+/// take down the whole `/api/repos` response for every other repo.
+#[test]
+fn web_serve_repos_list_reports_unavailable_repo_without_failing() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    std::fs::remove_dir_all(dir.path().join(".storyhook")).unwrap();
+
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "one broken repo must not fail the whole list"
+    );
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let repos = json.as_array().unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0]["id"], repo_id);
+    assert_eq!(repos[0]["available"], false);
+    assert!(repos[0]["error"].is_string());
+}
+
+#[test]
+fn web_serve_unknown_repo_id_is_404() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/nonexistent-id/data"
+    ))
+    .call()
+    .unwrap_err();
+    assert_eq!(status_of(err), 404);
+}
+
+#[test]
+fn web_register_repo_via_api() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let registry_dir = tempdir().unwrap();
+    let registry_path = registry_dir.path().join("registry.toml");
+    let port = pick_port();
+    let registry_path_for_server = registry_path.clone();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path_for_server, port).ok();
+    });
+    wait_for_server(port);
+
+    let body = serde_json::json!({"path": dir.path().to_string_lossy()}).to_string();
+    let resp = post_json(&format!("http://127.0.0.1:{port}/api/repos"), &body).unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert!(json["id"].is_string());
+
+    let list = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap();
+    let list_json: serde_json::Value =
+        serde_json::from_str(&list.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(list_json.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn web_register_repo_requires_guard_header() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let registry_dir = tempdir().unwrap();
+    let registry_path = registry_dir.path().join("registry.toml");
+    let port = pick_port();
+    let registry_path_for_server = registry_path.clone();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path_for_server, port).ok();
+    });
+    wait_for_server(port);
+
+    let body = serde_json::json!({"path": dir.path().to_string_lossy()}).to_string();
+    let err =
+        post_json_unguarded(&format!("http://127.0.0.1:{port}/api/repos"), &body).unwrap_err();
+    assert_eq!(status_of(err), 403);
+}
+
+#[test]
+fn web_deregister_repo_via_api() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = delete_json(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}"), "").unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let list = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap();
+    let list_json: serde_json::Value =
+        serde_json::from_str(&list.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(list_json.as_array().unwrap().len(), 0);
+
+    // Deregistering must never touch the repo's own files.
+    assert!(dir.path().join(".storyhook/project.toml").exists());
+}
+
+#[test]
+fn web_deregister_repo_requires_guard_header() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = ureq::delete(format!("http://127.0.0.1:{port}/api/repos/{repo_id}"))
+        .call()
+        .unwrap_err();
+    assert_eq!(status_of(err), 403);
+}
+
+// --- CLI: story web register|deregister|list ---
+//
+// All isolate $HOME to a temp dir so they never touch the developer's real
+// ~/.storyhook/registry.toml.
+
+#[test]
+fn web_register_dot_registers_cwd() {
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    let canonical = dir.path().canonicalize().unwrap();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "register", "."])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Registered"));
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            canonical.to_string_lossy().to_string(),
+        ));
+}
+
+#[test]
+fn web_register_explicit_path() {
+    let home = tempdir().unwrap();
+    let project = tempdir().unwrap();
+    story(project.path()).arg("init").assert().success();
+    let canonical = project.path().canonicalize().unwrap();
+    let elsewhere = tempdir().unwrap();
+
+    story(elsewhere.path())
+        .env("HOME", home.path())
+        .args(["web", "register", &project.path().to_string_lossy()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Registered"));
+
+    story(elsewhere.path())
+        .env("HOME", home.path())
+        .args(["web", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            canonical.to_string_lossy().to_string(),
+        ));
+}
+
+#[test]
+fn web_register_with_name() {
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "register", ".", "--name", "My Project"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("My Project"));
+}
+
+#[test]
+fn web_register_non_project_fails() {
+    let home = tempdir().unwrap();
+    let not_a_project = tempdir().unwrap();
+
+    story(not_a_project.path())
+        .env("HOME", home.path())
+        .args(["web", "register", "."])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("not initialized"));
+}
+
+#[test]
+fn web_deregister_by_id_cli() {
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    // Register directly through the registry API for a deterministic id,
+    // at the same path `story web register` would use once HOME points at
+    // `home` — sidesteps parsing `web list`'s human-readable text.
+    let registry_path = home.path().join(".storyhook").join("registry.toml");
+    let repo = storyhook::registry::with_lock_at(&registry_path, |r| r.register(dir.path(), None))
+        .unwrap();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "deregister", &repo.id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Deregistered"));
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No repos registered"));
+}
+
+#[test]
+fn web_deregister_unknown_target_fails() {
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "deregister", "nope"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn web_list_shows_registered_repos() {
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let registry_path = home.path().join(".storyhook").join("registry.toml");
+    let repo = storyhook::registry::with_lock_at(&registry_path, |r| r.register(dir.path(), None))
+        .unwrap();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(repo.id))
+        .stdout(predicate::str::contains(repo.name));
+}
+
+#[test]
+fn web_list_empty_registry_message() {
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No repos registered"));
 }
 
 // --- CLI DEFAULT_WEB_PORT constant ---
@@ -1804,17 +2267,17 @@ fn web_serve_handles_concurrent_requests() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     // Fire 10 concurrent requests
     let handles: Vec<_> = (0..10)
         .map(|_| {
-            let url = format!("http://127.0.0.1:{port}/api/data");
+            let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data");
             std::thread::spawn(move || {
                 let resp = ureq::get(&url).call().unwrap();
                 assert_eq!(resp.status(), 200);
@@ -1909,34 +2372,89 @@ fn web_parse_status() {
 }
 
 #[test]
+fn web_parse_register_defaults_path_to_dot() {
+    let inv =
+        storyhook::cli::parse_invocation(&["web".to_string(), "register".to_string()]).unwrap();
+    match inv {
+        storyhook::cli::Invocation::Web {
+            action: storyhook::cli::WebAction::Register { path, name },
+        } => {
+            assert_eq!(path, std::path::PathBuf::from("."));
+            assert_eq!(name, None);
+        }
+        other => panic!("expected Web::Register, got {:?}", other),
+    }
+}
+
+#[test]
+fn web_parse_register_with_explicit_path_and_name() {
+    let inv = storyhook::cli::parse_invocation(&[
+        "web".to_string(),
+        "register".to_string(),
+        "/some/path".to_string(),
+        "--name".to_string(),
+        "My Repo".to_string(),
+    ])
+    .unwrap();
+    match inv {
+        storyhook::cli::Invocation::Web {
+            action: storyhook::cli::WebAction::Register { path, name },
+        } => {
+            assert_eq!(path, std::path::PathBuf::from("/some/path"));
+            assert_eq!(name, Some("My Repo".to_string()));
+        }
+        other => panic!("expected Web::Register, got {:?}", other),
+    }
+}
+
+#[test]
+fn web_parse_deregister_requires_target() {
+    let result = storyhook::cli::parse_invocation(&["web".to_string(), "deregister".to_string()]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn web_parse_list() {
+    let inv = storyhook::cli::parse_invocation(&["web".to_string(), "list".to_string()]).unwrap();
+    assert!(matches!(
+        inv,
+        storyhook::cli::Invocation::Web {
+            action: storyhook::cli::WebAction::List
+        }
+    ));
+}
+
+#[test]
 fn web_parse_serve_internal() {
     let inv = storyhook::cli::parse_invocation(&[
         "web".to_string(),
         "--serve".to_string(),
         "--port".to_string(),
         "4000".to_string(),
-        "--root".to_string(),
-        "/tmp/test".to_string(),
     ])
     .unwrap();
     match inv {
         storyhook::cli::Invocation::Web {
-            action: storyhook::cli::WebAction::Serve { port, root },
+            action: storyhook::cli::WebAction::Serve { port },
         } => {
             assert_eq!(port, 4000);
-            assert_eq!(root, std::path::PathBuf::from("/tmp/test"));
         }
         other => panic!("expected Web::Serve, got {:?}", other),
     }
 }
 
+/// `--serve` no longer accepts `--root` (the server is registry-backed, not
+/// bound to a single repo) — a stray `--root` must be rejected like any
+/// other unknown flag, not silently accepted or ignored.
 #[test]
-fn web_parse_serve_missing_root_errors() {
+fn web_parse_serve_unknown_flag_errors() {
     let result = storyhook::cli::parse_invocation(&[
         "web".to_string(),
         "--serve".to_string(),
         "--port".to_string(),
         "4000".to_string(),
+        "--root".to_string(),
+        "/tmp/test".to_string(),
     ]);
     assert!(result.is_err());
 }
@@ -2028,14 +2546,14 @@ fn web_serve_api_data_ready_and_blocked_flags_correct() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
-    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/data"))
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     let body = resp.into_body().read_to_string().unwrap();
@@ -2116,10 +2634,10 @@ fn web_serve_binds_tailnet_ip_when_available() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
     // Give the (best-effort, separately-threaded) tailnet listener a moment
@@ -2127,13 +2645,13 @@ fn web_serve_binds_tailnet_ip_when_available() {
     std::thread::sleep(Duration::from_millis(200));
 
     // Loopback still works.
-    let loopback = ureq::get(format!("http://127.0.0.1:{port}/api/data"))
+    let loopback = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
         .unwrap();
     assert_eq!(loopback.status(), 200);
 
     // The tailnet interface is also bound and serves the same data.
-    let tailnet_url = format!("http://{tailnet_ip}:{port}/api/data");
+    let tailnet_url = format!("http://{tailnet_ip}:{port}/api/repos/{repo_id}/data");
     let resp = ureq::get(&tailnet_url).call().unwrap_or_else(|e| {
         panic!("expected the dashboard to be reachable via its own tailnet IP {tailnet_url}: {e}")
     });
@@ -2157,10 +2675,10 @@ fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
     std::thread::sleep(Duration::from_millis(200));
@@ -2168,7 +2686,7 @@ fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
     // No STORYHOOK_WEB_TRUSTED_HOSTS is set — the server itself decided to
     // bind this interface, so mutations through it must be trusted by
     // default, the same way loopback is.
-    let url = format!("http://{tailnet_ip}:{port}/api/story/SH-1/move");
+    let url = format!("http://{tailnet_ip}:{port}/api/repos/{repo_id}/story/SH-1/move");
     let resp = ureq::post(&url)
         .header("X-Storyhook", "1")
         .content_type("application/json")
@@ -2187,10 +2705,10 @@ fn web_serve_never_binds_wildcard_address() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
     std::thread::sleep(Duration::from_millis(200));
