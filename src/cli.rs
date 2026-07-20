@@ -63,6 +63,9 @@ Usage:
   story tui                                           (interactive terminal UI)
   story web start [--port <PORT>]                  (start web dashboard)
   story web stop                                   (stop web dashboard)
+  story web register [<PATH>] [--name <NAME>]      (add a repo to the dashboard)
+  story web deregister <ID|PATH>                   (remove a repo from the dashboard)
+  story web list                                   (list registered repos)
   story member add "<name <email>>"
   story member add -g <github-handle>
   story state add <state-slug> --super OPEN|CLOSED [--role active]
