@@ -82,6 +82,11 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
+/* An author rule setting `display` on an element (e.g. `.board { display:
+   flex }`) otherwise ties the UA's `[hidden] { display: none }` rule in
+   specificity and can win the cascade by source order, silently defeating
+   `hidden`. Force it to always win instead of chasing this per component. */
+[hidden] { display: none !important; }
 body {
   font-family: var(--sans);
   background: var(--bg);
@@ -140,6 +145,44 @@ button { cursor: pointer; }
 .conn-dot.live { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
 .conn-dot.disconnected { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
 
+/* ---- Repo select / Home / Settings ---- */
+.repo-select {
+  padding: 0.4375rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-raised); font-size: 0.8125rem; font-weight: 600; color: var(--fg); max-width: 12rem;
+  flex-shrink: 0;
+}
+.home, .settings { flex: 1; overflow-y: auto; padding: 1.25rem; }
+.home-summary { display: flex; gap: 1.5rem; margin-bottom: 1.25rem; }
+.home-stat { font-size: 1.5rem; font-weight: 700; }
+.home-stat span { font-size: 0.75rem; font-weight: 600; color: var(--fg-muted); margin-left: 0.25rem; }
+.home-empty { text-align: center; padding: 3rem 1rem; color: var(--fg-muted); display: flex; flex-direction: column; gap: 0.75rem; align-items: center; }
+.home-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); gap: 0.875rem; }
+.repo-card {
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 0.875rem 1rem; cursor: pointer; box-shadow: var(--shadow-sm); transition: box-shadow 0.12s, transform 0.12s;
+}
+.repo-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.repo-card.unavailable { cursor: default; opacity: 0.65; border-style: dashed; }
+.repo-card-name { font-weight: 700; font-size: 0.9375rem; margin-bottom: 0.25rem; }
+.repo-card-path { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); overflow-wrap: anywhere; margin-bottom: 0.625rem; }
+.repo-card-stats { display: flex; gap: 0.75rem; font-size: 0.75rem; color: var(--fg-muted); font-weight: 600; }
+.repo-card-error { font-size: 0.75rem; color: var(--danger); }
+.settings-form { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; flex-wrap: wrap; align-items: flex-start; }
+.settings-form input {
+  padding: 0.4375rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-raised); font-size: 0.8125rem;
+}
+.settings-form input:nth-child(1) { flex: 2; min-width: 14rem; }
+.settings-form input:nth-child(2) { flex: 1; min-width: 10rem; }
+.settings-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.settings-table th {
+  text-align: left; padding: 0.5625rem 0.75rem; background: var(--bg-sunken); border-bottom: 1px solid var(--border);
+  font-weight: 700; font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted);
+}
+.settings-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.settings-table tr:last-child td { border-bottom: none; }
+.settings-path { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); overflow-wrap: anywhere; }
+
 /* ---- Filter bar ---- */
 .filter-bar {
   display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
@@ -173,7 +216,6 @@ button { cursor: pointer; }
   flex: 1; display: flex; gap: 0.875rem; padding: 1rem 1.25rem; overflow-x: auto; overflow-y: hidden;
   align-items: flex-start;
 }
-.board[hidden], .list[hidden] { display: none; }
 .column {
   display: flex; flex-direction: column; flex: 0 0 18rem; max-width: 18rem;
   background: var(--bg-sunken); border-radius: var(--radius); max-height: 100%;
@@ -343,8 +385,12 @@ tbody tr:hover { background: var(--bg-sunken); }
 @media (max-width: 768px) {
   .topbar { flex-wrap: wrap; }
   .search-wrap { order: 3; max-width: none; flex-basis: 100%; }
+  .repo-select { max-width: none; }
   .drawer { width: 100vw; }
   .field-grid { grid-template-columns: 1fr; }
+  .home-grid { grid-template-columns: 1fr; }
+  .settings-form { flex-direction: column; align-items: stretch; }
+  .settings-form input:nth-child(1), .settings-form input:nth-child(2) { flex: none; min-width: 0; }
 }
 </style>
 </head>
@@ -356,7 +402,8 @@ tbody tr:hover { background: var(--bg-sunken); }
       <h1>Storyhook</h1>
       <span class="subtitle" id="subtitle">Loading…</span>
     </div>
-    <div class="search-wrap">
+    <select class="repo-select" id="repo-select"></select>
+    <div class="search-wrap" id="search-wrap">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input type="text" class="search-input" id="search-input" placeholder="Search stories, IDs, labels…">
     </div>
@@ -365,6 +412,8 @@ tbody tr:hover { background: var(--bg-sunken); }
       <button type="button" data-view="list">List</button>
     </div>
     <div class="topbar-right">
+      <button type="button" class="btn btn-ghost" id="home-btn">Home</button>
+      <button type="button" class="btn btn-ghost" id="settings-btn">Settings</button>
       <button type="button" class="btn btn-primary" id="new-story-btn">+ New</button>
       <div class="connection">
         <span class="conn-dot" id="conn-dot"></span>
@@ -403,6 +452,10 @@ tbody tr:hover { background: var(--bg-sunken); }
       </table>
     </div>
   </main>
+
+  <main class="home" id="home-view" hidden></main>
+
+  <main class="settings" id="settings-view" hidden></main>
 
   <p class="empty" id="empty-msg" hidden>No stories match the current filters.</p>
 
@@ -455,6 +508,15 @@ tbody tr:hover { background: var(--bg-sunken); }
   // ============================================================
 
   var state = {
+    // "home" | "repo" | "settings" — which top-level screen is showing.
+    screen: "home",
+    // The registered repo id the "repo" screen is scoped to, or null.
+    repoId: null,
+    // GET /api/repos results — drives the repo-select, home cards, and
+    // settings list. Independent of `data` below, which is one repo's data.
+    repos: [],
+    reposFetchOk: false,
+    reposFetchAt: 0,
     data: null,
     view: localStorage.getItem("storyhook.view") === "list" ? "list" : "board",
     filter: { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true },
@@ -465,6 +527,10 @@ tbody tr:hover { background: var(--bg-sunken); }
     lastFetchAt: 0,
     fetchOk: false
   };
+
+  /** The `/api/repos/<id>` prefix every per-repo route hangs off, scoped to
+   * the repo currently selected on the "repo" screen. */
+  function apiBase() { return "/api/repos/" + encodeURIComponent(state.repoId); }
 
   // ============================================================
   // DOM HELPERS
@@ -542,7 +608,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   function fetchData() {
     var xhr = new XMLHttpRequest();
-    xhr.open("GET", "/api/data", true);
+    xhr.open("GET", apiBase() + "/data", true);
     xhr.timeout = 8000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
@@ -562,6 +628,47 @@ tbody tr:hover { background: var(--bg-sunken); }
     };
     xhr.ontimeout = function() { state.fetchOk = false; updateConnection(); };
     xhr.onerror = function() { state.fetchOk = false; updateConnection(); };
+    xhr.send();
+  }
+
+  /** GET /api/repos — the registry list backing the repo-select, home
+   * cards, and settings table. Independent of the per-repo `fetchData()`
+   * above; `onDone` (optional) runs after the request settles either way,
+   * used by `bootstrap()` to decide the initial screen. */
+  function fetchReposOnce(onDone) {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "/api/repos", true);
+    xhr.timeout = 8000;
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== 4) return;
+      if (xhr.status === 200) {
+        try {
+          state.repos = JSON.parse(xhr.responseText);
+          state.reposFetchOk = true;
+          state.reposFetchAt = Date.now();
+        } catch (e) {
+          state.reposFetchOk = false;
+        }
+      } else {
+        state.reposFetchOk = false;
+      }
+      if (state.reposFetchOk) {
+        renderRepoSelect();
+        if (state.screen === "home") renderHome();
+        if (state.screen === "settings") renderSettings();
+        // The currently-viewed repo was deregistered elsewhere (another
+        // tab, another client) — don't keep showing its now-orphaned data.
+        if (state.screen === "repo" && state.repoId && !state.repos.some(function(r) { return r.id === state.repoId; })) {
+          toast("This repo was deregistered", "error");
+          state.repoId = null;
+          goHome();
+        }
+      }
+      updateConnection();
+      if (onDone) onDone();
+    };
+    xhr.ontimeout = function() { state.reposFetchOk = false; updateConnection(); if (onDone) onDone(); };
+    xhr.onerror = function() { state.reposFetchOk = false; updateConnection(); if (onDone) onDone(); };
     xhr.send();
   }
 
@@ -651,11 +758,56 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   function renderAll() {
     if (!state.data) return;
-    var s = state.data.summary;
-    var total = s.total_open + s.total_closed;
-    $("subtitle").textContent = total + " " + (total === 1 ? "story" : "stories") + " · " + s.ready_count + " ready · " + s.blocked_count + " blocked";
     renderFilterOptions();
     renderView();
+    updateSubtitle();
+  }
+
+  /** Sets the topbar subtitle for whichever screen is active. Split out of
+   * `renderAll()` (repo-only, needs `state.data`) so `renderScreen()` can
+   * refresh it on every screen switch too, including home/settings where
+   * `state.data` (one repo's data) is never populated. */
+  function updateSubtitle() {
+    if (state.screen === "repo") {
+      if (!state.data) { $("subtitle").textContent = "Loading…"; return; }
+      var s = state.data.summary;
+      var total = s.total_open + s.total_closed;
+      $("subtitle").textContent = total + " " + (total === 1 ? "story" : "stories") + " · " + s.ready_count + " ready · " + s.blocked_count + " blocked";
+    } else if (state.screen === "home") {
+      $("subtitle").textContent = state.repos.length + " registered " + (state.repos.length === 1 ? "repo" : "repos");
+    } else {
+      $("subtitle").textContent = "Settings";
+    }
+  }
+
+  /** Switches between the three top-level screens, showing/hiding the
+   * shared topbar controls (search, view toggle, + New) that only make
+   * sense while a repo is selected, and the three mutually-exclusive
+   * content areas (home cards, board/list, settings). */
+  function renderScreen() {
+    var isRepo = state.screen === "repo";
+    var isHome = state.screen === "home";
+    var isSettings = state.screen === "settings";
+
+    $("home-view").hidden = !isHome;
+    $("settings-view").hidden = !isSettings;
+    $("filter-bar").hidden = !isRepo;
+    $("search-wrap").hidden = !isRepo;
+    $("view-toggle").hidden = !isRepo;
+    $("new-story-btn").hidden = !isRepo;
+
+    if (isRepo) {
+      renderView();
+    } else {
+      $("board-view").hidden = true;
+      $("list-view").hidden = true;
+      $("empty-msg").hidden = true;
+    }
+    if (isHome) renderHome();
+    if (isSettings) renderSettings();
+
+    renderRepoSelect();
+    updateSubtitle();
   }
 
   function renderView() {
@@ -935,10 +1087,10 @@ tbody tr:hover { background: var(--bg-sunken); }
     renderView();
 
     var request = targetIsClosed
-      ? api("POST", "/api/story/" + encodeURIComponent(id) + "/move", { state: targetSlug })
+      ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", { state: targetSlug })
       : (stateSuperstate(originSlug) === "CLOSED"
-          ? api("POST", "/api/story/" + encodeURIComponent(id) + "/reopen", {})
-          : api("POST", "/api/story/" + encodeURIComponent(id) + "/move", { state: targetSlug }));
+          ? api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/reopen", {})
+          : api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/move", { state: targetSlug }));
 
     request
       .then(function(resp) {
@@ -1063,7 +1215,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("drawer-backdrop").hidden = false;
     requestAnimationFrame(function() { $("drawer-backdrop").classList.add("open"); });
     renderDrawer();
-    api("GET", "/api/story/" + encodeURIComponent(id))
+    api("GET", apiBase() + "/story/" + encodeURIComponent(id))
       .then(function(resp) {
         if (state.drawerId !== id) return;
         state.drawerDetail = resp.story || null;
@@ -1188,7 +1340,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       chips.appendChild(el("span", { class: "chip label-chip" }, [
         label,
         el("button", { type: "button", onClick: function() {
-          api("POST", "/api/story/" + encodeURIComponent(st.id) + "/labels", { remove: [label] })
+          api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/labels", { remove: [label] })
             .then(handleMutationSuccess).catch(toastError);
         } }, ["×"])
       ]));
@@ -1197,7 +1349,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     var input = el("input", { type: "text", placeholder: "Add label…" });
     input.addEventListener("keydown", function(e) {
       if (e.key !== "Enter" || !input.value.trim()) return;
-      api("POST", "/api/story/" + encodeURIComponent(st.id) + "/labels", { add: [input.value.trim()] })
+      api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/labels", { add: [input.value.trim()] })
         .then(function(r) { input.value = ""; handleMutationSuccess(r); }).catch(toastError);
     });
     wrap.appendChild(el("div", { class: "inline-add" }, [input]));
@@ -1214,7 +1366,7 @@ tbody tr:hover { background: var(--bg-sunken); }
           el("span", { class: "rel-kind" }, [r.relation]),
           el("button", { class: "rel-id", onClick: function() { openDrawer(r.other_id); } }, [r.other_id]),
           el("button", { type: "button", onClick: function() {
-            api("POST", "/api/unrelate", { a: st.id, relation: r.relation, b: r.other_id })
+            api("POST", apiBase() + "/unrelate", { a: st.id, relation: r.relation, b: r.other_id })
               .then(handleMutationSuccess).catch(toastError);
           } }, ["×"])
         ]));
@@ -1226,7 +1378,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     var idInput = el("input", { type: "text", placeholder: "Story ID (e.g. SH-2)" });
     var addBtn = el("button", { class: "btn", onClick: function() {
       if (!idInput.value.trim()) return;
-      api("POST", "/api/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
+      api("POST", apiBase() + "/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
         .then(function(r) { idInput.value = ""; handleMutationSuccess(r); }).catch(toastError);
     } }, ["Add"]);
     wrap.appendChild(el("div", { class: "inline-add" }, [relationSelect, idInput, addBtn]));
@@ -1246,7 +1398,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     var textarea = el("textarea", { placeholder: "Add a comment…" });
     var submit = el("button", { class: "btn", onClick: function() {
       if (!textarea.value.trim()) return;
-      api("POST", "/api/story/" + encodeURIComponent(st.id) + "/comment", { text: textarea.value.trim() })
+      api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/comment", { text: textarea.value.trim() })
         .then(function(r) { textarea.value = ""; handleMutationSuccess(r); }).catch(toastError);
     } }, ["Comment"]);
     wrap.appendChild(el("div", { class: "comment-add" }, [textarea, el("div", {}, [submit])]));
@@ -1275,7 +1427,7 @@ tbody tr:hover { background: var(--bg-sunken); }
         el("button", { class: "btn btn-ghost", onClick: function() { renderDrawerFooter(st); } }, ["Cancel"]),
         el("button", { class: "btn btn-danger", onClick: function() {
           if (!input.value.trim()) { toast("A deletion reason is required", "error"); return; }
-          api("DELETE", "/api/story/" + encodeURIComponent(st.id), { reason: input.value.trim() })
+          api("DELETE", apiBase() + "/story/" + encodeURIComponent(st.id), { reason: input.value.trim() })
             .then(function() {
               toast(st.id + " deleted", "success");
               closeDrawer();
@@ -1291,7 +1443,7 @@ tbody tr:hover { background: var(--bg-sunken); }
    * edits from the drawer): fire the request, then reconcile from its
    * response (or the next poll on failure). */
   function runFieldMutation(id, method, action, body) {
-    var path = "/api/story/" + encodeURIComponent(id) + (action ? "/" + action : "");
+    var path = apiBase() + "/story/" + encodeURIComponent(id) + (action ? "/" + action : "");
     api(method, path, body).then(handleMutationSuccess).catch(toastError);
   }
 
@@ -1304,6 +1456,188 @@ tbody tr:hover { background: var(--bg-sunken); }
       }
     }
     fetchData();
+  }
+
+  // ============================================================
+  // SCREENS: repo select, home, settings
+  // ============================================================
+
+  /** Populates the topbar's native repo-select from `state.repos`. A native
+   * <select> (rather than a custom dropdown like the filter bar's) keeps
+   * this fully keyboard/accessibility-native for what is, functionally,
+   * simple navigation — pick a repo, jump to it. */
+  function renderRepoSelect() {
+    var select = $("repo-select");
+    if (!select) return;
+    clear(select);
+    select.appendChild(el("option", { value: "" }, [state.repos.length ? "Select a repo…" : "No repos registered"]));
+    state.repos.forEach(function(r) {
+      var label = r.name + (r.available ? "" : " (unavailable)");
+      var opt = el("option", { value: r.id }, [label]);
+      if (!r.available) opt.disabled = true;
+      if (r.id === state.repoId) opt.selected = true;
+      select.appendChild(opt);
+    });
+  }
+
+  /** Enters the "repo" screen for `id`, resetting per-repo UI state (filters,
+   * sort, drawer) since it's meaningless — or actively misleading, e.g. a
+   * state-slug filter that happens to also exist in the new repo — once
+   * carried over from a different project's vocabulary. */
+  function selectRepo(id) {
+    closeDrawer();
+    state.repoId = id;
+    state.screen = "repo";
+    state.data = null;
+    state.filter = { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true };
+    state.sort = { col: "updated", dir: -1 };
+    $("search-input").value = "";
+    $("toggle-closed").checked = true;
+    resetFilterDropdownUI();
+    localStorage.setItem("storyhook.repoId", id);
+    renderScreen();
+    fetchData();
+  }
+
+  function goHome() {
+    closeDrawer();
+    state.screen = "home";
+    renderScreen();
+    fetchReposOnce();
+  }
+
+  function goSettings() {
+    closeDrawer();
+    state.screen = "settings";
+    // Force renderSettings() to rebuild the register form fresh on this
+    // explicit (re-)entry — see the flag's own comment for why routine
+    // polls must NOT do this.
+    delete $("settings-view").dataset.built;
+    renderScreen();
+    fetchReposOnce();
+  }
+
+  function renderHome() {
+    var container = $("home-view");
+    clear(container);
+    if (!state.repos.length) {
+      container.appendChild(el("div", { class: "home-empty" }, [
+        "No repos registered yet.",
+        el("button", { class: "btn btn-primary", onClick: goSettings }, ["Register a repo"])
+      ]));
+      return;
+    }
+    var totals = state.repos.reduce(function(acc, r) {
+      if (r.available && r.summary) {
+        acc.open += r.summary.total_open;
+        acc.ready += r.summary.ready_count;
+        acc.blocked += r.summary.blocked_count;
+      }
+      return acc;
+    }, { open: 0, ready: 0, blocked: 0 });
+    container.appendChild(el("div", { class: "home-summary" }, [
+      el("div", { class: "home-stat" }, [String(totals.open), el("span", {}, ["open"])]),
+      el("div", { class: "home-stat" }, [String(totals.ready), el("span", {}, ["ready"])]),
+      el("div", { class: "home-stat" }, [String(totals.blocked), el("span", {}, ["blocked"])])
+    ]));
+    var grid = el("div", { class: "home-grid" }, []);
+    state.repos.forEach(function(r) { grid.appendChild(buildRepoCard(r)); });
+    container.appendChild(grid);
+  }
+
+  function buildRepoCard(r) {
+    if (!r.available) {
+      return el("div", { class: "repo-card unavailable" }, [
+        el("div", { class: "repo-card-name" }, [r.name]),
+        el("div", { class: "repo-card-path" }, [r.path]),
+        el("div", { class: "repo-card-error" }, [r.error || "Unavailable"])
+      ]);
+    }
+    var s = r.summary;
+    return el("div", { class: "repo-card", onClick: function() { selectRepo(r.id); } }, [
+      el("div", { class: "repo-card-name" }, [r.name]),
+      el("div", { class: "repo-card-path" }, [r.path]),
+      el("div", { class: "repo-card-stats" }, [
+        el("span", {}, [s.total_open + " open"]),
+        el("span", {}, [s.ready_count + " ready"]),
+        el("span", {}, [s.blocked_count + " blocked"])
+      ])
+    ]);
+  }
+
+  /** The register form is built once per screen-entry (`goSettings()`
+   * clears the `built` flag), never on the routine 3s poll that keeps the
+   * repo table live — rebuilding it every poll would silently discard
+   * whatever the user is mid-typing into the path/name fields, which is
+   * exactly the kind of "worked in the demo, loses your input in real use"
+   * bug that only shows up once a human takes longer than 3 seconds to
+   * type a path. The table itself carries no editable state, so it's safe
+   * to fully rebuild on every poll (`renderSettingsTable()`, called both
+   * here on first build and directly from the poll path). */
+  function renderSettings() {
+    var container = $("settings-view");
+    if (!container.dataset.built) {
+      clear(container);
+      container.appendChild(buildRegisterForm());
+      container.appendChild(el("div", { id: "settings-table-wrap" }, []));
+      container.dataset.built = "1";
+    }
+    renderSettingsTable();
+  }
+
+  function renderSettingsTable() {
+    var wrap = $("settings-table-wrap");
+    if (!wrap) return;
+    clear(wrap);
+    var tbody = el("tbody", {}, []);
+    state.repos.forEach(function(r) {
+      tbody.appendChild(el("tr", {}, [
+        el("td", {}, [r.name + (r.available ? "" : " (unavailable)")]),
+        el("td", { class: "settings-path" }, [r.path]),
+        el("td", { class: "col-id" }, [r.id]),
+        el("td", {}, [el("button", { class: "btn btn-danger", onClick: function() { deregisterRepo(r.id); } }, ["Deregister"])])
+      ]));
+    });
+    wrap.appendChild(el("table", { class: "settings-table" }, [
+      el("thead", {}, [el("tr", {}, [
+        el("th", {}, ["Name"]), el("th", {}, ["Path"]), el("th", {}, ["ID"]), el("th", {}, [""])
+      ])]),
+      tbody
+    ]));
+  }
+
+  function buildRegisterForm() {
+    var pathInput = el("input", { type: "text", placeholder: "Path to a storyhook project on this machine" });
+    var nameInput = el("input", { type: "text", placeholder: "Display name (optional)" });
+    var error = el("div", { class: "modal-error" }, []);
+    var submit = el("button", { class: "btn btn-primary", onClick: function() {
+      var path = pathInput.value.trim();
+      if (!path) { error.textContent = "Path is required."; return; }
+      var body = { path: path };
+      if (nameInput.value.trim()) body.name = nameInput.value.trim();
+      api("POST", "/api/repos", body)
+        .then(function() {
+          pathInput.value = ""; nameInput.value = ""; error.textContent = "";
+          toast("Repo registered", "success");
+          fetchReposOnce();
+        })
+        .catch(function(err) { error.textContent = err.message; });
+    } }, ["Register"]);
+    return el("div", { class: "settings-form" }, [pathInput, nameInput, submit, error]);
+  }
+
+  function deregisterRepo(id) {
+    api("DELETE", "/api/repos/" + encodeURIComponent(id), null)
+      .then(function() {
+        toast("Repo deregistered", "success");
+        if (state.repoId === id) {
+          state.repoId = null;
+          goHome();
+        } else {
+          fetchReposOnce();
+        }
+      })
+      .catch(toastError);
   }
 
   // ============================================================
@@ -1345,7 +1679,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     var body = { title: title };
     if ($("create-state").value) body.state = $("create-state").value;
     if ($("create-type").value) body.type = $("create-type").value;
-    api("POST", "/api/story", body)
+    api("POST", apiBase() + "/story", body)
       .then(function(resp) {
         closeCreateModal();
         toast((resp.story && resp.story.story.id) + " created", "success");
@@ -1358,9 +1692,19 @@ tbody tr:hover { background: var(--bg-sunken); }
   // CONNECTION / FOOTER
   // ============================================================
 
+  /** Which poll's freshness the connection indicator/footer should reflect:
+   * the per-repo `/data` poll while on the repo screen, else the `/api/repos`
+   * poll that backs home and settings. */
+  function activePollState() {
+    return state.screen === "repo"
+      ? { ok: state.fetchOk, at: state.lastFetchAt }
+      : { ok: state.reposFetchOk, at: state.reposFetchAt };
+  }
+
   function updateConnection() {
     var dot = $("conn-dot"), text = $("conn-text");
-    if (state.fetchOk && (Date.now() - state.lastFetchAt) < 10000) {
+    var p = activePollState();
+    if (p.ok && (Date.now() - p.at) < 10000) {
       dot.className = "conn-dot live";
       text.textContent = "Live";
     } else {
@@ -1370,8 +1714,9 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   function updateFooter() {
-    if (!state.lastFetchAt) return;
-    var ago = Math.round((Date.now() - state.lastFetchAt) / 1000);
+    var at = activePollState().at;
+    if (!at) return;
+    var ago = Math.round((Date.now() - at) / 1000);
     $("footer").textContent = ago < 2 ? "Updated just now" : "Updated " + ago + "s ago";
     updateConnection();
   }
@@ -1385,6 +1730,11 @@ tbody tr:hover { background: var(--bg-sunken); }
       btn.classList.toggle("active", btn.dataset.view === state.view);
       btn.addEventListener("click", function() { setView(btn.dataset.view); });
     });
+    $("repo-select").addEventListener("change", function() {
+      if (this.value) selectRepo(this.value);
+    });
+    $("home-btn").addEventListener("click", goHome);
+    $("settings-btn").addEventListener("click", goSettings);
     $("new-story-btn").addEventListener("click", openCreateModal);
     $("create-cancel").addEventListener("click", closeCreateModal);
     $("modal-backdrop").addEventListener("click", closeCreateModal);
@@ -1397,12 +1747,37 @@ tbody tr:hover { background: var(--bg-sunken); }
     });
   }
 
+  /** Every poll tick refreshes the (lightweight) repo list — so the
+   * repo-select, home cards, and settings table stay live, and so a repo
+   * deregistered elsewhere is noticed promptly — plus the selected repo's
+   * full data while on the "repo" screen. */
+  function pollTick() {
+    fetchReposOnce();
+    if (state.screen === "repo" && state.repoId) fetchData();
+  }
+
+  /** Initial load: fetch the repo list once, then enter the "repo" screen
+   * for the last-viewed repo if it's still registered and available, else
+   * land on "home". */
+  function bootstrap() {
+    fetchReposOnce(function() {
+      var saved = localStorage.getItem("storyhook.repoId");
+      var match = saved && state.repos.filter(function(r) { return r.id === saved; })[0];
+      if (match && match.available) {
+        selectRepo(match.id);
+      } else {
+        goHome();
+      }
+    });
+  }
+
   bindShell();
   bindFilterBar();
   bindListSort();
 
-  fetchData();
-  setInterval(fetchData, POLL_INTERVAL_MS);
+  renderScreen();
+  bootstrap();
+  setInterval(pollTick, POLL_INTERVAL_MS);
   setInterval(updateFooter, FOOTER_TICK_MS);
 })();
 </script>
