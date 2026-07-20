@@ -210,6 +210,13 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert_eq!(body.matches("<script>").count(), 1);
     assert!(!body.contains("<link"), "no external stylesheet links");
     assert!(!body.contains("cdn."), "no CDN references");
+    // Regression guard: web_dashboard.html once had a stray raw NUL byte
+    // (a `.join("\0")` where a space belonged), which made the file look
+    // binary to naive tooling and shipped a NUL into the served page.
+    assert!(
+        !body.contains('\0'),
+        "served dashboard HTML must never contain a raw NUL byte"
+    );
 
     // Board + List + view toggle
     assert!(body.contains(r#"id="board-view""#));
