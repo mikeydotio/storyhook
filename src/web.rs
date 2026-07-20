@@ -268,9 +268,9 @@ fn route(
             (Method::Post, "unblock") => {
                 guarded_no_body(headers, trusted_hosts, || route_unblock_story(root, id))
             }
-            (Method::Post, "reopen") => {
-                guarded_no_body(headers, trusted_hosts, || route_reopen_story(root, id))
-            }
+            (Method::Post, "reopen") => guarded(headers, trusted_hosts, body, |b| {
+                route_reopen_story(root, id, b)
+            }),
             (Method::Post, _) => text_reply(404, "Not found"),
             _ => text_reply(405, "Method not allowed"),
         },
@@ -416,6 +416,12 @@ fn require_str<'a>(
             "`{key}` is required and must be a non-empty string"
         ))),
     }
+}
+
+/// Reads an optional boolean field, defaulting to `false` when absent or not
+/// a boolean — the shape every optional flag in a request body takes.
+fn get_bool(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    obj.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 fn get_str_array(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Vec<String> {
@@ -591,8 +597,24 @@ fn route_unblock_story(root: &Path, id: &str) -> Reply {
     run_and_reply(root, 200, Invocation::ClearAwaiting { id: id.to_string() })
 }
 
-fn route_reopen_story(root: &Path, id: &str) -> Reply {
-    run_and_reply(root, 200, Invocation::Reopen { id: id.to_string() })
+/// `POST /api/story/{id}/reopen` — reopens a closed story. An optional
+/// `"force": true` in the JSON body undeletes a soft-deleted story, mirroring
+/// the CLI's `story reopen <id> --force`; absent or `false` performs the
+/// guarded (non-force) reopen. An empty body is treated as `{}`.
+fn route_reopen_story(root: &Path, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let force = get_bool(&obj, "force");
+        Ok(run_and_reply(
+            root,
+            200,
+            Invocation::Reopen {
+                id: id.to_string(),
+                force,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
 }
 
 /// `DELETE /api/story/{id}` — a required, non-empty `reason` is enforced the
