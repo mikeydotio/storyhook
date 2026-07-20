@@ -937,7 +937,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     var request = targetIsClosed
       ? api("POST", "/api/story/" + encodeURIComponent(id) + "/move", { state: targetSlug })
       : (stateSuperstate(originSlug) === "CLOSED"
-          ? api("POST", "/api/story/" + encodeURIComponent(id) + "/reopen")
+          ? api("POST", "/api/story/" + encodeURIComponent(id) + "/reopen", {})
           : api("POST", "/api/story/" + encodeURIComponent(id) + "/move", { state: targetSlug }));
 
     request
@@ -1258,7 +1258,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     clear(footer);
     var isClosed = stateSuperstate(st.state) === "CLOSED";
     if (isClosed) {
-      footer.appendChild(el("button", { class: "btn", onClick: function() { runFieldMutation(st.id, "POST", "reopen", null); } }, ["Reopen"]));
+      footer.appendChild(el("button", { class: "btn", onClick: function() { runFieldMutation(st.id, "POST", "reopen", {}); } }, ["Reopen"]));
     }
     footer.appendChild(el("button", { class: "btn btn-danger", style: "margin-left:auto", onClick: function() {
       renderDeleteConfirm(st);
