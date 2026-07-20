@@ -13,6 +13,7 @@ pub mod hooks;
 pub mod lock;
 pub mod output;
 pub mod plugin;
+pub mod registry;
 pub mod storage;
 pub mod tui;
 #[cfg(feature = "github-sync")]
