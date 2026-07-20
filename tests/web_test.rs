@@ -1260,6 +1260,101 @@ fn web_reopen_archived_story() {
     assert_eq!(story_field(&json, "superstate"), "OPEN");
 }
 
+/// Regression test for #23: `Invocation::Reopen` gained a `force` field (#18)
+/// that the web route didn't plumb through at all, so a soft-deleted story
+/// could never be undeleted via the API — only the CLI's `--force` reached
+/// it. Without `force` (an empty JSON body), reopening a deleted story must
+/// fail the same guarded-undelete check the CLI enforces, surfaced as a 422
+/// (`AppError::Validation`), and leave the story untouched.
+#[test]
+fn web_reopen_deleted_story_without_force_is_422() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+    story(dir.path())
+        .args(["delete", "SH-1", "created in error"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        "",
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 422);
+
+    let show = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-1"))
+        .call()
+        .unwrap();
+    let show_json: serde_json::Value =
+        serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&show_json, "superstate"), "CLOSED");
+    assert_eq!(story_field(&show_json, "deleted"), true);
+}
+
+/// Companion to the test above: `{"force": true}` in the body mirrors the
+/// CLI's `story reopen <id> --force` and successfully undeletes.
+#[test]
+fn web_reopen_deleted_story_with_force_undeletes() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+    story(dir.path())
+        .args(["delete", "SH-1", "created in error"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        r#"{"force":true}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "superstate"), "OPEN");
+    assert!(story_field(&json, "deleted").is_null());
+}
+
+#[test]
+fn web_reopen_malformed_json_is_400() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+    story(dir.path())
+        .args(["move", "SH-1", "done"])
+        .assert()
+        .success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        "not json",
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 400);
+}
+
 // --- Mutation API: PATCH multi-field ---
 
 #[test]

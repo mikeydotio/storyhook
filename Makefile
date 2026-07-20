@@ -1,11 +1,14 @@
 # Storyhook developer tasks.
 #
-# `make test` is the canonical pre-push gate: it runs the same checks as CI
-# (formatting, clippy with warnings-as-errors, and the full test suite).
+# `make test` is the *only* build/test gate this project runs — there is no
+# push/PR CI (see .github/workflows/release.yml, which triggers on version
+# tags only). It's enforced locally by the pre-push hook, so it must be run
+# (and pass) before every push; skipping it is how a non-compiling commit
+# reaches `main` undetected (see #23).
 
 .PHONY: test build fmt lint clippy check release-build
 
-# Full local gate — mirrors .github/workflows/ci.yml.
+# Full local gate: formatting, clippy with warnings-as-errors, full test suite.
 test:
 	cargo fmt -- --check
 	cargo clippy --all-targets -- -D warnings
