@@ -1342,23 +1342,25 @@ fn web_reopen_deleted_story_without_force_is_422() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let err = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
         "",
     )
     .unwrap_err();
     assert_eq!(status_of(err), 422);
 
-    let show = ureq::get(format!("http://127.0.0.1:{port}/api/story/SH-1"))
-        .call()
-        .unwrap();
+    let show = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+    ))
+    .call()
+    .unwrap();
     let show_json: serde_json::Value =
         serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
     assert_eq!(story_field(&show_json, "superstate"), "CLOSED");
@@ -1377,15 +1379,15 @@ fn web_reopen_deleted_story_with_force_undeletes() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let resp = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
         r#"{"force":true}"#,
     )
     .unwrap();
@@ -1406,15 +1408,15 @@ fn web_reopen_malformed_json_is_400() {
         .assert()
         .success();
 
-    let root = dir.path().to_path_buf();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
     std::thread::spawn(move || {
-        storyhook::web::start_server(&root, port).ok();
+        storyhook::web::start_server(&registry_path, port).ok();
     });
     wait_for_server(port);
 
     let err = post_json(
-        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
         "not json",
     )
     .unwrap_err();
