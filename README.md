@@ -216,6 +216,9 @@ story doctor [--fix]
 story web start [--port <PORT>]
 story web stop
 story web status
+story web register [<PATH>] [--name <NAME>]
+story web deregister <ID|PATH>
+story web list
 story <id>
 story <id> "<comment>"
 story <id> assign <member-id|handle>
@@ -293,25 +296,37 @@ Behavior:
 
 ## Web dashboard
 
-`story` includes a local web dashboard for browsing and triaging stories visually, alongside the CLI.
+`story` includes a local web dashboard for browsing and triaging stories visually, alongside the CLI. One dashboard serves every project you register with it — a home screen with a summary card per repo, a repo-select dropdown for fast switching, and, per repo, the same Board/List/drawer views a single-project dashboard has always had.
 
 ```bash
-story web start [--port <PORT>]   # start the dashboard (default port 3456)
-story web stop                    # stop it
-story web status                  # check whether it's running
+story web register                   # register the current directory
+story web register ../other-project  # register another repo by path
+story web register . --name "API"    # register with a display name
+story web list                       # list every registered repo + id
+story web deregister api             # remove one (by id or by path)
+
+story web start [--port <PORT>]      # start the dashboard (default port 3456)
+story web stop                       # stop it
+story web status                     # check whether it's running
 ```
+
+`story web start` launches the dashboard on its own — it does not require running from inside a project, and it does not auto-register anything. Repos only appear once you `register` them.
 
 Open the URL printed on start — always `http://127.0.0.1:<port>`, plus a tailnet URL too if you have Tailscale (see Network exposure below). The dashboard offers:
 
+- **Home** — a summary card per registered repo (open/ready/blocked counts). Click a card to open that repo. A repo whose data can't currently be loaded (moved, deleted) shows its error instead of a summary, rather than failing the whole page.
+- **Settings** — register a new repo, or deregister an existing one. Deregistering only edits the dashboard's registry; it never touches the repo's own files.
 - **Board** — a kanban view with one column per project state, in `states.toml` order. Drag a card to a different column to move the story; dropping onto a `CLOSED` state archives it in place, and it stays visible in that column rather than vanishing.
 - **List** — a filterable, sortable table view.
 - **Detail drawer** — click any card or row to view and edit a story's full detail: title, state, priority, assignee, type, labels, block/unblock, comments, and relationships, plus reopen and delete.
-- Faceted filters (priority, assignee, type, state) and free-text search, shared between both views.
+- Faceted filters (priority, assignee, type, state) and free-text search, shared between both project views.
 - Live updates via 3-second polling; dark mode follows your system theme.
 
 It's a single self-contained page with no external dependencies (no CDN, no build step) and no mocked data — every action goes through the same validated, event-sourced write path as the CLI.
 
-The dashboard runs as a background daemon (PID file, lock file, and log at `.storyhook/web.pid` / `.storyhook/web.lock` / `.storyhook/web.log`).
+The dashboard is a single background daemon shared by every registered repo — not one per project. Registered repos live in `~/.storyhook/registry.toml`; the daemon's PID file, lock file, and log are at `~/.storyhook/web.pid` / `~/.storyhook/web.lock` / `~/.storyhook/web.log`.
+
+> **Upgrading from a per-repo dashboard:** earlier versions ran one daemon per project, started from inside it, with its PID/lock/log under that project's own `.storyhook/`. If you have one of those still running, `story web stop` from this version won't see it (it only knows about the new global daemon) — stop it manually, then `story web register` your project(s) and start the new dashboard.
 
 ### Network exposure
 
@@ -325,12 +340,12 @@ If the `web-serve` tool is present on your `PATH` (coderig/agentsmith environmen
 
 ### Security
 
-Mutating requests (creating, moving, editing, or deleting stories) require:
+Mutating requests (registering/deregistering a repo; creating, moving, editing, or deleting a story) require:
 
 - a same-origin request — the dashboard's own page sets a custom `X-Storyhook` header that a cross-site request cannot replicate without triggering a CORS preflight the server never answers;
 - a `Host` header that resolves to `127.0.0.1`, `localhost`, `::1`, or the tailnet IP this instance bound itself — this is what stops DNS-rebinding, which the header check alone can't catch.
 
-Read-only requests (`GET /`, `GET /api/data`, `GET /api/story/<id>`) have no such restriction — they're reachable (but not writable) from anywhere the socket itself is reachable, i.e. localhost and your tailnet.
+Read-only requests (`GET /`, `GET /api/repos`, `GET /api/repos/<id>/data`, `GET /api/repos/<id>/story/<sid>`) have no such restriction — they're reachable (but not writable) from anywhere the socket itself is reachable, i.e. localhost and your tailnet.
 
 If you reverse-proxy the dashboard under a different hostname (e.g. via `web-serve`) and want writes to work there too, set `STORYHOOK_WEB_TRUSTED_HOSTS` to a comma-separated allowlist before starting the server:
 

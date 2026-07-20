@@ -1120,11 +1120,16 @@ Related:
             r#"story web start [--port <PORT>]
 story web stop
 story web status
+story web register [<PATH>] [--name <NAME>]
+story web deregister <ID|PATH>
+story web list
 
-Launch an interactive web dashboard for your storyhook project: a
+Launch a single web dashboard that serves every storyhook project
+you've registered with it: a home screen with a summary card per
+repo, a repo-select dropdown for fast switching, and — per repo — a
 kanban board with drag-and-drop, a filterable/sortable list view, and
-a detail drawer for full editing — all live-updating and backed by
-the same validated write path the CLI uses.
+a detail drawer for full editing. Everything is live-updating and
+backed by the same validated write path the CLI uses.
 
 The server always binds 127.0.0.1, and also binds your Tailscale IP
 if the 'tailscale' CLI reports one — reachable from localhost and
@@ -1132,55 +1137,81 @@ your tailnet only, never the public internet or a plain LAN address.
 Default port is 3456. Data refreshes every 3 seconds via polling.
 
 Commands:
-  start   Start the dashboard as a background daemon.
-          --port <PORT>  Use a custom port (default: 3456).
-  stop    Stop the running dashboard daemon.
-  status  Check if the dashboard is running.
+  start        Start the dashboard as a background daemon (does not
+               require running from inside a project — repos are
+               added via 'register', not by cwd).
+               --port <PORT>  Use a custom port (default: 3456).
+  stop         Stop the running dashboard daemon.
+  status       Check if the dashboard is running.
+  register     Register a repo with the dashboard. PATH defaults to
+               the current directory ('.'), so 'story web register'
+               run from inside a project registers it.
+               --name <NAME>  Display name (default: directory name).
+  deregister   Remove a repo from the dashboard by its registered id
+               or its filesystem path. Never touches the repo's own
+               files — this only edits the registry.
+  list         List every registered repo and its id.
 
 When to use:
-  When you want a browser-based view of project status that updates
-  live as stories change, or want to triage/edit stories visually —
-  drag cards between states, edit fields, comment, block/unblock,
-  link relationships — without leaving the browser. Useful during
-  sprint planning, standups, or while working on multiple stories in
-  parallel.
+  When you want a browser-based view across some or all of your
+  storyhook projects that updates live as stories change, switch
+  quickly between projects without juggling ports, or triage/edit
+  stories visually — drag cards between states, edit fields, comment,
+  block/unblock, link relationships — without leaving the browser.
+  Useful during sprint planning, standups, or while working across
+  multiple projects in parallel.
 
 Examples:
-  story web start                # Start on default port 3456
-  story web start --port 8080    # Start on custom port
-  story web stop                 # Stop the dashboard
-  story web status               # Check if running
+  story web register                   # Register the current directory
+  story web register ../other-project  # Register another repo by path
+  story web register . --name "API"    # Register with a display name
+  story web list                       # See every registered repo + id
+  story web deregister api             # Remove it (by id or by path)
+  story web start                      # Start on default port 3456
+  story web start --port 8080          # Start on custom port
+  story web stop                       # Stop the dashboard
+  story web status                     # Check if running
 
-Views:
-  Board   One column per project state (states.toml order). Drag a
-          card to a different column to move it; dropping onto a
-          CLOSED state archives the story in place.
-  List    A filterable, sortable table.
-  Drawer  Click any card or row for full detail: title, state,
-          priority, assignee, type, labels, block/unblock, comments,
-          relationships, reopen, and delete.
+Screens:
+  Home      One summary card per registered repo (open/ready/blocked
+            counts). Click a card to open that repo. A repo whose
+            data can't currently be loaded (moved, deleted) shows its
+            error instead of a summary.
+  Settings  Register a new repo, or deregister an existing one.
+  Board     One column per project state (states.toml order). Drag a
+            card to a different column to move it; dropping onto a
+            CLOSED state archives the story in place.
+  List      A filterable, sortable table.
+  Drawer    Click any card or row for full detail: title, state,
+            priority, assignee, type, labels, block/unblock, comments,
+            relationships, reopen, and delete.
 
 Security:
-  Mutating requests (create/move/edit/delete) require a same-origin
-  request (a custom header a cross-site request can't replicate) and
-  a Host header resolving to 127.0.0.1/localhost/::1 or the tailnet
-  IP this instance bound itself — this stops DNS-rebinding, which the
-  header check alone can't catch. Read requests are unauthenticated
-  (but still only reachable where the socket is bound — localhost and
-  your tailnet). To allow writes through a reverse proxy under a
-  different hostname (e.g. web-serve), set STORYHOOK_WEB_TRUSTED_HOSTS
-  to a comma-separated allowlist before starting the server — this
-  only widens the Host allowlist for writes, it does not change what
-  the server binds.
+  Mutating requests (register/deregister a repo; create/move/edit/
+  delete a story) require a same-origin request (a custom header a
+  cross-site request can't replicate) and a Host header resolving to
+  127.0.0.1/localhost/::1 or the tailnet IP this instance bound
+  itself — this stops DNS-rebinding, which the header check alone
+  can't catch. Read requests are unauthenticated (but still only
+  reachable where the socket is bound — localhost and your tailnet).
+  To allow writes through a reverse proxy under a different hostname
+  (e.g. web-serve), set STORYHOOK_WEB_TRUSTED_HOSTS to a
+  comma-separated allowlist before starting the server — this only
+  widens the Host allowlist for writes, it does not change what the
+  server binds.
 
 How it works:
-  'story web start' spawns a background process that binds 127.0.0.1
-  and, if available, your Tailscale IP (never 0.0.0.0, never a plain
-  LAN address — best-effort: a failed tailnet bind just falls back to
-  localhost-only, logged as a warning). It polls /api/data every 3
-  seconds for fresh project data and calls /api/story/... routes for
-  mutations. A PID file at .storyhook/web.pid tracks the daemon. Logs
-  go to .storyhook/web.log.
+  Registered repos live in ~/.storyhook/registry.toml — the one piece
+  of storyhook state that isn't scoped to a single project. 'story web
+  start' spawns a single background process (not one per repo) that
+  binds 127.0.0.1 and, if available, your Tailscale IP (never
+  0.0.0.0, never a plain LAN address — best-effort: a failed tailnet
+  bind just falls back to localhost-only, logged as a warning). Its
+  PID file, lock, and log live at ~/.storyhook/web.{pid,lock,log}. It
+  polls GET /api/repos every 3 seconds for the repo list, and — for
+  whichever repo is selected — GET /api/repos/<id>/data for that
+  repo's stories, calling POST/PATCH/DELETE /api/repos/<id>/story/...
+  for mutations.
 
   If the 'web-serve' tool is in PATH (coderig/agentsmith environments),
   the port is additionally registered with it on top of the above.
@@ -1188,7 +1219,7 @@ How it works:
 Related:
   story report --html  — Generate a static HTML report (one-time snapshot)
   story summary        — Quick text summary in the terminal
-  story tui            — Interactive terminal UI
+  story tui             — Interactive terminal UI
 "#,
         );
 
