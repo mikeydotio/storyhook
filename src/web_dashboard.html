@@ -372,6 +372,59 @@ tbody tr:hover { background: var(--bg-sunken); }
 .toast.leaving { animation: toast-out 0.15s ease-in forwards; }
 @keyframes toast-out { to { opacity: 0; transform: translateX(12px); } }
 
+/* ---- Live updates: card/row enter, exit, cross-column move, field flash ----
+   All gated behind `prefers-reduced-motion: no-preference` (the JS side
+   mirrors this via `prefersReducedMotion()` and skips adding these classes
+   at all when the user has asked for reduced motion — this block is a
+   second, CSS-level guarantee, not the only one). See `diffSnapshots` /
+   `reconcileColumnCards` / `playFlip` in the script for what triggers each. */
+@media (prefers-reduced-motion: no-preference) {
+  .card.entering { animation: card-enter 0.22s ease-out; }
+  @keyframes card-enter { from { opacity: 0; transform: scale(0.97) translateY(-4px); } to { opacity: 1; transform: none; } }
+
+  .card.exiting { animation: card-exit 0.2s ease-in forwards; pointer-events: none; }
+  @keyframes card-exit { to { opacity: 0; transform: scale(0.96); } }
+
+  /* FLIP's "Play" step (see `playFlip`) — overrides `.card`'s base
+     `transition: transform .12s...` (a faster hover-lift transition) with
+     a slower, easier one sized for a cross-column slide. */
+  .card.moving { transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.2, 1); }
+
+  .card.flash-priority { animation: flash-accent 0.9s ease-out; }
+  @keyframes flash-accent {
+    0% { box-shadow: 0 0 0 3px var(--card-accent, var(--accent)); }
+    100% { box-shadow: var(--shadow-sm); }
+  }
+  .card.flash-blocked { animation: pulse-danger 0.9s ease-out; }
+  @keyframes pulse-danger {
+    0% { box-shadow: 0 0 0 3px var(--danger-soft); }
+    100% { box-shadow: var(--shadow-sm); }
+  }
+  .card.flash-ready { animation: pulse-success 0.9s ease-out; }
+  @keyframes pulse-success {
+    0% { box-shadow: 0 0 0 3px var(--success-soft); }
+    100% { box-shadow: var(--shadow-sm); }
+  }
+
+  /* Neutral "this changed" flash for a home repo card (a change in
+     aggregate counts, not any one field, so no single field color to key
+     off of the way the board's flash-* classes do). */
+  .repo-card.flash-updated { animation: flash-neutral 0.9s ease-out; }
+  @keyframes flash-neutral {
+    0% { box-shadow: 0 0 0 3px var(--accent-soft); }
+    100% { box-shadow: var(--shadow-sm); }
+  }
+
+  /* A table row's box model makes `box-shadow` render inconsistently
+     across browsers, so its flash uses `background-color` instead — reads
+     just as clearly against `tbody tr`'s existing hover treatment. */
+  .row-flash { animation: flash-row-bg 0.9s ease-out; }
+  @keyframes flash-row-bg {
+    0% { background-color: var(--accent-soft); }
+    100% { background-color: transparent; }
+  }
+}
+
 /* ---- Priority dots / badges (shared) ---- */
 .p-critical { background: var(--p-critical); }
 .p-high { background: var(--p-high); }
@@ -497,9 +550,16 @@ tbody tr:hover { background: var(--bg-sunken); }
   // CONSTANTS
   // ============================================================
 
-  var POLL_INTERVAL_MS = 3000;
+  // EventSource (see `connectEvents`) is the primary live-update path;
+  // this is only a slow safety net for browsers without SSE support and a
+  // periodic resync in case a `/api/events` push is ever missed.
+  var SAFETY_POLL_INTERVAL_MS = 25000;
   var FOOTER_TICK_MS = 1000;
   var TOAST_LIFETIME_MS = 4500;
+  // How long after a `repo-changed` SSE event to wait before re-fetching,
+  // coalescing a burst of individually-debounced server events (e.g. several
+  // rapid mutations) into a single re-fetch instead of one per event.
+  var FETCH_DEBOUNCE_MS = 150;
 
   var PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
 
@@ -527,6 +587,18 @@ tbody tr:hover { background: var(--bg-sunken); }
     lastFetchAt: 0,
     fetchOk: false
   };
+
+  /** Set by `fetchData()` (from `diffSnapshots`) whenever fresh data arrives
+   * with a previous snapshot to compare against; consumed and cleared by
+   * the very next `renderView()` so only a render actually triggered by new
+   * data animates anything — a render triggered by filtering, sorting, or
+   * switching views reconciles silently. `null` when there's nothing (yet)
+   * to animate: the initial load of a repo, or any render in between. */
+  var pendingAnimations = null;
+
+  /** Real-time connection state, driven by the `EventSource` in
+   * `connectEvents()` — see `updateConnection()`. */
+  var sse = { connected: false };
 
   /** The `/api/repos/<id>` prefix every per-repo route hangs off, scoped to
    * the repo currently selected on the "repo" screen. */
@@ -614,7 +686,14 @@ tbody tr:hover { background: var(--bg-sunken); }
       if (xhr.readyState !== 4) return;
       if (xhr.status === 200) {
         try {
-          state.data = JSON.parse(xhr.responseText);
+          var parsed = JSON.parse(xhr.responseText);
+          // Diff against the previous snapshot *before* replacing it, so
+          // the next render knows exactly what changed and can animate
+          // accordingly. Skipped on the first load of a repo (`state.data`
+          // still null then — see `selectRepo()`), so opening a repo never
+          // animates every card in as if it had just appeared.
+          if (state.data) pendingAnimations = diffSnapshots(state.data, parsed, state.pending);
+          state.data = parsed;
           state.lastFetchAt = Date.now();
           state.fetchOk = true;
           renderAll();
@@ -753,6 +832,68 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   // ============================================================
+  // LIVE-UPDATE DIFFING
+  // ============================================================
+
+  function prefersReducedMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  /** Pure: compares two `/data` snapshots (the shape `fetchData()` parses)
+   * and classifies what changed per story id, so the reconcile pass can
+   * pick an animation appropriate to the kind of change — moved between
+   * columns, newly created, deleted/closed-away, or a specific field
+   * flash — instead of animating every card uniformly on every update.
+   *
+   * `pending` is `state.pending`: ids with an in-flight optimistic
+   * mutation (a drag in progress, an edit not yet confirmed) are skipped
+   * entirely. Their local optimistic state is already what's on screen and
+   * already played its own animation when it landed; re-animating it here
+   * just because the confirming fetch caught up would be redundant at best
+   * and could visibly fight the optimistic update at worst.
+   *
+   * Returns `{ entered: [id], exited: [id], moved: [{id, from, to}],
+   * changed: { id: [fieldName] } }`. `oldData`/`newData` may be `null`
+   * (nothing to diff against, e.g. the very first load), in which case
+   * every list comes back empty — never treat a first load as "everything
+   * just appeared". */
+  function diffSnapshots(oldData, newData, pending) {
+    var result = { entered: [], exited: [], moved: [], changed: {} };
+    if (!oldData || !newData) return result;
+
+    var oldById = {}, newById = {};
+    oldData.stories.forEach(function(v) { oldById[v.story.id] = v; });
+    newData.stories.forEach(function(v) { newById[v.story.id] = v; });
+
+    var readyOld = {}, readyNew = {}, blockedOld = {}, blockedNew = {};
+    (oldData.ready_ids || []).forEach(function(id) { readyOld[id] = true; });
+    (newData.ready_ids || []).forEach(function(id) { readyNew[id] = true; });
+    (oldData.blocked_ids || []).forEach(function(id) { blockedOld[id] = true; });
+    (newData.blocked_ids || []).forEach(function(id) { blockedNew[id] = true; });
+
+    Object.keys(newById).forEach(function(id) {
+      if (pending && pending[id]) return;
+      var was = oldById[id];
+      if (!was) { result.entered.push(id); return; }
+      var a = was.story, b = newById[id].story;
+      var fields = [];
+      if (a.state !== b.state) { result.moved.push({ id: id, from: a.state, to: b.state }); fields.push("state"); }
+      if (a.priority !== b.priority) fields.push("priority");
+      if (a.assignee !== b.assignee) fields.push("assignee");
+      if (a.title !== b.title) fields.push("title");
+      if ((a.labels || []).join(",") !== (b.labels || []).join(",")) fields.push("labels");
+      if (!!blockedOld[id] !== !!blockedNew[id]) fields.push("blocked");
+      if (!!readyOld[id] !== !!readyNew[id]) fields.push("ready");
+      if (fields.length) result.changed[id] = fields;
+    });
+    Object.keys(oldById).forEach(function(id) {
+      if (pending && pending[id]) return;
+      if (!newById[id]) result.exited.push(id);
+    });
+    return result;
+  }
+
+  // ============================================================
   // RENDER: SHELL
   // ============================================================
 
@@ -816,14 +957,24 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("filter-count").textContent = total ? (visible.length + " / " + total) : "";
     $("empty-msg").hidden = visible.length !== 0 || !state.data;
 
+    // Consumed here, once, regardless of which view actually renders below
+    // — renderView() runs on every filter/sort/view-toggle/optimistic-update
+    // too, and only a render that's actually following fresh data should
+    // animate anything. Whichever view *doesn't* render this pass simply
+    // never sees this batch of `anims` at all; it reconciles quietly next
+    // time it becomes visible, which is correct — those changes already
+    // happened, there's nothing left to animate a transition *into*.
+    var anims = pendingAnimations;
+    pendingAnimations = null;
+
     if (state.view === "board") {
       $("board-view").hidden = false;
       $("list-view").hidden = true;
-      renderBoard(visible);
+      renderBoard(visible, anims);
     } else {
       $("board-view").hidden = true;
       $("list-view").hidden = false;
-      renderList(visible);
+      renderList(visible, anims);
     }
   }
 
@@ -962,9 +1113,22 @@ tbody tr:hover { background: var(--bg-sunken); }
   // RENDER: BOARD
   // ============================================================
 
-  function renderBoard(stories) {
+  /** Renders the board via a *keyed reconcile* rather than tearing down and
+   * rebuilding every column/card: existing card nodes are found by
+   * `data-id` and reused (`populateCard`), possibly moved to a different
+   * column (`appendChild` on an already-attached node relocates it — no
+   * clone, no destroy/recreate), so a CSS transition/animation running on
+   * a card survives an update instead of being wiped out by it. `anims`
+   * (from `diffSnapshots`, or `null` for a render not driven by fresh data)
+   * says which cards actually changed and how, so only those get an
+   * entrance/exit/flash; everything else just silently ends up in the
+   * right place. Column *moves* are animated separately via FLIP
+   * (`captureCardRects`/`playFlip`) below, independent of `anims`, since a
+   * drag-and-drop's optimistic update should slide into place too even
+   * though it never touches `pendingAnimations`.
+   */
+  function renderBoard(stories, anims) {
     var container = $("board-view");
-    clear(container);
     var ready = readySet(), blocked = blockedSet();
     var byState = {};
     stories.forEach(function(v) {
@@ -972,56 +1136,228 @@ tbody tr:hover { background: var(--bg-sunken); }
       (byState[slug] = byState[slug] || []).push(v);
     });
 
-    meta().states.forEach(function(stateDef) {
-      var cards = byState[stateDef.slug] || [];
+    var states = meta().states;
+    ensureColumnShells(container, states);
+
+    var reduceMotion = prefersReducedMotion();
+    // FLIP "First": capture every card's rect before anything moves.
+    var firstRects = reduceMotion ? null : captureCardRects(container);
+
+    // Board-wide (not per-column) index of existing cards, so a card
+    // relocating to a different column reuses its DOM node instead of each
+    // column only ever seeing its own prior children.
+    var existingById = {};
+    container.querySelectorAll(".card[data-id]").forEach(function(node) {
+      existingById[node.dataset.id] = node;
+    });
+
+    var claimed = {};
+    states.forEach(function(stateDef) {
+      var column = findColumnBySlug(container, stateDef.slug);
+      if (!column) return;
+      var isClosed = stateDef.super_state === "CLOSED";
+      var cards = (byState[stateDef.slug] || []).slice().sort(function(a, b) {
+        return (b.story.updated_at || "").localeCompare(a.story.updated_at || "");
+      });
+      column.querySelector(".column-count").textContent = String(cards.length);
+      reconcileColumnCards(column.querySelector(".column-cards"), cards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById);
+    });
+
+    removeUnclaimedCards(container, claimed, reduceMotion);
+    if (!reduceMotion) playFlip(container, firstRects);
+  }
+
+  /** Rebuilds the column *shells* (header + empty `.column-cards`) only when
+   * the set of states itself changed since the last render — a rare event
+   * (project reconfiguration), unlike a story mutation. Everything inside a
+   * shell is handled by `reconcileColumnCards`. */
+  function ensureColumnShells(container, states) {
+    var desired = states.map(function(s) { return s.slug; });
+    var existing = Array.prototype.map.call(container.children, function(c) { return c.dataset.state; });
+    if (desired.length === existing.length && desired.every(function(s, i) { return s === existing[i]; })) {
+      return;
+    }
+    clear(container);
+    states.forEach(function(stateDef) {
       var isClosed = stateDef.super_state === "CLOSED";
       var column = el("div", { class: "column", dataset: { state: stateDef.slug } }, [
         el("div", { class: "column-header" }, [
           el("span", { class: "column-dot", style: "background:" + stateColor(stateDef.slug) }, []),
           stateDef.slug,
-          el("span", { class: "column-count" }, [String(cards.length)])
+          el("span", { class: "column-count" }, ["0"])
         ]),
-        buildColumnCards(cards, ready, blocked, isClosed)
+        el("div", { class: "column-cards" }, [])
       ]);
       bindColumnDrop(column, stateDef.slug, isClosed);
       container.appendChild(column);
     });
   }
 
-  function buildColumnCards(cards, ready, blocked, isClosed) {
-    var wrap = el("div", { class: "column-cards" }, []);
-    if (!cards.length) {
-      wrap.appendChild(el("div", { class: "column-empty" }, ["No stories"]));
-      return wrap;
+  function findColumnBySlug(container, slug) {
+    for (var i = 0; i < container.children.length; i++) {
+      if (container.children[i].dataset.state === slug) return container.children[i];
     }
-    cards
-      .slice()
-      .sort(function(a, b) { return (b.story.updated_at || "").localeCompare(a.story.updated_at || ""); })
-      .forEach(function(v) {
-        wrap.appendChild(buildCard(v, ready, blocked, isClosed));
-      });
-    return wrap;
+    return null;
   }
 
+  /** Snapshots every currently-rendered card's viewport position, keyed by
+   * id — the FLIP technique's "First" measurement, taken before any DOM
+   * changes for this render. */
+  function captureCardRects(container) {
+    var rects = {};
+    container.querySelectorAll(".card[data-id]").forEach(function(node) {
+      rects[node.dataset.id] = node.getBoundingClientRect();
+    });
+    return rects;
+  }
+
+  /** Reconciles one column's card list against `desiredCards`: reuses an
+   * existing card (by id, from the board-wide `existingById`, so a card
+   * moving in from a *different* column is reused too) via `populateCard`,
+   * or builds a new one; marks every placed id `claimed` so the board-level
+   * cleanup pass (`removeUnclaimedCards`) knows what's still wanted
+   * somewhere. Ordering is applied via `appendChild`, which *moves* an
+   * already-attached node rather than cloning it — the prerequisite for
+   * `playFlip` to animate a cross-column move as one continuous slide. */
+  function reconcileColumnCards(cardsEl, desiredCards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById) {
+    if (!desiredCards.length) {
+      if (!cardsEl.querySelector(".column-empty")) {
+        cardsEl.appendChild(el("div", { class: "column-empty" }, ["No stories"]));
+      }
+      return;
+    }
+    var placeholder = cardsEl.querySelector(".column-empty");
+    if (placeholder) placeholder.remove();
+
+    desiredCards.forEach(function(v) {
+      var id = v.story.id;
+      claimed[id] = true;
+      var node = existingById[id];
+      if (node) {
+        populateCard(node, v, ready, blocked, isClosed);
+      } else {
+        node = buildCard(v, ready, blocked, isClosed);
+        existingById[id] = node;
+        if (!reduceMotion && anims && anims.entered.indexOf(id) !== -1) {
+          node.classList.add("entering");
+          node.addEventListener("animationend", function() { node.classList.remove("entering"); }, { once: true });
+        }
+      }
+      if (anims) applyChangeFlash(node, id, anims, reduceMotion);
+      cardsEl.appendChild(node);
+    });
+  }
+
+  /** Removes any card left in the DOM that no story wanted this render —
+   * genuinely gone (closed, deleted, filtered out), not just relocated to
+   * a different column (a relocated card was already re-claimed by
+   * `reconcileColumnCards` via `appendChild`, so it's never "unclaimed"). */
+  function removeUnclaimedCards(container, claimed, reduceMotion) {
+    container.querySelectorAll(".card[data-id]").forEach(function(node) {
+      var id = node.dataset.id;
+      if (claimed[id]) return;
+      if (reduceMotion) {
+        node.remove();
+        return;
+      }
+      node.classList.add("exiting");
+      node.addEventListener("animationend", function() { node.remove(); }, { once: true });
+      // Safety net: guarantee removal even if `animationend` never fires
+      // (e.g. an ancestor is hidden mid-animation) so a stale card can
+      // never linger indefinitely.
+      setTimeout(function() { if (node.parentNode) node.remove(); }, 600);
+    });
+  }
+
+  /** FLIP "Last"/"Invert"/"Play": for every card whose position changed
+   * since `firstRects` was captured, jumps it back to its old position with
+   * transitions disabled, forces layout, then on the next frame clears the
+   * jump with `.moving`'s transition enabled — the browser animates the
+   * (already-happened) DOM move as a smooth slide instead of an instant
+   * jump. Cards with no `firstRects` entry are newly entered — nothing to
+   * FLIP, `.entering` (applied in `reconcileColumnCards`) handles those. */
+  function playFlip(container, firstRects) {
+    var moved = [];
+    container.querySelectorAll(".card[data-id]").forEach(function(node) {
+      var first = firstRects[node.dataset.id];
+      if (!first) return;
+      var last = node.getBoundingClientRect();
+      var dx = first.left - last.left, dy = first.top - last.top;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      node.style.transition = "none";
+      node.style.transform = "translate(" + dx + "px," + dy + "px)";
+      moved.push(node);
+    });
+    if (!moved.length) return;
+    // Force layout so the inverted transform is committed before it's
+    // cleared below — otherwise both style writes coalesce into one frame
+    // and there's nothing left to animate.
+    void container.offsetHeight;
+    requestAnimationFrame(function() {
+      moved.forEach(function(node) {
+        node.style.transition = ""; // let the `.moving` class's transition govern now
+        node.classList.add("moving");
+        node.style.transform = "";
+      });
+      setTimeout(function() {
+        moved.forEach(function(node) { node.classList.remove("moving"); });
+      }, 320);
+    });
+  }
+
+  /** Flashes a card whose field(s) changed this render — one flash class at
+   * a time, in priority order (a newly-blocked card outranks a same-render
+   * priority bump for which color pulses). Restarts the animation via a
+   * forced reflow if the card is already mid-flash from a rapid prior
+   * update, rather than silently no-op'ing. */
+  function applyChangeFlash(node, id, anims, reduceMotion) {
+    if (reduceMotion) return;
+    var fields = anims.changed[id];
+    if (!fields) return;
+    var cls = fields.indexOf("blocked") !== -1 ? "flash-blocked"
+      : fields.indexOf("ready") !== -1 ? "flash-ready"
+      : fields.indexOf("priority") !== -1 ? "flash-priority"
+      : null;
+    if (!cls) return;
+    node.classList.remove("flash-priority", "flash-blocked", "flash-ready");
+    void node.offsetWidth; // force reflow so re-adding the class replays the animation
+    node.classList.add(cls);
+    node.addEventListener("animationend", function() { node.classList.remove(cls); }, { once: true });
+  }
+
+  /** Constructs a new card node: the parts that never change again for a
+   * given id (its identity-bound event listeners) live here; everything
+   * that *can* change across renders lives in `populateCard`, called both
+   * here (for the initial fill) and directly on reuse. */
   function buildCard(v, ready, blocked, isClosed) {
+    var id = v.story.id;
+    var card = el("div", { dataset: { id: id } }, []);
+    card.addEventListener("click", function() { openDrawer(id); });
+    card.addEventListener("dragstart", function(e) {
+      card.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", id);
+    });
+    card.addEventListener("dragend", function() { card.classList.remove("dragging"); });
+    populateCard(card, v, ready, blocked, isClosed);
+    return card;
+  }
+
+  /** Fills in (or updates in place) everything about a card that can change
+   * across renders: content, accent color, and the `draggable`/`pending`
+   * state (drag listeners are bound once in `buildCard` and stay bound
+   * regardless — the browser itself refuses to start a drag on an element
+   * whose `draggable` attribute is `false`, so nothing needs re-binding
+   * here, only the attribute). */
+  function populateCard(card, v, ready, blocked, isClosed) {
     var st = v.story;
     var draggable = !isClosed && !state.pending[st.id];
-    var card = el("div", {
-      class: "card" + (state.pending[st.id] ? " pending" : "") + (draggable ? "" : " not-draggable"),
-      draggable: draggable,
-      dataset: { id: st.id },
-      title: isClosed ? "Reopen from the detail view to move this card" : "",
-      onClick: function() { openDrawer(st.id); }
-    }, []);
+    card.className = "card" + (state.pending[st.id] ? " pending" : "") + (draggable ? "" : " not-draggable");
+    card.draggable = draggable;
+    card.title = isClosed ? "Reopen from the detail view to move this card" : "";
     card.style.setProperty("--card-accent", priorityColor(st.priority));
 
-    var meta_ = el("div", { class: "card-meta" }, [
-      el("span", { class: "card-id" }, [st.id])
-    ]);
-    if (st.assignee) {
-      meta_.appendChild(el("span", { class: "avatar", title: memberName(st.assignee) }, [initials(memberName(st.assignee))]));
-    }
-
+    clear(card);
     card.appendChild(el("div", { class: "card-id" }, [st.id]));
     card.appendChild(el("div", { class: "card-title" }, [st.title]));
 
@@ -1041,16 +1377,6 @@ tbody tr:hover { background: var(--bg-sunken); }
     if (blocked[st.id]) flags.appendChild(el("span", { class: "flag flag-blocked" }, ["● blocked"]));
     else if (ready[st.id]) flags.appendChild(el("span", { class: "flag flag-ready" }, ["● ready"]));
     if (flags.childNodes.length) card.appendChild(flags);
-
-    if (draggable) {
-      card.addEventListener("dragstart", function(e) {
-        card.classList.add("dragging");
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", st.id);
-      });
-      card.addEventListener("dragend", function() { card.classList.remove("dragging"); });
-    }
-    return card;
   }
 
   function bindColumnDrop(column, targetSlug, isClosed) {
@@ -1131,9 +1457,15 @@ tbody tr:hover { background: var(--bg-sunken); }
   // RENDER: LIST
   // ============================================================
 
-  function renderList(stories) {
+  /** Keyed reconcile, mirroring the board's: existing `<tr>`s are reused by
+   * `data-id` (`populateListRow`) and reordered via `appendChild` rather
+   * than torn down and rebuilt, so a changed row's flash animation
+   * (`applyRowFlash`) survives the render that triggers it. No FLIP here —
+   * a table row sliding vertically past its neighbors reads as noise, not
+   * signal, in a way a kanban card crossing columns doesn't; a flash is
+   * enough to say "this one changed." */
+  function renderList(stories, anims) {
     var body = $("list-body");
-    clear(body);
     var ready = readySet(), blocked = blockedSet();
 
     var sorted = stories.slice().sort(function(a, b) {
@@ -1146,22 +1478,65 @@ tbody tr:hover { background: var(--bg-sunken); }
     var arrow = $("sort-" + state.sort.col);
     if (arrow) arrow.textContent = state.sort.dir === 1 ? "▲" : "▼";
 
+    var reduceMotion = prefersReducedMotion();
+    var existingById = {};
+    Array.prototype.forEach.call(body.children, function(row) {
+      if (row.dataset && row.dataset.id) existingById[row.dataset.id] = row;
+    });
+
+    var claimed = {};
     sorted.forEach(function(v) {
-      var st = v.story;
-      var updated = (st.updated_at || "").slice(0, 10);
-      var row = el("tr", { onClick: function() { openDrawer(st.id); } }, [
-        el("td", { class: "col-id" }, [st.id]),
-        el("td", {}, [st.title]),
-        el("td", {}, [el("span", { class: "state-pill" }, [st.state])]),
-        el("td", {}, [priorityDot(st.priority)]),
-        el("td", {}, [labelChips(st.labels)]),
-        el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]),
-        el("td", { class: "col-date" }, [updated])
-      ]);
-      if (blocked[st.id]) row.style.borderLeft = "3px solid var(--danger)";
-      else if (ready[st.id]) row.style.borderLeft = "3px solid var(--success)";
+      var id = v.story.id;
+      claimed[id] = true;
+      var row = existingById[id];
+      if (row) {
+        populateListRow(row, v, ready, blocked);
+      } else {
+        row = buildListRow(v, ready, blocked);
+      }
+      if (!reduceMotion && anims) applyRowFlash(row, id, anims);
       body.appendChild(row);
     });
+
+    Object.keys(existingById).forEach(function(id) {
+      if (!claimed[id]) existingById[id].remove();
+    });
+  }
+
+  function buildListRow(v, ready, blocked) {
+    var id = v.story.id;
+    var row = el("tr", { dataset: { id: id } }, []);
+    row.addEventListener("click", function() { openDrawer(id); });
+    populateListRow(row, v, ready, blocked);
+    return row;
+  }
+
+  function populateListRow(row, v, ready, blocked) {
+    var st = v.story;
+    var updated = (st.updated_at || "").slice(0, 10);
+    clear(row);
+    row.appendChild(el("td", { class: "col-id" }, [st.id]));
+    row.appendChild(el("td", {}, [st.title]));
+    row.appendChild(el("td", {}, [el("span", { class: "state-pill" }, [st.state])]));
+    row.appendChild(el("td", {}, [priorityDot(st.priority)]));
+    row.appendChild(el("td", {}, [labelChips(st.labels)]));
+    row.appendChild(el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]));
+    row.appendChild(el("td", { class: "col-date" }, [updated]));
+    row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : (ready[st.id] ? "3px solid var(--success)" : "");
+  }
+
+  /** Briefly highlights a row that either just appeared or has a field
+   * change recorded in `anims` — a single shared visual treatment, unlike
+   * the board's per-field-type flash colors, since a table row has no
+   * per-field color affordance (no `--card-accent`-style border) to key
+   * off of. */
+  function applyRowFlash(row, id, anims) {
+    var isNew = anims.entered.indexOf(id) !== -1;
+    if (!isNew && !anims.changed[id]) return;
+    row.classList.remove("row-flash");
+    void row.offsetWidth; // force reflow so re-adding the class replays the animation
+    row.classList.add("row-flash");
+    row.addEventListener("animationend", function() { row.classList.remove("row-flash"); }, { once: true });
   }
 
   function priorityDot(p) {
@@ -1517,10 +1892,15 @@ tbody tr:hover { background: var(--bg-sunken); }
     fetchReposOnce();
   }
 
+  /** Keyed reconcile, same shape as the board/list: repo cards are reused
+   * by `data-id` (`populateRepoCard`) rather than rebuilt, and a card whose
+   * summary counts actually changed since the last render gets a brief
+   * flash (`flash-updated`) so a live update here reads as "this repo just
+   * changed" rather than a silent number swap. */
   function renderHome() {
     var container = $("home-view");
-    clear(container);
     if (!state.repos.length) {
+      clear(container);
       container.appendChild(el("div", { class: "home-empty" }, [
         "No repos registered yet.",
         el("button", { class: "btn btn-primary", onClick: goSettings }, ["Register a repo"])
@@ -1535,45 +1915,105 @@ tbody tr:hover { background: var(--bg-sunken); }
       }
       return acc;
     }, { open: 0, ready: 0, blocked: 0 });
-    container.appendChild(el("div", { class: "home-summary" }, [
-      el("div", { class: "home-stat" }, [String(totals.open), el("span", {}, ["open"])]),
-      el("div", { class: "home-stat" }, [String(totals.ready), el("span", {}, ["ready"])]),
-      el("div", { class: "home-stat" }, [String(totals.blocked), el("span", {}, ["blocked"])])
-    ]));
-    var grid = el("div", { class: "home-grid" }, []);
-    state.repos.forEach(function(r) { grid.appendChild(buildRepoCard(r)); });
-    container.appendChild(grid);
+
+    var grid = $("home-grid");
+    if (!grid) {
+      clear(container);
+      container.appendChild(el("div", { class: "home-summary", id: "home-summary" }, [
+        el("div", { class: "home-stat" }, [String(totals.open), el("span", {}, ["open"])]),
+        el("div", { class: "home-stat" }, [String(totals.ready), el("span", {}, ["ready"])]),
+        el("div", { class: "home-stat" }, [String(totals.blocked), el("span", {}, ["blocked"])])
+      ]));
+      grid = el("div", { class: "home-grid", id: "home-grid" }, []);
+      container.appendChild(grid);
+    } else {
+      var stats = $("home-summary").querySelectorAll(".home-stat");
+      stats[0].firstChild.nodeValue = String(totals.open);
+      stats[1].firstChild.nodeValue = String(totals.ready);
+      stats[2].firstChild.nodeValue = String(totals.blocked);
+    }
+
+    var reduceMotion = prefersReducedMotion();
+    var existingById = {};
+    Array.prototype.forEach.call(grid.children, function(node) {
+      if (node.dataset && node.dataset.id) existingById[node.dataset.id] = node;
+    });
+
+    var claimed = {};
+    state.repos.forEach(function(r) {
+      claimed[r.id] = true;
+      var node = existingById[r.id];
+      var fingerprint = repoCardFingerprint(r);
+      if (node) {
+        if (!reduceMotion && node.dataset.fingerprint !== fingerprint) {
+          node.classList.remove("flash-updated");
+          void node.offsetWidth; // force reflow so re-adding the class replays the animation
+          node.classList.add("flash-updated");
+          node.addEventListener("animationend", function() { node.classList.remove("flash-updated"); }, { once: true });
+        }
+        populateRepoCard(node, r);
+      } else {
+        node = buildRepoCard(r);
+      }
+      node.dataset.fingerprint = fingerprint;
+      grid.appendChild(node);
+    });
+
+    Object.keys(existingById).forEach(function(id) {
+      if (!claimed[id]) existingById[id].remove();
+    });
+  }
+
+  /** A cheap string summarizing everything `populateRepoCard` renders, so
+   * `renderHome()` can tell "this card's content actually changed" (worth
+   * a flash) apart from "same content, just re-reconciled" (e.g. every
+   * poll when nothing changed) without a field-by-field diff like
+   * `diffSnapshots` — a repo card has too little structure to need one. */
+  function repoCardFingerprint(r) {
+    return JSON.stringify([r.available, r.name, r.path, r.error, r.summary]);
   }
 
   function buildRepoCard(r) {
+    var card = el("div", { dataset: { id: r.id } }, []);
+    card.addEventListener("click", function() {
+      var current = state.repos.filter(function(x) { return x.id === r.id; })[0];
+      if (current && current.available) selectRepo(current.id);
+    });
+    populateRepoCard(card, r);
+    return card;
+  }
+
+  function populateRepoCard(card, r) {
+    clear(card);
     if (!r.available) {
-      return el("div", { class: "repo-card unavailable" }, [
-        el("div", { class: "repo-card-name" }, [r.name]),
-        el("div", { class: "repo-card-path" }, [r.path]),
-        el("div", { class: "repo-card-error" }, [r.error || "Unavailable"])
-      ]);
+      card.className = "repo-card unavailable";
+      card.appendChild(el("div", { class: "repo-card-name" }, [r.name]));
+      card.appendChild(el("div", { class: "repo-card-path" }, [r.path]));
+      card.appendChild(el("div", { class: "repo-card-error" }, [r.error || "Unavailable"]));
+      return;
     }
+    card.className = "repo-card";
     var s = r.summary;
-    return el("div", { class: "repo-card", onClick: function() { selectRepo(r.id); } }, [
-      el("div", { class: "repo-card-name" }, [r.name]),
-      el("div", { class: "repo-card-path" }, [r.path]),
-      el("div", { class: "repo-card-stats" }, [
-        el("span", {}, [s.total_open + " open"]),
-        el("span", {}, [s.ready_count + " ready"]),
-        el("span", {}, [s.blocked_count + " blocked"])
-      ])
-    ]);
+    card.appendChild(el("div", { class: "repo-card-name" }, [r.name]));
+    card.appendChild(el("div", { class: "repo-card-path" }, [r.path]));
+    card.appendChild(el("div", { class: "repo-card-stats" }, [
+      el("span", {}, [s.total_open + " open"]),
+      el("span", {}, [s.ready_count + " ready"]),
+      el("span", {}, [s.blocked_count + " blocked"])
+    ]));
   }
 
   /** The register form is built once per screen-entry (`goSettings()`
-   * clears the `built` flag), never on the routine 3s poll that keeps the
-   * repo table live — rebuilding it every poll would silently discard
+   * clears the `built` flag), never on a routine repo-list refresh — the
+   * safety poll, or (now) an `/api/events`-triggered `fetchReposOnce()`,
+   * which can land at any time, not just every few seconds — that keeps the
+   * repo table live. Rebuilding it on every refresh would silently discard
    * whatever the user is mid-typing into the path/name fields, which is
    * exactly the kind of "worked in the demo, loses your input in real use"
-   * bug that only shows up once a human takes longer than 3 seconds to
-   * type a path. The table itself carries no editable state, so it's safe
-   * to fully rebuild on every poll (`renderSettingsTable()`, called both
-   * here on first build and directly from the poll path). */
+   * bug that only shows up once a human takes long enough to type a path.
+   * The table itself carries no editable state, so it's safe to fully
+   * rebuild on every refresh (`renderSettingsTable()`, called both here on
+   * first build and directly from the refresh path). */
   function renderSettings() {
     var container = $("settings-view");
     if (!container.dataset.built) {
@@ -1694,23 +2134,29 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   /** Which poll's freshness the connection indicator/footer should reflect:
    * the per-repo `/data` poll while on the repo screen, else the `/api/repos`
-   * poll that backs home and settings. */
+   * poll that backs home and settings. Still used for the footer's "Updated
+   * Ns ago" text (and as the connection indicator's own fallback — see
+   * `updateConnection()`) even now that `/api/events` is the primary
+   * live-update signal, since either transport ultimately lands here via
+   * the same `fetchData()`/`fetchReposOnce()` calls. */
   function activePollState() {
     return state.screen === "repo"
       ? { ok: state.fetchOk, at: state.lastFetchAt }
       : { ok: state.reposFetchOk, at: state.reposFetchAt };
   }
 
+  /** "Live" means the `EventSource` in `connectEvents()` has an open
+   * connection — a real signal, not a guess — wherever the browser
+   * supports it. Only falls back to poll-freshness (the old, weaker
+   * "haven't heard from a poll in the last 10s" heuristic) when
+   * `EventSource` itself isn't available. */
   function updateConnection() {
     var dot = $("conn-dot"), text = $("conn-text");
-    var p = activePollState();
-    if (p.ok && (Date.now() - p.at) < 10000) {
-      dot.className = "conn-dot live";
-      text.textContent = "Live";
-    } else {
-      dot.className = "conn-dot disconnected";
-      text.textContent = "Disconnected";
-    }
+    var live = window.EventSource
+      ? sse.connected
+      : (function() { var p = activePollState(); return p.ok && (Date.now() - p.at) < 10000; })();
+    dot.className = "conn-dot " + (live ? "live" : "disconnected");
+    text.textContent = live ? "Live" : "Disconnected";
   }
 
   function updateFooter() {
@@ -1747,13 +2193,65 @@ tbody tr:hover { background: var(--bg-sunken); }
     });
   }
 
-  /** Every poll tick refreshes the (lightweight) repo list — so the
-   * repo-select, home cards, and settings table stay live, and so a repo
-   * deregistered elsewhere is noticed promptly — plus the selected repo's
-   * full data while on the "repo" screen. */
+  /** `/api/events` is the primary live-update transport (see
+   * `connectEvents()`); this is now only a slow safety net — a resync in
+   * case a push was ever missed, and the sole update mechanism for a
+   * browser without `EventSource` support. Refreshes the (lightweight)
+   * repo list — so the repo-select, home cards, and settings table stay
+   * live, and so a repo deregistered elsewhere is noticed eventually —
+   * plus the selected repo's full data while on the "repo" screen. */
   function pollTick() {
     fetchReposOnce();
     if (state.screen === "repo" && state.repoId) fetchData();
+  }
+
+  var fetchDataDebounceTimer = null;
+
+  /** Coalesces a burst of `repo-changed` events (e.g. several individually
+   * server-debounced mutations landing close together) into a single
+   * re-fetch, rather than one XHR per event. */
+  function scheduleDataFetch() {
+    if (fetchDataDebounceTimer) return;
+    fetchDataDebounceTimer = setTimeout(function() {
+      fetchDataDebounceTimer = null;
+      fetchData();
+    }, FETCH_DEBOUNCE_MS);
+  }
+
+  /** Opens the live-update channel. `repos-changed` refreshes the repo
+   * list (registration changed elsewhere); `repo-changed` does too — a
+   * repo's summary counts on the home/settings screens are as much "live"
+   * as its own board — and additionally re-fetches `/data` when the
+   * changed repo is the one currently open. `onopen` resyncs both,
+   * unconditionally: `EventSource` never replays history, so anything that
+   * changed before this connection (or a reconnect after a drop) opened
+   * would otherwise go unnoticed until the next safety poll. */
+  function connectEvents() {
+    if (!window.EventSource) return; // no push support — the safety poll alone drives updates
+    var es = new EventSource("/api/events");
+    es.onopen = function() {
+      sse.connected = true;
+      updateConnection();
+      fetchReposOnce();
+      if (state.screen === "repo" && state.repoId) fetchData();
+    };
+    es.addEventListener("repos-changed", function() {
+      fetchReposOnce();
+    });
+    es.addEventListener("repo-changed", function(e) {
+      fetchReposOnce();
+      if (state.screen !== "repo" || !state.repoId) return;
+      try {
+        var payload = JSON.parse(e.data);
+        if (payload.repo_id === state.repoId) scheduleDataFetch();
+      } catch (err) { /* malformed payload — fetchReposOnce() above already ran */ }
+    });
+    es.onerror = function() {
+      // `EventSource` retries on its own (using the server's `retry:`
+      // hint); this just reflects the gap in the indicator until it does.
+      sse.connected = false;
+      updateConnection();
+    };
   }
 
   /** Initial load: fetch the repo list once, then enter the "repo" screen
@@ -1777,7 +2275,8 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   renderScreen();
   bootstrap();
-  setInterval(pollTick, POLL_INTERVAL_MS);
+  connectEvents();
+  setInterval(pollTick, SAFETY_POLL_INTERVAL_MS);
   setInterval(updateFooter, FOOTER_TICK_MS);
 })();
 </script>
