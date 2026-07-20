@@ -1260,6 +1260,49 @@ fn web_reopen_archived_story() {
     assert_eq!(story_field(&json, "superstate"), "OPEN");
 }
 
+/// Regression test for a defect where `route_reopen_story` constructed
+/// `Invocation::Reopen` without the `force` field `story reopen --force`
+/// added on the CLI side, which failed to compile at all. The fix passes
+/// `force: false`, so this route must keep behaving like an un-forced CLI
+/// `story reopen`: reopening a *soft-deleted* story is rejected with a clear
+/// error rather than silently undeleting it (see `app.rs`'s `Invocation::
+/// Reopen` handler) — and, since the server has no TTY to prompt at, this
+/// must fail cleanly rather than hang waiting on stdin confirmation.
+#[test]
+fn web_reopen_soft_deleted_story_is_rejected_without_force() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let root = dir.path().to_path_buf();
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&root, port).ok();
+    });
+    wait_for_server(port);
+
+    let del = delete_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1"),
+        r#"{"reason":"duplicate"}"#,
+    )
+    .unwrap();
+    assert_eq!(del.status(), 200);
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/story/SH-1/reopen"),
+        "",
+    )
+    .unwrap_err();
+    let status = match err {
+        ureq::Error::StatusCode(code) => code,
+        other => panic!("expected status code error, got: {other}"),
+    };
+    assert_eq!(
+        status, 422,
+        "soft-deleted reopen must be rejected, not silently undeleted or hung"
+    );
+}
+
 // --- Mutation API: PATCH multi-field ---
 
 #[test]

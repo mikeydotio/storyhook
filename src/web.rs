@@ -591,8 +591,21 @@ fn route_unblock_story(root: &Path, id: &str) -> Reply {
     run_and_reply(root, 200, Invocation::ClearAwaiting { id: id.to_string() })
 }
 
+/// `POST /api/story/{id}/reopen` always reopens un-forced (`force: false`),
+/// matching a plain `story reopen <id>` on the CLI: an ordinarily-closed
+/// story reopens normally, but a soft-deleted one is rejected rather than
+/// silently undeleted — the server has no TTY to prompt at, so it must fail
+/// clearly instead of hanging on the confirmation `story reopen --force`
+/// exists to skip.
 fn route_reopen_story(root: &Path, id: &str) -> Reply {
-    run_and_reply(root, 200, Invocation::Reopen { id: id.to_string() })
+    run_and_reply(
+        root,
+        200,
+        Invocation::Reopen {
+            id: id.to_string(),
+            force: false,
+        },
+    )
 }
 
 /// `DELETE /api/story/{id}` — a required, non-empty `reason` is enforced the
