@@ -30,13 +30,22 @@ fn main() {
         }
     };
 
-    // Web server foreground mode: `story web --serve --port N --root /path`
-    // Runs the HTTP server directly (used by the daemon spawner).
+    // Web server foreground mode: `story web --serve --port N`. Runs the
+    // HTTP server directly (used by the daemon spawner), against the
+    // registry at its default location — the one piece of storyhook state
+    // that lives outside any single repo's `.storyhook/`.
     if let Invocation::Web {
-        action: WebAction::Serve { port, ref root },
+        action: WebAction::Serve { port },
     } = invocation
     {
-        if let Err(e) = storyhook::web::start_server(root, port) {
+        let registry_path = match storyhook::registry::default_registry_path() {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("error: {e}");
+                process::exit(e.exit_code());
+            }
+        };
+        if let Err(e) = storyhook::web::start_server(&registry_path, port) {
             eprintln!("error: {e}");
             process::exit(e.exit_code());
         }

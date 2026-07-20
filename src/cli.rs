@@ -63,6 +63,9 @@ Usage:
   story tui                                           (interactive terminal UI)
   story web start [--port <PORT>]                  (start web dashboard)
   story web stop                                   (stop web dashboard)
+  story web register [<PATH>] [--name <NAME>]      (add a repo to the dashboard)
+  story web deregister <ID|PATH>                   (remove a repo from the dashboard)
+  story web list                                   (list registered repos)
   story member add "<name <email>>"
   story member add -g <github-handle>
   story state add <state-slug> --super OPEN|CLOSED [--role active]
@@ -329,10 +332,22 @@ pub const DEFAULT_WEB_PORT: u16 = 3456;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WebAction {
-    Start { port: u16 },
+    Start {
+        port: u16,
+    },
     Stop,
     Status,
-    Serve { port: u16, root: std::path::PathBuf },
+    Serve {
+        port: u16,
+    },
+    Register {
+        path: std::path::PathBuf,
+        name: Option<String>,
+    },
+    Deregister {
+        target: String,
+    },
+    List,
 }
 
 pub fn split_global_flags(args: &[String]) -> (bool, bool, bool, Vec<String>) {
@@ -1270,7 +1285,8 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story web start [--port <PORT>] | stop | status";
+    let usage = "usage: story web start [--port <PORT>] | stop | status | \
+                  register [PATH] [--name <NAME>] | deregister <ID|PATH> | list";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -1306,10 +1322,47 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         "status" => Ok(Invocation::Web {
             action: WebAction::Status,
         }),
+        "register" => {
+            let mut path = std::path::PathBuf::from(".");
+            let mut name = None;
+            let mut index = 2;
+            if let Some(next) = args.get(2)
+                && !next.starts_with("--")
+            {
+                path = std::path::PathBuf::from(next);
+                index = 3;
+            }
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--name" => {
+                        let value = args.get(index + 1).ok_or_else(|| {
+                            AppError::Usage("--name requires a value".to_string())
+                        })?;
+                        name = Some(value.clone());
+                        index += 2;
+                    }
+                    _ => return Err(AppError::Usage(usage.to_string())),
+                }
+            }
+            Ok(Invocation::Web {
+                action: WebAction::Register { path, name },
+            })
+        }
+        "deregister" => {
+            let target = args
+                .get(2)
+                .ok_or_else(|| AppError::Usage(usage.to_string()))?
+                .clone();
+            Ok(Invocation::Web {
+                action: WebAction::Deregister { target },
+            })
+        }
+        "list" => Ok(Invocation::Web {
+            action: WebAction::List,
+        }),
         "--serve" => {
-            // Internal: story web --serve --port N --root /path
+            // Internal: story web --serve --port N
             let mut port: u16 = DEFAULT_WEB_PORT;
-            let mut root = None;
             let mut index = 2;
             while index < args.len() {
                 match args[index].as_str() {
@@ -1322,20 +1375,11 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
                             .map_err(|_| AppError::Usage(format!("invalid port: {value}")))?;
                         index += 2;
                     }
-                    "--root" => {
-                        let value = args.get(index + 1).ok_or_else(|| {
-                            AppError::Usage("--root requires a value".to_string())
-                        })?;
-                        root = Some(std::path::PathBuf::from(value));
-                        index += 2;
-                    }
                     _ => return Err(AppError::Usage(usage.to_string())),
                 }
             }
-            let root =
-                root.ok_or_else(|| AppError::Usage("--serve requires --root".to_string()))?;
             Ok(Invocation::Web {
-                action: WebAction::Serve { port, root },
+                action: WebAction::Serve { port },
             })
         }
         _ => Err(AppError::Usage(usage.to_string())),

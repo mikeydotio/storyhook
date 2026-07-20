@@ -12,6 +12,7 @@ use crate::cli::{CliOptions, Invocation};
 use crate::domain::Priority;
 use crate::error::AppError;
 use crate::output::{render_error, render_response};
+use crate::registry;
 use crate::storage;
 
 const DASHBOARD_HTML: &str = include_str!("web_dashboard.html");
@@ -201,11 +202,14 @@ fn run_mutation_and_reply_with_story(root: &Path, id: &str, invocation: Invocati
     }
 }
 
-/// Decides how to respond to a request. GET routes are unauthenticated reads;
-/// every other method mutates project state and must pass [`guarded`] (or
-/// [`guarded_no_body`]) first.
+/// Decides how to respond to a request against the *registry* at
+/// `registry_path` — the file listing every repo the dashboard knows about.
+/// `/` always serves the single-page app; `/api/repos` (list/register) and
+/// `/api/repos/<id>` (deregister) operate on the registry itself; every
+/// other `/api/repos/<id>/...` path resolves `<id>` to that repo's root and
+/// delegates to [`route_repo`], the entire per-repo API surface.
 fn route(
-    root: &Path,
+    registry_path: &Path,
     method: &Method,
     path: &str,
     headers: &[Header],
@@ -217,20 +221,58 @@ fn route(
             Method::Get => html_reply(DASHBOARD_HTML).no_cache(),
             _ => text_reply(405, "Method not allowed"),
         },
-        ["api", "data"] => match method {
+        ["api", "repos"] => match method {
+            Method::Get => match build_repos_json(registry_path) {
+                Ok(json) => json_reply(200, json).no_cache(),
+                Err(e) => error_reply(&e),
+            },
+            Method::Post => guarded(headers, trusted_hosts, body, |b| {
+                route_register_repo(registry_path, b)
+            }),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["api", "repos", id] => match method {
+            Method::Delete => guarded_no_body(headers, trusted_hosts, || {
+                route_deregister_repo(registry_path, id)
+            }),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["api", "repos", id, rest @ ..] => match resolve_repo_root(registry_path, id) {
+            Ok(Some(root)) => route_repo(&root, method, rest, headers, body, trusted_hosts),
+            Ok(None) => text_reply(404, "Not found"),
+            Err(e) => error_reply(&e),
+        },
+        _ => text_reply(404, "Not found"),
+    }
+}
+
+/// The per-repo API surface — everything under `/api/repos/<id>/...` once
+/// `<id>` has resolved to `root`. Identical to the routes the single-repo
+/// server used to expose at the top level; `rest` is the path *after*
+/// `/api/repos/<id>`, e.g. `["data"]` or `["story", "SH-1", "move"]`.
+fn route_repo(
+    root: &Path,
+    method: &Method,
+    rest: &[&str],
+    headers: &[Header],
+    body: &str,
+    trusted_hosts: &[String],
+) -> Reply {
+    match rest {
+        ["data"] => match method {
             Method::Get => match build_api_json(root) {
                 Ok(json) => json_reply(200, json).no_cache(),
                 Err(e) => error_reply(&e),
             },
             _ => text_reply(405, "Method not allowed"),
         },
-        ["api", "story"] => match method {
+        ["story"] => match method {
             Method::Post => guarded(headers, trusted_hosts, body, |b| {
                 route_create_story(root, b)
             }),
             _ => text_reply(405, "Method not allowed"),
         },
-        ["api", "story", id] => match method {
+        ["story", id] => match method {
             Method::Get => run_and_reply(
                 root,
                 200,
@@ -246,7 +288,7 @@ fn route(
             }),
             _ => text_reply(405, "Method not allowed"),
         },
-        ["api", "story", id, action] => match (method, *action) {
+        ["story", id, action] => match (method, *action) {
             (Method::Post, "move") => guarded(headers, trusted_hosts, body, |b| {
                 route_move_story(root, id, b)
             }),
@@ -274,19 +316,89 @@ fn route(
             (Method::Post, _) => text_reply(404, "Not found"),
             _ => text_reply(405, "Method not allowed"),
         },
-        ["api", "relate"] => match method {
+        ["relate"] => match method {
             Method::Post => guarded(headers, trusted_hosts, body, |b| {
                 route_relate(root, b, false)
             }),
             _ => text_reply(405, "Method not allowed"),
         },
-        ["api", "unrelate"] => match method {
+        ["unrelate"] => match method {
             Method::Post => guarded(headers, trusted_hosts, body, |b| {
                 route_relate(root, b, true)
             }),
             _ => text_reply(405, "Method not allowed"),
         },
         _ => text_reply(404, "Not found"),
+    }
+}
+
+/// Resolves `id` to its registered repo's root path, or `None` if no repo
+/// with that id is registered. A registry-load failure (e.g. corrupt TOML)
+/// is a distinct, real error from an unknown id, so callers can tell a 404
+/// (bad id) from a 500 (broken registry).
+fn resolve_repo_root(registry_path: &Path, id: &str) -> Result<Option<PathBuf>, AppError> {
+    let registry = registry::Registry::load_from(registry_path)?;
+    Ok(registry.find(id).map(|r| r.path.clone()))
+}
+
+// --- Registry route handlers: GET/POST /api/repos, DELETE /api/repos/<id> ---
+
+/// `GET /api/repos` — one entry per registered repo, driving the
+/// repo-selector dropdown, the home screen's summary cards, and the
+/// settings screen's repo list. A repo whose data can't currently be loaded
+/// (moved, deleted, or otherwise broken) is reported as `available: false`
+/// with an `error` message rather than failing the whole request — one bad
+/// repo must never take down the view of every other one.
+fn build_repos_json(registry_path: &Path) -> Result<String, AppError> {
+    let registry = registry::Registry::load_from(registry_path)?;
+    let repos: Vec<serde_json::Value> = registry
+        .repos
+        .iter()
+        .map(|repo| match build_report_data(&repo.path) {
+            Ok(data) => serde_json::json!({
+                "id": repo.id,
+                "name": repo.name,
+                "path": repo.path,
+                "available": true,
+                "summary": data.summary,
+            }),
+            Err(e) => serde_json::json!({
+                "id": repo.id,
+                "name": repo.name,
+                "path": repo.path,
+                "available": false,
+                "error": e.to_string(),
+            }),
+        })
+        .collect();
+
+    serde_json::to_string(&repos)
+        .map_err(|e| AppError::Storage(format!("JSON serialization failed: {e}")))
+}
+
+/// `POST /api/repos` — register a repo. Body: `{"path": "...", "name"?: "..."}`.
+fn route_register_repo(registry_path: &Path, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let path = require_str(&obj, "path")?;
+        let name = get_str(&obj, "name");
+        let repo = registry::with_lock_at(registry_path, |r| r.register(Path::new(path), name))?;
+        let json = serde_json::to_string(&repo)
+            .map_err(|e| AppError::Storage(format!("JSON serialization failed: {e}")))?;
+        Ok(json_reply(201, json))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `DELETE /api/repos/{id}` — deregister a repo. Never touches the target
+/// repo's own files, only the registry entry (see `Registry::deregister`).
+fn route_deregister_repo(registry_path: &Path, id: &str) -> Reply {
+    match registry::with_lock_at(registry_path, |r| r.deregister(id)) {
+        Ok(repo) => {
+            let json = serde_json::json!({"result": "ok", "repo": repo}).to_string();
+            json_reply(200, json)
+        }
+        Err(e) => error_reply(&e),
     }
 }
 
@@ -697,8 +809,9 @@ fn trusted_hosts_from_env() -> Vec<String> {
 /// Runs the request-accept loop for one bound `Server`, dispatching each
 /// request through [`route`]/[`finish`]. Shared between the primary
 /// (loopback) listener and the optional tailnet listener started by
-/// [`start_server`] — both serve identical logic against the same project.
-fn accept_loop(server: Server, root: PathBuf, trusted_hosts: Vec<String>) {
+/// [`start_server`] — both serve identical logic against the same registry
+/// (and, through it, every repo registered in it).
+fn accept_loop(server: Server, registry_path: PathBuf, trusted_hosts: Vec<String>) {
     for mut request in server.incoming_requests() {
         let method = request.method().clone();
         let path = request_path(request.url()).to_string();
@@ -719,12 +832,22 @@ fn accept_loop(server: Server, root: PathBuf, trusted_hosts: Vec<String>) {
             String::new()
         };
 
-        let reply = route(&root, &method, &path, &headers, &body, &trusted_hosts);
+        let reply = route(
+            &registry_path,
+            &method,
+            &path,
+            &headers,
+            &body,
+            &trusted_hosts,
+        );
         finish(request, reply);
     }
 }
 
-/// Binds the dashboard's listeners and serves forever.
+/// Binds the dashboard's listeners and serves forever, against the registry
+/// at `registry_path` (production always uses [`registry::default_registry_path`];
+/// tests point this at a temp file so the suite never touches the
+/// developer's real `~/.storyhook/registry.toml`).
 ///
 /// The primary listener is always `127.0.0.1` — hardcoded, never
 /// configurable — so the dashboard can never become reachable from beyond
@@ -735,7 +858,7 @@ fn accept_loop(server: Server, root: PathBuf, trusted_hosts: Vec<String>) {
 /// without a third-party reverse proxy. Nothing is ever bound to `0.0.0.0`
 /// or any other wildcard/public-facing address, and no plain LAN IP is
 /// bound either — only loopback and, when present, the tailnet.
-pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
+pub fn start_server(registry_path: &Path, port: u16) -> Result<(), AppError> {
     let loopback_addr = format!("127.0.0.1:{port}");
     let loopback_server = Server::http(&loopback_addr).map_err(|e| {
         if e.to_string().contains("Address already in use")
@@ -763,10 +886,10 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
                 // it for mutations too — the same standing as loopback —
                 // without requiring STORYHOOK_WEB_TRUSTED_HOSTS.
                 trusted_hosts.push(tailnet_ip);
-                let tailnet_root = root.to_path_buf();
+                let tailnet_registry_path = registry_path.to_path_buf();
                 let tailnet_trusted = trusted_hosts.clone();
                 std::thread::spawn(move || {
-                    accept_loop(tailnet_server, tailnet_root, tailnet_trusted)
+                    accept_loop(tailnet_server, tailnet_registry_path, tailnet_trusted)
                 });
             }
             Err(e) => {
@@ -778,27 +901,32 @@ pub fn start_server(root: &Path, port: u16) -> Result<(), AppError> {
         }
     }
 
-    accept_loop(loopback_server, root.to_path_buf(), trusted_hosts);
+    accept_loop(loopback_server, registry_path.to_path_buf(), trusted_hosts);
     Ok(())
 }
 
 // --- Daemon lifecycle ---
+//
+// One dashboard daemon serves every registered repo, so its pid/lock/log
+// live alongside the registry itself (`~/.storyhook/`) rather than under
+// any single repo's `.storyhook/` — there no longer is a single repo to
+// scope them to.
 
-fn pid_file(root: &Path) -> PathBuf {
-    root.join(".storyhook/web.pid")
+fn pid_file() -> Result<PathBuf, AppError> {
+    Ok(registry::registry_dir()?.join("web.pid"))
 }
 
-fn lock_file(root: &Path) -> PathBuf {
-    root.join(".storyhook/web.lock")
+fn lock_file() -> Result<PathBuf, AppError> {
+    Ok(registry::registry_dir()?.join("web.lock"))
 }
 
-fn log_file(root: &Path) -> PathBuf {
-    root.join(".storyhook/web.log")
+fn log_file() -> Result<PathBuf, AppError> {
+    Ok(registry::registry_dir()?.join("web.log"))
 }
 
 /// Read PID and port from the PID file. Format: "{pid}\n{port}"
-fn read_pid_file(root: &Path) -> Option<(u32, u16)> {
-    let content = fs::read_to_string(pid_file(root)).ok()?;
+fn read_pid_file() -> Option<(u32, u16)> {
+    let content = fs::read_to_string(pid_file().ok()?).ok()?;
     let mut lines = content.lines();
     let pid: u32 = lines.next()?.parse().ok()?;
     let port: u16 = lines.next()?.parse().ok()?;
@@ -848,11 +976,11 @@ fn has_web_serve() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
-pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
-    storage::ensure_project(root)?;
+pub fn handle_start(port: u16) -> Result<String, AppError> {
+    fs::create_dir_all(registry::registry_dir()?)?;
 
     // Acquire exclusive lock to prevent race conditions
-    let lock_path = lock_file(root);
+    let lock_path = lock_file()?;
     let lock = OpenOptions::new()
         .create(true)
         .read(true)
@@ -865,7 +993,7 @@ pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
         Ok(()) => {} // Lock acquired — no other instance running
         Err(_) => {
             // Lock held by another process — check PID for user message
-            if let Some((pid, existing_port)) = read_pid_file(root) {
+            if let Some((pid, existing_port)) = read_pid_file() {
                 return Err(AppError::Usage(format!(
                     "Web UI already running (PID {pid} on port {existing_port}). Run 'story web stop' first."
                 )));
@@ -877,10 +1005,10 @@ pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
     }
 
     // Check for stale PID file (lock acquired but PID file exists from a crashed instance)
-    if let Some((pid, _)) = read_pid_file(root)
+    if let Some((pid, _)) = read_pid_file()
         && !is_process_alive(pid)
     {
-        let _ = fs::remove_file(pid_file(root));
+        let _ = fs::remove_file(pid_file()?);
     }
 
     // Release lock before spawning child (child will acquire its own lock)
@@ -890,22 +1018,11 @@ pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
     let exe = env::current_exe()
         .map_err(|e| AppError::Storage(format!("Failed to find current executable: {e}")))?;
 
-    let root_abs = root
-        .canonicalize()
-        .map_err(|e| AppError::Storage(format!("Failed to resolve project path: {e}")))?;
-
-    let log = fs::File::create(log_file(root))
+    let log = fs::File::create(log_file()?)
         .map_err(|e| AppError::Storage(format!("Failed to create web log file: {e}")))?;
 
     let child = Command::new(exe)
-        .args([
-            "web",
-            "--serve",
-            "--port",
-            &port.to_string(),
-            "--root",
-            &root_abs.to_string_lossy(),
-        ])
+        .args(["web", "--serve", "--port", &port.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log)
@@ -915,7 +1032,7 @@ pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
     let pid = child.id();
 
     // Write PID file
-    fs::write(pid_file(root), format!("{pid}\n{port}"))
+    fs::write(pid_file()?, format!("{pid}\n{port}"))
         .map_err(|e| AppError::Storage(format!("Failed to write PID file: {e}")))?;
 
     // Register with web-serve if available
@@ -929,19 +1046,19 @@ pub fn handle_start(root: &Path, port: u16) -> Result<String, AppError> {
     Ok(format!("Web UI started at http://{ip}:{port} (PID {pid})"))
 }
 
-pub fn handle_stop(root: &Path) -> Result<String, AppError> {
-    let pid_path = pid_file(root);
+pub fn handle_stop() -> Result<String, AppError> {
+    let pid_path = pid_file()?;
     if !pid_path.exists() {
         return Ok("Web UI is not running".to_string());
     }
 
-    let (pid, _port) = read_pid_file(root)
-        .ok_or_else(|| AppError::Storage("Failed to read PID file".to_string()))?;
+    let (pid, _port) =
+        read_pid_file().ok_or_else(|| AppError::Storage("Failed to read PID file".to_string()))?;
 
     if !is_process_alive(pid) {
         // Stale PID
         let _ = fs::remove_file(&pid_path);
-        let _ = fs::remove_file(lock_file(root));
+        let _ = fs::remove_file(lock_file()?);
         return Ok("Cleaned up stale PID file".to_string());
     }
 
@@ -959,7 +1076,7 @@ pub fn handle_stop(root: &Path) -> Result<String, AppError> {
     }
 
     let _ = fs::remove_file(&pid_path);
-    let _ = fs::remove_file(lock_file(root));
+    let _ = fs::remove_file(lock_file()?);
 
     // Unregister from web-serve if available
     if has_web_serve() {
@@ -969,23 +1086,67 @@ pub fn handle_stop(root: &Path) -> Result<String, AppError> {
     Ok(format!("Web UI stopped (PID {pid})"))
 }
 
-pub fn handle_status(root: &Path) -> Result<String, AppError> {
-    let pid_path = pid_file(root);
+pub fn handle_status() -> Result<String, AppError> {
+    let pid_path = pid_file()?;
     if !pid_path.exists() {
         return Ok("Web UI is not running".to_string());
     }
 
-    let (pid, port) = read_pid_file(root)
-        .ok_or_else(|| AppError::Storage("Failed to read PID file".to_string()))?;
+    let (pid, port) =
+        read_pid_file().ok_or_else(|| AppError::Storage("Failed to read PID file".to_string()))?;
 
     if !is_process_alive(pid) {
         let _ = fs::remove_file(&pid_path);
-        let _ = fs::remove_file(lock_file(root));
+        let _ = fs::remove_file(lock_file()?);
         return Ok("Web UI is not running (stale PID file cleaned up)".to_string());
     }
 
     let ip = reachable_ip();
     Ok(format!("Web UI running at http://{ip}:{port} (PID {pid})"))
+}
+
+/// `story web register [PATH] [--name NAME]` — registers `path` with the
+/// default registry (`~/.storyhook/registry.toml`). A relative `path`
+/// resolves against the CLI process's actual working directory (the same
+/// place any other relative CLI path argument resolves), via
+/// `Path::canonicalize` inside `Registry::register`.
+pub fn handle_register(path: &Path, name: Option<&str>) -> Result<String, AppError> {
+    let repo = registry::with_lock(|r| r.register(path, name))?;
+    Ok(format!(
+        "Registered `{}` as `{}`",
+        repo.path.display(),
+        repo.id
+    ))
+}
+
+/// `story web deregister <ID|PATH>`.
+pub fn handle_deregister(target: &str) -> Result<String, AppError> {
+    let repo = registry::with_lock(|r| r.deregister(target))?;
+    Ok(format!(
+        "Deregistered `{}` ({})",
+        repo.id,
+        repo.path.display()
+    ))
+}
+
+/// `story web list` — human-readable summary of every registered repo.
+pub fn handle_list() -> Result<String, AppError> {
+    let registry = registry::Registry::load()?;
+    if registry.repos.is_empty() {
+        return Ok(
+            "No repos registered. Run `story web register` from a project to add one.".to_string(),
+        );
+    }
+    let mut lines = vec![format!("{} registered repo(s):", registry.repos.len())];
+    for repo in &registry.repos {
+        lines.push(format!(
+            "  {} — {} ({})",
+            repo.id,
+            repo.name,
+            repo.path.display()
+        ));
+    }
+    Ok(lines.join("\n"))
 }
 
 fn build_api_json(root: &Path) -> Result<String, AppError> {
