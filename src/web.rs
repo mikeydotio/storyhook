@@ -159,6 +159,7 @@ fn status_for(error: &AppError) -> u16 {
         AppError::Integrity(_) | AppError::Storage(_) => 500,
         AppError::GithubAuth(_) | AppError::GithubApi(_) => 502,
         AppError::SyncConflict(_) => 409,
+        AppError::StateConflict(..) => 409,
     }
 }
 
@@ -622,6 +623,7 @@ fn route_move_story(root: &Path, id: &str, body: &str) -> Reply {
                 id: id.to_string(),
                 state,
                 comment,
+                if_state: None,
             },
         ))
     })()
