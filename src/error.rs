@@ -20,6 +20,8 @@ pub enum AppError {
     GithubApi(String),
     #[error("sync conflict: {0}")]
     SyncConflict(String),
+    #[error("state conflict: expected `{0}`, was `{1}`")]
+    StateConflict(String, String), // (expected, actual)
 }
 
 impl AppError {
@@ -32,6 +34,7 @@ impl AppError {
             Self::GithubAuth(_) => 6,
             Self::GithubApi(_) => 7,
             Self::SyncConflict(_) => 8,
+            Self::StateConflict(..) => 9,
         }
     }
 }

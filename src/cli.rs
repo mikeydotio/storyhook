@@ -103,7 +103,7 @@ Usage:
   story show <id>
   story comment <id> "<text>"
   story assign <id> <member-id|handle>
-  story move <id> <state-slug> ["<comment>"]
+  story move <id> <state-slug> [--if-state <expected>] ["<comment>"]
   story block <id> "<reason>"
   story unblock <id>
   story prioritize <id> <critical|high|medium|low|none>
@@ -214,6 +214,7 @@ pub enum Invocation {
         id: String,
         state: String,
         comment: Option<String>,
+        if_state: Option<String>,
     },
     SetAwaiting {
         id: String,
@@ -1446,19 +1447,45 @@ fn parse_assign(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story move <id> <state> [--if-state <expected>] [\"<comment>\"]";
     if args.len() < 3 {
-        return Err(AppError::Usage(
-            "usage: story move <id> <state> [\"<comment>\"]".to_string(),
-        ));
+        return Err(AppError::Usage(usage.to_string()));
     }
+    let id = args[1].clone();
+    let state = args[2].clone();
+
+    // `--if-state` is recognized only as the literal token immediately
+    // following <state> (args[3]) — never scanned for anywhere else in the
+    // trailing args. A token-by-token flag loop over free-text comment
+    // content is what previously let a comment beginning with `--` fail as
+    // an "unrecognized flag" (a real backward-compatibility break: comments
+    // have always been unrestricted free text), and let an unrelated
+    // `--if-state` substring inside an unquoted multi-word comment be
+    // silently spliced out mid-comment and mistaken for a real CAS guard.
+    // Pinning the flag to one unambiguous position means every other
+    // trailing token, anywhere, is comment prose with zero restrictions —
+    // restoring the pre-existing `join_tokens(&args[3..])` guarantee for
+    // any caller not opting into `--if-state`.
+    let (if_state, comment_start) = if args.get(3).map(String::as_str) == Some("--if-state") {
+        let value = args
+            .get(4)
+            .ok_or_else(|| AppError::Usage("--if-state requires a value".to_string()))?;
+        (Some(value.clone()), 5)
+    } else {
+        (None, 3)
+    };
+
+    let comment = if comment_start < args.len() {
+        Some(join_tokens(&args[comment_start..]))
+    } else {
+        None
+    };
+
     Ok(Invocation::SetState {
-        id: args[1].clone(),
-        state: args[2].clone(),
-        comment: if args.len() > 3 {
-            Some(join_tokens(&args[3..]))
-        } else {
-            None
-        },
+        id,
+        state,
+        comment,
+        if_state,
     })
 }
 
