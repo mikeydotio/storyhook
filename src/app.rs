@@ -469,10 +469,23 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             // a lost race, and must be reported as a conflict rather than
             // surfacing as `ensure_open_story`'s generic "closed and cannot
             // be modified" validation error.
+            //
+            // `story delete` is the one closure path that leaves the `state`
+            // slug itself unchanged — it only forces `deleted`/`superstate`
+            // to CLOSED (see fold_story in domain.rs) — so a stale
+            // --if-state whose value still equals the pre-deletion slug
+            // would otherwise pass this comparison undetected. `deleted`
+            // must be checked as part of ground truth alongside the slug,
+            // not inferred from it.
             if let Some(expected) = &if_state {
                 let current = storage::load_story_snapshot(root, &id)?;
-                if &current.state != expected {
-                    return Err(AppError::StateConflict(expected.clone(), current.state));
+                if current.deleted || &current.state != expected {
+                    let actual = if current.deleted {
+                        "deleted".to_string()
+                    } else {
+                        current.state.clone()
+                    };
+                    return Err(AppError::StateConflict(expected.clone(), actual));
                 }
             }
             ensure_open_story(root, &id)?;

@@ -221,6 +221,62 @@ fn move_if_state_against_closed_story_reports_conflict_not_generic_error() {
 }
 
 #[test]
+fn move_if_state_against_deleted_story_reports_conflict_not_generic_error() {
+    // Repro: process A does `story delete` — which, by design, forces
+    // superstate CLOSED but leaves the `state` slug unchanged (see
+    // fold_story's deleted handling in src/domain.rs). Process B read the
+    // story before the delete and retries its now-stale --if-state whose
+    // value still equals the *unchanged* state slug. A CAS guard that only
+    // compares the slug would let this fall through to `ensure_open_story`,
+    // which raises a generic "closed and cannot be modified" validation
+    // error instead of a conflict -- exactly the failure mode this test
+    // pins shut, mirroring move_if_state_against_closed_story_reports_
+    // conflict_not_generic_error for the delete path specifically.
+    let dir = tempdir().unwrap();
+    let id = init_and_create(dir.path());
+
+    let show = story(dir.path())
+        .args(["show", &id, "--json"])
+        .output()
+        .unwrap();
+    let show_json: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    let original_state = show_json["story"]["story"]["state"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    story(dir.path())
+        .args(["delete", &id, "created in error"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .args([
+            "move",
+            &id,
+            "in-progress",
+            "--if-state",
+            &original_state,
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "a stale --if-state against a deleted story must not succeed"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["result"], "conflict",
+        "a deleted story must still surface as a CAS conflict, not the generic \
+         'closed and cannot be modified' validation error, even though the \
+         state slug itself never changed: {json}"
+    );
+    assert_eq!(json["expected"], original_state);
+}
+
+#[test]
 fn move_if_state_under_real_concurrency_yields_exactly_one_winner() {
     // The entire reason --if-state exists is to make a real compare-and-swap
     // safe under concurrent access (conductor's claim protocol). A
