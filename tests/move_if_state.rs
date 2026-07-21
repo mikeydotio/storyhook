@@ -91,38 +91,101 @@ fn move_without_if_state_is_unconditional_as_before() {
 }
 
 #[test]
-fn move_with_unrecognized_flag_is_rejected() {
-    // A typo'd flag (`--if-stat`, missing the trailing `e`) must never be
-    // silently folded into the free-text comment and treated as an
-    // unconditional move — that would defeat the CAS guard on the most
-    // likely real-world failure mode (a flag-name typo in an automated
-    // caller's argv construction) with zero diagnostic signal.
+fn move_comment_starting_with_double_dash_is_preserved_verbatim() {
+    // Regression: comments have always been unrestricted free text (see
+    // move_without_if_state_is_unconditional_as_before and the pre-existing
+    // `story comment` command, which stores any string verbatim including
+    // one that starts with `--`). `--if-state` is only ever recognized in
+    // the one position immediately after <state>, so a comment argument
+    // that happens to begin with `--` must never be mistaken for an
+    // unrecognized flag and rejected.
     let dir = tempdir().unwrap();
     let id = init_and_create(dir.path());
 
-    let output = story(dir.path())
-        .args(["move", &id, "in-progress", "--if-stat", "todo", "--json"])
-        .output()
-        .unwrap();
+    story(dir.path())
+        .args(["move", &id, "done", "-- deployed to prod"])
+        .assert()
+        .success();
 
-    assert!(
-        !output.status.success(),
-        "an unrecognized `--`-prefixed flag must not be silently accepted"
-    );
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["result"], "error");
-
-    // The move must not have gone through unconditionally, and the typo'd
-    // flag/value must not have been stored as a comment.
     let show = story(dir.path())
         .args(["show", &id, "--json"])
         .output()
         .unwrap();
     let show_json: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
-    assert_ne!(
-        show_json["story"]["story"]["state"], "in-progress",
-        "a rejected invocation must not perform the move"
+    let comments = show_json["story"]["story"]["comments"].as_array().unwrap();
+    assert_eq!(
+        comments.last().unwrap()["text"],
+        "-- deployed to prod",
+        "a comment beginning with `--` must be stored verbatim, not rejected as an unrecognized flag: {show_json}"
     );
+}
+
+#[test]
+fn move_comment_containing_if_state_token_is_not_spliced_or_dropped() {
+    // Regression: an unquoted, multi-word comment that happens to contain
+    // the literal token `--if-state` anywhere past the first trailing
+    // position must never be torn out of the comment and treated as a real
+    // CAS guard — that would silently corrupt the stored comment (dropping
+    // the flag-and-value pair) and activate an unintended precondition
+    // check, both with zero diagnostic signal. `--if-state` is recognized
+    // only when it is the very first trailing token (immediately after
+    // <state>); anywhere else it is inert comment text, exactly like the
+    // pre-existing unconditional `join_tokens(&args[3..])` behavior.
+    let dir = tempdir().unwrap();
+    let id = init_and_create(dir.path());
+
+    story(dir.path())
+        .args([
+            "move",
+            &id,
+            "in-progress",
+            "retry",
+            "--if-state",
+            "todo",
+            "later",
+        ])
+        .assert()
+        .success();
+
+    let show = story(dir.path())
+        .args(["show", &id, "--json"])
+        .output()
+        .unwrap();
+    let show_json: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(show_json["story"]["story"]["state"], "in-progress");
+    let comments = show_json["story"]["story"]["comments"].as_array().unwrap();
+    assert_eq!(
+        comments.last().unwrap()["text"],
+        "retry --if-state todo later",
+        "an --if-state-shaped substring inside free-text comment tokens must be preserved verbatim, not spliced out: {show_json}"
+    );
+}
+
+#[test]
+fn move_with_typoed_flag_name_immediately_after_state_is_comment_not_error() {
+    // A flag name is recognized only via an exact string match in the one
+    // position immediately after <state> — a typo like `--if-stat`
+    // (missing the trailing `e`) in that exact position is therefore never
+    // mistaken for an attempt at the real flag. It is preserved as ordinary
+    // comment text, and the move proceeds unconditionally (exactly as it
+    // would have before `--if-state` existed), rather than being rejected
+    // or silently treated as a defeated CAS guard.
+    let dir = tempdir().unwrap();
+    let id = init_and_create(dir.path());
+
+    story(dir.path())
+        .args(["move", &id, "in-progress", "--if-stat", "todo"])
+        .assert()
+        .success();
+
+    let show = story(dir.path())
+        .args(["show", &id, "--json"])
+        .output()
+        .unwrap();
+    let show_json: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(show_json["story"]["story"]["state"], "in-progress");
+    let comments = show_json["story"]["story"]["comments"].as_array().unwrap();
+    assert_eq!(comments.last().unwrap()["text"], "--if-stat todo");
 }
 
 #[test]

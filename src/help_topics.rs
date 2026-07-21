@@ -809,7 +809,7 @@ Related:
 
         m.insert(
             "move",
-            r#"story move <id> <state> ["<comment>"] [--if-state <expected>]
+            r#"story move <id> <state> [--if-state <expected>] ["<comment>"]
 
 Transition a story to a new state. Transitioning to a CLOSED state
 automatically archives the story. Optionally add a comment in the
@@ -819,7 +819,10 @@ same operation.
 the move only applies if the story's current state still matches
 <expected>. Otherwise it fails with a machine-readable conflict
 instead of overwriting a state you didn't know had changed —
-useful for automated callers claiming stories concurrently.
+useful for automated callers claiming stories concurrently. When
+used, --if-state must come immediately after <state>; everything
+else is treated as free-text comment, exactly like today, with no
+restrictions on its content.
 
 When to use:
   To update the status of a story as you work on it, or to close
