@@ -1105,6 +1105,227 @@ pub fn handle_status() -> Result<String, AppError> {
     Ok(format!("Web UI running at http://{ip}:{port} (PID {pid})"))
 }
 
+/// Help-like summary of the `web` command group, shown when a command needs the
+/// dashboard running but it isn't — so the user immediately sees how to start it.
+const WEB_COMMANDS_SUMMARY: &str = "\
+web commands:
+  story web start [--port <PORT>]   start the dashboard daemon
+  story web stop                    stop the dashboard daemon
+  story web status                  show whether it's running and its URL
+  story web open                    open the dashboard in your browser
+  story web address                 copy the dashboard URL to the clipboard
+  story web register [<PATH>]       add a repo to the dashboard
+  story web deregister <ID|PATH>    remove a repo from the dashboard
+  story web list                    list registered repos";
+
+/// The error returned when a `web` command requires the dashboard to be running
+/// but it is not. Carries [`WEB_COMMANDS_SUMMARY`] as its help-like body.
+fn web_not_running_error() -> AppError {
+    AppError::Usage(format!(
+        "web dashboard is not running — start it with: story web start\n\n{WEB_COMMANDS_SUMMARY}"
+    ))
+}
+
+/// Resolve the running dashboard's `(pid, port)`, or a graceful not-running
+/// error. Mirrors [`handle_status`]'s liveness check and stale-PID cleanup, so
+/// a crashed daemon's leftover files never masquerade as a running dashboard.
+fn running_dashboard() -> Result<(u32, u16), AppError> {
+    let pid_path = pid_file()?;
+    if !pid_path.exists() {
+        return Err(web_not_running_error());
+    }
+    let (pid, port) = read_pid_file().ok_or_else(web_not_running_error)?;
+    if !is_process_alive(pid) {
+        let _ = fs::remove_file(&pid_path);
+        let _ = fs::remove_file(lock_file()?);
+        return Err(web_not_running_error());
+    }
+    Ok((pid, port))
+}
+
+/// `story web open` — open the running dashboard in the system-default browser.
+///
+/// Targets loopback (`http://127.0.0.1:<port>/`), which is always reachable from
+/// a browser on this machine. Fails with a help-like summary when the dashboard
+/// isn't running.
+pub fn handle_open() -> Result<String, AppError> {
+    let (_pid, port) = running_dashboard()?;
+    let url = format!("http://127.0.0.1:{port}/");
+    open_in_browser(&url)?;
+    Ok(format!("Opening dashboard at {url}"))
+}
+
+/// `story web address` — copy the running dashboard's URL to the system clipboard.
+///
+/// Targets [`reachable_ip`] (the Tailscale IP when the `tailscale` CLI reports
+/// one, else loopback), so a copied URL is usable from other tailnet devices —
+/// matching what `story web status` prints. Fails with a help-like summary when
+/// the dashboard isn't running.
+pub fn handle_address() -> Result<String, AppError> {
+    let (_pid, port) = running_dashboard()?;
+    let url = format!("http://{}:{port}/", reachable_ip());
+    copy_to_clipboard(&url)?;
+    Ok(format!("Copied dashboard URL to clipboard: {url}"))
+}
+
+/// The default browser-opener argv for the host OS, with `url` appended. Empty
+/// on unsupported platforms (the caller turns that into a clear error).
+#[cfg(target_os = "macos")]
+fn default_open_argv(url: &str) -> Vec<String> {
+    vec!["open".to_string(), url.to_string()]
+}
+#[cfg(target_os = "linux")]
+fn default_open_argv(url: &str) -> Vec<String> {
+    vec!["xdg-open".to_string(), url.to_string()]
+}
+#[cfg(target_os = "windows")]
+fn default_open_argv(url: &str) -> Vec<String> {
+    // `start` is a `cmd` builtin; the empty "" is its (ignored) window-title arg.
+    vec![
+        "cmd".to_string(),
+        "/C".to_string(),
+        "start".to_string(),
+        String::new(),
+        url.to_string(),
+    ]
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn default_open_argv(_url: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// Open `url` in the system-default browser. Honors `$BROWSER` (a non-empty
+/// value is run as `<$BROWSER> <url>`); otherwise uses the platform opener. A
+/// missing opener maps to an actionable error rather than a raw IO error.
+fn open_in_browser(url: &str) -> Result<(), AppError> {
+    let argv: Vec<String> = match env::var("BROWSER") {
+        Ok(b) if !b.trim().is_empty() => vec![b, url.to_string()],
+        _ => default_open_argv(url),
+    };
+    if argv.is_empty() {
+        return Err(AppError::Storage(
+            "opening a browser isn't supported on this platform — use `story web address` to copy the URL instead"
+                .to_string(),
+        ));
+    }
+
+    let status = Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AppError::Storage(format!(
+                    "could not open a browser: `{}` not found on PATH. Set $BROWSER to your browser command, or use `story web address` to copy the URL.",
+                    argv[0]
+                ))
+            } else {
+                AppError::Storage(format!("failed to launch browser `{}`: {e}", argv[0]))
+            }
+        })?;
+    if !status.success() {
+        return Err(AppError::Storage(format!(
+            "browser command `{}` exited with status {status}",
+            argv[0]
+        )));
+    }
+    Ok(())
+}
+
+/// Clipboard-writer command candidates for the host OS, tried in order. Empty on
+/// unsupported platforms (the caller turns that into a clear error).
+#[cfg(target_os = "macos")]
+fn default_clipboard_argv() -> Vec<Vec<String>> {
+    vec![vec!["pbcopy".to_string()]]
+}
+#[cfg(target_os = "linux")]
+fn default_clipboard_argv() -> Vec<Vec<String>> {
+    vec![
+        vec![
+            "xclip".to_string(),
+            "-selection".to_string(),
+            "clipboard".to_string(),
+        ],
+        vec![
+            "xsel".to_string(),
+            "--clipboard".to_string(),
+            "--input".to_string(),
+        ],
+    ]
+}
+#[cfg(target_os = "windows")]
+fn default_clipboard_argv() -> Vec<Vec<String>> {
+    vec![vec!["clip".to_string()]]
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn default_clipboard_argv() -> Vec<Vec<String>> {
+    Vec::new()
+}
+
+/// Pipe `text` to a clipboard command's stdin. Stdout/stderr are discarded. The
+/// caller distinguishes a missing binary (`ErrorKind::NotFound`) to try the next
+/// candidate.
+fn pipe_to_command(argv: &[String], text: &str) -> std::io::Result<std::process::ExitStatus> {
+    use std::io::Write;
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+        // `stdin` drops here, closing the pipe so the child sees EOF.
+    }
+    child.wait()
+}
+
+/// Copy `text` to the system clipboard. Honors `$STORYHOOK_CLIPBOARD_CMD` (a
+/// non-empty value is split on whitespace and used verbatim, e.g. `wl-copy`);
+/// otherwise tries the platform utilities in order. A total absence of any
+/// clipboard utility maps to an actionable error.
+fn copy_to_clipboard(text: &str) -> Result<(), AppError> {
+    let candidates: Vec<Vec<String>> = match env::var("STORYHOOK_CLIPBOARD_CMD") {
+        Ok(c) if !c.trim().is_empty() => {
+            vec![c.split_whitespace().map(str::to_string).collect()]
+        }
+        _ => default_clipboard_argv(),
+    };
+    if candidates.is_empty() {
+        return Err(AppError::Storage(
+            "copying to the clipboard isn't supported on this platform — set $STORYHOOK_CLIPBOARD_CMD to a clipboard command"
+                .to_string(),
+        ));
+    }
+
+    let mut tried = Vec::new();
+    for argv in &candidates {
+        match pipe_to_command(argv, text) {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => {
+                return Err(AppError::Storage(format!(
+                    "clipboard command `{}` exited with status {status}",
+                    argv[0]
+                )));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tried.push(argv[0].clone());
+            }
+            Err(e) => {
+                return Err(AppError::Storage(format!(
+                    "failed to run clipboard command `{}`: {e}",
+                    argv[0]
+                )));
+            }
+        }
+    }
+    Err(AppError::Storage(format!(
+        "no clipboard utility found (tried: {}). Set $STORYHOOK_CLIPBOARD_CMD to your clipboard command (e.g. wl-copy).",
+        tried.join(", ")
+    )))
+}
+
 /// `story web register [PATH] [--name NAME]` — registers `path` with the
 /// default registry (`~/.storyhook/registry.toml`). A relative `path`
 /// resolves against the CLI process's actual working directory (the same

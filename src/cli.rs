@@ -63,6 +63,8 @@ Usage:
   story tui                                           (interactive terminal UI)
   story web start [--port <PORT>]                  (start web dashboard)
   story web stop                                   (stop web dashboard)
+  story web open                                   (open the dashboard in your browser)
+  story web address                                (copy the dashboard URL to the clipboard)
   story web register [<PATH>] [--name <NAME>]      (add a repo to the dashboard)
   story web deregister <ID|PATH>                   (remove a repo from the dashboard)
   story web list                                   (list registered repos)
@@ -348,6 +350,8 @@ pub enum WebAction {
         target: String,
     },
     List,
+    Open,
+    Address,
 }
 
 pub fn split_global_flags(args: &[String]) -> (bool, bool, bool, Vec<String>) {
@@ -1285,7 +1289,7 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story web start [--port <PORT>] | stop | status | \
+    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address | \
                   register [PATH] [--name <NAME>] | deregister <ID|PATH> | list";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
@@ -1321,6 +1325,12 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         }),
         "status" => Ok(Invocation::Web {
             action: WebAction::Status,
+        }),
+        "open" => Ok(Invocation::Web {
+            action: WebAction::Open,
+        }),
+        "address" => Ok(Invocation::Web {
+            action: WebAction::Address,
         }),
         "register" => {
             let mut path = std::path::PathBuf::from(".");
