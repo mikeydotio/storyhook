@@ -1120,6 +1120,8 @@ Related:
             r#"story web start [--port <PORT>]
 story web stop
 story web status
+story web open
+story web address
 story web register [<PATH>] [--name <NAME>]
 story web deregister <ID|PATH>
 story web list
@@ -1143,6 +1145,12 @@ Commands:
                --port <PORT>  Use a custom port (default: 3456).
   stop         Stop the running dashboard daemon.
   status       Check if the dashboard is running.
+  open         Open the running dashboard in your default browser
+               (loopback URL — always reachable on this machine).
+  address      Copy the running dashboard's URL to the clipboard. Uses
+               the tailnet URL when Tailscale is up (so it works from
+               your other devices), else loopback. Both open/address
+               fail with this summary if the dashboard isn't running.
   register     Register a repo with the dashboard. PATH defaults to
                the current directory ('.'), so 'story web register'
                run from inside a project registers it.
@@ -1171,6 +1179,8 @@ Examples:
   story web start --port 8080          # Start on custom port
   story web stop                       # Stop the dashboard
   story web status                     # Check if running
+  story web open                       # Open the dashboard in your browser
+  story web address                    # Copy the dashboard URL to the clipboard
 
 Screens:
   Home      One summary card per registered repo (open/ready/blocked
