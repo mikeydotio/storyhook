@@ -140,6 +140,18 @@ pub fn render_response(response: &Response, json: bool, quiet: bool) -> String {
 
 pub fn render_error(error: &AppError, json: bool) -> String {
     if json {
+        if let AppError::StateConflict(expected, actual) = error {
+            return format!(
+                "{}\n",
+                serde_json::json!({
+                    "result": "conflict",
+                    "error": error.to_string(),
+                    "exit_code": error.exit_code(),
+                    "expected": expected,
+                    "actual": actual,
+                })
+            );
+        }
         return format!(
             "{}\n",
             serde_json::json!({
