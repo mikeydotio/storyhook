@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.16.0] - 2026-07-21
+
+### Added
+- add --if-state CAS guard to story move (30ab541)
+
+### Fixed
+- account for soft-deletion in --if-state CAS guard (728a7bd)
+- give --if-state an unambiguous parse boundary in story move (f5fdc9b)
+- close CAS review gaps in --if-state move guard (b3dfa12)
+- run cargo-version sync as a pre-bump hook (1896992)
+
+### Changed
+- Merge pull request #33 from mikeydotio/feat/move-if-state (3a71fac)
+- Merge pull request #32 from mikeydotio/fix/semver-sync-cargo-pre-bump (838c611)
+- Merge pull request #31 from mikeydotio/chore/release-v0.15.0 (1f7d880)
+
+_[manual]_
+
 ## [v0.15.0] - 2026-07-20
 
 ### Added
