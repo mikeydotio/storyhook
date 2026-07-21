@@ -3,6 +3,55 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.15.0] - 2026-07-20
+
+### Added
+- add `story web open` and `story web address` (b1a73db)
+- animate live dashboard updates by type of change (0caceaa)
+- push live story updates to the dashboard over SSE (71e6659)
+- add home/repo/settings screens to the dashboard frontend (cb185d8)
+- make the dashboard registry-backed, one global daemon (808efe9)
+- add ~/.storyhook/registry.toml repo registry (174d8d9)
+- board + list dashboard with drawer and drag-and-drop (a828e0f)
+- add mutation API with CSRF/DNS-rebinding guard (bb4351b)
+- add GET /api/story/{id} and ordered /api/data meta (06fbafc)
+
+### Fixed
+- replace stray NUL byte in dashboard fingerprint separator (dcb71f2)
+- supply missing force field in reopen route (735892a)
+- supply Invocation::Reopen.force in the web reopen route (2a81190)
+- bind loopback + tailnet only, never the public internet (a0c8ace)
+- deleting a story now closes it, not just archives it (#18) (38f41ca)
+- inject session-start context via additionalContext (silent) (70e3dd1)
+- make sync-cargo-toml hook portable on BSD/macOS sed (faa0866)
+
+### Changed
+- Merge pull request #30 from mikeydotio/feat/web-open-address (1a7ca00)
+- Merge pull request #29 from mikeydotio/worktree-sto-21 (431905b)
+- Merge pull request #28 from mikeydotio/chore/untrack-stray-worktree-gitlink (142ac9f)
+- Merge pull request #27 from mikeydotio/feat/multi-repo-web-dashboard (01635a8)
+- Merge pull request #24 from mikeydotio/fix/23-web-reopen-force (8763004)
+- Merge pull request #19 from mikeydotio/worktree-sto-17 (fd09e61)
+- Merge pull request #22 from mikeydotio/worktree-sto-18 (8f58321)
+- dedupe delete_story onto archive_story (f1be5bb)
+- centralize security headers, add router scaffold (365d168)
+
+### Documentation
+- document the multi-repo dashboard (e9f2243)
+- correct Makefile's false claim of CI parity (7d02de4)
+- document the interactive dashboard and write API (4d5553b)
+
+### Testing
+- retarget grafted #23 reopen regressions at registry-backed API (d161006)
+
+### Maintenance
+- untrack stray .claude/worktrees gitlink and ignore the dir (6f911ca)
+- bump plugin to 0.2.1 for silent session-start context (8222173)
+- bump plugin to 0.2.0 to ship storyhook-update skill (dadd8d5)
+- remove test workflow; tests run locally via make test (e362c56)
+
+_[manual]_
+
 ## [v0.14.0] - 2026-07-03
 
 ### Added
