@@ -1447,10 +1447,9 @@ fn parse_assign(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story move <id> <state> [\"<comment>\"] [--if-state <expected>]";
     if args.len() < 3 {
-        return Err(AppError::Usage(
-            "usage: story move <id> <state> [\"<comment>\"] [--if-state <expected>]".to_string(),
-        ));
+        return Err(AppError::Usage(usage.to_string()));
     }
     let id = args[1].clone();
     let state = args[2].clone();
@@ -1465,6 +1464,14 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
                     .ok_or_else(|| AppError::Usage("--if-state requires a value".to_string()))?;
                 if_state = Some(value.clone());
                 index += 2;
+            }
+            // Any other `--`-prefixed token is an unrecognized flag, not
+            // free-text comment content — mirroring parse_github_sync's
+            // strictness. Silently folding a typo like `--if-stat` into the
+            // comment would defeat the CAS guard with zero diagnostic signal
+            // (the move would run unconditionally and succeed).
+            other if other.starts_with("--") => {
+                return Err(AppError::Usage(usage.to_string()));
             }
             other => {
                 comment_tokens.push(other.to_string());

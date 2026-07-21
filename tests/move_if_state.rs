@@ -89,3 +89,172 @@ fn move_without_if_state_is_unconditional_as_before() {
         .assert()
         .success();
 }
+
+#[test]
+fn move_with_unrecognized_flag_is_rejected() {
+    // A typo'd flag (`--if-stat`, missing the trailing `e`) must never be
+    // silently folded into the free-text comment and treated as an
+    // unconditional move — that would defeat the CAS guard on the most
+    // likely real-world failure mode (a flag-name typo in an automated
+    // caller's argv construction) with zero diagnostic signal.
+    let dir = tempdir().unwrap();
+    let id = init_and_create(dir.path());
+
+    let output = story(dir.path())
+        .args(["move", &id, "in-progress", "--if-stat", "todo", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "an unrecognized `--`-prefixed flag must not be silently accepted"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["result"], "error");
+
+    // The move must not have gone through unconditionally, and the typo'd
+    // flag/value must not have been stored as a comment.
+    let show = story(dir.path())
+        .args(["show", &id, "--json"])
+        .output()
+        .unwrap();
+    let show_json: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_ne!(
+        show_json["story"]["story"]["state"], "in-progress",
+        "a rejected invocation must not perform the move"
+    );
+}
+
+#[test]
+fn move_if_state_against_closed_story_reports_conflict_not_generic_error() {
+    // Repro: process A does an unconditional `move ... done` (closing and
+    // archiving the story). Process B — which read the story before it
+    // closed — retries with its now-stale --if-state and must be told
+    // "conflict", not `ensure_open_story`'s generic "closed and cannot be
+    // modified" validation error, since a caller branching on
+    // result == "conflict" must not misclassify a benign lost race as a
+    // fatal, unexpected error.
+    let dir = tempdir().unwrap();
+    let id = init_and_create(dir.path());
+
+    story(dir.path())
+        .args(["move", &id, "done"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .args(["move", &id, "in-progress", "--if-state", "todo", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["result"], "conflict",
+        "a closed story must still surface as a CAS conflict when if_state doesn't match, got: {json}"
+    );
+    assert_eq!(json["expected"], "todo");
+    assert_eq!(json["actual"], "done");
+}
+
+#[test]
+fn move_if_state_under_real_concurrency_yields_exactly_one_winner() {
+    // The entire reason --if-state exists is to make a real compare-and-swap
+    // safe under concurrent access (conductor's claim protocol). A
+    // sequential CLI invocation proves nothing about the check-then-write
+    // guard under contention — this spawns real, concurrent OS processes
+    // racing the same story through the same advisory project lock
+    // (src/lock.rs), so a future reordering of the if_state comparison
+    // relative to `lock::with_project_lock` (a TOCTOU regression) would
+    // fail this test even though every sequential test above stays green.
+    use std::process::{Command, Stdio};
+
+    let dir = tempdir().unwrap();
+    let id = init_and_create(dir.path());
+
+    let show = story(dir.path())
+        .args(["show", &id, "--json"])
+        .output()
+        .unwrap();
+    let show_json: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    let current_state = show_json["story"]["story"]["state"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let binary = assert_cmd::cargo::cargo_bin("story");
+    const ATTEMPTS: usize = 20;
+
+    // Spawn every attempt before waiting on any of them — this is what
+    // actually races real processes against the project lock, rather than
+    // just inferring concurrency safety from back-to-back sequential calls.
+    let children: Vec<_> = (0..ATTEMPTS)
+        .map(|_| {
+            Command::new(&binary)
+                .current_dir(dir.path())
+                .args([
+                    "move",
+                    &id,
+                    "in-progress",
+                    "--if-state",
+                    &current_state,
+                    "--json",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("failed to spawn concurrent `story move`")
+        })
+        .collect();
+
+    let mut successes = 0usize;
+    let mut conflicts = 0usize;
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.stderr.is_empty(),
+            "no concurrent attempt should print to stderr: {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|e| panic!("non-JSON output ({e}): {output:?}"));
+        if output.status.success() {
+            assert_eq!(json["result"], "ok");
+            successes += 1;
+        } else {
+            assert_eq!(
+                json["result"], "conflict",
+                "a losing concurrent attempt must fail as a conflict, not an undifferentiated error, got: {json}"
+            );
+            assert_eq!(json["expected"], current_state);
+            conflicts += 1;
+        }
+    }
+
+    assert_eq!(
+        successes, 1,
+        "exactly one of {ATTEMPTS} concurrent claimants must win the CAS race"
+    );
+    assert_eq!(conflicts, ATTEMPTS - 1);
+
+    // The story's own event log must be consistent with a single winner --
+    // exactly one StoryStateChanged event landed, not zero (lost write) and
+    // not many (double write / corruption).
+    let events_path = dir
+        .path()
+        .join(".storyhook")
+        .join("open")
+        .join("stories")
+        .join(format!("{id}.jsonl"));
+    let events_raw = std::fs::read_to_string(&events_path).unwrap();
+    let state_change_count = events_raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["kind"] == "StoryStateChanged")
+        .count();
+    assert_eq!(
+        state_change_count, 1,
+        "exactly one StoryStateChanged event must be recorded, found the raw log: {events_raw}"
+    );
+}
