@@ -119,6 +119,84 @@ fn web_stop_when_not_running() {
         .stdout(predicate::str::contains("Web UI is not running"));
 }
 
+// --- open / address tests ---
+//
+// `web open` and `web address` read the same `~/.storyhook/web.pid` as
+// `status`/`stop`, so `$HOME` is isolated to keep them off the developer's
+// real dashboard. Unlike `status`, they must *fail* (non-zero) when nothing is
+// running, and the error must carry a help-like summary of the web commands.
+// The success path drives the browser/clipboard through the `$BROWSER` /
+// `$STORYHOOK_CLIPBOARD_CMD` seams so no real browser opens and the real
+// clipboard is never clobbered.
+
+#[test]
+fn web_open_not_running_fails_with_summary() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "open"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("not running"))
+        .stdout(predicate::str::contains("story web start"));
+}
+
+#[test]
+fn web_address_not_running_fails_with_summary() {
+    let dir = tempdir().unwrap();
+    let home = tempdir().unwrap();
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "address"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("not running"))
+        .stdout(predicate::str::contains("story web start"));
+}
+
+#[test]
+fn web_open_and_address_succeed_when_running() {
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap(); // deliberately NOT a storyhook project
+    let port = pick_port();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "start", "--port", &port.to_string()])
+        .assert()
+        .success();
+    wait_for_server(port);
+
+    // `web open` targets loopback; browser launch is stubbed via $BROWSER=true.
+    story(dir.path())
+        .env("HOME", home.path())
+        .env("BROWSER", "true")
+        .args(["web", "open"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "http://127.0.0.1:{port}/"
+        )));
+
+    // `web address` copies to the clipboard, stubbed via $STORYHOOK_CLIPBOARD_CMD=cat.
+    // Host is left unasserted because the CI/dev host may or may not run Tailscale.
+    story(dir.path())
+        .env("HOME", home.path())
+        .env("STORYHOOK_CLIPBOARD_CMD", "cat")
+        .args(["web", "address"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(":{port}/")))
+        .stdout(predicate::str::contains("clipboard"));
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
 /// `story web start` now launches the single *global* dashboard daemon — it
 /// no longer requires being run from inside a storyhook project (repos are
 /// added afterwards via `story web register`). `$HOME` is isolated so the
@@ -400,7 +478,9 @@ fn help_web_topic_exists() {
         .success()
         .stdout(predicate::str::contains("story web start"))
         .stdout(predicate::str::contains("--port"))
-        .stdout(predicate::str::contains("story web stop"));
+        .stdout(predicate::str::contains("story web stop"))
+        .stdout(predicate::str::contains("story web open"))
+        .stdout(predicate::str::contains("story web address"));
 }
 
 // --- Non-GET method returns 405 ---

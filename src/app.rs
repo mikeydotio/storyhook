@@ -2102,6 +2102,15 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 let msg = crate::web::handle_list()?;
                 Ok(Response::Message(msg))
             }
+            // Registry-only: works from anywhere, not just inside a project.
+            WebAction::Open => {
+                let msg = crate::web::handle_open()?;
+                Ok(Response::Message(msg))
+            }
+            WebAction::Address => {
+                let msg = crate::web::handle_address()?;
+                Ok(Response::Message(msg))
+            }
             WebAction::Serve { .. } => {
                 // Handled in main.rs before app::run
                 unreachable!("web --serve is dispatched in main.rs")
