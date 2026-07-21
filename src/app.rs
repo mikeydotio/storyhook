@@ -454,10 +454,23 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             )?;
             story_view_by_id(root, &id)
         }),
-        Invocation::SetState { id, state, comment } => lock::with_project_lock(root, || {
+        Invocation::SetState {
+            id,
+            state,
+            comment,
+            if_state,
+        } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             ensure_open_story(root, &id)?;
             let story = storage::load_open_story_snapshot(root, &id)?;
+            if let Some(expected) = &if_state
+                && &story.state != expected
+            {
+                return Err(AppError::StateConflict(
+                    expected.clone(),
+                    story.state.clone(),
+                ));
+            }
             let states = storage::load_state_map(root)?;
             let state_def = states
                 .get(&state)

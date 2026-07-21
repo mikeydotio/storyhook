@@ -103,7 +103,7 @@ Usage:
   story show <id>
   story comment <id> "<text>"
   story assign <id> <member-id|handle>
-  story move <id> <state-slug> ["<comment>"]
+  story move <id> <state-slug> ["<comment>"] [--if-state <expected>]
   story block <id> "<reason>"
   story unblock <id>
   story prioritize <id> <critical|high|medium|low|none>
@@ -214,6 +214,7 @@ pub enum Invocation {
         id: String,
         state: String,
         comment: Option<String>,
+        if_state: Option<String>,
     },
     SetAwaiting {
         id: String,
@@ -1448,17 +1449,39 @@ fn parse_assign(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
     if args.len() < 3 {
         return Err(AppError::Usage(
-            "usage: story move <id> <state> [\"<comment>\"]".to_string(),
+            "usage: story move <id> <state> [\"<comment>\"] [--if-state <expected>]".to_string(),
         ));
     }
+    let id = args[1].clone();
+    let state = args[2].clone();
+    let mut if_state = None;
+    let mut comment_tokens: Vec<String> = Vec::new();
+    let mut index = 3;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--if-state" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage("--if-state requires a value".to_string()))?;
+                if_state = Some(value.clone());
+                index += 2;
+            }
+            other => {
+                comment_tokens.push(other.to_string());
+                index += 1;
+            }
+        }
+    }
+    let comment = if comment_tokens.is_empty() {
+        None
+    } else {
+        Some(join_tokens(&comment_tokens))
+    };
     Ok(Invocation::SetState {
-        id: args[1].clone(),
-        state: args[2].clone(),
-        comment: if args.len() > 3 {
-            Some(join_tokens(&args[3..]))
-        } else {
-            None
-        },
+        id,
+        state,
+        comment,
+        if_state,
     })
 }
 
