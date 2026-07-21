@@ -461,16 +461,22 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             if_state,
         } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
+            // Ground-truth read (open or archived) must happen before the
+            // open/closed check below: a concurrent writer may have closed
+            // (and archived) the story between the caller's read and this
+            // call. If --if-state was supplied, a mismatch against whatever
+            // the story's *current* state actually is — open or closed — is
+            // a lost race, and must be reported as a conflict rather than
+            // surfacing as `ensure_open_story`'s generic "closed and cannot
+            // be modified" validation error.
+            if let Some(expected) = &if_state {
+                let current = storage::load_story_snapshot(root, &id)?;
+                if &current.state != expected {
+                    return Err(AppError::StateConflict(expected.clone(), current.state));
+                }
+            }
             ensure_open_story(root, &id)?;
             let story = storage::load_open_story_snapshot(root, &id)?;
-            if let Some(expected) = &if_state
-                && &story.state != expected
-            {
-                return Err(AppError::StateConflict(
-                    expected.clone(),
-                    story.state.clone(),
-                ));
-            }
             let states = storage::load_state_map(root)?;
             let state_def = states
                 .get(&state)
