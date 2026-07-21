@@ -169,13 +169,22 @@ fn sh36_cargo_toml_version_matches_version_file() {
 }
 
 #[test]
-fn sh36_post_bump_hook_syncs_cargo_toml() {
+fn sh36_pre_bump_hook_syncs_cargo_toml() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let hook_path = manifest_dir.join(".semver/hooks/post-bump/sync-cargo-toml.sh");
+    let hook_path = manifest_dir.join(".semver/hooks/pre-bump/sync-cargo-toml.sh");
 
     assert!(
         hook_path.exists(),
-        ".semver/hooks/post-bump/sync-cargo-toml.sh should exist"
+        ".semver/hooks/pre-bump/sync-cargo-toml.sh should exist"
+    );
+    // The sync must be a *pre-bump* hook: the plugin's release commit is created
+    // with no pathspec, so only a hook that edits and stages Cargo.toml/Cargo.lock
+    // *before* the commit gets them in it. A post-bump hook leaves them dirty.
+    assert!(
+        !manifest_dir
+            .join(".semver/hooks/post-bump/sync-cargo-toml.sh")
+            .exists(),
+        "sync hook must be pre-bump, not post-bump (post-bump leaves the tree dirty)"
     );
 
     let hook = std::fs::read_to_string(&hook_path).expect("should be able to read hook script");
@@ -185,6 +194,14 @@ fn sh36_post_bump_hook_syncs_cargo_toml() {
         "hook should strip v prefix from $NEW_VERSION"
     );
     assert!(hook.contains("Cargo.toml"), "hook should update Cargo.toml");
+    assert!(
+        hook.contains("Cargo.lock"),
+        "hook should also sync Cargo.lock so the release commit stays clean"
+    );
+    assert!(
+        hook.contains("git add"),
+        "hook must stage its changes so they land in the pathspec-less release commit"
+    );
 }
 
 // ============================================================
