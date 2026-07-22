@@ -343,7 +343,7 @@ If the `web-serve` tool is present on your `PATH` (coderig/agentsmith environmen
 Mutating requests (registering/deregistering a repo; creating, moving, editing, or deleting a story) require:
 
 - a same-origin request — the dashboard's own page sets a custom `X-Storyhook` header that a cross-site request cannot replicate without triggering a CORS preflight the server never answers;
-- a `Host` header that resolves to `127.0.0.1`, `localhost`, `::1`, or the tailnet IP this instance bound itself — this is what stops DNS-rebinding, which the header check alone can't catch.
+- a `Host` header that resolves to `127.0.0.1`, `localhost`, `::1`, the tailnet IP this instance bound itself, or — when Tailscale MagicDNS is on — this machine's full MagicDNS name (e.g. `host.tailXXXXX.ts.net`) — this is what stops DNS-rebinding, which the header check alone can't catch. The bare short hostname (`host`, without the `.ts.net` suffix) is deliberately *not* trusted: unlike the full name, it can resolve through a DNS search domain that isn't your tailnet's, so trusting it could reopen the exact rebinding this check exists to stop.
 
 Read-only requests (`GET /`, `GET /api/repos`, `GET /api/repos/<id>/data`, `GET /api/repos/<id>/story/<sid>`) have no such restriction — they're reachable (but not writable) from anywhere the socket itself is reachable, i.e. localhost and your tailnet.
 

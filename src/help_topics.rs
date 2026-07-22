@@ -1210,15 +1210,20 @@ Security:
   Mutating requests (register/deregister a repo; create/move/edit/
   delete a story) require a same-origin request (a custom header a
   cross-site request can't replicate) and a Host header resolving to
-  127.0.0.1/localhost/::1 or the tailnet IP this instance bound
-  itself — this stops DNS-rebinding, which the header check alone
-  can't catch. Read requests are unauthenticated (but still only
-  reachable where the socket is bound — localhost and your tailnet).
-  To allow writes through a reverse proxy under a different hostname
-  (e.g. web-serve), set STORYHOOK_WEB_TRUSTED_HOSTS to a
-  comma-separated allowlist before starting the server — this only
-  widens the Host allowlist for writes, it does not change what the
-  server binds.
+  127.0.0.1/localhost/::1, the tailnet IP this instance bound
+  itself, or — when Tailscale MagicDNS is on — this machine's full
+  MagicDNS name (e.g. host.tailXXXXX.ts.net); this stops
+  DNS-rebinding, which the header check alone can't catch. The bare
+  short hostname (just 'host', without the .ts.net suffix) is
+  deliberately not trusted: unlike the full name, it can resolve
+  through a DNS search domain that isn't your tailnet's, so trusting
+  it could reopen the rebinding this check exists to stop. Read
+  requests are unauthenticated (but still only reachable where the
+  socket is bound — localhost and your tailnet). To allow writes
+  through a reverse proxy under a different hostname (e.g.
+  web-serve), set STORYHOOK_WEB_TRUSTED_HOSTS to a comma-separated
+  allowlist before starting the server — this only widens the Host
+  allowlist for writes, it does not change what the server binds.
 
 How it works:
   Registered repos live in ~/.storyhook/registry.toml — the one piece
