@@ -312,7 +312,7 @@ story web status                     # check whether it's running
 
 `story web start` launches the dashboard on its own — it does not require running from inside a project, and it does not auto-register anything. Repos only appear once you `register` them.
 
-Open the URL printed on start — always `http://127.0.0.1:<port>`, plus a tailnet URL too if you have Tailscale (see Network exposure below). The dashboard offers:
+Open the URL printed on start — `http://127.0.0.1:<port>` by default, or your machine's Tailscale MagicDNS name (falling back to its tailnet IP) if Tailscale is running (see Network exposure below). The dashboard offers:
 
 - **Home** — a summary card per registered repo (open/ready/blocked counts). Click a card to open that repo. A repo whose data can't currently be loaded (moved, deleted) shows its error instead of a summary, rather than failing the whole page.
 - **Settings** — register a new repo, or deregister an existing one. Deregistering only edits the dashboard's registry; it never touches the repo's own files.
