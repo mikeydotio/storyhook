@@ -1480,6 +1480,14 @@ impl TailnetIdentity {
         hosts.extend(self.magic_dns.clone());
         hosts
     }
+
+    /// The best host to show or copy for reaching this machine: the MagicDNS
+    /// name when available — memorable, and, since it's also in
+    /// [`Self::trusted_hosts`], guaranteed to work for mutations too — else
+    /// the bare tailnet IPv4.
+    fn advertise_host(&self) -> &str {
+        self.magic_dns.as_deref().unwrap_or(&self.bind_ip)
+    }
 }
 
 /// Mirrors only the fields this module reads from `tailscale status --json`.
@@ -1532,24 +1540,15 @@ fn tailnet_identity() -> Option<TailnetIdentity> {
     parse_tailnet_identity(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// This machine's Tailscale IPv4 address, if the `tailscale` CLI is present
-/// and reports one. Used to display the tailnet URL in `story web
-/// start`/`status`/`address` output. [`tailnet_identity`] is the source of
-/// truth for the bind + mutation-trust decision; this display-only helper is
-/// superseded by it separately, so that behavior change stays out of the
-/// mutation-guard fix's diff.
-fn tailscale_ip() -> Option<String> {
-    let output = Command::new("tailscale").args(["ip", "-4"]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if ip.is_empty() { None } else { Some(ip) }
-}
-
-/// The best reachable IP for display: the Tailscale IP if bound, else loopback.
-fn reachable_ip() -> String {
-    tailscale_ip().unwrap_or_else(|| "127.0.0.1".to_string())
+/// The best host to show or copy for reaching this machine, used by `story
+/// web start`/`status`/`address` output: this machine's MagicDNS FQDN when
+/// [`tailnet_identity`] reports one (memorable, and guaranteed to work for
+/// mutations too — see [`TailnetIdentity::trusted_hosts`]), else its bare
+/// tailnet IPv4, else loopback if no tailnet identity is available at all.
+fn reachable_host() -> String {
+    tailnet_identity()
+        .map(|identity| identity.advertise_host().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 /// Check if web-serve is available in PATH
@@ -1626,8 +1625,10 @@ pub fn handle_start(port: u16) -> Result<String, AppError> {
             .output();
     }
 
-    let ip = reachable_ip();
-    Ok(format!("Web UI started at http://{ip}:{port} (PID {pid})"))
+    let host = reachable_host();
+    Ok(format!(
+        "Web UI started at http://{host}:{port} (PID {pid})"
+    ))
 }
 
 pub fn handle_stop() -> Result<String, AppError> {
@@ -1685,8 +1686,10 @@ pub fn handle_status() -> Result<String, AppError> {
         return Ok("Web UI is not running (stale PID file cleaned up)".to_string());
     }
 
-    let ip = reachable_ip();
-    Ok(format!("Web UI running at http://{ip}:{port} (PID {pid})"))
+    let host = reachable_host();
+    Ok(format!(
+        "Web UI running at http://{host}:{port} (PID {pid})"
+    ))
 }
 
 /// Help-like summary of the `web` command group, shown when a command needs the
@@ -1741,13 +1744,13 @@ pub fn handle_open() -> Result<String, AppError> {
 
 /// `story web address` — copy the running dashboard's URL to the system clipboard.
 ///
-/// Targets [`reachable_ip`] (the Tailscale IP when the `tailscale` CLI reports
-/// one, else loopback), so a copied URL is usable from other tailnet devices —
-/// matching what `story web status` prints. Fails with a help-like summary when
-/// the dashboard isn't running.
+/// Targets [`reachable_host`] (this machine's MagicDNS FQDN when Tailscale
+/// reports one, else its bare tailnet IPv4, else loopback), so a copied URL
+/// is usable from other tailnet devices — matching what `story web status`
+/// prints. Fails with a help-like summary when the dashboard isn't running.
 pub fn handle_address() -> Result<String, AppError> {
     let (_pid, port) = running_dashboard()?;
-    let url = format!("http://{}:{port}/", reachable_ip());
+    let url = format!("http://{}:{port}/", reachable_host());
     copy_to_clipboard(&url)?;
     Ok(format!("Copied dashboard URL to clipboard: {url}"))
 }
@@ -2111,7 +2114,7 @@ mod tests {
         assert_eq!(identity.bind_ip, "100.71.206.33");
     }
 
-    // --- TailnetIdentity::trusted_hosts ---
+    // --- TailnetIdentity::trusted_hosts / advertise_host ---
 
     #[test]
     fn trusted_hosts_includes_ip_and_fqdn_but_not_short_label_or_ipv6() {
@@ -2142,6 +2145,21 @@ mod tests {
             magic_dns: None,
         };
         assert_eq!(identity.trusted_hosts(), vec!["100.71.206.33".to_string()]);
+    }
+
+    #[test]
+    fn advertise_host_prefers_magic_dns_over_ip() {
+        let identity = parse_tailnet_identity(STATUS_JSON).unwrap();
+        assert_eq!(identity.advertise_host(), "psamathe.tail983f02.ts.net");
+    }
+
+    #[test]
+    fn advertise_host_falls_back_to_ip_without_magic_dns() {
+        let identity = TailnetIdentity {
+            bind_ip: "100.71.206.33".to_string(),
+            magic_dns: None,
+        };
+        assert_eq!(identity.advertise_host(), "100.71.206.33");
     }
 
     // --- host_is_trusted ---

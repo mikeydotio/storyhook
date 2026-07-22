@@ -197,6 +197,54 @@ fn web_open_and_address_succeed_when_running() {
         .success();
 }
 
+/// Regression coverage for the #35 follow-up: `story web
+/// start`/`status`/`address` now advertise this machine's MagicDNS FQDN
+/// (not just its raw tailnet IP) whenever Tailscale reports one, since the
+/// FQDN is trusted for mutations too — unlike the bare short label (see
+/// `web::TailnetIdentity::advertise_host`). Skips gracefully wherever
+/// MagicDNS isn't available, the same as every other tailnet-gated test in
+/// this file (see `test_env_tailnet_fqdn`).
+#[test]
+fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
+    let Some(fqdn) = test_env_tailnet_fqdn() else {
+        eprintln!("skipping: no tailscale MagicDNS name available in this environment");
+        return;
+    };
+
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let port = pick_port();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "start", "--port", &port.to_string()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("http://{fqdn}:{port}")));
+    wait_for_server(port);
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("http://{fqdn}:{port}")));
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .env("STORYHOOK_CLIPBOARD_CMD", "cat")
+        .args(["web", "address"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("http://{fqdn}:{port}/")));
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
 /// `story web start` now launches the single *global* dashboard daemon — it
 /// no longer requires being run from inside a storyhook project (repos are
 /// added afterwards via `story web register`). `$HOME` is isolated so the
