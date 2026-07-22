@@ -197,6 +197,54 @@ fn web_open_and_address_succeed_when_running() {
         .success();
 }
 
+/// Regression coverage for the #35 follow-up: `story web
+/// start`/`status`/`address` now advertise this machine's MagicDNS FQDN
+/// (not just its raw tailnet IP) whenever Tailscale reports one, since the
+/// FQDN is trusted for mutations too — unlike the bare short label (see
+/// `web::TailnetIdentity::advertise_host`). Skips gracefully wherever
+/// MagicDNS isn't available, the same as every other tailnet-gated test in
+/// this file (see `test_env_tailnet_fqdn`).
+#[test]
+fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
+    let Some(fqdn) = test_env_tailnet_fqdn() else {
+        eprintln!("skipping: no tailscale MagicDNS name available in this environment");
+        return;
+    };
+
+    let home = tempdir().unwrap();
+    let dir = tempdir().unwrap();
+    let port = pick_port();
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "start", "--port", &port.to_string()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("http://{fqdn}:{port}")));
+    wait_for_server(port);
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("http://{fqdn}:{port}")));
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .env("STORYHOOK_CLIPBOARD_CMD", "cat")
+        .args(["web", "address"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("http://{fqdn}:{port}/")));
+
+    story(dir.path())
+        .env("HOME", home.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
 /// `story web start` now launches the single *global* dashboard daemon — it
 /// no longer requires being run from inside a storyhook project (repos are
 /// added afterwards via `story web register`). `$HOME` is isolated so the
@@ -2780,6 +2828,150 @@ fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
         .send(r#"{"state":"in-progress"}"#)
         .unwrap_or_else(|e| panic!("expected the tailnet interface to be auto-trusted: {e}"));
     assert_eq!(resp.status(), 200);
+}
+
+/// This machine's MagicDNS FQDN (trailing dot stripped, lowercased), if the
+/// `tailscale` CLI is present and reports one — independently derived from
+/// `tailscale status --json` (mirroring `web::parse_tailnet_identity`'s own
+/// extraction) so these tests don't depend on private lib internals. `None`
+/// (and the caller skips) wherever `tailscale` isn't installed, isn't logged
+/// in, or MagicDNS is disabled on this tailnet.
+fn test_env_tailnet_fqdn() -> Option<String> {
+    let output = std::process::Command::new("tailscale")
+        .args(["status", "--json"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let dns_name = json.get("Self")?.get("DNSName")?.as_str()?;
+    let fqdn = dns_name.trim_end_matches('.').to_ascii_lowercase();
+    if fqdn.is_empty() { None } else { Some(fqdn) }
+}
+
+#[test]
+fn web_serve_trusts_magic_dns_fqdn_for_mutations() {
+    // Regression test for #35: a tailnet peer reaching the dashboard by its
+    // MagicDNS name (rather than the raw tailnet IP) got 403 Forbidden on
+    // every mutation, because only the IP literal ever landed in
+    // `trusted_hosts`. This connects over loopback but sends the `Host` a
+    // tailnet browser would actually send when it opens the MagicDNS URL —
+    // the same technique `web_mutation_with_spoofed_host_is_403` uses in the
+    // opposite direction — so it needs no real cross-machine network access,
+    // only that the tailnet listener actually bound (which is what
+    // populates `trusted_hosts` with the FQDN in the first place; hence the
+    // skip-if-unavailable gate and the `wait_for_addr` below).
+    let Some(fqdn) = test_env_tailnet_fqdn() else {
+        eprintln!("skipping: no tailscale MagicDNS name available in this environment");
+        return;
+    };
+    let Some(tailnet_ip) = test_env_tailscale_ip() else {
+        eprintln!("skipping: no tailscale IP available in this environment");
+        return;
+    };
+
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Move me via MagicDNS"])
+        .assert()
+        .success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+    wait_for_addr(&format!("{tailnet_ip}:{port}"));
+
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
+    let resp = ureq::post(&url)
+        .header("X-Storyhook", "1")
+        .header("Host", format!("{fqdn}:{port}"))
+        .content_type("application/json")
+        .send(r#"{"state":"in-progress"}"#)
+        .unwrap_or_else(|e| {
+            panic!("expected the MagicDNS FQDN {fqdn} to be trusted for mutations: {e}")
+        });
+    assert_eq!(resp.status(), 200);
+}
+
+#[test]
+fn web_serve_rejects_bare_magic_dns_short_label_for_mutations() {
+    // The FQDN is trusted (see the test above), but its bare first label
+    // must not be: unlike the FQDN, a single-label host can resolve through
+    // a DNS search domain that isn't the tailnet's, so trusting it would
+    // reopen a DNS-rebinding path. Locks in that deliberate boundary.
+    let Some(fqdn) = test_env_tailnet_fqdn() else {
+        eprintln!("skipping: no tailscale MagicDNS name available in this environment");
+        return;
+    };
+    let Some(tailnet_ip) = test_env_tailscale_ip() else {
+        eprintln!("skipping: no tailscale IP available in this environment");
+        return;
+    };
+    let short_label = fqdn.split('.').next().unwrap();
+
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+    wait_for_addr(&format!("{tailnet_ip}:{port}"));
+
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
+    let err = ureq::post(&url)
+        .header("X-Storyhook", "1")
+        .header("Host", format!("{short_label}:{port}"))
+        .content_type("application/json")
+        .send(r#"{"state":"in-progress"}"#)
+        .unwrap_err();
+    assert_eq!(status_of(err), 403);
+}
+
+#[test]
+fn web_serve_rejects_foreign_ts_net_host_for_mutations() {
+    // Proves the allowlist trusts THIS machine's FQDN specifically, not any
+    // `ts.net` name under the same tailnet — another host's MagicDNS name
+    // must still be rejected.
+    let Some(fqdn) = test_env_tailnet_fqdn() else {
+        eprintln!("skipping: no tailscale MagicDNS name available in this environment");
+        return;
+    };
+    let Some(tailnet_ip) = test_env_tailscale_ip() else {
+        eprintln!("skipping: no tailscale IP available in this environment");
+        return;
+    };
+    let suffix = fqdn.split_once('.').map_or(fqdn.as_str(), |(_, rest)| rest);
+    let foreign_host = format!("definitely-not-this-host.{suffix}");
+
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+    wait_for_addr(&format!("{tailnet_ip}:{port}"));
+
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
+    let err = ureq::post(&url)
+        .header("X-Storyhook", "1")
+        .header("Host", format!("{foreign_host}:{port}"))
+        .content_type("application/json")
+        .send(r#"{"state":"in-progress"}"#)
+        .unwrap_err();
+    assert_eq!(status_of(err), 403);
 }
 
 #[test]
