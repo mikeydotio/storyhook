@@ -52,8 +52,13 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             title,
             state,
             story_type,
+            description,
+            priority,
+            labels,
+            assignee,
         } => lock::with_project_lock(root, || {
-            // Validate story_type before creating the story
+            // Validate every enrichment field before creating the story, so
+            // invalid input never leaves a partially-created story behind.
             if let Some(ref st) = story_type {
                 let type_map = storage::load_type_map(root)?;
                 if !type_map.contains_key(st.as_str()) {
@@ -63,18 +68,59 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     )));
                 }
             }
-            let story = storage::create_story(root, &title, state.as_deref())?;
-            // Emit StoryTypeSet if a type was specified
-            if let Some(ref st) = story_type {
-                storage::write_story_events(
-                    root,
-                    &story.id,
-                    &[StoryEvent::StoryTypeSet {
-                        at: storage::now(),
-                        story_type: st.clone(),
-                    }],
-                )?;
+            let priority_level = priority
+                .as_deref()
+                .map(|p| {
+                    Priority::parse(p)
+                        .ok_or_else(|| AppError::Validation(format!("invalid priority `{p}`")))
+                })
+                .transpose()?;
+            let assignee_member = assignee
+                .as_deref()
+                .map(|a| storage::find_member(root, a))
+                .transpose()?;
+
+            let now = storage::now();
+            let mut extra: Vec<StoryEvent> = Vec::new();
+            if let Some(level) = priority_level {
+                extra.push(StoryEvent::StoryPrioritySet {
+                    at: now.clone(),
+                    priority: level,
+                });
             }
+            if let Some(labels) = labels {
+                let mut sorted: Vec<String> = labels;
+                sorted.sort();
+                sorted.dedup();
+                if !sorted.is_empty() {
+                    extra.push(StoryEvent::StoryLabelsSet {
+                        at: now.clone(),
+                        labels: sorted,
+                    });
+                }
+            }
+            if let Some(member) = assignee_member {
+                extra.push(StoryEvent::StoryAssigned {
+                    at: now.clone(),
+                    member_id: member.id,
+                });
+            }
+            if let Some(ref description) = description
+                && !description.trim().is_empty()
+            {
+                extra.push(StoryEvent::StoryDescriptionSet {
+                    at: now.clone(),
+                    description: description.clone(),
+                });
+            }
+            if let Some(ref st) = story_type {
+                extra.push(StoryEvent::StoryTypeSet {
+                    at: now.clone(),
+                    story_type: st.clone(),
+                });
+            }
+
+            let story = storage::create_story_with_events(root, &title, state.as_deref(), &extra)?;
             if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
                 let payload = serde_json::json!({
                     "event_type": "create",
@@ -724,6 +770,14 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     events.push(StoryEvent::StoryAssigned {
                         at: now.clone(),
                         member_id: member.id,
+                    });
+                }
+                if let Some(ref description) = import_story.description
+                    && !description.trim().is_empty()
+                {
+                    events.push(StoryEvent::StoryDescriptionSet {
+                        at: now.clone(),
+                        description: description.clone(),
                     });
                 }
                 if let Some(ref st) = import_story.story_type {
@@ -1696,6 +1750,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             unblocked,
             json: json_patch,
             story_type,
+            description,
         } => lock::with_project_lock(root, || {
             storage::ensure_project(root)?;
             ensure_open_story(root, &id)?;
@@ -1792,6 +1847,13 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     story_type: st.clone(),
                 });
                 changes.push(format!("type -> {st}"));
+            }
+            if let Some(ref d) = description {
+                events.push(StoryEvent::StoryDescriptionSet {
+                    at: now.clone(),
+                    description: d.clone(),
+                });
+                changes.push("description updated".to_string());
             }
             if let Some(ref j) = json_patch {
                 let patch: serde_json::Value = serde_json::from_str(j)
@@ -1924,9 +1986,19 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                             });
                             changes.push(format!("type -> {v}"));
                         }
+                        "description" => {
+                            let v = value.as_str().ok_or_else(|| {
+                                AppError::Validation("description must be a string".to_string())
+                            })?;
+                            events.push(StoryEvent::StoryDescriptionSet {
+                                at: now.clone(),
+                                description: v.to_string(),
+                            });
+                            changes.push("description updated".to_string());
+                        }
                         other => {
                             return Err(AppError::Validation(format!(
-                                "unknown field `{other}` in JSON. Valid fields: title, state, priority, assignee, labels, blocked, story_type"
+                                "unknown field `{other}` in JSON. Valid fields: title, state, priority, assignee, labels, blocked, story_type, description"
                             )));
                         }
                     }
@@ -3176,9 +3248,9 @@ fn import_stories_batch(
         if let Some(ref description) = import_story.description
             && !description.trim().is_empty()
         {
-            events.push(StoryEvent::StoryCommentAdded {
+            events.push(StoryEvent::StoryDescriptionSet {
                 at: now.clone(),
-                text: description.clone(),
+                description: description.clone(),
             });
         }
         if let Some(ref st) = import_story.story_type {
