@@ -1940,6 +1940,7 @@ fn build_meta_json(root: &Path) -> Result<serde_json::Value, AppError> {
         .collect();
 
     let priorities: Vec<&str> = PRIORITIES.iter().map(Priority::as_str).collect();
+    let labels = storage::distinct_labels(root)?;
 
     Ok(serde_json::json!({
         "states": states,
@@ -1947,5 +1948,6 @@ fn build_meta_json(root: &Path) -> Result<serde_json::Value, AppError> {
         "members": members,
         "priorities": priorities,
         "relations": RELATIONS,
+        "labels": labels,
     }))
 }
