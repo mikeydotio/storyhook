@@ -572,6 +572,13 @@ fn route_create_story(root: &Path, body: &str) -> Reply {
         let title = require_str(&obj, "title")?.to_string();
         let state = get_str(&obj, "state").map(str::to_string);
         let story_type = get_str(&obj, "type").map(str::to_string);
+        let description = get_str(&obj, "description").map(str::to_string);
+        let priority = get_str(&obj, "priority").map(str::to_string);
+        let labels = if obj.contains_key("labels") {
+            Some(get_str_array(&obj, "labels"))
+        } else {
+            None
+        };
         Ok(run_and_reply(
             root,
             201,
@@ -579,6 +586,10 @@ fn route_create_story(root: &Path, body: &str) -> Reply {
                 title,
                 state,
                 story_type,
+                description,
+                priority,
+                labels,
+                assignee: None,
             },
         ))
     })()
@@ -603,6 +614,7 @@ fn route_patch_story(root: &Path, id: &str, body: &str) -> Reply {
             unblocked: false,
             json: None,
             story_type: get_str(&obj, "type").map(str::to_string),
+            description: get_str(&obj, "description").map(str::to_string),
         };
         Ok(run_mutation_and_reply_with_story(root, id, invocation))
     })()
