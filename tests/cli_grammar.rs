@@ -359,6 +359,55 @@ fn set_json_patch_applies_fields() {
         .stdout(predicate::str::contains("priority -> critical"));
 }
 
+// Regression: #39 — the `--json` patch's "assignee" key wrote the raw input
+// as `member_id` with no membership check, unlike the `--assignee` flag
+// (parsed by the same `set` command) right next to it, which already
+// validated via `storage::find_member`. See also `story_new_fields.rs`'s
+// `new_with_unknown_assignee_is_rejected_and_creates_no_story`.
+
+#[test]
+fn set_json_patch_unknown_assignee_is_rejected_and_does_not_set() {
+    let dir = tempdir().unwrap();
+    init_and_create(dir.path());
+
+    story(dir.path())
+        .args(["set", "SH-1", "--json", r#"{"assignee":"nobody"}"#])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("member `nobody` not found"));
+
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("assignee: -"));
+}
+
+#[test]
+fn set_json_patch_assignee_by_github_handle_normalizes_to_member_id() {
+    let dir = tempdir().unwrap();
+    init_and_create(dir.path());
+
+    // `id` is a lowercased slug of the handle, so this member's id
+    // ("mikeyward") differs in case from its github handle ("MikeyWard").
+    story(dir.path())
+        .args(["member", "add", "-g", "MikeyWard"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["set", "SH-1", "--json", r#"{"assignee":"MikeyWard"}"#])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("assignee -> MikeyWard"));
+
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("assignee: mikeyward"));
+}
+
 #[test]
 fn set_blocked_via_set() {
     let dir = tempdir().unwrap();
