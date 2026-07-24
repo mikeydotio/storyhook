@@ -400,6 +400,9 @@ fn render_story(view: &StoryView) -> String {
     } else {
         body.push_str(&format!("labels: {}\n", story.labels.join(", ")));
     }
+    if let Some(description) = &story.description {
+        body.push_str(&format!("description: {description}\n"));
+    }
     if let Some(awaiting) = &story.awaiting {
         body.push_str(&format!("awaiting: {awaiting}\n"));
     }

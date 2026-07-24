@@ -535,10 +535,10 @@ fn dispatch(
             priority,
             labels,
             assignee,
+            description,
         } => {
             let desc = format!("Created story: {title}");
             let result = crate::lock::with_project_lock(root, || {
-                let story = crate::storage::create_story(root, &title, None)?;
                 let mut events = Vec::new();
                 if let Some(p) = &priority {
                     events.push(crate::domain::StoryEvent::StoryPrioritySet {
@@ -558,9 +558,13 @@ fn dispatch(
                         member_id: a.clone(),
                     });
                 }
-                if !events.is_empty() {
-                    crate::storage::write_story_events(root, &story.id, &events)?;
+                if let Some(d) = &description {
+                    events.push(crate::domain::StoryEvent::StoryDescriptionSet {
+                        at: crate::storage::now(),
+                        description: d.clone(),
+                    });
                 }
+                let story = crate::storage::create_story_with_events(root, &title, None, &events)?;
                 Ok(story.id)
             });
             match result {
@@ -675,6 +679,38 @@ fn dispatch(
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification = Some((format!("{id} title updated"), Instant::now()));
+                }
+                Err(e) => {
+                    state.notification = Some((format!("Update failed: {e}"), Instant::now()));
+                }
+            }
+        }
+
+        Action::SetDescription { id, description } => {
+            let events_before = snapshot_for_undo(root, &id);
+            let result = crate::lock::with_project_lock(root, || {
+                crate::storage::write_story_events(
+                    root,
+                    &id,
+                    &[crate::domain::StoryEvent::StoryDescriptionSet {
+                        at: crate::storage::now(),
+                        description: description.clone(),
+                    }],
+                )
+            });
+            match result {
+                Ok(()) => {
+                    push_undo(
+                        state,
+                        format!("{id} description updated"),
+                        id.clone(),
+                        events_before,
+                    );
+                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    board.on_state_change(state);
+                    graph.on_state_change(state);
+                    state.notification =
+                        Some((format!("{id} description updated"), Instant::now()));
                 }
                 Err(e) => {
                     state.notification = Some((format!("Update failed: {e}"), Instant::now()));

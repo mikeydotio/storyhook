@@ -157,6 +157,8 @@ pub struct StorySnapshot {
     pub labels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub story_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<String>,
     /// `true` when the story was removed via `story delete` rather than
@@ -227,6 +229,10 @@ pub enum StoryEvent {
         at: String,
         title: String,
     },
+    StoryDescriptionSet {
+        at: String,
+        description: String,
+    },
     StoryClosedAndArchived {
         at: String,
         state: String,
@@ -253,6 +259,7 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryTypeSet { .. } => "type-set",
             StoryEvent::StoryLabelsSet { .. } => "labels-set",
             StoryEvent::StoryTitleSet { .. } => "title-set",
+            StoryEvent::StoryDescriptionSet { .. } => "description-set",
             StoryEvent::StoryClosedAndArchived { .. } => "archived",
             StoryEvent::StoryDeleted { .. } => "deleted",
         })
@@ -289,6 +296,7 @@ pub fn fold_story(
     let mut awaiting = None;
     let mut priority = Priority::None;
     let mut story_type = None;
+    let mut description = None;
     let mut labels = Vec::new();
     let mut comments = Vec::new();
     let mut relationships = BTreeSet::new();
@@ -363,6 +371,13 @@ pub fn fold_story(
                 title: new_title,
             } => {
                 title = Some(new_title.clone());
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryDescriptionSet {
+                at,
+                description: new_description,
+            } => {
+                description = Some(new_description.clone());
                 updated_at = Some(at.clone());
             }
             StoryEvent::StoryRelationshipAdded {
@@ -440,6 +455,7 @@ pub fn fold_story(
         priority,
         labels,
         story_type,
+        description,
         comments,
         relationships: relationships.into_iter().collect(),
         closed_at,
@@ -1440,6 +1456,7 @@ mod tests {
                 priority: Priority::None,
                 labels: Vec::new(),
                 story_type: None,
+                description: None,
                 comments: Vec::new(),
                 relationships: vec![StoryRelation {
                     relation: "parent-of".to_string(),
@@ -1461,6 +1478,7 @@ mod tests {
                 priority: Priority::None,
                 labels: Vec::new(),
                 story_type: None,
+                description: None,
                 comments: Vec::new(),
                 relationships: vec![
                     StoryRelation {
@@ -1488,6 +1506,7 @@ mod tests {
                 priority: Priority::None,
                 labels: Vec::new(),
                 story_type: None,
+                description: None,
                 comments: Vec::new(),
                 relationships: vec![StoryRelation {
                     relation: "child-of".to_string(),
@@ -1509,6 +1528,7 @@ mod tests {
                 priority: Priority::None,
                 labels: Vec::new(),
                 story_type: None,
+                description: None,
                 comments: Vec::new(),
                 relationships: Vec::new(),
                 closed_at: None,
@@ -1628,6 +1648,20 @@ mod tests {
             ]),
             "type-set"
         );
+        assert_eq!(
+            last_activity_type(&[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Test".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryDescriptionSet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    description: "Some description".to_string(),
+                },
+            ]),
+            "description-set"
+        );
     }
 
     #[test]
@@ -1694,6 +1728,91 @@ mod tests {
 
         assert_eq!(story.story_type.as_deref(), Some("bug"));
         assert_eq!(story.updated_at, "2026-03-13T00:02:00Z");
+    }
+
+    #[test]
+    fn fold_story_tracks_description() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Described story".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryDescriptionSet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    description: "What this story is about".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            story.description.as_deref(),
+            Some("What this story is about")
+        );
+        assert_eq!(story.updated_at, "2026-03-13T00:01:00Z");
+    }
+
+    #[test]
+    fn fold_story_description_defaults_to_none() {
+        let story = fold_story(
+            "SH-1",
+            &[StoryEvent::StoryCreated {
+                at: "2026-03-13T00:00:00Z".to_string(),
+                title: "No description".to_string(),
+                state: "todo".to_string(),
+            }],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.description, None);
+    }
+
+    #[test]
+    fn fold_story_description_last_write_wins() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Changing description".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryDescriptionSet {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    description: "First draft".to_string(),
+                },
+                StoryEvent::StoryDescriptionSet {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                    description: "Final draft".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.description.as_deref(), Some("Final draft"));
+        assert_eq!(story.updated_at, "2026-03-13T00:02:00Z");
+    }
+
+    #[test]
+    fn snapshot_without_description_deserializes() {
+        let json = r#"{
+            "id": "SH-1",
+            "title": "Legacy snapshot",
+            "created_at": "2026-03-13T00:00:00Z",
+            "updated_at": "2026-03-13T00:00:00Z",
+            "state": "todo",
+            "superstate": "OPEN"
+        }"#;
+
+        let story: StorySnapshot = serde_json::from_str(json).unwrap();
+
+        assert_eq!(story.description, None);
     }
 
     #[test]

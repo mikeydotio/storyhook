@@ -309,10 +309,14 @@ tbody tr:hover { background: var(--bg-sunken); }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 .field { display: flex; flex-direction: column; gap: 0.25rem; }
 .field label { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-faint); }
-.field select, .field input[type=text] {
+.field select, .field input[type=text], .field textarea {
   padding: 0.375rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--bg); font-size: 0.8125rem;
 }
+.field textarea {
+  width: 100%; font-family: inherit; resize: none; overflow: hidden; min-height: 2.25rem;
+}
+.label-combobox { position: relative; display: flex; flex-direction: column; gap: 0.375rem; }
 .section-label { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-faint); margin-bottom: 0.5rem; }
 .label-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; align-items: center; }
 .label-chip { display: inline-flex; align-items: center; gap: 0.25rem; }
@@ -332,6 +336,12 @@ tbody tr:hover { background: var(--bg-sunken); }
   width: 100%; min-height: 3.5rem; padding: 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--bg); font-size: 0.8125rem; resize: vertical; font-family: inherit;
 }
+.description-field {
+  width: 100%; min-height: 2.5rem; padding: 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg); font-size: 0.8125rem; font-family: inherit; resize: none; overflow: hidden;
+}
+.description-field:hover { background: var(--bg-sunken); }
+.description-field:focus { outline: none; border-color: var(--accent); background: var(--bg-sunken); }
 .rel-list { display: flex; flex-direction: column; gap: 0.375rem; }
 .rel-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; }
 .rel-row .rel-kind { color: var(--fg-muted); font-size: 0.75rem; }
@@ -345,9 +355,10 @@ tbody tr:hover { background: var(--bg-sunken); }
 
 /* ---- Modal ---- */
 .modal {
-  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -46%); width: min(26rem, 92vw);
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -46%); width: min(30rem, 92vw);
   background: var(--bg-raised); border-radius: var(--radius); box-shadow: var(--shadow-lg); z-index: 51;
   opacity: 0; pointer-events: none; transition: opacity 0.15s, transform 0.15s;
+  max-height: 90vh; overflow-y: auto;
 }
 .modal.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%); }
 .modal-header { padding: 1rem 1.25rem 0.5rem; font-size: 1rem; font-weight: 700; }
@@ -356,6 +367,12 @@ tbody tr:hover { background: var(--bg-sunken); }
   width: 100%; padding: 0.5rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--bg); font-size: 0.875rem;
 }
+.modal-body textarea {
+  width: 100%; padding: 0.5rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg); font-size: 0.875rem; font-family: inherit; resize: none; overflow: hidden; min-height: 2.5rem;
+}
+.modal-body .field-grid { gap: 0.625rem; }
+.modal-body .field label { display: block; margin-bottom: 0.25rem; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.25rem; }
 .modal-error { font-size: 0.75rem; color: var(--danger); }
 
@@ -530,8 +547,13 @@ tbody tr:hover { background: var(--bg-sunken); }
   <div class="modal-header">New story</div>
   <div class="modal-body">
     <input type="text" id="create-title" placeholder="Title" autocomplete="off">
-    <select id="create-state"></select>
-    <select id="create-type"></select>
+    <textarea id="create-description" placeholder="Description (optional)" rows="2"></textarea>
+    <div class="field-grid">
+      <div class="field"><label for="create-state">State</label><select id="create-state"></select></div>
+      <div class="field"><label for="create-type">Type</label><select id="create-type"></select></div>
+      <div class="field"><label for="create-priority">Priority</label><select id="create-priority"></select></div>
+    </div>
+    <div class="field" id="create-labels-field"><label>Labels</label></div>
     <div class="modal-error" id="create-error"></div>
   </div>
   <div class="modal-footer">
@@ -646,6 +668,13 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+  /** Grows a `resize: none; overflow: hidden` textarea to fit its content —
+   * called on `input` and once after any programmatic value change. */
+  function autoGrowTextarea(textarea) {
+    textarea.style.height = "auto";
+    textarea.style.height = textarea.scrollHeight + "px";
+  }
 
   // ============================================================
   // API
@@ -773,7 +802,7 @@ tbody tr:hover { background: var(--bg-sunken); }
   // DERIVED DATA / LOOKUPS
   // ============================================================
 
-  function meta() { return (state.data && state.data.meta) || { states: [], types: [], members: [], priorities: [], relations: [] }; }
+  function meta() { return (state.data && state.data.meta) || { states: [], types: [], members: [], priorities: [], relations: [], labels: [] }; }
 
   function memberName(id) {
     if (!id) return null;
@@ -1621,6 +1650,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 
     body.appendChild(buildTitleField(st));
     body.appendChild(buildFieldGrid(st));
+    body.appendChild(buildDescriptionSection(st));
 
     if (st.awaiting) {
       body.appendChild(el("div", { class: "banner banner-blocked" }, [
@@ -1699,6 +1729,23 @@ tbody tr:hover { background: var(--bg-sunken); }
     return grid;
   }
 
+  function buildDescriptionSection(st) {
+    var wrap = el("div", {}, [el("div", { class: "section-label" }, ["Description"])]);
+    var textarea = el("textarea", {
+      class: "description-field",
+      placeholder: "Add a description…",
+      value: st.description || ""
+    });
+    textarea.addEventListener("input", function() { autoGrowTextarea(textarea); });
+    textarea.addEventListener("blur", function() {
+      var v = textarea.value.trim();
+      if (v !== (st.description || "")) runFieldMutation(st.id, "PATCH", "", { description: v });
+    });
+    wrap.appendChild(textarea);
+    requestAnimationFrame(function() { autoGrowTextarea(textarea); });
+    return wrap;
+  }
+
   function buildBlockForm(st) {
     var input = el("input", { type: "text", placeholder: "Reason for blocking…" });
     var submit = el("button", { class: "btn", onClick: function() {
@@ -1729,6 +1776,79 @@ tbody tr:hover { background: var(--bg-sunken); }
     });
     wrap.appendChild(el("div", { class: "inline-add" }, [input]));
     return wrap;
+  }
+
+  /** A chip-token label input with a typeahead popover suggesting from
+   * `suggestions` (the project's existing labels). Free entry is still
+   * allowed — matches the free-text label convention used elsewhere in the
+   * app. Reuses the filter bar's `.fdd-panel` popover styling/close
+   * machinery (`closeFilterDropdowns`, wired to a single document-level
+   * click listener at init) rather than adding a new one per instance. */
+  function buildLabelCombobox(initialLabels, suggestions) {
+    var selected = (initialLabels || []).slice();
+    var chips = el("div", { class: "label-chips" }, []);
+    var input = el("input", { type: "text", placeholder: "Add label…", autocomplete: "off" });
+    var panel = el("div", { class: "fdd-panel" }, []);
+    panel.hidden = true;
+    var wrap = el("div", { class: "label-combobox" }, [chips, input, panel]);
+
+    function renderChips() {
+      clear(chips);
+      selected.forEach(function(label) {
+        chips.appendChild(el("span", { class: "chip label-chip" }, [
+          label,
+          el("button", { type: "button", onClick: function(e) {
+            e.stopPropagation();
+            selected = selected.filter(function(l) { return l !== label; });
+            renderChips();
+          } }, ["×"])
+        ]));
+      });
+    }
+
+    function addLabel(value) {
+      var v = value.trim();
+      input.value = "";
+      closeFilterDropdowns();
+      if (!v || selected.indexOf(v) !== -1) return;
+      selected.push(v);
+      renderChips();
+    }
+
+    function openPanel() {
+      var query = input.value.trim().toLowerCase();
+      var matches = suggestions.filter(function(s) {
+        return selected.indexOf(s) === -1 && (!query || s.toLowerCase().indexOf(query) !== -1);
+      });
+      closeFilterDropdowns();
+      if (!matches.length) return;
+      clear(panel);
+      matches.forEach(function(s) {
+        panel.appendChild(el("div", { class: "fdd-option", onClick: function(e) {
+          e.stopPropagation();
+          addLabel(s);
+        } }, [s]));
+      });
+      panel.hidden = false;
+    }
+
+    input.addEventListener("click", function(e) { e.stopPropagation(); openPanel(); });
+    input.addEventListener("input", openPanel);
+    input.addEventListener("keydown", function(e) {
+      if (e.key === "Enter" || e.key === ",") {
+        e.preventDefault();
+        addLabel(input.value);
+      } else if (e.key === "Backspace" && !input.value && selected.length) {
+        selected.pop();
+        renderChips();
+      } else if (e.key === "Escape") {
+        closeFilterDropdowns();
+      }
+    });
+    panel.addEventListener("click", function(e) { e.stopPropagation(); });
+
+    renderChips();
+    return { element: wrap, getLabels: function() { return selected.slice(); } };
   }
 
   function buildRelationshipsSection(st, full) {
@@ -2084,8 +2204,14 @@ tbody tr:hover { background: var(--bg-sunken); }
   // CREATE MODAL
   // ============================================================
 
+  /** The label combobox currently mounted in the create modal — rebuilt
+   * fresh on every `openCreateModal()` call, read back by `submitCreate()`. */
+  var createLabelCombobox = null;
+
   function openCreateModal() {
     $("create-title").value = "";
+    $("create-description").value = "";
+    autoGrowTextarea($("create-description"));
     $("create-error").textContent = "";
     var m = meta();
     clear($("create-state"));
@@ -2096,6 +2222,14 @@ tbody tr:hover { background: var(--bg-sunken); }
     clear($("create-type"));
     $("create-type").appendChild(el("option", { value: "" }, ["Default type"]));
     m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [t.slug])); });
+    clear($("create-priority"));
+    $("create-priority").appendChild(el("option", { value: "" }, ["Default priority"]));
+    m.priorities.forEach(function(p) { $("create-priority").appendChild(el("option", { value: p }, [p])); });
+
+    var labelsField = $("create-labels-field");
+    while (labelsField.children.length > 1) labelsField.removeChild(labelsField.lastChild);
+    createLabelCombobox = buildLabelCombobox([], m.labels || []);
+    labelsField.appendChild(createLabelCombobox.element);
 
     $("modal-backdrop").hidden = false;
     requestAnimationFrame(function() {
@@ -2117,8 +2251,13 @@ tbody tr:hover { background: var(--bg-sunken); }
     var title = $("create-title").value.trim();
     if (!title) { $("create-error").textContent = "Title is required."; return; }
     var body = { title: title };
+    var description = $("create-description").value.trim();
+    if (description) body.description = description;
     if ($("create-state").value) body.state = $("create-state").value;
     if ($("create-type").value) body.type = $("create-type").value;
+    if ($("create-priority").value) body.priority = $("create-priority").value;
+    var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
+    if (labels.length) body.labels = labels;
     api("POST", apiBase() + "/story", body)
       .then(function(resp) {
         closeCreateModal();
@@ -2186,6 +2325,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("modal-backdrop").addEventListener("click", closeCreateModal);
     $("create-submit").addEventListener("click", submitCreate);
     $("create-title").addEventListener("keydown", function(e) { if (e.key === "Enter") submitCreate(); });
+    $("create-description").addEventListener("input", function() { autoGrowTextarea(this); });
     $("drawer-close").addEventListener("click", closeDrawer);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {

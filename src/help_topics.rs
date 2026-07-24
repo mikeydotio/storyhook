@@ -39,9 +39,14 @@ Related:
 
         m.insert(
             "new",
-            r#"story new <title>
+            r#"story new <title> [--state <slug>] [--type <slug>] [--description <text>]
+              [--priority <level>] [--assignee <member>] [--label <name> ...]
+              [--labels <csv>]
 
 Create a new story with the given title. Returns the assigned ID.
+All flags are optional — everything but the title can also be set
+later via 'story set'. --label may be repeated; --labels accepts a
+comma-separated list (both may be combined).
 
 When to use:
   When you have a discrete piece of work to track. For bulk creation
@@ -51,9 +56,12 @@ Examples:
   story new "Implement authentication middleware"
   story new "Fix: login page returns 500 on empty password"
   story new "Refactor database connection pooling" --json
+  story new "Add rate limiting" --priority high --label backend --label api
+  story new "Investigate flaky test" --description "Fails ~1 in 20 runs in CI"
 
 Related:
   story decompose        — Create multiple stories from a spec file
+  story set <id>          — Change any field after creation
   story prioritize <id>  — Set priority after creation
   story label <id>       — Add labels after creation
 "#,
@@ -895,7 +903,8 @@ Related:
             "set",
             r#"story set <id> [--title "text"] [--state <slug>] [--priority <level>]
               [--assignee <member>] [--labels <csv>] [--blocked "<reason>"]
-              [--unblocked] [--json '{"key": "value"}']
+              [--unblocked] [--json '{"key": "value"}'] [--type <slug>]
+              [--description "text"]
 
 Update multiple fields on a story in a single command. Accepts any
 combination of field flags. Use --json for arbitrary key-value data.
@@ -912,6 +921,7 @@ Examples:
   story set SH-1 --json '{"estimate": "3d", "epic": "auth"}'
   story set SH-1 --blocked "waiting for deploy"
   story set SH-1 --unblocked
+  story set SH-1 --description "Root cause: race condition in cache invalidation"
 
 Related:
   story move <id>        — Change state only
