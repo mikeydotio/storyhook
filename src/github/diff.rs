@@ -26,6 +26,7 @@ pub struct FieldUpdates {
     pub priority: Option<Priority>,
     pub awaiting: Option<Option<String>>,
     pub labels: Option<Vec<String>>,
+    pub description: Option<Option<String>>,
 }
 
 impl FieldUpdates {
@@ -36,6 +37,7 @@ impl FieldUpdates {
             && self.priority.is_none()
             && self.awaiting.is_none()
             && self.labels.is_none()
+            && self.description.is_none()
     }
 }
 
@@ -148,6 +150,17 @@ pub fn three_way_merge(
         &remote.labels,
         &mut local_updates,
         &mut remote_updates,
+        &mut conflicts,
+    );
+
+    // 6b. description — Option<String> comparison, same shape as awaiting
+    merge_optional(
+        "description",
+        &base.description,
+        &local.description,
+        &remote.description,
+        |v| local_updates.description = Some(v.clone()),
+        |v| remote_updates.description = Some(v.clone()),
         &mut conflicts,
     );
 
@@ -714,6 +727,86 @@ mod tests {
         assert!(result.local_updates.labels.is_none());
         assert!(result.remote_updates.labels.is_none());
         assert!(result.conflicts.is_empty());
+    }
+
+    #[test]
+    fn local_only_description_change_pushes_to_remote() {
+        let base = make_snapshot("SH-1");
+        let mut local = base.clone();
+        local.description = Some("Local description".to_string());
+        let remote = base.clone();
+
+        let result = three_way_merge(&base, &local, &remote);
+
+        assert!(result.local_updates.description.is_none());
+        assert_eq!(
+            result.remote_updates.description,
+            Some(Some("Local description".to_string()))
+        );
+        assert!(result.conflicts.is_empty());
+    }
+
+    #[test]
+    fn remote_only_description_change_pulls_to_local() {
+        let base = make_snapshot("SH-1");
+        let local = base.clone();
+        let mut remote = base.clone();
+        remote.description = Some("Remote description".to_string());
+
+        let result = three_way_merge(&base, &local, &remote);
+
+        assert_eq!(
+            result.local_updates.description,
+            Some(Some("Remote description".to_string()))
+        );
+        assert!(result.remote_updates.description.is_none());
+        assert!(result.conflicts.is_empty());
+    }
+
+    #[test]
+    fn both_changed_description_to_same_value_no_conflict() {
+        let base = make_snapshot("SH-1");
+        let mut local = base.clone();
+        local.description = Some("Same description".to_string());
+        let mut remote = base.clone();
+        remote.description = Some("Same description".to_string());
+
+        let result = three_way_merge(&base, &local, &remote);
+
+        assert!(result.local_updates.description.is_none());
+        assert!(result.remote_updates.description.is_none());
+        assert!(result.conflicts.is_empty());
+    }
+
+    #[test]
+    fn both_changed_description_to_different_values_conflict() {
+        let base = make_snapshot("SH-1");
+        let mut local = base.clone();
+        local.description = Some("Local description".to_string());
+        let mut remote = base.clone();
+        remote.description = Some("Remote description".to_string());
+
+        let result = three_way_merge(&base, &local, &remote);
+
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(result.conflicts[0].field, "description");
+        assert_eq!(result.conflicts[0].base_value, "<none>");
+        assert_eq!(result.conflicts[0].local_value, "Local description");
+        assert_eq!(result.conflicts[0].remote_value, "Remote description");
+    }
+
+    #[test]
+    fn remote_clears_description() {
+        let mut base = make_snapshot("SH-1");
+        base.description = Some("Had a description".to_string());
+        let local = base.clone();
+        let mut remote = base.clone();
+        remote.description = None;
+
+        let result = three_way_merge(&base, &local, &remote);
+
+        assert_eq!(result.local_updates.description, Some(None));
+        assert!(result.remote_updates.description.is_none());
     }
 
     #[test]

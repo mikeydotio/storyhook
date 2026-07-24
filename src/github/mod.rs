@@ -671,6 +671,13 @@ fn create_story_from_issue(
         });
     }
 
+    if let Some(ref description) = remote_snap.body_text {
+        events.push(StoryEvent::StoryDescriptionSet {
+            at: now.clone(),
+            description: description.clone(),
+        });
+    }
+
     if !events.is_empty() {
         storage::write_story_events(root, &story_id, &events)?;
     }
@@ -761,7 +768,7 @@ fn create_issue_from_story(
     members: &[Member],
     _prefix: &str,
 ) -> Result<u64, AppError> {
-    let create_req = story_to_create_request(story, members, None);
+    let create_req = story_to_create_request(story, members, story.description.as_deref());
     let created_issue = client.create_issue(&create_req)?;
 
     // Save base snapshot
@@ -849,6 +856,16 @@ fn apply_local_updates(
         });
     }
 
+    if let Some(ref description_opt) = updates.description {
+        // No dedicated "clear description" event exists; an empty string is
+        // the legitimate representation of a cleared description, matching
+        // how the CLI/web SetFields path already treats it.
+        events.push(StoryEvent::StoryDescriptionSet {
+            at: now.clone(),
+            description: description_opt.clone().unwrap_or_default(),
+        });
+    }
+
     if !events.is_empty() {
         storage::write_story_events(root, story_id, &events)?;
     }
@@ -913,6 +930,17 @@ fn apply_conflict_locally(
                 .collect();
             StoryEvent::StoryLabelsSet { at: now, labels }
         }
+        "description" => {
+            let description = if conflict.remote_value == "<none>" {
+                String::new()
+            } else {
+                conflict.remote_value.clone()
+            };
+            StoryEvent::StoryDescriptionSet {
+                at: now,
+                description,
+            }
+        }
         _ => return Ok(()),
     };
 
@@ -967,6 +995,13 @@ fn apply_conflict_remotely(
                 .map(|s| s.to_string())
                 .collect();
             updates.labels = Some(labels);
+        }
+        "description" => {
+            if conflict.local_value == "<none>" {
+                updates.description = Some(None);
+            } else {
+                updates.description = Some(Some(conflict.local_value.clone()));
+            }
         }
         _ => return Ok(()),
     }
@@ -1098,5 +1133,11 @@ fn print_field_updates(indent: &str, updates: &FieldUpdates) {
     }
     if let Some(ref labels) = updates.labels {
         eprintln!("{indent}labels -> [{}]", labels.join(", "));
+    }
+    if let Some(ref description) = updates.description {
+        match description {
+            Some(d) => eprintln!("{indent}description -> \"{d}\""),
+            None => eprintln!("{indent}description -> (cleared)"),
+        }
     }
 }
