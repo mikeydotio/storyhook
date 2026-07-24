@@ -1,5 +1,5 @@
 ---
-name: storyhook-install
+name: story-install
 description: "Use when the storyhook 'story' CLI is missing (command not found) and an operation needs it, or when explicitly asked to install the storyhook CLI. Installs the story binary via the official installer or cargo, then verifies. Useful after installing the plugin via the Claude Code marketplace, which does not include the CLI."
 user-invocable: true
 allowed-tools: Bash(command -v *), Bash(which *), Bash(story *), Bash(cargo *), Bash(curl *), Bash(uname *), AskUserQuestion
@@ -59,5 +59,5 @@ Run `story --help` to confirm the binary is on `PATH` and working.
 
 Once the CLI is verified, suggest:
 
-- `/storyhook:storyhook-setup` to initialize the project and configure plugin behavior, or
-- `/storyhook:storyhook-context` to see the current project state and start working.
+- `/story-setup` to initialize the project and configure plugin behavior, or
+- `/story-context` to see the current project state and start working.

@@ -11,10 +11,10 @@ Before doing CLI-dependent work, run this guard:
 3. **If not found**, the storyhook CLI is required and must be installed first:
    - Tell the user the `story` CLI isn't installed and this skill needs it.
    - Ask for explicit permission to install it (use `AskUserQuestion`).
-   - **If approved**, follow the `storyhook-install` skill to install and verify the CLI,
+   - **If approved**, follow the `story-install` skill to install and verify the CLI,
      then continue with the original skill.
    - **If declined**, stop and explain that the skill can't run without the CLI, and point
-     the user to `/storyhook:storyhook-install` for when they're ready.
+     the user to `/story-install` for when they're ready.
 
 Do not attempt to run `story` commands until the guard passes — they will fail with
 "command not found" and produce confusing errors.

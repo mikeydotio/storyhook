@@ -1,5 +1,5 @@
 ---
-name: storyhook-update
+name: story-update
 description: "Use when asked to update, upgrade, or check for a new version of the storyhook 'story' CLI. Checks the installed version against the latest GitHub release and, with permission, self-updates the binary in place via 'story update'."
 user-invocable: true
 allowed-tools: Bash(command -v *), Bash(story *), AskUserQuestion
@@ -17,7 +17,7 @@ current platform, verifies it runs, and atomically replaces the running binary.
 
 Run `command -v story`.
 
-- **If not found**, there is nothing to update. Follow the `storyhook-install`
+- **If not found**, there is nothing to update. Follow the `story-install`
   skill to install the CLI first, then stop.
 - **If found**, continue.
 
@@ -55,4 +55,4 @@ Run `story --version` and confirm it reports the new version.
 
 If the update changed plugin-facing behavior, suggest starting a fresh Claude
 Code session so the reloaded CLI and any plugin changes take effect. Then
-`/storyhook:storyhook-context` to resume work.
+`/story-context` to resume work.
