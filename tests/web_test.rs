@@ -303,9 +303,13 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // Detail drawer
     assert!(body.contains(r#"id="drawer""#));
     assert!(body.contains(r#"id="drawer-body""#));
-    // Create-story modal
+    // Create-story modal, including the fields added for #36 (description,
+    // priority, and the label combobox's mount point)
     assert!(body.contains(r#"id="create-modal""#));
     assert!(body.contains(r#"id="create-title""#));
+    assert!(body.contains(r#"id="create-description""#));
+    assert!(body.contains(r#"id="create-priority""#));
+    assert!(body.contains(r#"id="create-labels-field""#));
     // Multi-repo screens (#20): repo selector, home dashboard, settings
     assert!(body.contains(r#"id="repo-select""#));
     assert!(body.contains(r#"id="home-view""#));
