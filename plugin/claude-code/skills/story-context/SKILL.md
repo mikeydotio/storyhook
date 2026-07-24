@@ -1,5 +1,5 @@
 ---
-name: storyhook-context
+name: story-context
 description: "Use at session start or whenever you need to understand project state -- open stories, priorities, blockers, and next recommended task. Shows project overview and surfaces the most important work."
 user-invocable: true
 allowed-tools: Bash(story *), Bash(command -v *), AskUserQuestion
@@ -13,7 +13,7 @@ Get a comprehensive view of current project state.
 
 ### 0. Ensure the storyhook CLI is available
 
-Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `storyhook-install` skill before continuing. Do not run `story` commands until this check passes.
+Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `story-install` skill before continuing. Do not run `story` commands until this check passes.
 
 ### 1. Project overview
 

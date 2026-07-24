@@ -1,5 +1,5 @@
 ---
-name: storyhook-triage
+name: story-triage
 description: "Use when the project backlog needs review -- stories need prioritization, stale items need attention, or work needs reorganization. Reviews all open stories, identifies issues, and guides reprioritization."
 user-invocable: true
 allowed-tools: Bash(story *), Bash(command -v *), AskUserQuestion
@@ -13,7 +13,7 @@ Review and organize the project backlog.
 
 ### 0. Ensure the storyhook CLI is available
 
-Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `storyhook-install` skill before continuing. Do not run `story` commands until this check passes.
+Before running any `story` command, confirm the CLI is installed by running `command -v story`. If it is missing, follow `references/ensure-cli.md`: tell the user, ask permission to install (via `AskUserQuestion`), and if approved use the `story-install` skill before continuing. Do not run `story` commands until this check passes.
 
 ### 1. Gather project state
 

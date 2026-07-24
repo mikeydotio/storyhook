@@ -8,7 +8,7 @@ use crate::error::AppError;
 /// Name of the marketplace declared in `.claude-plugin/marketplace.json`.
 const MARKETPLACE_NAME: &str = "storyhook";
 /// Plugin reference used with the `claude` CLI: `<plugin>@<marketplace>`.
-const PLUGIN_REF: &str = "storyhook@storyhook";
+const PLUGIN_REF: &str = "story@storyhook";
 /// GitHub shorthand source used when not installing from a local dev checkout.
 const GITHUB_REPO: &str = "mikeydotio/storyhook";
 /// Legacy directory created by the old copy-based installer (cleaned up on uninstall).
@@ -74,7 +74,7 @@ fn marketplace_source(dev_repo_root: Option<PathBuf>) -> String {
 fn claude_missing_message() -> String {
     "Claude Code CLI (`claude`) not found on PATH. Install or enable it, then retry — \
      or install the plugin manually with `/plugin marketplace add mikeydotio/storyhook` \
-     followed by `/plugin install storyhook@storyhook`."
+     followed by `/plugin install story@storyhook`."
         .to_string()
 }
 
@@ -186,7 +186,7 @@ pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
     }
     msg.push_str(
         "\nStart a new Claude Code session to load the plugin, then run \
-         /storyhook:storyhook-context to get started (or run story load-context directly).",
+         /story-context to get started (or run story load-context directly).",
     );
     Ok(msg)
 }
@@ -295,7 +295,7 @@ mod tests {
     fn claude_missing_message_mentions_manual_install() {
         let msg = claude_missing_message();
         assert!(msg.contains("/plugin marketplace add mikeydotio/storyhook"));
-        assert!(msg.contains("/plugin install storyhook@storyhook"));
+        assert!(msg.contains("/plugin install story@storyhook"));
     }
 
     #[test]
