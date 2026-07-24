@@ -188,8 +188,12 @@ pub fn updates_to_issue_request(
 
     let labels = updates.labels.clone();
 
-    // If priority or awaiting changed, we need to re-render the body block.
-    let body = if updates.priority.is_some() || updates.awaiting.is_some() {
+    // If priority, awaiting, or description changed, we need to re-render the
+    // body block.
+    let body = if updates.priority.is_some()
+        || updates.awaiting.is_some()
+        || updates.description.is_some()
+    {
         // Build the block from the current story state, then overlay the updates.
         let mut block = story_to_block(story);
         if let Some(ref prio) = updates.priority {
@@ -202,9 +206,14 @@ pub fn updates_to_issue_request(
         if let Some(ref aw) = updates.awaiting {
             block.awaiting = aw.clone();
         }
-        // We don't have the full body text here, so render with empty text.
-        // The caller is expected to merge body content if needed.
-        Some(render_block("", &block))
+        // The free-text body is the description when it changed, or the
+        // story's current description otherwise — never blank it out just
+        // because a different field (e.g. priority) triggered this rebuild.
+        let body_text = match &updates.description {
+            Some(new_description) => new_description.clone().unwrap_or_default(),
+            None => story.description.clone().unwrap_or_default(),
+        };
+        Some(render_block(&body_text, &block))
     } else {
         None
     };
@@ -833,6 +842,54 @@ mod tests {
 
         let body = req.body.unwrap();
         assert!(body.contains("awaiting: design review"));
+    }
+
+    #[test]
+    fn updates_to_issue_request_description_triggers_body_update() {
+        let updates = FieldUpdates {
+            description: Some(Some("New free text".to_string())),
+            ..Default::default()
+        };
+
+        let story = test_story();
+        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+
+        let body = req.body.unwrap();
+        assert!(body.starts_with("New free text"));
+        assert!(body.contains("```storyhook"));
+    }
+
+    #[test]
+    fn updates_to_issue_request_description_cleared_blanks_body_text() {
+        let mut story = test_story();
+        story.description = Some("Will be cleared".to_string());
+        let updates = FieldUpdates {
+            description: Some(None),
+            ..Default::default()
+        };
+
+        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+
+        let body = req.body.unwrap();
+        assert!(!body.contains("Will be cleared"));
+    }
+
+    #[test]
+    fn updates_to_issue_request_priority_change_preserves_existing_description() {
+        // Regression: rebuilding the body block for an unrelated field change
+        // (priority here) must not blank out the story's existing description.
+        let mut story = test_story();
+        story.description = Some("Existing free text".to_string());
+        let updates = FieldUpdates {
+            priority: Some(Priority::Low),
+            ..Default::default()
+        };
+
+        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+
+        let body = req.body.unwrap();
+        assert!(body.contains("Existing free text"));
+        assert!(body.contains("priority: low"));
     }
 
     #[test]
