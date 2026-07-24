@@ -316,6 +316,68 @@ fn push_undo(
     state.redo_stack.clear();
 }
 
+/// Create a story with the given enrichment fields inside the project lock.
+///
+/// Extracted from the `Action::CreateStory` dispatch arm so it can be
+/// exercised by tests without a real terminal (`dispatch` takes one and
+/// can't be unit-tested directly). Pure move — no behavior change.
+fn create_story_mutation(
+    root: &Path,
+    title: &str,
+    priority: Option<crate::domain::Priority>,
+    labels: &[String],
+    assignee: Option<&str>,
+    description: Option<&str>,
+) -> Result<String, AppError> {
+    crate::lock::with_project_lock(root, || {
+        let mut events = Vec::new();
+        if let Some(p) = &priority {
+            events.push(crate::domain::StoryEvent::StoryPrioritySet {
+                at: crate::storage::now(),
+                priority: p.clone(),
+            });
+        }
+        if !labels.is_empty() {
+            events.push(crate::domain::StoryEvent::StoryLabelsSet {
+                at: crate::storage::now(),
+                labels: labels.to_vec(),
+            });
+        }
+        if let Some(a) = assignee {
+            events.push(crate::domain::StoryEvent::StoryAssigned {
+                at: crate::storage::now(),
+                member_id: a.to_string(),
+            });
+        }
+        if let Some(d) = description {
+            events.push(crate::domain::StoryEvent::StoryDescriptionSet {
+                at: crate::storage::now(),
+                description: d.to_string(),
+            });
+        }
+        let story = crate::storage::create_story_with_events(root, title, None, &events)?;
+        Ok(story.id)
+    })
+}
+
+/// Assign an existing story to a member inside the project lock.
+///
+/// Extracted from the `Action::AssignStory` dispatch arm for the same
+/// testability reason as [`create_story_mutation`]. Pure move — no behavior
+/// change.
+fn assign_story_mutation(root: &Path, id: &str, assignee: &str) -> Result<(), AppError> {
+    crate::lock::with_project_lock(root, || {
+        crate::storage::write_story_events(
+            root,
+            id,
+            &[crate::domain::StoryEvent::StoryAssigned {
+                at: crate::storage::now(),
+                member_id: assignee.to_string(),
+            }],
+        )
+    })
+}
+
 /// Dispatch a single action, mutating AppState.
 #[allow(clippy::too_many_arguments)]
 fn dispatch(
@@ -538,35 +600,14 @@ fn dispatch(
             description,
         } => {
             let desc = format!("Created story: {title}");
-            let result = crate::lock::with_project_lock(root, || {
-                let mut events = Vec::new();
-                if let Some(p) = &priority {
-                    events.push(crate::domain::StoryEvent::StoryPrioritySet {
-                        at: crate::storage::now(),
-                        priority: p.clone(),
-                    });
-                }
-                if !labels.is_empty() {
-                    events.push(crate::domain::StoryEvent::StoryLabelsSet {
-                        at: crate::storage::now(),
-                        labels: labels.clone(),
-                    });
-                }
-                if let Some(a) = &assignee {
-                    events.push(crate::domain::StoryEvent::StoryAssigned {
-                        at: crate::storage::now(),
-                        member_id: a.clone(),
-                    });
-                }
-                if let Some(d) = &description {
-                    events.push(crate::domain::StoryEvent::StoryDescriptionSet {
-                        at: crate::storage::now(),
-                        description: d.clone(),
-                    });
-                }
-                let story = crate::storage::create_story_with_events(root, &title, None, &events)?;
-                Ok(story.id)
-            });
+            let result = create_story_mutation(
+                root,
+                &title,
+                priority,
+                &labels,
+                assignee.as_deref(),
+                description.as_deref(),
+            );
             match result {
                 Ok(id) => {
                     // Story didn't exist before creation: events_before is empty
@@ -784,16 +825,7 @@ fn dispatch(
 
         Action::AssignStory { id, assignee } => {
             let events_before = snapshot_for_undo(root, &id);
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::write_story_events(
-                    root,
-                    &id,
-                    &[crate::domain::StoryEvent::StoryAssigned {
-                        at: crate::storage::now(),
-                        member_id: assignee.clone(),
-                    }],
-                )
-            });
+            let result = assign_story_mutation(root, &id, &assignee);
             match result {
                 Ok(()) => {
                     push_undo(
