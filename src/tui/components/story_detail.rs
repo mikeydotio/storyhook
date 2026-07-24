@@ -24,6 +24,7 @@ pub enum DetailField {
     Awaiting,
     Relationships,
     Comments,
+    Description,
 }
 
 const FIELDS: &[DetailField] = &[
@@ -35,6 +36,7 @@ const FIELDS: &[DetailField] = &[
     DetailField::Awaiting,
     DetailField::Relationships,
     DetailField::Comments,
+    DetailField::Description,
 ];
 
 /// The editing mode for the story detail component.
@@ -47,6 +49,7 @@ pub enum DetailMode {
     EditingAssignee,
     EditingAwaiting,
     AddingComment,
+    EditingDescription,
 }
 
 /// Story detail modal component.
@@ -59,6 +62,7 @@ pub struct StoryDetail {
     pub assignee_input: tui_input::Input,
     pub awaiting_input: tui_input::Input,
     pub comment_input: tui_input::Input,
+    pub description_input: tui_input::Input,
     pub priority_cursor: usize,
     pub scroll_offset: u16,
 }
@@ -82,6 +86,7 @@ impl StoryDetail {
             assignee_input: tui_input::Input::default(),
             awaiting_input: tui_input::Input::default(),
             comment_input: tui_input::Input::default(),
+            description_input: tui_input::Input::default(),
             priority_cursor: 0,
             scroll_offset: 0,
         }
@@ -189,6 +194,11 @@ impl StoryDetail {
                             self.awaiting_input = tui_input::Input::default();
                             self.mode = DetailMode::EditingAwaiting;
                         }
+                    }
+                    DetailField::Description => {
+                        self.description_input =
+                            tui_input::Input::new(story.description.clone().unwrap_or_default());
+                        self.mode = DetailMode::EditingDescription;
                     }
                     // State, Relationships, Comments not editable via 'e'
                     _ => {}
@@ -361,6 +371,25 @@ impl StoryDetail {
                 }
                 _ => {
                     self.comment_input
+                        .handle_event(&crossterm::event::Event::Key(key));
+                    vec![]
+                }
+            },
+            DetailMode::EditingDescription => match key.code {
+                KeyCode::Enter => {
+                    let description = self.description_input.value().to_string();
+                    self.mode = DetailMode::Viewing;
+                    vec![Action::SetDescription {
+                        id: self.story_id.clone(),
+                        description,
+                    }]
+                }
+                KeyCode::Esc => {
+                    self.mode = DetailMode::Viewing;
+                    vec![]
+                }
+                _ => {
+                    self.description_input
                         .handle_event(&crossterm::event::Event::Key(key));
                     vec![]
                 }
@@ -566,6 +595,25 @@ impl Component for StoryDetail {
                     Span::raw(comment.text.clone()),
                 ]));
             }
+        }
+
+        // Description
+        let description_val = story.description.as_deref().unwrap_or("(none)");
+        if self.mode == DetailMode::EditingDescription && self.selected_field == 8 {
+            lines.push(render_editing_field(
+                "Description",
+                self.description_input.value(),
+                label_width,
+                &theme,
+            ));
+        } else {
+            lines.push(render_field(
+                "Description",
+                description_val,
+                self.selected_field == 8,
+                label_width,
+                &theme,
+            ));
         }
 
         // Timestamps
@@ -820,6 +868,74 @@ mod tests {
         assert_eq!(actions.len(), 1);
         assert!(
             matches!(&actions[0], Action::UpdateTitle { id, title } if id == "SH-1" && title == "Test story")
+        );
+    }
+
+    #[test]
+    fn e_on_description_enters_editing_mode_prefilled() {
+        let mut snapshot = test_snapshot();
+        snapshot.description = Some("Existing description".to_string());
+        let state = make_state(vec![snapshot]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 8; // Description
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingDescription);
+        assert_eq!(detail.description_input.value(), "Existing description");
+    }
+
+    #[test]
+    fn e_on_description_with_no_existing_value_starts_empty() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 8; // Description
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingDescription);
+        assert_eq!(detail.description_input.value(), "");
+    }
+
+    #[test]
+    fn enter_confirms_description_edit() {
+        let state = make_state(vec![test_snapshot()]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 8;
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        for ch in "New description".chars() {
+            detail.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+        let actions = detail.handle_key(key(KeyCode::Enter), &state);
+
+        assert_eq!(detail.mode, DetailMode::Viewing);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::SetDescription { id, description } if id == "SH-1" && description == "New description")
+        );
+    }
+
+    #[test]
+    fn enter_on_empty_description_still_emits_set_description() {
+        // Unlike Title/Assignee/Awaiting, an empty description is a legitimate
+        // value (there's no dedicated "clear description" action), so Enter
+        // on an empty input must still dispatch — not silently no-op.
+        let mut snapshot = test_snapshot();
+        snapshot.description = Some("Will be cleared".to_string());
+        let state = make_state(vec![snapshot]);
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 8;
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        // Clear the pre-filled input.
+        for _ in 0.."Will be cleared".len() {
+            detail.handle_key(key(KeyCode::Backspace), &state);
+        }
+        let actions = detail.handle_key(key(KeyCode::Enter), &state);
+
+        assert_eq!(detail.mode, DetailMode::Viewing);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::SetDescription { id, description } if id == "SH-1" && description.is_empty())
         );
     }
 
@@ -1113,6 +1229,13 @@ mod tests {
         // AddingComment
         detail.handle_key(key(KeyCode::Char('c')), &state);
         assert_eq!(detail.mode, DetailMode::AddingComment);
+        detail.handle_key(key(KeyCode::Esc), &state);
+        assert_eq!(detail.mode, DetailMode::Viewing);
+
+        // EditingDescription
+        detail.selected_field = 8;
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingDescription);
         detail.handle_key(key(KeyCode::Esc), &state);
         assert_eq!(detail.mode, DetailMode::Viewing);
     }

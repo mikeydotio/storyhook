@@ -53,6 +53,7 @@ pub enum Action {
         priority: Option<Priority>,
         labels: Vec<String>,
         assignee: Option<String>,
+        description: Option<String>,
     },
     MoveStory {
         id: String,
@@ -61,6 +62,10 @@ pub enum Action {
     UpdateTitle {
         id: String,
         title: String,
+    },
+    SetDescription {
+        id: String,
+        description: String,
     },
     SetPriority {
         id: String,
