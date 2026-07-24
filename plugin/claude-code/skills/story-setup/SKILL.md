@@ -1,5 +1,5 @@
 ---
-name: storyhook-setup
+name: story-setup
 description: "Use when setting up storyhook in a new project, when the 'story' command is not found, or when asked to configure storyhook integration. Detects CLI availability, installs if missing, initializes project, and configures plugin behavior."
 user-invocable: true
 allowed-tools: Read, Write, Bash(command -v *), Bash(story *), Bash(cargo *), Bash(curl *), AskUserQuestion
@@ -15,7 +15,7 @@ Set up storyhook CLI and project configuration.
 
 Run `command -v story` to see if the CLI is installed.
 
-- **If missing**, follow the `storyhook-install` skill to install and verify the `story` CLI. It asks the user's permission and offers the official installer or cargo. Do not continue until `story --help` works.
+- **If missing**, follow the `story-install` skill to install and verify the `story` CLI. It asks the user's permission and offers the official installer or cargo. Do not continue until `story --help` works.
 - **If present**, continue to the next step.
 
 ### 2. Initialize the project
@@ -65,4 +65,4 @@ Ask if the user wants git hooks installed for automatic story syncing.
 
 ### 6. Next steps
 
-Suggest running `/storyhook:storyhook-context` to see the current project state and start working.
+Suggest running `/story-context` to see the current project state and start working.
