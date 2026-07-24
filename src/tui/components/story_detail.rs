@@ -234,7 +234,7 @@ impl StoryDetail {
         }
     }
 
-    fn handle_editing_key(&mut self, key: KeyEvent) -> Vec<Action> {
+    fn handle_editing_key(&mut self, key: KeyEvent, state: &AppState) -> Vec<Action> {
         match &self.mode {
             DetailMode::EditingTitle => match key.code {
                 KeyCode::Enter => {
@@ -311,15 +311,18 @@ impl StoryDetail {
             },
             DetailMode::EditingAssignee => match key.code {
                 KeyCode::Enter => {
-                    let assignee = self.assignee_input.value().to_string();
+                    let assignee_raw = self.assignee_input.value().trim().to_string();
                     self.mode = DetailMode::Viewing;
-                    if assignee.is_empty() {
+                    if assignee_raw.is_empty() {
                         return vec![];
                     }
-                    vec![Action::AssignStory {
-                        id: self.story_id.clone(),
-                        assignee,
-                    }]
+                    match state.data.find_member(&assignee_raw) {
+                        Some(member) => vec![Action::AssignStory {
+                            id: self.story_id.clone(),
+                            assignee: member.id.clone(),
+                        }],
+                        None => vec![Action::Notify(format!("member `{assignee_raw}` not found"))],
+                    }
                 }
                 KeyCode::Esc => {
                     self.mode = DetailMode::Viewing;
@@ -404,7 +407,7 @@ impl Component for StoryDetail {
         if self.mode == DetailMode::Viewing {
             self.handle_viewing_key(key, state)
         } else {
-            self.handle_editing_key(key)
+            self.handle_editing_key(key, state)
         }
     }
 
@@ -712,7 +715,7 @@ fn render_editing_field<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Priority, StateDef, StoryComment, StorySnapshot, SuperState};
+    use crate::domain::{Member, Priority, StateDef, StoryComment, StorySnapshot, SuperState};
     use crate::tui::action::View;
     use crate::tui::data::DataStore;
     use crate::tui::focus::{FocusStack, FocusTarget};
@@ -764,8 +767,22 @@ mod tests {
         }
     }
 
+    fn test_member(id: &str, github: Option<&str>) -> Member {
+        Member {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            email: None,
+            github: github.map(|g| g.to_string()),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
     fn make_state(stories: Vec<StorySnapshot>) -> AppState {
-        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string(), vec![]);
+        make_state_with_members(stories, vec![])
+    }
+
+    fn make_state_with_members(stories: Vec<StorySnapshot>, members: Vec<Member>) -> AppState {
+        let data = DataStore::from_test_data(test_states(), stories, "SH".to_string(), members);
         AppState {
             data,
             focus: FocusStack::new(FocusTarget::Board),
@@ -1099,6 +1116,73 @@ mod tests {
 
         let actions = detail.handle_key(key(KeyCode::Enter), &state);
         assert!(actions.is_empty(), "Empty assignee should be rejected");
+    }
+
+    // =======================================================================
+    // Regression: #39 — assignee edit must be validated against real members
+    // =======================================================================
+
+    #[test]
+    fn enter_on_unknown_assignee_notifies_and_does_not_emit_assign() {
+        let state = make_state_with_members(
+            vec![test_snapshot()],
+            vec![test_member("mikey", Some("mikeyward"))],
+        );
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 3; // Assignee
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingAssignee);
+
+        // Clear the pre-filled input ("mikey") and type an unknown handle
+        for _ in 0..10 {
+            detail.handle_key(key(KeyCode::Backspace), &state);
+        }
+        for ch in "nobody".chars() {
+            detail.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        let actions = detail.handle_key(key(KeyCode::Enter), &state);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::Notify(msg) if msg.contains("nobody") && msg.contains("not found")),
+            "expected a not-found Notify, got {:?}",
+            actions[0]
+        );
+    }
+
+    #[test]
+    fn enter_on_github_handle_normalizes_to_member_id() {
+        let state = make_state_with_members(
+            vec![test_snapshot()],
+            vec![test_member("mikey", Some("mikeyward"))],
+        );
+        let mut detail = StoryDetail::new("SH-1".to_string());
+        detail.selected_field = 3; // Assignee
+
+        detail.handle_key(key(KeyCode::Char('e')), &state);
+        assert_eq!(detail.mode, DetailMode::EditingAssignee);
+
+        // Clear the pre-filled input ("mikey") and type the GitHub handle
+        for _ in 0..10 {
+            detail.handle_key(key(KeyCode::Backspace), &state);
+        }
+        for ch in "mikeyward".chars() {
+            detail.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        let actions = detail.handle_key(key(KeyCode::Enter), &state);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::AssignStory { id, assignee } => {
+                assert_eq!(id, "SH-1");
+                assert_eq!(
+                    assignee, "mikey",
+                    "github handle should normalize to the canonical member id"
+                );
+            }
+            other => panic!("Expected AssignStory, got {other:?}"),
+        }
     }
 
     // =======================================================================
