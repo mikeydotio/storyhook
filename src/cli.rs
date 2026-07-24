@@ -59,7 +59,8 @@ pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
   story init [--prefix <PREFIX>] [--no-agents-md]
-  story new <title> [--state <slug>] [--type <slug>]
+  story new <title> [--state <slug>] [--type <slug>] [--description <text>]
+                    [--priority <level>] [--assignee <member>] [--label <name> ...]
   story tui                                           (interactive terminal UI)
   story web start [--port <PORT>]                  (start web dashboard)
   story web stop                                   (stop web dashboard)
@@ -114,6 +115,7 @@ Usage:
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
                   [--assignee <member>] [--labels "<csv>"] [--blocked "<reason>"]
                   [--unblocked] [--json "<json>"] [--type <slug>]
+                  [--description "<text>"]
   story relate <a> <relationship-type> <b>
   story unrelate <a> <relationship-type> <b>
   story link <a> <relationship-type> <b>
