@@ -71,7 +71,7 @@ impl CreateForm {
         CREATE_FIELDS[self.focused_field]
     }
 
-    fn submit(&self) -> Vec<Action> {
+    fn submit(&self, data: &crate::tui::data::DataStore) -> Vec<Action> {
         let title = self.title_input.value().trim().to_string();
         if title.is_empty() {
             return vec![Action::Notify("Title is required".to_string())];
@@ -101,7 +101,12 @@ impl CreateForm {
         let assignee = if assignee_raw.is_empty() {
             None
         } else {
-            Some(assignee_raw)
+            match data.find_member(&assignee_raw) {
+                Some(member) => Some(member.id.clone()),
+                None => {
+                    return vec![Action::Notify(format!("member `{assignee_raw}` not found"))];
+                }
+            }
         };
 
         vec![Action::CreateStory {
@@ -115,7 +120,7 @@ impl CreateForm {
 }
 
 impl Component for CreateForm {
-    fn handle_key(&mut self, key: KeyEvent, _state: &AppState) -> Vec<Action> {
+    fn handle_key(&mut self, key: KeyEvent, state: &AppState) -> Vec<Action> {
         match key.code {
             KeyCode::Tab => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -140,7 +145,7 @@ impl Component for CreateForm {
                 }
                 vec![]
             }
-            KeyCode::Enter => self.submit(),
+            KeyCode::Enter => self.submit(&state.data),
             _ => {
                 // Route to the focused field
                 match self.current_field() {
@@ -312,13 +317,17 @@ fn render_form_field<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{StateDef, SuperState};
+    use crate::domain::{Member, StateDef, SuperState};
     use crate::tui::action::View;
     use crate::tui::data::DataStore;
     use crate::tui::focus::{FocusStack, FocusTarget};
     use crate::tui::state::AppState;
 
     fn make_state() -> AppState {
+        make_state_with_members(vec![])
+    }
+
+    fn make_state_with_members(members: Vec<Member>) -> AppState {
         let data = DataStore::from_test_data(
             vec![
                 StateDef {
@@ -334,7 +343,7 @@ mod tests {
             ],
             vec![],
             "SH".to_string(),
-            vec![],
+            members,
         );
         AppState {
             data,
@@ -347,6 +356,16 @@ mod tests {
             terminal_size: (120, 40),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+        }
+    }
+
+    fn test_member(id: &str, github: Option<&str>) -> Member {
+        Member {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            email: None,
+            github: github.map(|g| g.to_string()),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
         }
     }
 
@@ -474,7 +493,7 @@ mod tests {
 
     #[test]
     fn submit_with_all_fields() {
-        let state = make_state();
+        let state = make_state_with_members(vec![test_member("mikey", Some("mikeyward"))]);
         let mut form = CreateForm::new();
 
         // Title
@@ -663,5 +682,63 @@ mod tests {
         let actions = form.handle_key(key(KeyCode::Enter), &state);
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], Action::CreateStory { title, .. } if title == "My story"));
+    }
+
+    // =======================================================================
+    // Regression: #39 — assignee must be validated against real members
+    // =======================================================================
+
+    #[test]
+    fn submit_with_unknown_assignee_notifies_and_does_not_create() {
+        let state = make_state_with_members(vec![test_member("mikey", Some("mikeyward"))]);
+        let mut form = CreateForm::new();
+
+        for ch in "Bad assignee".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+        // Move to Assignee (last field) and type an unknown handle
+        for _ in 0..4 {
+            form.handle_key(key(KeyCode::Tab), &state);
+        }
+        for ch in "nobody".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        let actions = form.handle_key(key(KeyCode::Enter), &state);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], Action::Notify(msg) if msg.contains("nobody") && msg.contains("not found")),
+            "expected a not-found Notify, got {:?}",
+            actions[0]
+        );
+    }
+
+    #[test]
+    fn submit_with_github_handle_normalizes_to_member_id() {
+        let state = make_state_with_members(vec![test_member("mikey", Some("mikeyward"))]);
+        let mut form = CreateForm::new();
+
+        for ch in "Assigned via handle".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+        for _ in 0..4 {
+            form.handle_key(key(KeyCode::Tab), &state);
+        }
+        for ch in "mikeyward".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        let actions = form.handle_key(key(KeyCode::Enter), &state);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::CreateStory { assignee, .. } => {
+                assert_eq!(
+                    assignee,
+                    &Some("mikey".to_string()),
+                    "github handle should normalize to the canonical member id"
+                );
+            }
+            other => panic!("Expected CreateStory, got {other:?}"),
+        }
     }
 }

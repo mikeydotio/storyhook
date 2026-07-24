@@ -78,6 +78,17 @@ impl DataStore {
         self.stories.iter().find(|story| story.id == id)
     }
 
+    /// Resolve a typed assignee (member id or GitHub handle) against the
+    /// loaded members, mirroring [`storage::find_member`]'s matching rule.
+    ///
+    /// Operates entirely in memory so TUI components can validate user input
+    /// before dispatching a mutation, without touching the filesystem.
+    pub fn find_member(&self, lookup: &str) -> Option<&Member> {
+        self.members
+            .iter()
+            .find(|member| member.id == lookup || member.github.as_deref() == Some(lookup))
+    }
+
     /// Total number of open stories.
     pub fn story_count(&self) -> usize {
         self.stories.len()
@@ -345,6 +356,56 @@ mod tests {
         assert!(store.find_story("SH-1").is_some());
         assert_eq!(store.find_story("SH-1").unwrap().state, "todo");
         assert!(store.find_story("SH-99").is_none());
+    }
+
+    fn test_member(id: &str, github: Option<&str>) -> Member {
+        Member {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            email: None,
+            github: github.map(|g| g.to_string()),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn find_member_by_id() {
+        let store = DataStore::from_test_data(
+            test_states(),
+            vec![],
+            "SH".to_string(),
+            vec![test_member("mikey", Some("mikeyward"))],
+        );
+
+        let found = store.find_member("mikey").expect("should find by id");
+        assert_eq!(found.id, "mikey");
+    }
+
+    #[test]
+    fn find_member_by_github_handle() {
+        let store = DataStore::from_test_data(
+            test_states(),
+            vec![],
+            "SH".to_string(),
+            vec![test_member("mikey", Some("mikeyward"))],
+        );
+
+        let found = store
+            .find_member("mikeyward")
+            .expect("should find by github handle");
+        assert_eq!(found.id, "mikey");
+    }
+
+    #[test]
+    fn find_member_unknown_lookup_returns_none() {
+        let store = DataStore::from_test_data(
+            test_states(),
+            vec![],
+            "SH".to_string(),
+            vec![test_member("mikey", Some("mikeyward"))],
+        );
+
+        assert!(store.find_member("nobody").is_none());
     }
 
     #[test]

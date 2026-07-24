@@ -318,9 +318,16 @@ fn push_undo(
 
 /// Create a story with the given enrichment fields inside the project lock.
 ///
+/// A non-empty `assignee` is resolved against real project members via
+/// [`crate::storage::find_member`] *before* any event is written, mirroring
+/// the CLI's `story new --assignee` validation (see [`crate::app`]'s
+/// `Invocation::New` handler). An unknown member aborts the whole creation —
+/// no story is left half-enriched on disk. On success the resolved member's
+/// canonical id (not the raw, possibly-a-GitHub-handle input) is stored.
+///
 /// Extracted from the `Action::CreateStory` dispatch arm so it can be
 /// exercised by tests without a real terminal (`dispatch` takes one and
-/// can't be unit-tested directly). Pure move — no behavior change.
+/// can't be unit-tested directly).
 fn create_story_mutation(
     root: &Path,
     title: &str,
@@ -344,9 +351,10 @@ fn create_story_mutation(
             });
         }
         if let Some(a) = assignee {
+            let member = crate::storage::find_member(root, a)?;
             events.push(crate::domain::StoryEvent::StoryAssigned {
                 at: crate::storage::now(),
-                member_id: a.to_string(),
+                member_id: member.id,
             });
         }
         if let Some(d) = description {
@@ -362,17 +370,22 @@ fn create_story_mutation(
 
 /// Assign an existing story to a member inside the project lock.
 ///
+/// `assignee` is resolved against real project members via
+/// [`crate::storage::find_member`] before the `StoryAssigned` event is
+/// written; an unknown member aborts the mutation and no event is written.
+/// On success the resolved member's canonical id is stored.
+///
 /// Extracted from the `Action::AssignStory` dispatch arm for the same
-/// testability reason as [`create_story_mutation`]. Pure move — no behavior
-/// change.
+/// testability reason as [`create_story_mutation`].
 fn assign_story_mutation(root: &Path, id: &str, assignee: &str) -> Result<(), AppError> {
     crate::lock::with_project_lock(root, || {
+        let member = crate::storage::find_member(root, assignee)?;
         crate::storage::write_story_events(
             root,
             id,
             &[crate::domain::StoryEvent::StoryAssigned {
                 at: crate::storage::now(),
-                member_id: assignee.to_string(),
+                member_id: member.id,
             }],
         )
     })
@@ -1164,6 +1177,97 @@ mod tests {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
+    }
+
+    // =======================================================================
+    // Regression: #39 — create/assign mutations must validate assignee
+    // against real members, mirroring the CLI's `storage::find_member`.
+    // =======================================================================
+
+    fn init_test_project() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        crate::storage::init_project(&root, Some("SH")).unwrap();
+        (dir, root)
+    }
+
+    fn store_test_member(root: &Path, id: &str, github: Option<&str>) {
+        crate::storage::store_member(
+            root,
+            &crate::domain::Member {
+                id: id.to_string(),
+                display_name: id.to_string(),
+                email: None,
+                github: github.map(|g| g.to_string()),
+                created_at: crate::storage::now(),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn create_story_mutation_rejects_unknown_assignee_and_creates_no_story() {
+        let (_dir, root) = init_test_project();
+
+        let result = create_story_mutation(&root, "Bad assignee", None, &[], Some("nobody"), None);
+
+        assert!(result.is_err(), "unknown assignee should be rejected");
+        let store = DataStore::load(&root).unwrap();
+        assert_eq!(
+            store.story_count(),
+            0,
+            "no story should be written when the assignee is invalid"
+        );
+    }
+
+    #[test]
+    fn create_story_mutation_resolves_github_handle_to_member_id() {
+        let (_dir, root) = init_test_project();
+        store_test_member(&root, "mikey", Some("mikeyward"));
+
+        let id = create_story_mutation(&root, "Assigned story", None, &[], Some("mikeyward"), None)
+            .expect("valid github handle should be accepted");
+
+        let store = DataStore::load(&root).unwrap();
+        let story = store.find_story(&id).expect("story should exist");
+        assert_eq!(
+            story.assignee.as_deref(),
+            Some("mikey"),
+            "github handle should normalize to the canonical member id"
+        );
+    }
+
+    #[test]
+    fn assign_story_mutation_rejects_unknown_member_and_leaves_story_unassigned() {
+        let (_dir, root) = init_test_project();
+        let id = crate::lock::with_project_lock(&root, || {
+            crate::storage::create_story(&root, "Unassigned story", None).map(|s| s.id)
+        })
+        .unwrap();
+
+        let result = assign_story_mutation(&root, &id, "nobody");
+
+        assert!(result.is_err(), "unknown assignee should be rejected");
+        let store = DataStore::load(&root).unwrap();
+        assert!(store.find_story(&id).unwrap().assignee.is_none());
+    }
+
+    #[test]
+    fn assign_story_mutation_resolves_valid_handle_to_member_id() {
+        let (_dir, root) = init_test_project();
+        store_test_member(&root, "mikey", Some("mikeyward"));
+        let id = crate::lock::with_project_lock(&root, || {
+            crate::storage::create_story(&root, "Story to assign", None).map(|s| s.id)
+        })
+        .unwrap();
+
+        assign_story_mutation(&root, &id, "mikeyward").expect("valid handle should be accepted");
+
+        let store = DataStore::load(&root).unwrap();
+        assert_eq!(
+            store.find_story(&id).unwrap().assignee.as_deref(),
+            Some("mikey")
+        );
     }
 
     // =======================================================================
