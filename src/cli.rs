@@ -59,7 +59,8 @@ pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
   story init [--prefix <PREFIX>] [--no-agents-md]
-  story new <title> [--state <slug>] [--type <slug>]
+  story new <title> [--state <slug>] [--type <slug>] [--description <text>]
+                    [--priority <level>] [--assignee <member>] [--label <name> ...]
   story tui                                           (interactive terminal UI)
   story web start [--port <PORT>]                  (start web dashboard)
   story web stop                                   (stop web dashboard)
@@ -114,6 +115,7 @@ Usage:
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
                   [--assignee <member>] [--labels "<csv>"] [--blocked "<reason>"]
                   [--unblocked] [--json "<json>"] [--type <slug>]
+                  [--description "<text>"]
   story relate <a> <relationship-type> <b>
   story unrelate <a> <relationship-type> <b>
   story link <a> <relationship-type> <b>
@@ -159,6 +161,10 @@ pub enum Invocation {
         title: String,
         state: Option<String>,
         story_type: Option<String>,
+        description: Option<String>,
+        priority: Option<String>,
+        labels: Option<Vec<String>>,
+        assignee: Option<String>,
     },
     MemberAdd {
         input: MemberInput,
@@ -284,6 +290,7 @@ pub enum Invocation {
         unblocked: bool,
         json: Option<String>,
         story_type: Option<String>,
+        description: Option<String>,
     },
     Relate {
         a: String,
@@ -478,9 +485,13 @@ fn parse_init(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     let mut state = None;
     let mut story_type = None;
+    let mut description = None;
+    let mut priority = None;
+    let mut assignee = None;
+    let mut labels: Vec<String> = Vec::new();
     let mut title_parts = Vec::new();
     let mut index = 1;
-    let usage = "usage: story new <title> [--state <slug>] [--type <slug>]";
+    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>]";
     while index < args.len() {
         match args[index].as_str() {
             "--state" => {
@@ -497,6 +508,46 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
                 story_type = Some(value.clone());
                 index += 2;
             }
+            "--description" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                description = Some(value.clone());
+                index += 2;
+            }
+            "--priority" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                priority = Some(value.clone());
+                index += 2;
+            }
+            "--assignee" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                assignee = Some(value.clone());
+                index += 2;
+            }
+            "--label" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                labels.push(value.clone());
+                index += 2;
+            }
+            "--labels" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                labels.extend(
+                    value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                );
+                index += 2;
+            }
             _ => {
                 title_parts.push(args[index].clone());
                 index += 1;
@@ -510,6 +561,14 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
         title: title_parts.join(" "),
         state,
         story_type,
+        description,
+        priority,
+        labels: if labels.is_empty() {
+            None
+        } else {
+            Some(labels)
+        },
+        assignee,
     })
 }
 
@@ -1636,8 +1695,9 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
     let mut unblocked = false;
     let mut json = None;
     let mut story_type = None;
+    let mut description = None;
     let mut index = 2;
-    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--assignee <member>] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>]";
+    let usage = "usage: story set <id> [--title \"<title>\"] [--state <slug>] [--priority <level>] [--assignee <member>] [--labels \"<csv>\"] [--blocked \"<reason>\"] [--unblocked] [--json \"<json>\"] [--type <slug>] [--description \"<text>\"]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -1701,6 +1761,13 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
                 story_type = Some(value.clone());
                 index += 2;
             }
+            "--description" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                description = Some(value.clone());
+                index += 2;
+            }
             _ => return Err(AppError::Usage(usage.to_string())),
         }
     }
@@ -1714,6 +1781,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
         && !unblocked
         && json.is_none()
         && story_type.is_none()
+        && description.is_none()
     {
         return Err(AppError::Usage(
             "no fields specified. Usage: story set <id> --<field> <value> ...".to_string(),
@@ -1731,6 +1799,7 @@ fn parse_set(args: &[String]) -> Result<Invocation, AppError> {
         unblocked,
         json,
         story_type,
+        description,
     })
 }
 
@@ -1983,6 +2052,7 @@ mod tests {
                 title,
                 state,
                 story_type,
+                ..
             } => {
                 assert_eq!(title, "My story");
                 assert_eq!(state, None);
@@ -2008,6 +2078,7 @@ mod tests {
                 title,
                 state,
                 story_type,
+                ..
             } => {
                 assert_eq!(title, "My story");
                 assert_eq!(state.as_deref(), Some("open"));

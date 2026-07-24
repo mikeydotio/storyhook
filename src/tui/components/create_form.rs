@@ -17,6 +17,7 @@ use super::Component;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateField {
     Title,
+    Description,
     Priority,
     Labels,
     Assignee,
@@ -24,6 +25,7 @@ pub enum CreateField {
 
 const CREATE_FIELDS: &[CreateField] = &[
     CreateField::Title,
+    CreateField::Description,
     CreateField::Priority,
     CreateField::Labels,
     CreateField::Assignee,
@@ -41,6 +43,7 @@ const PRIORITY_OPTIONS: &[Priority] = &[
 pub struct CreateForm {
     pub focused_field: usize,
     pub title_input: tui_input::Input,
+    pub description_input: tui_input::Input,
     pub label_input: tui_input::Input,
     pub assignee_input: tui_input::Input,
     pub priority_cursor: usize,
@@ -57,6 +60,7 @@ impl CreateForm {
         Self {
             focused_field: 0,
             title_input: tui_input::Input::default(),
+            description_input: tui_input::Input::default(),
             label_input: tui_input::Input::default(),
             assignee_input: tui_input::Input::default(),
             priority_cursor: 0,
@@ -72,6 +76,13 @@ impl CreateForm {
         if title.is_empty() {
             return vec![Action::Notify("Title is required".to_string())];
         }
+
+        let description_raw = self.description_input.value().trim().to_string();
+        let description = if description_raw.is_empty() {
+            None
+        } else {
+            Some(description_raw)
+        };
 
         let priority = if self.priority_cursor == 0 {
             None
@@ -98,6 +109,7 @@ impl CreateForm {
             priority,
             labels,
             assignee,
+            description,
         }]
     }
 }
@@ -134,6 +146,10 @@ impl Component for CreateForm {
                 match self.current_field() {
                     CreateField::Title => {
                         self.title_input
+                            .handle_event(&crossterm::event::Event::Key(key));
+                    }
+                    CreateField::Description => {
+                        self.description_input
                             .handle_event(&crossterm::event::Event::Key(key));
                     }
                     CreateField::Priority => match key.code {
@@ -181,9 +197,18 @@ impl Component for CreateForm {
             &theme,
         ));
 
+        // Description
+        lines.push(render_form_field(
+            "Description",
+            self.description_input.value(),
+            self.focused_field == 1,
+            label_width,
+            &theme,
+        ));
+
         // Priority
         let pri_label = PRIORITY_OPTIONS[self.priority_cursor].as_str();
-        if self.focused_field == 1 {
+        if self.focused_field == 2 {
             // Show all options
             for (i, p) in PRIORITY_OPTIONS.iter().enumerate() {
                 let marker = if i == self.priority_cursor {
@@ -220,7 +245,7 @@ impl Component for CreateForm {
         lines.push(render_form_field(
             "Labels",
             self.label_input.value(),
-            self.focused_field == 2,
+            self.focused_field == 3,
             label_width,
             &theme,
         ));
@@ -229,7 +254,7 @@ impl Component for CreateForm {
         lines.push(render_form_field(
             "Assignee",
             self.assignee_input.value(),
-            self.focused_field == 3,
+            self.focused_field == 4,
             label_width,
             &theme,
         ));
@@ -338,13 +363,16 @@ mod tests {
         assert_eq!(form.focused_field, 0); // Title
 
         form.handle_key(key(KeyCode::Tab), &state);
-        assert_eq!(form.focused_field, 1); // Priority
+        assert_eq!(form.focused_field, 1); // Description
 
         form.handle_key(key(KeyCode::Tab), &state);
-        assert_eq!(form.focused_field, 2); // Labels
+        assert_eq!(form.focused_field, 2); // Priority
 
         form.handle_key(key(KeyCode::Tab), &state);
-        assert_eq!(form.focused_field, 3); // Assignee
+        assert_eq!(form.focused_field, 3); // Labels
+
+        form.handle_key(key(KeyCode::Tab), &state);
+        assert_eq!(form.focused_field, 4); // Assignee
 
         // Wraps around
         form.handle_key(key(KeyCode::Tab), &state);
@@ -359,10 +387,10 @@ mod tests {
 
         // BackTab goes to last field
         form.handle_key(key(KeyCode::BackTab), &state);
-        assert_eq!(form.focused_field, 3); // Assignee
+        assert_eq!(form.focused_field, 4); // Assignee
 
         form.handle_key(key(KeyCode::BackTab), &state);
-        assert_eq!(form.focused_field, 2); // Labels
+        assert_eq!(form.focused_field, 3); // Labels
     }
 
     #[test]
@@ -388,9 +416,33 @@ mod tests {
         let actions = form.handle_key(key(KeyCode::Enter), &state);
         assert_eq!(actions.len(), 1);
         assert!(
-            matches!(&actions[0], Action::CreateStory { title, priority, labels, assignee }
-                if title == "My new story" && priority.is_none() && labels.is_empty() && assignee.is_none())
+            matches!(&actions[0], Action::CreateStory { title, priority, labels, assignee, description }
+                if title == "My new story" && priority.is_none() && labels.is_empty() && assignee.is_none() && description.is_none())
         );
+    }
+
+    #[test]
+    fn description_field_accepts_input_and_is_optional_when_empty() {
+        let state = make_state();
+        let mut form = CreateForm::new();
+
+        for ch in "Bare title".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+        form.handle_key(key(KeyCode::Tab), &state); // Description
+        assert_eq!(form.focused_field, 1);
+        for ch in "Some detail".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+        assert_eq!(form.description_input.value(), "Some detail");
+
+        let actions = form.handle_key(key(KeyCode::Enter), &state);
+        match &actions[0] {
+            Action::CreateStory { description, .. } => {
+                assert_eq!(description, &Some("Some detail".to_string()));
+            }
+            other => panic!("Expected CreateStory, got {other:?}"),
+        }
     }
 
     #[test]
@@ -399,8 +451,9 @@ mod tests {
         let mut form = CreateForm::new();
 
         // Move to priority field
-        form.handle_key(key(KeyCode::Tab), &state);
-        assert_eq!(form.focused_field, 1);
+        form.handle_key(key(KeyCode::Tab), &state); // Description
+        form.handle_key(key(KeyCode::Tab), &state); // Priority
+        assert_eq!(form.focused_field, 2);
 
         // Default is None (index 0)
         assert_eq!(form.priority_cursor, 0);
@@ -426,6 +479,12 @@ mod tests {
 
         // Title
         for ch in "Full story".chars() {
+            form.handle_key(key(KeyCode::Char(ch)), &state);
+        }
+
+        // Description
+        form.handle_key(key(KeyCode::Tab), &state);
+        for ch in "Everything at once".chars() {
             form.handle_key(key(KeyCode::Char(ch)), &state);
         }
 
@@ -455,11 +514,13 @@ mod tests {
                 priority,
                 labels,
                 assignee,
+                description,
             } => {
                 assert_eq!(title, "Full story");
                 assert_eq!(priority, &Some(Priority::High));
                 assert_eq!(labels, &vec!["bug".to_string(), "tui".to_string()]);
                 assert_eq!(assignee, &Some("mikey".to_string()));
+                assert_eq!(description, &Some("Everything at once".to_string()));
             }
             other => panic!("Expected CreateStory, got {other:?}"),
         }
@@ -495,6 +556,7 @@ mod tests {
     fn priority_cursor_cannot_go_below_zero() {
         let state = make_state();
         let mut form = CreateForm::new();
+        form.handle_key(key(KeyCode::Tab), &state); // Description
         form.handle_key(key(KeyCode::Tab), &state); // move to Priority field
         assert_eq!(form.priority_cursor, 0);
 
@@ -507,6 +569,7 @@ mod tests {
     fn priority_cursor_cannot_exceed_max() {
         let state = make_state();
         let mut form = CreateForm::new();
+        form.handle_key(key(KeyCode::Tab), &state); // Description
         form.handle_key(key(KeyCode::Tab), &state); // move to Priority field
 
         // Move to last option
@@ -531,6 +594,7 @@ mod tests {
         }
 
         // Move to labels
+        form.handle_key(key(KeyCode::Tab), &state); // Description
         form.handle_key(key(KeyCode::Tab), &state); // Priority
         form.handle_key(key(KeyCode::Tab), &state); // Labels
 
@@ -592,7 +656,8 @@ mod tests {
         form.handle_key(key(KeyCode::Tab), &state);
         form.handle_key(key(KeyCode::Tab), &state);
         form.handle_key(key(KeyCode::Tab), &state);
-        assert_eq!(form.focused_field, 3);
+        form.handle_key(key(KeyCode::Tab), &state);
+        assert_eq!(form.focused_field, 4);
 
         // Submit should still work
         let actions = form.handle_key(key(KeyCode::Enter), &state);

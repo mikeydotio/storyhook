@@ -751,6 +751,7 @@ mod tests {
             priority: Priority::None,
             labels: vec![],
             story_type: None,
+            description: None,
             closed_at: None,
             deleted: false,
             deleted_reason: None,

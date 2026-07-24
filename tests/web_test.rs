@@ -351,9 +351,13 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     // Detail drawer
     assert!(body.contains(r#"id="drawer""#));
     assert!(body.contains(r#"id="drawer-body""#));
-    // Create-story modal
+    // Create-story modal, including the fields added for #36 (description,
+    // priority, and the label combobox's mount point)
     assert!(body.contains(r#"id="create-modal""#));
     assert!(body.contains(r#"id="create-title""#));
+    assert!(body.contains(r#"id="create-description""#));
+    assert!(body.contains(r#"id="create-priority""#));
+    assert!(body.contains(r#"id="create-labels-field""#));
     // Multi-repo screens (#20): repo selector, home dashboard, settings
     assert!(body.contains(r#"id="repo-select""#));
     assert!(body.contains(r#"id="home-view""#));
@@ -858,6 +862,41 @@ fn web_serve_api_data_meta_has_types_priorities_relations_members() {
 }
 
 #[test]
+fn web_meta_includes_sorted_unique_labels() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "A", "--labels", "web,bug"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "B", "--labels", "web,cli"])
+        .assert()
+        .success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+
+    let labels: Vec<&str> = json["meta"]["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .collect();
+    assert_eq!(labels, vec!["bug", "cli", "web"]);
+}
+
+#[test]
 fn web_serve_api_data_meta_includes_members() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
@@ -1115,6 +1154,89 @@ fn web_create_story_missing_title_is_400() {
     )
     .unwrap_err();
     assert_eq!(status_of(err), 400);
+}
+
+#[test]
+fn web_create_story_with_description_labels_priority() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Rich story","description":"Full details here","priority":"high","labels":["bug","web"]}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "description"), "Full details here");
+    assert_eq!(story_field(&json, "priority"), "high");
+    assert_eq!(
+        story_field(&json, "labels"),
+        serde_json::json!(["bug", "web"])
+    );
+}
+
+#[test]
+fn web_create_story_invalid_priority_is_422() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Bad priority","priority":"urgent"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 422);
+
+    // No orphaned story should have been created.
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let data_json: serde_json::Value =
+        serde_json::from_str(&data.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(data_json["summary"]["total_open"], 0);
+}
+
+#[test]
+fn web_create_story_without_guard_header_is_403() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = post_json_unguarded(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Should not be created"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 403);
+
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let data_json: serde_json::Value =
+        serde_json::from_str(&data.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(data_json["summary"]["total_open"], 0);
 }
 
 // --- Mutation API: move (board drag-and-drop) ---
@@ -1640,6 +1762,61 @@ fn web_patch_story_no_fields_is_400() {
     )
     .unwrap_err();
     assert_eq!(status_of(err), 400);
+}
+
+#[test]
+fn web_patch_story_sets_description() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = patch_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
+        r#"{"description":"Added via drawer"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "description"), "Added via drawer");
+}
+
+#[test]
+fn web_patch_story_description_without_guard_header_is_403() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path()).args(["new", "Story"]).assert().success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let err = ureq::patch(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+    ))
+    .content_type("application/json")
+    .send(r#"{"description":"Should not land"}"#)
+    .unwrap_err();
+    assert_eq!(status_of(err), 403);
+
+    let resp = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+    ))
+    .call()
+    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "description"), serde_json::Value::Null);
 }
 
 // --- Mutation API: relate / unrelate ---

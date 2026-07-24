@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -624,6 +624,21 @@ pub fn create_story(
     title: &str,
     initial_state: Option<&str>,
 ) -> Result<StorySnapshot, AppError> {
+    create_story_with_events(root, title, initial_state, &[])
+}
+
+/// Create a story and, in the same append to its event log, write additional
+/// enrichment events (priority, labels, description, assignee, type, ...).
+///
+/// Writing `StoryCreated` and `extra` as a single batch (rather than two
+/// separate [`write_story_events`] calls) means a new story is never left
+/// half-enriched on disk between the two writes.
+pub fn create_story_with_events(
+    root: &Path,
+    title: &str,
+    initial_state: Option<&str>,
+    extra: &[StoryEvent],
+) -> Result<StorySnapshot, AppError> {
     ensure_project(root)?;
     let id = next_story_id(root)?;
     let state_slug = if let Some(slug) = initial_state {
@@ -646,13 +661,26 @@ pub fn create_story(
     } else {
         default_open_state(root)?.slug
     };
-    let event = StoryEvent::StoryCreated {
+    let created = StoryEvent::StoryCreated {
         at: now(),
         title: title.to_string(),
         state: state_slug,
     };
-    write_story_events(root, &id, &[event])?;
+    let mut events = Vec::with_capacity(1 + extra.len());
+    events.push(created);
+    events.extend_from_slice(extra);
+    write_story_events(root, &id, &events)?;
     load_open_story_snapshot(root, &id)
+}
+
+/// Sorted, unique labels across every non-deleted story (open and archived).
+pub fn distinct_labels(root: &Path) -> Result<Vec<String>, AppError> {
+    let labels: BTreeSet<String> = load_all_snapshots(root)?
+        .into_iter()
+        .filter(|s| !s.deleted)
+        .flat_map(|s| s.labels)
+        .collect();
+    Ok(labels.into_iter().collect())
 }
 
 pub fn write_story_events(root: &Path, id: &str, events: &[StoryEvent]) -> Result<(), AppError> {
@@ -1136,6 +1164,7 @@ fn open_archive_connection(root: &Path) -> Result<Connection, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::Priority;
     use tempfile::tempdir;
 
     fn setup_project() -> tempfile::TempDir {
@@ -1298,6 +1327,82 @@ mod tests {
         let result = add_type(dir.path(), "spike", None).unwrap();
         assert_eq!(result.slug, "spike");
         assert_eq!(result.description, None);
+    }
+
+    // --- create_story_with_events ---
+
+    #[test]
+    fn create_story_with_events_writes_single_batch() {
+        let dir = setup_project();
+        let story = create_story_with_events(
+            dir.path(),
+            "Enriched story",
+            None,
+            &[
+                StoryEvent::StoryPrioritySet {
+                    at: now(),
+                    priority: Priority::High,
+                },
+                StoryEvent::StoryDescriptionSet {
+                    at: now(),
+                    description: "Batched description".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(story.priority, Priority::High);
+        assert_eq!(story.description.as_deref(), Some("Batched description"));
+
+        let paths = ProjectPaths::new(dir.path());
+        let events = read_story_events(&paths.open_story_file(&story.id)).unwrap();
+        assert_eq!(events.len(), 3, "created + 2 enrichment events in one log");
+    }
+
+    // --- distinct_labels ---
+
+    #[test]
+    fn distinct_labels_collects_sorted_unique_excluding_deleted() {
+        let dir = setup_project();
+        let a = create_story(dir.path(), "A", None).unwrap();
+        let b = create_story(dir.path(), "B", None).unwrap();
+        let c = create_story(dir.path(), "C", None).unwrap();
+        write_story_events(
+            dir.path(),
+            &a.id,
+            &[StoryEvent::StoryLabelsSet {
+                at: now(),
+                labels: vec!["bug".to_string(), "web".to_string()],
+            }],
+        )
+        .unwrap();
+        write_story_events(
+            dir.path(),
+            &b.id,
+            &[StoryEvent::StoryLabelsSet {
+                at: now(),
+                labels: vec!["web".to_string(), "cli".to_string()],
+            }],
+        )
+        .unwrap();
+        write_story_events(
+            dir.path(),
+            &c.id,
+            &[
+                StoryEvent::StoryLabelsSet {
+                    at: now(),
+                    labels: vec!["ignored".to_string()],
+                },
+                StoryEvent::StoryDeleted {
+                    at: now(),
+                    reason: "duplicate".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+
+        let labels = distinct_labels(dir.path()).unwrap();
+        assert_eq!(labels, vec!["bug", "cli", "web"]);
     }
 
     // --- remove_type ---

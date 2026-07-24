@@ -74,6 +74,41 @@ fn export_and_import_roundtrip() {
 }
 
 #[test]
+fn export_import_roundtrips_description() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args([
+            "new",
+            "Described story",
+            "--description",
+            "What this story is about",
+        ])
+        .assert()
+        .success();
+
+    let output = story(dir.path()).args(["export"]).assert().success();
+    let export_json = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+
+    let dir2 = tempdir().unwrap();
+    let export_file = dir2.path().join("export.json");
+    std::fs::write(&export_file, &export_json).unwrap();
+
+    story(dir2.path())
+        .args(["import-project", export_file.to_str().unwrap()])
+        .assert()
+        .success();
+
+    story(dir2.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "description: What this story is about",
+        ));
+}
+
+#[test]
 fn export_json_output() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
