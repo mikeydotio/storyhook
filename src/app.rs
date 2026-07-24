@@ -1759,6 +1759,17 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             let mut events: Vec<StoryEvent> = Vec::new();
             let mut changes: Vec<String> = Vec::new();
 
+            // Shared by the `--assignee` flag and the `--json "assignee"` key so both
+            // surfaces reject an unknown member the same way (see issue #39).
+            let resolve_assignee = |lookup: &str| -> Result<String, AppError> {
+                let members = storage::load_members(root)?;
+                members
+                    .iter()
+                    .find(|m| m.id == lookup || m.github.as_deref() == Some(lookup))
+                    .map(|m| m.id.clone())
+                    .ok_or_else(|| AppError::Validation(format!("member `{lookup}` not found")))
+            };
+
             if let Some(ref t) = title {
                 events.push(StoryEvent::StoryTitleSet {
                     at: now.clone(),
@@ -1796,14 +1807,10 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 changes.push(format!("priority -> {p}"));
             }
             if let Some(ref a) = assignee {
-                let members = storage::load_members(root)?;
-                let member = members
-                    .iter()
-                    .find(|m| m.id == *a || m.github.as_deref() == Some(a))
-                    .ok_or_else(|| AppError::Validation(format!("member `{a}` not found")))?;
+                let member_id = resolve_assignee(a)?;
                 events.push(StoryEvent::StoryAssigned {
                     at: now.clone(),
-                    member_id: member.id.clone(),
+                    member_id,
                 });
                 changes.push(format!("assignee -> {a}"));
             }
@@ -1919,9 +1926,10 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                                 if v.is_empty() {
                                     changes.push("assignee cleared".to_string());
                                 } else {
+                                    let member_id = resolve_assignee(v)?;
                                     events.push(StoryEvent::StoryAssigned {
                                         at: now.clone(),
-                                        member_id: v.to_string(),
+                                        member_id,
                                     });
                                     changes.push(format!("assignee -> {v}"));
                                 }
