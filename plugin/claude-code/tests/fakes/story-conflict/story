@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Fake `story` CLI for the claim-conflict regression test ONLY
+# (test-dispatch-claim-conflict.sh). A true TOCTOU race (another process's
+# `story move` landing between story.sh's own state read and its claim
+# attempt) isn't reproducible black-box without genuine concurrency, so
+# this wrapper simulates the race deterministically: it proxies every
+# invocation to the REAL story binary (STORY_REAL_BIN, set by the test)
+# EXCEPT one exact `move <id> in-progress --if-state <expected> --json`
+# call — identified by STORY_CONFLICT_ID/STORY_CONFLICT_EXPECTED — which it
+# answers with a canned {"result":"conflict",...} response instead,
+# regardless of the story's actual state. Every other subcommand (show,
+# list, new, etc.) passes through unchanged, so the fixture stays realistic
+# everywhere except the one moment under test.
+set -euo pipefail
+
+real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
+
+if [ "${1:-}" = "move" ] && [ "${2:-}" = "${STORY_CONFLICT_ID:-}" ] \
+  && [ "${3:-}" = "in-progress" ] && [ "${4:-}" = "--if-state" ] \
+  && [ "${5:-}" = "${STORY_CONFLICT_EXPECTED:-}" ]; then
+  printf '{"result":"conflict","expected":"%s","actual":"in-progress","error":"state conflict: expected `%s`, was `in-progress`","exit_code":9}\n' \
+    "$STORY_CONFLICT_EXPECTED" "$STORY_CONFLICT_EXPECTED"
+  exit 9
+fi
+
+exec "$real" "$@"

@@ -8,11 +8,19 @@
 
 .PHONY: test build fmt lint clippy check release-build
 
-# Full local gate: formatting, clippy with warnings-as-errors, full test suite.
+# Full local gate: formatting, clippy with warnings-as-errors, full test
+# suite, plus the Claude Code plugin's own bash harness (bin/story.sh's
+# ready-gate/CAS-claim/dispatch behavior — issue #40). The plugin suite
+# exercises the REAL `story` binary this build just produced (never a
+# possibly-stale globally-installed one, and never a fake -- a fake can't
+# catch a genuine CAS race or a real is_ready() interaction), so `cargo
+# build` runs first and target/debug is prepended to PATH for that one step.
 test:
 	cargo fmt -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test
+	cargo build
+	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
 
 # Debug build of the `story` binary.
 build:

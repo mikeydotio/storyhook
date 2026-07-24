@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# Fake `tmux` for story.sh's real-dispatch (non-dry-run) tests. VENDORED
+# verbatim from agentics' plugins/issue/tests/fakes/tmux (forked 2026-07-24,
+# alongside lib/session.sh — see that file's header) — it's already fully
+# provider-agnostic (no gh/issue-specific behavior anywhere in it), so no
+# adaptation was needed beyond this header note. Implements only the
+# subcommands cmd_dispatch drives, enough to let the helper run to
+# completion headlessly without a live tmux server:
+#
+#   new-window        -> reset the virtual input-box state, print a pane id (%1)
+#   display-message   -> print a window id (@1), exit 0
+#   set-window-option -> no-op, exit 0
+#   send-keys         -> mutate the virtual input box (see STATEFUL MODEL below)
+#   kill-window       -> no-op, exit 0
+#   capture-pane      -> print pane content selected by $FAKE_TMUX_CAPTURE, then
+#                        append the current input-box row when non-empty (see
+#                        below). DEFAULT (knob unset) is the legacy
+#                        "  ? for shortcuts" line, so every pre-#67 test that
+#                        relies on it keeps passing unchanged.
+#
+# STATEFUL MODEL (issue #82) — the fake now models the Claude Code input box so a
+# test can observe both RECEIPT (the paste landed in the box) and SUBMISSION (the
+# box cleared) — the two guarantees issue.sh's send_prompt_confirmed makes. This
+# is purely ADDITIVE: with none of the FAKE_TMUX_* knobs below set, and the input
+# box empty (its state after the launch Enter clears it), capture-pane emits
+# EXACTLY the same base fixture as before, so every readiness/gitignore test is
+# byte-for-byte unaffected.
+#
+#   * A virtual input buffer lives in $STATE/input (STATE = $FAKE_TMUX_STATE, or a
+#     fixed /tmp dir otherwise). `send-keys -l <text>` APPENDS <text> to it (a
+#     literal paste); `send-keys ... Enter` SUBMITS (clears it) — with two twists:
+#       - The FIRST Enter after launch always clears (it submits the launch
+#         command line); it also flips $STATE/launched so later Enters are treated
+#         as prompt submissions. This keeps a prompt absorb-count from ever
+#         stranding wait_ready's launch_gone gate.
+#       - $FAKE_TMUX_ENTER_ABSORB=N makes the next N *prompt* Enters get ABSORBED
+#         (decrement, do NOT clear) — the exact #82 race where an Enter fired into
+#         a still-settling bracketed paste is swallowed as a newline. The (N+1)th
+#         Enter submits.
+#   * capture-pane appends a "<glyph> <input>" row (glyph = U+276F, the same idle
+#     prompt glyph the fixtures use) ONLY when the input buffer is non-empty, so an
+#     empty box renders the base fixture verbatim.
+#   * $FAKE_TMUX_DROP_PASTE=1 makes a post-launch prompt paste get LOGGED but not
+#     applied to the input buffer (a genuinely dropped paste) — drives the
+#     receipt-phase re-paste path. Honoured for BOTH send-keys -l and paste-buffer.
+#   * Every literal paste is also appended (one line per paste) to
+#     $STATE/pastes.log, so a test can assert the prompt was pasted exactly once
+#     (no duplicate-paste on the submit retry) or the bounded re-paste count.
+#
+# BUFFER / BRACKETED-PASTE MODEL (issue #87) — the prompt is now delivered as a
+# bracketed paste, so the fake also models private tmux buffers:
+#   * `load-buffer -b <name> -` stores stdin in $STATE/buf-<name>.
+#   * `paste-buffer -p [-r] -d -b <name> -t <pane>` inserts that buffer. WITH -p
+#     the whole buffer lands as ONE literal block (embedded newlines stay text — no
+#     submit); WITHOUT -p it is replayed as keystrokes (a newline submits), so a
+#     multi-line test only stays green when -p is present. -d deletes the buffer.
+#   * `send-keys -l <text>` is likewise now newline-aware: an embedded newline is a
+#     literal Enter (the #87 bug). Single-line -l is byte-identical to before.
+#   * $STATE/prompt_submits counts PROMPT-phase submits and $STATE/submitted holds
+#     the content of the LAST such submit — so a test can prove a multi-line prompt
+#     submitted as ONE block (prompt_submits==1, submitted holds every line) rather
+#     than being split at a newline (prompt_submits>1, submitted holds only a tail).
+#
+# $FAKE_TMUX_CAPTURE selects the base capture-pane output so a test can drive each
+# readiness tier + warning path (issue #67). Unset reproduces the original
+# single-line behavior exactly:
+#
+#   (unset) / legacy  Legacy idle footer "  ? for shortcuts" — matches the
+#                     broadened READY_PATTERN via "for shortcuts" (back-compat).
+#   marker            Realistic plan-mode idle pane: framed input box + footer
+#                     "plan mode on (shift+tab to cycle)" and NO "for shortcuts"
+#                     — matches READY_PATTERN via "mode on"/"to cycle" (fast path).
+#   structural        Fully drifted footer (no known marker) but a rendered input
+#                     box: frame rule '─' AND idle glyph '❯', static content — so
+#                     it confirms via the STRUCTURAL tier once it stabilises.
+#   modal             A framed static dialog (trust prompt): frame rule '─' but NO
+#                     idle glyph '❯' — must NOT confirm readiness (guards the
+#                     structural tier against static modals).
+#   busy              Only a BUSY marker ("esc to interrupt"), no frame/glyph —
+#                     must NOT fast-path confirm (busy != idle-ready).
+#   churn             Ever-changing content (a per-call counter), no frame/glyph/
+#                     marker — never stabilises, never matches → readiness stays
+#                     unconfirmed (drives the warning + pane_tail evidence path).
+#
+# The fake is re-exec'd per tmux call and holds no in-process state, so ALL of the
+# above (the input buffer, the launched flag, the absorb counter, the churn
+# counter) live in files under $STATE. `churn` still advances $STATE/count and
+# falls back to $RANDOM when $FAKE_TMUX_STATE is unset.
+
+STATE="${FAKE_TMUX_STATE:-/tmp/issue-faketmux}"
+mkdir -p "$STATE" 2>/dev/null || true
+NL='
+'   # a single literal newline, for splitting -l keystroke text on line breaks
+
+# _submit_box — model ONE Enter against the virtual input box, matching the real
+# TUI. The FIRST submit after launch clears the launch command line and flips
+# $STATE/launched; every later submit is a PROMPT submit, which honours the
+# $FAKE_TMUX_ENTER_ABSORB counter (a swallowed Enter) and, when it actually clears
+# a non-empty box, RECORDS the submitted content (overwrite) + bumps the
+# prompt-submit counter. Those two records are what let a test prove a multi-line
+# prompt submitted as ONE block (issue #87) rather than being split at a newline.
+_submit_box() {
+  local launched absorb box n
+  launched="$(cat "$STATE/launched" 2>/dev/null || printf 'false')"
+  if [ "$launched" != true ]; then
+    : > "$STATE/input" 2>/dev/null || true          # launch line submitted
+    printf 'true' > "$STATE/launched" 2>/dev/null || true
+    return
+  fi
+  absorb="$(cat "$STATE/absorb" 2>/dev/null || printf '0')"
+  if [ "${absorb:-0}" -gt 0 ] 2>/dev/null; then
+    printf '%s' "$((absorb - 1))" > "$STATE/absorb" 2>/dev/null || true
+    return                                           # Enter absorbed by settling paste
+  fi
+  box="$(cat "$STATE/input" 2>/dev/null || printf '')"
+  printf '%s' "$box" > "$STATE/submitted" 2>/dev/null || true      # OVERWRITE: last submit wins
+  n="$(cat "$STATE/prompt_submits" 2>/dev/null || printf '0')"
+  printf '%s' "$((n + 1))" > "$STATE/prompt_submits" 2>/dev/null || true
+  : > "$STATE/input" 2>/dev/null || true            # prompt submitted
+}
+
+# _paste_keys <text> — model `send-keys -l <text>` (and a NON-bracketed paste) as
+# literal keystrokes: append <text> to the box, but treat every embedded newline
+# as a literal Enter (submit). This is the #87 bug for a multi-line prompt sent via
+# -l. Single-line text (no newline) just appends — byte-identical to the old fake.
+_paste_keys() {
+  local rest="$1" seg
+  while :; do
+    case "$rest" in
+      *"$NL"*)
+        seg="${rest%%"$NL"*}"                        # up to the first newline
+        printf '%s' "$seg" >> "$STATE/input" 2>/dev/null || true
+        _submit_box                                  # the newline = a literal Enter
+        rest="${rest#*"$NL"}"                        # after the first newline
+        ;;
+      *)
+        printf '%s' "$rest" >> "$STATE/input" 2>/dev/null || true
+        break
+        ;;
+    esac
+  done
+}
+
+case "${1:-}" in
+  new-window)
+    # First side effect of a dispatch: reset the virtual input box so every run
+    # starts clean, and seed the prompt-Enter absorb counter from the knob. Also
+    # clears the buffer store + submit bookkeeping (issue #87) so a reused $STATE
+    # dir (e.g. the shared /tmp/issue-faketmux the readiness cases use) can't read
+    # stale state.
+    rm -f "$STATE/input" "$STATE/launched" "$STATE/absorb" "$STATE/pastes.log" \
+          "$STATE/submitted" "$STATE/prompt_submits" 2>/dev/null || true
+    rm -f "$STATE"/buf-* 2>/dev/null || true
+    printf '%s' "${FAKE_TMUX_ENTER_ABSORB:-0}" > "$STATE/absorb" 2>/dev/null || true
+    printf '0' > "$STATE/prompt_submits" 2>/dev/null || true
+    printf '%%1\n'
+    ;;
+  display-message)   printf '@1\n' ;;
+  set-window-option) : ;;
+  send-keys)
+    # Parse the two shapes issue.sh emits: `-t <pane> -l <text>` (literal paste)
+    # and `-t <pane> Enter` (submit). Anything else is ignored.
+    shift || true
+    has_l=false; ltext=""; is_enter=false
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -t) shift || true ;;                 # drop the pane target (next arg)
+        -l) has_l=true; shift || true; ltext="${1-}" ;;
+        Enter) is_enter=true ;;
+      esac
+      shift || true
+    done
+    if [ "$has_l" = true ]; then
+      printf '%s\n' "$ltext" >> "$STATE/pastes.log" 2>/dev/null || true
+      launched="$(cat "$STATE/launched" 2>/dev/null || printf 'false')"
+      if [ "${FAKE_TMUX_DROP_PASTE:-}" = "1" ] && [ "$launched" = true ]; then
+        : # dropped paste: logged above, but never reaches the input box
+      else
+        _paste_keys "$ltext"   # newline in <text> = a literal Enter (issue #87)
+      fi
+    elif [ "$is_enter" = true ]; then
+      _submit_box
+    fi
+    ;;
+  load-buffer)
+    # `load-buffer -b <name> -` — read stdin into the named private buffer (the
+    # issue #87 prompt delivery: `printf %s "$prompt" | tmux load-buffer -b … -`).
+    shift || true
+    bname=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -b) shift || true; bname="${1-}" ;;
+        -)  : ;;                              # stdin marker
+      esac
+      shift || true
+    done
+    cat > "$STATE/buf-${bname:-default}" 2>/dev/null || true
+    ;;
+  paste-buffer)
+    # `paste-buffer [-p] [-r] [-d] -b <name> -t <pane>`. WITH -p (bracketed paste)
+    # the WHOLE buffer is inserted as literal text — embedded newlines stay text
+    # and do NOT submit (the issue #87 fix). WITHOUT -p it behaves like keystrokes
+    # (a newline submits), so a test that asserts one submission rewards -p. -d
+    # deletes the buffer after. Logs ONE paste line (like send-keys -l) so
+    # count_pastes keeps working now that the prompt is delivered via the buffer.
+    shift || true
+    bracketed=false; del=false; bname=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -p) bracketed=true ;;
+        -d) del=true ;;
+        -r) : ;;
+        -b) shift || true; bname="${1-}" ;;
+        -t) shift || true ;;
+      esac
+      shift || true
+    done
+    bfile="$STATE/buf-${bname:-default}"
+    content="$(cat "$bfile" 2>/dev/null || printf '')"
+    printf '%s\n' "$content" >> "$STATE/pastes.log" 2>/dev/null || true
+    launched="$(cat "$STATE/launched" 2>/dev/null || printf 'false')"
+    if [ "${FAKE_TMUX_DROP_PASTE:-}" = "1" ] && [ "$launched" = true ]; then
+      : # dropped paste: logged above, but never reaches the input box
+    elif [ "$bracketed" = true ]; then
+      printf '%s' "$content" >> "$STATE/input" 2>/dev/null || true   # one literal block
+    else
+      _paste_keys "$content"                                        # non-bracketed = keys
+    fi
+    if [ "$del" = true ]; then rm -f "$bfile" 2>/dev/null || true; fi
+    ;;
+  kill-window)       : ;;
+  list-panes)
+    # `list-panes -a -F <fmt>` — the `capture` verb enumerates windows→panes. Emit
+    # the seeded FAKE_TMUX_PANES (lines of "name<TAB>active<TAB>pane"), or nothing
+    # (→ no matching window found).
+    if [ -n "${FAKE_TMUX_PANES:-}" ]; then printf '%s\n' "$FAKE_TMUX_PANES"; fi
+    ;;
+  capture-pane)
+    # -S (scrollback start) present → the `capture` verb dumping a window's rendered
+    # transcript: echo the seeded FAKE_TMUX_TRANSCRIPT and stop. Otherwise fall
+    # through to the box+fixture model the readiness/receipt + doctor-probe paths use.
+    for _a in "$@"; do
+      if [ "$_a" = "-S" ]; then
+        printf '%s\n' "${FAKE_TMUX_TRANSCRIPT:-}"
+        exit 0
+      fi
+    done
+    case "${FAKE_TMUX_CAPTURE:-legacy}" in
+      marker)
+        cat <<'EOF'
+────────────────────────────── rep-42 ──
+❯
+──────────────────────────────────────────
+  ⏵ plan mode on (shift+tab to cycle)
+EOF
+        ;;
+      structural)
+        cat <<'EOF'
+────────────────────────────── rep-42 ──
+❯
+──────────────────────────────────────────
+  a brand new footer nobody predicted yet
+EOF
+        ;;
+      modal)
+        cat <<'EOF'
+──────────────────────────────────────────
+  Do you trust the files in this folder?
+  [ Yes ]     [ No ]
+──────────────────────────────────────────
+EOF
+        ;;
+      busy)
+        printf '  \342\234\273 Working... (esc to interrupt)\n' ;;
+      churn)
+        c=0
+        if [ -n "${FAKE_TMUX_STATE:-}" ]; then
+          c=$(cat "$FAKE_TMUX_STATE/count" 2>/dev/null || echo 0)
+          c=$((c + 1)); echo "$c" > "$FAKE_TMUX_STATE/count"
+        else
+          c=$RANDOM
+        fi
+        printf '  building worktree... step %s\n' "$c" ;;
+      legacy|*)
+        printf '  ? for shortcuts\n' ;;
+    esac
+    # Append the active input-box row when the virtual box holds text, so a test
+    # can observe receipt (row present) and submission (row gone). Empty box ⇒ no
+    # extra output ⇒ base fixture is byte-identical to the pre-#82 fake.
+    inp="$(cat "$STATE/input" 2>/dev/null || printf '')"
+    if [ -n "$inp" ]; then
+      printf '❯ %s\n' "$inp"
+    fi
+    ;;
+  *)                 : ;;
+esac
+exit 0

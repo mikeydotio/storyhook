@@ -80,10 +80,10 @@ Available targets:
 
 ### Claude Code plugin
 
-storyhook ships a Claude Code plugin (`plugin/claude-code/`) that adds workflow skills
-(`/storyhook:storyhook-context`, `/storyhook:storyhook-work`, …) and session hooks. There
+storyhook ships a Claude Code plugin (`plugin/claude-code/`) that adds a `/story` router
+skill (`/story do`, `/story work`, `/story context`, …) and session hooks. There
 are two ways to install it; both register it properly so Claude Code loads the
-`/storyhook:*` commands.
+`/story` and `/story-*` commands.
 
 **CLI-first** — if you already installed the `story` CLI (above):
 
@@ -98,14 +98,14 @@ This registers `mikeydotio/storyhook` as a marketplace and installs the plugin t
 
 ```text
 /plugin marketplace add mikeydotio/storyhook
-/plugin install storyhook@storyhook
+/plugin install story@storyhook
 ```
 
 The marketplace route installs the plugin but not the `story` CLI. Once the plugin loads,
-run `/storyhook:storyhook-install` and the plugin will install and verify the CLI for you.
+run `/story-install` and the plugin will install and verify the CLI for you.
 
 > After installing the plugin (either route), start a new Claude Code session so the
-> `/storyhook:*` commands load.
+> `/story` and `/story-*` commands load.
 
 ## Uninstall
 
