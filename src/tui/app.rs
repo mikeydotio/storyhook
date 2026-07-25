@@ -529,7 +529,7 @@ fn dispatch(
             if let Some(editor_cmd) = editor {
                 // Create temp file with placeholder text
                 let tmp_dir = std::env::temp_dir();
-                let tmp_path = tmp_dir.join(format!("storyhook-comment-{}.txt", &id));
+                let tmp_path = tmp_dir.join(format!("storyhook-comment-{id}.txt"));
                 if let Err(e) = std::fs::write(&tmp_path, "") {
                     state.notification =
                         Some((format!("Failed to create temp file: {e}"), Instant::now()));
