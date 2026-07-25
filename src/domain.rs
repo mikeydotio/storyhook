@@ -873,10 +873,9 @@ pub fn parse_duration(input: &str) -> Option<chrono::Duration> {
         (s, 'd')
     } else if let Some(s) = input.strip_suffix('m') {
         (s, 'm')
-    } else if let Some(s) = input.strip_suffix('w') {
-        (s, 'w')
     } else {
-        return None;
+        let s = input.strip_suffix('w')?;
+        (s, 'w')
     };
     let num: i64 = num_str.parse().ok()?;
     match unit {
