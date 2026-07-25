@@ -695,7 +695,7 @@ fn render_story_row(
         + blocked_part.as_ref().map_or(0, |(s, _)| s.chars().count());
 
     // Labels: fit as many as possible, show "+N more" if truncated
-    let id_display_width = format!("{:<8}", &story.id).chars().count();
+    let id_display_width = format!("{:<8}", story.id).chars().count();
     // Rough budget for labels: total width - cursor(2) - id(8) - gap(1) - min_title(10) - non_label_right
     let label_budget = width.saturating_sub(2 + id_display_width + 1 + 10 + non_label_right);
     let mut label_parts: Vec<(String, ratatui::style::Style)> = Vec::new();
@@ -734,7 +734,7 @@ fn render_story_row(
     let right_width: usize = right_parts.iter().map(|(s, _)| s.chars().count()).sum();
 
     // ID display (e.g. "SH-12")
-    let id_display = format!("{:<8}", &story.id);
+    let id_display = format!("{:<8}", story.id);
     let id_width = id_display.chars().count();
 
     // cursor(2) + id(8) + gap(1) + title + right
