@@ -1,0 +1,4 @@
+{"kind":"StoryCreated","at":"2026-07-25T18:42:24Z","title":"Create story plugin in the storyhook claude plugin marketplace which mirrors the behavior of the /issue plugin in the mikeydotio/agentics marketplace, but for storyhook stories instead of github issues.","state":"todo"}
+{"kind":"StoryTypeSet","at":"2026-07-25T18:42:24Z","story_type":"story"}
+{"kind":"StoryCommentAdded","at":"2026-07-25T19:13:46Z","text":"[git] 23da8ba: chore(storyhook): track SH-45"}
+{"kind":"StoryCommentAdded","at":"2026-07-25T19:14:41Z","text":"[git] 90703c4: chore(storyhook): sync SH-45 git-linked comment"}
