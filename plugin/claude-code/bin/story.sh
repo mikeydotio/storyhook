@@ -519,6 +519,181 @@ cmd_dispatch() {
     + {display: $display}'
 }
 
+# ---- subcommands: view / list / create ---------------------------------------
+# The storyhook analogues of issue.sh's cmd_view / cmd_list / cmd_create.
+# Shapes are kept deliberately identical (`option{label,description}` on each
+# list row, `display` on every result) so the skill's List->Pick and
+# View + Offer flows are a direct port rather than a re-derivation.
+
+# project_root — the directory every `story` call is anchored to.
+#
+# Prefers repo_root() (the MAIN worktree) so all verbs agree on one tracker:
+# `.storyhook/` is version-controlled, so a dispatched worktree holds its own
+# copy, and it would be actively confusing for `/story view` to read a
+# different tracker than the one `/story do` and `/story complete` act on.
+# Falls back to walking up for the project marker so the read verbs still
+# work in a storyhook project that isn't a git repo at all.
+project_root() {
+  local d
+  if d=$(repo_root 2>/dev/null) && [ -n "$d" ]; then printf '%s' "$d"; return 0; fi
+  d=$(pwd -P)
+  while [ "$d" != "/" ] && [ -n "$d" ]; do
+    if [ -f "$d/.storyhook/project.toml" ]; then printf '%s' "$d"; return 0; fi
+    d=$(dirname "$d")
+  done
+  pwd -P
+}
+
+# story_active_state — the slug meaning "claimed / being worked": the state
+# carrying `role = "active"` in .storyhook/states.toml, else "in-progress".
+# Mirrors the convention story-work already follows.
+story_active_state() {
+  local file="$PROJECT_DIR/.storyhook/states.toml" found=""
+  if [ -r "$file" ]; then
+    found=$(awk '
+      function val(s) { if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2); return "" }
+      /^[[:space:]]*\[\[states\]\]/ { slug = ""; role = ""; next }
+      /^[[:space:]]*slug[[:space:]]*=/ { slug = val($0); next }
+      /^[[:space:]]*role[[:space:]]*=/ { role = val($0); if (role == "active" && slug != "") { print slug; exit } next }
+    ' "$file")
+  fi
+  printf '%s' "${found:-in-progress}"
+}
+
+cmd_view() {
+  local id="${1:-}"
+  [ -n "$id" ] || fail "usage: story.sh view <story-id>"
+  shift
+  [ "$#" -eq 0 ] || fail "usage: story.sh view <story-id>"
+  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+
+  PROJECT_DIR=$(project_root)
+  require_story
+
+  local show_json result title state super
+  show_json=$(story_cli show "$id" --json 2>/dev/null) || true
+  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+  if [ "$result" != "ok" ]; then
+    fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
+  fi
+  title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
+  state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+  super=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
+
+  # Human rendering via the CLI's own non-JSON output (it already includes
+  # comments, relationships and derived fields). Best-effort: metadata above
+  # already succeeded, so a rendering failure degrades to a one-liner rather
+  # than a hard fail.
+  local body
+  body=$(story_cli show "$id" 2>/dev/null || printf '')
+  [ -n "$body" ] || body="$id — $title [$state]"
+
+  jq -n --arg id "$id" --arg title "$title" --arg state "$state" \
+        --arg super "$super" --arg display "$body" '
+    {ok:true, id:$id, title:$title, state:$state, superstate:$super, display:$display}'
+}
+
+cmd_list() {
+  [ "$#" -eq 0 ] || fail "usage: story.sh list"
+  PROJECT_DIR=$(project_root)
+  require_story
+
+  # `story list --ready` is the ground truth the dispatch gate already uses.
+  # Two deliberate narrowings on top of it, both because is_ready() answers
+  # "is this workable", not "is this available to pick up":
+  #   - already-claimed stories are dropped (is_ready() returns true for an
+  #     in-progress story — the exact gap /story do's own guard exists for);
+  #   - parents are dropped, matching `story next`'s has_children filter,
+  #     since dispatching an epic is never what the user meant.
+  local ready_json active
+  active=$(story_active_state)
+  ready_json=$(story_cli list --ready --json 2>/dev/null) || ready_json='{"stories":[]}'
+
+  printf '%s' "$ready_json" | jq --arg active "$active" '
+    [ .stories[]?
+      | select(.story.state != $active)
+      | select([.story.relationships[]? | select(.relation == "parent-of")] | length == 0)
+    ] as $rows
+    | {
+        ok: true,
+        count: ($rows | length),
+        stories: [ $rows[] | {
+          id: .story.id,
+          title: .story.title,
+          state: .story.state,
+          priority: .story.priority,
+          option: {
+            label: .story.id,
+            description: (.story.title // "(no title)")
+          }
+        } ],
+        display: (
+          if ($rows | length) == 0
+          then "No ready stories to pick up."
+          else "[story] " + ($rows | length | tostring) + " ready story(ies):\n"
+               + ([ $rows[] | "  " + .story.id + " [" + (.story.priority // "none") + "] " + (.story.title // "(no title)") ] | join("\n"))
+          end
+        )
+      }'
+}
+
+cmd_create() {
+  local title="" desc="" desc_file="" stype="" priority="" labels=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --title)            title="${2:-}";      shift 2 || fail "--title needs a value." ;;
+      --description)      desc="${2:-}";       shift 2 || fail "--description needs a value." ;;
+      --description-file) desc_file="${2:-}";  shift 2 || fail "--description-file needs a value." ;;
+      --type)             stype="${2:-}";      shift 2 || fail "--type needs a value." ;;
+      --priority)         priority="${2:-}";   shift 2 || fail "--priority needs a value." ;;
+      --label|--labels)   labels="${2:-}";     shift 2 || fail "--label needs a value." ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--label <csv>]" ;;
+    esac
+  done
+  [ -n "$title" ] || fail "usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--label <csv>]"
+
+  # A description reaches the CLI as ONE argv element. `story new` has no
+  # --description-file (unlike `gh issue create --body-file`), so the skill
+  # writes the drafted markdown to a file and this reads it back — argv is
+  # safe for arbitrary multi-line text, it is *shell quoting* that is not,
+  # and a file keeps the markdown from ever passing through a command string.
+  if [ -n "$desc_file" ]; then
+    [ -r "$desc_file" ] || fail "description file not readable: $desc_file"
+    desc=$(cat "$desc_file")
+  fi
+
+  PROJECT_DIR=$(project_root)
+  require_story
+
+  local -a args=(new "$title")
+  [ -n "$stype" ]    && args+=(--type "$stype")
+  [ -n "$priority" ] && args+=(--priority "$priority")
+  [ -n "$labels" ]   && args+=(--labels "$labels")
+  [ -n "$desc" ]     && args+=(--description "$desc")
+
+  if [ -n "$DRY_RUN" ]; then
+    jq -n --arg title "$title" --argjson cmds \
+      "$(printf '%s\n' "story ${args[*]:0:1} <title>${stype:+ --type $stype}${priority:+ --priority $priority}${labels:+ --labels $labels}${desc:+ --description <text>}" | jq -R -s 'split("\n")|map(select(length>0))')" '
+      {ok:true, dry_run:true, title:$title, commands:$cmds,
+       display:("[story] DRY RUN — would create a story titled: " + $title)}'
+    return 0
+  fi
+
+  local out result id
+  out=$(story_cli "${args[@]}" --json 2>/dev/null) || true
+  result=$(printf '%s' "$out" | jq -r '.result // ""' 2>/dev/null || printf '')
+  if [ "$result" != "ok" ]; then
+    # Deliberately NOT retried by the caller: a repeated create files a
+    # duplicate story. The skill is told to report and stop.
+    fail "failed to create the story: $(printf '%s' "$out" | jq -r '.error // "story new emitted no result"' 2>/dev/null)"
+  fi
+  id=$(printf '%s' "$out" | jq -r '.story.story.id // ""')
+
+  jq -n --arg id "$id" --arg title "$title" '
+    {ok:true, id:$id, title:$title,
+     display:("[story] created " + $id + " — " + $title)}'
+}
+
 # ---- subcommand: complete ---------------------------------------------------
 # FORKED from mikeydotio/agentics' plugins/storywork/bin/story.sh
 # (cmd_complete / _story_worktree_status, as of 2026-07-25, agentics plugin
@@ -808,5 +983,8 @@ cmd_complete() {
 case "${1:-}" in
   dispatch) shift; cmd_dispatch "$@" ;;
   complete) shift; cmd_complete "$@" ;;
-  *)        fail "usage: story.sh <dispatch <story-id> | complete <plan|execute> <story-id>>" ;;
+  view)     shift; cmd_view "$@" ;;
+  list)     shift; cmd_list "$@" ;;
+  create)   shift; cmd_create "$@" ;;
+  *)        fail "usage: story.sh <list | view <story-id> | dispatch <story-id> | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id>>" ;;
 esac
