@@ -440,6 +440,48 @@ fn web_serve_api_data_with_stories() {
 }
 
 #[test]
+fn web_serve_api_data_excludes_deleted_stories() {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["new", "Build feature"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Fix bug"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["delete", "SH-2", "duplicate"])
+        .assert()
+        .success();
+
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let stories = json["stories"].as_array().unwrap();
+    let ids: Vec<&str> = stories
+        .iter()
+        .map(|s| s["story"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["SH-1"],
+        "deleted story SH-2 leaked into /api/data"
+    );
+}
+
+#[test]
 fn web_serve_404_unknown_route() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
