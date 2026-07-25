@@ -127,6 +127,14 @@ DRY_RUN="${STORY_DRY_RUN:-}"
 # .storyhook/states.toml" (the first CLOSED-superstate entry) — see
 # story_closed_state.
 DONE_STATE="${STORY_DONE_STATE:-}"
+# `doctor`'s throwaway readiness probe: what it launches, and the scratch
+# window it launches into. Kept separate from LAUNCH_TPL so probing a build
+# never depends on a dispatch-time override.
+DOCTOR_LAUNCH_TPL="${STORY_DOCTOR_LAUNCH_CMD:-claude --permission-mode plan --model opusplan}"
+DOCTOR_WINDOW_NAME="${STORY_DOCTOR_WINDOW_NAME:-story-doctor}"
+# Set by _project_integrity; read by cmd_doctor.
+_INTEGRITY_OK=true
+_INTEGRITY_SUMMARY=""
 # Escalate a non-fresh base (CACHED/HEAD-FALLBACK — see Step 6 below) from a
 # warning to a hard ok:false. Unrelated to story readiness (see deviation #3
 # above) — this is purely about the worktree's base commit.
@@ -694,6 +702,198 @@ cmd_create() {
      display:("[story] created " + $id + " — " + $title)}'
 }
 
+# ---- subcommands: doctor / capture ------------------------------------------
+# FORKED from agentics' plugins/issue/bin/issue.sh (cmd_doctor / cmd_capture,
+# as of 2026-07-25, issue plugin v2.36.0).
+#
+# capture is a straight port: it exists to read a dispatched session's pane,
+# and pane_for_window/capture_pane_transcript were already vendored into
+# lib/session.sh for exactly this — until now they were the only functions in
+# the file with no caller.
+#
+# doctor deviates. `/issue doctor` is purely a readiness-tier drift probe, but
+# the story CLI ALSO has a `story doctor` (project data integrity), so a
+# `/story doctor` that ran only the tmux probe would surprise anyone who knows
+# the CLI. This runs both and reports them together.
+
+cmd_capture() {
+  if [ -z "$DRY_RUN" ]; then
+    [ -n "${TMUX:-}" ] || fail "story capture requires tmux — run Claude inside a tmux session."
+  fi
+  local id="${1:-}"
+  [ -n "$id" ] || fail "usage: story.sh capture <story-id>"
+  shift
+  [ "$#" -eq 0 ] || fail "usage: story.sh capture <story-id>"
+  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+
+  local dir wname
+  dir=$(repo_root) || fail "not inside a git repository."
+  wname=$(resolve_wname "$id" "$(basename "$dir")")
+
+  if [ -n "$DRY_RUN" ]; then
+    jq -n --arg wname "$wname" --arg lines "$CAPTURE_LINES" '
+      {
+        ok: true, dry_run: true, window_name: $wname,
+        commands: [ ("tmux capture-pane -p -t <pane-of " + $wname + "> -S -" + $lines) ],
+        display: ("[story] DRY RUN capture: would dump the last " + $lines
+                  + " rendered rows of the window " + $wname + ".")
+      }'
+    return 0
+  fi
+
+  local pane transcript
+  pane=$(pane_for_window "$wname")
+  [ -n "$pane" ] || fail "no live tmux window named \`$wname\` — dispatch it first with \`/story do $id\`."
+  transcript=$(capture_pane_transcript "$pane") \
+    || fail "failed to capture pane \`$pane\` (window \`$wname\`)."
+
+  jq -n --arg id "$id" --arg wname "$wname" --arg pane "$pane" --arg tx "$transcript" '
+    {
+      ok: true, id: $id, window_name: $wname, pane: $pane, transcript: $tx,
+      display: ("[story] capture " + $wname + " (" + $pane + ") — recent rendered rows:\n\n" + $tx)
+    }'
+}
+
+# _project_integrity — run the CLI's own `story doctor` tolerantly.
+#
+# It exits 5 with an AppError::Integrity whenever it finds ANYTHING, and emits
+# its `.issues[]` array only when that array is empty. So a non-zero exit here
+# is an ordinary finding, not a failure of this probe, and must never abort it.
+#
+# Sets _INTEGRITY_OK and _INTEGRITY_SUMMARY rather than echoing: a caller
+# capturing the summary with $(...) would run this in a subshell and silently
+# lose the flag, always reporting a healthy project.
+_project_integrity() {
+  local out
+  _INTEGRITY_OK=true
+  out=$(story_cli doctor --json 2>/dev/null) || true
+  case $(printf '%s' "$out" | jq -r '.result // "error"' 2>/dev/null || printf 'error') in
+    ok) _INTEGRITY_SUMMARY='project integrity: OK — `story doctor` found nothing.' ;;
+    *)
+      _INTEGRITY_OK=false
+      _INTEGRITY_SUMMARY="project integrity: $(printf '%s' "$out" \
+        | jq -r '.error // "story doctor reported findings"' 2>/dev/null | tr '\n' ';')"
+      ;;
+  esac
+}
+
+cmd_doctor() {
+  [ "$#" -eq 0 ] || fail "usage: story.sh doctor"
+
+  PROJECT_DIR=$(project_root)
+  require_story
+
+  if [ -z "$DRY_RUN" ]; then
+    [ -n "${TMUX:-}" ] || fail "story doctor requires tmux — run Claude inside a tmux session."
+    [ -n "${TMUX_PANE:-}" ] || fail "story doctor requires \$TMUX_PANE — run Claude inside a tmux pane."
+  fi
+
+  local doctor_bin="${DOCTOR_LAUNCH_TPL%% *}"
+  command -v "$doctor_bin" >/dev/null 2>&1 \
+    || fail "launch binary '$doctor_bin' not found on PATH (set STORY_DOCTOR_LAUNCH_CMD)."
+
+  if [ -n "$DRY_RUN" ]; then
+    jq -n --arg launch "$DOCTOR_LAUNCH_TPL" --arg wname "$DOCTOR_WINDOW_NAME" '
+      {
+        ok: true, dry_run: true, window_name: $wname,
+        commands: [
+          "story doctor --json",
+          ("tmux new-window -d -n " + $wname + " -P -F #{pane_id}"),
+          ("tmux send-keys -t <pane> -l " + $launch),
+          "tmux send-keys -t <pane> Enter",
+          "printf %s <multi-line probe> | tmux load-buffer -b story-doctor -",
+          "tmux paste-buffer -p -d -b story-doctor -t <pane>",
+          "tmux capture-pane -p -t <pane>",
+          "tmux kill-window -t <window>"
+        ],
+        display: ("[story] DRY RUN doctor: would run `story doctor` for project integrity, then spin a throwaway `"
+                  + $launch + "` in window " + $wname + ", check readiness, paste a multi-line probe "
+                  + "to verify bracketed-paste delivery, and tear it down.")
+      }'
+    return 0
+  fi
+
+  # Called plainly, NOT via $(...): it sets flags the report below reads, and a
+  # command substitution would run it in a subshell and lose them.
+  _project_integrity
+  local integrity_summary="$_INTEGRITY_SUMMARY"
+
+  local pane window
+  if ! pane=$(tmux new-window -d -n "$DOCTOR_WINDOW_NAME" -P -F '#{pane_id}' 2>/dev/null) || [ -z "$pane" ]; then
+    fail "failed to open a scratch tmux window for the readiness self-test."
+  fi
+  window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
+
+  paste_text "$pane" "$DOCTOR_LAUNCH_TPL" || true
+  tmux send-keys -t "$pane" Enter 2>/dev/null || true
+
+  local readiness_confirmed=false tier="none" tail_evidence
+  if wait_ready "$pane" "$DOCTOR_LAUNCH_TPL"; then
+    readiness_confirmed=true
+  fi
+  tier="$WAIT_READY_TIER"
+  tail_evidence=$(pane_tail "$pane")
+
+  # Live multi-line paste probe: paste a 3-line marker through the real
+  # bracketed-paste path WITHOUT submitting, then read the input box back.
+  # If delivery works, all three lines land as ONE block and the FIRST sits on
+  # the `❯` row; had it split at a newline, the first would have submitted and
+  # only the last would remain. Diagnostic only — never presses Enter.
+  local probe_ran=false probe_first_held=false probe_seen=0 probe_total=3
+  if [ "$readiness_confirmed" = true ]; then
+    local probe capture box_row marker
+    probe=$(printf 'story-probe-alpha\nstory-probe-bravo\nstory-probe-charlie')
+    if paste_prompt "$pane" "$probe" "story-doctor"; then
+      probe_ran=true
+      capture=$(tmux capture-pane -p -t "$pane" 2>/dev/null || printf '')
+      box_row=$(input_box_text "$capture")
+      for marker in story-probe-alpha story-probe-bravo story-probe-charlie; do
+        case "$capture" in *"$marker"*) probe_seen=$((probe_seen + 1)) ;; esac
+      done
+      case "$box_row" in *story-probe-alpha*) probe_first_held=true ;; esac
+    fi
+  fi
+
+  # Tear down the scratch window (best-effort — never flips ok). The probe text
+  # is discarded unsubmitted along with it.
+  if [ -n "$window" ]; then
+    tmux kill-window -t "$window" 2>/dev/null || true
+  else
+    tmux kill-window -t "$pane" 2>/dev/null || true
+  fi
+
+  local display
+  if [ "$readiness_confirmed" = true ]; then
+    display="[story] doctor: readiness OK via the '$tier' tier — the installed Claude build is recognised."
+  else
+    display="[story] doctor: readiness NOT confirmed within the poll budget — the readiness marker may have drifted. See pane_tail."
+  fi
+  if [ "$probe_ran" = true ]; then
+    if [ "$probe_first_held" = true ] && [ "$probe_seen" -eq "$probe_total" ]; then
+      display="$display Multi-line paste probe: OK — all $probe_total lines held as one un-submitted block."
+    else
+      display="$display Multi-line paste probe: SUSPECT (first-line-held=$probe_first_held, $probe_seen/$probe_total lines seen) — bracketed paste may not be landing."
+    fi
+  fi
+  display="$display $integrity_summary"
+
+  jq -n \
+    --argjson ready "$readiness_confirmed" --arg tier "$tier" \
+    --arg tail "$tail_evidence" --arg display "$display" \
+    --argjson probe_ran "$probe_ran" --argjson probe_first "$probe_first_held" \
+    --argjson probe_seen "$probe_seen" --argjson probe_total "$probe_total" \
+    --argjson integrity_ok "$_INTEGRITY_OK" --arg integrity "$integrity_summary" '
+    {
+      ok: true,
+      readiness_confirmed: $ready,
+      matched_tier: $tier,
+      project_integrity: { ok: $integrity_ok, summary: $integrity }
+    }
+    + (if $probe_ran then {multiline_probe: {first_line_held: $probe_first, lines_seen: $probe_seen, lines_total: $probe_total}} else {} end)
+    + (if $tail == "" then {} else {pane_tail: $tail} end)
+    + {display: $display}'
+}
+
 # ---- subcommand: complete ---------------------------------------------------
 # FORKED from mikeydotio/agentics' plugins/storywork/bin/story.sh
 # (cmd_complete / _story_worktree_status, as of 2026-07-25, agentics plugin
@@ -986,5 +1186,7 @@ case "${1:-}" in
   view)     shift; cmd_view "$@" ;;
   list)     shift; cmd_list "$@" ;;
   create)   shift; cmd_create "$@" ;;
-  *)        fail "usage: story.sh <list | view <story-id> | dispatch <story-id> | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id>>" ;;
+  doctor)   shift; cmd_doctor "$@" ;;
+  capture)  shift; cmd_capture "$@" ;;
+  *)        fail "usage: story.sh <list | view <story-id> | dispatch <story-id> | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | doctor | capture <story-id>>" ;;
 esac
