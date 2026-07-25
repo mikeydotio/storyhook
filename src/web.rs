@@ -1972,10 +1972,15 @@ pub fn handle_list() -> Result<String, AppError> {
 fn build_api_json(root: &Path) -> Result<String, AppError> {
     let data = build_report_data(root)?;
 
-    // Build a JSON response that includes is_ready and is_blocked per story
+    // Build a JSON response that includes is_ready and is_blocked per story.
+    // Soft-deleted stories are excluded here rather than in `build_report_data`
+    // — `story report`/`story list` intentionally still surface them (marked
+    // deleted), but the dashboard has no such treatment and would otherwise
+    // show them as live cards in whichever column matches their last state.
     let stories_json: Vec<serde_json::Value> = data
         .stories
         .iter()
+        .filter(|view| !view.story.deleted)
         .map(|view| {
             let mut val = serde_json::to_value(view).unwrap_or(serde_json::Value::Null);
             if let serde_json::Value::Object(ref mut map) = val {
