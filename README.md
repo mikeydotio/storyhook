@@ -107,6 +107,33 @@ run `/story-install` and the plugin will install and verify the CLI for you.
 > After installing the plugin (either route), start a new Claude Code session so the
 > `/story` and `/story-*` commands load.
 
+#### The `/story` lifecycle verbs
+
+`/story` covers a story end to end. The verbs below do deterministic work in
+`plugin/claude-code/bin/story.sh`; the rest delegate to the individual
+`/story-*` skills unchanged.
+
+| Command | What it does |
+|---|---|
+| `/story` | Lists ready stories and asks which to pick up |
+| `/story <id>` | Shows the story, then offers to start work on it |
+| `/story new <description>` | Interrogates you, drafts the story, files it after you confirm |
+| `/story view <id>` | Prints the story and its comments, then stops |
+| `/story do <id>` | Claims a **ready** story and dispatches it to a fresh plan-mode Claude session in a new tmux window rooted in a per-story git worktree |
+| `/story complete <id>` | Closes the story and reclaims its worktree and merged branch, after showing you a plan and asking |
+| `/story capture <id>` | Dumps the recent output of a dispatched session's window (read-only) |
+| `/story doctor` | Checks project data integrity, and whether this Claude build's readiness and paste behavior is still recognised |
+
+`do`, `capture`, and `doctor` need tmux. `do` refuses a story that isn't ready —
+closed, blocked, awaiting, obviated, or already in progress — and names the
+reason rather than dispatching it.
+
+`complete` is conservative by design. It never deletes an unmerged branch, never
+removes a dirty, locked, or current worktree, and never touches `main` or the
+default branch; anything preserved is reported and explained. Merged-ness is
+judged against `origin/<default>` (freshened first) as well as your local
+branch, so a repo whose local `main` lags still cleans up correctly.
+
 ## Uninstall
 
 If installed via the install script or manual download:
