@@ -1,0 +1,2 @@
+{"kind":"StoryCreated","at":"2026-07-24T03:03:27Z","title":"Set the default state to \"todo\" and the default item type to \"story\" for new stories web UI.","state":"todo"}
+{"kind":"StoryTypeSet","at":"2026-07-24T03:03:27Z","story_type":"story"}

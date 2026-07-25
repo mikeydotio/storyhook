@@ -1,0 +1,2 @@
+{"kind":"StoryCreated","at":"2026-07-24T02:58:59Z","title":"Replace bold project title in top-left corner with the project selector-dropdown. The project-selector dropdown should always currently show the current project, and then treat clicking on another project as the primary action to switch to another project.","state":"todo"}
+{"kind":"StoryTypeSet","at":"2026-07-24T02:58:59Z","story_type":"story"}
