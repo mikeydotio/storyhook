@@ -17,4 +17,12 @@ assert_contains "$(jqf "$out" .display)" "alphanumeric" "dispatch with invalid i
 out=$(bash "$SCRIPT" bogus-subcommand 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "unknown subcommand: ok:false"
 
+# The usage string is the only discovery surface a caller has when it guesses
+# wrong, so it must name every verb the router actually accepts. Pins the two
+# from drifting apart as verbs are added.
+usage=$(jqf "$(bash "$SCRIPT" bogus-subcommand 2>&1)" .display)
+for verb in list view dispatch create complete doctor capture; do
+  assert_contains "$usage" "$verb" "usage: names the \`$verb\` verb"
+done
+
 finish
