@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# `story.sh doctor` and `story.sh capture` — the two diagnostic verbs.
+#
+# doctor deviates from /issue's: the story CLI has its OWN `story doctor`
+# (project data integrity), so this verb runs BOTH that and the tmux
+# readiness probe. The integrity half is the tricky one -- `story doctor`
+# exits 5 with an error whenever it finds anything, and emits its `.issues[]`
+# array only when that array is EMPTY, so a finding must read as a finding and
+# never as a failure of the probe itself.
+source "$(dirname "$0")/lib.sh"
+
+export PATH="$TESTS_DIR/fakes:$PATH"
+export FAKE_TMUX_STATE
+FAKE_TMUX_STATE=$(mktemp -d /tmp/story-test-tmux.XXXXXX)
+_TMP_REPOS+=("$FAKE_TMUX_STATE")
+
+repo=$(mk_story_repo)
+id=$(new_story "$repo" "Dispatched story")
+w=$(wname_for "$repo" "$id")
+
+# --- capture: dry run names the window and runs nothing ---
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" capture "$id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "capture dry: ok"
+assert_eq "$(jqf "$out" .window_name)" "$w" "capture dry: window name matches dispatch's"
+assert_contains "$(jqf "$out" '.commands|join(" ")')" "capture-pane" "capture dry: previews the read"
+
+# --- capture: no such window ---
+out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_PANES="" bash "$SCRIPT" capture "$id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "capture: no live window is ok:false"
+assert_contains "$(jqf "$out" .display)" "/story do $id" "capture: points at the dispatch verb"
+
+# --- capture: a live window is read back ---
+# FAKE_TMUX_PANES lines are "name<TAB>active<TAB>pane", matching the real
+# `list-panes -a -F '#{window_name}\t#{pane_active}\t#{pane_id}'`.
+out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 \
+       FAKE_TMUX_PANES="$(printf 'other\t1\t%%3\n%s\t1\t%%7' "$w")" \
+       FAKE_TMUX_TRANSCRIPT="hello from the session" \
+       bash "$SCRIPT" capture "$id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "capture: ok"
+assert_eq "$(jqf "$out" .pane)" "%7" "capture: resolves the pane of the named window"
+assert_contains "$(jqf "$out" .transcript)" "hello from the session" "capture: returns the transcript"
+assert_contains "$(jqf "$out" .display)" "hello from the session" "capture: display carries it"
+
+# --- capture: preconditions and arg validation ---
+out=$(cd "$repo" && env -u TMUX -u TMUX_PANE bash "$SCRIPT" capture "$id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "capture: refuses outside tmux"
+assert_contains "$(jqf "$out" .display)" "tmux" "capture: says why"
+out=$(cd "$repo" && bash "$SCRIPT" capture 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "capture: missing id is ok:false"
+out=$(cd "$repo" && bash "$SCRIPT" capture "bad id!" 2>&1)
+assert_contains "$(jqf "$out" .display)" "alphanumeric" "capture: invalid id rejected"
+
+# --- doctor: dry run previews BOTH halves ---
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" doctor 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "doctor dry: ok"
+assert_contains "$(jqf "$out" '.commands|join(" ")')" "story doctor" "doctor dry: previews the integrity check"
+assert_contains "$(jqf "$out" '.commands|join(" ")')" "new-window" "doctor dry: previews the readiness probe"
+assert_contains "$(jqf "$out" '.commands|join(" ")')" "paste-buffer -p" \
+  "doctor dry: probes via bracketed paste, the delivery path dispatch actually uses"
+
+# --- doctor: a healthy project reports integrity OK ---
+out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "doctor: ok"
+assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "doctor: readiness confirmed via the fake TUI"
+assert_eq "$(jqf "$out" .matched_tier)" "marker" "doctor: reports which tier matched"
+assert_eq "$(jqf "$out" .project_integrity.ok)" "true" "doctor: healthy project integrity"
+assert_contains "$(jqf "$out" .display)" "project integrity: OK" "doctor: display carries both halves"
+
+# --- doctor: an integrity FINDING is a finding, not a failed probe ---
+# A dangling blocked-by relation is exactly what `story doctor` flags. Write
+# the broken relation straight into the event log: the CLI itself refuses to
+# create one, which is the whole reason doctor exists.
+broken=$(new_story "$repo" "Has a dangling blocker")
+printf '{"kind":"StoryRelationshipAdded","at":"2026-01-01T00:00:00Z","relation":"blocked-by","other_id":"TST-9999"}\n' \
+  >>"$repo/.storyhook/open/stories/$broken.jsonl"
+# Fixture sanity: the CLI must really be unhappy, or the assertions below pass
+# vacuously against a healthy project.
+rc=0
+(cd "$repo" && story doctor --json >/dev/null 2>&1) || rc=$?
+assert_eq "$rc" "5" "fixture sanity: \`story doctor\` exits 5 on a finding"
+
+out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
+assert_eq "$(jqf "$out" .ok)" "true" "doctor: a finding does NOT flip ok:false"
+assert_eq "$(jqf "$out" .project_integrity.ok)" "false" "doctor: integrity reported as not-ok"
+assert_contains "$(jqf "$out" .project_integrity.summary)" "TST-9999" "doctor: summary names the finding"
+assert_eq "$(jqf "$out" .readiness_confirmed)" "true" \
+  "doctor: the readiness probe still ran despite the integrity finding"
+
+# --- doctor: preconditions and arg validation ---
+out=$(cd "$repo" && env -u TMUX -u TMUX_PANE bash "$SCRIPT" doctor 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "doctor: refuses outside tmux"
+out=$(cd "$repo" && bash "$SCRIPT" doctor extra 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "doctor: takes no arguments"
+out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_DOCTOR_LAUNCH_CMD=definitely-not-a-real-binary \
+       bash "$SCRIPT" doctor 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "doctor: missing launch binary is ok:false"
+
+finish

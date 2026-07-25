@@ -61,6 +61,26 @@ new_story() {
   (cd "$repo" && story new "$title" --json 2>/dev/null | jq -r '.story.story.id')
 }
 
+# wname_for <repo-dir> <id> — the window/worktree/branch name story.sh
+# derives for <id>. Mirrors session.sh's repo_prefix + resolve_wname rather
+# than hard-coding the value, so a change to either is caught here instead of
+# silently desynchronising every complete/capture fixture.
+wname_for() {
+  local base prefix
+  base="$(basename "$1")"
+  prefix="$(printf '%s' "$base" | tr -cd '[:alnum:]' | cut -c1-3 | tr '[:upper:]' '[:lower:]')"
+  printf '%s-%s' "$prefix" "$2"
+}
+
+# mk_dispatched <repo-dir> <id> — create the worktree + branch exactly as
+# `story.sh dispatch` would, without needing tmux. Echoes the wname.
+mk_dispatched() {
+  local repo="$1" id="$2" w
+  w="$(wname_for "$repo" "$id")"
+  (cd "$repo" && git worktree add -q --no-track -b "worktree-$w" ".claude/worktrees/$w" HEAD) >/dev/null 2>&1
+  printf '%s' "$w"
+}
+
 _FAILED=0
 fail_test() {
   printf 'FAIL: %s\n' "$1" >&2
