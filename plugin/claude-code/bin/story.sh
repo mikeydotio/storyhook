@@ -128,9 +128,34 @@ DRY_RUN="${STORY_DRY_RUN:-}"
 # above) — this is purely about the worktree's base commit.
 REQUIRE_FRESH_BASE="${STORY_REQUIRE_FRESH_BASE:-}"
 
+# Project root every `story` call is anchored to. Set once, from repo_root(),
+# before the first story_cli use. Declared here so `set -u` is satisfied even
+# on paths that fail before it is assigned.
+PROJECT_DIR=""
+
 require_story() {
   command -v "$STORY" >/dev/null 2>&1 \
     || fail "story CLI not found — build/install it from mikeydotio/storyhook (see story --help)."
+}
+
+# story_cli <args...> — run the story CLI anchored at $PROJECT_DIR (SH-46).
+#
+# The CLI has no --repo/-C/--cwd flag and ensure_project() does NOT walk up
+# ancestors: the project root is always exactly env::current_dir(). Calling
+# `story` in the caller's CWD therefore breaks two ways.
+#
+#   1. From a plain subdirectory it just fails (exit 3, "not initialized").
+#   2. From inside a dispatched worktree it does something worse than fail --
+#      it silently succeeds against the WRONG tracker. `.storyhook/` is
+#      version-controlled, so every worktree carries its own independent copy.
+#      repo_root() already anchors worktree CREATION to the main repo; without
+#      this wrapper the ready-gate and CAS claim would be evaluated against a
+#      different checkout than the one the worktree is made in.
+#
+# Runs in a subshell so the caller's CWD is never mutated (several later steps
+# -- gitignore hygiene, `git worktree add` -- use paths relative to it).
+story_cli() {
+  ( CDPATH= cd -- "$PROJECT_DIR" && "$STORY" "$@" )
 }
 
 # valid_story_id <id> — a story id is interpolated verbatim into worktree
@@ -171,7 +196,7 @@ repo_root() {
 claim_rollback_note() {
   local id="$1" pre_state="$2"
   local rb_json rb_result
-  rb_json=$("$STORY" move "$id" "$pre_state" --if-state in-progress --json 2>/dev/null) || true
+  rb_json=$(story_cli move "$id" "$pre_state" --if-state in-progress --json 2>/dev/null) || true
   rb_result=$(printf '%s' "$rb_json" | jq -r '.result // ""' 2>/dev/null || printf '')
   if [ "$rb_result" = "ok" ]; then
     printf ' Rolled the claim back to `%s`.' "$pre_state"
@@ -221,6 +246,9 @@ cmd_dispatch() {
   # CWD-relative (see that function's header).
   local dir
   dir=$(repo_root) || fail "not inside a git repository."
+  # Anchor every subsequent `story` call to the project root (SH-46) — see
+  # story_cli's header for why the caller's CWD is not safe to inherit.
+  PROJECT_DIR="$dir"
 
   # Step 3: story CLI present.
   require_story
@@ -229,7 +257,7 @@ cmd_dispatch() {
   # (issue.sh's own asymmetry: reads always run for real, only writes are
   # symbolic under dry-run).
   local show_json result title state
-  show_json=$("$STORY" show "$id" --json 2>/dev/null) || true
+  show_json=$(story_cli show "$id" --json 2>/dev/null) || true
   result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
   if [ "$result" != "ok" ]; then
     # `story show`'s own .error already reads "story `<id>` not found" on a
@@ -252,7 +280,7 @@ cmd_dispatch() {
   # ask. Ground-truth membership check against the CLI's own `is_ready()`,
   # via the exact command every interactive skill already relies on.
   local ready_json is_ready_flag
-  ready_json=$("$STORY" list --ready --json 2>/dev/null) || ready_json='{"stories":[]}'
+  ready_json=$(story_cli list --ready --json 2>/dev/null) || ready_json='{"stories":[]}'
   is_ready_flag=$(printf '%s' "$ready_json" | jq --arg id "$id" '([.stories[]?.story.id // empty] | index($id)) != null' 2>/dev/null || printf 'false')
   if [ "$is_ready_flag" != "true" ]; then
     local reason
@@ -266,7 +294,7 @@ cmd_dispatch() {
 
   if [ -z "$DRY_RUN" ]; then
     local move_json move_result
-    move_json=$("$STORY" move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
+    move_json=$(story_cli move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
     move_result=$(printf '%s' "$move_json" | jq -r '.result // ""' 2>/dev/null || printf '')
     case "$move_result" in
       ok)
