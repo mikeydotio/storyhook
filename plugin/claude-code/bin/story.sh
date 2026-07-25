@@ -123,6 +123,10 @@ PASTE_SETTLE_DELAY="${STORY_PASTE_SETTLE_DELAY:-0.2}"
 READY_ACCEPT_PATTERN="${STORY_READY_ACCEPT_PATTERN:-esc to interrupt|Thinking|Crunching|tokens|to interrupt}"
 CAPTURE_LINES="${STORY_CAPTURE_LINES:-200}"
 DRY_RUN="${STORY_DRY_RUN:-}"
+# State `complete` closes a story into. Empty means "resolve it from
+# .storyhook/states.toml" (the first CLOSED-superstate entry) — see
+# story_closed_state.
+DONE_STATE="${STORY_DONE_STATE:-}"
 # Escalate a non-fresh base (CACHED/HEAD-FALLBACK — see Step 6 below) from a
 # warning to a hard ok:false. Unrelated to story readiness (see deviation #3
 # above) — this is purely about the worktree's base commit.
@@ -515,8 +519,294 @@ cmd_dispatch() {
     + {display: $display}'
 }
 
+# ---- subcommand: complete ---------------------------------------------------
+# FORKED from mikeydotio/agentics' plugins/storywork/bin/story.sh
+# (cmd_complete / _story_worktree_status, as of 2026-07-25, agentics plugin
+# `storywork` v2.36.0), with two deliberate deviations:
+#
+#   1. SPLIT INTO plan/execute. storywork exposes a single `complete <id>`
+#      because its caller (conductor's daemon) needs no confirmation step.
+#      A human-facing verb does: `plan` is a read-only preview the skill
+#      shows before asking, `execute` acts. This mirrors issue.sh's own
+#      `complete <plan|execute> <n>` split.
+#   2. IT CLOSES THE STORY. storywork deliberately never touches story state
+#      (conductor performs its own --if-state-guarded transition). But
+#      `/issue complete` closes the issue, and parity is the ask here, so
+#      `execute` moves the story into a CLOSED-superstate state. --no-close
+#      and --no-clean give back each half independently, exactly as
+#      issue.sh's do.
+#
+# The scan stays storywork's purpose-built SINGLE-TARGET lookup rather than a
+# port of issue.sh's collect_targets: collect_targets also discovers the head
+# branch of every merged PR that closed the issue, and storyhook has no such
+# linkage — the worktree directory name is the sole story<->branch tie.
+
+# story_closed_state — the slug `complete` moves a story into: the first
+# CLOSED-superstate entry in .storyhook/states.toml, or $STORY_DONE_STATE.
+# Not hard-coded to "done": states.toml is user-editable (this very repo
+# defines five states, not the three `story init` seeds), and the CLI has no
+# machine-readable "list states" verb to ask instead.
+story_closed_state() {
+  if [ -n "$DONE_STATE" ]; then printf '%s' "$DONE_STATE"; return 0; fi
+  local file="$PROJECT_DIR/.storyhook/states.toml"
+  [ -r "$file" ] || return 0
+  awk '
+    function val(s) { if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2); return "" }
+    /^[[:space:]]*\[\[states\]\]/ {
+      if (slug != "" && sup == "CLOSED") { print slug; found = 1; exit }
+      slug = ""; sup = ""; next
+    }
+    /^[[:space:]]*slug[[:space:]]*=/  { slug = val($0); next }
+    /^[[:space:]]*super[[:space:]]*=/ { sup  = val($0); next }
+    END { if (!found && slug != "" && sup == "CLOSED") print slug }
+  ' "$file"
+}
+
+# _story_worktree_status <path> — removable|current|locked|dirty|missing.
+#
+# `current` uses --show-toplevel ON PURPOSE (unlike repo_root elsewhere): the
+# question here is literally "is the caller standing inside the worktree it
+# is asking us to delete", which is a CWD-relative question. A locked
+# worktree is never removed and never unlocked — Claude Code's own worktree
+# feature locks the ones it creates, and reclaiming those is not this verb's
+# business.
+_story_worktree_status() {
+  local target="$1" cur locked
+  cur=$(git rev-parse --show-toplevel 2>/dev/null || printf '')
+  locked=$(git worktree list --porcelain 2>/dev/null | awk -v want="$target" '
+    function flush() { if (p == want) print (l ? "1" : "0") }
+    /^worktree / { flush(); p = substr($0, 10); l = 0 }
+    /^locked/    { l = 1 }
+    END          { flush() }')
+  [ -n "$locked" ] || { printf 'missing'; return 0; }
+  if [ "$target" = "$cur" ]; then printf 'current'; return 0; fi
+  if [ "$locked" = "1" ]; then printf 'locked'; return 0; fi
+  if [ -n "$(git -C "$target" status --porcelain 2>/dev/null)" ]; then printf 'dirty'; return 0; fi
+  printf 'removable'
+}
+
+# _complete_prepare <id> — shared by plan and execute. Resolves the story,
+# the target paths, and the classification of each, into caller-visible
+# globals. Freshens origin/<default> exactly ONCE here so both verbs judge
+# merged-ness against ground truth rather than a local <default> that a
+# worktree-driven repo may never pull (a read, not a mutation — it runs even
+# under dry-run, as issue.sh's cmd_complete_execute does).
+_complete_prepare() {
+  local id="$1"
+  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+
+  CMP_DIR=$(repo_root) || fail "not inside a git repository."
+  PROJECT_DIR="$CMP_DIR"
+  require_story
+
+  local show_json result
+  show_json=$(story_cli show "$id" --json 2>/dev/null) || true
+  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+  if [ "$result" != "ok" ]; then
+    fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
+  fi
+  CMP_TITLE=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
+  CMP_STATE=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+  CMP_SUPER=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
+  CMP_DONE_STATE=$(story_closed_state)
+
+  local repo_name wt_container
+  repo_name="$(basename "$CMP_DIR")"
+  CMP_WNAME=$(resolve_wname "$id" "$repo_name")
+  CMP_DEFAULT=$(default_branch)
+  freshen_base_ref "$CMP_DEFAULT"
+
+  wt_container="${WORKTREE_IGNORE_PATH%/}"
+  CMP_WT_PATH="$CMP_DIR/$wt_container/$CMP_WNAME"
+  CMP_WT_BRANCH="worktree-$CMP_WNAME"
+  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH")
+
+  # Branch classification. An un-comparable branch is NEVER treated as merged
+  # (branch_is_merged returns false when neither origin/<default> nor local
+  # <default> exists), so it is preserved rather than deleted.
+  if ! local_branch_exists "$CMP_WT_BRANCH"; then
+    CMP_BR_STATUS="missing"
+  elif is_protected_branch "$CMP_WT_BRANCH"; then
+    CMP_BR_STATUS="protected"
+  elif branch_is_merged "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
+    CMP_BR_STATUS="deletable"
+  else
+    CMP_BR_STATUS="unmerged"
+  fi
+
+  # Closing is an action only when the story is still open AND we resolved a
+  # state to close it into.
+  CMP_NEEDS_CLOSE=false
+  if [ "$CMP_SUPER" != "CLOSED" ] && [ -n "$CMP_DONE_STATE" ]; then
+    CMP_NEEDS_CLOSE=true
+  fi
+
+  CMP_ACTIONS=0
+  [ "$CMP_WT_STATUS" = "removable" ] && CMP_ACTIONS=$((CMP_ACTIONS + 1))
+  [ "$CMP_BR_STATUS" = "deletable" ] && CMP_ACTIONS=$((CMP_ACTIONS + 1))
+  [ "$CMP_NEEDS_CLOSE" = true ] && CMP_ACTIONS=$((CMP_ACTIONS + 1))
+  return 0
+}
+
+cmd_complete_plan() {
+  local id="${1:-}"
+  [ -n "$id" ] || fail "usage: story.sh complete plan <story-id>"
+  shift
+  [ "$#" -eq 0 ] || fail "usage: story.sh complete plan <story-id>"
+  _complete_prepare "$id"
+
+  jq -n \
+    --arg id "$id" --arg title "$CMP_TITLE" --arg state "$CMP_STATE" \
+    --arg super "$CMP_SUPER" --arg done_state "$CMP_DONE_STATE" \
+    --arg default "$CMP_DEFAULT" --arg wtpath "$CMP_WT_PATH" \
+    --arg wtstatus "$CMP_WT_STATUS" --arg branch "$CMP_WT_BRANCH" \
+    --arg brstatus "$CMP_BR_STATUS" --argjson close "$CMP_NEEDS_CLOSE" \
+    --argjson actions "$CMP_ACTIONS" '
+    {
+      ok: true, id: $id, title: $title, state: $state, superstate: $super,
+      default_branch: $default,
+      plan: {
+        close: (if $close then { to: $done_state } else null end),
+        worktree: { path: $wtpath, status: $wtstatus },
+        branch:   { name: $branch, status: $brstatus }
+      },
+      actions_count: $actions,
+      display: (
+        "[story] complete " + $id + " — plan (" + ($actions|tostring) + " action(s)):\n"
+        + "  story:    " + $state + " (" + $super + ")"
+          + (if $close then " -> would close as `" + $done_state + "`" else " -> already closed, nothing to do" end) + "\n"
+        + "  worktree: " + $wtpath + " [" + $wtstatus + "]"
+          + (if $wtstatus == "removable" then " -> would remove"
+             elif $wtstatus == "missing" then " -> nothing to remove"
+             else " -> PRESERVED" end) + "\n"
+        + "  branch:   " + $branch + " [" + $brstatus + "]"
+          + (if $brstatus == "deletable" then " -> would delete (merged into " + $default + ")"
+             elif $brstatus == "missing" then " -> nothing to delete"
+             elif $brstatus == "unmerged" then " -> PRESERVED (not merged into " + $default + ")"
+             else " -> PRESERVED (" + $brstatus + ")" end)
+      )
+    }'
+}
+
+cmd_complete_execute() {
+  local id="${1:-}"
+  [ -n "$id" ] || fail "usage: story.sh complete execute <story-id> [--no-close] [--no-clean]"
+  shift
+  local no_close="" no_clean=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-close) no_close=1; shift ;;
+      --no-clean) no_clean=1; shift ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh complete execute <story-id> [--no-close] [--no-clean]" ;;
+    esac
+  done
+  _complete_prepare "$id"
+
+  local -a removed_wt=() removed_bl=() failed=() skipped=() commands=()
+  local closed=false close_note=""
+
+  # Close FIRST, and best-effort: a close failure is reported as a note, never
+  # ok:false — the cleanup below is still worth doing and still succeeded.
+  if [ -n "$no_close" ]; then
+    skipped+=("close:$id(--no-close)")
+  elif [ "$CMP_NEEDS_CLOSE" != true ]; then
+    if [ -z "$CMP_DONE_STATE" ]; then
+      close_note=" Could not close: no CLOSED-superstate state is defined in .storyhook/states.toml."
+    fi
+  elif [ -n "$DRY_RUN" ]; then
+    commands+=("story move $id $CMP_DONE_STATE")
+    closed=true
+  else
+    local mv_json mv_result
+    mv_json=$(story_cli move "$id" "$CMP_DONE_STATE" --json 2>/dev/null) || true
+    mv_result=$(printf '%s' "$mv_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+    if [ "$mv_result" = "ok" ]; then
+      closed=true
+    else
+      close_note=" Could not close $id: $(printf '%s' "$mv_json" | jq -r '.error // "story move emitted no result"' 2>/dev/null)"
+    fi
+  fi
+
+  if [ -n "$no_clean" ]; then
+    skipped+=("cleanup:$CMP_WNAME(--no-clean)")
+  else
+    case "$CMP_WT_STATUS" in
+      removable)
+        if [ -n "$DRY_RUN" ]; then
+          commands+=("git worktree remove $CMP_WT_PATH" "git worktree prune")
+          removed_wt+=("$CMP_WT_PATH")
+        elif git worktree remove "$CMP_WT_PATH" >/dev/null 2>&1; then
+          # No --force: git itself refuses a dirty or current worktree, and
+          # that veto is a feature, not an obstacle to route around.
+          git worktree prune >/dev/null 2>&1 || true
+          removed_wt+=("$CMP_WT_PATH")
+        else
+          failed+=("worktree:$CMP_WT_PATH")
+        fi ;;
+      missing) : ;;  # already gone — not an error.
+      *) skipped+=("worktree:$CMP_WT_PATH($CMP_WT_STATUS)") ;;
+    esac
+
+    case "$CMP_BR_STATUS" in
+      deletable)
+        if [ -n "$DRY_RUN" ]; then
+          commands+=("git branch -d $CMP_WT_BRANCH")
+          removed_bl+=("$CMP_WT_BRANCH")
+        elif delete_merged_local_branch "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
+          removed_bl+=("$CMP_WT_BRANCH")
+        else
+          failed+=("branch:$CMP_WT_BRANCH(local)")
+        fi ;;
+      missing) : ;;
+      protected) failed+=("branch:$CMP_WT_BRANCH(protected)") ;;
+      *) skipped+=("branch:$CMP_WT_BRANCH($CMP_BR_STATUS)") ;;
+    esac
+  fi
+
+  local rwt rbl fail_json skip_json cmds_json='[]'
+  rwt=$(printf '%s\n' "${removed_wt[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+  rbl=$(printf '%s\n' "${removed_bl[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+  fail_json=$(printf '%s\n' "${failed[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+  skip_json=$(printf '%s\n' "${skipped[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+  [ -n "$DRY_RUN" ] && cmds_json=$(printf '%s\n' "${commands[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+
+  jq -n --arg id "$id" --argjson rwt "$rwt" --argjson rbl "$rbl" \
+        --argjson failed "$fail_json" --argjson skipped "$skip_json" \
+        --argjson cmds "$cmds_json" --argjson closed "$closed" \
+        --arg done_state "$CMP_DONE_STATE" --arg note "$close_note" \
+        --argjson dry "$([ -n "$DRY_RUN" ] && echo true || echo false)" '
+    {
+      ok: true, id: $id, closed: $closed,
+      removed: { worktrees: $rwt, branches: $rbl }
+    }
+    + (if $closed then {closed_as: $done_state} else {} end)
+    + (if $dry then {dry_run:true, commands:$cmds} else {} end)
+    + (if ($failed|length) > 0 then {failed:$failed} else {} end)
+    + (if ($skipped|length) > 0 then {skipped:$skipped} else {} end)
+    + { display: (
+        "[story] " + (if $dry then "DRY RUN for " else "" end) + "complete " + $id + ": "
+        + (if $closed then (if $dry then "would close as `" else "closed as `" end) + $done_state + "`, " else "" end)
+        + (if $dry then "would remove " else "removed " end) + ($rwt|length|tostring) + " worktree(s), "
+        + ($rbl|length|tostring) + " branch(es)."
+        + (if ($failed|length) > 0 then " Could not: " + ($failed|join(", ")) + "." else "" end)
+        + (if ($skipped|length) > 0 then " Preserved: " + ($skipped|join(", ")) + "." else "" end)
+        + $note
+      ) }'
+}
+
+cmd_complete() {
+  local sub="${1:-}"
+  shift 2>/dev/null || true
+  case "$sub" in
+    plan)    cmd_complete_plan "$@" ;;
+    execute) cmd_complete_execute "$@" ;;
+    *)       fail "usage: story.sh complete <plan|execute> <story-id>" ;;
+  esac
+}
+
 # ---- router -----------------------------------------------------------------
 case "${1:-}" in
   dispatch) shift; cmd_dispatch "$@" ;;
-  *)        fail "usage: story.sh dispatch <story-id>" ;;
+  complete) shift; cmd_complete "$@" ;;
+  *)        fail "usage: story.sh <dispatch <story-id> | complete <plan|execute> <story-id>>" ;;
 esac
