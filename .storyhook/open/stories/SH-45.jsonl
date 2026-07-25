@@ -2,3 +2,7 @@
 {"kind":"StoryTypeSet","at":"2026-07-25T18:42:24Z","story_type":"story"}
 {"kind":"StoryCommentAdded","at":"2026-07-25T19:13:46Z","text":"[git] 23da8ba: chore(storyhook): track SH-45"}
 {"kind":"StoryCommentAdded","at":"2026-07-25T19:14:41Z","text":"[git] 90703c4: chore(storyhook): sync SH-45 git-linked comment"}
+{"kind":"StoryStateChanged","at":"2026-07-25T20:38:07Z","state":"in-progress"}
+{"kind":"StoryRelationshipAdded","at":"2026-07-25T20:40:54Z","other_id":"SH-46","relation":"relates-to"}
+{"kind":"StoryRelationshipAdded","at":"2026-07-25T20:40:54Z","other_id":"SH-47","relation":"relates-to"}
+{"kind":"StoryRelationshipAdded","at":"2026-07-25T20:40:54Z","other_id":"SH-48","relation":"relates-to"}
