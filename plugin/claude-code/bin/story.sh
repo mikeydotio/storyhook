@@ -123,14 +123,51 @@ PASTE_SETTLE_DELAY="${STORY_PASTE_SETTLE_DELAY:-0.2}"
 READY_ACCEPT_PATTERN="${STORY_READY_ACCEPT_PATTERN:-esc to interrupt|Thinking|Crunching|tokens|to interrupt}"
 CAPTURE_LINES="${STORY_CAPTURE_LINES:-200}"
 DRY_RUN="${STORY_DRY_RUN:-}"
+# State `complete` closes a story into. Empty means "resolve it from
+# .storyhook/states.toml" (the first CLOSED-superstate entry) — see
+# story_closed_state.
+DONE_STATE="${STORY_DONE_STATE:-}"
+# `doctor`'s throwaway readiness probe: what it launches, and the scratch
+# window it launches into. Kept separate from LAUNCH_TPL so probing a build
+# never depends on a dispatch-time override.
+DOCTOR_LAUNCH_TPL="${STORY_DOCTOR_LAUNCH_CMD:-claude --permission-mode plan --model opusplan}"
+DOCTOR_WINDOW_NAME="${STORY_DOCTOR_WINDOW_NAME:-story-doctor}"
+# Set by _project_integrity; read by cmd_doctor.
+_INTEGRITY_OK=true
+_INTEGRITY_SUMMARY=""
 # Escalate a non-fresh base (CACHED/HEAD-FALLBACK — see Step 6 below) from a
 # warning to a hard ok:false. Unrelated to story readiness (see deviation #3
 # above) — this is purely about the worktree's base commit.
 REQUIRE_FRESH_BASE="${STORY_REQUIRE_FRESH_BASE:-}"
 
+# Project root every `story` call is anchored to. Set once, from repo_root(),
+# before the first story_cli use. Declared here so `set -u` is satisfied even
+# on paths that fail before it is assigned.
+PROJECT_DIR=""
+
 require_story() {
   command -v "$STORY" >/dev/null 2>&1 \
     || fail "story CLI not found — build/install it from mikeydotio/storyhook (see story --help)."
+}
+
+# story_cli <args...> — run the story CLI anchored at $PROJECT_DIR (SH-46).
+#
+# The CLI has no --repo/-C/--cwd flag and ensure_project() does NOT walk up
+# ancestors: the project root is always exactly env::current_dir(). Calling
+# `story` in the caller's CWD therefore breaks two ways.
+#
+#   1. From a plain subdirectory it just fails (exit 3, "not initialized").
+#   2. From inside a dispatched worktree it does something worse than fail --
+#      it silently succeeds against the WRONG tracker. `.storyhook/` is
+#      version-controlled, so every worktree carries its own independent copy.
+#      repo_root() already anchors worktree CREATION to the main repo; without
+#      this wrapper the ready-gate and CAS claim would be evaluated against a
+#      different checkout than the one the worktree is made in.
+#
+# Runs in a subshell so the caller's CWD is never mutated (several later steps
+# -- gitignore hygiene, `git worktree add` -- use paths relative to it).
+story_cli() {
+  ( CDPATH= cd -- "$PROJECT_DIR" && "$STORY" "$@" )
 }
 
 # valid_story_id <id> — a story id is interpolated verbatim into worktree
@@ -171,7 +208,7 @@ repo_root() {
 claim_rollback_note() {
   local id="$1" pre_state="$2"
   local rb_json rb_result
-  rb_json=$("$STORY" move "$id" "$pre_state" --if-state in-progress --json 2>/dev/null) || true
+  rb_json=$(story_cli move "$id" "$pre_state" --if-state in-progress --json 2>/dev/null) || true
   rb_result=$(printf '%s' "$rb_json" | jq -r '.result // ""' 2>/dev/null || printf '')
   if [ "$rb_result" = "ok" ]; then
     printf ' Rolled the claim back to `%s`.' "$pre_state"
@@ -221,6 +258,9 @@ cmd_dispatch() {
   # CWD-relative (see that function's header).
   local dir
   dir=$(repo_root) || fail "not inside a git repository."
+  # Anchor every subsequent `story` call to the project root (SH-46) — see
+  # story_cli's header for why the caller's CWD is not safe to inherit.
+  PROJECT_DIR="$dir"
 
   # Step 3: story CLI present.
   require_story
@@ -229,7 +269,7 @@ cmd_dispatch() {
   # (issue.sh's own asymmetry: reads always run for real, only writes are
   # symbolic under dry-run).
   local show_json result title state
-  show_json=$("$STORY" show "$id" --json 2>/dev/null) || true
+  show_json=$(story_cli show "$id" --json 2>/dev/null) || true
   result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
   if [ "$result" != "ok" ]; then
     # `story show`'s own .error already reads "story `<id>` not found" on a
@@ -252,7 +292,7 @@ cmd_dispatch() {
   # ask. Ground-truth membership check against the CLI's own `is_ready()`,
   # via the exact command every interactive skill already relies on.
   local ready_json is_ready_flag
-  ready_json=$("$STORY" list --ready --json 2>/dev/null) || ready_json='{"stories":[]}'
+  ready_json=$(story_cli list --ready --json 2>/dev/null) || ready_json='{"stories":[]}'
   is_ready_flag=$(printf '%s' "$ready_json" | jq --arg id "$id" '([.stories[]?.story.id // empty] | index($id)) != null' 2>/dev/null || printf 'false')
   if [ "$is_ready_flag" != "true" ]; then
     local reason
@@ -266,7 +306,7 @@ cmd_dispatch() {
 
   if [ -z "$DRY_RUN" ]; then
     local move_json move_result
-    move_json=$("$STORY" move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
+    move_json=$(story_cli move "$id" in-progress --if-state "$state" --json 2>/dev/null) || true
     move_result=$(printf '%s' "$move_json" | jq -r '.result // ""' 2>/dev/null || printf '')
     case "$move_result" in
       ok)
@@ -487,8 +527,666 @@ cmd_dispatch() {
     + {display: $display}'
 }
 
+# ---- subcommands: view / list / create ---------------------------------------
+# The storyhook analogues of issue.sh's cmd_view / cmd_list / cmd_create.
+# Shapes are kept deliberately identical (`option{label,description}` on each
+# list row, `display` on every result) so the skill's List->Pick and
+# View + Offer flows are a direct port rather than a re-derivation.
+
+# project_root — the directory every `story` call is anchored to.
+#
+# Prefers repo_root() (the MAIN worktree) so all verbs agree on one tracker:
+# `.storyhook/` is version-controlled, so a dispatched worktree holds its own
+# copy, and it would be actively confusing for `/story view` to read a
+# different tracker than the one `/story do` and `/story complete` act on.
+# Falls back to walking up for the project marker so the read verbs still
+# work in a storyhook project that isn't a git repo at all.
+project_root() {
+  local d
+  if d=$(repo_root 2>/dev/null) && [ -n "$d" ]; then printf '%s' "$d"; return 0; fi
+  d=$(pwd -P)
+  while [ "$d" != "/" ] && [ -n "$d" ]; do
+    if [ -f "$d/.storyhook/project.toml" ]; then printf '%s' "$d"; return 0; fi
+    d=$(dirname "$d")
+  done
+  pwd -P
+}
+
+# story_active_state — the slug meaning "claimed / being worked": the state
+# carrying `role = "active"` in .storyhook/states.toml, else "in-progress".
+# Mirrors the convention story-work already follows.
+story_active_state() {
+  local file="$PROJECT_DIR/.storyhook/states.toml" found=""
+  if [ -r "$file" ]; then
+    found=$(awk '
+      function val(s) { if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2); return "" }
+      /^[[:space:]]*\[\[states\]\]/ { slug = ""; role = ""; next }
+      /^[[:space:]]*slug[[:space:]]*=/ { slug = val($0); next }
+      /^[[:space:]]*role[[:space:]]*=/ { role = val($0); if (role == "active" && slug != "") { print slug; exit } next }
+    ' "$file")
+  fi
+  printf '%s' "${found:-in-progress}"
+}
+
+cmd_view() {
+  local id="${1:-}"
+  [ -n "$id" ] || fail "usage: story.sh view <story-id>"
+  shift
+  [ "$#" -eq 0 ] || fail "usage: story.sh view <story-id>"
+  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+
+  PROJECT_DIR=$(project_root)
+  require_story
+
+  local show_json result title state super
+  show_json=$(story_cli show "$id" --json 2>/dev/null) || true
+  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+  if [ "$result" != "ok" ]; then
+    fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
+  fi
+  title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
+  state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+  super=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
+
+  # Human rendering via the CLI's own non-JSON output (it already includes
+  # comments, relationships and derived fields). Best-effort: metadata above
+  # already succeeded, so a rendering failure degrades to a one-liner rather
+  # than a hard fail.
+  local body
+  body=$(story_cli show "$id" 2>/dev/null || printf '')
+  [ -n "$body" ] || body="$id — $title [$state]"
+
+  jq -n --arg id "$id" --arg title "$title" --arg state "$state" \
+        --arg super "$super" --arg display "$body" '
+    {ok:true, id:$id, title:$title, state:$state, superstate:$super, display:$display}'
+}
+
+cmd_list() {
+  [ "$#" -eq 0 ] || fail "usage: story.sh list"
+  PROJECT_DIR=$(project_root)
+  require_story
+
+  # `story list --ready` is the ground truth the dispatch gate already uses.
+  # Two deliberate narrowings on top of it, both because is_ready() answers
+  # "is this workable", not "is this available to pick up":
+  #   - already-claimed stories are dropped (is_ready() returns true for an
+  #     in-progress story — the exact gap /story do's own guard exists for);
+  #   - parents are dropped, matching `story next`'s has_children filter,
+  #     since dispatching an epic is never what the user meant.
+  local ready_json active
+  active=$(story_active_state)
+  ready_json=$(story_cli list --ready --json 2>/dev/null) || ready_json='{"stories":[]}'
+
+  printf '%s' "$ready_json" | jq --arg active "$active" '
+    [ .stories[]?
+      | select(.story.state != $active)
+      | select([.story.relationships[]? | select(.relation == "parent-of")] | length == 0)
+    ] as $rows
+    | {
+        ok: true,
+        count: ($rows | length),
+        stories: [ $rows[] | {
+          id: .story.id,
+          title: .story.title,
+          state: .story.state,
+          priority: .story.priority,
+          option: {
+            label: .story.id,
+            description: (.story.title // "(no title)")
+          }
+        } ],
+        display: (
+          if ($rows | length) == 0
+          then "No ready stories to pick up."
+          else "[story] " + ($rows | length | tostring) + " ready story(ies):\n"
+               + ([ $rows[] | "  " + .story.id + " [" + (.story.priority // "none") + "] " + (.story.title // "(no title)") ] | join("\n"))
+          end
+        )
+      }'
+}
+
+cmd_create() {
+  local title="" desc="" desc_file="" stype="" priority="" labels=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --title)            title="${2:-}";      shift 2 || fail "--title needs a value." ;;
+      --description)      desc="${2:-}";       shift 2 || fail "--description needs a value." ;;
+      --description-file) desc_file="${2:-}";  shift 2 || fail "--description-file needs a value." ;;
+      --type)             stype="${2:-}";      shift 2 || fail "--type needs a value." ;;
+      --priority)         priority="${2:-}";   shift 2 || fail "--priority needs a value." ;;
+      --label|--labels)   labels="${2:-}";     shift 2 || fail "--label needs a value." ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--label <csv>]" ;;
+    esac
+  done
+  [ -n "$title" ] || fail "usage: story.sh create --title <t> [--description-file <p> | --description <t>] [--type <slug>] [--priority <level>] [--label <csv>]"
+
+  # A description reaches the CLI as ONE argv element. `story new` has no
+  # --description-file (unlike `gh issue create --body-file`), so the skill
+  # writes the drafted markdown to a file and this reads it back — argv is
+  # safe for arbitrary multi-line text, it is *shell quoting* that is not,
+  # and a file keeps the markdown from ever passing through a command string.
+  if [ -n "$desc_file" ]; then
+    [ -r "$desc_file" ] || fail "description file not readable: $desc_file"
+    desc=$(cat "$desc_file")
+  fi
+
+  PROJECT_DIR=$(project_root)
+  require_story
+
+  local -a args=(new "$title")
+  [ -n "$stype" ]    && args+=(--type "$stype")
+  [ -n "$priority" ] && args+=(--priority "$priority")
+  [ -n "$labels" ]   && args+=(--labels "$labels")
+  [ -n "$desc" ]     && args+=(--description "$desc")
+
+  if [ -n "$DRY_RUN" ]; then
+    jq -n --arg title "$title" --argjson cmds \
+      "$(printf '%s\n' "story ${args[*]:0:1} <title>${stype:+ --type $stype}${priority:+ --priority $priority}${labels:+ --labels $labels}${desc:+ --description <text>}" | jq -R -s 'split("\n")|map(select(length>0))')" '
+      {ok:true, dry_run:true, title:$title, commands:$cmds,
+       display:("[story] DRY RUN — would create a story titled: " + $title)}'
+    return 0
+  fi
+
+  local out result id
+  out=$(story_cli "${args[@]}" --json 2>/dev/null) || true
+  result=$(printf '%s' "$out" | jq -r '.result // ""' 2>/dev/null || printf '')
+  if [ "$result" != "ok" ]; then
+    # Deliberately NOT retried by the caller: a repeated create files a
+    # duplicate story. The skill is told to report and stop.
+    fail "failed to create the story: $(printf '%s' "$out" | jq -r '.error // "story new emitted no result"' 2>/dev/null)"
+  fi
+  id=$(printf '%s' "$out" | jq -r '.story.story.id // ""')
+
+  jq -n --arg id "$id" --arg title "$title" '
+    {ok:true, id:$id, title:$title,
+     display:("[story] created " + $id + " — " + $title)}'
+}
+
+# ---- subcommands: doctor / capture ------------------------------------------
+# FORKED from agentics' plugins/issue/bin/issue.sh (cmd_doctor / cmd_capture,
+# as of 2026-07-25, issue plugin v2.36.0).
+#
+# capture is a straight port: it exists to read a dispatched session's pane,
+# and pane_for_window/capture_pane_transcript were already vendored into
+# lib/session.sh for exactly this — until now they were the only functions in
+# the file with no caller.
+#
+# doctor deviates. `/issue doctor` is purely a readiness-tier drift probe, but
+# the story CLI ALSO has a `story doctor` (project data integrity), so a
+# `/story doctor` that ran only the tmux probe would surprise anyone who knows
+# the CLI. This runs both and reports them together.
+
+cmd_capture() {
+  if [ -z "$DRY_RUN" ]; then
+    [ -n "${TMUX:-}" ] || fail "story capture requires tmux — run Claude inside a tmux session."
+  fi
+  local id="${1:-}"
+  [ -n "$id" ] || fail "usage: story.sh capture <story-id>"
+  shift
+  [ "$#" -eq 0 ] || fail "usage: story.sh capture <story-id>"
+  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+
+  local dir wname
+  dir=$(repo_root) || fail "not inside a git repository."
+  wname=$(resolve_wname "$id" "$(basename "$dir")")
+
+  if [ -n "$DRY_RUN" ]; then
+    jq -n --arg wname "$wname" --arg lines "$CAPTURE_LINES" '
+      {
+        ok: true, dry_run: true, window_name: $wname,
+        commands: [ ("tmux capture-pane -p -t <pane-of " + $wname + "> -S -" + $lines) ],
+        display: ("[story] DRY RUN capture: would dump the last " + $lines
+                  + " rendered rows of the window " + $wname + ".")
+      }'
+    return 0
+  fi
+
+  local pane transcript
+  pane=$(pane_for_window "$wname")
+  [ -n "$pane" ] || fail "no live tmux window named \`$wname\` — dispatch it first with \`/story do $id\`."
+  transcript=$(capture_pane_transcript "$pane") \
+    || fail "failed to capture pane \`$pane\` (window \`$wname\`)."
+
+  jq -n --arg id "$id" --arg wname "$wname" --arg pane "$pane" --arg tx "$transcript" '
+    {
+      ok: true, id: $id, window_name: $wname, pane: $pane, transcript: $tx,
+      display: ("[story] capture " + $wname + " (" + $pane + ") — recent rendered rows:\n\n" + $tx)
+    }'
+}
+
+# _project_integrity — run the CLI's own `story doctor` tolerantly.
+#
+# It exits 5 with an AppError::Integrity whenever it finds ANYTHING, and emits
+# its `.issues[]` array only when that array is empty. So a non-zero exit here
+# is an ordinary finding, not a failure of this probe, and must never abort it.
+#
+# Sets _INTEGRITY_OK and _INTEGRITY_SUMMARY rather than echoing: a caller
+# capturing the summary with $(...) would run this in a subshell and silently
+# lose the flag, always reporting a healthy project.
+_project_integrity() {
+  local out
+  _INTEGRITY_OK=true
+  out=$(story_cli doctor --json 2>/dev/null) || true
+  case $(printf '%s' "$out" | jq -r '.result // "error"' 2>/dev/null || printf 'error') in
+    ok) _INTEGRITY_SUMMARY='project integrity: OK — `story doctor` found nothing.' ;;
+    *)
+      _INTEGRITY_OK=false
+      _INTEGRITY_SUMMARY="project integrity: $(printf '%s' "$out" \
+        | jq -r '.error // "story doctor reported findings"' 2>/dev/null | tr '\n' ';')"
+      ;;
+  esac
+}
+
+cmd_doctor() {
+  [ "$#" -eq 0 ] || fail "usage: story.sh doctor"
+
+  PROJECT_DIR=$(project_root)
+  require_story
+
+  if [ -z "$DRY_RUN" ]; then
+    [ -n "${TMUX:-}" ] || fail "story doctor requires tmux — run Claude inside a tmux session."
+    [ -n "${TMUX_PANE:-}" ] || fail "story doctor requires \$TMUX_PANE — run Claude inside a tmux pane."
+  fi
+
+  local doctor_bin="${DOCTOR_LAUNCH_TPL%% *}"
+  command -v "$doctor_bin" >/dev/null 2>&1 \
+    || fail "launch binary '$doctor_bin' not found on PATH (set STORY_DOCTOR_LAUNCH_CMD)."
+
+  if [ -n "$DRY_RUN" ]; then
+    jq -n --arg launch "$DOCTOR_LAUNCH_TPL" --arg wname "$DOCTOR_WINDOW_NAME" '
+      {
+        ok: true, dry_run: true, window_name: $wname,
+        commands: [
+          "story doctor --json",
+          ("tmux new-window -d -n " + $wname + " -P -F #{pane_id}"),
+          ("tmux send-keys -t <pane> -l " + $launch),
+          "tmux send-keys -t <pane> Enter",
+          "printf %s <multi-line probe> | tmux load-buffer -b story-doctor -",
+          "tmux paste-buffer -p -d -b story-doctor -t <pane>",
+          "tmux capture-pane -p -t <pane>",
+          "tmux kill-window -t <window>"
+        ],
+        display: ("[story] DRY RUN doctor: would run `story doctor` for project integrity, then spin a throwaway `"
+                  + $launch + "` in window " + $wname + ", check readiness, paste a multi-line probe "
+                  + "to verify bracketed-paste delivery, and tear it down.")
+      }'
+    return 0
+  fi
+
+  # Called plainly, NOT via $(...): it sets flags the report below reads, and a
+  # command substitution would run it in a subshell and lose them.
+  _project_integrity
+  local integrity_summary="$_INTEGRITY_SUMMARY"
+
+  local pane window
+  if ! pane=$(tmux new-window -d -n "$DOCTOR_WINDOW_NAME" -P -F '#{pane_id}' 2>/dev/null) || [ -z "$pane" ]; then
+    fail "failed to open a scratch tmux window for the readiness self-test."
+  fi
+  window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
+
+  paste_text "$pane" "$DOCTOR_LAUNCH_TPL" || true
+  tmux send-keys -t "$pane" Enter 2>/dev/null || true
+
+  local readiness_confirmed=false tier="none" tail_evidence
+  if wait_ready "$pane" "$DOCTOR_LAUNCH_TPL"; then
+    readiness_confirmed=true
+  fi
+  tier="$WAIT_READY_TIER"
+  tail_evidence=$(pane_tail "$pane")
+
+  # Live multi-line paste probe: paste a 3-line marker through the real
+  # bracketed-paste path WITHOUT submitting, then read the input box back.
+  # If delivery works, all three lines land as ONE block and the FIRST sits on
+  # the `❯` row; had it split at a newline, the first would have submitted and
+  # only the last would remain. Diagnostic only — never presses Enter.
+  local probe_ran=false probe_first_held=false probe_seen=0 probe_total=3
+  if [ "$readiness_confirmed" = true ]; then
+    local probe capture box_row marker
+    probe=$(printf 'story-probe-alpha\nstory-probe-bravo\nstory-probe-charlie')
+    if paste_prompt "$pane" "$probe" "story-doctor"; then
+      probe_ran=true
+      capture=$(tmux capture-pane -p -t "$pane" 2>/dev/null || printf '')
+      box_row=$(input_box_text "$capture")
+      for marker in story-probe-alpha story-probe-bravo story-probe-charlie; do
+        case "$capture" in *"$marker"*) probe_seen=$((probe_seen + 1)) ;; esac
+      done
+      case "$box_row" in *story-probe-alpha*) probe_first_held=true ;; esac
+    fi
+  fi
+
+  # Tear down the scratch window (best-effort — never flips ok). The probe text
+  # is discarded unsubmitted along with it.
+  if [ -n "$window" ]; then
+    tmux kill-window -t "$window" 2>/dev/null || true
+  else
+    tmux kill-window -t "$pane" 2>/dev/null || true
+  fi
+
+  local display
+  if [ "$readiness_confirmed" = true ]; then
+    display="[story] doctor: readiness OK via the '$tier' tier — the installed Claude build is recognised."
+  else
+    display="[story] doctor: readiness NOT confirmed within the poll budget — the readiness marker may have drifted. See pane_tail."
+  fi
+  if [ "$probe_ran" = true ]; then
+    if [ "$probe_first_held" = true ] && [ "$probe_seen" -eq "$probe_total" ]; then
+      display="$display Multi-line paste probe: OK — all $probe_total lines held as one un-submitted block."
+    else
+      display="$display Multi-line paste probe: SUSPECT (first-line-held=$probe_first_held, $probe_seen/$probe_total lines seen) — bracketed paste may not be landing."
+    fi
+  fi
+  display="$display $integrity_summary"
+
+  jq -n \
+    --argjson ready "$readiness_confirmed" --arg tier "$tier" \
+    --arg tail "$tail_evidence" --arg display "$display" \
+    --argjson probe_ran "$probe_ran" --argjson probe_first "$probe_first_held" \
+    --argjson probe_seen "$probe_seen" --argjson probe_total "$probe_total" \
+    --argjson integrity_ok "$_INTEGRITY_OK" --arg integrity "$integrity_summary" '
+    {
+      ok: true,
+      readiness_confirmed: $ready,
+      matched_tier: $tier,
+      project_integrity: { ok: $integrity_ok, summary: $integrity }
+    }
+    + (if $probe_ran then {multiline_probe: {first_line_held: $probe_first, lines_seen: $probe_seen, lines_total: $probe_total}} else {} end)
+    + (if $tail == "" then {} else {pane_tail: $tail} end)
+    + {display: $display}'
+}
+
+# ---- subcommand: complete ---------------------------------------------------
+# FORKED from mikeydotio/agentics' plugins/storywork/bin/story.sh
+# (cmd_complete / _story_worktree_status, as of 2026-07-25, agentics plugin
+# `storywork` v2.36.0), with two deliberate deviations:
+#
+#   1. SPLIT INTO plan/execute. storywork exposes a single `complete <id>`
+#      because its caller (conductor's daemon) needs no confirmation step.
+#      A human-facing verb does: `plan` is a read-only preview the skill
+#      shows before asking, `execute` acts. This mirrors issue.sh's own
+#      `complete <plan|execute> <n>` split.
+#   2. IT CLOSES THE STORY. storywork deliberately never touches story state
+#      (conductor performs its own --if-state-guarded transition). But
+#      `/issue complete` closes the issue, and parity is the ask here, so
+#      `execute` moves the story into a CLOSED-superstate state. --no-close
+#      and --no-clean give back each half independently, exactly as
+#      issue.sh's do.
+#
+# The scan stays storywork's purpose-built SINGLE-TARGET lookup rather than a
+# port of issue.sh's collect_targets: collect_targets also discovers the head
+# branch of every merged PR that closed the issue, and storyhook has no such
+# linkage — the worktree directory name is the sole story<->branch tie.
+
+# story_closed_state — the slug `complete` moves a story into: the first
+# CLOSED-superstate entry in .storyhook/states.toml, or $STORY_DONE_STATE.
+# Not hard-coded to "done": states.toml is user-editable (this very repo
+# defines five states, not the three `story init` seeds), and the CLI has no
+# machine-readable "list states" verb to ask instead.
+story_closed_state() {
+  if [ -n "$DONE_STATE" ]; then printf '%s' "$DONE_STATE"; return 0; fi
+  local file="$PROJECT_DIR/.storyhook/states.toml"
+  [ -r "$file" ] || return 0
+  awk '
+    function val(s) { if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2); return "" }
+    /^[[:space:]]*\[\[states\]\]/ {
+      if (slug != "" && sup == "CLOSED") { print slug; found = 1; exit }
+      slug = ""; sup = ""; next
+    }
+    /^[[:space:]]*slug[[:space:]]*=/  { slug = val($0); next }
+    /^[[:space:]]*super[[:space:]]*=/ { sup  = val($0); next }
+    END { if (!found && slug != "" && sup == "CLOSED") print slug }
+  ' "$file"
+}
+
+# _story_worktree_status <path> — removable|current|locked|dirty|missing.
+#
+# `current` uses --show-toplevel ON PURPOSE (unlike repo_root elsewhere): the
+# question here is literally "is the caller standing inside the worktree it
+# is asking us to delete", which is a CWD-relative question. A locked
+# worktree is never removed and never unlocked — Claude Code's own worktree
+# feature locks the ones it creates, and reclaiming those is not this verb's
+# business.
+_story_worktree_status() {
+  local target="$1" cur locked
+  cur=$(git rev-parse --show-toplevel 2>/dev/null || printf '')
+  locked=$(git worktree list --porcelain 2>/dev/null | awk -v want="$target" '
+    function flush() { if (p == want) print (l ? "1" : "0") }
+    /^worktree / { flush(); p = substr($0, 10); l = 0 }
+    /^locked/    { l = 1 }
+    END          { flush() }')
+  [ -n "$locked" ] || { printf 'missing'; return 0; }
+  if [ "$target" = "$cur" ]; then printf 'current'; return 0; fi
+  if [ "$locked" = "1" ]; then printf 'locked'; return 0; fi
+  if [ -n "$(git -C "$target" status --porcelain 2>/dev/null)" ]; then printf 'dirty'; return 0; fi
+  printf 'removable'
+}
+
+# _complete_prepare <id> — shared by plan and execute. Resolves the story,
+# the target paths, and the classification of each, into caller-visible
+# globals. Freshens origin/<default> exactly ONCE here so both verbs judge
+# merged-ness against ground truth rather than a local <default> that a
+# worktree-driven repo may never pull (a read, not a mutation — it runs even
+# under dry-run, as issue.sh's cmd_complete_execute does).
+_complete_prepare() {
+  local id="$1"
+  valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
+
+  CMP_DIR=$(repo_root) || fail "not inside a git repository."
+  PROJECT_DIR="$CMP_DIR"
+  require_story
+
+  local show_json result
+  show_json=$(story_cli show "$id" --json 2>/dev/null) || true
+  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+  if [ "$result" != "ok" ]; then
+    fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
+  fi
+  CMP_TITLE=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
+  CMP_STATE=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
+  CMP_SUPER=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
+  CMP_DONE_STATE=$(story_closed_state)
+
+  local repo_name wt_container
+  repo_name="$(basename "$CMP_DIR")"
+  CMP_WNAME=$(resolve_wname "$id" "$repo_name")
+  CMP_DEFAULT=$(default_branch)
+  freshen_base_ref "$CMP_DEFAULT"
+
+  wt_container="${WORKTREE_IGNORE_PATH%/}"
+  CMP_WT_PATH="$CMP_DIR/$wt_container/$CMP_WNAME"
+  CMP_WT_BRANCH="worktree-$CMP_WNAME"
+  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH")
+
+  # Branch classification. An un-comparable branch is NEVER treated as merged
+  # (branch_is_merged returns false when neither origin/<default> nor local
+  # <default> exists), so it is preserved rather than deleted.
+  if ! local_branch_exists "$CMP_WT_BRANCH"; then
+    CMP_BR_STATUS="missing"
+  elif is_protected_branch "$CMP_WT_BRANCH"; then
+    CMP_BR_STATUS="protected"
+  elif branch_is_merged "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
+    CMP_BR_STATUS="deletable"
+  else
+    CMP_BR_STATUS="unmerged"
+  fi
+
+  # Closing is an action only when the story is still open AND we resolved a
+  # state to close it into.
+  CMP_NEEDS_CLOSE=false
+  if [ "$CMP_SUPER" != "CLOSED" ] && [ -n "$CMP_DONE_STATE" ]; then
+    CMP_NEEDS_CLOSE=true
+  fi
+
+  CMP_ACTIONS=0
+  [ "$CMP_WT_STATUS" = "removable" ] && CMP_ACTIONS=$((CMP_ACTIONS + 1))
+  [ "$CMP_BR_STATUS" = "deletable" ] && CMP_ACTIONS=$((CMP_ACTIONS + 1))
+  [ "$CMP_NEEDS_CLOSE" = true ] && CMP_ACTIONS=$((CMP_ACTIONS + 1))
+  return 0
+}
+
+cmd_complete_plan() {
+  local id="${1:-}"
+  [ -n "$id" ] || fail "usage: story.sh complete plan <story-id>"
+  shift
+  [ "$#" -eq 0 ] || fail "usage: story.sh complete plan <story-id>"
+  _complete_prepare "$id"
+
+  jq -n \
+    --arg id "$id" --arg title "$CMP_TITLE" --arg state "$CMP_STATE" \
+    --arg super "$CMP_SUPER" --arg done_state "$CMP_DONE_STATE" \
+    --arg default "$CMP_DEFAULT" --arg wtpath "$CMP_WT_PATH" \
+    --arg wtstatus "$CMP_WT_STATUS" --arg branch "$CMP_WT_BRANCH" \
+    --arg brstatus "$CMP_BR_STATUS" --argjson close "$CMP_NEEDS_CLOSE" \
+    --argjson actions "$CMP_ACTIONS" '
+    {
+      ok: true, id: $id, title: $title, state: $state, superstate: $super,
+      default_branch: $default,
+      plan: {
+        close: (if $close then { to: $done_state } else null end),
+        worktree: { path: $wtpath, status: $wtstatus },
+        branch:   { name: $branch, status: $brstatus }
+      },
+      actions_count: $actions,
+      display: (
+        "[story] complete " + $id + " — plan (" + ($actions|tostring) + " action(s)):\n"
+        + "  story:    " + $state + " (" + $super + ")"
+          + (if $close then " -> would close as `" + $done_state + "`" else " -> already closed, nothing to do" end) + "\n"
+        + "  worktree: " + $wtpath + " [" + $wtstatus + "]"
+          + (if $wtstatus == "removable" then " -> would remove"
+             elif $wtstatus == "missing" then " -> nothing to remove"
+             else " -> PRESERVED" end) + "\n"
+        + "  branch:   " + $branch + " [" + $brstatus + "]"
+          + (if $brstatus == "deletable" then " -> would delete (merged into " + $default + ")"
+             elif $brstatus == "missing" then " -> nothing to delete"
+             elif $brstatus == "unmerged" then " -> PRESERVED (not merged into " + $default + ")"
+             else " -> PRESERVED (" + $brstatus + ")" end)
+      )
+    }'
+}
+
+cmd_complete_execute() {
+  local id="${1:-}"
+  [ -n "$id" ] || fail "usage: story.sh complete execute <story-id> [--no-close] [--no-clean]"
+  shift
+  local no_close="" no_clean=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-close) no_close=1; shift ;;
+      --no-clean) no_clean=1; shift ;;
+      *) fail "unknown argument \`$1\` — usage: story.sh complete execute <story-id> [--no-close] [--no-clean]" ;;
+    esac
+  done
+  _complete_prepare "$id"
+
+  local -a removed_wt=() removed_bl=() failed=() skipped=() commands=()
+  local closed=false close_note=""
+
+  # Close FIRST, and best-effort: a close failure is reported as a note, never
+  # ok:false — the cleanup below is still worth doing and still succeeded.
+  if [ -n "$no_close" ]; then
+    skipped+=("close:$id(--no-close)")
+  elif [ "$CMP_NEEDS_CLOSE" != true ]; then
+    if [ -z "$CMP_DONE_STATE" ]; then
+      close_note=" Could not close: no CLOSED-superstate state is defined in .storyhook/states.toml."
+    fi
+  elif [ -n "$DRY_RUN" ]; then
+    commands+=("story move $id $CMP_DONE_STATE")
+    closed=true
+  else
+    local mv_json mv_result
+    mv_json=$(story_cli move "$id" "$CMP_DONE_STATE" --json 2>/dev/null) || true
+    mv_result=$(printf '%s' "$mv_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+    if [ "$mv_result" = "ok" ]; then
+      closed=true
+    else
+      close_note=" Could not close $id: $(printf '%s' "$mv_json" | jq -r '.error // "story move emitted no result"' 2>/dev/null)"
+    fi
+  fi
+
+  if [ -n "$no_clean" ]; then
+    skipped+=("cleanup:$CMP_WNAME(--no-clean)")
+  else
+    case "$CMP_WT_STATUS" in
+      removable)
+        if [ -n "$DRY_RUN" ]; then
+          commands+=("git worktree remove $CMP_WT_PATH" "git worktree prune")
+          removed_wt+=("$CMP_WT_PATH")
+        elif git worktree remove "$CMP_WT_PATH" >/dev/null 2>&1; then
+          # No --force: git itself refuses a dirty or current worktree, and
+          # that veto is a feature, not an obstacle to route around.
+          git worktree prune >/dev/null 2>&1 || true
+          removed_wt+=("$CMP_WT_PATH")
+        else
+          failed+=("worktree:$CMP_WT_PATH")
+        fi ;;
+      missing) : ;;  # already gone — not an error.
+      *) skipped+=("worktree:$CMP_WT_PATH($CMP_WT_STATUS)") ;;
+    esac
+
+    case "$CMP_BR_STATUS" in
+      deletable)
+        if [ -n "$DRY_RUN" ]; then
+          commands+=("git branch -d $CMP_WT_BRANCH")
+          removed_bl+=("$CMP_WT_BRANCH")
+        elif delete_merged_local_branch "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
+          removed_bl+=("$CMP_WT_BRANCH")
+        else
+          failed+=("branch:$CMP_WT_BRANCH(local)")
+        fi ;;
+      missing) : ;;
+      protected) failed+=("branch:$CMP_WT_BRANCH(protected)") ;;
+      *) skipped+=("branch:$CMP_WT_BRANCH($CMP_BR_STATUS)") ;;
+    esac
+  fi
+
+  local rwt rbl fail_json skip_json cmds_json='[]'
+  rwt=$(printf '%s\n' "${removed_wt[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+  rbl=$(printf '%s\n' "${removed_bl[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+  fail_json=$(printf '%s\n' "${failed[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+  skip_json=$(printf '%s\n' "${skipped[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+  [ -n "$DRY_RUN" ] && cmds_json=$(printf '%s\n' "${commands[@]:-}" | jq -R -s 'split("\n")|map(select(length>0))')
+
+  jq -n --arg id "$id" --argjson rwt "$rwt" --argjson rbl "$rbl" \
+        --argjson failed "$fail_json" --argjson skipped "$skip_json" \
+        --argjson cmds "$cmds_json" --argjson closed "$closed" \
+        --arg done_state "$CMP_DONE_STATE" --arg note "$close_note" \
+        --argjson dry "$([ -n "$DRY_RUN" ] && echo true || echo false)" '
+    {
+      ok: true, id: $id, closed: $closed,
+      removed: { worktrees: $rwt, branches: $rbl }
+    }
+    + (if $closed then {closed_as: $done_state} else {} end)
+    + (if $dry then {dry_run:true, commands:$cmds} else {} end)
+    + (if ($failed|length) > 0 then {failed:$failed} else {} end)
+    + (if ($skipped|length) > 0 then {skipped:$skipped} else {} end)
+    + { display: (
+        "[story] " + (if $dry then "DRY RUN for " else "" end) + "complete " + $id + ": "
+        + (if $closed then (if $dry then "would close as `" else "closed as `" end) + $done_state + "`, " else "" end)
+        + (if $dry then "would remove " else "removed " end) + ($rwt|length|tostring) + " worktree(s), "
+        + ($rbl|length|tostring) + " branch(es)."
+        + (if ($failed|length) > 0 then " Could not: " + ($failed|join(", ")) + "." else "" end)
+        + (if ($skipped|length) > 0 then " Preserved: " + ($skipped|join(", ")) + "." else "" end)
+        + $note
+      ) }'
+}
+
+cmd_complete() {
+  local sub="${1:-}"
+  shift 2>/dev/null || true
+  case "$sub" in
+    plan)    cmd_complete_plan "$@" ;;
+    execute) cmd_complete_execute "$@" ;;
+    *)       fail "usage: story.sh complete <plan|execute> <story-id>" ;;
+  esac
+}
+
 # ---- router -----------------------------------------------------------------
 case "${1:-}" in
   dispatch) shift; cmd_dispatch "$@" ;;
-  *)        fail "usage: story.sh dispatch <story-id>" ;;
+  complete) shift; cmd_complete "$@" ;;
+  view)     shift; cmd_view "$@" ;;
+  list)     shift; cmd_list "$@" ;;
+  create)   shift; cmd_create "$@" ;;
+  doctor)   shift; cmd_doctor "$@" ;;
+  capture)  shift; cmd_capture "$@" ;;
+  *)        fail "usage: story.sh <list | view <story-id> | dispatch <story-id> | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | doctor | capture <story-id>>" ;;
 esac
