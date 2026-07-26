@@ -1245,12 +1245,25 @@ fn spawn_change_watcher(
     thread::spawn(move || run_change_watcher(registry_path, broadcaster, stop, ready_tx))
 }
 
-/// Rebuilds `watched` (open-stories dir -> repo id) from the registry at
+/// Rebuilds `watched` (watched directory -> repo id) from the registry at
 /// `registry_path`, `watch`-ing every directory newly present and
 /// `unwatch`-ing every one no longer registered. A single repo whose
 /// directory is missing or otherwise unwatchable (moved, deleted, permission
 /// error) is skipped rather than aborting the whole rescan — one bad repo
 /// must never break live updates for the others.
+///
+/// Watches each repo's open-stories directory, which covers every story
+/// mutation (create, any field change, close, reopen — see
+/// `storage::write_story_events`/`archive_story`/`unarchive_story`).
+///
+/// Project *configuration* (states, types, members) deliberately isn't
+/// watched: it lives beside the stories directory, next to the SQLite
+/// archive whose WAL and shared-memory files are rewritten merely by
+/// reading the archive — which every `/data` request does — so watching that
+/// directory turns each client's refetch into another change event for
+/// every client. Configuration changes made *through the dashboard* are
+/// published directly by `accept_loop` instead; ones made behind its back
+/// are picked up by the client's safety poll.
 fn rescan_watched_repos(
     registry_path: &Path,
     watcher: &mut notify::RecommendedWatcher,
@@ -1397,6 +1410,25 @@ fn run_change_watcher(
     drop(watcher);
 }
 
+/// The repo whose configuration a just-answered request changed, if any —
+/// i.e. a successful write to `/api/repos/<id>/states…`.
+///
+/// Read as: which clients need to redraw because the *state set* moved under
+/// them. Only successful (2xx) writes count; a rejected edit changed
+/// nothing, and telling every client to refetch for it would be noise.
+fn config_change_repo_id(method: &Method, path: &str, reply: &Reply) -> Option<String> {
+    if !matches!(method, Method::Post | Method::Patch | Method::Delete) {
+        return None;
+    }
+    if !(200..300).contains(&reply.status) {
+        return None;
+    }
+    match path_segments(path).as_slice() {
+        ["api", "repos", id, "states", ..] => Some((*id).to_string()),
+        _ => None,
+    }
+}
+
 /// Maximum request body size accepted from a mutation route. Well above any
 /// legitimate story field (titles, comments, label lists), while bounding
 /// how much a single request can force the server to buffer.
@@ -1489,6 +1521,15 @@ fn accept_loop(
             &body,
             &trusted_hosts,
         );
+        // Story writes reach other clients through the filesystem watcher,
+        // which watches the open-stories directory. Configuration writes
+        // can't: the directory holding states.toml also holds the SQLite
+        // archive, which rewrites its WAL files whenever it is merely read
+        // (see `rescan_watched_repos`). The server knows perfectly well what
+        // it just changed, so it says so directly.
+        if let Some(repo_id) = config_change_repo_id(&method, &path, &reply) {
+            broadcaster.publish(SseEvent::RepoChanged(repo_id));
+        }
         finish(request, reply);
     }
 }
@@ -2370,6 +2411,63 @@ mod tests {
             magic_dns: None,
         };
         assert_eq!(identity.advertise_host(), "100.71.206.33");
+    }
+
+    // --- config_change_repo_id ---
+
+    fn ok_reply() -> Reply {
+        json_reply(200, "{}")
+    }
+
+    #[test]
+    fn config_change_is_detected_for_every_state_write() {
+        for (method, path) in [
+            (Method::Post, "/api/repos/app/states"),
+            (Method::Patch, "/api/repos/app/states"),
+            (Method::Patch, "/api/repos/app/states/todo"),
+            (Method::Delete, "/api/repos/app/states/todo"),
+        ] {
+            assert_eq!(
+                config_change_repo_id(&method, path, &ok_reply()).as_deref(),
+                Some("app"),
+                "{method:?} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_and_story_writes_are_not_config_changes() {
+        assert_eq!(
+            config_change_repo_id(&Method::Get, "/api/repos/app/states", &ok_reply()),
+            None,
+            "listing states changes nothing"
+        );
+        assert_eq!(
+            config_change_repo_id(&Method::Post, "/api/repos/app/story", &ok_reply()),
+            None,
+            "story writes reach clients through the filesystem watcher"
+        );
+        assert_eq!(
+            config_change_repo_id(&Method::Post, "/api/repos", &ok_reply()),
+            None
+        );
+    }
+
+    /// A rejected edit changed nothing — telling every client to refetch for
+    /// it would be pure noise.
+    #[test]
+    fn failed_state_writes_are_not_config_changes() {
+        for status in [400, 403, 404, 422, 500] {
+            assert_eq!(
+                config_change_repo_id(
+                    &Method::Patch,
+                    "/api/repos/app/states/todo",
+                    &json_reply(status, "{}")
+                ),
+                None,
+                "status {status}"
+            );
+        }
     }
 
     // --- host_is_trusted ---
