@@ -558,8 +558,17 @@ Key bindings (board view):
   n               Create a new story
   /               Focus the filter bar
   Space           Toggle section collapsed/expanded
+  s               Configure the project's statuses
   ?               Show full keybinding reference
   q               Quit
+
+Statuses editor (s):
+  Configures the project's states — the board's columns — without
+  leaving the TUI. j/k selects, J/K reorders, o toggles open/closed,
+  a toggles the active role, e edits the description, n adds, d
+  deletes. Reclassifying or deleting a status that still holds stories
+  asks where those stories should go first. Status edits are not
+  undoable. Same operations as 'story state' on the CLI.
 
 Filtering:
   Press / to focus the filter bar, then type a filter query:

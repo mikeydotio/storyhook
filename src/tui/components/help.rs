@@ -86,6 +86,7 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     key_row(&mut lines, "2", "Switch to Board", theme);
     key_row(&mut lines, "3", "Switch to Graph", theme);
     key_row(&mut lines, "r", "Refresh data from disk", theme);
+    key_row(&mut lines, "s", "Configure statuses", theme);
     key_row(&mut lines, "Ctrl+Z", "Undo last action", theme);
     key_row(&mut lines, "Ctrl+Y", "Redo last undone action", theme);
     lines.push(Line::from(""));
@@ -150,6 +151,23 @@ fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
     key_row(&mut lines, "Esc", "Cancel and close", theme);
     key_row(&mut lines, "Tab / Shift+Tab", "Cycle fields", theme);
     key_row(&mut lines, "Enter", "Submit (if title non-empty)", theme);
+    lines.push(Line::from(""));
+
+    // Statuses Editor
+    section_header(&mut lines, "Statuses Editor Modal", theme);
+    key_row(&mut lines, "j / k", "Select a status", theme);
+    key_row(&mut lines, "J / K", "Reorder (board column order)", theme);
+    key_row(&mut lines, "o", "Toggle open / closed", theme);
+    key_row(&mut lines, "a", "Toggle the active role", theme);
+    key_row(&mut lines, "e", "Edit description (empty clears)", theme);
+    key_row(&mut lines, "n", "New status", theme);
+    key_row(&mut lines, "d", "Delete status", theme);
+    key_row(
+        &mut lines,
+        "Esc",
+        "Cancel current edit, else close (not undoable)",
+        theme,
+    );
     lines.push(Line::from(""));
 
     // Graph View
