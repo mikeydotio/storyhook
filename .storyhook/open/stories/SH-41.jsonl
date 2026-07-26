@@ -1,4 +1,0 @@
-{"kind":"StoryCreated","at":"2026-07-24T02:57:42Z","title":"Create UI for per-repo configuration of available story statuses","state":"todo"}
-{"kind":"StoryTypeSet","at":"2026-07-24T02:57:42Z","story_type":"story"}
-{"kind":"StoryStateChanged","at":"2026-07-25T23:56:18Z","state":"in-progress"}
-{"kind":"StoryCommentAdded","at":"2026-07-25T23:59:59Z","text":"[git] 131512c: chore(storyhook): start SH-41 and file the states.toml defect"}
