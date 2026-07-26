@@ -3628,6 +3628,41 @@ fn sse_delivers_repo_changed_on_story_mutation() {
     );
 }
 
+/// Editing the project's *configuration* is a live update too: the board's
+/// columns are the state set, so a second open dashboard must be told to
+/// refetch rather than drawing stale columns until its slow safety poll
+/// comes round. Configuration lives beside the SQLite archive and so isn't
+/// watched (see `rescan_watched_repos`) — the server publishes these itself.
+#[test]
+fn sse_delivers_repo_changed_on_state_configuration_change() {
+    let _sse_guard = sse_test_lock();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let mut sse = connect_sse(port);
+    post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
+        r#"{"slug":"review","super_state":"OPEN"}"#,
+    )
+    .unwrap();
+
+    let received = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    assert!(
+        received.contains("event: repo-changed"),
+        "expected a repo-changed event after a state was added, got: {received}"
+    );
+    assert!(
+        received.contains(&format!("\"repo_id\":\"{repo_id}\"")),
+        "expected the changed repo's id `{repo_id}` in the event payload, got: {received}"
+    );
+}
+
 /// Several mutations fired back-to-back collapse into fewer published
 /// events than mutations performed, proving the watcher's per-repo 200ms
 /// debounce window is actually coalescing rather than publishing once per
