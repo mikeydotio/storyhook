@@ -142,6 +142,7 @@ fn move_story_through_states() {
                 slug: "in-progress".to_string(),
                 super_state: SuperState::Open,
                 role: Some("active".to_string()),
+                description: None,
             },
         );
         // Rewrite states.toml
@@ -516,6 +517,7 @@ fn stories_grouped_correctly_across_multiple_states() {
                 slug: "in-progress".to_string(),
                 super_state: SuperState::Open,
                 role: Some("active".to_string()),
+                description: None,
             },
         );
         let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
@@ -823,6 +825,7 @@ fn state_removal_during_runtime_returns_error() {
                 slug: "review".to_string(),
                 super_state: SuperState::Open,
                 role: None,
+                description: None,
             },
         );
         let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
@@ -854,11 +857,13 @@ fn state_removal_during_runtime_returns_error() {
                 slug: "todo".to_string(),
                 super_state: SuperState::Open,
                 role: None,
+                description: None,
             },
             StateDef {
                 slug: "done".to_string(),
                 super_state: SuperState::Closed,
                 role: None,
+                description: None,
             },
         ];
         let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
