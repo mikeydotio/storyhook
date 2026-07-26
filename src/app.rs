@@ -154,7 +154,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 let superstate = SuperState::parse(&superstate).ok_or_else(|| {
                     AppError::Validation("superstate must be OPEN or CLOSED".to_string())
                 })?;
-                let state = storage::add_state(root, &slug, superstate, role)?;
+                let state = storage::add_state(root, &slug, superstate, role, None)?;
                 Ok(Response::Message(format!(
                     "added state {} ({})",
                     state.slug,
@@ -163,7 +163,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             }),
             StateAction::Remove { slug } => lock::with_project_lock(root, || {
                 storage::ensure_project(root)?;
-                storage::remove_state(root, &slug)?;
+                storage::remove_state(root, &slug, None)?;
                 Ok(Response::Message(format!("removed state {slug}")))
             }),
         },
