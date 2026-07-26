@@ -6,7 +6,13 @@
 # (and pass) before every push; skipping it is how a non-compiling commit
 # reaches `main` undetected (see #23).
 
-.PHONY: test build fmt lint clippy check release-build
+.PHONY: test build fmt lint clippy check release-build install
+
+# Where `make install` puts the binary. Mirrors install.sh's default and its
+# STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
+# still say `make install INSTALL_DIR=/somewhere/else`.
+STORYHOOK_INSTALL_DIR ?= $(HOME)/.local/bin
+INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 
 # Full local gate: formatting, clippy with warnings-as-errors, full test
 # suite, plus the Claude Code plugin's own bash harness (bin/story.sh's
@@ -41,3 +47,20 @@ check:
 # Optimized release build.
 release-build:
 	cargo build --release
+
+# Build release and install it to INSTALL_DIR (see SH-55).
+#
+# Uses install(1) and never `cp`. macOS invalidates a Mach-O's cached
+# code-signing state when its contents are rewritten *in place*; `cp` keeps the
+# destination inode, so copying over a path that a live process still has
+# mapped (a running `story web --serve`) leaves every later exec of that inode
+# SIGKILLed -- exit 137, despite correct bytes and a passing `codesign -v`.
+# install(1) replaces the file with a fresh inode: new invocations get a
+# cleanly-signed binary and the running process keeps its old mapping.
+#
+# Note this does NOT restart a running dashboard daemon; it keeps serving the
+# old code until restarted (see SH-54).
+install: release-build
+	@mkdir -p "$(INSTALL_DIR)"
+	install -m 755 target/release/story "$(INSTALL_DIR)/story"
+	@echo "Installed story $$("$(INSTALL_DIR)/story" --version | awk '{print $$2}') to $(INSTALL_DIR)/story"
