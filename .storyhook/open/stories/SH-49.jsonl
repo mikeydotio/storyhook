@@ -1,0 +1,3 @@
+{"kind":"StoryCreated","at":"2026-07-26T00:43:54Z","title":"Add a linked-PRs field to stories so GitHub PRs can be linked to them","state":"todo"}
+{"kind":"StoryDescriptionSet","at":"2026-07-26T00:43:54Z","description":"Add a linked-PRs field (name it better) to stories, so that GitHub PRs can be linked to stories.\n\nThe storyhook daemon should then monitor GitHub for any PRs linked to active stories to merge.\n\nAny story-to-PR linkage should also carry a \"close on merge\" boolean option which, if true, closes the story when the PR merges. The flag should be enabled by default."}
+{"kind":"StoryTypeSet","at":"2026-07-26T00:43:54Z","story_type":"story"}
