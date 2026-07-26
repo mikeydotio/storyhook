@@ -1,0 +1,2 @@
+{"kind":"StoryCreated","at":"2026-07-25T20:37:43Z","title":"Add a Dispatch button to the bottom-right corner which, when activated, performs a storyhook dispatch event (creating the tmux window, worktree, etc. and initiating work on the story))","state":"todo"}
+{"kind":"StoryTypeSet","at":"2026-07-25T20:37:43Z","story_type":"story"}

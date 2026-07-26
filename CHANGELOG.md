@@ -3,6 +3,55 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.17.0] - 2026-07-25
+
+### Added
+- add /story do dispatch actuator with ready-state gate (ed4f23d)
+- vendor session-lifecycle lib for /story do (03f8e63)
+- add /story router dispatching to story-* subskills (6313b01)
+- sync description as the issue body's free text (c24a9c4)
+- add description to the create form and detail editor (7c45387)
+- add description, priority, and label fields to new-story modal (f577cad)
+- expose distinct labels in dashboard meta (ce0ba42)
+- support description/priority/labels/assignee on story new (9e4a21e)
+- add first-class story description field (c25be1d)
+- advertise the MagicDNS name in web start/status/address (4b73c7a)
+
+### Fixed
+- exclude deleted stories from the dashboard's story feed (fae158d)
+- renumber new stories off colliding SH-31-34 IDs (9eafc3a)
+- repair SH-20 soft-delete state inconsistency (717a3aa)
+- validate assignee in SetFields --json branch (faa0667)
+- validate & normalize assignee in create/assign paths (0f888e0)
+- trust the MagicDNS FQDN for tailnet mutations (bbe0034)
+
+### Changed
+- Merge pull request #47 from mikeydotio/chore/track-sh-45 (af0fbbd)
+- Merge pull request #46 from mikeydotio/fix/44-web-dashboard-hides-deleted-stories (977c8bd)
+- Merge pull request #45 from mikeydotio/chore/fix-clippy-lints (6506f27)
+- Merge pull request #43 from mikeydotio/fix/storyhook-story-id-collision (e76b2f7)
+- Merge pull request #42 from mikeydotio/worktree-sto-40 (24c42cb)
+- Merge pull request #41 from mikeydotio/worktree-sto-39 (8e8958a)
+- rename storyhook plugin/skills to the story namespace (ce107d0)
+- extract CreateStory/AssignStory mutations into fns (231dabd)
+- Merge pull request #38 from mikeydotio/feat/web-new-story-fields (721763e)
+- Merge pull request #37 from mikeydotio/fix/35-tailnet-magicdns-mutation-guard (92d3188)
+- Merge pull request #34 from mikeydotio/chore/release-v0.16.0 (92ac402)
+
+### Documentation
+- document the new story new/set flags in help text (e5b91be)
+
+### Testing
+- add bash harness for story.sh dispatch (fab7da2)
+
+### Maintenance
+- finalize git-sync comments for new story (56f5b64)
+- sync SH-45 git-linked comment (90703c4)
+- track SH-45 (23da8ba)
+- fix clippy lints blocking make test (5286a5b)
+
+_[manual]_
+
 ## [v0.16.0] - 2026-07-21
 
 ### Added
