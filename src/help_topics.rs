@@ -132,6 +132,66 @@ Related:
         );
 
         m.insert(
+            "state",
+            r#"story state list
+story state add <slug> --super OPEN|CLOSED [--role active] [--description "<text>"]
+story state set <slug> [--super OPEN|CLOSED] [--role active|none]
+                       [--description "<text>"] [--no-description]
+                       [--move-stories-to <slug>]
+story state remove <slug> [--move-stories-to <slug>]
+story state reorder <slug,slug,...>
+
+Configure the project's states — the vocabulary every story moves
+through, stored in .storyhook/states.toml. Each state maps to a
+superstate (OPEN or CLOSED) that decides whether stories in it count as
+open work; moving a story into a CLOSED state closes and archives it.
+
+State order matters: it is the column order on the web dashboard's
+board, and the first OPEN state is where new stories land.
+
+When to use:
+  Setting a project up ('review', 'blocked', 'verifying'), or adjusting
+  the workflow later. The same edits are available in the web dashboard
+  (Settings -> Statuses) and the TUI (press 's').
+
+Examples:
+  story state list
+  story state add review --super OPEN --description "Waiting on a reviewer"
+  story state set review --role active
+  story state set review --no-description
+  story state reorder todo,in-progress,review,done
+  story state remove review --move-stories-to todo
+
+Moving stories out of the way:
+  Changing a state's superstate, or removing it, would leave the stories
+  sitting in it misfiled — so both refuse until you say where those
+  stories go:
+
+    story state remove review --move-stories-to todo
+
+  Stories moved into a CLOSED state are closed and archived, exactly as
+  'story move' would. A state that already has ARCHIVED stories cannot
+  be removed at all: their history records the slug, and reopening one
+  later would fail against a state that no longer exists.
+
+Rules:
+  - Slugs are lowercase letters, digits, and single dashes ('in-review').
+    They are typed as CLI arguments and appear in dashboard URLs.
+  - A state set always keeps at least one OPEN and one CLOSED state.
+  - At most one state may carry --role active, which marks the state a
+    story enters when work starts (used by 'story commit-sync').
+  - There is no rename: a slug is recorded in every state-change event
+    ever written. Add the new state, migrate, and remove the old one.
+
+Related:
+  story move    — Move one story between states
+  story type    — Configure story types instead of states
+  story summary — Story counts per state
+"#,
+        );
+        m.insert("states", m["state"]);
+
+        m.insert(
             "summary",
             r#"story summary
 
@@ -498,8 +558,17 @@ Key bindings (board view):
   n               Create a new story
   /               Focus the filter bar
   Space           Toggle section collapsed/expanded
+  s               Configure the project's statuses
   ?               Show full keybinding reference
   q               Quit
+
+Statuses editor (s):
+  Configures the project's states — the board's columns — without
+  leaving the TUI. j/k selects, J/K reorders, o toggles open/closed,
+  a toggles the active role, e edits the description, n adds, d
+  deletes. Reclassifying or deleting a status that still holds stories
+  asks where those stories should go first. Status edits are not
+  undoable. Same operations as 'story state' on the CLI.
 
 Filtering:
   Press / to focus the filter bar, then type a filter query:

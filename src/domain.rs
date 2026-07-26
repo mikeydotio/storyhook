@@ -97,6 +97,83 @@ pub struct StateDef {
     pub super_state: SuperState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Free text explaining what the state means, surfaced in the UIs.
+    ///
+    /// Round-tripping this is not optional: `save_states` rewrites the whole
+    /// file, so a field the struct doesn't know about is silently destroyed
+    /// on the next `story state add` (SH-49).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// The only [`StateDef::role`] the tool understands — see
+/// [`crate::storage::find_active_state`], which uses it to pick the state a
+/// story moves into when work starts.
+pub const STATE_ROLE_ACTIVE: &str = "active";
+
+/// A three-way edit of an optional field: leave it as it is, empty it, or
+/// give it a value.
+///
+/// `Option<Option<T>>` says the same thing and is misread at every call site.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum FieldEdit<T> {
+    #[default]
+    Keep,
+    Clear,
+    Set(T),
+}
+
+impl<T> FieldEdit<T> {
+    /// Resolves the edit against the field's current value.
+    pub fn apply(self, current: Option<T>) -> Option<T> {
+        match self {
+            FieldEdit::Keep => current,
+            FieldEdit::Clear => None,
+            FieldEdit::Set(value) => Some(value),
+        }
+    }
+
+    /// Whether this edit would leave the field untouched.
+    pub fn is_keep(&self) -> bool {
+        matches!(self, FieldEdit::Keep)
+    }
+}
+
+/// The parts of a [`StateDef`] that can be edited in place.
+///
+/// `slug` is deliberately absent: a state's slug is recorded in every
+/// `StoryStateChanged` event ever written, so renaming one would orphan
+/// history rather than update it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StateChanges {
+    pub super_state: Option<SuperState>,
+    pub role: FieldEdit<String>,
+    pub description: FieldEdit<String>,
+}
+
+impl StateChanges {
+    /// Whether this would change nothing at all — callers reject a no-op edit
+    /// rather than rewriting states.toml for it.
+    pub fn is_empty(&self) -> bool {
+        self.super_state.is_none() && self.role.is_keep() && self.description.is_keep()
+    }
+}
+
+/// How many stories reference a state, split by where they live.
+///
+/// Open stories can be migrated elsewhere; archived ones cannot, which is
+/// why the two are counted separately rather than summed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateUsage {
+    pub open: usize,
+    pub archived: usize,
+}
+
+impl StateUsage {
+    /// Total stories in this state.
+    pub fn total(&self) -> usize {
+        self.open + self.archived
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -266,6 +343,11 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
         .unwrap_or("unknown")
 }
 
+/// Read-path validation, applied by `storage::load_states` on **every** read.
+///
+/// Deliberately minimal: a rule added here can make an existing project
+/// unreadable rather than merely uneditable. Rules that only a new state set
+/// must satisfy belong in [`validate_state_defs_for_write`].
 pub fn validate_state_defs(states: &[StateDef]) -> Result<(), AppError> {
     let has_open = states
         .iter()
@@ -281,6 +363,81 @@ pub fn validate_state_defs(states: &[StateDef]) -> Result<(), AppError> {
             "state set must include at least one OPEN state and one CLOSED state".to_string(),
         ))
     }
+}
+
+/// A state slug must be lowercase alphanumerics in dash-separated words.
+///
+/// Slugs are addresses, not labels: they are typed as CLI arguments
+/// (`story move SH-1 <slug>`) and interpolated into URL path segments
+/// (`DELETE /api/repos/<id>/states/<slug>`, split on `/` by the router). A
+/// slug containing a space, slash, or capital cannot be addressed by either.
+pub fn validate_state_slug(slug: &str) -> Result<(), AppError> {
+    let invalid = |reason: &str| {
+        Err(AppError::Validation(format!(
+            "invalid state slug `{slug}`: {reason} (use lowercase letters, digits, and single dashes, e.g. `in-review`)"
+        )))
+    };
+
+    if slug.is_empty() {
+        return invalid("it is empty");
+    }
+    if let Some(bad) = slug
+        .chars()
+        .find(|ch| !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && *ch != '-')
+    {
+        return invalid(&format!("`{bad}` is not allowed"));
+    }
+    if slug.starts_with('-') || slug.ends_with('-') {
+        return invalid("it starts or ends with a dash");
+    }
+    if slug.contains("--") {
+        return invalid("it contains a double dash");
+    }
+    Ok(())
+}
+
+/// Write-path validation: everything [`validate_state_defs`] requires, plus
+/// the rules a state set must satisfy to be *written*.
+///
+/// Kept separate from the read path so a project carrying a legacy slug
+/// still loads — it just reports the offending slug the first time someone
+/// edits its states.
+pub fn validate_state_defs_for_write(states: &[StateDef]) -> Result<(), AppError> {
+    validate_state_defs(states)?;
+
+    let mut seen = BTreeSet::new();
+    for state in states {
+        validate_state_slug(&state.slug)?;
+        if !seen.insert(state.slug.as_str()) {
+            return Err(AppError::Validation(format!(
+                "state `{}` is defined more than once",
+                state.slug
+            )));
+        }
+        if let Some(role) = state.role.as_deref()
+            && role != STATE_ROLE_ACTIVE
+        {
+            return Err(AppError::Validation(format!(
+                "state `{}` has unknown role `{role}` (the only role is `{STATE_ROLE_ACTIVE}`)",
+                state.slug
+            )));
+        }
+    }
+
+    let active: Vec<&str> = states
+        .iter()
+        .filter(|state| state.role.as_deref() == Some(STATE_ROLE_ACTIVE))
+        .map(|state| state.slug.as_str())
+        .collect();
+    if active.len() > 1 {
+        return Err(AppError::Validation(format!(
+            "only one state may have role `{STATE_ROLE_ACTIVE}`, but {} do: {}",
+            active.len(),
+            active.join(", ")
+        )));
+    }
+
+    Ok(())
 }
 
 pub fn fold_story(
@@ -1114,9 +1271,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        Priority, StateDef, StoryEvent, StoryRelation, StorySnapshot, SuperState, compute_progress,
-        derive_family_relationships, fold_story, has_children, is_ready, last_activity_type,
-        validate_state_defs, would_create_parent_cycle,
+        FieldEdit, Priority, StateChanges, StateDef, StateUsage, StoryEvent, StoryRelation,
+        StorySnapshot, SuperState, compute_progress, derive_family_relationships, fold_story,
+        has_children, is_ready, last_activity_type, validate_state_defs,
+        validate_state_defs_for_write, validate_state_slug, would_create_parent_cycle,
     };
 
     #[test]
@@ -1125,9 +1283,137 @@ mod tests {
             slug: "todo".to_string(),
             super_state: SuperState::Open,
             role: None,
+            description: None,
         }];
         let error = validate_state_defs(&states).unwrap_err();
         assert!(error.to_string().contains("OPEN"));
+    }
+
+    // --- state slug / write-path validation ---
+
+    fn state(slug: &str, super_state: SuperState, role: Option<&str>) -> StateDef {
+        StateDef {
+            slug: slug.to_string(),
+            super_state,
+            role: role.map(str::to_string),
+            description: None,
+        }
+    }
+
+    #[test]
+    fn validate_state_slug_accepts_dash_separated_lowercase() {
+        for good in ["todo", "in-progress", "wave-2", "x"] {
+            validate_state_slug(good).unwrap_or_else(|e| panic!("`{good}` rejected: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_state_slug_rejects_unaddressable_slugs() {
+        // Each of these breaks either the CLI (`story move SH-1 <slug>`) or
+        // the web router, which splits paths on `/`.
+        for bad in [
+            "",
+            "In Review",
+            "in review",
+            "in/review",
+            "in_review",
+            "-todo",
+            "todo-",
+            "in--review",
+            "tödo",
+        ] {
+            let error = validate_state_slug(bad).unwrap_err();
+            assert!(
+                error.to_string().contains("invalid state slug"),
+                "`{bad}` should have been rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn write_validation_rejects_duplicate_slugs() {
+        let states = vec![
+            state("todo", SuperState::Open, None),
+            state("todo", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ];
+        let error = validate_state_defs_for_write(&states).unwrap_err();
+        assert!(error.to_string().contains("defined more than once"));
+    }
+
+    #[test]
+    fn write_validation_rejects_more_than_one_active_role() {
+        let states = vec![
+            state("todo", SuperState::Open, Some("active")),
+            state("doing", SuperState::Open, Some("active")),
+            state("done", SuperState::Closed, None),
+        ];
+        let error = validate_state_defs_for_write(&states).unwrap_err();
+        assert!(error.to_string().contains("only one state may have role"));
+    }
+
+    #[test]
+    fn write_validation_rejects_unknown_roles() {
+        let states = vec![
+            state("todo", SuperState::Open, Some("triage")),
+            state("done", SuperState::Closed, None),
+        ];
+        let error = validate_state_defs_for_write(&states).unwrap_err();
+        assert!(error.to_string().contains("unknown role `triage`"));
+    }
+
+    /// The read path stays permissive on purpose: tightening it would make a
+    /// project carrying a legacy slug unloadable rather than uneditable.
+    #[test]
+    fn read_validation_tolerates_what_the_write_path_rejects() {
+        let states = vec![
+            state("In Review", SuperState::Open, Some("triage")),
+            state("done", SuperState::Closed, None),
+        ];
+        validate_state_defs(&states).unwrap();
+        assert!(validate_state_defs_for_write(&states).is_err());
+    }
+
+    // --- FieldEdit ---
+
+    #[test]
+    fn field_edit_keep_clear_and_set() {
+        let current = || Some("before".to_string());
+        assert_eq!(FieldEdit::Keep.apply(current()), current());
+        assert_eq!(FieldEdit::Clear.apply(current()), None);
+        assert_eq!(
+            FieldEdit::Set("after".to_string()).apply(current()),
+            Some("after".to_string())
+        );
+        assert_eq!(
+            FieldEdit::Set("after".to_string()).apply(None),
+            Some("after".to_string())
+        );
+    }
+
+    #[test]
+    fn state_changes_default_is_a_no_op() {
+        assert!(StateChanges::default().is_empty());
+        assert!(
+            !StateChanges {
+                description: FieldEdit::Clear,
+                ..StateChanges::default()
+            }
+            .is_empty(),
+            "clearing a field is a change, not a no-op"
+        );
+    }
+
+    #[test]
+    fn state_usage_totals_both_stores() {
+        assert_eq!(
+            StateUsage {
+                open: 2,
+                archived: 3
+            }
+            .total(),
+            5
+        );
     }
 
     #[test]
@@ -1429,11 +1715,13 @@ mod tests {
                 slug: "todo".to_string(),
                 super_state: SuperState::Open,
                 role: None,
+                description: None,
             },
             StateDef {
                 slug: "done".to_string(),
                 super_state: SuperState::Closed,
                 role: None,
+                description: None,
             },
         ]
         .into_iter()

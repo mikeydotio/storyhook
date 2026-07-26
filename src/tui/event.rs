@@ -90,13 +90,21 @@ impl EventSource {
         tx: Sender<Event>,
         stop: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
-        let watch_path = ProjectPaths::new(root).open_stories_dir();
+        let paths = ProjectPaths::new(root);
+        // Two directories, neither recursive: the stories directory covers
+        // every story mutation, and `.storyhook/` itself covers the project
+        // configuration the board renders from — a state added from the CLI
+        // or the web dashboard redraws the columns here too, rather than
+        // waiting for the user to press `r`. Non-recursive matters: it keeps
+        // `.storyhook/archive/`, where SQLite rewrites WAL files on every
+        // read, out of the watch entirely.
+        let watch_paths = vec![paths.open_stories_dir(), paths.storyhook_dir()];
         thread::spawn(move || {
-            Self::run_file_watcher(watch_path, tx, stop);
+            Self::run_file_watcher(watch_paths, tx, stop);
         })
     }
 
-    fn run_file_watcher(watch_path: PathBuf, tx: Sender<Event>, stop: Arc<AtomicBool>) {
+    fn run_file_watcher(watch_paths: Vec<PathBuf>, tx: Sender<Event>, stop: Arc<AtomicBool>) {
         use notify::{RecursiveMode, Watcher};
 
         let tx_notify = tx.clone();
@@ -108,22 +116,23 @@ impl EventSource {
         let last_event_clone = Arc::clone(&last_event);
         let mut watcher =
             match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if res.is_ok() {
-                    let mut last = last_event_clone.lock().unwrap();
-                    let now = Instant::now();
-                    if now.duration_since(*last).as_millis() >= debounce_ms {
-                        *last = now;
-                        let _ = tx_notify.send(Event::DataChanged);
-                    }
+                let Ok(event) = res else { return };
+                if !event.paths.iter().any(|path| is_reportable_change(path)) {
+                    return;
+                }
+                let mut last = last_event_clone.lock().unwrap();
+                let now = Instant::now();
+                if now.duration_since(*last).as_millis() >= debounce_ms {
+                    *last = now;
+                    let _ = tx_notify.send(Event::DataChanged);
                 }
             }) {
                 Ok(w) => w,
                 Err(_) => return, // If watcher creation fails, silently give up
             };
 
-        // Watch the stories directory if it exists
-        if watch_path.exists() {
-            let _ = watcher.watch(&watch_path, RecursiveMode::NonRecursive);
+        for path in watch_paths.iter().filter(|path| path.exists()) {
+            let _ = watcher.watch(path, RecursiveMode::NonRecursive);
         }
 
         // Keep the watcher alive until stop is signaled
@@ -145,8 +154,46 @@ impl EventSource {
     }
 }
 
+/// Whether a filesystem event under the watched directories is project data
+/// worth reloading for.
+///
+/// Excludes `.storyhook/lock`, which every write attempt opens — including
+/// ones that go on to fail validation, where reloading would find nothing
+/// changed. (The SQLite archive needs no exclusion here: it lives in
+/// `.storyhook/archive/`, and neither watch is recursive.)
+fn is_reportable_change(path: &Path) -> bool {
+    path.file_name() != Some(std::ffi::OsStr::new("lock"))
+}
+
 impl Drop for EventSource {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_reportable_change;
+    use std::path::Path;
+
+    #[test]
+    fn story_and_config_writes_are_reportable() {
+        for path in [
+            "/repo/.storyhook/open/stories/SH-1.jsonl",
+            "/repo/.storyhook/states.toml",
+            "/repo/.storyhook/types.toml",
+            "/repo/.storyhook/members.jsonl",
+            "/repo/.storyhook/next-id",
+        ] {
+            assert!(
+                is_reportable_change(Path::new(path)),
+                "{path} should be reported"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_writes_are_ignored() {
+        assert!(!is_reportable_change(Path::new("/repo/.storyhook/lock")));
     }
 }

@@ -1,4 +1,4 @@
-use crate::domain::{Priority, StoryEvent};
+use crate::domain::{Priority, StateChanges, StoryEvent, SuperState};
 
 /// A snapshot of a story's events before a mutation, used for undo/redo.
 #[derive(Debug, Clone)]
@@ -39,6 +39,7 @@ pub enum Action {
     SwitchView(View),
     OpenDetail(String),
     OpenCreateForm,
+    OpenStatesEditor,
     CloseModal,
     FocusFilterBar,
     UnfocusFilterBar,
@@ -89,6 +90,28 @@ pub enum Action {
     },
     ClearAwaiting {
         id: String,
+    },
+
+    // Project configuration (the statuses editor). Not undoable: the undo
+    // stack replays one story's event log, and these edit the project's
+    // state set — sometimes migrating stories as a side effect.
+    AddState {
+        slug: String,
+        super_state: SuperState,
+    },
+    SetStateFields {
+        slug: String,
+        changes: StateChanges,
+        /// Where the status's open stories go when this edit reclassifies
+        /// them; required by `storage::update_state` in exactly that case.
+        move_stories_to: Option<String>,
+    },
+    RemoveState {
+        slug: String,
+        move_stories_to: Option<String>,
+    },
+    ReorderStates {
+        order: Vec<String>,
     },
 
     // Filtering

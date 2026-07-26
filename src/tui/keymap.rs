@@ -11,6 +11,7 @@ pub enum KeyContext {
     FilterBarFocused,
     StoryDetail,
     CreateForm,
+    StatesEditor,
     Help,
 }
 
@@ -32,6 +33,10 @@ pub fn map_key(key: KeyEvent, context: KeyContext) -> Option<Action> {
         KeyContext::FilterBarFocused => map_filter_bar(key),
         KeyContext::StoryDetail => map_story_detail(key),
         KeyContext::CreateForm => map_create_form(key),
+        // The statuses editor owns every key it receives, Esc included:
+        // inside a sub-mode Esc backs out one level rather than closing the
+        // modal, which only the component knows.
+        KeyContext::StatesEditor => None,
         KeyContext::Help => map_help(key),
     }
 }
@@ -53,6 +58,7 @@ fn map_global(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('2') => Some(Action::SwitchView(View::Board)),
         KeyCode::Char('3') => Some(Action::SwitchView(View::Graph)),
         KeyCode::Char('r') => Some(Action::RefreshData),
+        KeyCode::Char('s') => Some(Action::OpenStatesEditor),
         _ => None,
     }
 }

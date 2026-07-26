@@ -11,6 +11,7 @@ pub enum FocusTarget {
 pub enum Modal {
     StoryDetail { story_id: String },
     CreateForm,
+    StatesEditor,
     Help,
 }
 

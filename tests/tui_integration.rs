@@ -142,6 +142,7 @@ fn move_story_through_states() {
                 slug: "in-progress".to_string(),
                 super_state: SuperState::Open,
                 role: Some("active".to_string()),
+                description: None,
             },
         );
         // Rewrite states.toml
@@ -516,6 +517,7 @@ fn stories_grouped_correctly_across_multiple_states() {
                 slug: "in-progress".to_string(),
                 super_state: SuperState::Open,
                 role: Some("active".to_string()),
+                description: None,
             },
         );
         let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
@@ -823,6 +825,7 @@ fn state_removal_during_runtime_returns_error() {
                 slug: "review".to_string(),
                 super_state: SuperState::Open,
                 role: None,
+                description: None,
             },
         );
         let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
@@ -854,11 +857,13 @@ fn state_removal_during_runtime_returns_error() {
                 slug: "todo".to_string(),
                 super_state: SuperState::Open,
                 role: None,
+                description: None,
             },
             StateDef {
                 slug: "done".to_string(),
                 super_state: SuperState::Closed,
                 role: None,
+                description: None,
             },
         ];
         let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
@@ -952,6 +957,117 @@ fn datastore_load_100_stories_under_500ms() {
         "build_visible_rows for 100 stories took {}ms, should be under 50ms",
         elapsed.as_millis()
     );
+}
+
+// ─── Statuses editor (SH-41) ────────────────────────────────────────
+//
+// The component's key handling is unit-tested in
+// `tui::components::states_editor`; these exercise the other half — that
+// the actions it emits, applied through the same storage operations the
+// dispatch loop calls, actually change the project and are reflected by a
+// reload.
+
+/// The board renders one column per OPEN state, in configured order — so a
+/// reorder from the editor is visible work, not bookkeeping.
+#[test]
+fn reordering_statuses_reorders_the_board_columns() {
+    let (_dir, root) = init_project("TP");
+    let before: Vec<String> = DataStore::load(&root)
+        .unwrap()
+        .states
+        .iter()
+        .map(|s| s.slug.clone())
+        .collect();
+    assert_eq!(before, vec!["todo", "in-progress", "done"]);
+
+    storyhook::lock::with_project_lock(&root, || {
+        storyhook::storage::reorder_states(
+            &root,
+            &[
+                "in-progress".to_string(),
+                "todo".to_string(),
+                "done".to_string(),
+            ],
+        )
+        .map(|_| ())
+    })
+    .unwrap();
+
+    let store = DataStore::load(&root).unwrap();
+    let columns: Vec<&str> = store
+        .stories_by_state()
+        .iter()
+        .map(|(state, _)| state.slug.as_str())
+        .collect();
+    assert_eq!(
+        columns,
+        vec!["in-progress", "todo"],
+        "OPEN states, in order"
+    );
+}
+
+#[test]
+fn adding_a_status_makes_it_available_to_the_board() {
+    let (_dir, root) = init_project("TP");
+    storyhook::lock::with_project_lock(&root, || {
+        storyhook::storage::add_state(
+            &root,
+            "review",
+            SuperState::Open,
+            None,
+            Some("Waiting on a reviewer".to_string()),
+        )
+        .map(|_| ())
+    })
+    .unwrap();
+
+    let store = DataStore::load(&root).unwrap();
+    let review = store
+        .states
+        .iter()
+        .find(|s| s.slug == "review")
+        .expect("the new status should load");
+    assert_eq!(review.description.as_deref(), Some("Waiting on a reviewer"));
+    assert!(
+        store
+            .stories_by_state()
+            .iter()
+            .any(|(state, _)| state.slug == "review")
+    );
+}
+
+/// The editor's migration path, end to end: the story moves and the status
+/// is gone afterwards.
+#[test]
+fn removing_an_occupied_status_migrates_its_stories() {
+    let (_dir, root) = init_project("TP");
+    let id = create_story(&root, "Needs a home");
+
+    storyhook::lock::with_project_lock(&root, || {
+        storyhook::storage::remove_state(&root, "todo", Some("in-progress")).map(|_| ())
+    })
+    .unwrap();
+
+    let store = DataStore::load(&root).unwrap();
+    assert!(!store.states.iter().any(|s| s.slug == "todo"));
+    assert_eq!(store.find_story(&id).unwrap().state, "in-progress");
+}
+
+/// Without a destination the storage layer refuses, and the TUI turns that
+/// error into a notification rather than losing the stories.
+#[test]
+fn removing_an_occupied_status_without_a_destination_is_refused() {
+    let (_dir, root) = init_project("TP");
+    create_story(&root, "Still here");
+
+    let error = storyhook::lock::with_project_lock(&root, || {
+        storyhook::storage::remove_state(&root, "todo", None).map(|_| ())
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("1 open story"));
+
+    let store = DataStore::load(&root).unwrap();
+    assert!(store.states.iter().any(|s| s.slug == "todo"));
 }
 
 // ─── Helper struct for TOML serialization of states ─────────────────

@@ -121,6 +121,18 @@ fn build_key_hints<'a>(state: &AppState, theme: &Theme) -> Vec<Span<'a>> {
                 Span::styled("Enter", theme.status_bar_keys),
                 Span::styled(" submit", theme.status_bar),
             ],
+            // The editor draws its own, mode-specific hints; this is the
+            // one-line summary for the bar underneath it.
+            Modal::StatesEditor => vec![
+                Span::styled(" Esc", theme.status_bar_keys),
+                Span::styled(" close  ", theme.status_bar),
+                Span::styled("J/K", theme.status_bar_keys),
+                Span::styled(" reorder  ", theme.status_bar),
+                Span::styled("o", theme.status_bar_keys),
+                Span::styled(" open/closed  ", theme.status_bar),
+                Span::styled("n/d", theme.status_bar_keys),
+                Span::styled(" new/delete", theme.status_bar),
+            ],
             Modal::Help => vec![
                 Span::styled(" Esc", theme.status_bar_keys),
                 Span::styled(" close  ", theme.status_bar),

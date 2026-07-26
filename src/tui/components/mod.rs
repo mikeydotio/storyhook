@@ -5,6 +5,7 @@ pub mod filter_bar;
 pub mod graph;
 pub mod help;
 pub mod modal;
+pub mod states_editor;
 pub mod status_bar;
 pub mod story_detail;
 
