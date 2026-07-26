@@ -6,9 +6,10 @@ use crate::cli::{
     PhaseAction, PluginAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{
-    DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
-    compute_integrity_issues, compute_progress, derive_family_relationships, extract_story_ids,
-    has_children, is_ready, parse_duration, relation_edges, would_create_parent_cycle,
+    DependencyGraph, FieldEdit, ImportStory, Member, Priority, StateChanges, StateDef, StateUsage,
+    StoryEvent, StorySnapshot, SuperState, compute_integrity_issues, compute_progress,
+    derive_family_relationships, extract_story_ids, has_children, is_ready, parse_duration,
+    relation_edges, would_create_parent_cycle,
 };
 use crate::error::AppError;
 use crate::lock;
@@ -144,29 +145,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             storage::store_member(root, &member)?;
             Ok(Response::Message(format!("added member {}", member.id)))
         }),
-        Invocation::State { action } => match action {
-            StateAction::Add {
-                slug,
-                superstate,
-                role,
-            } => lock::with_project_lock(root, || {
-                storage::ensure_project(root)?;
-                let superstate = SuperState::parse(&superstate).ok_or_else(|| {
-                    AppError::Validation("superstate must be OPEN or CLOSED".to_string())
-                })?;
-                let state = storage::add_state(root, &slug, superstate, role, None)?;
-                Ok(Response::Message(format!(
-                    "added state {} ({})",
-                    state.slug,
-                    state.super_state.as_str()
-                )))
-            }),
-            StateAction::Remove { slug } => lock::with_project_lock(root, || {
-                storage::ensure_project(root)?;
-                storage::remove_state(root, &slug, None)?;
-                Ok(Response::Message(format!("removed state {slug}")))
-            }),
-        },
+        Invocation::State { action } => run_state_action(root, action),
         Invocation::List {
             state,
             assignee,
@@ -2836,6 +2815,147 @@ fn doctor_fix(root: &Path) -> Result<Response, AppError> {
         }
         Err(error) => Err(error),
     }
+}
+
+/// Runs a `story state …` subcommand.
+///
+/// Every mutating branch takes the project write lock, because editing the
+/// state set can migrate stories (see `storage::update_state`) — the
+/// configuration change and the story moves have to land together.
+fn run_state_action(root: &Path, action: StateAction) -> Result<Response, AppError> {
+    match action {
+        StateAction::List => {
+            storage::ensure_project(root)?;
+            let usage = storage::state_usage(root)?;
+            let lines: Vec<String> = storage::load_states(root)?
+                .iter()
+                .map(|state| format_state_line(state, usage.get(&state.slug).copied()))
+                .collect();
+            Ok(Response::Message(lines.join("\n")))
+        }
+
+        StateAction::Add {
+            slug,
+            superstate,
+            role,
+            description,
+        } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            let superstate = parse_superstate(&superstate)?;
+            let state = storage::add_state(root, &slug, superstate, role, description)?;
+            Ok(Response::Message(format!(
+                "added state {} ({})",
+                state.slug,
+                state.super_state.as_str()
+            )))
+        }),
+
+        StateAction::Set {
+            slug,
+            superstate,
+            role,
+            description,
+            clear_description,
+            move_stories_to,
+        } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            let changes = StateChanges {
+                super_state: superstate.as_deref().map(parse_superstate).transpose()?,
+                // `--role none` clears; `active` is the only real role, so
+                // `none` can't collide with one.
+                role: match role.as_deref() {
+                    None => FieldEdit::Keep,
+                    Some("none") => FieldEdit::Clear,
+                    Some(value) => FieldEdit::Set(value.to_string()),
+                },
+                description: if clear_description {
+                    FieldEdit::Clear
+                } else {
+                    match description {
+                        Some(text) => FieldEdit::Set(text),
+                        None => FieldEdit::Keep,
+                    }
+                },
+            };
+            let edit = storage::update_state(root, &slug, &changes, move_stories_to.as_deref())?;
+            let mut message = format!(
+                "updated state {} ({})",
+                edit.state.slug,
+                edit.state.super_state.as_str()
+            );
+            if edit.moved > 0 {
+                message.push_str(&format!(
+                    "; moved {} {} to {}",
+                    edit.moved,
+                    if edit.moved == 1 { "story" } else { "stories" },
+                    move_stories_to.as_deref().unwrap_or("another state")
+                ));
+            }
+            Ok(Response::Message(message))
+        }),
+
+        StateAction::Remove {
+            slug,
+            move_stories_to,
+        } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            let moved = storage::remove_state(root, &slug, move_stories_to.as_deref())?;
+            let mut message = format!("removed state {slug}");
+            if moved > 0 {
+                message.push_str(&format!(
+                    "; moved {} {} to {}",
+                    moved,
+                    if moved == 1 { "story" } else { "stories" },
+                    move_stories_to.as_deref().unwrap_or("another state")
+                ));
+            }
+            Ok(Response::Message(message))
+        }),
+
+        StateAction::Reorder { order } => lock::with_project_lock(root, || {
+            storage::ensure_project(root)?;
+            let states = storage::reorder_states(root, &order)?;
+            Ok(Response::Message(format!(
+                "reordered states: {}",
+                states
+                    .iter()
+                    .map(|state| state.slug.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )))
+        }),
+    }
+}
+
+fn parse_superstate(raw: &str) -> Result<SuperState, AppError> {
+    SuperState::parse(raw)
+        .ok_or_else(|| AppError::Validation("superstate must be OPEN or CLOSED".to_string()))
+}
+
+/// One `story state list` row: `in-progress (OPEN, active) — 2 open — desc`.
+fn format_state_line(state: &StateDef, usage: Option<StateUsage>) -> String {
+    let mut attributes = vec![state.super_state.as_str().to_string()];
+    if let Some(ref role) = state.role {
+        attributes.push(role.clone());
+    }
+    let mut line = format!("{} ({})", state.slug, attributes.join(", "));
+
+    if let Some(usage) = usage {
+        let mut counts = Vec::new();
+        if usage.open > 0 {
+            counts.push(format!("{} open", usage.open));
+        }
+        if usage.archived > 0 {
+            counts.push(format!("{} archived", usage.archived));
+        }
+        if !counts.is_empty() {
+            line.push_str(&format!(" — {}", counts.join(", ")));
+        }
+    }
+    if let Some(ref description) = state.description {
+        line.push_str(&format!(" — {description}"));
+    }
+    line
 }
 
 fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Response, AppError> {

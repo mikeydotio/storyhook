@@ -385,6 +385,15 @@ pub fn state_usage(root: &Path) -> Result<BTreeMap<String, StateUsage>, AppError
     Ok(usage)
 }
 
+/// The result of an edit that may have migrated stories out of the state it
+/// changed, so callers can report both halves of what happened.
+#[derive(Clone, Debug)]
+pub struct StateEdit {
+    pub state: StateDef,
+    /// How many open stories were moved out of the edited state.
+    pub moved: usize,
+}
+
 pub fn add_state(
     root: &Path,
     slug: &str,
@@ -428,7 +437,7 @@ pub fn update_state(
     slug: &str,
     changes: &StateChanges,
     move_stories_to: Option<&str>,
-) -> Result<StateDef, AppError> {
+) -> Result<StateEdit, AppError> {
     let states = load_states(root)?;
     let current = states
         .iter()
@@ -474,6 +483,7 @@ pub fn update_state(
     // fails having changed nothing.
     validate_state_defs_for_write(&next_states)?;
 
+    let mut moved = 0;
     if superstate_changed {
         let destination = resolve_migration(
             root,
@@ -483,12 +493,15 @@ pub fn update_state(
             "change the superstate of",
         )?;
         if let Some(destination) = destination {
-            migrate_open_stories(root, slug, &destination)?;
+            moved = migrate_open_stories(root, slug, &destination)?;
         }
     }
 
     save_states(root, &next_states)?;
-    Ok(updated)
+    Ok(StateEdit {
+        state: updated,
+        moved,
+    })
 }
 
 /// Removes the state `slug`.
@@ -499,12 +512,14 @@ pub fn update_state(
 /// the *current* state set, so reopening one after the state vanished would
 /// fail (`fold_story` rejects an undefined state).
 ///
+/// Returns how many open stories were migrated out on the way.
+///
 /// Caller must hold the project write lock.
 pub fn remove_state(
     root: &Path,
     slug: &str,
     move_stories_to: Option<&str>,
-) -> Result<(), AppError> {
+) -> Result<usize, AppError> {
     let states = load_states(root)?;
     if !states.iter().any(|state| state.slug == slug) {
         return Err(AppError::NotFound(format!("state `{slug}` not found")));
@@ -528,13 +543,14 @@ pub fn remove_state(
         )));
     }
 
+    let mut moved = 0;
     if let Some(destination) = resolve_migration(root, &retained, slug, move_stories_to, "remove")?
     {
-        migrate_open_stories(root, slug, &destination)?;
+        moved = migrate_open_stories(root, slug, &destination)?;
     }
 
     save_states(root, &retained)?;
-    Ok(())
+    Ok(moved)
 }
 
 /// Rewrites the state set in the given order.
@@ -2087,7 +2103,7 @@ mod tests {
         let story = create_story(root, "in flight", None).unwrap();
         move_to(root, &story.id, "in-progress");
 
-        update_state(
+        let edit = update_state(
             root,
             "in-progress",
             &StateChanges {
@@ -2097,6 +2113,7 @@ mod tests {
             Some("todo"),
         )
         .unwrap();
+        assert_eq!(edit.moved, 1);
 
         assert_eq!(
             load_state_map(root).unwrap()["in-progress"].super_state,
@@ -2233,7 +2250,7 @@ mod tests {
         move_to(root, &first.id, "in-progress");
         move_to(root, &second.id, "in-progress");
 
-        remove_state(root, "in-progress", Some("todo")).unwrap();
+        assert_eq!(remove_state(root, "in-progress", Some("todo")).unwrap(), 2);
 
         assert!(!load_state_map(root).unwrap().contains_key("in-progress"));
         for id in [&first.id, &second.id] {
