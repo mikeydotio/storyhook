@@ -131,16 +131,19 @@ pub fn init_project(root: &Path, prefix: Option<&str>) -> Result<(), AppError> {
                 slug: "todo".to_string(),
                 super_state: SuperState::Open,
                 role: None,
+                description: None,
             },
             StateDef {
                 slug: "in-progress".to_string(),
                 super_state: SuperState::Open,
                 role: Some("active".to_string()),
+                description: None,
             },
             StateDef {
                 slug: "done".to_string(),
                 super_state: SuperState::Closed,
                 role: None,
+                description: None,
             },
         ];
         save_states(root, &states)?;
@@ -367,6 +370,7 @@ pub fn add_state(
         slug: slug.to_string(),
         super_state: superstate,
         role,
+        description: None,
     };
     states.push(state.clone());
     save_states(root, &states)?;
@@ -1403,6 +1407,65 @@ mod tests {
 
         let labels = distinct_labels(dir.path()).unwrap();
         assert_eq!(labels, vec!["bug", "cli", "web"]);
+    }
+
+    // --- state descriptions (SH-49 regression) ---
+
+    /// A `description` written into `states.toml` by hand (or by an earlier
+    /// build) must survive any command that rewrites the file. Before SH-49,
+    /// `StateDef` had no `description` field at all, so every rewrite silently
+    /// dropped it.
+    #[test]
+    fn add_state_preserves_existing_state_descriptions() {
+        let dir = setup_project();
+        let paths = ProjectPaths::new(dir.path());
+        let mut raw = fs::read_to_string(paths.states_file()).unwrap();
+        raw.push_str(
+            "\n[[states]]\nslug = \"review\"\nsuper = \"OPEN\"\ndescription = \"Waiting on a reviewer\"\n",
+        );
+        fs::write(paths.states_file(), raw).unwrap();
+
+        add_state(dir.path(), "qa", SuperState::Open, None).unwrap();
+
+        let after = fs::read_to_string(paths.states_file()).unwrap();
+        assert!(
+            after.contains("Waiting on a reviewer"),
+            "rewriting states.toml dropped `review`'s description:\n{after}"
+        );
+    }
+
+    #[test]
+    fn save_states_round_trips_descriptions() {
+        let dir = setup_project();
+        let states = vec![
+            StateDef {
+                slug: "todo".to_string(),
+                super_state: SuperState::Open,
+                role: None,
+                description: Some("Not started yet".to_string()),
+            },
+            StateDef {
+                slug: "done".to_string(),
+                super_state: SuperState::Closed,
+                role: None,
+                description: None,
+            },
+        ];
+        save_states(dir.path(), &states).unwrap();
+
+        let loaded = load_states(dir.path()).unwrap();
+        assert_eq!(loaded[0].description.as_deref(), Some("Not started yet"));
+        assert_eq!(loaded[1].description, None);
+    }
+
+    /// A state without a description must not gain an empty `description = ""`
+    /// line — the on-disk format stays byte-identical for projects that never
+    /// used descriptions.
+    #[test]
+    fn save_states_omits_absent_descriptions() {
+        let dir = setup_project();
+        let raw = fs::read_to_string(ProjectPaths::new(dir.path()).states_file()).unwrap();
+        assert!(!raw.contains("description"), "unexpected key:\n{raw}");
     }
 
     // --- remove_type ---

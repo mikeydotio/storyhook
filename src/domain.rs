@@ -97,6 +97,13 @@ pub struct StateDef {
     pub super_state: SuperState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Free text explaining what the state means, surfaced in the UIs.
+    ///
+    /// Round-tripping this is not optional: `save_states` rewrites the whole
+    /// file, so a field the struct doesn't know about is silently destroyed
+    /// on the next `story state add` (SH-49).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1125,6 +1132,7 @@ mod tests {
             slug: "todo".to_string(),
             super_state: SuperState::Open,
             role: None,
+            description: None,
         }];
         let error = validate_state_defs(&states).unwrap_err();
         assert!(error.to_string().contains("OPEN"));
@@ -1429,11 +1437,13 @@ mod tests {
                 slug: "todo".to_string(),
                 super_state: SuperState::Open,
                 role: None,
+                description: None,
             },
             StateDef {
                 slug: "done".to_string(),
                 super_state: SuperState::Closed,
                 role: None,
+                description: None,
             },
         ]
         .into_iter()
