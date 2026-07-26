@@ -5,7 +5,7 @@ use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::domain::{StoryEvent, SuperState};
+use crate::domain::StoryEvent;
 use crate::error::AppError;
 
 use super::action::{Action, UndoEntry, View};
@@ -645,42 +645,13 @@ fn dispatch(
             // Snapshot before mutation for potential undo
             let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
-                // Check if target state is CLOSED -- if so, we need to archive
                 let states = crate::storage::load_state_map(root)?;
                 let state_def = states.get(&target_state).ok_or_else(|| {
                     AppError::Validation(format!("state `{target_state}` is not defined"))
                 })?;
-
-                let is_close = state_def.super_state == SuperState::Closed;
-
-                let now = crate::storage::now();
-                let mut events = vec![crate::domain::StoryEvent::StoryStateChanged {
-                    at: now.clone(),
-                    state: target_state.clone(),
-                }];
-
-                if is_close {
-                    // Clear awaiting if set
-                    let snapshot = crate::storage::load_open_story_snapshot(root, &id)?;
-                    if snapshot.awaiting.is_some() {
-                        events.push(crate::domain::StoryEvent::StoryAwaitingCleared {
-                            at: now.clone(),
-                        });
-                    }
-                    events.push(crate::domain::StoryEvent::StoryClosedAndArchived {
-                        at: now,
-                        state: target_state.clone(),
-                    });
-                }
-
-                crate::storage::write_story_events(root, &id, &events)?;
-
-                // Archive MUST happen inside the lock closure
-                if is_close {
-                    crate::storage::archive_story(root, &id)?;
-                }
-
-                Ok(is_close)
+                // Writing the events and archiving a closed story both happen
+                // inside this closure — i.e. under the project lock.
+                crate::storage::move_story_to_state(root, &id, state_def)
             });
             match result {
                 Ok(is_close) => {

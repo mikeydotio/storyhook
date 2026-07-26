@@ -750,6 +750,70 @@ pub fn load_story_snapshot(root: &Path, id: &str) -> Result<StorySnapshot, AppEr
     }
 }
 
+/// The event batch that moves an open story into `target`.
+///
+/// Order is `StoryStateChanged`, then `extra` (a caller-supplied comment,
+/// say), then — when `target` is a CLOSED state — the close markers:
+/// `StoryAwaitingCleared` if the story is currently awaiting something,
+/// followed by `StoryClosedAndArchived`.
+///
+/// Every path that changes a story's state (`story move`, `story set
+/// --state`, bulk update, the TUI board) must emit the identical batch:
+/// forgetting the awaiting clear archives a story that still reads as
+/// blocked, and forgetting the close marker leaves a CLOSED story that
+/// `archive_story` will happily archive but that reopens inconsistently.
+pub fn state_transition_events(
+    target: &StateDef,
+    awaiting: bool,
+    at: &str,
+    extra: Vec<StoryEvent>,
+) -> Vec<StoryEvent> {
+    let mut events = vec![StoryEvent::StoryStateChanged {
+        at: at.to_string(),
+        state: target.slug.clone(),
+    }];
+    events.extend(extra);
+    if target.super_state == SuperState::Closed {
+        if awaiting {
+            events.push(StoryEvent::StoryAwaitingCleared { at: at.to_string() });
+        }
+        events.push(StoryEvent::StoryClosedAndArchived {
+            at: at.to_string(),
+            state: target.slug.clone(),
+        });
+    }
+    events
+}
+
+/// Moves the open story `id` into `target`: writes
+/// [`state_transition_events`] and archives the story when `target` closes
+/// it. Returns `true` when the story was archived.
+///
+/// The caller must already hold the project write lock — the write and the
+/// archive have to land inside one lock, or a reader can observe a story
+/// that is marked closed but still sitting in the open store.
+pub fn move_story_to_state(root: &Path, id: &str, target: &StateDef) -> Result<bool, AppError> {
+    let awaiting = load_open_story_snapshot(root, id)
+        .map(|snapshot| snapshot.awaiting.is_some())
+        .unwrap_or(false);
+    let events = state_transition_events(target, awaiting, &now(), Vec::new());
+    write_story_events(root, id, &events)?;
+
+    let closed = target.super_state == SuperState::Closed;
+    if closed {
+        // The events are already written, so a failure here leaves a story
+        // marked closed but still in the open store. Say which stage failed
+        // rather than surfacing a bare "story not found" from `archive_story`.
+        archive_story(root, id).map_err(|error| {
+            AppError::Storage(format!(
+                "story `{id}` moved to `{}` but could not be archived: {error}",
+                target.slug
+            ))
+        })?;
+    }
+    Ok(closed)
+}
+
 pub fn is_archived(root: &Path, id: &str) -> Result<bool, AppError> {
     let connection = open_archive_connection(root)?;
     let count = connection.query_row(

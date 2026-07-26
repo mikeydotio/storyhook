@@ -541,25 +541,16 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 .get(&state)
                 .ok_or_else(|| AppError::Validation(format!("state `{state}` is not defined")))?;
             let now = storage::now();
-            let mut events = vec![StoryEvent::StoryStateChanged {
+            let comment_event = comment.map(|text| StoryEvent::StoryCommentAdded {
                 at: now.clone(),
-                state: state.clone(),
-            }];
-            if let Some(comment) = comment {
-                events.push(StoryEvent::StoryCommentAdded {
-                    at: now.clone(),
-                    text: comment,
-                });
-            }
-            if state_def.super_state == SuperState::Closed {
-                if story.awaiting.is_some() {
-                    events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
-                }
-                events.push(StoryEvent::StoryClosedAndArchived {
-                    at: now.clone(),
-                    state: state.clone(),
-                });
-            }
+                text,
+            });
+            let events = storage::state_transition_events(
+                state_def,
+                story.awaiting.is_some(),
+                &now,
+                comment_event.into_iter().collect(),
+            );
             storage::write_story_events(root, &id, &events)?;
 
             if !no_hooks && let Some(ref config) = crate::event_hooks::load_hooks_config(root) {
@@ -993,37 +984,10 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                             continue;
                         }
 
-                        let now = storage::now();
-                        let mut events = vec![StoryEvent::StoryStateChanged {
-                            at: now.clone(),
-                            state: state_slug.clone(),
-                        }];
-
-                        if state_def.super_state == SuperState::Closed {
-                            // Clear awaiting if set
-                            if let Ok(snapshot) = storage::load_open_story_snapshot(root, id)
-                                && snapshot.awaiting.is_some()
-                            {
-                                events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
-                            }
-                            events.push(StoryEvent::StoryClosedAndArchived {
-                                at: now,
-                                state: state_slug.clone(),
-                            });
-                        }
-
-                        if let Err(e) = storage::write_story_events(root, id, &events) {
-                            results.push(format!("{id}: error — {e}"));
-                            continue;
-                        }
-
-                        if state_def.super_state == SuperState::Closed {
-                            match storage::archive_story(root, id) {
-                                Ok(_) => results.push(format!("{id}: {state_slug} (archived)")),
-                                Err(e) => results.push(format!("{id}: error archiving — {e}")),
-                            }
-                        } else {
-                            results.push(format!("{id}: {state_slug}"));
+                        match storage::move_story_to_state(root, id, state_def) {
+                            Ok(true) => results.push(format!("{id}: {state_slug} (archived)")),
+                            Ok(false) => results.push(format!("{id}: {state_slug}")),
+                            Err(e) => results.push(format!("{id}: error — {e}")),
                         }
                     }
                 }
@@ -1782,19 +1746,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 let state_def = states
                     .get(s)
                     .ok_or_else(|| AppError::Validation(format!("state `{s}` is not defined")))?;
-                events.push(StoryEvent::StoryStateChanged {
-                    at: now.clone(),
-                    state: s.clone(),
-                });
-                if state_def.super_state == SuperState::Closed {
-                    if story.awaiting.is_some() {
-                        events.push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
-                    }
-                    events.push(StoryEvent::StoryClosedAndArchived {
-                        at: now.clone(),
-                        state: s.clone(),
-                    });
-                }
+                events.extend(storage::state_transition_events(
+                    state_def,
+                    story.awaiting.is_some(),
+                    &now,
+                    Vec::new(),
+                ));
                 changes.push(format!("state -> {s}"));
             }
             if let Some(ref p) = priority {
@@ -1890,20 +1847,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                             let state_def = states.get(v).ok_or_else(|| {
                                 AppError::Validation(format!("state `{v}` is not defined"))
                             })?;
-                            events.push(StoryEvent::StoryStateChanged {
-                                at: now.clone(),
-                                state: v.to_string(),
-                            });
-                            if state_def.super_state == SuperState::Closed {
-                                if story.awaiting.is_some() {
-                                    events
-                                        .push(StoryEvent::StoryAwaitingCleared { at: now.clone() });
-                                }
-                                events.push(StoryEvent::StoryClosedAndArchived {
-                                    at: now.clone(),
-                                    state: v.to_string(),
-                                });
-                            }
+                            events.extend(storage::state_transition_events(
+                                state_def,
+                                story.awaiting.is_some(),
+                                &now,
+                                Vec::new(),
+                            ));
                             changes.push(format!("state -> {v}"));
                         }
                         "priority" => {
