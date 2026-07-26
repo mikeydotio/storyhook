@@ -47,6 +47,20 @@ pub enum TypeAction {
     },
 }
 
+/// The `story state …` subcommands, grouped the same way [`TypeAction`]
+/// groups `story type …`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StateAction {
+    Add {
+        slug: String,
+        superstate: String,
+        role: Option<String>,
+    },
+    Remove {
+        slug: String,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EpicAction {
     List,
@@ -169,13 +183,8 @@ pub enum Invocation {
     MemberAdd {
         input: MemberInput,
     },
-    StateAdd {
-        slug: String,
-        superstate: String,
-        role: Option<String>,
-    },
-    StateRemove {
-        slug: String,
+    State {
+        action: StateAction,
     },
     List {
         state: Option<String>,
@@ -650,19 +659,23 @@ fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
                 }
             }
 
-            Ok(Invocation::StateAdd {
-                slug,
-                superstate: superstate.ok_or_else(|| {
-                    AppError::Usage(
-                        "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
-                            .to_string(),
-                    )
-                })?,
-                role,
+            Ok(Invocation::State {
+                action: StateAction::Add {
+                    slug,
+                    superstate: superstate.ok_or_else(|| {
+                        AppError::Usage(
+                            "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
+                                .to_string(),
+                        )
+                    })?,
+                    role,
+                },
             })
         }
-        "remove" => Ok(Invocation::StateRemove {
-            slug: args[2].clone(),
+        "remove" => Ok(Invocation::State {
+            action: StateAction::Remove {
+                slug: args[2].clone(),
+            },
         }),
         _ => Err(AppError::Usage(
             "usage: story state add <slug> --super OPEN|CLOSED | story state remove <slug>"

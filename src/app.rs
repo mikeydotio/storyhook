@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::cli::{
     CliOptions, EpicAction, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput,
-    PhaseAction, PluginAction, TypeAction, WebAction,
+    PhaseAction, PluginAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{
     DependencyGraph, ImportStory, Member, Priority, StoryEvent, StorySnapshot, SuperState,
@@ -144,27 +144,29 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             storage::store_member(root, &member)?;
             Ok(Response::Message(format!("added member {}", member.id)))
         }),
-        Invocation::StateAdd {
-            slug,
-            superstate,
-            role,
-        } => lock::with_project_lock(root, || {
-            storage::ensure_project(root)?;
-            let superstate = SuperState::parse(&superstate).ok_or_else(|| {
-                AppError::Validation("superstate must be OPEN or CLOSED".to_string())
-            })?;
-            let state = storage::add_state(root, &slug, superstate, role)?;
-            Ok(Response::Message(format!(
-                "added state {} ({})",
-                state.slug,
-                state.super_state.as_str()
-            )))
-        }),
-        Invocation::StateRemove { slug } => lock::with_project_lock(root, || {
-            storage::ensure_project(root)?;
-            storage::remove_state(root, &slug)?;
-            Ok(Response::Message(format!("removed state {slug}")))
-        }),
+        Invocation::State { action } => match action {
+            StateAction::Add {
+                slug,
+                superstate,
+                role,
+            } => lock::with_project_lock(root, || {
+                storage::ensure_project(root)?;
+                let superstate = SuperState::parse(&superstate).ok_or_else(|| {
+                    AppError::Validation("superstate must be OPEN or CLOSED".to_string())
+                })?;
+                let state = storage::add_state(root, &slug, superstate, role)?;
+                Ok(Response::Message(format!(
+                    "added state {} ({})",
+                    state.slug,
+                    state.super_state.as_str()
+                )))
+            }),
+            StateAction::Remove { slug } => lock::with_project_lock(root, || {
+                storage::ensure_project(root)?;
+                storage::remove_state(root, &slug)?;
+                Ok(Response::Message(format!("removed state {slug}")))
+            }),
+        },
         Invocation::List {
             state,
             assignee,
