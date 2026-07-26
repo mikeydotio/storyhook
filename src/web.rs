@@ -16,7 +16,7 @@ use notify::Watcher;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::app::{self, build_report_data};
-use crate::cli::{CliOptions, Invocation};
+use crate::cli::{CliOptions, Invocation, StateAction};
 use crate::domain::Priority;
 use crate::error::AppError;
 use crate::output::{render_error, render_response};
@@ -325,6 +325,31 @@ fn route_repo(
                 route_reopen_story(root, id, b)
             }),
             (Method::Post, _) => text_reply(404, "Not found"),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        // Reordering is a PATCH of the *collection*, not a
+        // `/states/reorder` sub-path: `reorder` is a legal state slug, and
+        // that route would shadow the state with that name.
+        ["states"] => match method {
+            Method::Get => match build_states_json(root, None) {
+                Ok(json) => json_reply(200, json).no_cache(),
+                Err(e) => error_reply(&e),
+            },
+            Method::Post => guarded(headers, trusted_hosts, body, |b| {
+                route_create_state(root, b)
+            }),
+            Method::Patch => guarded(headers, trusted_hosts, body, |b| {
+                route_reorder_states(root, b)
+            }),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["states", slug] => match method {
+            Method::Patch => guarded(headers, trusted_hosts, body, |b| {
+                route_patch_state(root, slug, b)
+            }),
+            Method::Delete => guarded(headers, trusted_hosts, body, |b| {
+                route_delete_state(root, slug, b)
+            }),
             _ => text_reply(405, "Method not allowed"),
         },
         ["relate"] => match method {
@@ -778,6 +803,170 @@ fn route_delete_story(root: &Path, id: &str, body: &str) -> Reply {
     .unwrap_or_else(|e| error_reply(&e))
 }
 
+// --- Per-repo state configuration: /api/repos/<id>/states ---
+
+/// The states payload every state route replies with: the configured states
+/// in `states.toml` order — which is the board's column order — each with
+/// the story counts the editor needs to decide whether a change is
+/// destructive.
+///
+/// `open_count` stories can be migrated elsewhere; `archived_count` ones
+/// cannot, so the two stay separate rather than summed.
+fn build_states_json(root: &Path, message: Option<&str>) -> Result<String, AppError> {
+    let usage = storage::state_usage(root)?;
+    let states: Vec<serde_json::Value> = storage::load_states(root)?
+        .into_iter()
+        .map(|state| {
+            let counts = usage.get(&state.slug).copied().unwrap_or_default();
+            serde_json::json!({
+                "slug": state.slug,
+                "super_state": state.super_state.as_str(),
+                "role": state.role,
+                "description": state.description,
+                "open_count": counts.open,
+                "archived_count": counts.archived,
+            })
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "result": "ok",
+        "message": message,
+        "states": states,
+    });
+    serde_json::to_string(&payload)
+        .map_err(|e| AppError::Storage(format!("JSON serialization failed: {e}")))
+}
+
+/// Dispatches a state mutation through `app::run` — same locking, migration,
+/// and validation as the CLI — then replies with the refreshed list rather
+/// than the bare success message, so the editor always redraws from server
+/// truth instead of guessing what its own edit did (an edit can move
+/// stories, which changes counts on *two* states at once).
+fn run_state_mutation_and_reply(root: &Path, status: u16, invocation: Invocation) -> Reply {
+    let options = CliOptions {
+        json: true,
+        quiet: false,
+        no_hooks: false,
+        invocation,
+    };
+    match app::run(root, options) {
+        Ok(response) => {
+            // `Response` here is tiny_http's; the app's lives in `output`.
+            let message = match response {
+                crate::output::Response::Message(text) => text,
+                _ => String::new(),
+            };
+            match build_states_json(root, Some(&message)) {
+                Ok(json) => json_reply(status, json).no_cache(),
+                Err(e) => error_reply(&e),
+            }
+        }
+        Err(e) => error_reply(&e),
+    }
+}
+
+/// `POST /api/repos/{id}/states` — add a state.
+fn route_create_state(root: &Path, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let slug = require_str(&obj, "slug")?.to_string();
+        let superstate = require_str(&obj, "super_state")?.to_string();
+        Ok(run_state_mutation_and_reply(
+            root,
+            201,
+            Invocation::State {
+                action: StateAction::Add {
+                    slug,
+                    superstate,
+                    role: get_str(&obj, "role").map(str::to_string),
+                    description: get_str(&obj, "description").map(str::to_string),
+                },
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `PATCH /api/repos/{id}/states/{slug}` — edit one state.
+///
+/// `role` and `description` are three-valued: absent leaves the field alone,
+/// `null` clears it, a string sets it. `move_stories_to` names where open
+/// stories go when the edit reclassifies the state they sit in — required by
+/// `storage::update_state` in exactly that case.
+fn route_patch_state(root: &Path, slug: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let field_edit = |key: &str| match obj.get(key) {
+            None => Ok(None),
+            Some(serde_json::Value::Null) => Ok(Some(None)),
+            Some(serde_json::Value::String(value)) => Ok(Some(Some(value.clone()))),
+            Some(_) => Err(AppError::Usage(format!("`{key}` must be a string or null"))),
+        };
+        let role = field_edit("role")?;
+        let description = field_edit("description")?;
+
+        Ok(run_state_mutation_and_reply(
+            root,
+            200,
+            Invocation::State {
+                action: StateAction::Set {
+                    slug: slug.to_string(),
+                    superstate: get_str(&obj, "super_state").map(str::to_string),
+                    // `app::run` reads a literal "none" as "clear the role".
+                    role: role.map(|value| value.unwrap_or_else(|| "none".to_string())),
+                    description: description.clone().flatten(),
+                    clear_description: matches!(description, Some(None)),
+                    move_stories_to: get_str(&obj, "move_stories_to").map(str::to_string),
+                },
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `DELETE /api/repos/{id}/states/{slug}` — remove a state, optionally
+/// migrating the open stories still in it.
+fn route_delete_state(root: &Path, slug: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        Ok(run_state_mutation_and_reply(
+            root,
+            200,
+            Invocation::State {
+                action: StateAction::Remove {
+                    slug: slug.to_string(),
+                    move_stories_to: get_str(&obj, "move_stories_to").map(str::to_string),
+                },
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `PATCH /api/repos/{id}/states` — reorder the whole set, i.e. the board's
+/// column order. The body must list every state; a partial order is refused
+/// rather than interpreted as a deletion.
+fn route_reorder_states(root: &Path, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let order = get_str_array(&obj, "order");
+        if order.is_empty() {
+            return Err(AppError::Usage(
+                "`order` is required and must be a non-empty array of state slugs".to_string(),
+            ));
+        }
+        Ok(run_state_mutation_and_reply(
+            root,
+            200,
+            Invocation::State {
+                action: StateAction::Reorder { order },
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
 /// Backs both `POST /api/relate` (`remove: false`) and `POST /api/unrelate`
 /// (`remove: true`).
 fn route_relate(root: &Path, body: &str, remove: bool) -> Reply {
@@ -1056,12 +1245,25 @@ fn spawn_change_watcher(
     thread::spawn(move || run_change_watcher(registry_path, broadcaster, stop, ready_tx))
 }
 
-/// Rebuilds `watched` (open-stories dir -> repo id) from the registry at
+/// Rebuilds `watched` (watched directory -> repo id) from the registry at
 /// `registry_path`, `watch`-ing every directory newly present and
 /// `unwatch`-ing every one no longer registered. A single repo whose
 /// directory is missing or otherwise unwatchable (moved, deleted, permission
 /// error) is skipped rather than aborting the whole rescan — one bad repo
 /// must never break live updates for the others.
+///
+/// Watches each repo's open-stories directory, which covers every story
+/// mutation (create, any field change, close, reopen — see
+/// `storage::write_story_events`/`archive_story`/`unarchive_story`).
+///
+/// Project *configuration* (states, types, members) deliberately isn't
+/// watched: it lives beside the stories directory, next to the SQLite
+/// archive whose WAL and shared-memory files are rewritten merely by
+/// reading the archive — which every `/data` request does — so watching that
+/// directory turns each client's refetch into another change event for
+/// every client. Configuration changes made *through the dashboard* are
+/// published directly by `accept_loop` instead; ones made behind its back
+/// are picked up by the client's safety poll.
 fn rescan_watched_repos(
     registry_path: &Path,
     watcher: &mut notify::RecommendedWatcher,
@@ -1208,6 +1410,25 @@ fn run_change_watcher(
     drop(watcher);
 }
 
+/// The repo whose configuration a just-answered request changed, if any —
+/// i.e. a successful write to `/api/repos/<id>/states…`.
+///
+/// Read as: which clients need to redraw because the *state set* moved under
+/// them. Only successful (2xx) writes count; a rejected edit changed
+/// nothing, and telling every client to refetch for it would be noise.
+fn config_change_repo_id(method: &Method, path: &str, reply: &Reply) -> Option<String> {
+    if !matches!(method, Method::Post | Method::Patch | Method::Delete) {
+        return None;
+    }
+    if !(200..300).contains(&reply.status) {
+        return None;
+    }
+    match path_segments(path).as_slice() {
+        ["api", "repos", id, "states", ..] => Some((*id).to_string()),
+        _ => None,
+    }
+}
+
 /// Maximum request body size accepted from a mutation route. Well above any
 /// legitimate story field (titles, comments, label lists), while bounding
 /// how much a single request can force the server to buffer.
@@ -1300,6 +1521,15 @@ fn accept_loop(
             &body,
             &trusted_hosts,
         );
+        // Story writes reach other clients through the filesystem watcher,
+        // which watches the open-stories directory. Configuration writes
+        // can't: the directory holding states.toml also holds the SQLite
+        // archive, which rewrites its WAL files whenever it is merely read
+        // (see `rescan_watched_repos`). The server knows perfectly well what
+        // it just changed, so it says so directly.
+        if let Some(repo_id) = config_change_repo_id(&method, &path, &reply) {
+            broadcaster.publish(SseEvent::RepoChanged(repo_id));
+        }
         finish(request, reply);
     }
 }
@@ -2020,6 +2250,8 @@ fn build_meta_json(root: &Path) -> Result<serde_json::Value, AppError> {
             serde_json::json!({
                 "slug": s.slug,
                 "super_state": s.super_state.as_str(),
+                "role": s.role,
+                "description": s.description,
             })
         })
         .collect();
@@ -2179,6 +2411,63 @@ mod tests {
             magic_dns: None,
         };
         assert_eq!(identity.advertise_host(), "100.71.206.33");
+    }
+
+    // --- config_change_repo_id ---
+
+    fn ok_reply() -> Reply {
+        json_reply(200, "{}")
+    }
+
+    #[test]
+    fn config_change_is_detected_for_every_state_write() {
+        for (method, path) in [
+            (Method::Post, "/api/repos/app/states"),
+            (Method::Patch, "/api/repos/app/states"),
+            (Method::Patch, "/api/repos/app/states/todo"),
+            (Method::Delete, "/api/repos/app/states/todo"),
+        ] {
+            assert_eq!(
+                config_change_repo_id(&method, path, &ok_reply()).as_deref(),
+                Some("app"),
+                "{method:?} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_and_story_writes_are_not_config_changes() {
+        assert_eq!(
+            config_change_repo_id(&Method::Get, "/api/repos/app/states", &ok_reply()),
+            None,
+            "listing states changes nothing"
+        );
+        assert_eq!(
+            config_change_repo_id(&Method::Post, "/api/repos/app/story", &ok_reply()),
+            None,
+            "story writes reach clients through the filesystem watcher"
+        );
+        assert_eq!(
+            config_change_repo_id(&Method::Post, "/api/repos", &ok_reply()),
+            None
+        );
+    }
+
+    /// A rejected edit changed nothing — telling every client to refetch for
+    /// it would be pure noise.
+    #[test]
+    fn failed_state_writes_are_not_config_changes() {
+        for status in [400, 403, 404, 422, 500] {
+            assert_eq!(
+                config_change_repo_id(
+                    &Method::Patch,
+                    "/api/repos/app/states/todo",
+                    &json_reply(status, "{}")
+                ),
+                None,
+                "status {status}"
+            );
+        }
     }
 
     // --- host_is_trusted ---

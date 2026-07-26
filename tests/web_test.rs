@@ -366,6 +366,18 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="settings-btn""#));
     // Mutation API call sites carry the CSRF guard header
     assert!(body.contains("X-Storyhook"));
+    // Statuses editor (SH-41): its own styles, the settings-table entry
+    // point, and the four calls that reach the states API.
+    assert!(body.contains(".status-row"));
+    assert!(body.contains(".status-add"));
+    assert!(body.contains("goStatuses"));
+    assert!(body.contains("function statusMutation"));
+    for call in ["/states", "move_stories_to", "super_state"] {
+        assert!(
+            body.contains(call),
+            "statuses editor should reference {call}"
+        );
+    }
 }
 
 #[test]
@@ -2164,6 +2176,326 @@ fn web_mutation_guard_reject_has_security_headers() {
     }
 }
 
+// --- State configuration API: /api/repos/<id>/states ---
+
+/// Boots a server over a fresh project and returns (dir guard, port, repo id).
+/// Every state test needs the same three lines otherwise.
+fn serve_project() -> (tempfile::TempDir, tempfile::TempDir, u16, String) {
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    let (registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+    (dir, registry_dir, port, repo_id)
+}
+
+fn get_states(port: u16, repo_id: &str) -> serde_json::Value {
+    let resp = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/states"
+    ))
+    .call()
+    .unwrap();
+    serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap()
+}
+
+fn json_body(resp: ureq::http::Response<ureq::Body>) -> serde_json::Value {
+    serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap()
+}
+
+fn slugs(json: &serde_json::Value) -> Vec<String> {
+    json["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|state| state["slug"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn web_states_list_reports_config_and_counts_in_board_order() {
+    let (dir, _registry_dir, port, repo_id) = serve_project();
+    story(dir.path())
+        .args(["new", "Open one"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Done one"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["move", "SH-2", "done"])
+        .assert()
+        .success();
+
+    let json = get_states(port, &repo_id);
+    assert_eq!(slugs(&json), vec!["todo", "in-progress", "done"]);
+
+    let todo = &json["states"][0];
+    assert_eq!(todo["super_state"], "OPEN");
+    assert_eq!(todo["open_count"], 1);
+    assert_eq!(todo["archived_count"], 0);
+    assert!(todo["role"].is_null());
+    assert!(todo["description"].is_null());
+
+    assert_eq!(json["states"][1]["role"], "active");
+    assert_eq!(json["states"][2]["archived_count"], 1);
+}
+
+#[test]
+fn web_states_create_adds_a_state_and_returns_the_new_list() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
+        r#"{"slug":"review","super_state":"OPEN","description":"Waiting on a reviewer"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    let json = json_body(resp);
+    assert_eq!(slugs(&json), vec!["todo", "in-progress", "done", "review"]);
+    assert_eq!(json["states"][3]["description"], "Waiting on a reviewer");
+    assert_eq!(slugs(&get_states(port, &repo_id)), slugs(&json));
+}
+
+#[test]
+fn web_states_create_rejects_an_invalid_slug() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+
+    let error = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
+        r#"{"slug":"In Review","super_state":"OPEN"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(error), 422);
+}
+
+#[test]
+fn web_states_create_requires_slug_and_superstate() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states");
+
+    for body in [r#"{"super_state":"OPEN"}"#, r#"{"slug":"review"}"#] {
+        let error = post_json(&url, body).unwrap_err();
+        assert_eq!(status_of(error), 400, "body: {body}");
+    }
+}
+
+#[test]
+fn web_states_patch_sets_and_clears_optional_fields() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/todo");
+
+    let json = json_body(patch_json(&url, r#"{"description":"Not started yet"}"#).unwrap());
+    assert_eq!(json["states"][0]["description"], "Not started yet");
+
+    // null clears, absent leaves alone — the whole reason the field is
+    // three-valued.
+    let json = json_body(patch_json(&url, r#"{"role":null,"description":null}"#).unwrap());
+    assert!(json["states"][0]["description"].is_null());
+}
+
+#[test]
+fn web_states_patch_leaves_unmentioned_fields_alone() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/in-progress");
+
+    patch_json(&url, r#"{"description":"Being worked on"}"#).unwrap();
+    let json = json_body(patch_json(&url, r#"{"super_state":"OPEN"}"#).unwrap());
+    let in_progress = &json["states"][1];
+    assert_eq!(in_progress["description"], "Being worked on");
+    assert_eq!(in_progress["role"], "active");
+}
+
+#[test]
+fn web_states_patch_requires_a_destination_for_occupied_states() {
+    let (dir, _registry_dir, port, repo_id) = serve_project();
+    story(dir.path())
+        .args(["new", "A story"])
+        .assert()
+        .success();
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/todo");
+
+    let error = patch_json(&url, r#"{"super_state":"CLOSED"}"#).unwrap_err();
+    assert_eq!(status_of(error), 422);
+
+    // And with a destination it goes through, moving the story.
+    let json = json_body(
+        patch_json(
+            &url,
+            r#"{"super_state":"CLOSED","move_stories_to":"in-progress"}"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(json["states"][0]["super_state"], "CLOSED");
+    assert_eq!(json["states"][0]["open_count"], 0);
+    assert_eq!(json["states"][1]["open_count"], 1);
+    assert!(
+        json["message"]
+            .as_str()
+            .unwrap()
+            .contains("moved 1 story to in-progress"),
+        "got: {}",
+        json["message"]
+    );
+}
+
+#[test]
+fn web_states_patch_reorders_the_collection() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+
+    let json = json_body(
+        patch_json(
+            &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
+            r#"{"order":["done","todo","in-progress"]}"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(slugs(&json), vec!["done", "todo", "in-progress"]);
+    assert_eq!(slugs(&get_states(port, &repo_id)), slugs(&json));
+}
+
+#[test]
+fn web_states_reorder_rejects_a_partial_order() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+
+    let error = patch_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
+        r#"{"order":["done","todo"]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(error), 422);
+
+    let error = patch_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
+        r#"{"order":[]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(error), 400);
+}
+
+/// `reorder` is a legal state slug, so the collection PATCH must not be
+/// reachable as a sub-path that would shadow a state with that name.
+#[test]
+fn web_states_a_state_named_reorder_is_still_addressable() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
+        r#"{"slug":"reorder","super_state":"OPEN"}"#,
+    )
+    .unwrap();
+
+    let json = json_body(
+        patch_json(
+            &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/reorder"),
+            r#"{"description":"an unfortunate name"}"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(json["states"][3]["description"], "an unfortunate name");
+}
+
+#[test]
+fn web_states_delete_removes_and_migrates() {
+    let (dir, _registry_dir, port, repo_id) = serve_project();
+    story(dir.path())
+        .args(["new", "A story"])
+        .assert()
+        .success();
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/todo");
+
+    // Occupied and no destination named: refused, nothing changed.
+    let error = delete_json(&url, "{}").unwrap_err();
+    assert_eq!(status_of(error), 422);
+    assert_eq!(slugs(&get_states(port, &repo_id)).len(), 3);
+
+    let json = json_body(delete_json(&url, r#"{"move_stories_to":"in-progress"}"#).unwrap());
+    assert_eq!(slugs(&json), vec!["in-progress", "done"]);
+    assert_eq!(json["states"][0]["open_count"], 1);
+}
+
+#[test]
+fn web_states_delete_unknown_state_is_404() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let error = delete_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/nope"),
+        "{}",
+    )
+    .unwrap_err();
+    assert_eq!(status_of(error), 404);
+}
+
+/// Every state mutation is a write, so it must carry the same CSRF header
+/// the story routes require.
+#[test]
+fn web_states_mutations_require_the_guard_header() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+
+    let error = post_json_unguarded(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
+        r#"{"slug":"review","super_state":"OPEN"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(error), 403);
+
+    let error = ureq::patch(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/states/todo"
+    ))
+    .content_type("application/json")
+    .send(r#"{"description":"x"}"#)
+    .unwrap_err();
+    assert_eq!(status_of(error), 403);
+
+    let error = ureq::delete(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/states/in-progress"
+    ))
+    .force_send_body()
+    .content_type("application/json")
+    .send("{}")
+    .unwrap_err();
+    assert_eq!(status_of(error), 403);
+}
+
+#[test]
+fn web_states_rejects_disallowed_methods() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+
+    let error = ureq::put(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/states"
+    ))
+    .header("X-Storyhook", "1")
+    .content_type("application/json")
+    .send("{}")
+    .unwrap_err();
+    assert_eq!(status_of(error), 405);
+}
+
+/// The dashboard's board reads its columns from `/data`'s `meta.states`, so
+/// the two views of the state set must agree — including the fields the
+/// editor writes.
+#[test]
+fn web_data_meta_states_carry_role_and_description() {
+    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    patch_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/in-progress"),
+        r#"{"description":"Being worked on"}"#,
+    )
+    .unwrap();
+
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let json = json_body(resp);
+    let states = json["meta"]["states"].as_array().unwrap();
+    assert_eq!(states[1]["slug"], "in-progress");
+    assert_eq!(states[1]["role"], "active");
+    assert_eq!(states[1]["description"], "Being worked on");
+    assert!(states[0]["role"].is_null());
+}
+
 // --- Registry API: GET/POST /api/repos, DELETE /api/repos/<id> ---
 
 #[test]
@@ -3301,6 +3633,41 @@ fn sse_delivers_repo_changed_on_story_mutation() {
     assert!(
         received.contains("event: repo-changed"),
         "expected a repo-changed event, got: {received}"
+    );
+    assert!(
+        received.contains(&format!("\"repo_id\":\"{repo_id}\"")),
+        "expected the changed repo's id `{repo_id}` in the event payload, got: {received}"
+    );
+}
+
+/// Editing the project's *configuration* is a live update too: the board's
+/// columns are the state set, so a second open dashboard must be told to
+/// refetch rather than drawing stale columns until its slow safety poll
+/// comes round. Configuration lives beside the SQLite archive and so isn't
+/// watched (see `rescan_watched_repos`) — the server publishes these itself.
+#[test]
+fn sse_delivers_repo_changed_on_state_configuration_change() {
+    let _sse_guard = sse_test_lock();
+    let dir = tempdir().unwrap();
+    story(dir.path()).arg("init").assert().success();
+    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
+    let port = pick_port();
+    std::thread::spawn(move || {
+        storyhook::web::start_server(&registry_path, port).ok();
+    });
+    wait_for_server(port);
+
+    let mut sse = connect_sse(port);
+    post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
+        r#"{"slug":"review","super_state":"OPEN"}"#,
+    )
+    .unwrap();
+
+    let received = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    assert!(
+        received.contains("event: repo-changed"),
+        "expected a repo-changed event after a state was added, got: {received}"
     );
     assert!(
         received.contains(&format!("\"repo_id\":\"{repo_id}\"")),

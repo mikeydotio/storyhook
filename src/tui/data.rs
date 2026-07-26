@@ -262,16 +262,19 @@ mod tests {
                 slug: "todo".to_string(),
                 super_state: SuperState::Open,
                 role: None,
+                description: None,
             },
             StateDef {
                 slug: "in-progress".to_string(),
                 super_state: SuperState::Open,
                 role: Some("active".to_string()),
+                description: None,
             },
             StateDef {
                 slug: "done".to_string(),
                 super_state: SuperState::Closed,
                 role: None,
+                description: None,
             },
         ]
     }

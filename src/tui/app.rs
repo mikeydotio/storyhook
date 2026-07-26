@@ -5,7 +5,7 @@ use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::domain::{StoryEvent, SuperState};
+use crate::domain::StoryEvent;
 use crate::error::AppError;
 
 use super::action::{Action, UndoEntry, View};
@@ -16,6 +16,7 @@ use super::components::dashboard::Dashboard;
 use super::components::filter_bar::FilterBar;
 use super::components::graph::GraphComponent;
 use super::components::help::Help;
+use super::components::states_editor::StatesEditor;
 use super::components::status_bar::StatusBar;
 use super::components::story_detail::StoryDetail;
 use super::data::DataStore;
@@ -72,6 +73,7 @@ pub fn run(root: &Path) -> Result<(), AppError> {
 struct ModalComponents {
     story_detail: Option<StoryDetail>,
     create_form: Option<CreateForm>,
+    states_editor: Option<StatesEditor>,
     help: Option<Help>,
     /// The rect of the top modal from the last render, for click-outside detection.
     modal_rect: Option<Rect>,
@@ -192,6 +194,12 @@ fn route_event(
                             }
                             vec![]
                         }
+                        KeyContext::StatesEditor => {
+                            if let Some(ref mut editor) = modal_components.states_editor {
+                                return editor.handle_key(key, state);
+                            }
+                            vec![]
+                        }
                         KeyContext::Help => {
                             if let Some(ref mut help) = modal_components.help {
                                 return help.handle_key(key, state);
@@ -283,6 +291,7 @@ fn determine_key_context(state: &AppState) -> KeyContext {
         return match modal {
             Modal::StoryDetail { .. } => KeyContext::StoryDetail,
             Modal::CreateForm => KeyContext::CreateForm,
+            Modal::StatesEditor => KeyContext::StatesEditor,
             Modal::Help => KeyContext::Help,
         };
     }
@@ -393,6 +402,34 @@ fn assign_story_mutation(root: &Path, id: &str, assignee: &str) -> Result<(), Ap
 
 /// Dispatch a single action, mutating AppState.
 #[allow(clippy::too_many_arguments)]
+/// Shared tail of every statuses-editor mutation: report what happened, then
+/// reload so the board's columns, the editor's rows, and any story the edit
+/// moved all reflect the new configuration.
+fn finish_state_edit(
+    state: &mut AppState,
+    board: &mut Board,
+    graph: &mut GraphComponent,
+    modal_components: &mut ModalComponents,
+    root: &Path,
+    result: Result<String, AppError>,
+    action_label: &str,
+) {
+    match result {
+        Ok(message) => {
+            state.notification = Some((message, Instant::now()));
+            state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+            board.on_state_change(state);
+            graph.on_state_change(state);
+            if let Some(ref mut editor) = modal_components.states_editor {
+                editor.on_state_change(state);
+            }
+        }
+        Err(error) => {
+            state.notification = Some((format!("{action_label} failed: {error}"), Instant::now()));
+        }
+    }
+}
+
 fn dispatch(
     action: Action,
     state: &mut AppState,
@@ -440,6 +477,13 @@ fn dispatch(
             state.focus.push_modal(Modal::CreateForm);
         }
 
+        Action::OpenStatesEditor => {
+            if !matches!(state.focus.top_modal(), Some(Modal::StatesEditor)) {
+                modal_components.states_editor = Some(StatesEditor::new());
+                state.focus.push_modal(Modal::StatesEditor);
+            }
+        }
+
         Action::CloseModal => {
             if let Some(modal) = state.focus.pop_modal() {
                 match modal {
@@ -448,6 +492,9 @@ fn dispatch(
                     }
                     Modal::CreateForm => {
                         modal_components.create_form = None;
+                    }
+                    Modal::StatesEditor => {
+                        modal_components.states_editor = None;
                     }
                     Modal::Help => {
                         modal_components.help = None;
@@ -645,42 +692,13 @@ fn dispatch(
             // Snapshot before mutation for potential undo
             let events_before = snapshot_for_undo(root, &id);
             let result = crate::lock::with_project_lock(root, || {
-                // Check if target state is CLOSED -- if so, we need to archive
                 let states = crate::storage::load_state_map(root)?;
                 let state_def = states.get(&target_state).ok_or_else(|| {
                     AppError::Validation(format!("state `{target_state}` is not defined"))
                 })?;
-
-                let is_close = state_def.super_state == SuperState::Closed;
-
-                let now = crate::storage::now();
-                let mut events = vec![crate::domain::StoryEvent::StoryStateChanged {
-                    at: now.clone(),
-                    state: target_state.clone(),
-                }];
-
-                if is_close {
-                    // Clear awaiting if set
-                    let snapshot = crate::storage::load_open_story_snapshot(root, &id)?;
-                    if snapshot.awaiting.is_some() {
-                        events.push(crate::domain::StoryEvent::StoryAwaitingCleared {
-                            at: now.clone(),
-                        });
-                    }
-                    events.push(crate::domain::StoryEvent::StoryClosedAndArchived {
-                        at: now,
-                        state: target_state.clone(),
-                    });
-                }
-
-                crate::storage::write_story_events(root, &id, &events)?;
-
-                // Archive MUST happen inside the lock closure
-                if is_close {
-                    crate::storage::archive_story(root, &id)?;
-                }
-
-                Ok(is_close)
+                // Writing the events and archiving a closed story both happen
+                // inside this closure — i.e. under the project lock.
+                crate::storage::move_story_to_state(root, &id, state_def)
             });
             match result {
                 Ok(is_close) => {
@@ -948,6 +966,103 @@ fn dispatch(
             }
         }
 
+        // --- Project configuration (the statuses editor) ---
+        //
+        // These edit `.storyhook/states.toml` through the same storage
+        // operations the CLI and the web dashboard use, so all three enforce
+        // one set of rules. None of them push onto the undo stack: it
+        // replays a single story's event log, and a status edit changes the
+        // project's configuration — sometimes migrating stories as it goes.
+        Action::AddState { slug, super_state } => {
+            let result = crate::lock::with_project_lock(root, || {
+                crate::storage::add_state(root, &slug, super_state, None, None)
+            });
+            finish_state_edit(
+                state,
+                board,
+                graph,
+                modal_components,
+                root,
+                result.map(|_| format!("added status {slug}")),
+                "Add status",
+            );
+        }
+
+        Action::SetStateFields {
+            slug,
+            changes,
+            move_stories_to,
+        } => {
+            let result = crate::lock::with_project_lock(root, || {
+                crate::storage::update_state(root, &slug, &changes, move_stories_to.as_deref())
+            });
+            let message = result.map(|edit| {
+                let mut message = format!("updated status {slug}");
+                if edit.moved > 0 {
+                    message.push_str(&format!(
+                        "; moved {} {} to {}",
+                        edit.moved,
+                        if edit.moved == 1 { "story" } else { "stories" },
+                        move_stories_to.as_deref().unwrap_or("another status")
+                    ));
+                }
+                message
+            });
+            finish_state_edit(
+                state,
+                board,
+                graph,
+                modal_components,
+                root,
+                message,
+                "Update status",
+            );
+        }
+
+        Action::RemoveState {
+            slug,
+            move_stories_to,
+        } => {
+            let result = crate::lock::with_project_lock(root, || {
+                crate::storage::remove_state(root, &slug, move_stories_to.as_deref())
+            });
+            let message = result.map(|moved| {
+                let mut message = format!("removed status {slug}");
+                if moved > 0 {
+                    message.push_str(&format!(
+                        "; moved {moved} {} to {}",
+                        if moved == 1 { "story" } else { "stories" },
+                        move_stories_to.as_deref().unwrap_or("another status")
+                    ));
+                }
+                message
+            });
+            finish_state_edit(
+                state,
+                board,
+                graph,
+                modal_components,
+                root,
+                message,
+                "Remove status",
+            );
+        }
+
+        Action::ReorderStates { order } => {
+            let result = crate::lock::with_project_lock(root, || {
+                crate::storage::reorder_states(root, &order)
+            });
+            finish_state_edit(
+                state,
+                board,
+                graph,
+                modal_components,
+                root,
+                result.map(|_| "reordered statuses".to_string()),
+                "Reorder statuses",
+            );
+        }
+
         Action::Undo => {
             if let Some(entry) = state.undo_stack.pop() {
                 // Snapshot current state for redo
@@ -1124,6 +1239,13 @@ fn render(
             Modal::CreateForm => {
                 if let Some(ref mut form) = modal_components.create_form {
                     form.render(frame, area, state);
+                    modal_components.modal_rect =
+                        Some(super::components::modal::centered_modal_rect(area));
+                }
+            }
+            Modal::StatesEditor => {
+                if let Some(ref mut editor) = modal_components.states_editor {
+                    editor.render(frame, area, state);
                     modal_components.modal_rect =
                         Some(super::components::modal::centered_modal_rect(area));
                 }

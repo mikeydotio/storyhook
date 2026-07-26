@@ -334,11 +334,13 @@ mod tests {
                     slug: "todo".to_string(),
                     super_state: SuperState::Open,
                     role: None,
+                    description: None,
                 },
                 StateDef {
                     slug: "done".to_string(),
                     super_state: SuperState::Closed,
                     role: None,
+                    description: None,
                 },
             ],
             vec![],

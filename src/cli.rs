@@ -47,6 +47,43 @@ pub enum TypeAction {
     },
 }
 
+/// The `story state …` subcommands, grouped the same way [`TypeAction`]
+/// groups `story type …`.
+///
+/// Values stay as the raw strings the user typed; `app::run` parses and
+/// validates them, like every other invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StateAction {
+    List,
+    Add {
+        slug: String,
+        superstate: String,
+        role: Option<String>,
+        description: Option<String>,
+    },
+    Set {
+        slug: String,
+        superstate: Option<String>,
+        /// `--role active` sets the role, `--role none` clears it, absent
+        /// leaves it alone. `none` is unambiguous because `active` is the
+        /// only role the tool recognizes.
+        role: Option<String>,
+        description: Option<String>,
+        /// `--no-description`, which clears rather than sets.
+        clear_description: bool,
+        /// `--move-stories-to <slug>`: where open stories go when this edit
+        /// reclassifies the state they are sitting in.
+        move_stories_to: Option<String>,
+    },
+    Remove {
+        slug: String,
+        move_stories_to: Option<String>,
+    },
+    Reorder {
+        order: Vec<String>,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EpicAction {
     List,
@@ -71,8 +108,14 @@ Usage:
   story web list                                   (list registered repos)
   story member add "<name <email>>"
   story member add -g <github-handle>
+  story state list
   story state add <state-slug> --super OPEN|CLOSED [--role active]
-  story state remove <state-slug>
+                               [--description "<text>"]
+  story state set <state-slug> [--super OPEN|CLOSED] [--role active|none]
+                               [--description "<text>"] [--no-description]
+                               [--move-stories-to <state-slug>]
+  story state remove <state-slug> [--move-stories-to <state-slug>]
+  story state reorder <state-slug,state-slug,...>   (board column order)
   story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
              [--label <labels>] [--created-after <date>] [--updated-after <date>]
              [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
@@ -169,13 +212,8 @@ pub enum Invocation {
     MemberAdd {
         input: MemberInput,
     },
-    StateAdd {
-        slug: String,
-        superstate: String,
-        role: Option<String>,
-    },
-    StateRemove {
-        slug: String,
+    State {
+        action: StateAction,
     },
     List {
         state: Option<String>,
@@ -597,78 +635,165 @@ fn parse_member(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() < 3 {
-        return Err(AppError::Usage(
-            "usage: story state add <slug> --super OPEN|CLOSED | story state remove <slug>"
-                .to_string(),
-        ));
-    }
+const STATE_USAGE: &str = "usage: story state list | story state add <slug> --super OPEN|CLOSED | story state set <slug> [...] | story state remove <slug> | story state reorder <slug,...>";
+const STATE_ADD_USAGE: &str =
+    "usage: story state add <slug> --super OPEN|CLOSED [--role active] [--description \"<text>\"]";
+const STATE_SET_USAGE: &str = "usage: story state set <slug> [--super OPEN|CLOSED] [--role active|none] [--description \"<text>\"] [--no-description] [--move-stories-to <slug>]";
+const STATE_REMOVE_USAGE: &str = "usage: story state remove <slug> [--move-stories-to <slug>]";
+const STATE_REORDER_USAGE: &str = "usage: story state reorder <slug,slug,...>";
 
-    match args[1].as_str() {
+/// Splits `--flag value` / `--flag=value` / `--flag` into (name, value)
+/// pairs. A value that itself starts with `--` is read as the next flag, so
+/// a missing value is reported rather than silently swallowing the flag that
+/// followed it; pass `--flag=--value` when a value really does start with
+/// dashes.
+fn parse_dash_flags(
+    args: &[String],
+    usage: &str,
+) -> Result<Vec<(String, Option<String>)>, AppError> {
+    let mut flags = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let Some(rest) = args[index].strip_prefix("--") else {
+            return Err(AppError::Usage(usage.to_string()));
+        };
+        if let Some((name, value)) = rest.split_once('=') {
+            flags.push((name.to_string(), Some(value.to_string())));
+            index += 1;
+        } else {
+            let value = args
+                .get(index + 1)
+                .filter(|next| !next.starts_with("--"))
+                .cloned();
+            index += if value.is_some() { 2 } else { 1 };
+            flags.push((rest.to_string(), value));
+        }
+    }
+    Ok(flags)
+}
+
+/// The value of a flag that requires one.
+fn flag_value(value: Option<String>, flag: &str, usage: &str) -> Result<String, AppError> {
+    value.ok_or_else(|| AppError::Usage(format!("--{flag} needs a value\n{usage}")))
+}
+
+fn parse_state(args: &[String]) -> Result<Invocation, AppError> {
+    let subcommand = args
+        .get(1)
+        .ok_or_else(|| AppError::Usage(STATE_USAGE.to_string()))?;
+
+    let action = match subcommand.as_str() {
+        "list" => StateAction::List,
+
         "add" => {
-            let slug = args[2].clone();
+            let slug = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| AppError::Usage(STATE_ADD_USAGE.to_string()))?;
             let mut superstate = None;
             let mut role = None;
-            let mut index = 3;
-            while index < args.len() {
-                match args[index].as_str() {
-                    "--super" => {
-                        let value = args.get(index + 1).ok_or_else(|| {
-                            AppError::Usage(
-                                "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
-                                    .to_string(),
-                            )
-                        })?;
-                        superstate = Some(value.clone());
-                        index += 2;
+            let mut description = None;
+            for (flag, value) in parse_dash_flags(&args[3..], STATE_ADD_USAGE)? {
+                match flag.as_str() {
+                    "super" => superstate = Some(flag_value(value, "super", STATE_ADD_USAGE)?),
+                    "role" => role = Some(flag_value(value, "role", STATE_ADD_USAGE)?),
+                    "description" => {
+                        description = Some(flag_value(value, "description", STATE_ADD_USAGE)?)
                     }
-                    token if token.starts_with("--super=") => {
-                        superstate = Some(token.trim_start_matches("--super=").to_string());
-                        index += 1;
-                    }
-                    "--role" => {
-                        let value = args.get(index + 1).ok_or_else(|| {
-                            AppError::Usage(
-                                "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
-                                    .to_string(),
-                            )
-                        })?;
-                        role = Some(value.clone());
-                        index += 2;
-                    }
-                    token if token.starts_with("--role=") => {
-                        role = Some(token.trim_start_matches("--role=").to_string());
-                        index += 1;
-                    }
-                    _ => {
-                        return Err(AppError::Usage(
-                            "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
-                                .to_string(),
-                        ));
-                    }
+                    _ => return Err(AppError::Usage(STATE_ADD_USAGE.to_string())),
                 }
             }
-
-            Ok(Invocation::StateAdd {
+            StateAction::Add {
                 slug,
-                superstate: superstate.ok_or_else(|| {
-                    AppError::Usage(
-                        "usage: story state add <slug> --super OPEN|CLOSED [--role active]"
-                            .to_string(),
-                    )
-                })?,
+                superstate: superstate
+                    .ok_or_else(|| AppError::Usage(STATE_ADD_USAGE.to_string()))?,
                 role,
-            })
+                description,
+            }
         }
-        "remove" => Ok(Invocation::StateRemove {
-            slug: args[2].clone(),
-        }),
-        _ => Err(AppError::Usage(
-            "usage: story state add <slug> --super OPEN|CLOSED | story state remove <slug>"
-                .to_string(),
-        )),
-    }
+
+        "set" => {
+            let slug = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| AppError::Usage(STATE_SET_USAGE.to_string()))?;
+            let mut superstate = None;
+            let mut role = None;
+            let mut description = None;
+            let mut clear_description = false;
+            let mut move_stories_to = None;
+            for (flag, value) in parse_dash_flags(&args[3..], STATE_SET_USAGE)? {
+                match flag.as_str() {
+                    "super" => superstate = Some(flag_value(value, "super", STATE_SET_USAGE)?),
+                    "role" => role = Some(flag_value(value, "role", STATE_SET_USAGE)?),
+                    "description" => {
+                        description = Some(flag_value(value, "description", STATE_SET_USAGE)?)
+                    }
+                    "no-description" => clear_description = true,
+                    "move-stories-to" => {
+                        move_stories_to =
+                            Some(flag_value(value, "move-stories-to", STATE_SET_USAGE)?)
+                    }
+                    _ => return Err(AppError::Usage(STATE_SET_USAGE.to_string())),
+                }
+            }
+            if description.is_some() && clear_description {
+                return Err(AppError::Usage(
+                    "--description and --no-description contradict each other".to_string(),
+                ));
+            }
+            StateAction::Set {
+                slug,
+                superstate,
+                role,
+                description,
+                clear_description,
+                move_stories_to,
+            }
+        }
+
+        "remove" => {
+            let slug = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| AppError::Usage(STATE_REMOVE_USAGE.to_string()))?;
+            let mut move_stories_to = None;
+            for (flag, value) in parse_dash_flags(&args[3..], STATE_REMOVE_USAGE)? {
+                match flag.as_str() {
+                    "move-stories-to" => {
+                        move_stories_to =
+                            Some(flag_value(value, "move-stories-to", STATE_REMOVE_USAGE)?)
+                    }
+                    _ => return Err(AppError::Usage(STATE_REMOVE_USAGE.to_string())),
+                }
+            }
+            StateAction::Remove {
+                slug,
+                move_stories_to,
+            }
+        }
+
+        // Accepts both `reorder a,b,c` and `reorder a b c`, so the order can
+        // be pasted from `story state list` output either way.
+        "reorder" => {
+            let order: Vec<String> = args[1..]
+                .iter()
+                .skip(1)
+                .flat_map(|arg| arg.split(','))
+                .map(str::trim)
+                .filter(|slug| !slug.is_empty())
+                .map(str::to_string)
+                .collect();
+            if order.is_empty() {
+                return Err(AppError::Usage(STATE_REORDER_USAGE.to_string()));
+            }
+            StateAction::Reorder { order }
+        }
+
+        _ => return Err(AppError::Usage(STATE_USAGE.to_string())),
+    };
+
+    Ok(Invocation::State { action })
 }
 
 fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
