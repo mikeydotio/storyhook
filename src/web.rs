@@ -16,7 +16,7 @@ use notify::Watcher;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::app::{self, build_report_data};
-use crate::cli::{CliOptions, Invocation};
+use crate::cli::{CliOptions, Invocation, StateAction};
 use crate::domain::Priority;
 use crate::error::AppError;
 use crate::output::{render_error, render_response};
@@ -325,6 +325,31 @@ fn route_repo(
                 route_reopen_story(root, id, b)
             }),
             (Method::Post, _) => text_reply(404, "Not found"),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        // Reordering is a PATCH of the *collection*, not a
+        // `/states/reorder` sub-path: `reorder` is a legal state slug, and
+        // that route would shadow the state with that name.
+        ["states"] => match method {
+            Method::Get => match build_states_json(root, None) {
+                Ok(json) => json_reply(200, json).no_cache(),
+                Err(e) => error_reply(&e),
+            },
+            Method::Post => guarded(headers, trusted_hosts, body, |b| {
+                route_create_state(root, b)
+            }),
+            Method::Patch => guarded(headers, trusted_hosts, body, |b| {
+                route_reorder_states(root, b)
+            }),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["states", slug] => match method {
+            Method::Patch => guarded(headers, trusted_hosts, body, |b| {
+                route_patch_state(root, slug, b)
+            }),
+            Method::Delete => guarded(headers, trusted_hosts, body, |b| {
+                route_delete_state(root, slug, b)
+            }),
             _ => text_reply(405, "Method not allowed"),
         },
         ["relate"] => match method {
@@ -772,6 +797,170 @@ fn route_delete_story(root: &Path, id: &str, body: &str) -> Reply {
             Invocation::Delete {
                 id: id.to_string(),
                 reason,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+// --- Per-repo state configuration: /api/repos/<id>/states ---
+
+/// The states payload every state route replies with: the configured states
+/// in `states.toml` order — which is the board's column order — each with
+/// the story counts the editor needs to decide whether a change is
+/// destructive.
+///
+/// `open_count` stories can be migrated elsewhere; `archived_count` ones
+/// cannot, so the two stay separate rather than summed.
+fn build_states_json(root: &Path, message: Option<&str>) -> Result<String, AppError> {
+    let usage = storage::state_usage(root)?;
+    let states: Vec<serde_json::Value> = storage::load_states(root)?
+        .into_iter()
+        .map(|state| {
+            let counts = usage.get(&state.slug).copied().unwrap_or_default();
+            serde_json::json!({
+                "slug": state.slug,
+                "super_state": state.super_state.as_str(),
+                "role": state.role,
+                "description": state.description,
+                "open_count": counts.open,
+                "archived_count": counts.archived,
+            })
+        })
+        .collect();
+
+    let payload = serde_json::json!({
+        "result": "ok",
+        "message": message,
+        "states": states,
+    });
+    serde_json::to_string(&payload)
+        .map_err(|e| AppError::Storage(format!("JSON serialization failed: {e}")))
+}
+
+/// Dispatches a state mutation through `app::run` — same locking, migration,
+/// and validation as the CLI — then replies with the refreshed list rather
+/// than the bare success message, so the editor always redraws from server
+/// truth instead of guessing what its own edit did (an edit can move
+/// stories, which changes counts on *two* states at once).
+fn run_state_mutation_and_reply(root: &Path, status: u16, invocation: Invocation) -> Reply {
+    let options = CliOptions {
+        json: true,
+        quiet: false,
+        no_hooks: false,
+        invocation,
+    };
+    match app::run(root, options) {
+        Ok(response) => {
+            // `Response` here is tiny_http's; the app's lives in `output`.
+            let message = match response {
+                crate::output::Response::Message(text) => text,
+                _ => String::new(),
+            };
+            match build_states_json(root, Some(&message)) {
+                Ok(json) => json_reply(status, json).no_cache(),
+                Err(e) => error_reply(&e),
+            }
+        }
+        Err(e) => error_reply(&e),
+    }
+}
+
+/// `POST /api/repos/{id}/states` — add a state.
+fn route_create_state(root: &Path, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let slug = require_str(&obj, "slug")?.to_string();
+        let superstate = require_str(&obj, "super_state")?.to_string();
+        Ok(run_state_mutation_and_reply(
+            root,
+            201,
+            Invocation::State {
+                action: StateAction::Add {
+                    slug,
+                    superstate,
+                    role: get_str(&obj, "role").map(str::to_string),
+                    description: get_str(&obj, "description").map(str::to_string),
+                },
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `PATCH /api/repos/{id}/states/{slug}` — edit one state.
+///
+/// `role` and `description` are three-valued: absent leaves the field alone,
+/// `null` clears it, a string sets it. `move_stories_to` names where open
+/// stories go when the edit reclassifies the state they sit in — required by
+/// `storage::update_state` in exactly that case.
+fn route_patch_state(root: &Path, slug: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let field_edit = |key: &str| match obj.get(key) {
+            None => Ok(None),
+            Some(serde_json::Value::Null) => Ok(Some(None)),
+            Some(serde_json::Value::String(value)) => Ok(Some(Some(value.clone()))),
+            Some(_) => Err(AppError::Usage(format!("`{key}` must be a string or null"))),
+        };
+        let role = field_edit("role")?;
+        let description = field_edit("description")?;
+
+        Ok(run_state_mutation_and_reply(
+            root,
+            200,
+            Invocation::State {
+                action: StateAction::Set {
+                    slug: slug.to_string(),
+                    superstate: get_str(&obj, "super_state").map(str::to_string),
+                    // `app::run` reads a literal "none" as "clear the role".
+                    role: role.map(|value| value.unwrap_or_else(|| "none".to_string())),
+                    description: description.clone().flatten(),
+                    clear_description: matches!(description, Some(None)),
+                    move_stories_to: get_str(&obj, "move_stories_to").map(str::to_string),
+                },
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `DELETE /api/repos/{id}/states/{slug}` — remove a state, optionally
+/// migrating the open stories still in it.
+fn route_delete_state(root: &Path, slug: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        Ok(run_state_mutation_and_reply(
+            root,
+            200,
+            Invocation::State {
+                action: StateAction::Remove {
+                    slug: slug.to_string(),
+                    move_stories_to: get_str(&obj, "move_stories_to").map(str::to_string),
+                },
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `PATCH /api/repos/{id}/states` — reorder the whole set, i.e. the board's
+/// column order. The body must list every state; a partial order is refused
+/// rather than interpreted as a deletion.
+fn route_reorder_states(root: &Path, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let order = get_str_array(&obj, "order");
+        if order.is_empty() {
+            return Err(AppError::Usage(
+                "`order` is required and must be a non-empty array of state slugs".to_string(),
+            ));
+        }
+        Ok(run_state_mutation_and_reply(
+            root,
+            200,
+            Invocation::State {
+                action: StateAction::Reorder { order },
             },
         ))
     })()
@@ -2020,6 +2209,8 @@ fn build_meta_json(root: &Path) -> Result<serde_json::Value, AppError> {
             serde_json::json!({
                 "slug": s.slug,
                 "super_state": s.super_state.as_str(),
+                "role": s.role,
+                "description": s.description,
             })
         })
         .collect();
