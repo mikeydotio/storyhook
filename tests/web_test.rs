@@ -366,6 +366,18 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="settings-btn""#));
     // Mutation API call sites carry the CSRF guard header
     assert!(body.contains("X-Storyhook"));
+    // Statuses editor (SH-41): its own styles, the settings-table entry
+    // point, and the four calls that reach the states API.
+    assert!(body.contains(".status-row"));
+    assert!(body.contains(".status-add"));
+    assert!(body.contains("goStatuses"));
+    assert!(body.contains("function statusMutation"));
+    for call in ["/states", "move_stories_to", "super_state"] {
+        assert!(
+            body.contains(call),
+            "statuses editor should reference {call}"
+        );
+    }
 }
 
 #[test]
