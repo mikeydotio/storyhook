@@ -16,7 +16,8 @@ It keeps active work in project-local JSON event logs, archives closed work into
 - Create and show stories
 - Add comments with `story <id> "comment"`
 - Assign members
-- Define project states mapped to `OPEN` or `CLOSED`
+- Define project states mapped to `OPEN` or `CLOSED`, and edit, reorder, or
+  remove them later from the CLI, the web dashboard, or the TUI
 - Set and clear `awaiting` blockers
 - Set priority levels (critical, high, medium, low, none)
 - Add and filter by labels/tags
@@ -225,8 +226,14 @@ story init [--prefix <PREFIX>]
 story new <title>
 story member add "<name <email>>"
 story member add -g <github-handle>
-story state add <state-slug> --super OPEN|CLOSED
-story state remove <state-slug>
+story state list
+story state add <state-slug> --super OPEN|CLOSED [--role active]
+                             [--description "<text>"]
+story state set <state-slug> [--super OPEN|CLOSED] [--role active|none]
+                             [--description "<text>"] [--no-description]
+                             [--move-stories-to <state-slug>]
+story state remove <state-slug> [--move-stories-to <state-slug>]
+story state reorder <state-slug,state-slug,...>
 story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
            [--label <labels>] [--created-after <date>] [--updated-after <date>]
            [--blocked] [--ready]
@@ -266,6 +273,35 @@ story <a> <relationship> <b> [--remove]
 - New projects start with `todo -> OPEN` and `done -> CLOSED`.
 - Moving a story into a `CLOSED` state immediately archives it to SQLite.
 - Closed stories remain readable but are no longer mutable.
+- State order is user-visible: it's the dashboard board's column order, and
+  new stories land in the first `OPEN` state. `story state reorder` sets it.
+- Slugs are lowercase letters, digits, and single dashes (`in-review`) —
+  they're typed as CLI arguments and appear in dashboard URLs.
+- At most one state may carry `--role active`, marking the state a story
+  enters when work starts (used by `story commit-sync`).
+- There is no rename: a slug is recorded in every state-change event ever
+  written. Add the new state, migrate to it, and remove the old one.
+
+Configure states from the CLI (`story state …`), the dashboard
+(**Settings → Statuses**), or the TUI (press `s`) — all three go through the
+same operations.
+
+### Editing a state that still holds stories
+
+Changing a state's superstate reclassifies every story sitting in it, and
+removing a state would leave those stories pointing at a definition that no
+longer exists. Both refuse until you say where the stories should go:
+
+```bash
+story state remove review --move-stories-to todo
+story state set review --super CLOSED --move-stories-to todo
+```
+
+Stories moved into a `CLOSED` state are closed and archived exactly as
+`story move` would, and each records a comment noting the move. A state that
+already has **archived** stories can't be removed at all: their history
+records the slug, and reopening one later would fail against a state that no
+longer exists.
 
 ## Relationships
 
@@ -342,7 +378,7 @@ story web status                     # check whether it's running
 Open the URL printed on start — `http://127.0.0.1:<port>` by default, or your machine's Tailscale MagicDNS name (falling back to its tailnet IP) if Tailscale is running (see Network exposure below). The dashboard offers:
 
 - **Home** — a summary card per registered repo (open/ready/blocked counts). Click a card to open that repo. A repo whose data can't currently be loaded (moved, deleted) shows its error instead of a summary, rather than failing the whole page.
-- **Settings** — register a new repo, or deregister an existing one. Deregistering only edits the dashboard's registry; it never touches the repo's own files.
+- **Settings** — register a new repo, or deregister an existing one. Deregistering only edits the dashboard's registry; it never touches the repo's own files. **Statuses** on any repo row opens that project's state configuration: reorder (which is the board's column order), flip open/closed, set the active role and descriptions, add and remove. Reclassifying or removing a status that still holds stories asks where those stories go first; deletion is disabled, with the reason, when a status has archived history or is the last open or closed one.
 - **Board** — a kanban view with one column per project state, in `states.toml` order. Drag a card to a different column to move the story; dropping onto a `CLOSED` state archives it in place, and it stays visible in that column rather than vanishing.
 - **List** — a filterable, sortable table view.
 - **Detail drawer** — click any card or row to view and edit a story's full detail: title, state, priority, assignee, type, labels, block/unblock, comments, and relationships, plus reopen and delete.
