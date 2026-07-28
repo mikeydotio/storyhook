@@ -344,6 +344,21 @@ fn put_labels(
     Ok(())
 }
 
+/// Reconciles one story's end of the relation graph with what its snapshot
+/// claims.
+///
+/// An edge is a fact about a *pair*, not about one story, and the schema
+/// materializes both directions from whichever one is written. So a row
+/// attributed to this story may be there because this story claims it, or
+/// because the story at the other end does. Deleting the second kind on the
+/// grounds that this snapshot does not mention it would silently retract an
+/// edge its owner still asserts — and would make the outcome depend on which
+/// story happened to be written first.
+///
+/// The rule is therefore: remove a row only when *neither* end claims it. When
+/// the other end has no row yet — a project being written for the first time —
+/// removal is still safe, because that story's own write will restore anything
+/// it claims.
 fn put_relations(
     conn: &Connection,
     project: ProjectId,
@@ -368,7 +383,14 @@ fn put_relations(
         .map(|edge| (edge.relation, edge.other_no.get()))
         .collect();
 
+    let mut stale = Vec::new();
     for (relation, other) in existing.difference(&desired) {
+        if !claimed_by_other_end(conn, project, prefix, story, relation, StoryNo::new(*other))? {
+            stale.push((relation.clone(), *other));
+        }
+    }
+
+    for (relation, other) in &stale {
         sql(
             conn.execute(
                 "DELETE FROM story_relations \
@@ -389,6 +411,32 @@ fn put_relations(
         )?;
     }
     Ok(())
+}
+
+/// Whether the story at the far end of an edge asserts it, in the snapshot the
+/// read model currently holds for it.
+///
+/// A relation this binary has no inverse for cannot be mirrored at all, so
+/// nothing at the far end could be asserting it — the schema rejects such a
+/// relation on insert, and this answers `false` rather than pretending.
+fn claimed_by_other_end(
+    conn: &Connection,
+    project: ProjectId,
+    prefix: &str,
+    story: StoryNo,
+    relation: &str,
+    other: StoryNo,
+) -> Result<bool, StoreError> {
+    let Some(inverse) = crate::domain::inverse_relation(relation) else {
+        return Ok(false);
+    };
+    let Some(row) = read::story(conn, project, other)? else {
+        return Ok(false);
+    };
+    Ok(row.snapshot.relationships.iter().any(|claim| {
+        claim.relation == inverse
+            && StoryNo::parse_id(prefix, &claim.other_id).is_ok_and(|target| target == story)
+    }))
 }
 
 // ---------------------------------------------------------------------------

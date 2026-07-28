@@ -54,12 +54,15 @@
 //! the result back with [`WriteOps::put_story`]. Keeping the fold out of the
 //! store means there is exactly one definition of what a story is, and it means
 //! the "read model updated in the same transaction as its events" rule is
-//! visible at the call site rather than hidden behind a storage method.
+//! visible at the call site rather than hidden behind a storage method. The one
+//! exception is [`diff_read_model`], whose entire job is to fold independently
+//! and disagree.
 
 pub mod error;
 pub mod fault;
 pub mod ids;
 pub mod migrate;
+pub mod rebuild;
 pub mod sqlite;
 pub mod types;
 
@@ -72,6 +75,10 @@ pub use error::StoreError;
 pub use fault::FaultPoint;
 pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, PathKind, ProjectId, StoryNo};
 pub use migrate::{MIGRATIONS, Migration, current_schema_version};
+pub use rebuild::{
+    Divergence, ReadModelDiff, RebuiltStory, RepairReport, diff_read_model, rebuild_read_model,
+    repair_read_model,
+};
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
     FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord, ProjectSettings,
