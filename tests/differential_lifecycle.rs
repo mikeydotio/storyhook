@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use storyhook::cli::{GraphMode, Invocation, WebAction};
+use storyhook::cli::{Invocation, WebAction};
 use storyhook::invoke::dispatch;
 
 mod differential_support;
@@ -1327,11 +1327,11 @@ fn the_story_view_agrees_on_derived_relationships_and_progress() {
 #[test]
 fn an_unported_invocation_fails_loudly_rather_than_silently() {
     let differential = Differential::new();
-    let error = dispatch(&differential.ctx(), Invocation::Summary)
-        .expect_err("summary is not ported in this wave");
+    let error = dispatch(&differential.ctx(), Invocation::Export)
+        .expect_err("export is not ported in this wave");
     let message = error.to_string();
     assert!(message.contains("not yet ported"), "{message}");
-    assert!(message.contains("summary"), "{message}");
+    assert!(message.contains("export"), "{message}");
 }
 
 #[test]
@@ -1367,6 +1367,15 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "version",
         "phase",
         "epic",
+        "list",
+        "show",
+        "search",
+        "next",
+        "summary",
+        "report",
+        "graph",
+        "context",
+        "handoff",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1397,52 +1406,16 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         46,
         "an invocation is on neither the ported roster nor the unported probes"
     );
-    assert_eq!(ported.len(), 27);
+    assert_eq!(ported.len(), 36);
 }
 
 /// One probe per invocation this wave does *not* port.
 fn unported_probes() -> Vec<(&'static str, Invocation)> {
     vec![
-        ("summary", Invocation::Summary),
         ("export", Invocation::Export),
         ("session-start", Invocation::SessionStart),
-        ("show", Invocation::Show { id: "SH-1".into() }),
-        ("search", Invocation::Search { query: "x".into() }),
         ("doctor", Invocation::Doctor { fix: false }),
-        ("report", Invocation::Report { html: false }),
-        (
-            "next",
-            Invocation::Next {
-                count: 1,
-                phase: None,
-            },
-        ),
-        ("context", Invocation::Context { format: None }),
-        ("handoff", Invocation::Handoff { since: None }),
         ("import", Invocation::Import { file: None }),
-        (
-            "list",
-            Invocation::List {
-                state: None,
-                assignee: None,
-                flagged: false,
-                priority: None,
-                label: None,
-                created_after: None,
-                updated_after: None,
-                blocked: false,
-                ready: false,
-                stale: None,
-                phase: None,
-                story_type: None,
-            },
-        ),
-        (
-            "graph",
-            Invocation::Graph {
-                mode: GraphMode::Overview,
-            },
-        ),
         (
             "decompose",
             Invocation::Decompose {
