@@ -25,9 +25,9 @@ use crate::error::AppError;
 use crate::help_topics;
 use crate::output::{Response, render_html_report};
 use crate::service::{
-    Clock, ConfigService, Ctx, FieldEdits, GroupingService, InitOptions, InitOutcome, ListFilters,
-    NewStoryInput, PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService,
-    ReopenOutcome, StateListing, StoryService, SystemService,
+    Clock, ConfigService, Ctx, FieldEdits, GroupingService, InitOptions, InitOutcome,
+    IntegrityService, ListFilters, NewStoryInput, PhaseCleared, ProjectService, QueryService,
+    RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService, SystemService,
 };
 use crate::store::Store;
 
@@ -345,6 +345,17 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         }
         Invocation::Handoff { since } => {
             query(ctx, |service| service.handoff(since.as_deref())).map(Response::Message)
+        }
+        Invocation::Doctor { fix } => {
+            let service = IntegrityService::new(ctx);
+            if fix {
+                service.fix().map(Response::Message)
+            } else {
+                match service.report()? {
+                    issues if issues.is_empty() => Ok(Response::Issues(Vec::new())),
+                    issues => Err(AppError::Integrity(issues.join("\n"))),
+                }
+            }
         }
         Invocation::Init { .. }
         | Invocation::Help
