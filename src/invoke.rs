@@ -11,7 +11,7 @@
 //! site.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -28,10 +28,11 @@ use crate::service::{
     CatalogService, Clock, ConfigService, Ctx, FieldEdits, GitService, GroupingService,
     ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters, NewStoryInput,
     PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService, ReopenOutcome,
-    SessionService, StateListing, StoryService, SystemService, TransferService, session, transfer,
+    SessionService, StateListing, StoryService, SystemService, TransferService, session, system,
+    transfer,
 };
 use crate::storage::ProjectExport;
-use crate::store::Store;
+use crate::store::{ProjectId, ReadOps, Store};
 
 /// One unit of work for an [`Invoker`]: the command, plus the execution
 /// context that has to travel with it.
@@ -416,17 +417,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             stdin,
             dry_run,
         } => {
-            let content = if stdin {
-                read_input(None)?
-            } else if let Some(path) = file.as_deref() {
-                read_input(Some(path))?
-            } else {
-                return Err(AppError::Usage(
-                    "usage: story decompose <file> [--dry-run] | story decompose --stdin \
-                     [--dry-run]"
-                        .to_string(),
-                ));
-            };
+            let content = decompose_input(file.as_deref(), stdin)?;
             let stories = crate::decompose::decompose(file.as_deref(), &content)?;
             if dry_run {
                 return Ok(Response::Message(serde_json::to_string_pretty(&stories)?));
@@ -760,6 +751,22 @@ pub fn dispatch_unscoped<S: Store>(
     now: &str,
     invocation: Invocation,
 ) -> Result<Response, AppError> {
+    // The pointer file is the store's claim on the repository, and while the
+    // legacy tree is still the identity of record a second claim could only
+    // ever disagree with it. `StoreInvoker` — which serves a process for which
+    // the store *is* the identity of record — asks for it explicitly.
+    dispatch_unscoped_with(store, root, now, invocation, false)
+}
+
+/// [`dispatch_unscoped`], told whether `story init` should write the pointer
+/// file.
+pub fn dispatch_unscoped_with<S: Store>(
+    store: &S,
+    root: &Path,
+    now: &str,
+    invocation: Invocation,
+    pointer: bool,
+) -> Result<Response, AppError> {
     match invocation {
         Invocation::Init {
             prefix,
@@ -770,11 +777,7 @@ pub fn dispatch_unscoped<S: Store>(
                 .init(&InitOptions {
                     prefix,
                     agents_md: !no_agents_md,
-                    // The pointer file is the store's claim on the repository,
-                    // and while the legacy tree is still the identity of record
-                    // a second claim could only ever disagree with it. The wave
-                    // that flips the default turns this on.
-                    pointer: false,
+                    pointer,
                 })?;
             Ok(Response::Message(init_message(&outcome)))
         }
@@ -797,6 +800,63 @@ pub fn dispatch_unscoped<S: Store>(
             "story {}",
             env!("CARGO_PKG_VERSION")
         ))),
+        // Parsing a spec is a pure function of its text. `--dry-run` prints the
+        // stories it *would* create and writes nothing, which the legacy path
+        // answered before it ever looked for a project — so this arm does too,
+        // and an agent can check its plan in a directory storyhook has never
+        // heard of.
+        Invocation::Decompose {
+            file,
+            stdin,
+            dry_run,
+        } => {
+            let content = decompose_input(file.as_deref(), stdin)?;
+            let stories = crate::decompose::decompose(file.as_deref(), &content)?;
+            if !dry_run {
+                return Err(AppError::Storage(
+                    "internal: a writing `decompose` reached the project-less dispatcher"
+                        .to_string(),
+                ));
+            }
+            Ok(Response::Message(serde_json::to_string_pretty(&stories)?))
+        }
+        // A directory, not a project: these write `.git/hooks`, read
+        // `hooks.toml`, or install an editor plugin, and the legacy path
+        // answered all of them in a directory storyhook had never heard of.
+        Invocation::Hooks { action } => match action {
+            HooksAction::Install => system::install_git_hooks(root).map(Response::Message),
+            HooksAction::Uninstall => system::uninstall_git_hooks(root).map(Response::Message),
+            HooksAction::List => Ok(Response::Message(system::list_event_hooks(root))),
+            // `hooks test` fires a real hook against a real project; it is
+            // routed to `dispatch` instead and never arrives here.
+            HooksAction::Test { .. } => Err(not_yet_ported(&Invocation::Hooks {
+                action: HooksAction::Test {
+                    event_type: String::new(),
+                },
+            })),
+        },
+        Invocation::Plugin { action } => match action {
+            PluginAction::Install { target } => system::install_plugin(&target, root),
+            PluginAction::Uninstall { target } => system::uninstall_plugin(&target, root),
+        }
+        .map(Response::Message),
+        // Reached only when no project could be resolved. `claude-md` and
+        // `cursor-rules` take nothing from a project at all; `agents-md` falls
+        // back to the default prefix and `done`, which is exactly what the
+        // legacy path printed in an uninitialized directory. A `scaffold` that
+        // refused outside a project would be a user-visible regression in a
+        // command whose whole purpose is to be run before anything else.
+        Invocation::Scaffold { kind } => match kind.as_str() {
+            "agents-md" => Ok(Response::Message(crate::service::templates::agents_md(
+                crate::service::project::DEFAULT_PREFIX,
+                "done",
+            ))),
+            "claude-md" => Ok(Response::Message(crate::service::templates::claude_md())),
+            "cursor-rules" => Ok(Response::Message(crate::service::templates::cursor_rules())),
+            _ => Err(AppError::Usage(
+                "usage: story scaffold agents-md|claude-md|cursor-rules".to_string(),
+            )),
+        },
         // Project-less for the same reason `init` is: `story import-project`
         // into an empty directory is how a backup is restored, so the arm has
         // to be able to create the project it is importing into.
@@ -833,6 +893,24 @@ fn read_input(file: Option<&str>) -> Result<String, AppError> {
                 .map_err(|e| AppError::Storage(format!("failed to read stdin: {e}")))?;
             Ok(buffer)
         }
+    }
+}
+
+/// The spec text `story decompose` was pointed at.
+///
+/// One helper for both dispatchers, because a dry run is answered without a
+/// project and a real one is not — and the two must not disagree about which
+/// argument combinations are usable.
+fn decompose_input(file: Option<&str>, stdin: bool) -> Result<String, AppError> {
+    if stdin {
+        return read_input(None);
+    }
+    match file {
+        Some(path) => read_input(Some(path)),
+        None => Err(AppError::Usage(
+            "usage: story decompose <file> [--dry-run] | story decompose --stdin [--dry-run]"
+                .to_string(),
+        )),
     }
 }
 
@@ -948,5 +1026,148 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Version => "version",
         Invocation::ProjectSnapshot => "project-snapshot",
         Invocation::History { .. } => "history",
+    }
+}
+
+/// Runs one invocation against the store, resolving the project from the
+/// working directory first.
+///
+/// The counterpart to [`LegacyInvoker`]: same seam, same envelope, the new
+/// stack underneath. It exists before the flip so that the whole integration
+/// suite can be run against the store — `STORYHOOK_INVOKER=local` — which is
+/// how the flip's surprises are found while the legacy path is still the
+/// default and a surprise is cheap.
+///
+/// # Root resolution
+///
+/// The project is the one registered at the working directory, or the one the
+/// directory's pointer file names. It does **not** walk upwards, because the
+/// legacy path does not: `ensure_project` looks for `<cwd>/.storyhook` and
+/// nowhere else, and a store leg that resolved a parent's project would answer
+/// questions the legacy leg refuses.
+pub struct StoreInvoker<'a, S: Store> {
+    store: &'a S,
+    cwd: PathBuf,
+    hook_depth: u32,
+    pointer: bool,
+}
+
+impl<'a, S: Store> StoreInvoker<'a, S> {
+    /// An invoker over `store`, running from `cwd`.
+    ///
+    /// Writes the pointer file on `story init`, because for a process served
+    /// this way the store *is* where the project lives, and a checkout with no
+    /// pointer is one a fresh clone cannot identify.
+    pub fn new(store: &'a S, cwd: impl Into<PathBuf>) -> Self {
+        Self {
+            store,
+            cwd: cwd.into(),
+            hook_depth: 0,
+            pointer: true,
+        }
+    }
+
+    /// Sets how deep inside an event hook this invocation is running.
+    #[must_use]
+    pub fn hook_depth(mut self, hook_depth: u32) -> Self {
+        self.hook_depth = hook_depth;
+        self
+    }
+
+    /// Sets whether `story init` writes the pointer file.
+    #[must_use]
+    pub fn pointer(mut self, pointer: bool) -> Self {
+        self.pointer = pointer;
+        self
+    }
+
+    /// The project this working directory belongs to, if any.
+    fn resolve(&self) -> Result<Option<ProjectId>, AppError> {
+        let root = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
+        let pointer = crate::service::project::read_pointer(&root)?;
+        Ok(self.store.read(|tx| {
+            // The pointer file wins: it is the identity that travels with the
+            // repository, so a checkout that was moved on disk still resolves
+            // to the project it has always been.
+            if let Some(pointer) = &pointer
+                && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
+            {
+                return Ok(Some(project.id));
+            }
+            Ok(tx.project_by_path(&root)?.map(|project| project.id))
+        })?)
+    }
+}
+
+impl<S: Store> Invoker for StoreInvoker<'_, S> {
+    fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
+        let now = Clock::System.now();
+        if is_project_less(&request.invocation) {
+            return dispatch_unscoped_with(
+                self.store,
+                &self.cwd,
+                &now,
+                request.invocation,
+                self.pointer,
+            );
+        }
+
+        let Some(project) = self.resolve()? else {
+            // `session-start` is a hook, and a hook that reports an error
+            // writes that error into a model's context. Silence is its answer
+            // for a directory storyhook has never heard of.
+            if matches!(request.invocation, Invocation::SessionStart) {
+                return Ok(Response::RawJson(
+                    crate::service::session::SILENT.to_string(),
+                ));
+            }
+            // `scaffold` degrades rather than refuses: it prints instruction
+            // files, and the legacy path printed them with default values in a
+            // directory it knew nothing about.
+            if matches!(request.invocation, Invocation::Scaffold { .. }) {
+                return dispatch_unscoped_with(
+                    self.store,
+                    &self.cwd,
+                    &now,
+                    request.invocation,
+                    self.pointer,
+                );
+            }
+            return Err(AppError::NotFound(
+                "story project not initialized in this directory; run `story init`".to_string(),
+            ));
+        };
+
+        let ctx = Ctx::new(self.store, project, &self.cwd)
+            .no_hooks(request.no_hooks)
+            .hook_depth(self.hook_depth);
+        dispatch(&ctx, request.invocation)
+    }
+}
+
+/// Whether an invocation is answered without resolving a project.
+///
+/// The list is `dispatch`'s own forwarding set plus `import-project`, and it is
+/// an exhaustive-by-inspection match rather than a `matches!` so that the two
+/// cannot drift: adding a project-less arm to `dispatch` without adding it here
+/// makes `story <verb>` fail in an empty directory, which is exactly the
+/// failure this function exists to prevent.
+fn is_project_less(invocation: &Invocation) -> bool {
+    match invocation {
+        Invocation::Init { .. }
+        | Invocation::ImportProject { .. }
+        | Invocation::Help
+        | Invocation::HelpTopic { .. }
+        | Invocation::HelpCompact
+        | Invocation::HelpAll
+        | Invocation::Version
+        | Invocation::Plugin { .. } => true,
+        // `hooks test` is the exception in its own family: it fires a real hook
+        // against a real project, and the legacy path calls `ensure_project`
+        // before it does.
+        Invocation::Hooks { action } => !matches!(action, HooksAction::Test { .. }),
+        // A dry run parses and prints; only a real one writes stories.
+        Invocation::Decompose { dry_run, .. } => *dry_run,
+        _ => false,
     }
 }
