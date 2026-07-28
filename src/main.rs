@@ -2,7 +2,7 @@ use std::env;
 use std::process;
 
 use storyhook::cli::{self, Invocation, WebAction};
-use storyhook::invoke::{InvokeRequest, Invoker, LegacyInvoker};
+use storyhook::invoke::{InvokeRequest, Invoker, LegacyInvoker, StoreInvoker};
 use storyhook::output;
 
 /// Reports `error` on the stream its consumer reads, and exits with the
@@ -90,7 +90,17 @@ fn main() {
     // because rendering is this process's job no matter where the answer
     // came from.
     let request = InvokeRequest::new(invocation).no_hooks(no_hooks);
-    match LegacyInvoker::new(&cwd).invoke(request) {
+    let result = match selected_backend() {
+        Backend::Legacy => LegacyInvoker::new(&cwd).invoke(request),
+        Backend::Local => match open_store() {
+            Ok(store) => StoreInvoker::new(&store, &cwd)
+                .hook_depth(hook_depth())
+                .invoke(request),
+            Err(error) => Err(error),
+        },
+    };
+
+    match result {
         Ok(response) => {
             let rendered = output::render_response(&response, json, quiet);
             if !rendered.is_empty() {
@@ -98,5 +108,58 @@ fn main() {
             }
         }
         Err(error) => fail(&error, json),
+    }
+}
+
+/// Which stack serves this invocation.
+///
+/// The strangler's switch. Both backends answer the same
+/// `Response`/`AppError` envelope, so selecting between them changes where the
+/// work happens and not what the answer means — which is the property the whole
+/// port is built to preserve, and the property `STORYHOOK_INVOKER=local` exists
+/// to *test*: the integration suite can be run end to end against the store
+/// long before the store is what anybody's data is in.
+enum Backend {
+    /// `.storyhook/` in the repository — today's default.
+    Legacy,
+    /// The global store, in this process. Named `local` because the daemon
+    /// wave adds a third backend that is the same store over a socket, and
+    /// `local` is what distinguishes them.
+    Local,
+}
+
+/// Reads `STORYHOOK_INVOKER`, defaulting to the legacy stack.
+///
+/// An unrecognised value is a *failure*, not a fallback: a typo that silently
+/// ran the legacy path would make a green store-leg run mean nothing at all.
+fn selected_backend() -> Backend {
+    match env::var("STORYHOOK_INVOKER").as_deref() {
+        Ok("local") => Backend::Local,
+        Ok("legacy") | Err(_) => Backend::Legacy,
+        Ok(other) => {
+            eprintln!("error: STORYHOOK_INVOKER must be `legacy` or `local`, not `{other}`");
+            process::exit(2);
+        }
+    }
+}
+
+/// Opens and migrates the global store.
+fn open_store() -> Result<storyhook::store::SqliteStore, storyhook::error::AppError> {
+    use storyhook::store::Store as _;
+    let store = storyhook::store::SqliteStore::open(storyhook::paths::store_path()?)?;
+    store.migrate()?;
+    Ok(store)
+}
+
+/// How deep inside an event hook this process is running.
+///
+/// A hook shells out to `story`, and the child must not fire the hook that
+/// spawned it. `event_hooks` sets the variable on the child; anything it cannot
+/// parse counts as "inside a hook", because the safe answer to an ambiguous
+/// depth is to fire nothing.
+fn hook_depth() -> u32 {
+    match env::var("STORYHOOK_HOOK_DEPTH") {
+        Ok(raw) => raw.trim().parse().unwrap_or(1),
+        Err(_) => 0,
     }
 }

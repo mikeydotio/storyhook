@@ -70,20 +70,20 @@ impl<'ctx, S: Store> SystemService<'ctx, S> {
     /// and reported as skipped — the user's own `pre-commit` is not ours to
     /// overwrite.
     pub fn install_git_hooks(&self) -> Result<String, AppError> {
-        hooks::install_hooks(self.ctx.cwd())
+        install_git_hooks(self.ctx.cwd())
     }
 
     /// Removes storyhook's git hooks from this checkout, leaving anyone
     /// else's alone.
     pub fn uninstall_git_hooks(&self) -> Result<String, AppError> {
-        hooks::uninstall_hooks(self.ctx.cwd())
+        uninstall_git_hooks(self.ctx.cwd())
     }
 
     /// Describes the project's configured event hooks.
     ///
     /// Infallible: "no hooks configured" is an answer, not an error.
     pub fn list_event_hooks(&self) -> String {
-        event_hooks::list_hooks(self.ctx.cwd())
+        list_event_hooks(self.ctx.cwd())
     }
 
     /// Fires one event hook with a synthetic payload, so a user can see what
@@ -94,11 +94,47 @@ impl<'ctx, S: Store> SystemService<'ctx, S> {
 
     /// Installs the editor/agent plugin named by `target`.
     pub fn install_plugin(&self, target: &str) -> Result<String, AppError> {
-        plugin::install(target, self.ctx.cwd())
+        install_plugin(target, self.ctx.cwd())
     }
 
     /// Removes the editor/agent plugin named by `target`.
     pub fn uninstall_plugin(&self, target: &str) -> Result<String, AppError> {
-        plugin::uninstall(target, self.ctx.cwd())
+        uninstall_plugin(target, self.ctx.cwd())
     }
+}
+
+// --- the project-less half --------------------------------------------------
+//
+// These five need a *directory*, not a project: they write `.git/hooks`, read
+// `hooks.toml`, or install an editor plugin, and the legacy path answered every
+// one of them in a directory storyhook had never heard of. Root resolution
+// routes them before it looks for a project, which is why they exist as free
+// functions rather than only as methods. `hooks test` is deliberately not among
+// them — it fires a real hook against a real project, and the legacy path calls
+// `ensure_project` first.
+
+/// Installs storyhook's git hooks into the checkout at `cwd`.
+pub fn install_git_hooks(cwd: &std::path::Path) -> Result<String, AppError> {
+    hooks::install_hooks(cwd)
+}
+
+/// Removes storyhook's git hooks from the checkout at `cwd`.
+pub fn uninstall_git_hooks(cwd: &std::path::Path) -> Result<String, AppError> {
+    hooks::uninstall_hooks(cwd)
+}
+
+/// Describes the event hooks configured at `cwd`.
+#[must_use]
+pub fn list_event_hooks(cwd: &std::path::Path) -> String {
+    event_hooks::list_hooks(cwd)
+}
+
+/// Installs the plugin named by `target` for the checkout at `cwd`.
+pub fn install_plugin(target: &str, cwd: &std::path::Path) -> Result<String, AppError> {
+    plugin::install(target, cwd)
+}
+
+/// Removes the plugin named by `target` from the checkout at `cwd`.
+pub fn uninstall_plugin(target: &str, cwd: &std::path::Path) -> Result<String, AppError> {
+    plugin::uninstall(target, cwd)
 }
