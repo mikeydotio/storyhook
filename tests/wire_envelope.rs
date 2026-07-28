@@ -18,16 +18,17 @@
 //! pins that a hop through JSON changes neither.
 
 use storyhook::cli::{
-    EpicAction, GraphMode, HooksAction, Invocation, MemberInput, PhaseAction, PluginAction,
-    StateAction, TypeAction, WebAction,
+    EpicAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput, PhaseAction,
+    PluginAction, StateAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
-    Priority, ProgressRollup, StoryComment, StoryRelation, StorySnapshot, SuperState,
+    Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent, StoryRelation,
+    StorySnapshot, SuperState,
 };
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
-    BlockedChainView, GraphOverview, GraphView, PhaseView, Response, StaleInfo, StoryView,
-    SummaryView, render_error, render_response,
+    BlockedChainView, GraphOverview, GraphView, PhaseView, ProjectSnapshotView, Response,
+    StaleInfo, StoryView, SummaryView, render_error, render_response,
 };
 
 /// The four ways a `Response` can be rendered. Every case in this file is
@@ -299,6 +300,58 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "raw_json",
             Response::RawJson("{\n  \"schema\": 1,\n  \"stories\": []\n}".to_string()),
+        ),
+        (
+            "project_snapshot_empty",
+            Response::ProjectSnapshot(Box::new(ProjectSnapshotView {
+                prefix: "SH".to_string(),
+                states: Vec::new(),
+                members: Vec::new(),
+                stories: Vec::new(),
+            })),
+        ),
+        (
+            "project_snapshot",
+            Response::ProjectSnapshot(Box::new(ProjectSnapshotView {
+                prefix: "API".to_string(),
+                states: vec![
+                    StateDef {
+                        slug: "todo".to_string(),
+                        super_state: SuperState::Open,
+                        role: None,
+                        description: Some("not started".to_string()),
+                    },
+                    StateDef {
+                        slug: "done".to_string(),
+                        super_state: SuperState::Closed,
+                        role: None,
+                        description: None,
+                    },
+                ],
+                members: vec![Member {
+                    id: "ada".to_string(),
+                    display_name: "Ada Lovelace".to_string(),
+                    email: Some("ada@example.com".to_string()),
+                    github: Some("ada-gh".to_string()),
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                }],
+                stories: vec![maximal_view().story],
+            })),
+        ),
+        ("story_history_empty", Response::StoryHistory(Vec::new())),
+        (
+            "story_history",
+            Response::StoryHistory(vec![
+                StoryEvent::StoryCreated {
+                    at: "2026-01-01T00:00:00Z".to_string(),
+                    title: "A story — with ünïcödé".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryCommentAdded {
+                    at: "2026-01-01T00:01:00Z".to_string(),
+                    text: "multi\nline".to_string(),
+                },
+            ]),
         ),
     ]
 }
@@ -838,6 +891,34 @@ fn invocation_corpus() -> Vec<Invocation> {
             force: true,
         },
         Invocation::Version,
+        Invocation::ProjectSnapshot,
+        Invocation::History {
+            action: HistoryAction::Read {
+                id: "SH-7".to_string(),
+            },
+        },
+        Invocation::History {
+            action: HistoryAction::Restore {
+                id: "SH-7".to_string(),
+                events: vec![
+                    StoryEvent::StoryCreated {
+                        at: "2026-01-01T00:00:00Z".to_string(),
+                        title: "Before the mutation".to_string(),
+                        state: "todo".to_string(),
+                    },
+                    StoryEvent::StoryCommentAdded {
+                        at: "2026-01-01T00:01:00Z".to_string(),
+                        text: "a comment the undo restores".to_string(),
+                    },
+                ],
+            },
+        },
+        Invocation::History {
+            action: HistoryAction::Restore {
+                id: "SH-7".to_string(),
+                events: Vec::new(),
+            },
+        },
     ]
 }
 
@@ -891,6 +972,8 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::SessionStart => "SessionStart",
         Invocation::Update { .. } => "Update",
         Invocation::Version => "Version",
+        Invocation::ProjectSnapshot => "ProjectSnapshot",
+        Invocation::History { .. } => "History",
     }
 }
 
@@ -904,7 +987,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        46,
+        48,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

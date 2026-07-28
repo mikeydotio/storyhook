@@ -25,7 +25,7 @@ impl DataStore {
         storage::ensure_project(root)?;
         let states = storage::load_states(root)?;
         let state_map = storage::load_state_map(root)?;
-        let stories = load_open_snapshots_tolerant(root)?;
+        let stories = storage::load_open_snapshots_tolerant(root)?;
         let prefix = storage::load_project_prefix(root)?;
         let members = storage::load_members(root)?;
 
@@ -190,65 +190,6 @@ fn matches_filter(filter: &FilterSpec, story: &StorySnapshot) -> bool {
     }
 
     true
-}
-
-/// Load all open snapshots, tolerating a trailing incomplete JSON line.
-///
-/// When reading JSONL event files, a concurrent append-mode write could leave
-/// a partial trailing line. If serde_json parse fails on the last line of a
-/// file, we skip it rather than propagating the error.
-fn load_open_snapshots_tolerant(root: &Path) -> Result<Vec<StorySnapshot>, AppError> {
-    use std::fs;
-    use std::io::{BufRead, BufReader};
-
-    storage::ensure_project(root)?;
-    let paths = storage::ProjectPaths::new(root);
-    let states = storage::load_state_map(root)?;
-    let mut stories = Vec::new();
-
-    let stories_dir = paths.open_stories_dir();
-    if !stories_dir.exists() {
-        return Ok(stories);
-    }
-
-    let mut entries = fs::read_dir(&stories_dir)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let id = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .ok_or_else(|| AppError::Storage("invalid story filename".to_string()))?;
-
-        let file = fs::OpenOptions::new().read(true).open(&path)?;
-        let reader = BufReader::new(file);
-        let mut events = Vec::new();
-        let lines: Vec<String> = reader.lines().collect::<Result<Vec<_>, _>>()?;
-        let line_count = lines.len();
-
-        for (i, line) in lines.into_iter().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str(&line) {
-                Ok(event) => events.push(event),
-                Err(_) if i == line_count - 1 => {
-                    // Skip incomplete trailing line from concurrent write
-                }
-                Err(e) => return Err(AppError::from(e)),
-            }
-        }
-
-        if !events.is_empty() {
-            stories.push(crate::domain::fold_story(id, &events, &states)?);
-        }
-    }
-
-    Ok(stories)
 }
 
 // TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.

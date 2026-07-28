@@ -36,7 +36,8 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::output::{
-    BlockedChainView, GraphOverview, GraphView, ReportData, StaleInfo, StoryView, SummaryView,
+    BlockedChainView, GraphOverview, GraphView, ProjectSnapshotView, ReportData, StaleInfo,
+    StoryView, SummaryView,
 };
 use crate::store::{ProjectId, ReadOps, StoryNo, StoryQuery, partition_known};
 
@@ -120,6 +121,27 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                 "internal: story view answered with {other:?}"
             ))),
         }
+    }
+
+    /// Everything a client that holds a *model* needs, in one read.
+    ///
+    /// The catalog in **configured** order — `tx.states()`, never
+    /// `tx.state_map()`, which is alphabetical and would put a board's columns
+    /// in the wrong order — the members, and every unarchived story. One
+    /// transaction, so a client cannot observe a catalog from one instant and
+    /// stories from another.
+    pub fn project_snapshot(&self) -> Result<ProjectSnapshotView, AppError> {
+        Ok(ProjectSnapshotView {
+            prefix: super::project_prefix(self.tx, self.project)?,
+            states: self.tx.states(self.project)?,
+            members: self.tx.members(self.project)?,
+            stories: self
+                .tx
+                .stories(self.project, &StoryQuery::all().archived(false))?
+                .into_iter()
+                .map(|row| row.snapshot)
+                .collect(),
+        })
     }
 
     /// `story list` with every filter the CLI grammar allows.

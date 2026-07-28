@@ -1377,6 +1377,7 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "context",
         "handoff",
         "doctor",
+        "project-snapshot",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1401,19 +1402,25 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
     }
     // Roster plus probes must account for *every* `Invocation` variant, so an
     // arm cannot be ported — or added — without appearing on one of the two
-    // lists. 46 is the variant count `wire_envelope.rs` pins independently.
+    // lists. 48 is the variant count `wire_envelope.rs` pins independently.
     assert_eq!(
         ported.len() + unported_probes().len(),
-        46,
+        48,
         "an invocation is on neither the ported roster nor the unported probes"
     );
-    assert_eq!(ported.len(), 37);
+    assert_eq!(ported.len(), 38);
 }
 
 /// One probe per invocation this wave does *not* port.
 fn unported_probes() -> Vec<(&'static str, Invocation)> {
     vec![
         ("export", Invocation::Export),
+        (
+            "history",
+            Invocation::History {
+                action: storyhook::cli::HistoryAction::Read { id: "SH-1".into() },
+            },
+        ),
         ("session-start", Invocation::SessionStart),
         ("import", Invocation::Import { file: None }),
         (

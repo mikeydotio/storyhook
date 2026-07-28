@@ -384,6 +384,48 @@ pub enum Invocation {
         force: bool,
     },
     Version,
+    /// Everything a long-lived client needs to render a project, in one
+    /// round trip.
+    ///
+    /// Not reachable from the command line, and deliberately so: a shell user
+    /// asking for the whole project already has `story list` and `story
+    /// export`. This exists for clients that hold a *model* — the TUI, which
+    /// rebuilds its board after every change, and the dashboard's resync after
+    /// a dropped event stream. Without it those clients issue four or five
+    /// reads per refresh and see a different instant in each one.
+    ProjectSnapshot,
+    /// Read or replace one story's raw event history.
+    ///
+    /// The TUI's undo primitive, and nothing else's: undo snapshots the exact
+    /// log a story had before a mutation and puts it back afterwards, which is
+    /// neither an append nor a compensating edit. It is here rather than in
+    /// the TUI because the seam has to be the only way a client reaches
+    /// project data — a client that keeps one filesystem call keeps all of
+    /// them.
+    ///
+    /// Not reachable from the command line either. Reading a raw history is
+    /// what `story export` is for, and rewriting one is not something a user
+    /// should be able to ask for by accident.
+    History {
+        action: HistoryAction,
+    },
+}
+
+/// The two halves of the undo primitive: snapshot a history, and put one back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HistoryAction {
+    /// Every event of one story, oldest first. An unknown story has an empty
+    /// history rather than being an error: a client asking "what was there
+    /// before?" about a story that was not there gets the honest answer.
+    Read { id: String },
+    /// Replaces one story's history with `events`.
+    ///
+    /// An **empty** `events` means "this story should not exist" — undoing a
+    /// creation. Anything else is a verbatim replacement.
+    Restore {
+        id: String,
+        events: Vec<crate::domain::StoryEvent>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
