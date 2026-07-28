@@ -37,6 +37,18 @@ categories = ["command-line-utilities", "development-tools"]
 default = ["github-sync"]
 github-sync = ["dep:ureq"]
 
+# Named crash points inside the store (`src/store/fault.rs`). NEVER in
+# `default`: with the feature off, every injection point is an inlined
+# `Ok(())`, so a release binary carries no arming machinery at all.
+#
+# `cargo test` still gets it, because `storyhook-test-support` — a
+# dev-dependency of this package — depends on `storyhook` *with* the feature.
+# Cargo's v2 feature resolver keeps dev-dependency features out of non-test
+# builds, so `cargo build` and `cargo build --release` are unaffected. That is
+# what lets the store's crash tests run under the ordinary `make test` gate
+# instead of behind a flag nothing remembers to pass.
+fault-injection = []
+
 [[bin]]
 name = "story"
 path = "src/main.rs"
