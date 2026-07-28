@@ -35,7 +35,7 @@ Execution state — wave status, step log, discovered defects — lives in
 | Wave | Scope | Status |
 |---|---|---|
 | W0 | quality-gate repair, shared test harness, baseline capture | **complete — merged** |
-| W0b | wire-serializable envelope + the `Invoker` seam | **complete — PR open** |
+| W0b | wire-serializable envelope + the `Invoker` seam | **complete — merged** |
 | W1 | `Store` trait, SQLite engine, migrations, rebuild-diff | **complete — PR open** |
 | W2a–d | services over the store (`app.rs` frozen) | pending |
 | W3 | legacy importer (`story migrate`) — also W4's rollback path | pending (parallel with W2) |

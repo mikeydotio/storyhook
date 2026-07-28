@@ -25,7 +25,7 @@
 | Wave | Branch/PR | Status |
 |---|---|---|
 | W0 gate repair + harness | `rearch/w0-gate-repair` / [PR #60](https://github.com/mikeydotio/storyhook/pull/60) | **MERGED** 2026-07-28 |
-| W0b envelope + Invoker seam | `rearch/w0b-envelope` | **PR OPENED** — awaiting merge |
+| W0b envelope + Invoker seam | `rearch/w0b-envelope` / [PR #61](https://github.com/mikeydotio/storyhook/pull/61) | **MERGED** 2026-07-28 |
 | W1 store engine | `rearch/w1-store` | **PR OPENED** — awaiting merge |
 | W2a/b/c/d services | — | pending |
 | W3 importer | — | pending |
