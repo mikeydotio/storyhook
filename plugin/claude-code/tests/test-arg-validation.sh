@@ -14,6 +14,13 @@ out=$(bash "$SCRIPT" dispatch "bad id!" 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "dispatch with invalid id: ok:false"
 assert_contains "$(jqf "$out" .display)" "alphanumeric" "dispatch with invalid id: names the constraint"
 
+# SH-62: dispatch used to silently ignore a stray trailing token; it is now a
+# hard fail, and the usage string names --auto as the only flag it accepts.
+out=$(bash "$SCRIPT" dispatch SH-1 junk 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "dispatch with a trailing token: ok:false"
+assert_contains "$(jqf "$out" .display)" "usage" "dispatch with a trailing token: usage message"
+assert_contains "$(jqf "$out" .display)" "--auto" "dispatch with a trailing token: usage names --auto"
+
 out=$(bash "$SCRIPT" bogus-subcommand 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "unknown subcommand: ok:false"
 
