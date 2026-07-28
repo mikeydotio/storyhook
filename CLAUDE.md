@@ -36,7 +36,7 @@ Execution state — wave status, step log, discovered defects — lives in
 |---|---|---|
 | W0 | quality-gate repair, shared test harness, baseline capture | **complete — merged** |
 | W0b | wire-serializable envelope + the `Invoker` seam | **complete — PR open** |
-| W1 | `Store` trait, SQLite engine, migrations, rebuild-diff | entry-ready |
+| W1 | `Store` trait, SQLite engine, migrations, rebuild-diff | **complete — PR open** |
 | W2a–d | services over the store (`app.rs` frozen) | pending |
 | W3 | legacy importer (`story migrate`) — also W4's rollback path | pending (parallel with W2) |
 | W4 | **the flip**: the global store becomes the default | pending; one uninterrupted session |

@@ -26,7 +26,7 @@
 |---|---|---|
 | W0 gate repair + harness | `rearch/w0-gate-repair` / [PR #60](https://github.com/mikeydotio/storyhook/pull/60) | **MERGED** 2026-07-28 |
 | W0b envelope + Invoker seam | `rearch/w0b-envelope` | **PR OPENED** — awaiting merge |
-| W1 store engine | — | **entry-ready** |
+| W1 store engine | `rearch/w1-store` | **PR OPENED** — awaiting merge |
 | W2a/b/c/d services | — | pending |
 | W3 importer | — | pending |
 | W4 THE FLIP | — | pending (one uninterrupted session; revert only while W3 round-trip green) |
@@ -64,6 +64,15 @@
   mirror for `AppError`, and `tests/wire_envelope.rs` (9 tests): `2db8310`.
 - **W0b.3 DONE** — `Invoker`/`InvokeRequest`/`LegacyInvoker` in `src/invoke.rs`, adopted by
   `main.rs` and `web.rs`'s three dispatchers; `tests/invoker_seam.rs` (4 tests): `ef717f2`.
+
+## W1 step plan
+
+- **W1 DONE** — `src/store/`, pure new code, nothing wired. Six commits:
+  `ebb7522` (domain `PartialEq` derives), `a7a8cc6` (schema v1 + migrations +
+  engine), `33c9454` (rebuild-diff oracle + fault points), `aac3a5c` (priority
+  slug constraint — a defect this wave's own tests found), `e792a3e` (the
+  162-case conformance suite), `9f7d0e4` (property tests). See Step log for the
+  public API W2a builds on and the deviations.
 
 ## Key facts discovered (do not re-derive)
 
@@ -148,6 +157,43 @@
   `#![allow(clippy::disallowed_methods)]`. `grep -rl 'TODO(rearch)' tests/ src/` is the live
   migration list; it must only ever shrink. Deliberate: bulk-migrating 45 files here would have
   produced an unreviewable diff and collided with every later wave.
+- **W1 finding, fixed in-wave (`aac3a5c`) — a CHECK constraint that evaluates to
+  NULL PASSES.** The `stories` table tied `priority_rank` to `priority` with
+  `CHECK (priority_rank = CASE priority WHEN 'critical' THEN 0 … END)`, and the
+  schema comment claimed this also validated the slug, since an unknown slug
+  makes the `CASE` yield NULL. It does — and SQL rejects a row only when a
+  constraint is **FALSE**, so `UPDATE stories SET priority = 'urgent'` was
+  accepted. Fixed with an explicit `CHECK (priority IN (…))`. **Generalize
+  this:** every CHECK in this schema that compares against a possibly-NULL
+  expression needs the same audit, and a future migration adding one should
+  assume NULL means "allowed" until proved otherwise.
+- **W1: `story doctor`'s integrity question is now TWO questions**, and W2c
+  should surface both. `ReadModelDiff::is_clean()` = "does the read model match
+  its events" (everything it covers is fixable by `repair_read_model`, so
+  repair-then-diff is clean by construction). `has_integrity_issues()` = "are
+  there problems no re-fold can fix" — today: unfoldable stories, and
+  **asymmetric relations**, which is SH-60 at the level it actually lives. The
+  relations *table* is symmetric by construction, so queries are unaffected; the
+  missing half is a missing *event*, and only the layer that writes events can
+  add it. A `--repair` must not claim to fix the second kind.
+- **W1: the relations table is the CLOSURE of both ends' claims, not one end's.**
+  `put_story` removes an edge row only when *neither* end's snapshot claims it
+  (`claimed_by_other_end`). Without that rule, rewriting SH-2 from a history
+  that never mentioned SH-1 retracted an edge SH-1 still asserted, and the
+  surviving state depended on which story was written first —
+  `repair_read_model` never converged. W2a's RelationService must keep writing
+  both stories' events; the store guarantees the *table* stays symmetric, not
+  that the histories agree.
+- **W1: `put_story` derives `archived` from `closed_at`** and a schema CHECK
+  ties them, so W2/W3 must not try to set it independently — there is no
+  parameter for it and the constraint would refuse.
+- **W1: `cargo test` gets the `fault-injection` feature; `cargo build` does
+  not** — verified by grepping `cargo build -v`/`cargo test -v` for
+  `feature="fault-injection"` (0 occurrences vs 2). The mechanism is
+  `crates/storyhook-test-support/Cargo.toml` depending on `storyhook` **with**
+  the feature; cargo's v2 resolver keeps dev-dependency features out of
+  non-test builds. If someone ever removes that `features = [...]`, the store's
+  crash tests silently stop compiling into the gate.
 - Baseline `make test` cold: 83s wall (230% CPU) incl. build; failed only in web_test (orphans).
 - Post-W0.1 `make test` warm: ~29s wall, 3 consecutive green runs (49 Rust targets + 15 bash).
 - `git commit --amend` silently fails in this environment — use reset --soft + fresh commit.
@@ -435,6 +481,130 @@
   - `tests/invoker_seam.rs` calls `storyhook::app::run` in-process alongside
     `storyhook_test_support`. Safe — integration tests link ONE copy of `storyhook`. The
     two-copies trap in Key facts applies only to `src/`'s own `#[cfg(test)]` modules.
+- 2026-07-28 W1: branch `rearch/w1-store` off merged main `8ffee70`. Six commits, `make test`
+  green after each; two consecutive green full runs at the end: **55.8s and 56.5s warm**,
+  against W0b's 39.7s. Test count 1185 → **1422** (+237: 162 conformance, 32 rebuild/faults,
+  15 migrations, 8 property, 2 schema fixture, 17 `src/store` unit, 1 doctest).
+
+  **The +16s is build, not tests.** Warm `cargo test --workspace` alone is 36.0s, of which the
+  five new store binaries contribute **2.2s of runtime** (conformance 0.87s, properties 1.06s,
+  rebuild 0.18s, migrations 0.07s, fixture 0.01s) — inside the "<5s added" budget. The rest is
+  linking five more test binaries plus compiling `proptest`, the same per-binary cost W0b
+  measured at ~1.2s each. If a later wave wants it back, merging `store_schema_fixture.rs` into
+  `store_migrations.rs` is the cheapest binary to remove. Note `web_test` measured 18.4–21.4s across
+  these runs against a 7.2s baseline: that is parallel-binary contention, not a W1 regression —
+  it is unchanged code, and it varied by 3s between two back-to-back runs of the same tree.
+
+  - `ebb7522` — `PartialEq`/`Eq` derives on `StoryEvent`, `StorySnapshot`, `StoryComment`,
+    `StateDef`, `TypeDef`, `Member`. **The only change this wave makes outside `src/store/`**
+    besides one `pub mod store;` line, and it is a derive-only diff.
+  - `a7a8cc6` — schema v1, the migration framework, the SQLite engine.
+  - `33c9454` — the rebuild-diff oracle and the fault-injection call sites, plus the
+    relation-convergence defect its tests found (see Key facts).
+  - `aac3a5c` — the priority-slug constraint (see Key facts) and five raw-connection
+    constraint tests.
+  - `e792a3e` — `store_conformance_suite!`, 162 cases, instantiated for SQLite.
+  - `9f7d0e4` — five proptest properties, `proptest` added as a workspace dev-dependency.
+
+  **The public store API W2a builds on** (`storyhook::store`):
+
+  ```rust
+  // Engine
+  SqliteStore::open(path) / ::open_with(StoreConfig) -> Result<Self, StoreError>
+  StoreConfig { db_path, backup_dir, pool_size, busy_timeout }
+
+  trait Store: Send + Sync + 'static {          // generic S: Store, never dyn
+      type ReadTx<'a>: ReadOps;  type WriteTx<'a>: WriteOps;
+      fn read<T>(&self, f: impl FnOnce(&Self::ReadTx<'_>) -> Result<T, StoreError>) -> …;
+      fn write<T>(&self, f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>) -> …;
+      fn migrate(&self) -> Result<MigrationReport, StoreError>;
+  }
+
+  trait ReadOps {   // EVERY method takes ProjectId — a missing scope is a compile error
+      project / project_by_uuid / project_by_slug / project_by_path / projects / project_paths
+      states / state_map / types / members / settings
+      events_for / head_seq / events_since(after: GlobalSeq, limit: u32) / max_global_seq
+      story / stories(&StoryQuery) / relations_from / relations_to / github_base
+  }
+  trait WriteOps: ReadOps {
+      create_project(&NewProject) -> ProjectId · touch_project_path(.., PathKind)
+      allocate_story_no(ProjectId) -> StoryNo
+      append_events(.., ExpectedSeq, &[StoryEvent]) -> EventSeq
+      append_raw_events(.., ExpectedSeq, &[RawEvent]) -> EventSeq   // W3's importer
+      put_story(ProjectId, &StorySnapshot, head: EventSeq)
+      put_states / put_types / put_member / remove_member / put_settings / put_github_base
+  }
+
+  // Newtypes: ProjectId, StoryNo (::parse_id(prefix, "SH-1") / .to_id(prefix)),
+  //           EventSeq (::ZERO), GlobalSeq (::ZERO), ExpectedSeq::{Any, Exact}, PathKind
+  // Values:   ProjectRecord, NewProject, ProjectPathRecord, ProjectSettings, StoryRow,
+  //           StoryQuery (builder) + StorySort, RelationEdge, StoredEvent/StoredPayload,
+  //           FeedEvent, RawEvent, MigrationReport, UnknownEventDiagnostic
+  // Oracle:   rebuild_read_model / diff_read_model / repair_read_model / ReadModelDiff
+  // Errors:   StoreError, with `impl From<StoreError> for AppError` already written
+  ```
+
+  **The call pattern W2a must follow** — the store deliberately does not fold, so this is
+  visible at every call site rather than hidden behind a storage method:
+
+  ```rust
+  store.write(|tx| {
+      let head = tx.append_events(project, story, expected, &events)?;
+      let stored = tx.events_for(project, story)?;          // includes what was just written
+      let (known, unknown) = partition_known(story, &stored);
+      let snapshot = domain::fold_story(&story.to_id(&prefix), &known, &tx.state_map(project)?)?;
+      tx.put_story(project, &snapshot, head)?;              // same transaction
+      Ok(())
+  })
+  ```
+
+  Things W2a/W2b/W3 should know:
+  - **`StoreError` already maps onto `AppError`** (`Conflict→StateConflict`/9,
+    `Busy→LockTimeout`/4, `Invariant|Corrupt→Integrity`/5, `Validation`/2) and the conformance
+    suite asserts the exit code. Services should propagate `StoreError` with `?` rather than
+    re-deriving a mapping.
+  - **`put_story` validates the snapshot's `id` against the project's prefix.** A snapshot
+    cannot be filed under the wrong project, and a relation naming a foreign prefix is a
+    `Validation` error. W3's importer must therefore renumber *before* writing, not after.
+  - **`ExpectedSeq::Exact(EventSeq::ZERO)` means "this story must not exist yet"** — the
+    create path's CAS.
+  - **A rolled-back allocation returns the number** (no gaps). Anything relying on gaps to
+    detect lost work will not find them.
+  - **The store holds no clock** except `project_paths.last_seen_at` and
+    `schema_migrations.applied_at`. Every user-visible timestamp arrives as a parameter, so the
+    injectable `Clock` belongs in W5's `Environment` and needs no store change.
+  - **`tests/store_support/mod.rs`** holds the fixture helpers (`new_store`, `seed_project`,
+    `create_story`, `append_and_fold`, `link_atomic`, `raw`). `link_atomic` is the one-transaction
+    relation write W2a's RelationService should mirror.
+  - **`tests/fixtures/schema/v1.db`** is a committed schema-v1 database, checked against a
+    freshly-migrated one on every run. **Once this wave merges, migration 0001 must never be
+    edited again** — a schema change becomes migration 0002. It was edited in place inside this
+    wave (`aac3a5c`) only because v1 had not shipped, and the fixture check is what caught it.
+
+  Deviations from the wave brief, all deliberate:
+  - **The conformance suite is not feature- or cfg-gated.** It is a `macro_rules!` definition
+    plus a four-method trait, both of which generate no code, so nothing reaches a release
+    binary anyway — and gating would have split the crate's feature surface for no gain.
+  - **A fifth fault point, `backup_verify`**, beyond the four the brief named. Testing "refuse
+    to migrate when the backup cannot be verified" otherwise means hand-corrupting a SQLite
+    file, which tests the corruption rather than the refusal.
+  - **`stories` carries `priority_rank` alongside `priority`**, and the priority index is on the
+    rank. `ORDER BY priority` on the slug is alphabetical, which is wrong; a CHECK ties the two.
+  - **`put_story` owns relations; there are no `add_relation`/`remove_relation` ops.** The brief
+    left the symmetry mechanism to this wave's judgement: both directions are stored, only one
+    is ever written, and triggers materialize the mirror from a `relation_inverses` vocabulary
+    table that a foreign key also validates against.
+  - **`append_raw_events` + `RawEvent` added to `WriteOps`.** W3 needs it for a byte-identical
+    legacy round trip, and it is the only honest way to write the unknown-kind tests.
+  - **Migration/backup and raw-SQL corruption cases live outside the conformance suite**
+    (`tests/store_migrations.rs`, `tests/store_rebuild.rs`): they are properties of an engine,
+    not of the contract a second engine would have to satisfy.
+
+  Verification that the tests bite, not just pass: reverting the single-parent index to
+  non-unique, and emptying the relation mirror trigger, each fail the conformance case that
+  names them; making `put_story` drop one label fails
+  `the_read_model_always_equals_a_rebuild`, which shrinks to a two-operation counterexample
+  naming the field.
 
 ## Resume protocol (fresh session)
 

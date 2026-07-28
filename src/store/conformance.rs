@@ -6,7 +6,7 @@
 //! file reaches a release binary — while a second implementation (the design
 //! admits Postgres later) is put under the whole suite with one line:
 //!
-//! ```ignore
+//! ```text
 //! storyhook::store_conformance_suite!(PostgresFixture);
 //! ```
 //!
