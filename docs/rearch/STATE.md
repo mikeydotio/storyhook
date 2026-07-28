@@ -16,7 +16,7 @@
 
 | Wave | Branch/PR | Status |
 |---|---|---|
-| W0 gate repair + harness | `rearch/w0-gate-repair` | **IN PROGRESS** — step W0.1 next |
+| W0 gate repair + harness | `rearch/w0-gate-repair` | **IN PROGRESS** — step W0.3 next |
 | W0b envelope + Invoker seam | — | pending (after W0) |
 | W1 store engine | — | pending |
 | W2a/b/c/d services | — | pending |
@@ -33,11 +33,10 @@
 - **W0.1 DONE** — five gate fixes (four planned + one production defect the readiness fix
   exposed), each its own `fix:` commit + regression test: `2316ddf` SH-53, `4c1aed9` SH-51,
   `e8d4cf8` tailnet probe, `da3109d` SH-59, `e2531c4` SH-52. See Step log.
-- **W0.2** — `storyhook-test-support` workspace crate: TestEnv (unconditional HOME/XDG/
-  STORYHOOK_DATA_DIR isolation), ProjectBuilder, scratch_dir + clippy tempdir ban, Daemon
-  guard scaffolding, orphan postlude in make test; migrate 3 proof files
-  (move_if_state, registry_test, story_export); plugin lib.sh XDG isolation + run-tests.sh
-  assertion; drop lib.sh `git add .storyhook`.
+- **W0.2 DONE** — `storyhook-test-support` workspace crate (TestEnv, ProjectBuilder,
+  scratch_dir, server/daemon helpers), clippy `$TMPDIR` ban, 3 proof files migrated,
+  bash suite data-home isolation: `877c31f`, `a170106`, `c444313`, `f4eefe1`, `ca2b4a7`.
+  See Step log for the API surface W0.3 builds on.
 - **W0.3** — RED `two_worktrees_mint_colliding_ids`; insta golden CLI corpus (~200 invocations,
   ≥12-story fixture, timestamp redactions, INSTA_UPDATE=no in gate); error-code table;
   export-idempotency tests.
@@ -70,6 +69,19 @@
 - **Second finding, unfixed, needs a story:** positional-taking verbs still swallow unknown
   `--flags` as data (`story new --typo x` creates a story titled `--typo x`). Same shape as
   SH-52, different defect; SH-52's fix covers help flags only.
+- **The harness lives in `crates/storyhook-test-support/` (W0.2).** `storyhook` is both the
+  workspace root package and a member, so `src/`/`tests/` paths are unchanged. The crate is a
+  dev-dependency of `storyhook` AND depends on `storyhook` — cargo permits a cycle through a
+  dev-dependency, and `cargo publish` strips path-only dev-deps. **Consequence to respect:**
+  `src/`'s own `#[cfg(test)]` modules deliberately do NOT use the crate. They can (dev-deps are
+  in scope there), but doing so links two copies of `storyhook` into the lib-test binary — the
+  cfg(test) one and the plain one the harness depends on — whose types are mutually
+  incompatible. Fine for `scratch_dir()`; a trap the day someone passes a storyhook type across.
+- **45 files still build fixtures in `$TMPDIR`**, each carrying
+  `// TODO(rearch): migrate to storyhook_test_support::scratch_dir` +
+  `#![allow(clippy::disallowed_methods)]`. `grep -rl 'TODO(rearch)' tests/ src/` is the live
+  migration list; it must only ever shrink. Deliberate: bulk-migrating 45 files here would have
+  produced an unreviewable diff and collided with every later wave.
 - Baseline `make test` cold: 83s wall (230% CPU) incl. build; failed only in web_test (orphans).
 - Post-W0.1 `make test` warm: ~29s wall, 3 consecutive green runs (49 Rust targets + 15 bash).
 - `git commit --amend` silently fails in this environment — use reset --soft + fresh commit.
@@ -104,6 +116,65 @@
   - For W0.2: the `scratch_dir`/`serve`/`DaemonGuard`/orphan-check helpers are deliberately
     self-contained in `tests/web_test.rs` + `scripts/`, ready to move into the test-support
     crate unchanged.
+- 2026-07-28 W0.2: five commits, `make test` green after each; two consecutive green full runs
+  at the end (27s, 28s warm — the pre-step baseline was ~29s, so the workspace costs nothing).
+  - `877c31f` — 2-member cargo workspace + the crate + 23 unit tests of the harness itself.
+  - `a170106` — `scratch_dir`/`reserve_port`/`serve`/`try_serve_on`/`DaemonGuard`/`ChildGuard`/
+    `wait_for_*`/`http_status_line` moved out of `web_test.rs` unchanged; the three tests that
+    test *those* moved with them. `web_test.rs` 143→140; the crate holds 23 unit tests + 1
+    doctest, unchanged across the move because `877c31f` already wrote the crate with those
+    three in place. (`a170106`'s commit body miscounts this as "crate 23 → 26"; the crate was
+    23 throughout.)
+  - `c444313` — `move_if_state.rs`, `registry_test.rs`, `story_export.rs` migrated. Zero
+    assertion changes: `git show -U0 c444313 -- tests/ | grep '^[-+].*assert'` yields 7 removed
+    lines, all `story init` fixture setup or the hand-resolved `cargo_bin` path, and nothing
+    added.
+  - `f4eefe1` — bash suite data-home isolation (the plan's highest-severity risk).
+  - `ca2b4a7` — `clippy.toml` `$TMPDIR` ban + the 45 TODO(rearch) markers.
+
+  **API surface W0.3 builds its RED `two_worktrees_mint_colliding_ids` on** (all of
+  `storyhook_test_support::*`, and `--workspace` is now required on cargo invocations):
+
+  ```rust
+  TestEnv::shared() -> &'static TestEnv     // one per test binary, the default
+  TestEnv::isolated() -> TestEnv            // when a test asserts on env contents
+    .story(cwd) -> assert_cmd::Command      // replaces every `fn story(dir)` helper
+    .raw_story(cwd) -> std::process::Command// for tests that spawn+race processes
+    .apply(&mut std::process::Command)      // isolate an arbitrary command (git, env…)
+    .project() -> ProjectBuilder<'_>
+    .home()/.data_home()/.config_home()/.state_home()/.data_dir() -> &Path
+    .vars() -> [(&'static str, &Path); 5]
+
+  ProjectBuilder: .prefix(&str) .git() .with_local_origin() .worktree(&str)
+                  .seed_story(&str) .build() -> Project<'a>
+  Project: .path() .env() .origin_path() .worktree_path(name)
+           .story() -> assert_cmd::Command
+           .run(&[&str]) -> assert_cmd::assert::Assert
+           .json(&[&str]) -> serde_json::Value   // appends --json, asserts success
+           .new_story(title) -> String           // returns the minted id
+
+  scratch_dir() / scratch_dir_named(label) / scratch_root()
+  serve(&Path) -> u16 · try_serve_on(&Path, u16) -> Result<u16, String>
+  reserve_port() · wait_for_server(u16) · wait_for_addr(&str)
+  http_status_line(u16, Duration) -> Option<String>
+  DaemonGuard::new(home, cwd) · ChildGuard::new(child) · story_binary() -> &'static Path
+  ```
+
+  For the collision test specifically: `env.project().worktree("a").worktree("b").build()`
+  gives a repo with two linked worktrees in the exact `story.sh dispatch` shape
+  (`.claude/worktrees/<name>` on branch `worktree-<name>`); drive each with
+  `env.raw_story(project.worktree_path("a"))` so both can be spawned before either is waited on.
+  `TestEnv` NEVER mutates the current process's environment — tests in a binary are parallel
+  threads, and `registry_test.rs` legitimately asserts against the real `$HOME`.
+
+  Two things W0.2 changed that are worth knowing, neither a defect:
+  - `scratch_dir()` now roots fixtures at `<tmp>/storyhook-tests/` and sweeps its own
+    prefix-matching entries older than 6h. Required because `TestEnv::shared()` parks a
+    `TempDir` in a `OnceLock` and Rust never drops statics.
+  - Dropping lib.sh's `git add .storyhook` slightly weakens `test-dispatch-cwd.sh`: its linked
+    worktree now resolves *no* tracker where it used to resolve a *different* one. Same
+    anchoring property, weaker fixture. Its comment was corrected to say so. **W7 (repo
+    cutover) should restore the stronger form** once the global store makes it expressible.
 
 ## Resume protocol (fresh session)
 
