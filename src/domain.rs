@@ -501,6 +501,26 @@ pub fn fold_story(
             } => {
                 state = Some(story_state.clone());
                 updated_at = Some(at.clone());
+                // Moving into an OPEN state is what *reopening* is, so it
+                // retracts the closure markers. Without this the fold is not
+                // total: `closed_at` and `deleted` have events that set them
+                // and none that clear them, so the only way to reopen a story
+                // is to delete history — which is precisely what
+                // `unarchive_story` does, and precisely what an append-only
+                // event store cannot do.
+                //
+                // Scoped to states the project actually defines and actually
+                // calls open: an unrecognised slug leaves the flags alone, so
+                // a story that folds today because `deleted` forces its
+                // superstate cannot be made unfoldable by this rule.
+                if states
+                    .get(story_state)
+                    .is_some_and(|def| def.super_state == SuperState::Open)
+                {
+                    closed_at = None;
+                    deleted = false;
+                    deleted_reason = None;
+                }
             }
             StoryEvent::StoryPrioritySet {
                 at,
@@ -1563,6 +1583,134 @@ mod tests {
         // `closed_at` reflects the original close, not the later deletion —
         // `fold_story` only backfills `closed_at` when it was never set.
         assert_eq!(story.closed_at.as_deref(), Some("2026-03-13T00:01:00Z"));
+    }
+
+    #[test]
+    fn fold_story_reopens_a_closed_story_by_appending_a_move_to_an_open_state() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Closed then reopened".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                    state: "todo".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.superstate, SuperState::Open);
+        assert_eq!(story.state, "todo");
+        assert_eq!(story.closed_at, None);
+    }
+
+    #[test]
+    fn fold_story_undeletes_when_moved_back_into_an_open_state() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Deleted then undeleted".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryCommentAdded {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    text: "[deleted] created in error".to_string(),
+                },
+                StoryEvent::StoryDeleted {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    reason: "created in error".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                    state: "todo".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert!(!story.deleted);
+        assert_eq!(story.deleted_reason, None);
+        assert_eq!(story.closed_at, None);
+        assert_eq!(story.superstate, SuperState::Open);
+        // The audit trail survives the undelete, exactly as it does when
+        // `unarchive_story` rewrites the log: the marker events go, the
+        // `[deleted]` comment stays.
+        assert_eq!(story.comments.len(), 1);
+    }
+
+    #[test]
+    fn fold_story_move_into_a_closed_state_does_not_reopen() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Closed twice".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.superstate, SuperState::Closed);
+        assert_eq!(story.closed_at.as_deref(), Some("2026-03-13T00:01:00Z"));
+    }
+
+    #[test]
+    fn fold_story_move_into_an_undefined_state_leaves_deletion_alone() {
+        // A deleted story folds even when its state slug is no longer
+        // configured, because `deleted` forces the superstate. Retracting the
+        // deletion on an unrecognised slug would turn that into a hard fold
+        // failure, so the rule requires a state the project defines *and*
+        // calls open.
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Deleted, then moved somewhere unknown".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryDeleted {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    reason: "created in error".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                    state: "retired".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert!(story.deleted);
+        assert_eq!(story.superstate, SuperState::Closed);
     }
 
     #[test]
