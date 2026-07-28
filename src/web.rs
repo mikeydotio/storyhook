@@ -1804,18 +1804,76 @@ fn parse_tailnet_identity(status_json: &str) -> Option<TailnetIdentity> {
     Some(TailnetIdentity { bind_ip, magic_dns })
 }
 
+/// How long `tailscale status --json` gets to answer before the dashboard
+/// gives up on the tailnet and serves loopback only.
+///
+/// The probe is not optional-in-timing the way it is optional-in-outcome:
+/// it runs *after* the loopback listener is bound, so for as long as it
+/// blocks, the dashboard accepts connections and answers nothing — a state a
+/// client cannot tell from a healthy server. The CLI talks to `tailscaled`,
+/// which does wedge (probes stuck for minutes, orphaned by servers that had
+/// already exited, observed on macOS). No tailnet is a degraded dashboard; a
+/// dashboard that never answers is a broken one.
+const TAILNET_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Shells out to `tailscale status --json` and parses this machine's
-/// [`TailnetIdentity`]. `None` if the CLI is absent, exits non-zero, or
-/// reports nothing usable (see [`parse_tailnet_identity`]).
+/// [`TailnetIdentity`]. `None` if the CLI is absent, exits non-zero, wedges
+/// (see [`TAILNET_PROBE_TIMEOUT`]), or reports nothing usable (see
+/// [`parse_tailnet_identity`]).
 fn tailnet_identity() -> Option<TailnetIdentity> {
-    let output = Command::new("tailscale")
+    let stdout = tailscale_status_json(TAILNET_PROBE_TIMEOUT)?;
+    parse_tailnet_identity(&stdout)
+}
+
+/// Runs `tailscale status --json`, returning its stdout, or `None` if it
+/// fails or outlives `timeout`. A probe that overruns is killed rather than
+/// left behind: an abandoned one holds a pipe this process owns and lingers
+/// after it exits.
+fn tailscale_status_json(timeout: Duration) -> Option<String> {
+    let mut command = Command::new("tailscale");
+    command
         .args(["status", "--json"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    // Its own process group, so a timeout can kill whatever the probe
+    // started as well as the probe itself — killing the leader alone leaves
+    // its children orphaned and still running.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let child = command.spawn().ok()?;
+    let pid = child.id();
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        Ok(_) => None,
+        Err(_) => {
+            eprintln!(
+                "warning: `tailscale status --json` did not answer within {}s; serving \
+                 localhost only",
+                timeout.as_secs()
+            );
+            // Negative pid = the whole process group (established above), so
+            // nothing the probe spawned survives it. The reaper thread is
+            // still in `wait_with_output`, so the killed process is collected
+            // rather than left a zombie.
+            #[cfg(unix)]
+            // SAFETY: libc::kill with the group id of a process this process
+            // just spawned and has not yet reaped, so it cannot have been
+            // recycled onto an unrelated group.
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            None
+        }
     }
-    parse_tailnet_identity(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// The best host to show or copy for reaching this machine, used by `story

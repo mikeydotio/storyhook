@@ -3908,6 +3908,86 @@ fn concurrent_servers_get_distinct_ports_and_serve_only_their_own_registry() {
     );
 }
 
+/// Kills a child process on drop, so a server a test started can never
+/// outlive it.
+struct ChildGuard(std::process::Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Sends `GET /` and returns the response's status line, or `None` while the
+/// server is not answering. A read timeout is essential: the failure being
+/// tested is a listener that accepts the connection and then says nothing.
+fn http_status_line(port: u16, timeout: Duration) -> Option<String> {
+    use std::io::{BufRead, BufReader, Write};
+
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    let mut writer = stream.try_clone().ok()?;
+    write!(
+        writer,
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).ok()?;
+    Some(line)
+}
+
+/// `tailscale status --json` is shelled out to during server start-up, and
+/// the CLI talks to `tailscaled`, which wedges: probes stuck for minutes were
+/// observed on this machine, orphaned by servers that had already exited.
+/// Because the loopback listener is bound before that probe runs, a wedged
+/// probe leaves the dashboard accepting connections and answering nothing at
+/// all — indistinguishable from a healthy server until a request hangs. The
+/// probe must be bounded, and the dashboard must serve loopback regardless.
+#[test]
+fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
+    let home = scratch_dir();
+    let fake_bin = scratch_dir();
+    let fake_tailscale = fake_bin.path().join("tailscale");
+    std::fs::write(&fake_tailscale, "#!/bin/sh\nsleep 120\n").expect("writing the fake CLI");
+    std::fs::set_permissions(
+        &fake_tailscale,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .expect("making the fake CLI executable");
+
+    let port = reserve_port();
+    let path = format!(
+        "{}:{}",
+        fake_bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_story"))
+        .args(["web", "--serve", "--port", &port.to_string()])
+        .env("HOME", home.path())
+        .env("PATH", path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawning the dashboard");
+    let _guard = ChildGuard(child);
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut last = None;
+    while Instant::now() < deadline {
+        last = http_status_line(port, Duration::from_millis(500));
+        if last.as_deref().is_some_and(|line| line.contains("200")) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    panic!(
+        "the dashboard never served a request while `tailscale` hung; last response line: {last:?}"
+    );
+}
+
 fn wait_for_server(port: u16) {
     wait_for_addr(&format!("127.0.0.1:{port}"));
 }
