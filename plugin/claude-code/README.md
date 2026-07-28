@@ -31,7 +31,7 @@ exercises the real logic, and the prose can't quietly diverge from it.
 |---|---|
 | `list` | bare `/story` |
 | `view <id>` | `/story view`, `/story <id>` |
-| `dispatch <id>` | `/story do` |
+| `dispatch <id> [--auto]` | `/story do` |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id>` | `/story complete` |
 | `capture <id>` | `/story capture` |
@@ -69,6 +69,11 @@ Worth knowing before changing anything here:
 - **`story doctor` exits 5 when it finds anything** and emits `.issues[]` only
   when that array is empty, so `/story doctor` treats a non-zero exit as a
   finding, never as a failed probe.
+- **An `--auto` session closes with a plain `story move`, never `/story
+  complete`.** `complete` asks a confirming question — fatal to an unattended
+  run — and would try to remove the very worktree the auto session is
+  standing in; teardown stays a later `/story complete <id>` from the main
+  checkout, same as the attended path.
 
 ## Environment
 
@@ -79,6 +84,7 @@ All knobs are `STORY_*`. The commonly useful ones:
 | `STORY_DRY_RUN=1` | preview any side-effecting verb; changes nothing |
 | `STORY_LAUNCH_CMD` | what `dispatch` launches (must **not** include `-w`) |
 | `STORY_PROMPT` / `STORY_PROMPT_EXTRA` | the handoff prompt, and a clause appended to it |
+| `STORY_AUTO_PROMPT` | the `--auto` charter (same seam as `STORY_PROMPT`, autonomous runs only) |
 | `STORY_DONE_STATE` | the state `complete` closes into |
 | `STORY_TARGET_SESSION` | dispatch into a named session from outside tmux |
 | `STORY_PROTECTED_BRANCHES` | extra globs `complete` must never delete |

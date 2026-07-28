@@ -50,6 +50,12 @@ grep -qF '^[A-Za-z0-9]+-[0-9]+$' "$SKILL" \
 grep -qi "teardown verb.*not part of this skill" "$SKILL" \
   && fail_test "router skill still claims complete is unimplemented"
 
+# --- SH-62: --auto is documented where a caller would actually look ---
+grep -qF -- "--auto" "$SKILL" \
+  || fail_test "router skill never mentions --auto (dispatch's autonomous flag)"
+grep -qF "STORY_AUTO_PROMPT" "$SKILL" \
+  || fail_test "router skill documents STORY_PROMPT but not its --auto counterpart, STORY_AUTO_PROMPT"
+
 # --- reference files must not tell the agent to drive the CLI directly ---
 # The whole contract is that side effects go through bin/story.sh; a reference
 # that says otherwise reintroduces the duplication the router exists to avoid.

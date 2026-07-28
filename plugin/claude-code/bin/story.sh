@@ -93,6 +93,17 @@ LAUNCH_TPL="${STORY_LAUNCH_CMD:-claude --permission-mode plan --model opusplan}"
 # `Closes #N` convention — the child instead posts its plan back via `story
 # comment` and references the story id in every PR body.
 PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with \`story show <n> --json\` (its comments carry the discussion history). When your plan is finalized and approved, post it as a comment on <n> via \`story comment <n> \"<plan>\"\` before you start implementing. Ensure every pull request you open references story <n> in its body, and comment a link to each PR on <n> after you push it. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here.}"
+# The autonomous charter `--auto` swaps in for PROMPT_TPL (SH-62) — plan
+# approval stays the ONE human interaction; everything past it (ambiguity,
+# testing, merge, closure, hard stops) is the child's own call. Unlike
+# PROMPT_TPL it anchors every `story` write at <dir> (the MAIN checkout,
+# templated in by cmd_dispatch): .storyhook/ is version-controlled, so the
+# worktree the child is standing in carries its own separate copy — a write
+# made against it is silently lost, and a story created after the worktree's
+# base commit doesn't even exist there. Closure goes through a plain `story
+# move`, never `story complete`: that verb asks a question (fatal to an
+# unattended run) and would try to remove the very worktree the child occupies.
+AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with \`story show <n> --json\` (its comments carry the discussion history). This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. Run every \`story\` command from <dir>, the main checkout -- this worktree carries its own separate copy of \`.storyhook/\` and any story write made here is lost (e.g. \`(cd <dir> && story comment <n> \"...\")\`). When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision without a single obvious answer, convene \`/council-vote\` instead of asking, and record the outcome as a comment on <n>. Run the full local suite with \`make test\` and confirm it passes before pushing; the pre-push hook enforces it. Open a pull request whose body references story <n>, comment the PR link on <n>, then merge it yourself with \`gh pr merge --merge\` -- a merge commit, the only method this org allows -- verify the merge actually landed, and delete the source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once the merge lands, judge from your own record of the work whether <n> is genuinely complete: default to closing it from <dir> with \`story move <n> done\` (or the CLOSED-superstate state this project uses, if not \`done\`), and do not run \`/story complete\`, which asks a question and would try to reclaim the worktree you are standing in. If your own output shows further PRs or testing are still needed, leave <n> open and comment naming exactly what remains. If you hit a hard stop a council vote cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run \`story block <n> \"<reason>\"\` from <dir>, leave the PR open and this worktree intact, and stop. Never merge past a hard stop.}"
 # Extra clause a caller appends to the handoff prompt (daemon-caller seam).
 # Appended VERBATIM with a single space separator, AFTER <n>/<name> templating.
 PROMPT_EXTRA="${STORY_PROMPT_EXTRA:-}"
@@ -242,8 +253,20 @@ ready_gate_reason() {
 
 # ---- subcommand: dispatch ---------------------------------------------------
 cmd_dispatch() {
-  local id="${1:-}"
-  [ -n "$id" ] || fail "usage: story.sh dispatch <story-id>"
+  # <story-id> may appear before or after --auto; anything past that (a
+  # second positional, an unknown flag) is a hard fail rather than the
+  # silent ignore this verb used to give a stray trailing token — matching
+  # view/list/capture/doctor/complete-plan, which already reject extras.
+  local id="" auto=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --auto) auto=1; shift ;;
+      *)
+        [ -z "$id" ] || fail "unexpected argument \`$1\` — usage: story.sh dispatch <story-id> [--auto]"
+        id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || fail "usage: story.sh dispatch <story-id> [--auto]"
   valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
   # Step 1: tmux precondition (relaxed under dry-run and under
@@ -330,10 +353,21 @@ cmd_dispatch() {
   worktree_path="$dir/$wt_container/$wname"
   worktree_branch="worktree-$wname"
 
+  local prompt_tpl="$PROMPT_TPL"
+  [ -n "$auto" ] && prompt_tpl="$AUTO_PROMPT_TPL"
   local launch_cmd prompt
-  launch_cmd=$(render_template "$LAUNCH_TPL" "$id" "$wname")
-  prompt=$(render_template "$PROMPT_TPL" "$id" "$wname")
+  launch_cmd=$(render_template "$LAUNCH_TPL" "$id" "$wname" "$dir")
+  prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir")
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
+
+  # Surfaced in both the dry-run and real result so the skill can warn the
+  # caller: an auto session's ONLY human interaction is plan approval, so
+  # auto-accept-edits must be chosen there or a later Bash permission prompt
+  # stalls the unattended run forever.
+  local auto_note=""
+  if [ -n "$auto" ]; then
+    auto_note=" Autonomous (--auto): choose auto-accept edits at the plan-approval prompt, or a later permission prompt can stall the unattended run. From there it runs to completion on its own -- council-voting its open questions, merging its own PR, and closing $id itself."
+  fi
 
   local ignore_status
   ignore_status=$(worktree_ignore_status "$dir")
@@ -354,11 +388,12 @@ cmd_dispatch() {
       --arg state "$state" \
       --arg ignore_status "$ignore_status" \
       --arg detach "$detach" --arg target "$target" \
+      --argjson auto "$([ -n "$auto" ] && echo true || echo false)" --arg auto_note "$auto_note" \
       --arg wtpath "$worktree_path" --arg wtbranch "$worktree_branch" '
       {
         ok: true, dry_run: true,
         id: $id, title: $title, dir: $dir,
-        window_name: $wname, prompt: $prompt, state: $state,
+        window_name: $wname, prompt: $prompt, state: $state, auto: $auto,
         worktree_branch: $wtbranch, worktree_path: $wtpath,
         gitignore: (if $ignore_status == "already-ignored" then "already-ignored" else "would-add" end),
         commands: [
@@ -375,7 +410,7 @@ cmd_dispatch() {
                   + "): would claim it via `story move " + $id + " in-progress --if-state " + $state
                   + "`, create worktree " + $wtpath + " (branch " + $wtbranch
                   + "), open a new tmux window named " + $wname
-                  + ", and run the listed commands.")
+                  + ", and run the listed commands." + $auto_note)
       }'
     return 0
   fi
@@ -495,6 +530,7 @@ cmd_dispatch() {
   fi
 
   local tail_evidence=""
+  base="$base$auto_note"
   if [ -n "$warning" ]; then
     display="$base $warning"
     tail_evidence=$(pane_tail "$pane")
@@ -508,6 +544,7 @@ cmd_dispatch() {
     --arg gitignore "$gitignore_result" \
     --argjson ready "$readiness_confirmed" --argjson pconf "$prompt_confirmed" \
     --argjson paccept "$prompt_accepted_flag" \
+    --argjson auto "$([ -n "$auto" ] && echo true || echo false)" \
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
     --arg default "$default" --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
     --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" '
@@ -515,7 +552,7 @@ cmd_dispatch() {
       ok: true,
       id: $id, title: $title,
       window: $window, window_name: $wname, pane: $pane,
-      state: $state,
+      state: $state, auto: $auto,
       readiness_confirmed: $ready, prompt_confirmed: $pconf, prompt_accepted: $paccept,
       claimed: true, gitignore: $gitignore,
       base_branch: $default, base_ref: ("origin/" + $default),
