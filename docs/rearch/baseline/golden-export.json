@@ -1,0 +1,3099 @@
+{
+  "schema": 1,
+  "prefix": "SH",
+  "states": [
+    {
+      "slug": "todo",
+      "super": "OPEN"
+    },
+    {
+      "slug": "in-progress",
+      "super": "OPEN",
+      "description": "Generator working on this story"
+    },
+    {
+      "slug": "verifying",
+      "super": "OPEN",
+      "description": "Evaluator reviewing this story"
+    },
+    {
+      "slug": "blocked",
+      "super": "OPEN",
+      "description": "Dependency unmet, decision needed, or max retries exhausted"
+    },
+    {
+      "slug": "done",
+      "super": "CLOSED"
+    }
+  ],
+  "types": [
+    {
+      "slug": "story",
+      "description": "A user story or feature"
+    },
+    {
+      "slug": "epic",
+      "description": "A large initiative containing child stories"
+    },
+    {
+      "slug": "bug",
+      "description": "A defect or regression"
+    },
+    {
+      "slug": "chore",
+      "description": "Maintenance or infrastructure work"
+    },
+    {
+      "slug": "task",
+      "description": "A discrete unit of work"
+    }
+  ],
+  "members": [],
+  "stories": [
+    {
+      "id": "SH-42",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-24T02:58:59Z",
+          "title": "Replace bold project title in top-left corner with the project selector-dropdown. The project-selector dropdown should always currently show the current project, and then treat clicking on another project as the primary action to switch to another project.",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-24T02:58:59Z",
+          "story_type": "story"
+        },
+        {
+          "kind": "StoryAwaitingSet",
+          "at": "2026-07-28T13:23:42Z",
+          "awaiting": "Deferred during data-layer rearchitecture: web-UI serving layer is being rebuilt; re-spec after the daemon wave lands (docs/spec/data-layer-rearchitecture.md)"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-43",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-24T03:02:44Z",
+          "title": "Add an \"archived\" boolean status, and the ability to archive stories from the done column (add an Archive button to the top of any column that maps to a Closed superstate) which should archive all stories currently in that column/state, which hides them from the primary UI. This way, columns like Done become a way to see recently-closed stories. Also add an Archive button (with confirmation popup) to the detail page of each individual story.",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-24T03:02:44Z",
+          "story_type": "story"
+        },
+        {
+          "kind": "StoryAwaitingSet",
+          "at": "2026-07-28T13:23:42Z",
+          "awaiting": "Deferred during data-layer rearchitecture: touches the store schema mid-rebuild; must not leak into the W1 schema; re-spec after W1/W5"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-44",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-24T03:03:27Z",
+          "title": "Set the default state to \"todo\" and the default item type to \"story\" for new stories web UI.",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-24T03:03:27Z",
+          "story_type": "story"
+        },
+        {
+          "kind": "StoryAwaitingSet",
+          "at": "2026-07-28T13:23:42Z",
+          "awaiting": "Deferred during data-layer rearchitecture: web-UI change; land after the daemon wave to avoid churn on a moving surface"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-46",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-25T20:38:23Z",
+          "title": "bin/story.sh runs story commands in the caller's CWD, not the repo root --priority high --description ## What\n`plugin/claude-code/bin/story.sh` resolves the repo root into `dir` (`dir=$(repo_root)`, line 223) but never `cd`s there. Every `$STORY` invocation — `story show` (232), `story list --ready` (255), `story move --if-state` (269), and the rollback move (174) — therefore runs in whatever directory the caller happened to be in.\n\n## Why it breaks\nThe story CLI has no `--repo`/`-C`/`--cwd` flag, and `ensure_project` (src/storage.rs:315-323) does NOT walk up ancestors — the project root is always exactly `env::current_dir()`.\n\n## Extent\n1. `/story do <id>` invoked from ANY subdirectory of the repo fails with exit 3, 'story project not initialized in this directory; run `story init`'.\n2. Worse, invoked from inside an existing dispatched worktree it does not fail — it silently reads the WRONG tracker. `.storyhook/` is version-controlled, so every git worktree carries its own independent copy. `repo_root()` correctly anchors worktree creation to the main repo (it deliberately uses `--git-common-dir`, not `--show-toplevel`), but the ready-gate and the CAS claim are then evaluated against the worktree's own `.storyhook/open/stories/`. The claim can succeed in one checkout while the worktree is created in another.\n\n## Repro\nInside a storyhook-initialized repo, from a tmux session:\n  mkdir -p src && cd src && /story do <a-ready-id>\nExpected: dispatches. Actual: ok:false, 'story project not initialized in this directory'.\n\n## Last known good\nNever worked — present since the verb landed in ed4f23d (PR #42, issue #40).\n\n## Fix\n`cd` to `$dir` before any $STORY call (or run them in a subshell anchored there). Regression test: dispatch from a subdirectory.",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-25T20:38:23Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryTitleSet",
+          "at": "2026-07-25T20:40:36Z",
+          "title": "bin/story.sh runs story commands in the caller's CWD, not the repo root"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-25T20:40:36Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-25T20:40:36Z",
+          "description": "## What\n\n`plugin/claude-code/bin/story.sh` resolves the repo root into `dir`\n(`dir=$(repo_root)`, line 223) but never `cd`s there. Every `$STORY` invocation\n— `story show` (232), `story list --ready` (255), `story move --if-state` (269),\nand the rollback move (174) — therefore runs in whatever directory the caller\nhappened to be in.\n\n## Why it breaks\n\nThe story CLI has no `--repo`/`-C`/`--cwd` flag, and `ensure_project`\n(src/storage.rs:315-323) does NOT walk up ancestors — the project root is always\nexactly `env::current_dir()`.\n\n## Extent\n\n1. `/story do <id>` invoked from ANY subdirectory of the repo fails with exit 3,\n   \"story project not initialized in this directory; run `story init`\".\n2. Worse, invoked from inside an existing dispatched worktree it does not fail —\n   it silently reads the WRONG tracker. `.storyhook/` is version-controlled, so\n   every git worktree carries its own independent copy. `repo_root()` correctly\n   anchors worktree creation to the main repo (it deliberately uses\n   `--git-common-dir`, not `--show-toplevel`), but the ready-gate and the CAS\n   claim are then evaluated against the worktree's own\n   `.storyhook/open/stories/`. The claim can succeed in one checkout while the\n   worktree is created in another.\n\n## Repro\n\nInside a storyhook-initialized repo, from a tmux session:\n\n    mkdir -p src && cd src && /story do <a-ready-id>\n\nExpected: dispatches. Actual: `ok:false`, \"story project not initialized in this\ndirectory\".\n\n## Last known good\n\nNever worked — present since the verb landed in ed4f23d (PR #42, issue #40).\n\n## Fix\n\n`cd` to `$dir` before any `$STORY` call (or run them in a subshell anchored\nthere). Regression test: dispatch from a subdirectory."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-25T20:40:54Z",
+          "other_id": "SH-45",
+          "relation": "relates-to"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-47",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-25T20:40:44Z",
+          "title": "Plugin hooks' enabled=false kill switch is inoperative for unquoted TOML",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-25T20:40:44Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-25T20:40:44Z",
+          "description": "## What\n\nThe `enabled = false` kill switch documented for the Claude Code plugin's\nsession hooks does not work. `read_plugin_config` in both\n`plugin/claude-code/hooks/post-git.sh` and\n`plugin/claude-code/hooks/stop-handoff.sh` extracts the value with:\n\n    val=$(grep \"^${key}\" \"$config\" 2>/dev/null | head -1 | sed 's/.*= *\"//' | sed 's/\".*//' || true)\n\n## Why it breaks\n\nBoth `sed` expressions require a literal double quote. For an *unquoted* TOML\nboolean neither substitution matches, so `val` is left as the entire matched\nline — `enabled = false` — which compares `!= \"false\"`, and the hook proceeds as\nthough it were enabled.\n\nOnly the non-idiomatic quoted form `enabled = \"false\"` actually disables the\nhooks.\n\n## Extent\n\n- Affects `post-git.sh` (runs `story sync-git` after every git commit/merge/push)\n  and `stop-handoff.sh` (runs `story handoff` on session Stop).\n- The unquoted form is exactly what the plugin itself writes: the\n  `story-setup` skill's own `plugin-config.toml` template emits\n  `enabled = true` / `tracking = \"normal\"` with no quotes on the boolean.\n- So a user who follows the documented instruction to disable the hooks gets no\n  effect and no error.\n\n## Repro\n\n    printf '[plugin]\\nenabled = false\\n' > .storyhook/plugin-config.toml\n\nThen trigger a git commit in a storyhook-initialized repo with the plugin\ninstalled. Expected: post-git hook no-ops. Actual: it runs `story sync-git`\nanyway.\n\n## Related\n\nNote a second, latent inconsistency in the same area: this repo's real\n`.storyhook/plugin-config.toml` has a `[plugin]` table header, while\n`story-setup`'s template writes bare keys with no header. `read_plugin_config`\nis table-blind (a plain `grep \"^${key}\"`), so both happen to work today — but a\nreal TOML parser would disagree, and the two shapes should be reconciled.\n\n## Fix\n\nParse the value in a way that tolerates both quoted and unquoted forms, e.g.\nstrip an optional surrounding quote pair after taking everything past `=` and\ntrimming whitespace. Add a regression test for `enabled = false`,\n`enabled = \"false\"`, and `enabled = true`, in both the bare-key and\n`[plugin]`-table shapes."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-25T20:40:44Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-25T20:40:54Z",
+          "other_id": "SH-45",
+          "relation": "relates-to"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-48",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-25T20:40:44Z",
+          "title": "story-install skill falsely claims the CLI has no --version flag",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-25T20:40:44Z",
+          "priority": "low"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-25T20:40:44Z",
+          "description": "## What\n\n`plugin/claude-code/skills/story-install/SKILL.md` instructs the agent to verify\na successful install with:\n\n> Confirm it works by running `story doctor` (or `story --help` — note there is\n> no `--version` flag)\n\nThe parenthetical is false. The `story` CLI does have a version flag.\n\n## Evidence\n\n- `src/cli.rs:136` documents it in `HELP_TEXT`:\n  `-V, --version   Print the installed story version`\n- `src/cli.rs:405` parses it: `\"-V\" | \"--version\" => Ok(Invocation::Version)`\n- The sibling `story-update` skill already uses `story --version` correctly, so\n  the two skills contradict each other.\n\n## Extent\n\nDocumentation-only defect in one skill body; no runtime behavior is wrong. The\nconsequence is that an agent following `story-install` will verify with the\nwrong command, and `story doctor` is a poor choice for that purpose — it exits 5\nwith an `AppError::Integrity` whenever the project has any data-integrity\nfinding, so a healthy *binary* install in a project with pre-existing integrity\nissues reads as a failed install.\n\n## Fix\n\nCorrect the parenthetical and prefer `story --version` as the post-install\nverification. Sweep the other skill bodies and `references/` for the same\nclaim while fixing."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-25T20:40:44Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-25T20:40:54Z",
+          "other_id": "SH-45",
+          "relation": "relates-to"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-49",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-26T00:43:54Z",
+          "title": "Add a linked-PRs field to stories so GitHub PRs can be linked to them",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-26T00:43:54Z",
+          "description": "Add a linked-PRs field (name it better) to stories, so that GitHub PRs can be linked to stories.\n\nThe storyhook daemon should then monitor GitHub for any PRs linked to active stories to merge.\n\nAny story-to-PR linkage should also carry a \"close on merge\" boolean option which, if true, closes the story when the PR merges. The flag should be enabled by default."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-26T00:43:54Z",
+          "story_type": "story"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-27T23:26:39Z",
+          "text": "[git] f59d072: chore(storyhook): close SH-41 and SH-49 as done"
+        },
+        {
+          "kind": "StoryAwaitingSet",
+          "at": "2026-07-28T13:23:42Z",
+          "awaiting": "Blocked by the rearch: explicitly requires the storyhook daemon; re-spec against /api/v1 + change feed after the daemon wave"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-50",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-26T00:43:57Z",
+          "title": "Add a Dispatch button to the dashboard story detail view",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-26T00:43:57Z",
+          "description": "Add a Dispatch button to the bottom-right corner which, when activated, performs a storyhook dispatch event (creating the tmux window, worktree, etc.) and initiates work on the story."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-26T00:43:57Z",
+          "story_type": "story"
+        },
+        {
+          "kind": "StoryAwaitingSet",
+          "at": "2026-07-28T13:23:42Z",
+          "awaiting": "Blocked by the rearch: daemon-initiated dispatch; re-spec after the daemon wave"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-51",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-26T00:50:24Z",
+          "title": "web_test.rs is load-sensitively flaky: wait_for_server races the server readiness handshake",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-26T00:50:24Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-26T00:50:24Z",
+          "description": "## What\n\n`tests/web_test.rs` fails nondeterministically, swinging between 0 and 60 failures across consecutive runs on a byte-identical tree. Observed counts in one sitting: 0, 27, 57, 2, 44, 0, 0, 60, 0, 0.\n\nNearly every failure is a spurious `404` — e.g. `web_serve_get_story_by_id` (line 994) panicking on `Err value: StatusCode(404)`, `web_reopen_malformed_json_is_400` (line 1715) asserting `left: 404, right: 400`.\n\n## Why it breaks\n\n`wait_for_server` (tests/web_test.rs:3616) only polls until the TCP port accepts a connection:\n\n    if std::net::TcpStream::connect(addr).is_ok() { return; }\n\nBut `storyhook::web::start_server` does not finish loading registry/project state until its filesystem watcher completes the `watcher_ready_rx` handshake (see `web.rs`). The listener therefore accepts connections before the server can resolve `/api/repos/<id>/...`, and any request that wins that race gets a 404 from a server that is listening but not yet ready.\n\n`wait_for_addr` documents awareness of exactly this hazard for the *tailnet* listener, but `wait_for_server` — used by the bulk of the suite for the loopback listener — still gates on `connect()` alone.\n\n## Extent\n\nLoad-sensitive, which is why it looks random. It correlates with `fseventsd` CPU: the readiness handshake is FSEvents-backed, so anything keeping the filesystem-events daemon busy widens the window. Reproduced with load average ~5.5.\n\nAmplified severely on macOS by a missing `$TMPDIR/.metadata_never_index` marker (see sibling story) — with Spotlight indexing the suite fixtures, failures hit 57/123; restoring the marker dropped the same suite to 0-2.\n\n## Repro\n\n    for i in 1 2 3 4 5; do cargo test --test web_test 2>&1 | tail -3; done\n\nunder moderate system load. Expect at least one run with a large block of 404 failures.\n\n## Last known good\n\nNever reliably good; the race is inherent to the readiness probe. Surfaced during the v0.17.0 release (PR #51), which touches no Rust source.\n\n## Fix\n\nGate the probe on real readiness rather than on `connect()` succeeding — poll an actual endpoint (e.g. `/api/repos/<id>/...` or a dedicated health route) until it returns non-404, with the existing 5s deadline. A test that cannot distinguish \"port open\" from \"server ready\" will keep reintroducing this class, so the preventative action is to make the ready-probe helper the only sanctioned way tests wait for a server."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-26T00:50:24Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-26T00:50:57Z",
+          "other_id": "SH-53",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-27T23:26:39Z",
+          "text": "[git] e35a433: chore(storyhook): track SH-51, SH-52, SH-53"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-28T14:22:05Z",
+          "text": "Fixed in commit 4c1aed9, with a follow-on production fix in e8d4cf8 (branch rearch/w0-gate-repair, W0.1). The mechanism proven on 2026-07-28 was not the readiness race in the description but orphaned web_test processes from earlier runs holding ~100 LISTEN sockets across 19000-19095: a fresh run restarted the fixed PORT_COUNTER at 19000, collided, and because start_server's error was swallowed with .ok() and readiness was 'the port accepts a connection', the suite talked to the ORPHAN's stale registry - 78/139 failures, all spurious 404s. Three fixes, one per link: (a) start_server_with_ready reports the address the loopback listener actually got, so in-process test servers bind port 0 and are told their port - collision is impossible, not unlikely; the four tests that must know a port before the process binding it exists draw from a randomized bind-tested band outside the ephemeral range. (b) serve/try_serve_on wait for the server's own ready callback (fired after the watcher handshake) and never swallow a start-up failure; connect_sse grew a deadline, having previously retried forever against a bound-but-silent listener while holding the SSE lock. (c) DaemonGuard stops a test-launched daemon even on panic, and make test brackets the run with scripts/check-no-orphan-servers.sh, which names surviving pids from this worktree (never the installed :3456 daemon). Regression tests: serving_an_occupied_port_fails_loudly_instead_of_trusting_the_squatter (red: reported the squatter's port as ready; green: reports 'in use') and concurrent_servers_get_distinct_ports_and_serve_only_their_own_registry. THEN, with real readiness in place, ~1 run in 5 failed with 'neither became ready nor reported a failure within 10s': tailnet_identity shells out to tailscale status --json with an unbounded Command::output(), after the loopback listener is bound - and tailscaled wedges (probes found stuck for minutes, orphaned by exited servers). That is the description's original hypothesis (listener accepting before it can serve), proven, and it hits production too: story web start's daemon would sit on :3456 listening and permanently silent. e8d4cf8 bounds the probe to 3s, kills its process group on overrun and serves localhost only; regression test a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving puts a hanging fake tailscale ahead of the real one on PATH (red: never served; green: 3.8s). web_test 143/143 across repeated runs. That production defect deserves its own story - not filed from this worktree because minting an id here would collide with ids being minted in parallel worktrees."
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-52",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-26T00:50:38Z",
+          "title": "story new --help creates a story titled \"--help\" instead of printing help",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-26T00:50:38Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-26T00:50:38Z",
+          "description": "## What\n\n`story new --help` does not print help. It creates a real story whose title is the literal string `--help`, allocating an ID and incrementing `next-id`.\n\n## Repro\n\n    $ story new --help\n    SH-48 --help\n    state: todo (OPEN)\n    assignee: -\n    priority: none\n    type: Default\n\nObserved directly while working on the v0.17.0 release; it burned SH-48 in a local tree and had to be manually deleted plus `next-id` reverted.\n\n## Why it breaks\n\n`story new <title>` takes the first positional argument as the title with no flag handling ahead of it, so any `--`-prefixed token in the title position is swallowed as content rather than parsed as a flag.\n\n## Extent\n\n- Any `story <verb> --help` that takes a positional is suspect; `new` is confirmed. Sweep the other positional-taking verbs (`search`, `phase create`, `member add`, `import`, `decompose`, `web register`) before closing.\n- The damage is silent and persistent: it writes a story file, mutates `next-id`, and (in a storyhook-tracked repo) leaves the tree dirty. A user probing for usage gets a junk story instead of an error.\n- `--help` is the conventional discovery gesture, so this is likely to be hit by exactly the users who least expect it.\n\n## Last known good\n\nUnknown; likely present since `story new` gained positional-title parsing.\n\n## Fix\n\nHandle `-h`/`--help` (and reject unknown leading `--` tokens) before positional-title parsing, for every verb that takes a positional. Preventative action: a table-driven test asserting that `<verb> --help` exits 0, prints usage, and mutates no state, run across the full verb list so the class cannot regress one verb at a time."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-26T00:50:38Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-27T23:26:39Z",
+          "text": "[git] e35a433: chore(storyhook): track SH-51, SH-52, SH-53"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-28T14:22:22Z",
+          "text": "Fixed in commit e2531c4 (branch rearch/w0-gate-repair, W0.1). Fixed ahead of every verb parser rather than inside them: parse_invocation now recognizes -h/--help anywhere after a recognized verb and answers with that verb's help topic (aliases resolve to their canonical topic; a verb with no topic gets the general help). The sibling sweep confirmed it was never only 'new' - comment SH-1 --help recorded a comment, move SH-1 done --help archived the story, and search, phase create, member add, import, decompose and web register all read the token as data. story tui --help was worse: it launched the interactive UI, because main.rs dispatches tui before parsing happens at all; main now lets a help request fall through to the parser. Two deliberate non-changes: an unrecognized verb keeps its error (story frobnicate --help still reports the unknown command rather than papering over a typo), and story help <topic> --help stays parse_help's to answer. Verb recognition asks the dispatcher (extracted as a pure dispatch fn, called with just the verb) instead of a second copy of the verb list that could fall out of step. Preventative action as the story asked: tests/help_flag_sweep.rs is table-driven over 54 verbs and subcommand forms x --help and -h, each required to exit 0, print one of the CLI's own sanctioned help renderings (read from the binary, not restated in the test) and write nothing to stderr, followed by a byte-level comparison of the whole .storyhook tree. Red evidence: next-id changed, SH-1 archived out of open/stories, SH-2 created. Green: 3/3, tree unchanged. cargo test 49 targets green. Separate finding, not fixed here: unknown --flags in positional-taking verbs are still swallowed as data (story new --typo x creates a story titled '--typo x'). Same shape, different defect - worth its own story."
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-53",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-26T00:50:52Z",
+          "title": "Test suite silently depends on an untracked $TMPDIR Spotlight-exclusion marker",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-26T00:50:52Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-26T00:50:52Z",
+          "description": "## What\n\nThe Rust test suite depends on `$TMPDIR/.metadata_never_index` existing on macOS. Nothing in the repo creates, checks, or documents this — the marker lives outside version control and does not survive a fresh machine or (apparently) an OS upgrade.\n\n## Why it breaks\n\nThe suite creates many small files in `$TMPDIR` (temp git repos, storyhook fixture trees). Without the marker, Spotlight indexes them and `mds_stores` backlogs, starving the fixture-heavy web tests. The resulting slowness widens the readiness race in [[SH-51]] and the failures surface as spurious 404s rather than as anything pointing at the filesystem.\n\n## Extent\n\nMeasured on a tree with no Rust changes:\n\n- marker absent: `cargo test --test web_test` failed 57 of 123\n- marker restored (`touch \"${TMPDIR}.metadata_never_index\"`): same suite, same tree, 0-2 failures across five consecutive runs\n\nThe diagnosis cost is the real damage — the symptom (404s from a live server) points nowhere near Spotlight.\n\n## Repro\n\n    rm \"${TMPDIR}.metadata_never_index\"\n    cargo test --test web_test\n\nExpect a large block of 404 failures within a few runs.\n\n## Last known good\n\nUnknown. The marker was present historically on this machine and was gone by 2026-07-25, plausibly wiped by the Tahoe 26.5.2 upgrade.\n\n## Fix\n\nDo not depend on ambient machine state. Options, best first:\n\n1. Point the suite at its own scratch root under a directory that is never indexed (`/private/tmp` is not indexed), via a `TempDir::new_in` helper all fixtures go through.\n2. Failing that, have the test harness assert the marker exists and create it, so the dependency is explicit and self-healing rather than silent.\n\nFixing [[SH-51]] reduces the blast radius but does not remove the dependency — the suite would still be slow, just less wrong."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-26T00:50:52Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-26T00:50:57Z",
+          "other_id": "SH-51",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-27T23:26:39Z",
+          "text": "[git] e35a433: chore(storyhook): track SH-51, SH-52, SH-53"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-28T14:22:05Z",
+          "text": "Fixed in commit 2316ddf (branch rearch/w0-gate-repair, W0.1). Root cause removed rather than documented: web_test.rs no longer creates fixtures under $TMPDIR at all. scratch_root() resolves to /private/tmp on macOS (never Spotlight-indexed) and to the OS temp dir elsewhere; scratch_dir() is now the only way this suite creates a temp directory and all 134 tempdir() call sites go through it. ensure_tmpdir_is_spotlight_exempt() additionally creates $TMPDIR/.metadata_never_index when missing, so the suites still building fixtures there are protected too (they move onto the shared helper when the test-support crate lands in W0.2). Regression test scratch_dirs_live_outside_the_spotlight_indexed_tmpdir asserts fixture paths never start with std::env::temp_dir() and that the marker exists on macOS: red against a passthrough helper (got /var/folders/.../T/.tmpddEaaq), green after. web_test 140/140 in 3.25s. Deliberately minimal so it moves into the test-support crate unchanged."
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-54",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-26T03:35:20Z",
+          "title": "StoryEvent has no forward-compat gate: a new event variant makes older readers fail the whole repo",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-26T03:35:20Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-26T03:35:20Z",
+          "description": "## What\n\n`StoryEvent` (`src/domain.rs:179-181`) is an internally-tagged serde enum with no\nunknown-variant tolerance. Adding any new event variant is therefore a **silent\nbreaking change to the on-disk format**: every reader built before the variant\nexisted fails hard, and it fails for the *whole repo*, not just the story that\ncarries the new event.\n\nThis is not hypothetical — it took the web dashboard down for StoryHook's own\nrepo on 2026-07-25.\n\n## Why it breaks\n\n`read_story_events()` (`src/storage.rs:721-733`) deserializes each JSONL line with\n`serde_json::from_str` and propagates the first error with `?`. An unknown `kind`\ntag aborts the read of that story; callers that walk every story (report building,\n`story list`, the dashboard's `build_report_data`) abort the entire traversal.\n\nThere is no `#[serde(other)]` fallback, no catch-all variant, and no schema-version\nfield in the log that would let an old reader detect \"this repo is newer than me\"\nand say so.\n\n## Extent\n\n`StoryDescriptionSet` landed in c25be1d (2026-07-23, shipped in v0.17.0). Eight\nstories — [[SH-46]] through [[SH-53]] — now carry that event.\n\nThe long-lived dashboard daemon had been running since 2026-07-24 00:07 on a\npre-c25be1d build. Result: `GET /api/repos` reported\n\n    storyhook | available: false\n      unknown variant `StoryDescriptionSet`, expected one of `StoryCreated`,\n      `StoryCommentAdded`, ... `StoryDeleted` at line 1 column 29\n\nand the dashboard rendered StoryHook as a dimmed, dashed \"(unavailable)\" card\n(`src/web_dashboard.html:2109`). Every other registered repo loaded fine — they\nhad no `StoryDescriptionSet` events yet.\n\n`build_repos_json` (`src/web.rs:363-388`) did its job: it isolated the failure to\none card rather than failing the whole request. The defect is upstream of that.\n\nBlast radius beyond this incident:\n\n- Any long-running `story web --serve` outlives a version bump — the daemon does\n  not reload its binary.\n- Any collaborator or CI runner on an older build sees the repo as broken.\n- Rollback to a previous release makes previously-readable repos unreadable.\n\n## Repro\n\n1. Check out a commit before c25be1d and `cargo build --release`.\n2. Point that binary at a repo containing a `StoryDescriptionSet` event:\n\n       ./target/release/story list\n\nExpect a hard failure naming the unknown variant, with no stories listed —\nincluding the ones that contain no new events at all.\n\n## Last known good\n\nEvery release before v0.17.0 could read every log written by every earlier\nrelease, because no variant had been added since the format stabilized. c25be1d\nis the first variant addition to expose the gap; the gap itself has existed since\nthe enum was introduced.\n\n## Fix\n\nThe tension: silently ignoring unknown events renders *wrong* state (a story\nshowing a stale description as though it were current), which is worse than\nrendering none. So a bare `#[serde(other)]` catch-all is the wrong fix.\n\nOptions, best first:\n\n1. **Schema version in the log + explicit refusal.** Record the writer's format\n   version (per-repo or per-story-header). A reader that finds a version it does\n   not understand fails with \"this repo was written by story >= X, upgrade to\n   read it\" — actionable, honest, and it names the real problem instead of\n   leaking a serde error to the UI.\n2. **Per-story quarantine.** Have `read_story_events` collect unreadable stories\n   instead of aborting the traversal, so one future-versioned story degrades to\n   an explicit \"unreadable\" row and the rest of the repo still loads. Complements\n   option 1 rather than replacing it.\n3. **Unknown-variant capture with a poisoned-snapshot flag.** Deserialize unknown\n   events into a catch-all that marks the folded snapshot \"incomplete\", so state\n   is never presented as authoritative when events were skipped. More work, and\n   only worth it if partial reads turn out to be genuinely useful.\n\nWhatever ships needs a regression test that pins the compatibility contract:\na fixture log containing an unknown `kind` must produce the chosen behavior,\nnot a raw serde error.\n\n## Preventative action\n\nThe defect class is \"on-disk format changed without a compatibility gate.\" A\nvariant addition currently looks like an ordinary feature commit. Consider a test\nthat asserts the set of known `kind` tags against a checked-in golden list, so\nadding a variant forces a deliberate update and a compatibility decision.\n\n## Related\n\nOperationally adjacent, not the same defect: the dashboard daemon does not\nrestart itself on upgrade, which is what let a stale reader persist for 42 hours.\nWorth its own story if it recurs."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-26T03:35:20Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-26T03:40:12Z",
+          "text": "[git] 7e6e69e: chore(storyhook): track SH-54, SH-55"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-56",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-26T03:45:18Z",
+          "title": "post-merge hook reads only commit subjects, so body-trailer \"Closes SH-NN\" never auto-closes",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-26T03:45:18Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-26T03:45:18Z",
+          "description": "## What\n\nThe managed `post-merge` hook auto-closes stories referenced by\n`closes|fixes|resolves SH-NN`, but it only reads commit **subject lines**. Any\nsuch reference written conventionally — in the commit body, as a trailer — is\ninvisible to it, so the story is never closed.\n\n## Where\n\n`src/hooks.rs`, `POST_MERGE_HOOK`:\n\n    git log --format='%s' \"$ORIG_HEAD..HEAD\" 2>/dev/null | while IFS= read -r msg; do\n      echo \"$msg\" | grep -oiE '(closes?|fixes?|resolves?)\\s+[A-Z]+-[0-9]+' | ...\n\n`%s` is the subject alone. `%B` is the raw body including the subject.\n\n## Why it breaks\n\nConventional Commits — which `CLAUDE.md` mandates for this repo — put the\nclosing reference in a trailer, not the summary line. The subject is reserved\nfor a concise description under 72 characters. So the hook's trigger and the\nproject's own commit style are mutually exclusive in practice: following the\nstyle guide guarantees the hook does nothing.\n\n## Extent\n\nReproduced on the merge of PR #54 (merge commit 84b64e1), whose branch commit\ncarried a `Closes SH-55` trailer:\n\n    $ git log --format='%s' ORIG_HEAD..HEAD | grep -oiE '(closes?|fixes?|resolves?)\\s+[A-Z]+-[0-9]+'\n    (no output — nothing closed)\n\n    $ git log --format='%B' ORIG_HEAD..HEAD | grep -oiE '(closes?|fixes?|resolves?)\\s+[A-Z]+-[0-9]+'\n    Closes SH-55\n\nSH-55 remained `todo` after the merge and had to be closed by hand.\n\nCorroborating history: `0aa0094`/`d08af8e` include a commit titled\n`chore(storyhook): close SH-45 as done` — a manual close. The feature has\nplausibly never worked for a body-trailer reference, and the workaround\n(closing by hand in a follow-up commit) has become the de-facto process.\n\n## Repro\n\n1. `story hooks install`\n2. On a branch, commit with the reference in the body:\n\n       git commit -m \"fix(x): something\" -m \"Closes SH-N\"\n\n3. Merge to main.\n\nExpect SH-N to still be OPEN.\n\n## Last known good\n\nNone known. The `%s` format is present in the hook's original definition, so\nthis likely never worked for body trailers.\n\n## Fix\n\nChange `--format='%s'` to `--format='%B'` in `POST_MERGE_HOOK`.\n\nNote `%B` emits multi-line records, so the surrounding `while IFS= read -r msg`\nloop no longer receives one commit per iteration. It does not need to: the\nloop's only job is to feed text to `grep -oiE`, which is line-oriented and\nalready emits one match per line. Piping `git log --format='%B'` straight into\nthe existing `grep -oiE ... | while read match` is simpler and correct. Verify\nthat a commit mentioning two stories closes both.\n\n## Preventative action\n\nThe defect class is \"hook logic shipped as an untested string literal.\"\n`POST_MERGE_HOOK` is a `&str` in `src/hooks.rs` with no coverage — nothing\nexecutes it. The plugin suite (`plugin/claude-code/tests/`) demonstrates the\npattern for testing real shell behavior against the real binary; an equivalent\ntest that installs the hook into a scratch repo, merges a branch whose commit\nbody closes a story, and asserts the story went to `done` would have caught\nthis and will catch the next hook regression."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-26T03:45:18Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-26T03:45:37Z",
+          "text": "[git] 20017ac: chore(storyhook): close SH-55, track SH-56"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-26T05:48:26Z",
+          "other_id": "SH-58",
+          "relation": "relates-to"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-58",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-26T05:48:19Z",
+          "title": "commit-sync scans only commit subjects, so body-referenced stories are never linked or transitioned",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-26T05:48:19Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-26T05:48:19Z",
+          "description": "## What\n\n`story commit-sync` scans commits with `git log --format='%H %s'` — subject\nlines only. A story referenced anywhere in a commit **body** is invisible to\nit, so it gets no `[git]` comment and never auto-transitions from the default\nopen state to the `active` one.\n\nThis is the same defect class as SH-56, in a different code path. SH-56 covers\n`POST_MERGE_HOOK` (auto-close) in `src/hooks.rs`; this is `commit-sync` itself\n(comment linking + auto-transition) in `src/app.rs`. Fixing one does not fix\nthe other.\n\n## Where\n\n`src/app.rs`, `Invocation::CommitSync`:\n\n    let output = std::process::Command::new(\"git\")\n        .args([\"log\", \"--format=%H %s\", &format!(\"--since={since_date}\")])\n\n`%s` is the subject alone. Everything downstream — `extract_story_ids`, the\n`[git] <hash>: <subject>` comment, and the `todo -> in-progress` transition —\nonly ever sees that one line.\n\n## Why it breaks\n\nCLAUDE.md mandates Conventional Commits for this repo, whose subject line is\nreserved for a concise summary under 72 characters. Story references\nconsequently land in the body. So, as with SH-56, following the project's own\ncommit style guarantees the feature does nothing.\n\nThe blast radius is wider than SH-56's, because `commit-sync` runs from the\nmanaged `post-commit` hook on **every commit**, not just on merges.\n\n## Extent / repro\n\nIn a scratch repo (`story init --prefix CS`, two stories, hooks not required):\n\n    git commit -m \"feat: something for CS-1\"                    # subject reference\n    git commit -m \"feat: something else\" -m \"Closes CS-2\"       # body trailer\n\n    $ story commit-sync --since 1h\n    scanned 3 commits, added 1 comments to 1 stories\n    CS-1: todo -> in-progress (referenced in 84fae18)\n\nCS-1 got its comment and its transition. CS-2 got neither, and stayed `todo`.\n\nReproduced against v0.17.0 (2026-07-26).\n\n## Last known good\n\nNone. `--format=%H %s` is present in the original implementation, so body\nreferences have plausibly never been linked.\n\n## Fix\n\nNot a one-token swap — this is where it differs from SH-56. `%B` emits\nmulti-line records, and the parser is line-oriented:\n\n    for line in log_output.lines() {\n        let (hash, message) = match line.split_once(' ') { ... };\n\nWith `%B`, a body line like `Closes CS-2` parses as hash=`Closes`,\nmessage=`CS-2`, producing a `[git] Closes: CS-2` comment. That is worse than\nthe current miss: the short hash is the idempotency key\n(`comment_prefix = format!(\"[git] {short_hash}:\")`), so a garbage hash also\nbreaks the \"safe to run repeatedly\" guarantee.\n\nUse a record-separated format and parse per commit rather than per line, e.g.\n\n    --format=%H%x1f%B%x1e\n\nsplitting on `\\x1e` for commits and `\\x1f` for hash/message. Keep the comment\ntext as the subject alone (the first line of `%B`) — a comment carrying an\nentire multi-paragraph body would be unreadable in `story show`.\n\nVerify: a body reference is linked; a commit referencing two stories links\nboth; the same commit scanned twice still adds one comment.\n\n## Preventative action\n\n`commit-sync` has no test that exercises real `git log` output against a real\nrepo. `tests/story_sync_git.rs` exists — extend it with a case whose reference\nis in the body, which pins both this bug and the parsing trap above.\n\n## Related, but separate\n\n`story help commit-sync` claims it \"auto-transitions stories based on commit\npatterns (e.g., 'closes SH-1')\". There is no close-pattern handling in\n`Invocation::CommitSync` at all — the only transition is\ndefault-open -> `role = \"active\"`, triggered by any reference regardless of\nwording. Either the docs overstate the feature or the feature is missing; worth\ndeciding, but it is a distinct defect from this one and is not filed here."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-26T05:48:19Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-26T05:48:26Z",
+          "other_id": "SH-56",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-27T23:26:39Z",
+          "text": "[git] c2a929a: chore(storyhook): file SH-58, commit-sync's subject-only commit scan"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-28T00:06:54Z",
+          "other_id": "SH-61",
+          "relation": "blocked-by"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-59",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-27T23:33:55Z",
+          "title": "CLI errors print to stdout instead of stderr, defeating shell 2>/dev/null guards",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-27T23:33:55Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-07-27T23:33:55Z",
+          "labels": [
+            "cli",
+            "dx"
+          ]
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-27T23:33:55Z",
+          "description": "WHAT: Every error from the main CLI dispatch path is written to stdout via print!, not stderr. Confirmed empirically: `story move SH-41 done x --quiet >out 2>err` yields 54 bytes on stdout and 0 bytes on stderr (exit 2).\n\nWHERE: src/main.rs lines 28, 68, and 81 all call print!(\"{}\", output::render_error(...)). Only the TUI path (main.rs:13,17) and the web --serve path (main.rs:44,49) correctly use eprintln!.\n\nWHEN / LAST KNOWN GOOD: none — present since aee7bac (2026-03-11, 'feat: add core story cli workflow'). This is a day-one defect, not a regression.\n\nEXTENT (why it matters):\n1. Callers cannot suppress errors with 2>/dev/null. The storyhook-managed post-merge hook does exactly this: `story move $ID done ... --quiet 2>/dev/null || true`. Because the error lands on stdout, it leaks into unrelated output — observed during a routine fast-forward of main, which printed 'error: story SH-41 is closed and cannot be modified' in the middle of the merge diffstat.\n2. With --json, error payloads are interleaved into the stdout data stream that scripts parse as results.\n3. Violates the POSIX convention that diagnostics go to stderr and results to stdout, which every piping/scripting consumer assumes.\n\nREPRO:\n  story move <any-closed-id> done \"probe\" --quiet >/tmp/out 2>/tmp/err; echo \"exit=$?\"\n  wc -c </tmp/out   # 54 — should be 0\n  wc -c </tmp/err   # 0  — should be 54\n\nFIX SKETCH: change the three print! calls to eprint! . Note render_error already returns a trailing newline, so eprint! (not eprintln!) preserves current formatting.\n\nREGRESSION TEST: assert an erroring invocation writes an empty stdout and a non-empty stderr, for both plain and --json modes."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-27T23:33:55Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-27T23:34:30Z",
+          "text": "[git] b60db32: chore(storyhook): file SH-59 and SH-60, two defects found reconciling main"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-28T14:22:22Z",
+          "text": "Fixed in commit da3109d (branch rearch/w0-gate-repair, W0.1). All three dispatch paths (parse failure, cwd resolution, command failure) now go through one fail() helper in main.rs. Ruling on the --json contract, as asked: the envelope STAYS on stdout and only plain-text diagnostics move. With --json, stdout is a machine-readable result channel carrying exactly one self-describing document per run ({result: ok|conflict|error, exit_code: N}), and the error envelope is the result the caller asked for. Existing tests state this deliberately, not incidentally - move_if_state.rs reads a result:conflict envelope off stdout for an exit-2 invocation, and plugin/claude-code/bin/story.sh's CAS claim depends on that same envelope captured from stdout with 2>/dev/null. Splitting it to stderr would force every consumer to read two streams to find one answer, on a stream that also carries free-text hook warnings (event_hooks.rs) that would break jq outright. test-dispatch-claim-conflict.sh is the empirical check on that ruling and passes unchanged. Regression tests in tests/cli_error_streams.rs: failed command writes to stderr and nothing to stdout with its exit code intact; --quiet does not put it back (the reported post-merge-hook symptom); parser usage errors behave the same; a successful command stays silent on stderr; --json still emits one parseable envelope on stdout with stderr empty. Red 3 of 5, green after. 73 existing assertions across 18 test files were characterizing the bug and now assert stderr; no message text changed. Not covered: the cwd-resolution path, which needs a process started in a directory that no longer exists - the harness sets the child's cwd, so it cannot arrange that. cargo test 48 targets green, plugin suite 15/15."
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-60",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-27T23:34:13Z",
+          "title": "story doctor reports 15 relation-integrity violations across SH-31..SH-40",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-27T23:34:13Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-07-27T23:34:13Z",
+          "labels": [
+            "data-integrity",
+            "doctor"
+          ]
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-27T23:34:13Z",
+          "description": "WHAT: 'story doctor' reports 15 integrity violations in this project's own .storyhook data — missing inverse relations and stories with multiple parents. Exit is non-zero, so doctor cannot currently be used as a clean gate.\n\nWHERE: stories SH-31 through SH-40. Full output:\n  SH-31: missing inverse relation `child-of` on story `SH-34`\n  SH-31: missing inverse relation `child-of` on story `SH-35`\n  SH-31: missing inverse relation `child-of` on story `SH-36`\n  SH-32: missing inverse relation `blocked-by` on story `SH-34`\n  SH-32: story has multiple parents\n  SH-33: missing inverse relation `blocked-by` on story `SH-34`\n  SH-33: story has multiple parents\n  SH-34: story has multiple parents\n  SH-35: story has multiple parents\n  SH-36: story has multiple parents\n  SH-37: missing inverse relation `blocks` on story `SH-35`\n  SH-37: missing inverse relation `blocks` on story `SH-36`\n  SH-40: missing inverse relation `child-of` on story `SH-31`\n  SH-40: missing inverse relation `child-of` on story `SH-32`\n  SH-40: missing inverse relation `child-of` on story `SH-33`\n\nWHEN: observed 2026-07-27 on main at 6c3e2da, immediately after a fast-forward reconcile. Pre-existing — NOT introduced by that merge; the affected stories date from earlier work.\n\nEXTENT: two distinct failure classes, likely two distinct root causes:\n1. Missing inverse relations (10 of 15) — 'story relate a rel b' appears not to have written, or later lost, the reciprocal edge on the target story. Suspect either a write path that only persists one side, or a rewrite path that drops relations it does not recognise.\n2. 'story has multiple parents' (5 of 15) — either the parent-of relation lacks a single-parent constraint at write time, or multiple parents are legitimate and the doctor check is wrong. Decide which before repairing.\n\nINVESTIGATION NOTES (do this before fixing):\n- Reproduce the ORIGIN, not just the symptom: replay how SH-31..SH-40 were created (likely 'story decompose' from a spec, given the contiguous ID block) and see whether decompose emits one-sided relations. If so, that is the defect class and the repair of existing data is only half the fix.\n- 'story doctor --fix' exists but has not been run; do not run it until the origin is understood, or the evidence is destroyed.\n\nACCEPTANCE:\n- Root cause identified for BOTH classes, with a failing automated test per class.\n- Write path fixed so new relations cannot become one-sided (prefer making the invalid state unrepresentable at the storage layer).\n- Existing SH-31..SH-40 data repaired.\n- 'story doctor' exits clean on this repo, and a test asserts that."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-27T23:34:13Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-27T23:34:30Z",
+          "text": "[git] b60db32: chore(storyhook): file SH-59 and SH-60, two defects found reconciling main"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-28T00:07:08Z",
+          "text": "Narrowing datum (2026-07-27, main @ f8645a0): 'story relate SH-61 blocks SH-58' wrote BOTH sides correctly — SH-58 shows the 'blocked-by SH-61' inverse. So the current 'story relate' write path is not the culprit. The missing inverses on SH-31..SH-40 came from some other origin: most likely 'story decompose' (those IDs are a contiguous block, consistent with bulk creation from a spec), or a since-fixed older version. Start the investigation at decompose's relation-writing code, not at relate."
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-61",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-28T00:06:51Z",
+          "title": "Fixing SH-58 (body scanning) turns commit-sync's bookkeeping churn into a non-terminating loop",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-28T00:06:51Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-07-28T00:06:51Z",
+          "labels": [
+            "commit-sync",
+            "dx",
+            "hooks"
+          ]
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-28T00:06:51Z",
+          "description": "## What\n\nThe post-commit hook runs 'story commit-sync --since 1h', which appends a [git] link comment to every story referenced by a new commit. That comment dirties the story's .jsonl, so recording it requires ANOTHER commit — whose message, in turn, may reference the same stories.\n\nToday this converges after exactly one step, but only by accident. Verified on main at f8645a0:\n\n- commit-sync scans SUBJECTS only (src/app.rs:1573, --format=%H %s).\n- 21258cf 'chore(storyhook): record commit links from commit-sync' — no story ID in subject — appears NOWHERE in .storyhook/. No link, no new dirt. Loop ends.\n- b60db32 'chore(storyhook): file SH-59 and SH-60, ...' — story IDs in subject — linked to both. Dirt.\n- commit-sync is idempotent: a second run added 0 comments, no duplicates.\n\nThe two precedent bookkeeping commits in history (c54eef2, 74869d4) are both titled 'record commit link(s) from post-commit hook' — deliberately story-ID-free. That convention is load-bearing and undocumented.\n\n## The problem\n\nSH-58 asks commit-sync to scan commit BODIES as well as subjects. That is a correct fix for the bug SH-58 describes, but it removes the only thing terminating this loop:\n\n1. Commit X references SH-N -> commit-sync links it -> SH-N.jsonl dirty.\n2. Bookkeeping commit Y records that link. A useful message for Y explains WHICH stories it linked, so 'SH-N' appears in Y's body.\n3. With body scanning, commit-sync links Y to SH-N too -> SH-N.jsonl dirty again.\n4. Bookkeeping commit Z records THAT link, body mentions SH-N, ... ad infinitum.\n\nA subject-only bookkeeping commit no longer saves you, because the body is now scanned. The only escape becomes writing bookkeeping commits with no story ID anywhere in the message — which makes them useless to read and is an unenforced human convention.\n\n## Extent\n\nLow blast radius today (one extra commit, terminates). HIGH the moment SH-58 lands. This is a latent trap in an already-filed, already-prioritized story, which is why it is filed separately rather than as a comment.\n\nNote SH-56 (post-merge hook, body trailers) is lower risk: it matches only 'Closes|Fixes|Resolves SH-N', which bookkeeping commits would not contain. The exposure is specific to commit-sync's link comments.\n\n## Fix options (evaluate before implementing SH-58)\n\n1. **Skip metadata-only commits (preferred).** If a commit's diff touches nothing outside .storyhook/, it is bookkeeping by definition — do not scan it. Content-based, needs no human convention, self-enforcing, and kills the loop at the origin rather than the encounter point.\n2. Trailer opt-out, e.g. 'Storyhook-Bookkeeping: true', with commit-sync skipping matching commits and the hook writing it automatically. Works, but relies on the trailer being present.\n3. Suppress link comments for commits authored by the hook itself. Fragile — author identity is the user's, not the hook's.\n4. Treat link comments as derived state and stop committing them. Cleanest conceptually, but they are event-sourced into the same .jsonl as real story data, so they cannot be separated without a storage change.\n\nOption 1 is the recommendation.\n\n## Acceptance\n\n- An automated test proves the loop terminates WITH body scanning enabled: make a commit referencing a story, run the hook's commit-sync, commit the result, run commit-sync again, and assert the working tree is clean (no new comments).\n- The termination guarantee is documented, so it is not re-broken later.\n- SH-58 is not closed until this holds."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-28T00:06:51Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-28T00:06:54Z",
+          "other_id": "SH-58",
+          "relation": "blocks"
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "SH-1",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:42:38Z",
+          "title": "Story Types & Epics — Work Execution",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:45:06Z",
+          "other_id": "SH-2",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:44:19Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T13:44:19Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-10",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "T3.3: storage.rs + app.rs — Export/import types.toml, ImportStory type handling",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-04T04:44:29Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-04T04:44:29Z",
+          "labels": [
+            "phase:4"
+          ]
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "text": "Requirements: R34, R35. Files: src/storage.rs, src/app.rs, src/mcp.rs.\nAC: ProjectExport.types: Vec<TypeDef> with serde(default); export_project includes types; import_project restores types.toml; import writes StoryTypeSet for typed stories; bulk_create maps story_type; round-trip test passes."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-2",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-7",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-11",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:30:52Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:37:21Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:39:33Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T13:39:33Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-11",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "T4.1: Full compilation and test pass",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-04T04:44:29Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-04T04:44:29Z",
+          "labels": [
+            "phase:5"
+          ]
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "text": "Requirements: R32, R33. Files: all modified.\nAC: cargo build with no errors; cargo test with 0 failures; cargo clippy with no errors."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-2",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-8",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-9",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-10",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:43:47Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:43:50Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T13:43:50Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-12",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T13:59:21Z",
+          "title": "ESCALATE: Default type display — \"-\" vs default type name for untyped stories",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T13:59:38Z",
+          "text": "{\"type\":\"escalate\",\"finding\":\"Default type display\",\"severity\":\"Important\",\"description\":\"DESIGN.md specifies that story_type: None should render as the default type from types.toml (e.g. 'type: story'). Implementation shows 'type: -' in story show and omits badge in list. This diverges from the design intent that every story has a displayable type.\",\"options\":[{\"label\":\"Option 1: Accept current behavior\",\"solution\":\"Keep '-' display, document it means untyped/default. No code change.\",\"pros\":\"Simpler code, no new dependencies in output.rs, honest about stored data\",\"cons\":\"Diverges from DESIGN.md intent\"},{\"label\":\"Option 2: Pass default type as fallback\",\"solution\":\"Load default_type(root) in app.rs, thread through StoryView, use as fallback in render_story\",\"pros\":\"Matches DESIGN.md exactly, every story displays a type\",\"cons\":\"Adds coupling between output layer and storage, extra I/O per render\"}],\"recommendation\":\"Option 1 — simpler, no behavior surprise, output.rs stays independent of storage\",\"location\":\"src/output.rs:342, src/output.rs:256-259\"}"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:27:36Z",
+          "text": "{\"type\":\"user_decision\",\"decision\":\"Custom: Show \\\"Default\\\" instead of \\\"-\\\" for untyped stories. Keep output.rs independent of storage — use a hardcoded \\\"Default\\\" string as fallback, not a types.toml lookup.\"}"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:20Z",
+          "other_id": "SH-22",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-13",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T13:59:22Z",
+          "title": "ESCALATE: Import validation — validate story_type against types.toml on import",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T13:59:44Z",
+          "text": "{\"type\":\"escalate\",\"finding\":\"Import validation gap\",\"severity\":\"Useful\",\"description\":\"story import writes StoryTypeSet events without validating story_type against types.toml. This means imports can create stories with types that don't exist in the project config. story new and story set both validate eagerly. Doctor catches drift afterward.\",\"options\":[{\"label\":\"Option 1: Add validation pass before import\",\"solution\":\"Check each ImportStory.story_type against load_type_map before the import loop, fail early with clear message\",\"pros\":\"Consistent with write-time validation elsewhere, prevents doctor issues\",\"cons\":\"Makes import stricter, may break batch imports where types are added separately\"},{\"label\":\"Option 2: Accept current behavior\",\"solution\":\"Keep import permissive. Doctor catches drift.\",\"pros\":\"Import stays permissive for migration scenarios\",\"cons\":\"Inconsistent validation behavior across entry points\"}],\"recommendation\":\"Option 2 — import is a bulk/migration tool where strictness may be counterproductive\",\"location\":\"src/app.rs:761-766\"}"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:27:37Z",
+          "text": "{\"type\":\"user_decision\",\"decision\":\"Option 1: Add validation pass before import. Check each story_type against types.toml before the import loop, fail early with clear message.\"}"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:20Z",
+          "other_id": "SH-23",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-14",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T13:59:23Z",
+          "title": "ESCALATE: Progress bar format — compact (done/total) vs ASCII progress bar in list",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T13:59:50Z",
+          "text": "{\"type\":\"escalate\",\"finding\":\"Progress bar format in list output\",\"severity\":\"Useful\",\"description\":\"DESIGN.md shows story epic list output with ASCII progress bars (████████░░ 80%). Implementation uses compact (done/total) format without bar or percentage. Functionally equivalent but visually different.\",\"options\":[{\"label\":\"Option 1: Accept compact format\",\"solution\":\"Keep (done/total) display as-is. Clean and functional.\",\"pros\":\"Clean output, no rendering complexity, works in narrow terminals\",\"cons\":\"Does not match DESIGN.md aspirational output\"},{\"label\":\"Option 2: Add ASCII progress bar\",\"solution\":\"Add simple bar like [===---] 60% in list output for stories with progress\",\"pros\":\"Matches DESIGN.md, more visual\",\"cons\":\"Makes list lines longer, may not render well in narrow terminals\"}],\"recommendation\":\"Option 1 — compact format is clearer for CLI, progress bars better suited for future TUI\",\"location\":\"src/output.rs:261-264\"}"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:27:38Z",
+          "text": "{\"type\":\"user_decision\",\"decision\":\"Option 1: Accept compact format. No code change needed. Closing as done.\"}"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:27:39Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T04:27:39Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-15",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T13:59:24Z",
+          "title": "ESCALATE: story summary/context type breakdown (deferred scope)",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T13:59:55Z",
+          "text": "{\"type\":\"escalate\",\"finding\":\"story summary/context type breakdown\",\"severity\":\"Useful\",\"description\":\"IDEA.md lists 'story summary and story context surface epic/type information' as a requirement. PLAN.md scope boundaries explicitly defer this: 'story summary/story context type breakdown (DESIGN.md open question).' No type breakdown is rendered in summary or context output.\",\"options\":[{\"label\":\"Option 1: Accept as deferred scope\",\"solution\":\"Track as future enhancement. Current behavior is consistent with PLAN.md scope boundaries.\",\"pros\":\"Clean scope boundary, no risk, planned decision\",\"cons\":\"Feature gap vs IDEA.md\"},{\"label\":\"Option 2: Implement type breakdown\",\"solution\":\"Add type distribution to summary/context output (e.g. 'Types: 3 epic, 5 story, 2 bug')\",\"pros\":\"Fulfills IDEA.md requirement\",\"cons\":\"Scope expansion, needs separate planning\"}],\"recommendation\":\"Option 1 — explicitly deferred during planning, should be its own story\",\"location\":\"src/app.rs (summary/context handlers)\"}"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:27:40Z",
+          "text": "{\"type\":\"user_decision\",\"decision\":\"Option 2: Implement type breakdown in summary/context output. Add type distribution (e.g. '3 epic, 5 story, 2 bug') to summary and context handlers.\"}"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:20Z",
+          "other_id": "SH-24",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:21Z",
+          "other_id": "SH-25",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:22Z",
+          "other_id": "SH-26",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-16",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:00:20Z",
+          "title": "Fix Cycle 1",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:00:20Z",
+          "other_id": "SH-17",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:00:20Z",
+          "other_id": "SH-18",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:00:20Z",
+          "other_id": "SH-19",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:14:33Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T04:14:33Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-17",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:00:20Z",
+          "title": "Add `story_type` to MCP update tool description",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T04:00:20Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T04:00:20Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:00:20Z",
+          "other_id": "SH-16",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:00:25Z",
+          "text": "Acceptance: The `storyhook_update_story` tool description string includes `story_type` in the priority order list (state > priority > labels > assignee > awaiting > story_type). Files: `src/mcp.rs` (line 185, description string only)"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:05:44Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:06:19Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T04:06:19Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-18",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:00:20Z",
+          "title": "Guard against removing last type in `remove_type`",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T04:00:20Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T04:00:20Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:00:20Z",
+          "other_id": "SH-16",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:00:26Z",
+          "text": "Acceptance: `remove_type` returns `AppError::Validation` with a message containing \"last\" when called with the only remaining type in types.toml. New unit test `remove_type_rejects_last_type` passes. Files: `src/storage.rs` (guard clause in `remove_type` at line 441 + new test after line 1210)"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:09:57Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:11:40Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:12:37Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T04:12:37Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-19",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:00:20Z",
+          "title": "Remove dead code branch in progress rendering",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T04:00:20Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T04:00:20Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:00:20Z",
+          "other_id": "SH-16",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:00:27Z",
+          "text": "Acceptance: The `else` branch at output.rs:387-389 (printing \"0/0 children done (0%)\") is removed. The `if progress.children_total > 0` conditional is simplified since it's always true when progress is `Some`. All existing tests pass. Files: `src/output.rs` (lines 380-389)"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:12:49Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:13:43Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T04:14:28Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T04:14:28Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-2",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "Story Types & Epics",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-3",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-4",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-5",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-6",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-7",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-8",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-9",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-10",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-11",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:45:06Z",
+          "other_id": "SH-1",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:44:19Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T13:44:19Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-20",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:37:33Z",
+          "title": "ESCALATE Fix Cycle 1 — Story Types & Epics",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:38:19Z",
+          "text": "[deleted] duplicate of SH-21 — decompose_spec created its own parent"
+        },
+        {
+          "kind": "StoryDeleted",
+          "at": "2026-04-05T04:38:19Z",
+          "reason": "duplicate of SH-21 — decompose_spec created its own parent"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-21",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:38:02Z",
+          "title": "ESCALATE Fix Cycle 1 — Story Types & Epics",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-22",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-23",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-24",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-25",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-26",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-27",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T14:02:07Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T14:02:07Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-22",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:38:02Z",
+          "title": "T1.1: Display \"Default\" for untyped stories + reserve \"default\" slug",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T04:38:02Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T04:38:02Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-21",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-24",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-25",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-26",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:20Z",
+          "other_id": "SH-12",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:38:27Z",
+          "text": "Acceptance: (1) src/output.rs:342 fallback changed from \"-\" to \"Default\" — story show prints type: Default for untyped stories. (2) src/output.rs:256-259 list view renders [Default] badge for story_type == None. (3) src/storage.rs add_type rejects slug \"default\" (case-insensitive) with AppError::Validation. (4) Update tests: story_types.rs and story_import.rs to assert \"Default\". (5) New test: type_add_rejects_reserved_default_slug. (6) No use of storage or types.toml added to output.rs."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-23",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:38:02Z",
+          "title": "T1.2: Add import validation for story_type against types.toml",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T04:38:02Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T04:38:02Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-21",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-24",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-25",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-26",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:20Z",
+          "other_id": "SH-13",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:38:32Z",
+          "text": "Acceptance: (1) src/app.rs: before import loop (~L725-730), call load_type_map(root)?. (2) Collect and validate ALL import_story.story_type values before loop — invalid types cause early Err(AppError::Validation). (3) Error message lists ALL invalid types, e.g. \"unknown types: foo, bar. Available types: story, epic, bug, chore, task\". (4) Zero stories created on validation failure (all-or-nothing). (5) New tests: import_rejects_invalid_story_type, import_atomicity_on_type_error, import_accepts_valid_story_type."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-24",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:38:02Z",
+          "title": "T2.1: Add type breakdown to SummaryView and Summary/Report handlers",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T04:38:02Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T04:38:02Z",
+          "labels": [
+            "phase:2"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-21",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-22",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-23",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-27",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:20Z",
+          "other_id": "SH-15",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:38:35Z",
+          "text": "Acceptance: (1) SummaryView in src/output.rs gains pub by_type: Vec<(String, usize)>. (2) Invocation::Summary handler counts types using \"Default\" for story_type == None, passes as by_type. (3) Both Report { html: false } and Report { html: true } handlers: same type counting. (4) render_summary renders \"by type:\" section after \"by priority:\". (5) New test: summary_shows_type_breakdown. (6) cargo test --test story_summary passes."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T05:07:07Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T13:36:47Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T13:36:47Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-25",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:38:02Z",
+          "title": "T2.2: Add type breakdown to Context handler",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T04:38:02Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T04:38:02Z",
+          "labels": [
+            "phase:2"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-21",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-22",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-23",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-27",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:21Z",
+          "other_id": "SH-15",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:38:37Z",
+          "text": "Acceptance: (1) Invocation::Context JSON branch: by_type BTreeMap included in JSON output. (2) Invocation::Context plain text branch: \"## Type Distribution\" section after \"## State Distribution\". (3) New tests: context_shows_type_distribution, context_json_includes_type_distribution. (4) cargo test --test story_context passes."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T14:02:48Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-26",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:38:02Z",
+          "title": "T2.3: Add type breakdown to HTML report",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T04:38:02Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T04:38:02Z",
+          "labels": [
+            "phase:2"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-21",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-22",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-23",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-27",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:22Z",
+          "other_id": "SH-15",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:38:39Z",
+          "text": "Acceptance: (1) render_html_report in src/output.rs: new \"Type Breakdown\" section after Priority Breakdown. (2) New test: report_html_shows_type_breakdown. (3) cargo test --test story_report passes."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T14:02:49Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T14:02:49Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-27",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T04:38:02Z",
+          "title": "T3.1: Full test suite validation (cargo test + clippy + release build)",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T04:38:02Z",
+          "labels": [
+            "phase:3"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-21",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-24",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-25",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T04:38:02Z",
+          "other_id": "SH-26",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-05T04:38:40Z",
+          "text": "Acceptance: (1) cargo test — 0 failures. (2) cargo clippy -- -D warnings — 0 errors. (3) cargo build --release — succeeds."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T14:02:01Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T14:02:01Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-28",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T15:21:02Z",
+          "title": "Fix Cycle 3",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T15:21:02Z",
+          "other_id": "SH-29",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T15:21:02Z",
+          "other_id": "SH-30",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T15:39:02Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T15:39:02Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-29",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T15:21:02Z",
+          "title": "Add `story_type` arm to JSON patch dispatch table — `story set <id> --json '{\"story_type\":\"...\"}'` must work, mirror `--type` flag behavior, update error message to list `story_type` as valid field, reject unknown types with validation error",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T15:21:02Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T15:21:02Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T15:21:02Z",
+          "other_id": "SH-28",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T15:30:32Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T15:32:43Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T15:32:43Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-3",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "T1.1: domain.rs — StoryTypeSet event, TypeDef, snapshot field, fold logic",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-04T04:44:29Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-04T04:44:29Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "text": "Requirements: R1, R2, R3, R4, R6, R28, R34. Files: src/domain.rs.\nAC: StoryEvent has StoryTypeSet { at, story_type } variant; TypeDef struct with slug + description; StorySnapshot.story_type: Option<String> with serde(default); ImportStory.story_type: Option<String> with serde(default); ProgressRollup struct with children_done + children_total; fold_story handles StoryTypeSet; last_activity_type returns \"type-set\"; existing domain::tests pass; new fold tests for story_type."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-2",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-5",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-6",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T04:56:30Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T05:14:59Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T05:14:59Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-30",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-05T15:21:02Z",
+          "title": "Make reserved slug \"none\" check case-insensitive — `story type add None` and `story type add NONE` must be rejected as reserved, existing lowercase rejection must continue working",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-05T15:21:02Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-05T15:21:02Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-05T15:21:02Z",
+          "other_id": "SH-28",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T15:37:48Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-05T15:38:50Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-05T15:38:50Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-31",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T12:20:07Z",
+          "title": "Replace MCP with CLI Documentation — Work Execution",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:29Z",
+          "other_id": "SH-32",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:29Z",
+          "other_id": "SH-33",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:30Z",
+          "other_id": "SH-34",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:30Z",
+          "other_id": "SH-35",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:31Z",
+          "other_id": "SH-36",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:32Z",
+          "other_id": "SH-37",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T13:41:43Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T13:41:43Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-32",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T12:20:24Z",
+          "title": "T1.1: Strip MCP server from Rust codebase — delete src/mcp.rs, src/mcp_install.rs, tests/mcp_server.rs, tests/mcp_config.rs; remove MCP from lib.rs, main.rs, cli.rs, app.rs, help_topics.rs, story_types.rs; cargo build + test must pass",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-07T12:20:24Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-07T12:20:24Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:24Z",
+          "other_id": "SH-34",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:29Z",
+          "other_id": "SH-31",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T12:20:43Z",
+          "text": "Acceptance: src/mcp.rs and src/mcp_install.rs deleted. lib.rs no longer declares pub mod mcp or pub mod mcp_install. main.rs --mcp flag handling (lines 23-33) removed entirely. main.rs interactive McpConfig handler block (lines 48-71) removed. cli.rs Invocation::McpConfig variant removed; parse_mcp_config() removed; \"mcp-config\" dispatch arm removed; HELP_TEXT no longer contains \"mcp-config\". app.rs McpConfig match arm (lines 1424-1471) removed; resolve_binary_path() removed. help_topics.rs mcp-config topic removed; json-format topic no longer mentions MCP/JSON-RPC; json_format_topic test no longer asserts on \"JSON-RPC\". tests/mcp_server.rs deleted. tests/mcp_config.rs deleted. tests/story_types.rs MCP test functions (lines ~749-834) and mcp_request helper removed; all other tests remain. cargo build succeeds. cargo test passes.\nFiles: src/mcp.rs (delete), src/mcp_install.rs (delete), src/lib.rs, src/main.rs, src/cli.rs, src/app.rs, src/help_topics.rs, tests/mcp_server.rs (delete), tests/mcp_config.rs (delete), tests/story_types.rs"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T12:23:35Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T12:30:34Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T13:41:39Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T13:41:39Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-33",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T12:20:24Z",
+          "title": "T1.2: Remove MCP from documentation and plugin files — strip MCP sections from README.md, install.sh, cli-reference.md; no file outside .forge/ contains \"mcp-config\"",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-07T12:20:24Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-07T12:20:24Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:24Z",
+          "other_id": "SH-34",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:29Z",
+          "other_id": "SH-31",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T12:20:47Z",
+          "text": "Acceptance: README.md MCP Server section (lines ~287-325) removed; bullet \"MCP server for native AI tool integration\" removed; no remaining MCP references. install.sh MCP registration section (lines ~72-127) removed; post-install hint mentioning story mcp-config removed; install script still works for binary install + git hooks. plugin/claude-code/references/cli-reference.md story mcp-config section (lines ~463-477) removed. No file in the repository (outside .forge/) contains the string \"mcp-config\" (case-insensitive).\nFiles: README.md, install.sh, plugin/claude-code/references/cli-reference.md"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T12:39:19Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T12:40:56Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T12:40:56Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-34",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T14:02:17Z",
+          "title": "ESCALATE: HELP_TEXT missing --compact and --all flags",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T14:03:00Z",
+          "text": "{\"type\":\"escalate\",\"finding\":\"HELP_TEXT missing --compact and --all flags\",\"severity\":\"Important\",\"description\":\"HELP_TEXT at src/cli.rs:78 shows 'story help <command>' but omits [--compact] [--all]. Users running story --help or story help cannot discover the new LLM-optimized output modes. Triager and skeptic voted FIX, QA voted ESCALATE.\",\"options\":[{\"label\":\"Option 1: Update HELP_TEXT line (Recommended)\",\"solution\":\"Change 'story help <command>' to 'story help [<command>] [--compact] [--all]'\",\"pros\":\"Standard CLI discoverability, single string change, zero risk\",\"cons\":\"None\"},{\"label\":\"Option 2: Add note in help topics footer\",\"solution\":\"Mention flags in the help topics list footer\",\"pros\":\"Less cluttered usage line\",\"cons\":\"Easier to miss\"}],\"recommendation\":\"Option 1. Trivial string change with no risk.\",\"location\":\"src/cli.rs:78\"}"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-07T14:03:53Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:02Z",
+          "other_id": "SH-40",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T15:59:11Z",
+          "text": "User decision: Update HELP_TEXT line. Change 'story help <command>' to 'story help [<command>] [--compact] [--all]'."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:23:10Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:23:30Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T20:23:30Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-35",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T14:02:18Z",
+          "title": "ESCALATE: Ghost command --tree in scaffold init template",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T14:03:12Z",
+          "text": "{\"type\":\"escalate\",\"finding\":\"Ghost command --tree in scaffold init template\",\"severity\":\"Important\",\"description\":\"generate_claude_md() in src/storage.rs:262 references 'story graph --tree {prefix}-1'. This flag does not exist — parse_graph only accepts --critical-path, --blocked-by, and --parallel-groups. More impactful now that CLI docs are the sole integration surface. Skeptic strongly challenged the recommended replacement.\",\"options\":[{\"label\":\"Option 1: Replace with --blocked-by\",\"solution\":\"Change to 'story graph --blocked-by {prefix}-1' with updated comment 'Trace why a story is blocked'\",\"pros\":\"Accurate docs, no CLI change\",\"cons\":\"SKEPTIC WARNING: --blocked-by has fundamentally different semantics than --tree. --tree implies showing children/descendants; --blocked-by traces upstream blocks. The replacement would actively mislead users.\"},{\"label\":\"Option 2: Remove the line entirely (Skeptic Recommended)\",\"solution\":\"Remove the --tree example line. Keep the other graph examples (story graph for overview).\",\"pros\":\"No misleading documentation, clean\",\"cons\":\"One fewer example in scaffold\"},{\"label\":\"Option 3: Replace with --parallel-groups\",\"solution\":\"Change to 'story graph --parallel-groups' with comment 'Show parallelizable work groups'\",\"pros\":\"Accurate, demonstrates a useful graph mode\",\"cons\":\"Different purpose than the original example\"},{\"label\":\"Option 4: Implement --tree flag\",\"solution\":\"Add --tree <id> as a graph mode showing subtree\",\"pros\":\"Documented behavior works\",\"cons\":\"YAGNI scope creep\"}],\"recommendation\":\"Skeptic recommended Option 2 or 3 over Option 1. The original team recommendation (Option 1) was challenged because --blocked-by walks upstream along blocks relationships, not downstream along parent-of — semantically wrong replacement.\",\"location\":\"src/storage.rs:262\"}"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-07T14:03:54Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:03Z",
+          "other_id": "SH-40",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T15:59:11Z",
+          "text": "User decision: Remove the --tree example line entirely. No misleading docs."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:23:37Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:23:57Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T20:23:57Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-36",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T14:02:19Z",
+          "title": "ESCALATE: VERSION file vs Cargo.toml version drift",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T14:03:20Z",
+          "text": "{\"type\":\"escalate\",\"finding\":\"VERSION file vs Cargo.toml version drift\",\"severity\":\"Important\",\"description\":\"VERSION file reads v0.12.0 but Cargo.toml declares version = '0.6.0'. The semver plugin bumps VERSION but Cargo.toml is not tracked in .semver/config.yaml. Pre-existing issue that grows worse with each release. Two agents voted ESCALATE, one voted FIX-with-tight-scope.\",\"options\":[{\"label\":\"Option 1: Add Cargo.toml to semver config + sync now (Recommended)\",\"solution\":\"Add Cargo.toml to .semver/config.yaml as a tracked file AND manually sync Cargo.toml version to 0.12.0\",\"pros\":\"One-time fix, prevents future drift, semver plugin handles it going forward\",\"cons\":\"Needs semver config update + manual version sync\"},{\"label\":\"Option 2: Manual sync only\",\"solution\":\"Change Cargo.toml version to 0.12.0 now, leave semver config unchanged\",\"pros\":\"Immediate fix\",\"cons\":\"Will drift again on next semver bump\"},{\"label\":\"Option 3: Defer entirely\",\"solution\":\"Track as future chore, don't fix now\",\"pros\":\"No changes to semver infrastructure\",\"cons\":\"Drift grows with each release, will bite on first cargo publish\"}],\"recommendation\":\"Option 1. Skeptic noted this has nothing to do with MCP removal work but is a 2-minute fix that prevents recurring drift.\",\"location\":\"VERSION, Cargo.toml:2, .semver/config.yaml\"}"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-07T14:03:54Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:03Z",
+          "other_id": "SH-40",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T15:59:12Z",
+          "text": "User decision: Add Cargo.toml to .semver/config.yaml AND sync Cargo.toml version to 0.12.0."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:24:04Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:24:38Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T20:24:38Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-37",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T12:20:24Z",
+          "title": "T4.1: Rewrite session-start hook — replace python3-based hook with story session-start call; under 20 lines; no python3 dependency; update cli-reference.md and workflow-patterns.md",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-07T12:20:24Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-07T12:20:24Z",
+          "labels": [
+            "phase:4"
+          ]
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:24Z",
+          "other_id": "SH-35",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:24Z",
+          "other_id": "SH-36",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T12:20:32Z",
+          "other_id": "SH-31",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T12:21:06Z",
+          "text": "Acceptance: plugin/claude-code/hooks/session-start.sh rewritten to call story session-start (single CLI invocation, no python3); outputs JSON result directly; falls back to {} if story binary not found or command fails. Hook under 20 lines. No python3 dependency. Completes within 5-second hook timeout. plugin/claude-code/references/cli-reference.md documents story session-start. plugin/claude-code/references/workflow-patterns.md has no MCP references.\nFiles: plugin/claude-code/hooks/session-start.sh, plugin/claude-code/references/cli-reference.md, plugin/claude-code/references/workflow-patterns.md"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T13:39:06Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T13:41:23Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T13:41:23Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-38",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T14:02:21Z",
+          "title": "ESCALATE: No CHANGELOG entry for MCP removal breaking change",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T14:03:39Z",
+          "text": "{\"type\":\"escalate\",\"finding\":\"No CHANGELOG entry for MCP removal breaking change\",\"severity\":\"Important\",\"description\":\"MCP removal is a breaking change — story --mcp and story mcp-config no longer exist. No CHANGELOG entry documents the removal or migration path. Skeptic upgraded severity from Useful to Important: 'A silent breaking change with no migration guidance is an Important finding.' Triager and QA voted ESCALATE, skeptic voted FIX (text-only, zero risk).\",\"options\":[{\"label\":\"Option 1: Add CHANGELOG entry now (Recommended)\",\"solution\":\"Add version entry documenting: MCP server removed, story --mcp and story mcp-config no longer available, session hooks via story session-start are the replacement, story plugin install claude-code sets up hooks automatically\",\"pros\":\"Clear migration guidance, standard communication channel, zero-risk text change\",\"cons\":\"Minor effort\"},{\"label\":\"Option 2: Bundle with next semver bump\",\"solution\":\"Let the semver plugin generate it during next version bump\",\"pros\":\"Follows semver workflow\",\"cons\":\"Gap until then — users upgrading get no guidance\"},{\"label\":\"Option 3: Add MIGRATION.md\",\"solution\":\"Create dedicated migration doc for MCP removal\",\"pros\":\"More detailed than CHANGELOG entry\",\"cons\":\"Separate file to maintain, CHANGELOG still needs an entry\"}],\"recommendation\":\"Option 1. Brief CHANGELOG entry is the standard channel. Content should cover removal, replacement (session hooks), and setup path (story plugin install claude-code).\",\"location\":\"CHANGELOG.md\"}"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-07T14:03:55Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:04Z",
+          "other_id": "SH-40",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T15:59:13Z",
+          "text": "User decision: Add CHANGELOG entry now documenting MCP removal, migration to session hooks, and 'story plugin install claude-code' setup path."
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:24:44Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:25:07Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T20:25:07Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-39",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T14:02:21Z",
+          "title": "ESCALATE: Stale skill invocation in plugin install message",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T14:03:45Z",
+          "text": "{\"type\":\"escalate\",\"finding\":\"Stale skill invocation in plugin install message\",\"severity\":\"Useful\",\"description\":\"plugin.rs:107 outputs 'Use /storyhook:context to get started' after plugin installation. While the skill exists and works, adding the CLI equivalent would be more consistent with the CLI-first direction. Two agents voted ESCALATE, one voted DISMISS.\",\"options\":[{\"label\":\"Option 1: Add CLI alternative (Recommended)\",\"solution\":\"Change to: 'Use /storyhook:context to get started (or run story load-context directly).'\",\"pros\":\"Covers both paths, additive, single string change\",\"cons\":\"Slightly longer message\"},{\"label\":\"Option 2: Replace with CLI-only\",\"solution\":\"Change to: 'Run story load-context to get started.'\",\"pros\":\"Simpler, consistent with CLI-first\",\"cons\":\"Misses installed skill\"},{\"label\":\"Option 3: Leave as-is\",\"solution\":\"No change — the skill works fine\",\"pros\":\"No change needed\",\"cons\":\"Doesn't mention CLI alternative\"}],\"recommendation\":\"Option 1. Additive change that covers both paths. Low priority.\",\"location\":\"src/plugin.rs:107\"}"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-07T14:03:55Z",
+          "priority": "low"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:04Z",
+          "other_id": "SH-40",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-07T15:59:14Z",
+          "text": "User decision: Add CLI alternative. Change to 'Use /storyhook:context to get started (or run story load-context directly).'"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:25:12Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:25:25Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T20:25:25Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-4",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "T1.3: cli.rs — TypeAction, EpicAction, Invocation variants, parsers, flags",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-04T04:44:29Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-04T04:44:29Z",
+          "labels": [
+            "phase:1"
+          ]
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "text": "Requirements: R12, R13, R14, R15, R16, R29. Files: src/cli.rs.\nAC: TypeAction enum (List, Add, Remove); EpicAction enum (List, Show, Create, Add); Invocation::Type and ::Epic variants; story_type on New/List/SetFields; parse_invocation dispatches \"type\" and \"epic\"; --type flag on new/list/set; parse_type follows parse_state pattern; parse_epic parses all subcommands; HELP_TEXT updated; existing cli::tests pass; new parser tests."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-2",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-5",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-6",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T05:08:43Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T05:15:28Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T05:15:28Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-40",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-07T14:52:53Z",
+          "title": "Fix Cycle 4",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:00Z",
+          "other_id": "SH-31",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:01Z",
+          "other_id": "SH-32",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:01Z",
+          "other_id": "SH-33",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:02Z",
+          "other_id": "SH-34",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:03Z",
+          "other_id": "SH-35",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:03Z",
+          "other_id": "SH-36",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:04Z",
+          "other_id": "SH-38",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-07T14:53:04Z",
+          "other_id": "SH-39",
+          "relation": "parent-of"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-07T20:34:23Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-07T20:34:23Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-41",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-24T02:57:42Z",
+          "title": "Create UI for per-repo configuration of available story statuses",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-24T02:57:42Z",
+          "story_type": "story"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-07-25T23:56:18Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-25T23:59:59Z",
+          "text": "[git] 131512c: chore(storyhook): start SH-41 and file the states.toml defect"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-07-26T01:16:16Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-26T01:16:16Z",
+          "text": "Per-repo status configuration shipped on three surfaces sharing one set of storage operations: story state list/add/set/remove/reorder on the CLI, Settings -> Statuses in the web dashboard, and the s modal in the TUI. Includes add/remove/reorder, superstate, active role, and descriptions; editing or removing a status that still holds stories requires naming where they go, and they migrate through the normal move path (archiving if the destination closes them). Board columns follow states.toml order and refresh live."
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-07-26T01:16:16Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-45",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-25T18:42:24Z",
+          "title": "Create story plugin in the storyhook claude plugin marketplace which mirrors the behavior of the /issue plugin in the mikeydotio/agentics marketplace, but for storyhook stories instead of github issues.",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-25T18:42:24Z",
+          "story_type": "story"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-25T19:13:46Z",
+          "text": "[git] 23da8ba: chore(storyhook): track SH-45"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-25T19:14:41Z",
+          "text": "[git] 90703c4: chore(storyhook): sync SH-45 git-linked comment"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-07-25T20:38:07Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-25T20:40:54Z",
+          "other_id": "SH-46",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-25T20:40:54Z",
+          "other_id": "SH-47",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-07-25T20:40:54Z",
+          "other_id": "SH-48",
+          "relation": "relates-to"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-25T20:41:02Z",
+          "text": "[git] d2fce75: chore(storyhook): file three plugin defects found while scoping SH-45"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-25T21:02:45Z",
+          "text": "Delivered full /issue parity for the /story plugin.\n\nbin/story.sh went from 1 subcommand to 7: dispatch (existing) plus\ncomplete (plan|execute), view, list, create, doctor, capture.\n\nSkill layer: bare /story is now List -> Pick (was project context -- a\ndeliberate breaking change for parity; /story context still gives the\noverview), /story <id> is View + Offer, and new/complete lazy-load\nprotocol files from references/.\n\nForks follow the precedent set by issue #40: complete from agentics'\nplugins/storywork, the rest from plugins/issue, each with a provenance\nheader. lib/session.sh needed no changes -- its git-safety block and\npane helpers were already vendored and had zero callers until now.\n\nTwo deviations from a literal port, both deliberate:\n- complete closes the story (storywork leaves state alone because\n  conductor owns the transition; /issue complete closes the issue, and\n  parity is the ask). --no-close/--no-clean give back each half.\n- doctor runs BOTH the tmux readiness-drift probe and `story doctor`\n  project integrity, since the CLI already owns that verb name.\n\nAlso fixed SH-46 as a prerequisite (every story call now anchored to the\nproject root) and filed SH-47/SH-48 for two unrelated defects found\nwhile scoping.\n\nTests: 15 plugin cases (was 6), including the first coverage of the\nskill layer, which was previously untested prose. Verified end-to-end\nagainst real tmux and real git: list -> dispatch -> capture -> view ->\ncomplete plan -> complete execute, with the worktree and branch\nreclaimed and the story closed.\n\nKnown behavior, matching /issue: complete does not kill the dispatched\ntmux window. Killing a window could destroy an in-flight session, and\nthe scrollback is often still wanted."
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-25T21:02:48Z",
+          "text": "[git] 2c44a65: chore(storyhook): record SH-45 delivery summary"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-25T21:22:21Z",
+          "text": "PR: https://github.com/mikeydotio/storyhook/pull/48"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-25T21:22:24Z",
+          "text": "[git] fca171a: chore(storyhook): link PR #48 on SH-45"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-07-25T23:39:06Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-25T23:39:06Z",
+          "text": "Delivered and merged in PR #48 (merge commit e15bee0). /story now has full /issue parity: complete, view, list, create, doctor, and capture join dispatch. Plugin bumped to 0.3.0. Follow-ups SH-47 and SH-48 remain open."
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-07-25T23:39:06Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-5",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "T1.2: storage.rs — types.toml config lifecycle",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-04T04:44:29Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-04T04:44:29Z",
+          "labels": [
+            "phase:2"
+          ]
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "text": "Requirements: R7, R8, R9, R10, R11. Files: src/storage.rs.\nAC: ProjectPaths.types_file() returns .storyhook/types.toml; TypesFile wraps Vec<TypeDef>; load_types auto-creates if missing; load_type_map returns BTreeMap; save_types writes file; add_type validates no duplicates, rejects \"none\"; remove_type rejects in-use types; ensure_types_file creates defaults; default_type returns first slug; init_project calls ensure_types_file."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-2",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-3",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-4",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-7",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T05:15:55Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T05:20:22Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T05:23:39Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T05:23:39Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-55",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-26T03:37:47Z",
+          "title": "Add a make install target so local installs don't use cp",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-26T03:37:47Z",
+          "priority": "medium"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-26T03:37:47Z",
+          "description": "## What\n\nThe Makefile has no `install` target, so installing a locally-built `story`\nmeans copying the binary by hand. The obvious hand-rolled command —\n`cp target/release/story ~/.local/bin/story` — is a footgun that produces a\nbinary macOS refuses to execute.\n\n## Why it breaks\n\nmacOS invalidates a Mach-O's cached code-signing state when the file's contents\nare rewritten **in place**. `cp` truncates and rewrites the destination, keeping\nthe same inode. If any live process still has that inode mapped — e.g. a\nlong-running `story web --serve` — every subsequent `exec` of that path dies\nwith SIGKILL (exit 137), even though the bytes on disk are correct and\n`codesign -v` passes.\n\nVerified on macOS 26.5.2, 2026-07-25:\n\n    cp release/story ./story          # inode 549887163\n    ./story web --serve &             # holds it mapped\n    cp debug/story ./story            # inode 549887163 — unchanged\n    ./story --version                 # exit 137\n\n    install -m 755 debug/story ./story  # inode 549887171 — fresh\n    ./story --version                   # exit 0, holder process unaffected\n\nThe failure is confusing out of proportion to its cause: the binary hashes\nidentically to a known-good build and passes signature verification, so nothing\nabout the symptom points at the copy mechanism.\n\n## Extent\n\nHit on 2026-07-25 while diagnosing [[SH-54]]: `~/.local/bin/story` returned 137\nfor every subcommand while `target/release/story` — byte-identical, same\nSHA-256 — ran fine.\n\n`install.sh:54` already does the right thing (`install -m 755`). Only the\nhand-copy path is affected, which is exactly the path a developer takes when\niterating locally.\n\n## Fix\n\nAdd a `make install` target that builds release and installs via `install(1)`,\nhonouring `install.sh`'s `STORYHOOK_INSTALL_DIR` convention so both entry points\nagree on where the binary goes. Comment the target with *why* it is not `cp`, so\nthe constraint survives future edits.\n\n## Note\n\n`make install` does not restart a running `story web --serve`. The daemon keeps\nits old mapping and continues serving stale code until restarted — the\nproximate trigger for [[SH-54]]."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-26T03:37:47Z",
+          "story_type": "chore"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-26T03:40:12Z",
+          "text": "[git] 7e6e69e: chore(storyhook): track SH-54, SH-55"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-07-26T03:45:21Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-26T03:45:21Z",
+          "text": "Delivered by PR #54 (merge 84b64e1). Closed by hand -- the post-merge hook did not fire; see SH-56."
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-07-26T03:45:21Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-57",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-07-25T23:56:18Z",
+          "title": "story state add/remove silently deletes state descriptions from states.toml",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-07-25T23:56:18Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryDescriptionSet",
+          "at": "2026-07-25T23:56:18Z",
+          "description": "## What\n`storage::save_states` silently deletes the `description` field of every state\nin `.storyhook/states.toml`. `domain::StateDef` has no `description` field, so\nthe value is dropped at deserialize time and never written back out.\n\n## Where\n- `src/domain.rs` — `StateDef` (slug, super, role only)\n- `src/storage.rs` — `save_states` / `add_state` / `remove_state`\n\n## Extent\nAny command that rewrites states.toml destroys all state descriptions in the\nfile: `story state add`, `story state remove`. This repo's own\n`.storyhook/states.toml` carries two descriptions (in-progress, verifying) that\nwould be lost on the next `story state add`.\n\n## Repro\n1. `story init` in an empty dir\n2. Append to `.storyhook/states.toml`:\n   [[states]]\n   slug = \"review\"\n   super = \"OPEN\"\n   description = \"Waiting on a reviewer\"\n3. `story state add qa --super OPEN`\n4. Re-read `.storyhook/states.toml` — the `description` line is gone.\n\nVerified against v0.16.0.\n\n## Last known good\nNone — `StateDef` has never had a description field. `TypeDef` does, which is\nwhy types.toml is unaffected and states.toml looks like an oversight.\n\n## Blocks\nSH-41 (status-configuration UI), which writes states.toml from both UIs and\nwould make this data loss routine rather than rare."
+        },
+        {
+          "kind": "StoryTypeSet",
+          "at": "2026-07-25T23:56:18Z",
+          "story_type": "bug"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-07-26T01:16:16Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-07-26T01:16:16Z",
+          "text": "Fixed in 995c082: StateDef gained a description field, so rewriting states.toml no longer destroys it. Regression test add_state_preserves_existing_state_descriptions fails before the fix and passes after."
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-07-26T01:16:16Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-6",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "T2.2: output.rs — StoryView.progress, type + progress rendering",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-04T04:44:29Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-04T04:44:29Z",
+          "labels": [
+            "phase:2"
+          ]
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "text": "Requirements: R25, R26, R27, R31. Files: src/output.rs.\nAC: StoryView.progress: Option<ProgressRollup> with skip_serializing_if; render_story shows type after priority with default fallback; progress line when present; list shows [type] badge and progress summary; JSON includes story_type and progress via serde."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-2",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-3",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-4",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-7",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T12:47:31Z",
+          "state": "in-progress"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T12:51:02Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T12:52:36Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T12:52:36Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-7",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "T2.1: app.rs — Type and Epic command handlers, type validation, --type filter, epic create",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-04T04:44:29Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-04T04:44:29Z",
+          "labels": [
+            "phase:3"
+          ]
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "text": "Requirements: R17, R18, R19, R30. Files: src/app.rs.\nAC: Type List/Add/Remove handlers; Epic Create with two-event pattern in single lock; Epic Add delegates to Relate parent-of; Epic List filters to epic type; Epic Show delegates; New handler validates type and writes StoryTypeSet; SetFields validates and emits StoryTypeSet; List handler --type filter including --type none; unknown type returns AppError::Validation."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-2",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-5",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-6",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-8",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-9",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-10",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:19:36Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T13:19:36Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-8",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "T3.1: app.rs — build_story_views progress rollup, Next parent skip, doctor type check",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-04T04:44:29Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-04T04:44:29Z",
+          "labels": [
+            "phase:4"
+          ]
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "text": "Requirements: R5, R20, R21, R22. Files: src/domain.rs, src/app.rs.\nAC: has_children returns true for parent-of relationships; compute_progress returns ProgressRollup for parents; build_story_views attaches progress; Next handler filters out parents; doctor_report flags unknown types."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-2",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-7",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-11",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:14:17Z",
+          "state": "verifying"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:16:53Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T13:16:53Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    },
+    {
+      "id": "SH-9",
+      "events": [
+        {
+          "kind": "StoryCreated",
+          "at": "2026-04-04T04:44:29Z",
+          "title": "T3.2: mcp.rs — story_type param on MCP tools",
+          "state": "todo"
+        },
+        {
+          "kind": "StoryPrioritySet",
+          "at": "2026-04-04T04:44:29Z",
+          "priority": "high"
+        },
+        {
+          "kind": "StoryLabelsSet",
+          "at": "2026-04-04T04:44:29Z",
+          "labels": [
+            "phase:4"
+          ]
+        },
+        {
+          "kind": "StoryCommentAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "text": "Requirements: R23, R24. Files: src/mcp.rs.\nAC: story_type in create/update/list tool inputSchema; build_invocation passes story_type for all three tools."
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-2",
+          "relation": "child-of"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-7",
+          "relation": "blocked-by"
+        },
+        {
+          "kind": "StoryRelationshipAdded",
+          "at": "2026-04-04T04:44:29Z",
+          "other_id": "SH-11",
+          "relation": "blocks"
+        },
+        {
+          "kind": "StoryStateChanged",
+          "at": "2026-04-04T13:26:55Z",
+          "state": "done"
+        },
+        {
+          "kind": "StoryClosedAndArchived",
+          "at": "2026-04-04T13:26:55Z",
+          "state": "done"
+        }
+      ],
+      "archived": true
+    }
+  ]
+}
