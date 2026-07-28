@@ -433,11 +433,83 @@ pub fn split_global_flags(args: &[String]) -> (bool, bool, bool, Vec<String>) {
     (json, quiet, no_hooks, filtered)
 }
 
+/// Whether `args` — a whole invocation, verb included — asks a verb to
+/// explain itself rather than to run.
+///
+/// A `-h`/`--help` anywhere after the verb is a help request. It is never
+/// data: no flag in this grammar takes a value that begins with `--` (see
+/// [`parse_dash_flags`]), and a title, query, or comment that must literally
+/// start with `--help` was never expressible in the position the verb reads
+/// it from anyway.
+pub fn is_help_request(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| arg == "-h" || arg == "--help")
+}
+
+/// The help a recognized verb answers a help request with: its own topic
+/// when one exists, otherwise the general help.
+fn help_for_verb(verb: &str) -> Invocation {
+    let topic = match verb {
+        "context" => "load-context",
+        "sync-git" => "commit-sync",
+        "link" => "relate",
+        "unlink" => "unrelate",
+        other => other,
+    };
+    match crate::help_topics::get_help_topic(topic) {
+        Some(_) => Invocation::HelpTopic {
+            topic: topic.to_string(),
+        },
+        None => Invocation::Help,
+    }
+}
+
+/// Answers `story <verb> --help` before the verb's own parser ever sees the
+/// token.
+///
+/// Verbs parse their own flags, so a rule applied per-verb is a rule some
+/// verb will miss: `story new --help` read `--help` as the title and created
+/// a story called `--help`, allocating an id, bumping `next-id`, and dirtying
+/// a storyhook-tracked repo — in answer to the conventional way of asking
+/// what a command does (SH-52). This is the one place ahead of all of them.
+///
+/// An unrecognized verb is left alone, so `story frobnicate --help` still
+/// reports the unknown command rather than papering over a typo with usage
+/// text. Recognition asks [`dispatch`] rather than consulting a second copy
+/// of the verb list, which could fall out of step with the first.
+fn verb_help_request(args: &[String]) -> Option<Invocation> {
+    let verb = args.first()?.as_str();
+    // `story help <topic> --help` is `parse_help`'s to answer.
+    if verb == "help" || verb.starts_with('-') || !is_help_request(args) {
+        return None;
+    }
+    // `tui` is dispatched in main.rs before parsing ever happens, so
+    // `dispatch` does not know it, but it is a verb like any other here.
+    let recognized = verb == "tui"
+        || !matches!(
+            dispatch(&[args[0].clone()]),
+            Err(AppError::Usage(ref message)) if message.starts_with("unknown command")
+        );
+    recognized.then(|| help_for_verb(verb))
+}
+
 pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
     if args.is_empty() {
         return Ok(Invocation::Help);
     }
 
+    if let Some(help) = verb_help_request(args) {
+        return Ok(help);
+    }
+
+    dispatch(args)
+}
+
+/// Routes an invocation to its verb's parser. Pure: it inspects `args` and
+/// builds an [`Invocation`], which is what lets [`verb_help_request`] use it
+/// to ask whether a verb exists.
+fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
     match args[0].as_str() {
         "-h" | "--help" => Ok(Invocation::Help),
         "-V" | "--version" => Ok(Invocation::Version),
