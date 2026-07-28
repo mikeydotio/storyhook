@@ -32,7 +32,10 @@ fn fail(error: &storyhook::error::AppError, json: bool) -> ! {
 fn main() {
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
 
-    if raw_args.first().is_some_and(|arg| arg == "tui") {
+    // `tui` is dispatched here, ahead of parsing, so `story tui --help` would
+    // launch the interactive UI instead of explaining it; the help request
+    // falls through to the parser, which answers it like any other verb's.
+    if raw_args.first().is_some_and(|arg| arg == "tui") && !cli::is_help_request(&raw_args) {
         let cwd = env::current_dir().unwrap_or_else(|e| {
             eprintln!("error: failed to resolve current directory: {e}");
             process::exit(1);
