@@ -18,6 +18,8 @@ use crate::app;
 use crate::cli::{CliOptions, Invocation};
 use crate::error::AppError;
 use crate::output::Response;
+use crate::service::{Ctx, FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
+use crate::store::Store;
 
 /// One unit of work for an [`Invoker`]: the command, plus the execution
 /// context that has to travel with it.
@@ -100,5 +102,198 @@ impl Invoker for LegacyInvoker<'_> {
                 invocation: request.invocation,
             },
         )
+    }
+}
+
+/// Runs one invocation against the store, in this process.
+///
+/// This is the new stack's entry point, and the eventual replacement for
+/// [`crate::app::run`]. It is deliberately thin: every arm validates the
+/// CLI-shaped arguments it was handed, makes **one** service call, and turns
+/// the answer into a [`Response`]. An arm that wants to do more than that is an
+/// arm whose logic belongs in a service — that is where the invariants live,
+/// and a rule enforced in a dispatch arm is a rule the web dashboard and the
+/// daemon do not get.
+///
+/// # Completeness
+///
+/// Only the story-lifecycle and relation invocations are ported so far.
+/// Everything else answers with [`not_yet_ported`], which is an internal error
+/// naming the variant: nothing routes production traffic here yet, and the
+/// wave that finishes the port has "every variant dispatches" as its exit
+/// criterion. A silent fallback to the legacy path is exactly what this must
+/// not do — a half-ported dispatcher that quietly works is one nobody
+/// finishes.
+pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Response, AppError> {
+    match invocation {
+        Invocation::New {
+            title,
+            state,
+            story_type,
+            description,
+            priority,
+            labels,
+            assignee,
+        } => {
+            let input = NewStoryInput {
+                title,
+                state,
+                story_type,
+                description,
+                priority,
+                labels,
+                assignee,
+            };
+            let story = StoryService::new(ctx).create(&input)?;
+            ctx.story_view(&story.id)
+        }
+        Invocation::Comment { id, text } => {
+            StoryService::new(ctx).comment(&id, &text)?;
+            ctx.story_view(&id)
+        }
+        Invocation::Assign { id, member } => {
+            StoryService::new(ctx).assign(&id, &member)?;
+            ctx.story_view(&id)
+        }
+        Invocation::SetPriority { id, priority } => {
+            StoryService::new(ctx).set_priority(&id, &priority)?;
+            ctx.story_view(&id)
+        }
+        Invocation::SetLabels { id, add, remove } => {
+            StoryService::new(ctx).set_labels(&id, &add, &remove)?;
+            ctx.story_view(&id)
+        }
+        Invocation::SetAwaiting { id, awaiting } => {
+            StoryService::new(ctx).set_awaiting(&id, &awaiting)?;
+            ctx.story_view(&id)
+        }
+        Invocation::ClearAwaiting { id } => {
+            StoryService::new(ctx).clear_awaiting(&id)?;
+            ctx.story_view(&id)
+        }
+        Invocation::SetState {
+            id,
+            state,
+            comment,
+            if_state,
+        } => {
+            StoryService::new(ctx).set_state(
+                &id,
+                &state,
+                comment.as_deref(),
+                if_state.as_deref(),
+            )?;
+            ctx.story_view(&id)
+        }
+        Invocation::SetFields {
+            id,
+            title,
+            state,
+            priority,
+            assignee,
+            labels,
+            blocked,
+            unblocked,
+            json,
+            story_type,
+            description,
+        } => {
+            let edits = FieldEdits {
+                title,
+                state,
+                priority,
+                assignee,
+                labels,
+                blocked,
+                unblocked,
+                json,
+                story_type,
+                description,
+            };
+            StoryService::new(ctx)
+                .set_fields(&id, &edits)
+                .map(Response::Message)
+        }
+        Invocation::BulkUpdate { updates } => StoryService::new(ctx)
+            .bulk_update(&updates)
+            .map(Response::Message),
+        Invocation::Delete { id, reason } => StoryService::new(ctx)
+            .delete(&id, &reason)
+            .map(Response::Message),
+        Invocation::Reopen { id, force } => match StoryService::new(ctx).reopen(&id, force)? {
+            ReopenOutcome::Reopened(_) => ctx.story_view(&id),
+            ReopenOutcome::Aborted(message) => Ok(Response::Message(message)),
+        },
+        other => Err(not_yet_ported(&other)),
+    }
+}
+
+/// The error an unported [`Invocation`] answers with.
+///
+/// Loud and specific on purpose. This dispatcher is built additively while the
+/// legacy path keeps serving users, so an unported arm has to be impossible to
+/// mistake for a working one — in a test, in a differential run, or in the
+/// wave that switches the default over.
+fn not_yet_ported(invocation: &Invocation) -> AppError {
+    AppError::Storage(format!(
+        "internal: `{}` is not yet ported to the store-backed dispatcher",
+        invocation_name(invocation)
+    ))
+}
+
+/// An [`Invocation`]'s variant name, for diagnostics.
+///
+/// An exhaustive match rather than `Debug`: a fifteenth story-lifecycle
+/// variant added tomorrow stops this file compiling until somebody decides
+/// whether it dispatches, which is the only reliable way to keep an additive
+/// port honest.
+fn invocation_name(invocation: &Invocation) -> &'static str {
+    match invocation {
+        Invocation::Help => "help",
+        Invocation::Init { .. } => "init",
+        Invocation::New { .. } => "new",
+        Invocation::MemberAdd { .. } => "member-add",
+        Invocation::State { .. } => "state",
+        Invocation::List { .. } => "list",
+        Invocation::Search { .. } => "search",
+        Invocation::Next { .. } => "next",
+        Invocation::Summary => "summary",
+        Invocation::Report { .. } => "report",
+        Invocation::Doctor { .. } => "doctor",
+        Invocation::Show { .. } => "show",
+        Invocation::Comment { .. } => "comment",
+        Invocation::Assign { .. } => "assign",
+        Invocation::SetState { .. } => "set-state",
+        Invocation::SetAwaiting { .. } => "set-awaiting",
+        Invocation::ClearAwaiting { .. } => "clear-awaiting",
+        Invocation::SetPriority { .. } => "set-priority",
+        Invocation::SetLabels { .. } => "set-labels",
+        Invocation::Reopen { .. } => "reopen",
+        Invocation::Delete { .. } => "delete",
+        Invocation::BulkUpdate { .. } => "bulk-update",
+        Invocation::Import { .. } => "import",
+        Invocation::Decompose { .. } => "decompose",
+        Invocation::Export => "export",
+        Invocation::ImportProject { .. } => "import-project",
+        Invocation::Context { .. } => "context",
+        Invocation::Handoff { .. } => "handoff",
+        Invocation::Phase { .. } => "phase",
+        Invocation::Type { .. } => "type",
+        Invocation::Epic { .. } => "epic",
+        Invocation::Graph { .. } => "graph",
+        Invocation::SetFields { .. } => "set-fields",
+        Invocation::Relate { .. } => "relate",
+        Invocation::Hooks { .. } => "hooks",
+        Invocation::Scaffold { .. } => "scaffold",
+        Invocation::CommitSync { .. } => "commit-sync",
+        Invocation::GithubSync { .. } => "github-sync",
+        Invocation::HelpTopic { .. } => "help-topic",
+        Invocation::HelpCompact => "help-compact",
+        Invocation::HelpAll => "help-all",
+        Invocation::Plugin { .. } => "plugin",
+        Invocation::Web { .. } => "web",
+        Invocation::SessionStart => "session-start",
+        Invocation::Update { .. } => "update",
+        Invocation::Version => "version",
     }
 }

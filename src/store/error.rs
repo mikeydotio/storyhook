@@ -102,6 +102,29 @@ pub enum StoreError {
     /// backup directory.
     #[error("{0}")]
     Io(#[from] std::io::Error),
+
+    /// The caller's own closure rejected the write.
+    ///
+    /// [`crate::store::Store::write`] decides commit or rollback from the
+    /// closure's `Result`, so a service that wants to abort a transaction
+    /// because *its* rules were broken — a closed story, a state slug the
+    /// project does not define — has to say so as a `StoreError`. Wrapping the
+    /// application's own error rather than flattening it into
+    /// [`StoreError::Validation`] is what keeps the CLI's error contract exact:
+    /// `Usage` and `Validation` share an exit code but not a wire form, and
+    /// [`AppError::StateConflict`] carries two state slugs that no store-level
+    /// variant has anywhere to put.
+    ///
+    /// [`From<StoreError> for AppError`] unwraps it, so a service's rejection
+    /// arrives at the caller as the error it raised, unchanged.
+    #[error("{0}")]
+    Rejected(Box<AppError>),
+}
+
+impl From<AppError> for StoreError {
+    fn from(error: AppError) -> Self {
+        Self::Rejected(Box::new(error))
+    }
 }
 
 impl StoreError {
@@ -168,6 +191,10 @@ fn constraint_detail(error: &rusqlite::Error) -> String {
 impl From<StoreError> for AppError {
     fn from(error: StoreError) -> Self {
         match error {
+            // A rejection the caller raised itself travels back out unchanged;
+            // anything else would make a round trip through the transaction
+            // boundary lossy.
+            StoreError::Rejected(inner) => *inner,
             // Semantics preserved deliberately, variant by variant: `exit_code`
             // and the dashboard's `status_for` both switch on these, and the
             // characterization suite asserts the results.

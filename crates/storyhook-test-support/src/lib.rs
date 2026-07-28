@@ -38,6 +38,7 @@ mod env;
 mod project;
 mod scratch;
 mod server;
+mod service;
 
 pub use env::{TestEnv, story_binary};
 pub use project::{Project, ProjectBuilder};
@@ -46,3 +47,4 @@ pub use server::{
     ChildGuard, DaemonGuard, http_status_line, reserve_port, serve, try_serve_on, wait_for_addr,
     wait_for_server,
 };
+pub use service::{FIXTURE_NOW, ServiceFixture, default_states, default_types};
