@@ -7,11 +7,18 @@
 > — the design. This file is the execution state; that file is what we agreed to build.
 > Companion: [`flip-checklist.md`](flip-checklist.md) (the enumerated W4 work).
 > **Worktree:** `/Volumes/Code/mikeyward/storyhook/.claude/worktrees/rearch` (linked worktree —
-> waves end at "PR opened"; NO version bumps, NO deploys, NO force-push, NO touching main).
+> NO version bumps, NO deploys, NO force-push, NO touching main).
 > **Execution model:** orchestrator (main session) spawns one subagent per step, sequentially.
 > Each subagent: does the step TDD-style, commits (story IDs in commit BODIES only, never
 > subjects), updates this file's Step Log + status table, includes it in its final commit,
-> runs `make test`, reports tersely.
+> runs `make test`, reports tersely, and **stops at "PR opened"** — a subagent never merges,
+> not even its own PR.
+> **Merge policy (changed 2026-07-28, W0b):** the wave no longer stops at "PR opened" waiting on
+> Mikey. The **orchestrator** merges each wave PR itself (merge commit — the only method the org
+> allows), verifies the merge landed, then deletes the branch; it escalates to Mikey only for
+> genuinely attention-worthy items. **This supersedes the spec**, which still says a wave ends at
+> "PR opened" at `data-layer-rearchitecture.md` lines 73 and 520 — per this file's own rule,
+> process changes are recorded here rather than edited into the design of record.
 
 ## Wave status
 
