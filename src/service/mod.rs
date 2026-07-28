@@ -30,6 +30,7 @@
 
 pub mod config;
 pub mod grouping;
+pub mod integrity;
 pub mod project;
 pub mod query;
 pub mod relation;
@@ -50,6 +51,7 @@ use crate::store::{
 
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use grouping::{GroupingService, PhaseCleared};
+pub use integrity::IntegrityService;
 pub use project::{InitOptions, InitOutcome, ProjectPointer, ProjectService};
 pub use query::{ListFilters, QueryService};
 pub use relation::{RelationOutcome, RelationService};

@@ -1376,6 +1376,7 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "graph",
         "context",
         "handoff",
+        "doctor",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1406,7 +1407,7 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         46,
         "an invocation is on neither the ported roster nor the unported probes"
     );
-    assert_eq!(ported.len(), 36);
+    assert_eq!(ported.len(), 37);
 }
 
 /// One probe per invocation this wave does *not* port.
@@ -1414,7 +1415,6 @@ fn unported_probes() -> Vec<(&'static str, Invocation)> {
     vec![
         ("export", Invocation::Export),
         ("session-start", Invocation::SessionStart),
-        ("doctor", Invocation::Doctor { fix: false }),
         ("import", Invocation::Import { file: None }),
         (
             "decompose",

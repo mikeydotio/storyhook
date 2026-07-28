@@ -627,3 +627,125 @@ fn handoff_agrees_on_an_empty_project() {
     let differential = Differential::new();
     differential.step("handoff", Invocation::Handoff { since: None });
 }
+
+// --- doctor ----------------------------------------------------------------
+
+/// Every integrity shape the legacy doctor reports needs a project the public
+/// API cannot produce, so what the differential can compare is the *healthy*
+/// verdict — in both forms, and after enough real work to make "healthy" a
+/// claim rather than a tautology. The damaged cases are store-only, in
+/// `service_integrity.rs`, because the two legs cannot be damaged alike.
+#[test]
+fn doctor_agrees_on_a_healthy_project_in_both_its_forms() {
+    let differential = seeded();
+    differential.step("doctor", Invocation::Doctor { fix: false });
+    differential.step("doctor --fix", Invocation::Doctor { fix: true });
+    differential.step("doctor again", Invocation::Doctor { fix: false });
+}
+
+#[test]
+fn doctor_agrees_on_an_empty_project() {
+    let differential = Differential::new();
+    differential.step("doctor", Invocation::Doctor { fix: false });
+    differential.step("doctor --fix", Invocation::Doctor { fix: true });
+}
+
+/// An obviated story is flagged everywhere except in the doctor, which has
+/// always suppressed that reason: it is an authoring decision, not damage.
+#[test]
+fn doctor_agrees_that_an_obviated_story_is_not_an_integrity_failure() {
+    let differential = seeded();
+    differential.step(
+        "obviate",
+        Invocation::Relate {
+            a: "SH-4".into(),
+            relation: "obviated-by".into(),
+            b: "SH-3".into(),
+            remove: false,
+        },
+    );
+    differential.step("doctor", Invocation::Doctor { fix: false });
+    differential.step("doctor --fix", Invocation::Doctor { fix: true });
+}
+
+/// **`story doctor --fix` destroys relationships to archived stories, and the
+/// store leg deliberately does not.**
+///
+/// The legacy repair loop asks "does the other end of this edge exist?" of the
+/// *open* stories only. Relate two stories, delete one — a completely ordinary
+/// sequence — and the survivor's edges are treated as dangling and retracted.
+/// The repair then reports the asymmetry it has just created, so the command
+/// exits 5 and can never again exit 0: the data is gone and the diagnosis is
+/// permanent.
+///
+/// Pinned rather than reproduced. This is the same call W2a made about the
+/// burnt story number: the store does not have the defect, the difference is a
+/// user-visible improvement, and it belongs in the flip's behaviour-change
+/// notes as a deliberate line rather than as a surprise.
+#[test]
+fn doctor_fix_retracts_edges_to_deleted_stories_in_the_legacy_leg_only() {
+    let differential = seeded();
+    differential.step(
+        "delete a story SH-4 is related to",
+        Invocation::Delete {
+            id: "SH-3".into(),
+            reason: "superseded".into(),
+        },
+    );
+    differential.step(
+        "doctor is clean beforehand",
+        Invocation::Doctor { fix: false },
+    );
+
+    let legacy = differential.legacy_only(Invocation::Doctor { fix: true });
+    let store = differential.store_only(Invocation::Doctor { fix: true });
+
+    let legacy_error = legacy.expect_err("the legacy repair breaks the project");
+    assert_eq!(legacy_error.exit_code(), 5);
+    assert!(
+        legacy_error
+            .to_string()
+            .contains("missing inverse relation `blocked-by` on story `SH-4`"),
+        "{legacy_error}"
+    );
+    assert_eq!(
+        differential
+            .legacy_only(Invocation::Show { id: "SH-4".into() })
+            .map(relationship_count)
+            .expect("showing SH-4"),
+        0,
+        "the legacy repair erased SH-4's relationships"
+    );
+
+    assert!(store.is_ok(), "the store repair leaves the project healthy");
+    assert_eq!(
+        differential
+            .store_only(Invocation::Show { id: "SH-4".into() })
+            .map(relationship_count)
+            .expect("showing SH-4"),
+        1,
+        "SH-4 still knows it is blocked by the story that was deleted"
+    );
+    assert!(
+        differential
+            .store_only(Invocation::Doctor { fix: false })
+            .is_ok(),
+        "the store leg is still healthy afterwards"
+    );
+    assert_eq!(
+        differential
+            .legacy_only(Invocation::Doctor { fix: false })
+            .expect_err("the legacy leg never recovers")
+            .exit_code(),
+        5,
+        "the legacy diagnosis is permanent: repairing again cannot undo the retraction"
+    );
+}
+
+/// How many relationships a `Response::Story` carries.
+fn relationship_count(response: storyhook::output::Response) -> usize {
+    match response {
+        storyhook::output::Response::Story(view) => view.story.relationships.len(),
+        other => panic!("expected a story response, got {other:?}"),
+    }
+}
