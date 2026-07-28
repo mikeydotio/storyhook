@@ -31,11 +31,11 @@
 pub mod config;
 pub mod grouping;
 pub mod project;
+pub mod query;
 pub mod relation;
 pub mod story;
 pub mod system;
 pub mod templates;
-pub mod view;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -51,6 +51,7 @@ use crate::store::{
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use grouping::{GroupingService, PhaseCleared};
 pub use project::{InitOptions, InitOutcome, ProjectPointer, ProjectService};
+pub use query::{ListFilters, QueryService};
 pub use relation::{RelationOutcome, RelationService};
 pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
 pub use system::SystemService;
@@ -205,7 +206,7 @@ impl<'a, S: Store> Ctx<'a, S> {
     /// its view after firing for exactly that reason.
     pub fn story_view(&self, id: &str) -> Result<crate::output::Response, AppError> {
         self.store
-            .read(|tx| Ok(view::story_view(tx, self.project, id)))?
+            .read(|tx| Ok(query::story_view(tx, self.project, id)))?
     }
 }
 

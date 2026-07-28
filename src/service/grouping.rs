@@ -28,7 +28,7 @@ use crate::event_hooks::HookEventType;
 use crate::output::{PhaseView, StoryView};
 use crate::store::{ExpectedSeq, ReadOps, Store};
 
-use super::view::{sort_story_views, story_views};
+use super::query::{sort_story_views, story_views};
 use super::{
     Clock, Ctx, NewStoryInput, RelationService, StoryService, append_and_fold, project_prefix,
     resolve_open_story,
