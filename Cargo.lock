@@ -1652,6 +1652,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yml",
+ "storyhook-test-support",
  "tempfile",
  "thiserror",
  "tiny_http",
@@ -1661,6 +1662,17 @@ dependencies = [
  "tui-textarea",
  "ureq",
  "wait-timeout",
+]
+
+[[package]]
+name = "storyhook-test-support"
+version = "0.0.0"
+dependencies = [
+ "assert_cmd",
+ "serde_json",
+ "storyhook",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]
