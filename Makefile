@@ -26,9 +26,9 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # run makes this one lie (SH-51), and after, because a run that leaks one has
 # just armed the same trap for the next person.
 test: check-no-orphan-servers
-	cargo fmt -- --check
-	cargo clippy --all-targets -- -D warnings
-	cargo test
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets -- -D warnings
+	cargo test --workspace
 	cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
 	@bash scripts/check-no-orphan-servers.sh postlude
@@ -48,11 +48,11 @@ fmt:
 
 # Lint only (warnings treated as errors).
 lint clippy:
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
 
 # Fast type-check without producing a binary.
 check:
-	cargo check --all-targets
+	cargo check --workspace --all-targets
 
 # Optimized release build.
 release-build:
