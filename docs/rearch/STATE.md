@@ -27,8 +27,9 @@
 | W0 gate repair + harness | `rearch/w0-gate-repair` / [PR #60](https://github.com/mikeydotio/storyhook/pull/60) | **MERGED** 2026-07-28 |
 | W0b envelope + Invoker seam | `rearch/w0b-envelope` / [PR #61](https://github.com/mikeydotio/storyhook/pull/61) | **MERGED** 2026-07-28 |
 | W1 store engine | `rearch/w1-store` / [PR #62](https://github.com/mikeydotio/storyhook/pull/62) | **MERGED** 2026-07-28 |
-| W2a services (lifecycle + relations) | `rearch/w2a-lifecycle` | **PR OPENED** — awaiting merge |
-| W2b/c/d services | — | pending |
+| W2a services (lifecycle + relations) | `rearch/w2a-lifecycle` / [PR #63](https://github.com/mikeydotio/storyhook/pull/63) | **MERGED** 2026-07-28 |
+| W2b services (project + config + system + grouping) | `rearch/w2b-config` | **PR OPENED** — awaiting merge |
+| W2c/d services | — | pending |
 | W3 importer | — | pending |
 | W4 THE FLIP | — | pending (one uninterrupted session; revert only while W3 round-trip green) |
 | W5 daemon | — | pending |
@@ -81,6 +82,15 @@
   Four commits: `845afb9` (the fold fix reopen needs), `c67642b` (context, dispatch
   skeleton, StoryService), `fa4d610` (RelationService), `757bc7b` (the differential
   harness). See Step log for the service API W2b/c/d builds on and the deviations.
+
+## W2b step plan
+
+- **W2b DONE** — `src/service/{project,config,system,grouping,templates}.rs` +
+  `invoke::dispatch_unscoped`, additive; `src/app.rs` untouched. Five commits:
+  `4056817` (ProjectService + atomic init + the pointer file), `afa2bca` (ConfigService),
+  `b4e7598` (SystemService + the text-only arms), `1354798` (differential rows +
+  the shared harness extraction), `ddfe113` (GroupingService). See Step log for the
+  service API W2c/W2d build on, the ported-arm roster, and the deviations.
 
 ## Key facts discovered (do not re-derive)
 
@@ -255,6 +265,77 @@
   the fold, the snapshot write and the archived flag land together or not at all, where the
   legacy path had three separate filesystem operations and a failure between them left the
   SH-20 split-brain shape. Pinned by `service_story.rs::each_bulk_item_is_atomic_on_its_own`.
+- **W2b: a state's superstate is a DEFINITION, and changing one invalidates rows no event
+  touched.** A story's `superstate` is folded from the definition of the state it sits in, so
+  `story state set <slug> --super …` changes the correct answer for every story in that slug
+  without appending anything to any story's history. Open occupants migrate out; **archived
+  ones do not**, and the legacy path left their stored snapshots claiming the superstate they
+  had when they closed. `ConfigService::update_state` re-folds them
+  (`service::refold_story`, the only sanctioned fold-without-append). **This is a deliberate
+  divergence from legacy** — reachable only with two CLOSED states, archived stories in one of
+  them, and a flip of that one to OPEN — and the reason is that the alternative is a read model
+  that no longer equals a fold of its own events, which `story doctor` reports and
+  `repair_read_model` then silently changes anyway. Pinned by
+  `service_config.rs::flipping_a_superstate_re_derives_the_rows_of_the_stories_left_in_it`,
+  which fails if the re-fold is removed. **W4 should list it in the flip's behaviour-change
+  notes.**
+- **W2b: three grouping commands fire no hooks, on purpose.** `story phase create`,
+  `story epic create` and `story epic add` fire nothing, where `story new` and `story relate`
+  fire `create` and `relationship_change`. The legacy path got this by writing events directly
+  instead of going through the shared paths; `GroupingService` gets it by running those three
+  against a **hook-suppressed `Ctx`** (`Ctx::new(...).no_hooks(true)`), so the delegation is
+  real and the hook behaviour is unchanged. `story phase add` *does* fire `label_change`, with
+  the story re-read after the write; `story phase remove` fires nothing. All four directions
+  are pinned by `service_grouping.rs`'s marker-file tests. Unifying them is a user-visible
+  change and belongs to whoever decides it is worth making.
+- **W2b: `story init` cannot go through `dispatch`.** A `Ctx` names a `ProjectId` and `init` is
+  the command that creates one, so on a virgin store there is no id for a context to hold.
+  `invoke::dispatch_unscoped(store, root, now, invocation)` is the project-less entry point;
+  `dispatch` forwards its own project-less variants (`init`, `help`, the three help topics,
+  `version`) to it, so the roster of ported arms stays a property of one function. **W4's root
+  resolution should call `dispatch_unscoped` before it tries to resolve a project**, not after.
+- **W2b: the pointer file is `<root>/.storyhook.toml`, and nothing writes it yet.**
+  `ProjectPointer { schema, uuid, prefix }`, with `service::project::{pointer_path,
+  read_pointer, write_pointer}`. `InitOptions::pointer` gates the write and the dispatcher
+  leaves it `false`: while `.storyhook/` is still the identity of record, a pointer file is a
+  second answer to "which project is this" and the two would disagree the moment either moved.
+  **W4 turns it on.** The location is beside the legacy directory rather than inside it, so W7
+  can delete `.storyhook/` without moving the pointer. Pinned by
+  `differential_config.rs::init_leaves_no_pointer_file_before_the_flip`.
+- **W2b: `story init` is idempotent and must stay so.** The legacy path skipped every file it
+  found; the store path finds the checkout by canonical path, refreshes its registration, and
+  leaves the catalog *and the prefix* alone. `story init --prefix ZZ` on a project created with
+  `--prefix AB` is a no-op in both legs.
+- **W2b: three template/default pairs now exist twice**, because `src/app.rs` is frozen:
+  `generate_agents_md`/`generate_claude_md`/`generate_cursor_rules` versus
+  `service::templates`, and `storage::init_project`'s inline default states/types versus
+  `service::project::{default_states,default_types}`. **The differential rows are the drift
+  guard** — `scaffolding_agrees_byte_for_byte` and `init_agrees_on_the_catalog_it_creates` /
+  `init_agrees_on_the_agents_md_it_generates`. W4 deletes the `app.rs` copies.
+- **W2b: `story scaffold` in an uninitialized directory diverges after the flip.** The legacy
+  arm never calls `ensure_project`, so it falls back to prefix `SH` / state `done`; the
+  store-backed arm takes a `Ctx`, which implies a project exists. Not reachable today (nothing
+  routes production traffic through `dispatch`); **W4's root resolution decides what
+  `story scaffold` does outside a project.**
+- **W2b: `git hooks install` is still broken in a linked worktree**, and deliberately so. In a
+  linked worktree `.git` is a *file*, so `.git/hooks` cannot be created and the install fails
+  with the filesystem's error rather than a diagnosis. `SystemService` calls
+  `crate::hooks::install_hooks` rather than reimplementing it, so the behaviour is identical by
+  construction; fixing it means resolving `--git-common-dir`, which is the same resolution the
+  worktree wave has to build, and doing it twice would leave two answers to one question.
+  Pinned as-is by `service_system.rs::installing_from_a_linked_worktree_fails_loudly_rather_than_silently`.
+- **W2b: two orderings inherited unchanged, both user-visible.** `story phase list` sorts
+  phases by *label text*, so phase `10` comes before phase `2` (a `BTreeMap<String, _>` over
+  `phase:<n>`). Stories *within* a phase, and `story epic list`, sort by story **number**
+  (`service::view::sort_story_views`), so `SH-10` comes after `SH-2`. Both are named in the code
+  so a later wave can change them on purpose rather than by accident. This is the same family as
+  the W0.3 finding about lexicographic-versus-numeric id ordering.
+- **W2b: `make test` mass-failing in `web_test` is not always an orphan.** A neighbouring
+  project's Swift test suite pinning a core (load average 6–9) failed 52/140 `web_test` tests
+  on one run; the same tree ran 140/140 green alone minutes later, and `make test` has been
+  green on every commit since. Before hunting a regression, check `uptime` and
+  `ps aux | sort -nrk 3` — the readiness deadlines in that suite are wall-clock.
+
 - Baseline `make test` cold: 83s wall (230% CPU) incl. build; failed only in web_test (orphans).
 - Post-W0.1 `make test` warm: ~29s wall, 3 consecutive green runs (49 Rust targets + 15 bash).
 - `git commit --amend` silently fails in this environment — use reset --soft + fresh commit.
@@ -764,6 +845,134 @@
   - **A `Clock` on `Ctx`.** The spec puts the injectable clock in W5's `Environment`; the
     service tests need a pinned "now" three waves earlier, and 20 lines now beats an
     untestable service.
+
+- 2026-07-28 W2b: branch `rearch/w2b-config` off merged main `67b516a`. Five commits,
+  `make test` green after each; two consecutive green full runs at the end (see below).
+  Test count 1575 → **1716** (+141: 19 `service_project`, 49 `service_config`,
+  18 `service_system`, 16 `service_grouping`, 39 `differential_config`). 2 ignored,
+  unchanged — still the W4 headline REDs. `src/app.rs` has **zero** changes
+  (`git diff 67b516a..HEAD -- src/app.rs` is empty) and `tests/snapshots/` is byte-unchanged.
+  - `4056817` — `ProjectService`, `service::templates`, `invoke::dispatch_unscoped`,
+    the pointer file, the `uuid` dependency.
+  - `afa2bca` — `ConfigService`; `state_transition_events` becomes `pub(crate)`;
+    `service::refold_story` joins `append_and_fold`.
+  - `b4e7598` — `SystemService`; the five text-only arms; the roster test gains its
+    46-variant completeness assertion.
+  - `1354798` — `tests/differential_config.rs` (31 rows at that commit) and the shared
+    harness extracted to `tests/differential_support/mod.rs`.
+  - `ddfe113` — `GroupingService` (phases and epics), `view::sort_story_views`.
+
+  **Ported-arm roster: 13 → 27.** Added this wave: `init`, `state`, `type`, `member-add`,
+  `scaffold`, `hooks`, `plugin`, `phase`, `epic`, `help`, `help-topic`, `help-compact`,
+  `help-all`, `version`. **Remaining 19**, all in `unported_probes()`:
+  `list`, `show`, `search`, `next`, `summary`, `report`, `graph`, `context`, `handoff`,
+  `doctor` (W2c); `import`, `import-project`, `export`, `decompose`, `commit-sync`,
+  `github-sync`, `update`, `web`, `session-start` (W2d/W3/W5). The roster test now asserts
+  `ported + probes == 46`, so an arm cannot be ported — or added to `Invocation` — without
+  landing on one of the two lists.
+
+  **The service API W2c/W2d build on** (`storyhook::service`):
+
+  ```rust
+  ProjectService::new(&store, root).clock(Clock)          // NOT Ctx-based: init has no project
+      .init(&InitOptions { prefix, agents_md, pointer }) -> InitOutcome
+  service::project::{DEFAULT_PREFIX, default_states, default_types, closed_state,
+                     ProjectPointer, pointer_path, read_pointer, write_pointer}
+
+  ConfigService::new(&ctx)
+      .list_states() -> Vec<StateListing>          // StateListing { state, usage }
+      .add_state(slug, SuperState, role, description) -> StateDef
+      .update_state(slug, &StateChanges, move_stories_to) -> StateEdit { state, moved }
+      .remove_state(slug, move_stories_to) -> usize
+      .reorder_states(&[String]) -> Vec<StateDef>
+      .list_types() / .add_type(slug, description) / .remove_type(slug)
+      .list_members() / .add_member(&MemberInput) -> Member
+  service::config::state_usage(tx, project) -> BTreeMap<String, StateUsage>
+
+  SystemService::new(&ctx)
+      .scaffold(kind) -> String
+      .install_git_hooks() / .uninstall_git_hooks() -> String
+      .list_event_hooks() -> String   (infallible)
+      .test_event_hook(event_type) -> String
+      .install_plugin(target) / .uninstall_plugin(target) -> String
+
+  GroupingService::new(&ctx)
+      .phases() -> Vec<PhaseView>
+      .phase_stories(phase) -> Vec<StoryView>
+      .assign_phase(id, phase) -> StorySnapshot        (fires label_change)
+      .clear_phase(id) -> PhaseCleared::{Removed(Box<StorySnapshot>), NoAssignment}
+      .create_phase(phase, title) -> StorySnapshot     (no hook)
+      .epics() -> Vec<StoryView>
+      .create_epic(title) -> StorySnapshot             (no hook)
+      .add_to_epic(epic_id, story_id)                  (no hook)
+
+  service::templates::{agents_md(prefix, done_state), claude_md, cursor_rules}
+  service::view::sort_story_views(&mut [StoryView])    // numeric, not lexicographic
+  service::refold_story(tx, project, story, prefix, states)   // pub(crate)
+
+  invoke::dispatch_unscoped(&store, root, now, Invocation)     // init + the text-only arms
+  ```
+
+  Things W2c/W2d should know, beyond the Key facts above:
+  - **`tests/differential_support/mod.rs` is the shared harness now.** `Differential::new()`,
+    `step`/`step_id`/`show`/`assert_no_drift`, plus `legacy_only`/`store_only`/`legacy_path`/
+    `store()` for the rows where the two legs are *expected* to differ. A new differential
+    file is `mod differential_support;` and nothing else. The module carries
+    `#![allow(dead_code)]` because each test binary uses a different subset.
+  - **`service::view::story_views` is still the read side, and W2c still owns absorbing it.**
+    This wave added `sort_story_views` beside it and consumed `story_views` from
+    `GroupingService`; `QueryService` should take over both rather than growing a third copy.
+  - **`ServiceFixture::with_states` is how you get a catalog with two CLOSED states**, which is
+    what the superstate-flip and archived-history cases need.
+  - **A hook-suppressed context is `Ctx::new(ctx.store(), ctx.project(), ctx.cwd())
+    .no_hooks(true).clock(Clock::Fixed(ctx.now()))`.** There is no clock *accessor* on `Ctx`
+    — the builder method occupies the name — and pinning to `ctx.now()` is equivalent and
+    more deterministic.
+  - **`ProjectService` is the one service that does not take a `Ctx`.** Anything W5's
+    `Environment` does about project selection has to account for that asymmetry rather than
+    assume every service is context-shaped.
+
+  Gate: **two consecutive green full runs, 90.3s and 88.2s warm** against W2a's ~62.5s.
+  **Most of the +26s is machine contention, not this wave**: a neighbouring project's Swift
+  test suite held a core at 100% throughout (load average 6–9; `cargo test --workspace` alone
+  measured 75.8s wall against 27.4s of user time). The five new binaries contribute **1.5s of
+  runtime** (`service_project` 0.08s, `service_config` 0.20s, `service_system` 0.09s,
+  `service_grouping` 0.11s, `differential_config` 0.99s) plus the ~1.2s-per-binary link cost
+  W0b, W1 and W2a all measured. Re-measure on an idle machine at the next wave boundary
+  before treating this as a trend.
+
+  Verification that the tests bite, not merely pass:
+  - Deleting the `refold_occupants` call fails
+    `flipping_a_superstate_re_derives_the_rows_of_the_stories_left_in_it` with
+    `left: Closed, right: Open`.
+  - Changing one word of one `ConfigService` validation message
+    (`already exists` → `exists already`) fails
+    `differential_config.rs::adding_states_agrees_including_every_rejection`.
+  - The fault-injection rows (`BeforeCommit`, `MidReadModelUpdate`) fail the atomicity tests
+    when armed and pass when not, which is what makes "nothing moved" a claim rather than a
+    hope.
+
+  Deviations from the wave brief, all deliberate:
+  - **`init`'s Response text is byte-identical to legacy**, `.storyhook/` reference and all,
+    rather than differentially normalized as the brief suggested. Byte-compatibility is the
+    port's governing rule and W4 owns the rewrite; keeping the text identical makes the
+    differential row a strict equality, which is strictly stronger than a normalization. The
+    text is wrong under the new storage model and `init_message`'s doc comment says so.
+  - **`Phase` and `Epic` were ported**, though the spec files their *list* forms under W2c's
+    QueryService. `service::view::story_views` already existed, so the read halves cost one
+    sort helper; splitting the two `Invocation` arms across waves would have left a
+    half-ported enum arm and a roster that could not describe itself.
+  - **A `GroupingService` module rather than methods on `StoryService`.** Phases and epics are
+    conventions over labels and relations; putting them where the conventions are written once
+    is the point, and `SystemService` — the brief's suggested home — has nothing to do with
+    stories.
+  - **`state_transition_events` became `pub(crate)`** (a visibility change to W2a's file, no
+    behaviour change): the migration path has to produce the identical batch, and a second
+    copy of it is exactly what W2a wrote that function to prevent.
+  - **The `uuid` crate was added.** A project's portable identity travels in a committed file
+    to other machines, so it cannot be derived from a path, a counter, or a clock.
+  - **The differential harness moved to `tests/differential_support/mod.rs`** — a verbatim
+    move, no assertion changes; `differential_lifecycle.rs` keeps all 39 of its rows.
 
 ## Resume protocol (fresh session)
 
