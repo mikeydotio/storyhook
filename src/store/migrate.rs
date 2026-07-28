@@ -128,8 +128,13 @@ pub fn run(
     let mut applied = Vec::with_capacity(pending.len());
     for migration in pending {
         fire(FaultPoint::MidMigration)?;
-        apply(conn, migration)?;
-        applied.push(migration.name.to_string());
+        // A migration another process applied first is not this one's work to
+        // report: `applied` is what *this* call changed, and a report claiming
+        // otherwise would make a concurrent `story init` look like it migrated
+        // a database it merely opened.
+        if apply(conn, migration)? {
+            applied.push(migration.name.to_string());
+        }
     }
 
     Ok(MigrationReport {
@@ -156,7 +161,21 @@ fn validate_sequence(migrations: &[Migration]) {
     }
 }
 
-fn apply(conn: &Connection, migration: &Migration) -> Result<(), StoreError> {
+/// Applies one migration, reporting whether it had anything to do.
+///
+/// The version is re-read **inside** the transaction, and that is the whole of
+/// the concurrency story. `run` decides what is pending outside any
+/// transaction, so two processes opening a fresh store both see version 0 and
+/// both queue migration 1; without this check the loser's `CREATE TABLE
+/// schema_migrations` fails and the user gets `error: migration 1 (initial)
+/// failed: table schema_migrations already exists` — exit 5, on a `story init`
+/// that did nothing wrong. `BEGIN IMMEDIATE` serializes the two; re-reading
+/// under it is what lets the second one notice it has already been overtaken.
+///
+/// Found by the store test leg: a parallel run is dozens of processes racing to
+/// create one database, which is the same shape as a hook shelling out to
+/// `story` while its parent still holds the store.
+fn apply(conn: &Connection, migration: &Migration) -> Result<bool, StoreError> {
     let fail = |detail: String| StoreError::Migration {
         version: migration.version,
         name: migration.name.to_string(),
@@ -165,6 +184,19 @@ fn apply(conn: &Connection, migration: &Migration) -> Result<(), StoreError> {
 
     conn.execute_batch("BEGIN IMMEDIATE")
         .map_err(|e| fail(e.to_string()))?;
+
+    match schema_version(conn) {
+        Ok(version) if version >= migration.version => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| fail(e.to_string()))?;
+            return Ok(false);
+        }
+        Ok(_) => {}
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+    }
 
     let result = (|| -> Result<(), rusqlite::Error> {
         conn.execute_batch(migration.sql)?;
@@ -186,7 +218,7 @@ fn apply(conn: &Connection, migration: &Migration) -> Result<(), StoreError> {
         Ok(()) => {
             conn.execute_batch("COMMIT")
                 .map_err(|e| fail(e.to_string()))?;
-            Ok(())
+            Ok(true)
         }
         Err(error) => {
             let _ = conn.execute_batch("ROLLBACK");
