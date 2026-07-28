@@ -1611,6 +1611,9 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "reopen",
         "relate",
         "init",
+        "state",
+        "type",
+        "member-add",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1633,7 +1636,7 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
             "`{name}` is on the ported roster but reports itself unported"
         );
     }
-    assert_eq!(ported.len(), 14);
+    assert_eq!(ported.len(), 17);
 }
 
 /// One probe per invocation this wave does *not* port.

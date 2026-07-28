@@ -15,12 +15,13 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::app;
-use crate::cli::{CliOptions, Invocation};
+use crate::cli::{CliOptions, Invocation, StateAction, TypeAction};
+use crate::domain::{FieldEdit, StateChanges, SuperState};
 use crate::error::AppError;
 use crate::output::Response;
 use crate::service::{
-    Clock, Ctx, FieldEdits, InitOptions, InitOutcome, NewStoryInput, ProjectService,
-    RelationOutcome, RelationService, ReopenOutcome, StoryService,
+    Clock, ConfigService, Ctx, FieldEdits, InitOptions, InitOutcome, NewStoryInput, ProjectService,
+    RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService,
 };
 use crate::store::Store;
 
@@ -239,11 +240,164 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 if remove { "removed" } else { "added" }
             ))),
         },
+        Invocation::State { action } => dispatch_state(ctx, action),
+        Invocation::Type { action } => dispatch_type(ctx, action),
+        Invocation::MemberAdd { input } => ConfigService::new(ctx)
+            .add_member(&input)
+            .map(|member| Response::Message(format!("added member {}", member.id))),
         Invocation::Init { .. } => {
             dispatch_unscoped(ctx.store(), ctx.cwd(), &ctx.now(), invocation)
         }
         other => Err(not_yet_ported(&other)),
     }
+}
+
+/// The `story state …` family.
+fn dispatch_state<S: Store>(ctx: &Ctx<'_, S>, action: StateAction) -> Result<Response, AppError> {
+    let service = ConfigService::new(ctx);
+    match action {
+        StateAction::List => Ok(Response::Message(
+            service
+                .list_states()?
+                .iter()
+                .map(format_state_line)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )),
+        StateAction::Add {
+            slug,
+            superstate,
+            role,
+            description,
+        } => {
+            let state =
+                service.add_state(&slug, parse_superstate(&superstate)?, role, description)?;
+            Ok(Response::Message(format!(
+                "added state {} ({})",
+                state.slug,
+                state.super_state.as_str()
+            )))
+        }
+        StateAction::Set {
+            slug,
+            superstate,
+            role,
+            description,
+            clear_description,
+            move_stories_to,
+        } => {
+            let changes = StateChanges {
+                super_state: superstate.as_deref().map(parse_superstate).transpose()?,
+                // `--role none` clears; `active` is the only real role, so
+                // `none` cannot collide with one.
+                role: match role.as_deref() {
+                    None => FieldEdit::Keep,
+                    Some("none") => FieldEdit::Clear,
+                    Some(value) => FieldEdit::Set(value.to_string()),
+                },
+                description: if clear_description {
+                    FieldEdit::Clear
+                } else {
+                    description.map_or(FieldEdit::Keep, FieldEdit::Set)
+                },
+            };
+            let edit = service.update_state(&slug, &changes, move_stories_to.as_deref())?;
+            let mut message = format!(
+                "updated state {} ({})",
+                edit.state.slug,
+                edit.state.super_state.as_str()
+            );
+            message.push_str(&moved_suffix(edit.moved, move_stories_to.as_deref()));
+            Ok(Response::Message(message))
+        }
+        StateAction::Remove {
+            slug,
+            move_stories_to,
+        } => {
+            let moved = service.remove_state(&slug, move_stories_to.as_deref())?;
+            let mut message = format!("removed state {slug}");
+            message.push_str(&moved_suffix(moved, move_stories_to.as_deref()));
+            Ok(Response::Message(message))
+        }
+        StateAction::Reorder { order } => Ok(Response::Message(format!(
+            "reordered states: {}",
+            service
+                .reorder_states(&order)?
+                .iter()
+                .map(|state| state.slug.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// The `story type …` family.
+fn dispatch_type<S: Store>(ctx: &Ctx<'_, S>, action: TypeAction) -> Result<Response, AppError> {
+    let service = ConfigService::new(ctx);
+    match action {
+        TypeAction::List => Ok(Response::Message(
+            service
+                .list_types()?
+                .iter()
+                .map(|t| match &t.description {
+                    Some(description) => format!("{} — {description}", t.slug),
+                    None => t.slug.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )),
+        TypeAction::Add { slug, description } => Ok(Response::Message(format!(
+            "added type {}",
+            service.add_type(&slug, description.as_deref())?.slug
+        ))),
+        TypeAction::Remove { slug } => {
+            service.remove_type(&slug)?;
+            Ok(Response::Message(format!("removed type {slug}")))
+        }
+    }
+}
+
+/// `OPEN` or `CLOSED`, as a superstate.
+fn parse_superstate(raw: &str) -> Result<SuperState, AppError> {
+    SuperState::parse(raw)
+        .ok_or_else(|| AppError::Validation("superstate must be OPEN or CLOSED".to_string()))
+}
+
+/// The `; moved 2 stories to done` half of a state edit's answer.
+fn moved_suffix(moved: usize, destination: Option<&str>) -> String {
+    if moved == 0 {
+        return String::new();
+    }
+    format!(
+        "; moved {moved} {} to {}",
+        if moved == 1 { "story" } else { "stories" },
+        destination.unwrap_or("another state")
+    )
+}
+
+/// One `story state list` row: `in-progress (OPEN, active) — 2 open — desc`.
+fn format_state_line(listing: &StateListing) -> String {
+    let state = &listing.state;
+    let mut attributes = vec![state.super_state.as_str().to_string()];
+    if let Some(role) = &state.role {
+        attributes.push(role.clone());
+    }
+    let mut line = format!("{} ({})", state.slug, attributes.join(", "));
+
+    let mut counts = Vec::new();
+    if listing.usage.open > 0 {
+        counts.push(format!("{} open", listing.usage.open));
+    }
+    if listing.usage.archived > 0 {
+        counts.push(format!("{} archived", listing.usage.archived));
+    }
+    if !counts.is_empty() {
+        line.push_str(&format!(" — {}", counts.join(", ")));
+    }
+    if let Some(description) = &state.description {
+        line.push_str(&format!(" — {description}"));
+    }
+    line
 }
 
 /// Dispatch for the invocations that run *before* a project is resolved.

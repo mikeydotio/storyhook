@@ -602,11 +602,13 @@ fn state_map(states: &[StateDef]) -> BTreeMap<String, StateDef> {
 
 /// The event batch that moves a story into `target`.
 ///
-/// The **only** place this batch is built, and private so it stays that way.
-/// Order is `StoryStateChanged`, then any caller-supplied extras, then — when
-/// the target closes the story — the close markers: `StoryAwaitingCleared` if
-/// the story was awaiting something, followed by `StoryClosedAndArchived`.
-fn state_transition_events(
+/// The **only** place this batch is built, and crate-private so it stays that
+/// way — the configuration service migrates occupants out of a state it is
+/// removing and has to produce the identical batch. Order is
+/// `StoryStateChanged`, then any caller-supplied extras, then — when the
+/// target closes the story — the close markers: `StoryAwaitingCleared` if the
+/// story was awaiting something, followed by `StoryClosedAndArchived`.
+pub(crate) fn state_transition_events(
     target: &StateDef,
     awaiting: bool,
     at: &str,
