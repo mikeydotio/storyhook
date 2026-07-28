@@ -10,7 +10,12 @@ publish = false
 [dependencies]
 assert_cmd = { workspace = true }
 serde_json = { workspace = true }
-storyhook = { path = "../.." }
+# The `fault-injection` feature is requested here, not in the root
+# manifest's `default`, so that `cargo test` builds a storyhook with the
+# store's crash points live while `cargo build`/`--release` do not. Cargo's
+# v2 resolver keeps dev-dependency features out of non-test builds, and
+# this crate is a dev-dependency of storyhook.
+storyhook = { path = "../..", features = ["fault-injection"] }
 tempfile = { workspace = true }
 
 [dev-dependencies]
