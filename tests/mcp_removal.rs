@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 /// Tests verifying that MCP functionality has been completely removed.
 ///
 /// These tests assert the negative — that MCP-related commands, flags,
