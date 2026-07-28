@@ -1,6 +1,5 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
 
 fn story(dir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("story").unwrap();
@@ -16,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 /// `Registry::register` minted for `dir` (use to build `/api/repos/<id>/...`
 /// URLs).
 fn register_repo(dir: &std::path::Path) -> (tempfile::TempDir, std::path::PathBuf, String) {
-    let registry_dir = tempdir().unwrap();
+    let registry_dir = scratch_dir();
     let registry_path = registry_dir.path().join("registry.toml");
     let repo = storyhook::registry::with_lock_at(&registry_path, |r| r.register(dir, None))
         .expect("registering the test repo must succeed");
@@ -27,7 +26,7 @@ fn register_repo(dir: &std::path::Path) -> (tempfile::TempDir, std::path::PathBu
 
 #[test]
 fn web_no_subcommand_shows_usage() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .arg("web")
         .assert()
@@ -37,7 +36,7 @@ fn web_no_subcommand_shows_usage() {
 
 #[test]
 fn web_invalid_subcommand_shows_usage() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["web", "restart"])
         .assert()
@@ -47,7 +46,7 @@ fn web_invalid_subcommand_shows_usage() {
 
 #[test]
 fn web_start_invalid_port_non_numeric() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["web", "start", "--port", "abc"])
         .assert()
@@ -57,7 +56,7 @@ fn web_start_invalid_port_non_numeric() {
 
 #[test]
 fn web_start_invalid_port_zero() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["web", "start", "--port", "0"])
         .assert()
@@ -67,7 +66,7 @@ fn web_start_invalid_port_zero() {
 
 #[test]
 fn web_start_invalid_port_too_large() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["web", "start", "--port", "99999"])
         .assert()
@@ -77,7 +76,7 @@ fn web_start_invalid_port_too_large() {
 
 #[test]
 fn web_start_port_missing_value() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["web", "start", "--port"])
         .assert()
@@ -93,8 +92,8 @@ fn web_start_port_missing_value() {
 
 #[test]
 fn web_status_not_running() {
-    let dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
+    let dir = scratch_dir();
+    let home = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     story(dir.path())
@@ -107,8 +106,8 @@ fn web_status_not_running() {
 
 #[test]
 fn web_stop_when_not_running() {
-    let dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
+    let dir = scratch_dir();
+    let home = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     story(dir.path())
@@ -131,8 +130,8 @@ fn web_stop_when_not_running() {
 
 #[test]
 fn web_open_not_running_fails_with_summary() {
-    let dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
+    let dir = scratch_dir();
+    let home = scratch_dir();
     story(dir.path())
         .env("HOME", home.path())
         .args(["web", "open"])
@@ -144,8 +143,8 @@ fn web_open_not_running_fails_with_summary() {
 
 #[test]
 fn web_address_not_running_fails_with_summary() {
-    let dir = tempdir().unwrap();
-    let home = tempdir().unwrap();
+    let dir = scratch_dir();
+    let home = scratch_dir();
     story(dir.path())
         .env("HOME", home.path())
         .args(["web", "address"])
@@ -157,8 +156,8 @@ fn web_address_not_running_fails_with_summary() {
 
 #[test]
 fn web_open_and_address_succeed_when_running() {
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap(); // deliberately NOT a storyhook project
+    let home = scratch_dir();
+    let dir = scratch_dir(); // deliberately NOT a storyhook project
     let port = pick_port();
 
     story(dir.path())
@@ -211,8 +210,8 @@ fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
         return;
     };
 
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
+    let home = scratch_dir();
+    let dir = scratch_dir();
     let port = pick_port();
 
     story(dir.path())
@@ -253,8 +252,8 @@ fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
 /// end cleans it up so the test doesn't leak a bound port.
 #[test]
 fn web_start_succeeds_outside_a_project() {
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap(); // deliberately NOT a storyhook project
+    let home = scratch_dir();
+    let dir = scratch_dir(); // deliberately NOT a storyhook project
     let port = pick_port();
 
     story(dir.path())
@@ -277,7 +276,7 @@ fn web_start_succeeds_outside_a_project() {
 
 #[test]
 fn web_serve_and_query_root() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     // Start server in foreground in a thread
@@ -315,7 +314,7 @@ fn web_serve_and_query_root() {
 /// accidentally dropping one of those surfaces.
 #[test]
 fn web_serve_root_html_has_board_list_drawer_markers() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
@@ -382,7 +381,7 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
 
 #[test]
 fn web_serve_api_data_empty_project() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -415,7 +414,7 @@ fn web_serve_api_data_empty_project() {
 
 #[test]
 fn web_serve_api_data_with_stories() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Build feature"])
@@ -453,7 +452,7 @@ fn web_serve_api_data_with_stories() {
 
 #[test]
 fn web_serve_api_data_excludes_deleted_stories() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Build feature"])
@@ -495,7 +494,7 @@ fn web_serve_api_data_excludes_deleted_stories() {
 
 #[test]
 fn web_serve_404_unknown_route() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
@@ -520,7 +519,7 @@ fn web_serve_404_unknown_route() {
 
 #[test]
 fn build_report_data_empty_project() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let data = storyhook::app::build_report_data(dir.path()).unwrap();
@@ -533,7 +532,7 @@ fn build_report_data_empty_project() {
 
 #[test]
 fn build_report_data_with_mixed_states() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Open story"])
@@ -557,7 +556,7 @@ fn build_report_data_with_mixed_states() {
 
 #[test]
 fn report_data_serializes_to_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "JSON test"])
@@ -577,7 +576,7 @@ fn report_data_serializes_to_json() {
 
 #[test]
 fn help_web_topic_exists() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["help", "web"])
         .assert()
@@ -593,7 +592,7 @@ fn help_web_topic_exists() {
 
 #[test]
 fn web_serve_post_returns_405() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -617,7 +616,7 @@ fn web_serve_post_returns_405() {
 
 #[test]
 fn web_serve_api_data_special_chars_in_title() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Fix <script>alert('xss')</script> & \"quotes\""])
@@ -647,7 +646,7 @@ fn web_serve_api_data_special_chars_in_title() {
 
 #[test]
 fn web_serve_api_data_unicode_title() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Support emoji: and CJK: \u{4e16}\u{754c}"])
@@ -676,7 +675,7 @@ fn web_serve_api_data_unicode_title() {
 
 #[test]
 fn web_serve_root_has_no_cache_header() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
@@ -701,7 +700,7 @@ fn web_serve_root_has_no_cache_header() {
 
 #[test]
 fn web_serve_api_data_has_no_cache_header() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -728,7 +727,7 @@ fn web_serve_api_data_has_no_cache_header() {
 
 #[test]
 fn web_serve_api_json_structure_matches_dashboard() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Story one"])
@@ -812,7 +811,7 @@ fn web_serve_api_json_structure_matches_dashboard() {
 
 #[test]
 fn web_serve_api_data_meta_states_are_ordered() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     // Append a state whose slug sorts alphabetically first ("archived" < "done"
     // < "in-progress" < "todo"), so an alphabetical (e.g. BTreeMap-derived)
@@ -866,7 +865,7 @@ fn web_serve_api_data_meta_states_are_ordered() {
 
 #[test]
 fn web_serve_api_data_meta_has_types_priorities_relations_members() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -917,7 +916,7 @@ fn web_serve_api_data_meta_has_types_priorities_relations_members() {
 
 #[test]
 fn web_meta_includes_sorted_unique_labels() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "A", "--labels", "web,bug"])
@@ -952,7 +951,7 @@ fn web_meta_includes_sorted_unique_labels() {
 
 #[test]
 fn web_serve_api_data_meta_includes_members() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["member", "add", "Alice"])
@@ -985,7 +984,7 @@ fn web_serve_api_data_meta_includes_members() {
 
 #[test]
 fn web_serve_get_story_by_id() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Fetch me"])
@@ -1024,7 +1023,7 @@ fn web_serve_get_story_by_id() {
 
 #[test]
 fn web_serve_get_story_by_id_unknown_returns_404() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -1050,7 +1049,7 @@ fn web_serve_get_story_by_id_unknown_returns_404() {
 
 #[test]
 fn web_serve_error_reply_has_security_headers() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -1085,7 +1084,7 @@ fn web_serve_error_reply_has_security_headers() {
 
 #[test]
 fn web_serve_error_reply_uses_standard_envelope() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -1160,7 +1159,7 @@ fn story_field(json: &serde_json::Value, field: &str) -> serde_json::Value {
 
 #[test]
 fn web_create_story_returns_201_and_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -1192,7 +1191,7 @@ fn web_create_story_returns_201_and_story() {
 
 #[test]
 fn web_create_story_missing_title_is_400() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -1212,7 +1211,7 @@ fn web_create_story_missing_title_is_400() {
 
 #[test]
 fn web_create_story_with_description_labels_priority() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -1240,7 +1239,7 @@ fn web_create_story_with_description_labels_priority() {
 
 #[test]
 fn web_create_story_invalid_priority_is_422() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -1268,7 +1267,7 @@ fn web_create_story_invalid_priority_is_422() {
 
 #[test]
 fn web_create_story_without_guard_header_is_403() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -1297,7 +1296,7 @@ fn web_create_story_without_guard_header_is_403() {
 
 #[test]
 fn web_move_story_changes_state() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Movable"])
@@ -1324,7 +1323,7 @@ fn web_move_story_changes_state() {
 
 #[test]
 fn web_move_story_to_closed_state_archives() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Will be archived"])
@@ -1361,7 +1360,7 @@ fn web_move_story_to_closed_state_archives() {
 
 #[test]
 fn web_move_story_invalid_state_is_422() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1382,7 +1381,7 @@ fn web_move_story_invalid_state_is_422() {
 
 #[test]
 fn web_move_unknown_story_is_404() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -1404,7 +1403,7 @@ fn web_move_unknown_story_is_404() {
 
 #[test]
 fn web_comment_story_appends_comment() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1429,7 +1428,7 @@ fn web_comment_story_appends_comment() {
 
 #[test]
 fn web_priority_story_sets_priority() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1453,7 +1452,7 @@ fn web_priority_story_sets_priority() {
 
 #[test]
 fn web_assign_story_to_valid_member_succeeds() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
     story(dir.path())
@@ -1481,7 +1480,7 @@ fn web_assign_story_to_valid_member_succeeds() {
 
 #[test]
 fn web_assign_story_to_missing_member_is_404() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1505,7 +1504,7 @@ fn web_assign_story_to_missing_member_is_404() {
 
 #[test]
 fn web_labels_add_and_remove() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1551,7 +1550,7 @@ fn web_labels_add_and_remove() {
 
 #[test]
 fn web_labels_empty_body_is_400() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1572,7 +1571,7 @@ fn web_labels_empty_body_is_400() {
 
 #[test]
 fn web_block_and_unblock_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1604,7 +1603,7 @@ fn web_block_and_unblock_story() {
 
 #[test]
 fn web_reopen_archived_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
     story(dir.path())
@@ -1638,7 +1637,7 @@ fn web_reopen_archived_story() {
 /// (`AppError::Validation`), and leave the story untouched.
 #[test]
 fn web_reopen_deleted_story_without_force_is_422() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
     story(dir.path())
@@ -1675,7 +1674,7 @@ fn web_reopen_deleted_story_without_force_is_422() {
 /// CLI's `story reopen <id> --force` and successfully undeletes.
 #[test]
 fn web_reopen_deleted_story_with_force_undeletes() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
     story(dir.path())
@@ -1704,7 +1703,7 @@ fn web_reopen_deleted_story_with_force_undeletes() {
 
 #[test]
 fn web_reopen_malformed_json_is_400() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
     story(dir.path())
@@ -1737,7 +1736,7 @@ fn web_reopen_malformed_json_is_400() {
 /// must fail cleanly rather than hang waiting on stdin confirmation.
 #[test]
 fn web_reopen_soft_deleted_story_is_rejected_without_force() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1774,7 +1773,7 @@ fn web_reopen_soft_deleted_story_is_rejected_without_force() {
 
 #[test]
 fn web_patch_story_updates_multiple_fields() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1799,7 +1798,7 @@ fn web_patch_story_updates_multiple_fields() {
 
 #[test]
 fn web_patch_story_no_fields_is_400() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1820,7 +1819,7 @@ fn web_patch_story_no_fields_is_400() {
 
 #[test]
 fn web_patch_story_sets_description() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1844,7 +1843,7 @@ fn web_patch_story_sets_description() {
 
 #[test]
 fn web_patch_story_description_without_guard_header_is_403() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1877,7 +1876,7 @@ fn web_patch_story_description_without_guard_header_is_403() {
 
 #[test]
 fn web_relate_and_unrelate_stories() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "A"]).assert().success();
     story(dir.path()).args(["new", "B"]).assert().success();
@@ -1924,7 +1923,7 @@ fn web_relate_and_unrelate_stories() {
 
 #[test]
 fn web_delete_story_soft_deletes_it() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1966,7 +1965,7 @@ fn web_delete_story_soft_deletes_it() {
 
 #[test]
 fn web_delete_story_without_reason_is_400() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -1989,7 +1988,7 @@ fn web_delete_story_without_reason_is_400() {
 
 #[test]
 fn web_move_story_malformed_json_is_400() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -2012,7 +2011,7 @@ fn web_move_story_malformed_json_is_400() {
 
 #[test]
 fn web_mutation_without_guard_header_is_403() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -2041,7 +2040,7 @@ fn web_mutation_without_guard_header_is_403() {
 
 #[test]
 fn web_mutation_with_spoofed_host_is_403() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -2065,7 +2064,7 @@ fn web_mutation_with_spoofed_host_is_403() {
 
 #[test]
 fn web_mutation_wrong_content_type_is_415() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -2088,7 +2087,7 @@ fn web_mutation_wrong_content_type_is_415() {
 
 #[test]
 fn web_put_on_story_path_is_405() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -2113,7 +2112,7 @@ fn web_put_on_story_path_is_405() {
 
 #[test]
 fn web_mutation_success_has_security_headers() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -2143,7 +2142,7 @@ fn web_mutation_success_has_security_headers() {
 
 #[test]
 fn web_mutation_guard_reject_has_security_headers() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -2181,7 +2180,7 @@ fn web_mutation_guard_reject_has_security_headers() {
 /// Boots a server over a fresh project and returns (dir guard, port, repo id).
 /// Every state test needs the same three lines otherwise.
 fn serve_project() -> (tempfile::TempDir, tempfile::TempDir, u16, String) {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
@@ -2500,7 +2499,7 @@ fn web_data_meta_states_carry_role_and_description() {
 
 #[test]
 fn web_serve_repos_list_reports_available_repo_with_summary() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -2529,7 +2528,7 @@ fn web_serve_repos_list_reports_available_repo_with_summary() {
 /// take down the whole `/api/repos` response for every other repo.
 #[test]
 fn web_serve_repos_list_reports_unavailable_repo_without_failing() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -2560,7 +2559,7 @@ fn web_serve_repos_list_reports_unavailable_repo_without_failing() {
 
 #[test]
 fn web_serve_unknown_repo_id_is_404() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
@@ -2580,10 +2579,10 @@ fn web_serve_unknown_repo_id_is_404() {
 
 #[test]
 fn web_register_repo_via_api() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
-    let registry_dir = tempdir().unwrap();
+    let registry_dir = scratch_dir();
     let registry_path = registry_dir.path().join("registry.toml");
     let port = pick_port();
     let registry_path_for_server = registry_path.clone();
@@ -2609,10 +2608,10 @@ fn web_register_repo_via_api() {
 
 #[test]
 fn web_register_repo_requires_guard_header() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
-    let registry_dir = tempdir().unwrap();
+    let registry_dir = scratch_dir();
     let registry_path = registry_dir.path().join("registry.toml");
     let port = pick_port();
     let registry_path_for_server = registry_path.clone();
@@ -2629,7 +2628,7 @@ fn web_register_repo_requires_guard_header() {
 
 #[test]
 fn web_deregister_repo_via_api() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -2655,7 +2654,7 @@ fn web_deregister_repo_via_api() {
 
 #[test]
 fn web_deregister_repo_requires_guard_header() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
@@ -2678,8 +2677,8 @@ fn web_deregister_repo_requires_guard_header() {
 
 #[test]
 fn web_register_dot_registers_cwd() {
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
+    let home = scratch_dir();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let canonical = dir.path().canonicalize().unwrap();
 
@@ -2702,11 +2701,11 @@ fn web_register_dot_registers_cwd() {
 
 #[test]
 fn web_register_explicit_path() {
-    let home = tempdir().unwrap();
-    let project = tempdir().unwrap();
+    let home = scratch_dir();
+    let project = scratch_dir();
     story(project.path()).arg("init").assert().success();
     let canonical = project.path().canonicalize().unwrap();
-    let elsewhere = tempdir().unwrap();
+    let elsewhere = scratch_dir();
 
     story(elsewhere.path())
         .env("HOME", home.path())
@@ -2727,8 +2726,8 @@ fn web_register_explicit_path() {
 
 #[test]
 fn web_register_with_name() {
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
+    let home = scratch_dir();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     story(dir.path())
@@ -2747,8 +2746,8 @@ fn web_register_with_name() {
 
 #[test]
 fn web_register_non_project_fails() {
-    let home = tempdir().unwrap();
-    let not_a_project = tempdir().unwrap();
+    let home = scratch_dir();
+    let not_a_project = scratch_dir();
 
     story(not_a_project.path())
         .env("HOME", home.path())
@@ -2760,8 +2759,8 @@ fn web_register_non_project_fails() {
 
 #[test]
 fn web_deregister_by_id_cli() {
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
+    let home = scratch_dir();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     // Register directly through the registry API for a deterministic id,
@@ -2788,8 +2787,8 @@ fn web_deregister_by_id_cli() {
 
 #[test]
 fn web_deregister_unknown_target_fails() {
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
+    let home = scratch_dir();
+    let dir = scratch_dir();
 
     story(dir.path())
         .env("HOME", home.path())
@@ -2800,8 +2799,8 @@ fn web_deregister_unknown_target_fails() {
 
 #[test]
 fn web_list_shows_registered_repos() {
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
+    let home = scratch_dir();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let registry_path = home.path().join(".storyhook").join("registry.toml");
@@ -2819,8 +2818,8 @@ fn web_list_shows_registered_repos() {
 
 #[test]
 fn web_list_empty_registry_message() {
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
+    let home = scratch_dir();
+    let dir = scratch_dir();
 
     story(dir.path())
         .env("HOME", home.path())
@@ -2841,7 +2840,7 @@ fn default_web_port_constant_is_3456() {
 
 #[test]
 fn build_report_data_with_blocked_story() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Blocking story"])
@@ -2876,7 +2875,7 @@ fn build_report_data_with_blocked_story() {
 
 #[test]
 fn build_report_data_counts_priorities() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "High priority"])
@@ -2907,7 +2906,7 @@ fn build_report_data_counts_priorities() {
 
 #[test]
 fn build_report_data_counts_types() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Epic story", "--type", "epic"])
@@ -2939,7 +2938,7 @@ fn build_report_data_counts_types() {
 
 #[test]
 fn web_serve_handles_concurrent_requests() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Concurrent test"])
@@ -2991,7 +2990,7 @@ fn help_text_includes_web_commands() {
 
 #[test]
 fn web_start_default_port_is_3456() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     // We test this via the CLI output: start without --port should mention 3456
     // But actually, the best test is to verify parse_web returns port 3456 by default.
     // We invoke the CLI parse directly.
@@ -3140,7 +3139,7 @@ fn web_parse_serve_unknown_flag_errors() {
 
 #[test]
 fn web_start_extra_unknown_flag_errors() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["web", "start", "--verbose"])
         .assert()
@@ -3187,7 +3186,7 @@ fn web_start_port_65535_is_valid() {
 
 #[test]
 fn web_start_port_65536_is_invalid() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["web", "start", "--port", "65536"])
         .assert()
@@ -3197,7 +3196,7 @@ fn web_start_port_65536_is_invalid() {
 
 #[test]
 fn web_start_port_negative_is_invalid() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["web", "start", "--port", "-1"])
         .assert()
@@ -3209,7 +3208,7 @@ fn web_start_port_negative_is_invalid() {
 
 #[test]
 fn web_serve_api_data_ready_and_blocked_flags_correct() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Ready story"])
@@ -3275,7 +3274,7 @@ fn web_serve_api_data_ready_and_blocked_flags_correct() {
 
 #[test]
 fn build_report_data_non_project_errors() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let result = storyhook::app::build_report_data(dir.path());
     assert!(
         result.is_err(),
@@ -3306,7 +3305,7 @@ fn web_serve_binds_tailnet_ip_when_available() {
         return;
     };
 
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Reachable via tailnet"])
@@ -3349,7 +3348,7 @@ fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
         return;
     };
 
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Move me from the tailnet"])
@@ -3422,7 +3421,7 @@ fn web_serve_trusts_magic_dns_fqdn_for_mutations() {
         return;
     };
 
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
         .args(["new", "Move me via MagicDNS"])
@@ -3465,7 +3464,7 @@ fn web_serve_rejects_bare_magic_dns_short_label_for_mutations() {
     };
     let short_label = fqdn.split('.').next().unwrap();
 
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -3503,7 +3502,7 @@ fn web_serve_rejects_foreign_ts_net_host_for_mutations() {
     let suffix = fqdn.split_once('.').map_or(fqdn.as_str(), |(_, rest)| rest);
     let foreign_host = format!("definitely-not-this-host.{suffix}");
 
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     story(dir.path()).args(["new", "Story"]).assert().success();
 
@@ -3532,7 +3531,7 @@ fn web_serve_never_binds_wildcard_address() {
     // specific tailnet IP — never 0.0.0.0, ::, or `*` (a wildcard bind would
     // make the dashboard reachable from any interface, including a public
     // one). Skips gracefully if `lsof` isn't available.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
@@ -3614,7 +3613,7 @@ fn sse_test_lock() -> std::sync::MutexGuard<'static, ()> {
 #[test]
 fn sse_delivers_repo_changed_on_story_mutation() {
     let _sse_guard = sse_test_lock();
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
@@ -3648,7 +3647,7 @@ fn sse_delivers_repo_changed_on_story_mutation() {
 #[test]
 fn sse_delivers_repo_changed_on_state_configuration_change() {
     let _sse_guard = sse_test_lock();
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
@@ -3682,7 +3681,7 @@ fn sse_delivers_repo_changed_on_state_configuration_change() {
 #[test]
 fn sse_coalesces_rapid_mutations_within_debounce_window() {
     let _sse_guard = sse_test_lock();
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
     let port = pick_port();
@@ -3745,7 +3744,7 @@ fn sse_coalesces_rapid_mutations_within_debounce_window() {
 #[test]
 fn sse_disconnect_does_not_break_server_for_other_clients() {
     let _sse_guard = sse_test_lock();
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
@@ -3787,7 +3786,7 @@ fn sse_disconnect_does_not_break_server_for_other_clients() {
 #[test]
 fn sse_detects_runtime_repo_registration_and_watches_it() {
     let _sse_guard = sse_test_lock();
-    let dir_a = tempdir().unwrap();
+    let dir_a = scratch_dir();
     story(dir_a.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, _repo_a_id) = register_repo(dir_a.path());
     let port = pick_port();
@@ -3801,7 +3800,7 @@ fn sse_detects_runtime_repo_registration_and_watches_it() {
 
     let mut sse = connect_sse(port);
 
-    let dir_b = tempdir().unwrap();
+    let dir_b = scratch_dir();
     story(dir_b.path()).arg("init").assert().success();
     let repo_b = storyhook::registry::with_lock_at(&registry_path, |r| {
         r.register(dir_b.path(), Some("repo-b"))
@@ -3844,11 +3843,11 @@ fn sse_detects_runtime_repo_registration_and_watches_it() {
 #[test]
 fn sse_one_unreachable_repo_does_not_break_stream_for_others() {
     let _sse_guard = sse_test_lock();
-    let dir_broken = tempdir().unwrap();
+    let dir_broken = scratch_dir();
     story(dir_broken.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, broken_id) = register_repo(dir_broken.path());
 
-    let dir_healthy = tempdir().unwrap();
+    let dir_healthy = scratch_dir();
     story(dir_healthy.path()).arg("init").assert().success();
     let healthy = storyhook::registry::with_lock_at(&registry_path, |r| {
         r.register(dir_healthy.path(), Some("healthy"))
@@ -3904,8 +3903,8 @@ fn sse_one_unreachable_repo_does_not_break_stream_for_others() {
 #[test]
 fn sse_heartbeat_ping_arrives_without_any_story_changes() {
     let _sse_guard = sse_test_lock();
-    let home = tempdir().unwrap();
-    let dir = tempdir().unwrap();
+    let home = scratch_dir();
+    let dir = scratch_dir();
     let port = pick_port();
 
     story(dir.path())
@@ -3937,7 +3936,7 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
 #[test]
 fn sse_connection_does_not_block_other_requests() {
     let _sse_guard = sse_test_lock();
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     let port = pick_port();
@@ -3970,6 +3969,77 @@ fn sse_connection_does_not_block_other_requests() {
 
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
+
+/// The root every fixture directory in this suite is created under.
+///
+/// Deliberately *not* `$TMPDIR`. On macOS `$TMPDIR` (`/var/folders/…/T/`) is
+/// Spotlight-indexed, and this suite creates hundreds of tiny files per run
+/// (temp git repos, storyhook project trees, registries); `mds_stores`
+/// backlogs behind them and starves the fixture-heavy web tests until they
+/// fail as unexplained 404s — a diagnosis that points nowhere near the
+/// filesystem (SH-53). `/private/tmp` (the real path behind `/tmp`) is never
+/// indexed. On every other platform the OS temp dir carries no such hazard.
+fn scratch_root() -> std::path::PathBuf {
+    let unindexed = std::path::Path::new("/private/tmp");
+    if cfg!(target_os = "macos") && unindexed.is_dir() {
+        unindexed.to_path_buf()
+    } else {
+        std::env::temp_dir()
+    }
+}
+
+/// Best-effort: mark `$TMPDIR` itself Spotlight-exempt, for the sake of the
+/// suites that still build fixtures there. The marker is untracked machine
+/// state that an OS upgrade wipes (SH-53), so the harness creates it rather
+/// than assuming a human did — a failure to create it is advisory, and
+/// `scratch_dirs_live_outside_the_spotlight_indexed_tmpdir` is what makes it
+/// loud.
+fn ensure_tmpdir_is_spotlight_exempt() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if cfg!(target_os = "macos") {
+            let marker = std::env::temp_dir().join(".metadata_never_index");
+            if !marker.exists() {
+                let _ = std::fs::File::create(&marker);
+            }
+        }
+    });
+}
+
+/// Creates a fixture directory under [`scratch_root`]. Every temp directory
+/// this suite creates goes through here — never `tempfile::tempdir()`, which
+/// lands in the indexed `$TMPDIR`.
+fn scratch_dir() -> tempfile::TempDir {
+    ensure_tmpdir_is_spotlight_exempt();
+    tempfile::Builder::new()
+        .prefix("storyhook-web-test-")
+        .tempdir_in(scratch_root())
+        .expect("creating a scratch directory")
+}
+
+#[test]
+fn scratch_dirs_live_outside_the_spotlight_indexed_tmpdir() {
+    let dir = scratch_dir();
+    let indexed = std::env::temp_dir();
+    assert!(
+        !dir.path().starts_with(&indexed),
+        "fixtures must not be created under {} — macOS Spotlight indexes it, and this \
+         suite's file churn backlogs mds_stores until the web tests fail as unexplained \
+         404s (SH-53); got {}",
+        indexed.display(),
+        dir.path().display()
+    );
+
+    if cfg!(target_os = "macos") {
+        let marker = indexed.join(".metadata_never_index");
+        assert!(
+            marker.exists(),
+            "the harness must create {} so the suites that still use $TMPDIR are \
+             Spotlight-exempt too (SH-53)",
+            marker.display()
+        );
+    }
+}
 
 // Use a fixed high-range counter to avoid port reuse across parallel tests
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(19000);
