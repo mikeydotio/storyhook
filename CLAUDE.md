@@ -37,8 +37,9 @@ Execution state — wave status, step log, discovered defects — lives in
 | W0 | quality-gate repair, shared test harness, baseline capture | **complete — merged** |
 | W0b | wire-serializable envelope + the `Invoker` seam | **complete — merged** |
 | W1 | `Store` trait, SQLite engine, migrations, rebuild-diff | **complete — merged** |
-| W2a | story lifecycle + relation services, differential harness | **complete — PR open** |
-| W2b–d | project/config/query/integrity/git services over the store | pending |
+| W2a | story lifecycle + relation services, differential harness | **complete — merged** |
+| W2b | project, config, system and grouping services; 27 of 46 arms ported | **complete — PR open** |
+| W2c–d | query, integrity and git services; TUI onto the seam; dispatch completeness | pending |
 | W3 | legacy importer (`story migrate`) — also W4's rollback path | pending (parallel with W2) |
 | W4 | **the flip**: the global store becomes the default | pending; one uninterrupted session |
 | W5 | daemon promotion + `/api/v1/invoke` transport | pending |
