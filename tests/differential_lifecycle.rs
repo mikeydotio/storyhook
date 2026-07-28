@@ -1610,6 +1610,7 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "delete",
         "reopen",
         "relate",
+        "init",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1632,7 +1633,7 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
             "`{name}` is on the ported roster but reports itself unported"
         );
     }
-    assert_eq!(ported.len(), 13);
+    assert_eq!(ported.len(), 14);
 }
 
 /// One probe per invocation this wave does *not* port.
@@ -1658,13 +1659,6 @@ fn unported_probes() -> Vec<(&'static str, Invocation)> {
         ),
         ("context", Invocation::Context { format: None }),
         ("handoff", Invocation::Handoff { since: None }),
-        (
-            "init",
-            Invocation::Init {
-                prefix: None,
-                no_agents_md: true,
-            },
-        ),
         ("import", Invocation::Import { file: None }),
         (
             "import-project",
