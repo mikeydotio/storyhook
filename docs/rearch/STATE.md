@@ -30,9 +30,9 @@
 ## W0 step plan
 
 - **W0.0 DONE** — story bookkeeping: SH-42/43/44 deferred, SH-49/50 blocked (commit `be1601c`).
-- **W0.1 NEXT** — four gate fixes, each own `fix:` commit + regression test (red→green):
-  SH-53 (Spotlight/$TMPDIR), SH-51 (port allocation + readiness + orphan class), SH-59
-  (errors→stderr), SH-52 (`--help` creates story + sibling-verb sweep).
+- **W0.1 DONE** — five gate fixes (four planned + one production defect the readiness fix
+  exposed), each its own `fix:` commit + regression test: `2316ddf` SH-53, `4c1aed9` SH-51,
+  `e8d4cf8` tailnet probe, `da3109d` SH-59, `e2531c4` SH-52. See Step log.
 - **W0.2** — `storyhook-test-support` workspace crate: TestEnv (unconditional HOME/XDG/
   STORYHOOK_DATA_DIR isolation), ProjectBuilder, scratch_dir + clippy tempdir ban, Daemon
   guard scaffolding, orphan postlude in make test; migrate 3 proof files
@@ -59,7 +59,19 @@
   mds_stores idle — SH-53 stall NOT active today, but plausibly the original orphan-maker.
 - Live dashboard daemon PID on :3456 (loopback + tailnet) is PRODUCTION — never kill it in
   tests; tests must never bind 3456.
+- **Orphan-maker identified (W0.1):** `tailnet_identity()` shelled out to `tailscale status
+  --json` with an unbounded `Command::output()`, *after* the loopback listener binds. When
+  `tailscaled` wedges (repeatedly observed; probes stuck for minutes, orphaned by exited
+  servers) the server sits bound-and-silent forever — which is how test binaries survived
+  their runs holding ports. Now bounded to 3s + process-group kill (`e8d4cf8`). This is a
+  PRODUCTION defect too (`story web start`'s daemon on :3456 would listen and never answer);
+  it needs its own story, NOT filed from this worktree because minting an id here collides
+  with ids minted in parallel worktrees (see W0.3's `two_worktrees_mint_colliding_ids`).
+- **Second finding, unfixed, needs a story:** positional-taking verbs still swallow unknown
+  `--flags` as data (`story new --typo x` creates a story titled `--typo x`). Same shape as
+  SH-52, different defect; SH-52's fix covers help flags only.
 - Baseline `make test` cold: 83s wall (230% CPU) incl. build; failed only in web_test (orphans).
+- Post-W0.1 `make test` warm: ~29s wall, 3 consecutive green runs (49 Rust targets + 15 bash).
 - `git commit --amend` silently fails in this environment — use reset --soft + fresh commit.
 - Post-commit hook scans commit SUBJECTS for story IDs — bookkeeping/story refs go in BODIES.
 - Worktree branch base: main @ `838d68a`.
@@ -69,6 +81,29 @@
 - 2026-07-28 W0.0: branch `rearch/w0-gate-repair` created off `838d68a`; five stories blocked
   with rearch reasons; committed `be1601c` (subject deliberately ID-free). Task ledger created
   in session task list (#1–#14, spine dependencies wired).
+- 2026-07-28 W0.1: five `fix:` commits, each red→green with its own regression test.
+  - `2316ddf` SH-53 — `scratch_dir()`/`scratch_root()` in web_test; fixtures now under
+    `/private/tmp` (never Spotlight-indexed), all 134 `tempdir()` sites migrated; harness
+    also creates `$TMPDIR/.metadata_never_index` for the suites still using `$TMPDIR`.
+  - `4c1aed9` SH-51 — `web::start_server_with_ready` reports the *actually bound* address
+    (the adopted design rule, arriving early); in-process test servers bind port 0;
+    `serve`/`try_serve_on` gate on the server's own ready callback and never swallow a
+    start-up error; `DaemonGuard`; `connect_sse` deadline; `scripts/check-no-orphan-servers.sh`
+    brackets `make test`. **`pick_port`/`PORT_COUNTER` are gone — new server tests must use
+    `serve()`.**
+  - `e8d4cf8` — bounded tailnet probe (see Key facts; production defect, needs its own story).
+  - `da3109d` SH-59 — errors to stderr via one `fail()` helper. **Ruling: `--json` envelopes
+    stay on STDOUT** (stdout is the machine-readable result channel: exactly one
+    self-describing document per run; `move_if_state.rs` and `story.sh`'s CAS claim both read
+    the conflict envelope there, and stderr also carries free-text hook warnings). 73 existing
+    assertions across 18 files flipped to `.stderr(...)`.
+  - `e2531c4` SH-52 — help flags answered ahead of every verb parser; `parse_invocation` split
+    into a pure `dispatch()` (used for verb recognition, so there is no second verb list);
+    `main` no longer launches the TUI for `story tui --help`. 54 verbs × `--help`/`-h` swept.
+  - Gate after: `make test` green ×3, ~29s warm; web_test 143/143 (~3.5s).
+  - For W0.2: the `scratch_dir`/`serve`/`DaemonGuard`/orphan-check helpers are deliberately
+    self-contained in `tests/web_test.rs` + `scripts/`, ready to move into the test-support
+    crate unchanged.
 
 ## Resume protocol (fresh session)
 
