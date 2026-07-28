@@ -1,42 +1,129 @@
 // TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
 #![allow(clippy::disallowed_methods)]
 
-/// Integration tests for the TUI data path.
-///
-/// These tests exercise DataStore + AppState + Board + Action dispatch
-/// WITHOUT launching a terminal. They use tempdir-backed filesystem storage
-/// to verify the full data flow from creation through filtering and display.
+//! Integration tests for the TUI data path.
+//!
+//! These tests exercise DataStore + AppState + Board + Action dispatch
+//! WITHOUT launching a terminal, verifying the full data flow from creation
+//! through filtering and display.
+//!
+//! **Reconstructed for the Invoker seam.** Fixtures used to be built by
+//! calling the storage layer under the project lock and by writing events
+//! directly; they are now built out of the same `Invocation`s the TUI itself
+//! issues, and `DataStore::load` takes an `Invoker`. No white-box storage call
+//! is left. The assertions are unchanged — where a fixture could not be
+//! expressed through the seam at all, the file still writes to `.storyhook/`
+//! directly, because those cases fabricate states no API can produce and that
+//! is precisely what they are for.
+
+use std::path::Path;
 use std::time::Instant;
 
-use storyhook::domain::{Priority, StateDef, StoryEvent, SuperState};
+use storyhook::cli::{Invocation, StateAction};
+use storyhook::domain::{Priority, StateDef, SuperState};
+use storyhook::error::AppError;
+use storyhook::invoke::{InvokeRequest, Invoker, LegacyInvoker};
+use storyhook::output::Response;
 use storyhook::tui::action::{FilterSpec, View};
 use storyhook::tui::components::board::{Board, RowItem};
 use storyhook::tui::data::DataStore;
 use storyhook::tui::focus::{FocusStack, FocusTarget, Modal};
 use storyhook::tui::state::AppState;
 
+/// Helper: run one invocation through the seam, hooks suppressed as the TUI
+/// does.
+fn run(root: &Path, invocation: Invocation) -> Result<Response, AppError> {
+    LegacyInvoker::new(root).invoke(InvokeRequest::new(invocation).no_hooks(true))
+}
+
+/// Helper: the project as the TUI sees it — one `ProjectSnapshot`.
+fn load(root: &Path) -> Result<DataStore, AppError> {
+    DataStore::load(&LegacyInvoker::new(root))
+}
+
 /// Helper: initialize a storyhook project in a tempdir and return (dir, root path).
 fn init_project(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
-    storyhook::storage::init_project(&root, Some(prefix)).unwrap();
+    run(
+        &root,
+        Invocation::Init {
+            prefix: Some(prefix.to_string()),
+            no_agents_md: true,
+        },
+    )
+    .unwrap();
     (dir, root)
 }
 
-/// Helper: create a story inside a lock and return its ID.
-fn create_story(root: &std::path::Path, title: &str) -> String {
-    storyhook::lock::with_project_lock(root, || {
-        let snap = storyhook::storage::create_story(root, title, None)?;
-        Ok(snap.id)
-    })
+/// Helper: create a story and return its ID.
+fn create_story(root: &Path, title: &str) -> String {
+    match run(
+        root,
+        Invocation::New {
+            title: title.to_string(),
+            state: None,
+            story_type: None,
+            description: None,
+            priority: None,
+            labels: None,
+            assignee: None,
+        },
+    )
     .unwrap()
+    {
+        Response::Story(view) => view.story.id,
+        other => panic!("expected a story, got {other:?}"),
+    }
 }
 
-/// Helper: write story events inside a lock.
-fn write_events(root: &std::path::Path, id: &str, events: &[StoryEvent]) {
-    storyhook::lock::with_project_lock(root, || {
-        storyhook::storage::write_story_events(root, id, events)
-    })
+/// Helper: add a member so `story assign` has someone to resolve to.
+fn add_member(root: &Path, handle: &str) {
+    run(
+        root,
+        Invocation::MemberAdd {
+            input: storyhook::cli::MemberInput::Github(handle.to_string()),
+        },
+    )
+    .unwrap();
+}
+
+/// Helper: move a story into a state.
+fn set_state(root: &Path, id: &str, state: &str) {
+    run(
+        root,
+        Invocation::SetState {
+            id: id.to_string(),
+            state: state.to_string(),
+            comment: None,
+            if_state: None,
+        },
+    )
+    .unwrap();
+}
+
+/// Helper: set a story's labels, which for a story that has none is an add.
+fn set_labels(root: &Path, id: &str, labels: &[&str]) {
+    run(
+        root,
+        Invocation::SetLabels {
+            id: id.to_string(),
+            add: labels.iter().map(|l| (*l).to_string()).collect(),
+            remove: Vec::new(),
+        },
+    )
+    .unwrap();
+}
+
+/// Helper: set a story's priority.
+fn set_priority(root: &Path, id: &str, priority: &str) {
+    run(
+        root,
+        Invocation::SetPriority {
+            id: id.to_string(),
+            priority: priority.to_string(),
+        },
+    )
     .unwrap();
 }
 
@@ -45,7 +132,7 @@ fn write_events(root: &std::path::Path, id: &str, events: &[StoryEvent]) {
 #[test]
 fn empty_project_loads_with_no_stories() {
     let (_dir, root) = init_project("TP");
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
 
     assert_eq!(store.story_count(), 0);
     assert_eq!(store.prefix, "TP");
@@ -77,7 +164,7 @@ fn create_and_edit_story_flow() {
     assert_eq!(id, "CE-1");
 
     // Verify it appears in DataStore
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(store.story_count(), 1);
     let story = store.find_story("CE-1").unwrap();
     assert_eq!(story.title, "Initial title");
@@ -86,42 +173,36 @@ fn create_and_edit_story_flow() {
     assert!(story.comments.is_empty());
 
     // Set priority
-    write_events(
-        &root,
-        "CE-1",
-        &[StoryEvent::StoryPrioritySet {
-            at: storyhook::storage::now(),
-            priority: Priority::High,
-        }],
-    );
-    let store = DataStore::load(&root).unwrap();
+    set_priority(&root, "CE-1", "high");
+    let store = load(&root).unwrap();
     assert_eq!(store.find_story("CE-1").unwrap().priority, Priority::High);
 
     // Assign
-    write_events(
+    add_member(&root, "mikey");
+    run(
         &root,
-        "CE-1",
-        &[StoryEvent::StoryAssigned {
-            at: storyhook::storage::now(),
-            member_id: "mikey".to_string(),
-        }],
-    );
-    let store = DataStore::load(&root).unwrap();
+        Invocation::Assign {
+            id: "CE-1".to_string(),
+            member: "mikey".to_string(),
+        },
+    )
+    .unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(
         store.find_story("CE-1").unwrap().assignee.as_deref(),
         Some("mikey")
     );
 
     // Add comment
-    write_events(
+    run(
         &root,
-        "CE-1",
-        &[StoryEvent::StoryCommentAdded {
-            at: storyhook::storage::now(),
+        Invocation::Comment {
+            id: "CE-1".to_string(),
             text: "Work in progress".to_string(),
-        }],
-    );
-    let store = DataStore::load(&root).unwrap();
+        },
+    )
+    .unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(store.find_story("CE-1").unwrap().comments.len(), 1);
     assert_eq!(
         store.find_story("CE-1").unwrap().comments[0].text,
@@ -135,42 +216,17 @@ fn create_and_edit_story_flow() {
 fn move_story_through_states() {
     let (_dir, root) = init_project("MV");
 
-    // Add an intermediate open state
-    storyhook::lock::with_project_lock(&root, || {
-        let mut states = storyhook::storage::load_states(&root)?;
-        // Insert "in-progress" before "done"
-        states.insert(
-            1,
-            StateDef {
-                slug: "in-progress".to_string(),
-                super_state: SuperState::Open,
-                role: Some("active".to_string()),
-                description: None,
-            },
-        );
-        // Rewrite states.toml
-        let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
-        std::fs::write(root.join(".storyhook/states.toml"), states_toml)?;
-        Ok(())
-    })
-    .unwrap();
-
+    // `in-progress` is a default state, so the board already has a second
+    // OPEN column to move into.
     let id = create_story(&root, "Move me");
 
     // Story starts in "todo" (default open state)
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(store.find_story(&id).unwrap().state, "todo");
 
     // Move to in-progress
-    write_events(
-        &root,
-        &id,
-        &[StoryEvent::StoryStateChanged {
-            at: storyhook::storage::now(),
-            state: "in-progress".to_string(),
-        }],
-    );
-    let store = DataStore::load(&root).unwrap();
+    set_state(&root, &id, "in-progress");
+    let store = load(&root).unwrap();
     assert_eq!(store.find_story(&id).unwrap().state, "in-progress");
 
     // Verify board groups it correctly
@@ -211,33 +267,14 @@ fn move_to_closed_state_archives_story() {
     let id = create_story(&root, "Close me");
 
     // Story exists in open snapshots
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(store.story_count(), 1);
 
     // Move to "done" (closed state) - archive it
-    storyhook::lock::with_project_lock(&root, || {
-        let now = storyhook::storage::now();
-        storyhook::storage::write_story_events(
-            &root,
-            &id,
-            &[
-                StoryEvent::StoryStateChanged {
-                    at: now.clone(),
-                    state: "done".to_string(),
-                },
-                StoryEvent::StoryClosedAndArchived {
-                    at: now,
-                    state: "done".to_string(),
-                },
-            ],
-        )?;
-        storyhook::storage::archive_story(&root, &id)?;
-        Ok(())
-    })
-    .unwrap();
+    set_state(&root, &id, "done");
 
     // Story should be gone from open snapshots
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(store.story_count(), 0);
     assert!(store.find_story(&id).is_none());
 }
@@ -253,44 +290,21 @@ fn filter_narrows_visible_stories() {
     let id3 = create_story(&root, "Refactor database");
 
     // Set different priorities and labels
-    write_events(
+    add_member(&root, "mikey");
+    set_priority(&root, &id1, "high");
+    set_labels(&root, &id1, &["bug"]);
+    set_priority(&root, &id2, "medium");
+    set_labels(&root, &id3, &["tech-debt"]);
+    run(
         &root,
-        &id1,
-        &[
-            StoryEvent::StoryPrioritySet {
-                at: storyhook::storage::now(),
-                priority: Priority::High,
-            },
-            StoryEvent::StoryLabelsSet {
-                at: storyhook::storage::now(),
-                labels: vec!["bug".to_string()],
-            },
-        ],
-    );
-    write_events(
-        &root,
-        &id2,
-        &[StoryEvent::StoryPrioritySet {
-            at: storyhook::storage::now(),
-            priority: Priority::Medium,
-        }],
-    );
-    write_events(
-        &root,
-        &id3,
-        &[
-            StoryEvent::StoryLabelsSet {
-                at: storyhook::storage::now(),
-                labels: vec!["tech-debt".to_string()],
-            },
-            StoryEvent::StoryAssigned {
-                at: storyhook::storage::now(),
-                member_id: "mikey".to_string(),
-            },
-        ],
-    );
+        Invocation::Assign {
+            id: id3.clone(),
+            member: "mikey".to_string(),
+        },
+    )
+    .unwrap();
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(store.story_count(), 3);
 
     // Filter by text
@@ -308,7 +322,7 @@ fn filter_narrows_visible_stories() {
     assert_eq!(story_rows.len(), 1);
 
     // Filter by priority
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let mut state = AppState::new(store);
     state.filters.push(FilterSpec {
         priority: Some(Priority::High),
@@ -322,7 +336,7 @@ fn filter_narrows_visible_stories() {
     assert_eq!(story_rows.len(), 1);
 
     // Filter by label
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let mut state = AppState::new(store);
     state.filters.push(FilterSpec {
         label: Some("bug".to_string()),
@@ -336,7 +350,7 @@ fn filter_narrows_visible_stories() {
     assert_eq!(story_rows.len(), 1);
 
     // Combined filters (priority + assignee) should AND together
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let mut state = AppState::new(store);
     state.filters.push(FilterSpec {
         assignee: Some("mikey".to_string()),
@@ -405,7 +419,7 @@ fn stale_modal_detected_after_story_archived() {
     let (_dir, root) = init_project("SM");
     let id = create_story(&root, "Will be archived");
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let mut state = AppState::new(store);
 
     // Simulate opening the detail modal
@@ -415,29 +429,10 @@ fn stale_modal_detected_after_story_archived() {
     assert!(state.focus.has_modal());
 
     // Now archive the story externally (simulating CLI action)
-    storyhook::lock::with_project_lock(&root, || {
-        let now = storyhook::storage::now();
-        storyhook::storage::write_story_events(
-            &root,
-            &id,
-            &[
-                StoryEvent::StoryStateChanged {
-                    at: now.clone(),
-                    state: "done".to_string(),
-                },
-                StoryEvent::StoryClosedAndArchived {
-                    at: now,
-                    state: "done".to_string(),
-                },
-            ],
-        )?;
-        storyhook::storage::archive_story(&root, &id)?;
-        Ok(())
-    })
-    .unwrap();
+    set_state(&root, &id, "done");
 
     // Refresh data (simulates what RefreshData action does)
-    let new_data = DataStore::load(&root).unwrap();
+    let new_data = load(&root).unwrap();
     state.data = new_data;
 
     // Check stale modal: story is gone, modal should be closed
@@ -470,7 +465,7 @@ fn collapsed_sections_hide_story_rows() {
     create_story(&root, "Story A");
     create_story(&root, "Story B");
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let state = AppState::new(store);
 
     let mut board = Board::new();
@@ -511,39 +506,15 @@ fn collapsed_sections_hide_story_rows() {
 fn stories_grouped_correctly_across_multiple_states() {
     let (_dir, root) = init_project("GR");
 
-    // Add "in-progress" state
-    storyhook::lock::with_project_lock(&root, || {
-        let mut states = storyhook::storage::load_states(&root)?;
-        states.insert(
-            1,
-            StateDef {
-                slug: "in-progress".to_string(),
-                super_state: SuperState::Open,
-                role: Some("active".to_string()),
-                description: None,
-            },
-        );
-        let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
-        std::fs::write(root.join(".storyhook/states.toml"), states_toml)?;
-        Ok(())
-    })
-    .unwrap();
-
+    // `in-progress` is a default state.
     let id1 = create_story(&root, "Todo story");
     let id2 = create_story(&root, "In progress story");
     let id3 = create_story(&root, "Another todo");
 
     // Move id2 to in-progress
-    write_events(
-        &root,
-        &id2,
-        &[StoryEvent::StoryStateChanged {
-            at: storyhook::storage::now(),
-            state: "in-progress".to_string(),
-        }],
-    );
+    set_state(&root, &id2, "in-progress");
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let state = AppState::new(store);
     let board = Board::new();
     let rows = board.build_visible_rows(&state);
@@ -575,7 +546,7 @@ fn view_switching_preserves_board_state() {
     let (_dir, root) = init_project("VS");
     create_story(&root, "Test story");
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let mut state = AppState::new(store);
 
     // Set up some board state
@@ -606,21 +577,14 @@ fn data_refresh_picks_up_external_changes() {
     let (_dir, root) = init_project("RX");
     let id = create_story(&root, "Original");
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(store.find_story(&id).unwrap().priority, Priority::None);
 
     // External write (simulating CLI changing priority)
-    write_events(
-        &root,
-        &id,
-        &[StoryEvent::StoryPrioritySet {
-            at: storyhook::storage::now(),
-            priority: Priority::Critical,
-        }],
-    );
+    set_priority(&root, &id, "critical");
 
     // Refresh
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(
         store.find_story(&id).unwrap().priority,
         Priority::Critical,
@@ -639,7 +603,7 @@ fn story_deleted_externally_closes_modal_with_notification() {
     let (_dir, root) = init_project("ED");
     let id = create_story(&root, "Ephemeral");
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let mut state = AppState::new(store);
 
     // Open detail modal for the story
@@ -652,7 +616,7 @@ fn story_deleted_externally_closes_modal_with_notification() {
     std::fs::remove_file(&story_file).unwrap();
 
     // Refresh data
-    let new_data = DataStore::load(&root).unwrap();
+    let new_data = load(&root).unwrap();
     state.data = new_data;
 
     // Stale modal protection logic (mirrors app.rs dispatch for RefreshData)
@@ -678,7 +642,7 @@ fn empty_states_file_produces_validation_error() {
     std::fs::write(root.join(".storyhook/states.toml"), "states = []\n").unwrap();
 
     // DataStore::load should return an error, not panic
-    let result = DataStore::load(&root);
+    let result = load(&root);
     assert!(
         result.is_err(),
         "empty states should produce a validation error"
@@ -698,7 +662,7 @@ fn very_long_title_does_not_panic_in_board() {
     let long_title = "A".repeat(300);
     create_story(&root, &long_title);
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let story = store.find_story("LT-1").unwrap();
     assert_eq!(story.title.len(), 300);
 
@@ -721,16 +685,17 @@ fn many_labels_do_not_panic() {
     let id = create_story(&root, "Many labels");
 
     let labels: Vec<String> = (0..25).map(|i| format!("label-{i}")).collect();
-    write_events(
+    run(
         &root,
-        &id,
-        &[StoryEvent::StoryLabelsSet {
-            at: storyhook::storage::now(),
-            labels,
-        }],
-    );
+        Invocation::SetLabels {
+            id: id.clone(),
+            add: labels,
+            remove: Vec::new(),
+        },
+    )
+    .unwrap();
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let story = store.find_story(&id).unwrap();
     assert_eq!(story.labels.len(), 25);
 
@@ -751,26 +716,25 @@ fn unicode_content_handled_gracefully() {
     let (_dir, root) = init_project("UC");
     let id = create_story(&root, "Fix emoji rendering \u{1F680}\u{1F30D}");
 
-    write_events(
+    set_labels(
         &root,
         &id,
         &[
-            StoryEvent::StoryLabelsSet {
-                at: storyhook::storage::now(),
-                labels: vec![
-                    "\u{2705} done".to_string(),
-                    "\u{00E9}t\u{00E9}".to_string(), // "ete" with accents
-                    "\u{4F60}\u{597D}".to_string(),  // Chinese: "hello"
-                ],
-            },
-            StoryEvent::StoryCommentAdded {
-                at: storyhook::storage::now(),
-                text: "Added CJK characters: \u{65E5}\u{672C}\u{8A9E}".to_string(),
-            },
+            "\u{2705} done",
+            "\u{00E9}t\u{00E9}", // "ete" with accents
+            "\u{4F60}\u{597D}",  // Chinese: "hello"
         ],
     );
+    run(
+        &root,
+        Invocation::Comment {
+            id: id.clone(),
+            text: "Added CJK characters: \u{65E5}\u{672C}\u{8A9E}".to_string(),
+        },
+    )
+    .unwrap();
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let story = store.find_story(&id).unwrap();
     assert!(story.title.contains('\u{1F680}'));
     assert_eq!(story.labels.len(), 3);
@@ -805,7 +769,7 @@ fn incomplete_trailing_json_line_tolerated() {
     }
 
     // DataStore::load should succeed, skipping the incomplete line
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(store.story_count(), 1);
     assert_eq!(
         store.find_story(&id).unwrap().title,
@@ -820,65 +784,53 @@ fn state_removal_during_runtime_returns_error() {
     let (_dir, root) = init_project("SR");
 
     // Add "review" state
-    storyhook::lock::with_project_lock(&root, || {
-        let mut states = storyhook::storage::load_states(&root)?;
-        states.insert(
-            1,
-            StateDef {
+    run(
+        &root,
+        Invocation::State {
+            action: StateAction::Add {
                 slug: "review".to_string(),
-                super_state: SuperState::Open,
+                superstate: "OPEN".to_string(),
                 role: None,
                 description: None,
             },
-        );
-        let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
-        std::fs::write(root.join(".storyhook/states.toml"), states_toml)?;
-        Ok(())
-    })
+        },
+    )
     .unwrap();
 
     let id = create_story(&root, "Will lose its state");
 
     // Move to review
-    write_events(
-        &root,
-        &id,
-        &[StoryEvent::StoryStateChanged {
-            at: storyhook::storage::now(),
-            state: "review".to_string(),
-        }],
-    );
+    set_state(&root, &id, "review");
 
     // Verify it loads fine with "review" still defined
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert_eq!(store.find_story(&id).unwrap().state, "review");
 
-    // Now remove the "review" state from states.toml
-    storyhook::lock::with_project_lock(&root, || {
-        let states = vec![
-            StateDef {
-                slug: "todo".to_string(),
-                super_state: SuperState::Open,
-                role: None,
-                description: None,
-            },
-            StateDef {
-                slug: "done".to_string(),
-                super_state: SuperState::Closed,
-                role: None,
-                description: None,
-            },
-        ];
-        let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
-        std::fs::write(root.join(".storyhook/states.toml"), states_toml)?;
-        Ok(())
-    })
-    .unwrap();
+    // Now remove the "review" state out from under the story. `story state
+    // remove` refuses while a story occupies it — which is the point: this
+    // case fabricates a project the API will not produce, so it writes the
+    // catalog directly.
+    let states = vec![
+        StateDef {
+            slug: "todo".to_string(),
+            super_state: SuperState::Open,
+            role: None,
+            description: None,
+        },
+        StateDef {
+            slug: "done".to_string(),
+            super_state: SuperState::Closed,
+            role: None,
+            description: None,
+        },
+    ];
+    let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
+    std::fs::write(root.join(".storyhook/states.toml"), states_toml).unwrap();
 
     // DataStore::load returns an error because fold_story validates that
     // the story's state exists in the state map. This error is caught by
     // the TUI's RefreshData handler and shown as a notification.
-    let result = DataStore::load(&root);
+    let result = load(&root);
     assert!(result.is_err(), "should error on undefined state reference");
     let err_msg = format!("{}", result.err().unwrap());
     assert!(
@@ -896,48 +848,41 @@ fn datastore_load_100_stories_under_500ms() {
     let (_dir, root) = init_project("PF");
 
     // Create 100 stories with varying attributes
-    storyhook::lock::with_project_lock(&root, || {
-        for i in 1..=100 {
-            storyhook::storage::create_story(&root, &format!("Performance test story {i}"), None)?;
-        }
-        Ok(())
-    })
-    .unwrap();
+    for i in 1..=100 {
+        create_story(&root, &format!("Performance test story {i}"));
+    }
 
     // Add events to some stories (priorities, labels, comments)
-    storyhook::lock::with_project_lock(&root, || {
-        for i in 1..=50 {
-            let id = format!("PF-{i}");
-            let mut events = vec![StoryEvent::StoryPrioritySet {
-                at: storyhook::storage::now(),
-                priority: match i % 4 {
-                    0 => Priority::Critical,
-                    1 => Priority::High,
-                    2 => Priority::Medium,
-                    _ => Priority::Low,
-                },
-            }];
-            if i % 3 == 0 {
-                events.push(StoryEvent::StoryLabelsSet {
-                    at: storyhook::storage::now(),
-                    labels: vec!["perf".to_string(), "test".to_string()],
-                });
-            }
-            if i % 5 == 0 {
-                events.push(StoryEvent::StoryCommentAdded {
-                    at: storyhook::storage::now(),
-                    text: format!("Comment on story {i}"),
-                });
-            }
-            storyhook::storage::write_story_events(&root, &id, &events)?;
+    for i in 1..=50 {
+        let id = format!("PF-{i}");
+        set_priority(
+            &root,
+            &id,
+            match i % 4 {
+                0 => "critical",
+                1 => "high",
+                2 => "medium",
+                _ => "low",
+            },
+        );
+        if i % 3 == 0 {
+            set_labels(&root, &id, &["perf", "test"]);
         }
-        Ok(())
-    })
-    .unwrap();
+        if i % 5 == 0 {
+            run(
+                &root,
+                Invocation::Comment {
+                    id: id.clone(),
+                    text: format!("Comment on story {i}"),
+                },
+            )
+            .unwrap();
+        }
+    }
 
     // Measure load time
     let start = Instant::now();
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let elapsed = start.elapsed();
 
     assert_eq!(store.story_count(), 100);
@@ -975,7 +920,7 @@ fn datastore_load_100_stories_under_500ms() {
 #[test]
 fn reordering_statuses_reorders_the_board_columns() {
     let (_dir, root) = init_project("TP");
-    let before: Vec<String> = DataStore::load(&root)
+    let before: Vec<String> = load(&root)
         .unwrap()
         .states
         .iter()
@@ -983,20 +928,21 @@ fn reordering_statuses_reorders_the_board_columns() {
         .collect();
     assert_eq!(before, vec!["todo", "in-progress", "done"]);
 
-    storyhook::lock::with_project_lock(&root, || {
-        storyhook::storage::reorder_states(
-            &root,
-            &[
-                "in-progress".to_string(),
-                "todo".to_string(),
-                "done".to_string(),
-            ],
-        )
-        .map(|_| ())
-    })
+    run(
+        &root,
+        Invocation::State {
+            action: StateAction::Reorder {
+                order: vec![
+                    "in-progress".to_string(),
+                    "todo".to_string(),
+                    "done".to_string(),
+                ],
+            },
+        },
+    )
     .unwrap();
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let columns: Vec<&str> = store
         .stories_by_state()
         .iter()
@@ -1012,19 +958,20 @@ fn reordering_statuses_reorders_the_board_columns() {
 #[test]
 fn adding_a_status_makes_it_available_to_the_board() {
     let (_dir, root) = init_project("TP");
-    storyhook::lock::with_project_lock(&root, || {
-        storyhook::storage::add_state(
-            &root,
-            "review",
-            SuperState::Open,
-            None,
-            Some("Waiting on a reviewer".to_string()),
-        )
-        .map(|_| ())
-    })
+    run(
+        &root,
+        Invocation::State {
+            action: StateAction::Add {
+                slug: "review".to_string(),
+                superstate: "OPEN".to_string(),
+                role: None,
+                description: Some("Waiting on a reviewer".to_string()),
+            },
+        },
+    )
     .unwrap();
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     let review = store
         .states
         .iter()
@@ -1046,12 +993,18 @@ fn removing_an_occupied_status_migrates_its_stories() {
     let (_dir, root) = init_project("TP");
     let id = create_story(&root, "Needs a home");
 
-    storyhook::lock::with_project_lock(&root, || {
-        storyhook::storage::remove_state(&root, "todo", Some("in-progress")).map(|_| ())
-    })
+    run(
+        &root,
+        Invocation::State {
+            action: StateAction::Remove {
+                slug: "todo".to_string(),
+                move_stories_to: Some("in-progress".to_string()),
+            },
+        },
+    )
     .unwrap();
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert!(!store.states.iter().any(|s| s.slug == "todo"));
     assert_eq!(store.find_story(&id).unwrap().state, "in-progress");
 }
@@ -1063,13 +1016,19 @@ fn removing_an_occupied_status_without_a_destination_is_refused() {
     let (_dir, root) = init_project("TP");
     create_story(&root, "Still here");
 
-    let error = storyhook::lock::with_project_lock(&root, || {
-        storyhook::storage::remove_state(&root, "todo", None).map(|_| ())
-    })
+    let error = run(
+        &root,
+        Invocation::State {
+            action: StateAction::Remove {
+                slug: "todo".to_string(),
+                move_stories_to: None,
+            },
+        },
+    )
     .unwrap_err();
     assert!(error.to_string().contains("1 open story"));
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root).unwrap();
     assert!(store.states.iter().any(|s| s.slug == "todo"));
 }
 

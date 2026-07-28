@@ -10,6 +10,7 @@
 //! a daemon becomes a constructor swap rather than a rewrite of every call
 //! site.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -22,11 +23,11 @@ use crate::cli::{
 use crate::domain::{FieldEdit, StateChanges, SuperState};
 use crate::error::AppError;
 use crate::help_topics;
-use crate::output::Response;
+use crate::output::{Response, render_html_report};
 use crate::service::{
     Clock, ConfigService, Ctx, FieldEdits, GroupingService, InitOptions, InitOutcome,
-    NewStoryInput, PhaseCleared, ProjectService, RelationOutcome, RelationService, ReopenOutcome,
-    StateListing, StoryService, SystemService,
+    IntegrityService, ListFilters, NewStoryInput, PhaseCleared, ProjectService, QueryService,
+    RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService, SystemService,
 };
 use crate::store::Store;
 
@@ -126,10 +127,10 @@ impl Invoker for LegacyInvoker<'_> {
 ///
 /// # Completeness
 ///
-/// The story lifecycle, relations, project initialization, configuration and
-/// the system commands are ported. The query surfaces (`list`, `show`,
-/// `summary`, `graph`, `phase`, `epic`, …), the integrity commands and the
-/// git/GitHub family are not. Everything unported answers with
+/// The story lifecycle, relations, project initialization, configuration, the
+/// system commands and the whole read surface are ported. The importer, the
+/// git/GitHub family, the updater, the dashboard and the session hook are not.
+/// Everything unported answers with
 /// [`not_yet_ported`], which is an internal error naming the variant: nothing
 /// routes production traffic here yet, and the wave that finishes the port has
 /// "every variant dispatches" as its exit criterion. A silent fallback to the
@@ -269,6 +270,95 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         }
         Invocation::Phase { action } => dispatch_phase(ctx, action),
         Invocation::Epic { action } => dispatch_epic(ctx, action),
+        Invocation::List {
+            state,
+            assignee,
+            flagged,
+            priority,
+            label,
+            created_after,
+            updated_after,
+            blocked,
+            ready,
+            stale,
+            phase,
+            story_type,
+        } => {
+            let filters = ListFilters {
+                state,
+                assignee,
+                flagged,
+                priority,
+                label,
+                created_after,
+                updated_after,
+                blocked,
+                ready,
+                stale,
+                phase,
+                story_type,
+            };
+            query(ctx, |service| service.list(&filters)).map(|views| Response::Stories(views, None))
+        }
+        Invocation::Show { id } => {
+            query(ctx, |service| service.show(&id)).map(|view| Response::Story(Box::new(view)))
+        }
+        Invocation::Search { query: needle } => query(ctx, |service| service.search(&needle))
+            .map(|views| Response::Stories(views, None)),
+        Invocation::Next { count, phase } => {
+            let mut ready = query(ctx, |service| service.next(count, phase.as_deref()))?;
+            // One story is answered as a story, not as a list of one: `story
+            // next` is a question with a singular answer, and its `--json`
+            // consumers read `.story`.
+            if ready.is_empty() {
+                Ok(Response::Message("no ready stories".to_string()))
+            } else if count == 1 {
+                Ok(Response::Story(Box::new(ready.remove(0))))
+            } else {
+                Ok(Response::Stories(ready, None))
+            }
+        }
+        Invocation::Summary => query(ctx, |service| service.summary())
+            .map(|summary| Response::Summary(Box::new(summary))),
+        Invocation::Report { html } => {
+            if html {
+                let data = query(ctx, |service| service.report_data())?;
+                let ready: BTreeSet<&str> = data.ready_ids.iter().map(String::as_str).collect();
+                let blocked: BTreeSet<&str> = data.blocked_ids.iter().map(String::as_str).collect();
+                Ok(Response::Message(render_html_report(
+                    &data.summary,
+                    &data.stories,
+                    &|id| ready.contains(id),
+                    &|id| blocked.contains(id),
+                )))
+            } else {
+                query(ctx, |service| service.report_summary())
+                    .map(|summary| Response::Summary(Box::new(summary)))
+            }
+        }
+        Invocation::Graph { mode } => {
+            query(ctx, |service| service.graph(&mode)).map(|graph| Response::Graph(Box::new(graph)))
+        }
+        Invocation::Context { format } => {
+            let json = format.as_deref() == Some("json");
+            query(ctx, |service| service.context(json)).map(Response::Message)
+        }
+        Invocation::Handoff { since } => {
+            query(ctx, |service| service.handoff(since.as_deref())).map(Response::Message)
+        }
+        Invocation::ProjectSnapshot => query(ctx, |service| service.project_snapshot())
+            .map(|view| Response::ProjectSnapshot(Box::new(view))),
+        Invocation::Doctor { fix } => {
+            let service = IntegrityService::new(ctx);
+            if fix {
+                service.fix().map(Response::Message)
+            } else {
+                match service.report()? {
+                    issues if issues.is_empty() => Ok(Response::Issues(Vec::new())),
+                    issues => Err(AppError::Integrity(issues.join("\n"))),
+                }
+            }
+        }
         Invocation::Init { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
@@ -277,6 +367,21 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::Version => dispatch_unscoped(ctx.store(), ctx.cwd(), &ctx.now(), invocation),
         other => Err(not_yet_ported(&other)),
     }
+}
+
+/// Runs one read-only question against the project, in its own read
+/// transaction.
+///
+/// The service handed to `f` borrows a [`ReadOps`](crate::store::ReadOps)
+/// transaction and nothing else, so a query arm is *structurally* unable to
+/// write — there is no store in scope to write to.
+fn query<S: Store, T>(
+    ctx: &Ctx<'_, S>,
+    f: impl FnOnce(&QueryService<'_, S::ReadTx<'_>>) -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let now = ctx.now();
+    ctx.store()
+        .read(|tx| Ok(f(&QueryService::new(tx, ctx.project(), &now))))?
 }
 
 /// The `story phase …` family.
@@ -627,5 +732,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::SessionStart => "session-start",
         Invocation::Update { .. } => "update",
         Invocation::Version => "version",
+        Invocation::ProjectSnapshot => "project-snapshot",
+        Invocation::History { .. } => "history",
     }
 }

@@ -285,10 +285,14 @@ impl<'a> SqliteReadTx<'a> {
     }
 
     fn end(mut self) -> Result<(), StoreError> {
-        self.open = false;
+        // `open` is cleared only once the COMMIT has actually succeeded. A
+        // failed COMMIT leaves SQLite's transaction open, so the drop guard
+        // below still has work to do — see [`SqliteWriteTx::commit`].
         self.conn
             .execute_batch("COMMIT")
-            .map_err(|e| StoreError::from_sqlite(e, "ending a read"))
+            .map_err(|e| StoreError::from_sqlite(e, "ending a read"))?;
+        self.open = false;
+        Ok(())
     }
 }
 
@@ -327,10 +331,18 @@ impl<'a> SqliteWriteTx<'a> {
 
     fn commit(mut self) -> Result<(), StoreError> {
         fire(FaultPoint::BeforeCommit)?;
-        self.open = false;
+        // `open` stays true until the COMMIT has succeeded, and that ordering
+        // is load-bearing. `defer_foreign_keys` holds referential checks until
+        // COMMIT, so a transaction can fail *there* rather than in the
+        // closure — and SQLite leaves the transaction open when it does.
+        // Clearing the flag first would skip the rollback below and hand a
+        // connection back to the pool mid-transaction, where the next caller's
+        // `BEGIN` fails with an error describing this caller's mistake.
         self.conn
             .execute_batch("COMMIT")
-            .map_err(|e| StoreError::from_sqlite(e, "committing"))
+            .map_err(|e| StoreError::from_sqlite(e, "committing"))?;
+        self.open = false;
+        Ok(())
     }
 }
 

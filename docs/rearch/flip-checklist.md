@@ -21,7 +21,7 @@
 |---|---|---|
 | A. `.storyhook` path references | **104 refs across 26 files** (99 in `tests/`, 5 in the support crate) | W4 |
 | B. Raw-state fabricators needing `inject_events()` | **10 sites in 4 files**, covering 8 tests | W4 |
-| C. White-box calls into APIs W4 deletes | **85 sites in 6 files** | W2c (TUI, 70) / W4 (15) |
+| C. White-box calls into APIs W4 deletes | ~~85 sites in 6 files~~ → **14 sites in 6 files** after W2c | W4 |
 | D. `#[ignore]`d worktree-truth tests | **2** — un-ignoring them is W4's exit criterion | W4 |
 | E. `TODO(rearch)` scratch_dir migrations outstanding | **45 files** | opportunistic, any wave |
 
@@ -209,15 +209,21 @@ compiling — a **hard** break, unlike category A's silent-wrong-answer breaks.
 
 | File | Sites | Owner | Note |
 |---|---|---|---|
-| `tests/tui_integration.rs` | 50 | **W2c** | The spec already routes the TUI's storage sites through the Invoker seam and reconstructs the white-box tests there. If W2c does its job, W4 inherits zero of these. |
-| `tests/tui_undo.rs` | 20 | **W2c** | Same, plus `ProjectPaths::new` at `:183`, `:270` and `rewrite_story_events` at `:62` — the undo mechanism is itself a storage rewrite and needs a store-level replacement, not a port. |
-| `tests/registry_test.rs` | 8 | W4 | Deleted with `registry.rs`; the *behavior* (many checkouts of one project) is what `worktree_truth.rs` asserts instead. |
-| `tests/web_test.rs` | 5 | W4 | `:24`, `:2518`, `:2555`, `:3498`, `:3545` — registry registration in fixtures; becomes a `projects` row. |
-| `crates/storyhook-test-support/src/server.rs` | 1 | W4 | `:215`, the harness's own registration helper — fix before the tests that call it. |
-| `tests/error_contract.rs` | 1 | W4 | `:99` holds the real project lock from the test process to provoke `LockTimeout`. With `lock.rs` gone this becomes "hold a write transaction"; the ~5s cost noted in STATE.md goes away if `busy_timeout` is configurable. |
+| ~~`tests/tui_integration.rs`~~ | ~~50~~ → **0** | done (W2c) | Reconstructed onto the Invoker seam. |
+| ~~`tests/tui_undo.rs`~~ | ~~20~~ → **0** | done (W2c) | Same. Undo is now `Invocation::History::{Read,Restore}`; **`Restore` is still unported to the store**, so W4 (or W8) owes it the append-only design this row originally flagged. |
+| `tests/registry_test.rs` | 3 | W4 | Deleted with `registry.rs`; the *behavior* (many checkouts of one project) is what `worktree_truth.rs` asserts instead. |
+| `tests/web_test.rs` | 5 | W4 | Registry registration in fixtures; becomes a `projects` row. |
+| `crates/storyhook-test-support/src/server.rs` | 1 | W4 | The harness's own registration helper — fix before the tests that call it. |
+| `tests/error_contract.rs` | 1 | W4 | Holds the real project lock from the test process to provoke `LockTimeout`. With `lock.rs` gone this becomes "hold a write transaction"; the ~5s cost noted in STATE.md goes away if `busy_timeout` is configurable. |
+| `tests/differential_support/mod.rs`, `tests/differential_config.rs` | 4 | W3/W4 | The differential harness reads a legacy project's catalog to seed the store leg. These *should* exist until the legacy leg is retired; they go when the harness does. |
 
-**Consequence for scheduling:** 70 of the 85 sites belong to W2c, not W4. If W2c ships without
-them, W4's budget silently grows by the largest single chunk in this document.
+**Consequence for scheduling, resolved:** the 70 TUI sites were W2c's, and W2c ported them.
+`src/tui/` retains exactly one white-box reference — `event.rs`'s notify watcher, which W5
+deletes — and `src/tui/`'s own `#[cfg(test)]` modules have none.
+
+Also cleared by W2c: **`src/tui/data.rs` and `src/tui/app.rs` no longer build fixtures in
+`$TMPDIR` through `storage::`**, though both still carry their `TODO(rearch)` marker for the
+`tempfile::tempdir` calls themselves (category E).
 
 ---
 

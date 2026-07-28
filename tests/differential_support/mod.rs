@@ -177,34 +177,17 @@ impl Differential {
         (&self.store, self.project)
     }
 
-    /// Compares the *view* of one story, without going through dispatch.
+    /// Compares the *view* of one story through `story show`.
     ///
-    /// `story show` belongs to the query service a later wave builds, so there
-    /// is no dispatch arm for it yet. The view it renders is nonetheless the
-    /// thing almost every write in this wave answers with, and asserting it
+    /// The view is the thing almost every write answers with, and asserting it
     /// after a write is how a divergence in stored state gets caught even when
-    /// the write's own answer happened to agree. So this leg calls the
-    /// service's own view builder directly; the envelope compared is the same
-    /// `Response::Story` in both cases.
+    /// the write's own answer happened to agree. It goes through `dispatch`
+    /// like any other row — the query wave gave `show` an arm — so this is
+    /// [`step`](Self::step) with a label that names the story.
     pub fn show(&self, label: &str, id: &str) {
-        let legacy = app::run(
-            self.legacy.path(),
-            CliOptions {
-                json: false,
-                quiet: false,
-                no_hooks: false,
-                invocation: Invocation::Show { id: id.to_string() },
-            },
-        );
-        let new = self.ctx().story_view(id);
-        let left = canonical(&legacy);
-        let right = canonical(&new);
-        assert_eq!(
-            left,
-            right,
-            "`{label}` (show {id}) diverged\n legacy: {}\n  store: {}",
-            serde_json::to_string_pretty(&left).unwrap(),
-            serde_json::to_string_pretty(&right).unwrap(),
+        self.step(
+            &format!("{label} (show {id})"),
+            Invocation::Show { id: id.to_string() },
         );
     }
 

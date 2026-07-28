@@ -1,16 +1,28 @@
 // TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
 #![allow(clippy::disallowed_methods)]
 
-/// Integration tests for TUI undo/redo.
-///
-/// These tests verify the undo/redo mechanism by exercising the storage-level
-/// operations that the dispatch function performs: snapshot events, mutate,
-/// and restore from snapshot. Uses tempdir-backed filesystem storage.
+//! Integration tests for TUI undo/redo.
+//!
+//! Undo snapshots a story's raw event log before a mutation and puts it back
+//! afterwards. Both halves are one seam invocation — `History::Read` and
+//! `History::Restore` — which is exactly what `tui::app::dispatch` calls, so
+//! these tests exercise the production primitive rather than a copy of it.
+//!
+//! **Reconstructed for the Invoker seam.** Every fixture and every mutation
+//! that used to reach into the storage layer or take the project lock now
+//! goes through `Invoker`; the file holds no white-box storage call. The
+//! assertions are unchanged in meaning, with one mechanical substitution: two
+//! of them asked whether a story's JSONL file still existed, and now ask
+//! whether the story is still in the project — the same question, in terms of
+//! a storage layout that is about to stop existing.
+
 use std::path::Path;
 use std::time::Instant;
 
+use storyhook::cli::{HistoryAction, Invocation};
 use storyhook::domain::{Priority, StoryEvent};
-use storyhook::storage::ProjectPaths;
+use storyhook::invoke::{InvokeRequest, Invoker, LegacyInvoker};
+use storyhook::output::Response;
 use storyhook::tui::action::UndoEntry;
 use storyhook::tui::data::DataStore;
 use storyhook::tui::state::AppState;
@@ -19,49 +31,75 @@ use storyhook::tui::state::AppState;
 fn init_project(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
-    storyhook::storage::init_project(&root, Some(prefix)).unwrap();
+    run(
+        &root,
+        Invocation::Init {
+            prefix: Some(prefix.to_string()),
+            no_agents_md: true,
+        },
+    )
+    .unwrap();
     (dir, root)
 }
 
-/// Helper: create a story inside a lock and return its ID.
+/// Helper: run one invocation through the seam, hooks suppressed as the TUI
+/// does.
+fn run(root: &Path, invocation: Invocation) -> Result<Response, storyhook::error::AppError> {
+    LegacyInvoker::new(root).invoke(InvokeRequest::new(invocation).no_hooks(true))
+}
+
+/// Helper: create a story and return its ID.
 fn create_story(root: &Path, title: &str) -> String {
-    storyhook::lock::with_project_lock(root, || {
-        let snap = storyhook::storage::create_story(root, title, None)?;
-        Ok(snap.id)
-    })
+    match run(
+        root,
+        Invocation::New {
+            title: title.to_string(),
+            state: None,
+            story_type: None,
+            description: None,
+            priority: None,
+            labels: None,
+            assignee: None,
+        },
+    )
     .unwrap()
+    {
+        Response::Story(view) => view.story.id,
+        other => panic!("expected a story, got {other:?}"),
+    }
 }
 
-/// Helper: write story events inside a lock.
-fn write_events(root: &Path, id: &str, events: &[StoryEvent]) {
-    storyhook::lock::with_project_lock(root, || {
-        storyhook::storage::write_story_events(root, id, events)
-    })
-    .unwrap();
+/// Helper: the project as the TUI sees it.
+fn load(root: &Path) -> DataStore {
+    DataStore::load(&LegacyInvoker::new(root)).unwrap()
 }
 
-/// Helper: load a story's current events.
+/// Helper: load a story's current events — the TUI's undo snapshot.
 fn load_events(root: &Path, id: &str) -> Vec<StoryEvent> {
-    storyhook::storage::load_open_story_events(root, id).unwrap_or_default()
+    match run(
+        root,
+        Invocation::History {
+            action: HistoryAction::Read { id: id.to_string() },
+        },
+    )
+    .unwrap()
+    {
+        Response::StoryHistory(events) => events,
+        other => panic!("expected a history, got {other:?}"),
+    }
 }
 
-/// Helper: perform the undo operation (same logic as dispatch).
+/// Helper: perform the undo operation — the same invocation `dispatch` makes.
 fn perform_undo(root: &Path, entry: &UndoEntry) {
-    let story_id = entry.story_id.clone();
-    let events_before = entry.events_before.clone();
-    storyhook::lock::with_project_lock(root, || {
-        if events_before.is_empty() {
-            let paths = ProjectPaths::new(root);
-            let path = paths.open_story_file(&story_id);
-            if path.exists() {
-                std::fs::remove_file(&path)
-                    .map_err(|e| storyhook::error::AppError::Storage(e.to_string()))?;
-            }
-            Ok(())
-        } else {
-            storyhook::storage::rewrite_story_events(root, &story_id, &events_before)
-        }
-    })
+    run(
+        root,
+        Invocation::History {
+            action: HistoryAction::Restore {
+                id: entry.story_id.clone(),
+                events: entry.events_before.clone(),
+            },
+        },
+    )
     .unwrap();
 }
 
@@ -76,7 +114,7 @@ fn undo_move_story_restores_state() {
     assert_eq!(id, "UM-1");
 
     // Verify initial state is "todo"
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     let story = store.find_story("UM-1").unwrap();
     assert_eq!(story.state, "todo");
 
@@ -84,17 +122,19 @@ fn undo_move_story_restores_state() {
     let events_before = load_events(&root, &id);
 
     // Move to in-progress
-    write_events(
+    run(
         &root,
-        &id,
-        &[StoryEvent::StoryStateChanged {
-            at: storyhook::storage::now(),
+        Invocation::SetState {
+            id: id.clone(),
             state: "in-progress".to_string(),
-        }],
-    );
+            comment: None,
+            if_state: None,
+        },
+    )
+    .unwrap();
 
     // Verify move happened
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     let story = store.find_story("UM-1").unwrap();
     assert_eq!(story.state, "in-progress");
 
@@ -107,7 +147,7 @@ fn undo_move_story_restores_state() {
     perform_undo(&root, &entry);
 
     // Verify undo restored state
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     let story = store.find_story("UM-1").unwrap();
     assert_eq!(story.state, "todo");
 }
@@ -123,14 +163,16 @@ fn redo_after_undo() {
 
     // Snapshot, move, then undo
     let events_before_move = load_events(&root, &id);
-    write_events(
+    run(
         &root,
-        &id,
-        &[StoryEvent::StoryStateChanged {
-            at: storyhook::storage::now(),
+        Invocation::SetState {
+            id: id.clone(),
             state: "in-progress".to_string(),
-        }],
-    );
+            comment: None,
+            if_state: None,
+        },
+    )
+    .unwrap();
 
     // Snapshot current state before undo (this becomes the redo snapshot)
     let events_after_move = load_events(&root, &id);
@@ -143,7 +185,7 @@ fn redo_after_undo() {
     };
     perform_undo(&root, &undo_entry);
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     assert_eq!(store.find_story("RD-1").unwrap().state, "todo");
 
     // Redo: restore events_after_move
@@ -154,7 +196,7 @@ fn redo_after_undo() {
     };
     perform_undo(&root, &redo_entry); // Redo uses same mechanism as undo
 
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     assert_eq!(store.find_story("RD-1").unwrap().state, "in-progress");
 }
 
@@ -168,7 +210,7 @@ fn undo_create_story_deletes_it() {
     assert_eq!(id, "UC-1");
 
     // Verify story exists
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     assert_eq!(store.story_count(), 1);
 
     // Undo creation: events_before is empty (story didn't exist)
@@ -179,12 +221,11 @@ fn undo_create_story_deletes_it() {
     };
     perform_undo(&root, &entry);
 
-    // Verify story file is gone
-    let paths = ProjectPaths::new(&root);
-    assert!(!paths.open_story_file(&id).exists());
+    // Verify the story is gone — it has no history left, and nothing to load
+    assert!(load_events(&root, &id).is_empty());
 
     // Verify DataStore no longer has the story
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     assert_eq!(store.story_count(), 0);
 }
 
@@ -245,34 +286,24 @@ fn close_archive_not_undoable() {
     // Snapshot before close
     let events_before = load_events(&root, &id);
 
-    // Simulate close: write close events + archive
-    storyhook::lock::with_project_lock(&root, || {
-        storyhook::storage::write_story_events(
-            &root,
-            &id,
-            &[
-                StoryEvent::StoryStateChanged {
-                    at: storyhook::storage::now(),
-                    state: "done".to_string(),
-                },
-                StoryEvent::StoryClosedAndArchived {
-                    at: storyhook::storage::now(),
-                    state: "done".to_string(),
-                },
-            ],
-        )?;
-        storyhook::storage::archive_story(&root, &id)?;
-        Ok(())
-    })
+    // Close it: a move into a CLOSED state archives the story
+    run(
+        &root,
+        Invocation::SetState {
+            id: id.clone(),
+            state: "done".to_string(),
+            comment: None,
+            if_state: None,
+        },
+    )
     .unwrap();
 
-    // Verify archived (file gone from open/)
-    let paths = ProjectPaths::new(&root);
-    assert!(!paths.open_story_file(&id).exists());
+    // Verify archived: the story has left the project the TUI can see
+    assert!(load(&root).find_story(&id).is_none());
 
     // In the dispatch code, MoveStory to a CLOSED state does NOT push to undo_stack.
     // We verify this by checking that the undo_stack remains empty.
-    let mut state = AppState::new(DataStore::load(&root).unwrap());
+    let mut state = AppState::new(load(&root));
 
     // MoveStory dispatch checks is_close and only pushes undo when !is_close.
     // Simulate that behavior:
@@ -300,7 +331,7 @@ fn undo_set_priority_restores() {
     let id = create_story(&root, "Priority test");
 
     // Verify initial priority is None
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     let story = store.find_story("SP-1").unwrap();
     assert_eq!(story.priority, Priority::None);
 
@@ -308,17 +339,17 @@ fn undo_set_priority_restores() {
     let events_before = load_events(&root, &id);
 
     // Set priority to High
-    write_events(
+    run(
         &root,
-        &id,
-        &[StoryEvent::StoryPrioritySet {
-            at: storyhook::storage::now(),
-            priority: Priority::High,
-        }],
-    );
+        Invocation::SetPriority {
+            id: id.clone(),
+            priority: "high".to_string(),
+        },
+    )
+    .unwrap();
 
     // Verify priority changed
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     assert_eq!(store.find_story("SP-1").unwrap().priority, Priority::High);
 
     // Undo: restore events from snapshot
@@ -330,6 +361,6 @@ fn undo_set_priority_restores() {
     perform_undo(&root, &entry);
 
     // Verify priority restored to None
-    let store = DataStore::load(&root).unwrap();
+    let store = load(&root);
     assert_eq!(store.find_story("SP-1").unwrap().priority, Priority::None);
 }
