@@ -3,8 +3,9 @@
 > **Purpose:** continuity record for the data-layer rearchitecture. Any session resuming this
 > program reads this file first, then the approved plan. Update + commit after EVERY step.
 >
-> **Approved plan:** `/Users/mikey/.claude/plans/help-me-plan-a-toasty-pelican.md` (source of
-> truth until W0 commits it as `docs/spec/data-layer-rearchitecture.md`).
+> **Spec of record:** [`docs/spec/data-layer-rearchitecture.md`](../spec/data-layer-rearchitecture.md)
+> — the design. This file is the execution state; that file is what we agreed to build.
+> Companion: [`flip-checklist.md`](flip-checklist.md) (the enumerated W4 work).
 > **Worktree:** `/Volumes/Code/mikeyward/storyhook/.claude/worktrees/rearch` (linked worktree —
 > waves end at "PR opened"; NO version bumps, NO deploys, NO force-push, NO touching main).
 > **Execution model:** orchestrator (main session) spawns one subagent per step, sequentially.
@@ -16,9 +17,9 @@
 
 | Wave | Branch/PR | Status |
 |---|---|---|
-| W0 gate repair + harness | `rearch/w0-gate-repair` | **IN PROGRESS** — step W0.5 next |
-| W0b envelope + Invoker seam | — | pending (after W0) |
-| W1 store engine | — | pending |
+| W0 gate repair + harness | `rearch/w0-gate-repair` | **PR OPENED** — awaiting merge (number in HANDOFF.md) |
+| W0b envelope + Invoker seam | — | entry-ready once W0 merges |
+| W1 store engine | — | entry-ready once W0 merges (parallel with W0b) |
 | W2a/b/c/d services | — | pending |
 | W3 importer | — | pending |
 | W4 THE FLIP | — | pending (one uninterrupted session; revert only while W3 round-trip green) |
@@ -43,9 +44,9 @@
 - **W0.4 DONE** — baseline capture: `scripts/capture-baseline.sh` (`4179f48`) →
   `docs/rearch/baseline/` (this commit). **Census 10/10 green**, 1171 Rust tests / 52
   binaries / 2 ignored, gate median 36.4s. See Step log.
-- **W0.5** — commit plan as docs/spec/data-layer-rearchitecture.md; CLAUDE.md mini-roadmap;
-  W4 flip checklist enumeration (path-assertion tests + ~8 raw-JSONL corruption fabricators);
-  HANDOFF.md; open PR `test: repair the quality gate and unify the integration harness`.
+- **W0.5 DONE** — spec of record at `docs/spec/data-layer-rearchitecture.md`; W4 flip checklist
+  at `docs/rearch/flip-checklist.md`; CLAUDE.md mini-roadmap; HANDOFF.md; PR opened. See Step
+  log for the checklist's corrections to the plan's estimates.
 
 ## Key facts discovered (do not re-derive)
 
@@ -306,6 +307,37 @@
     matches its directory, and jq's array construction drops an ELEMENT when `capture` matches
     nothing — which reported `storyhook-test-support`'s 23 tests as zero. A field-count
     assertion and an `-x "$exe"` check now refuse to let either pass quietly.
+
+- 2026-07-28 W0.5: three docs commits, then the PR. No `src/`/`tests/`/`crates/` changes.
+  - **The spec of record is now in-repo** at `docs/spec/data-layer-rearchitecture.md`; this
+    file's header points there instead of `~/.claude/plans/`. The adaptation dropped the
+    plan-approval scaffolding and folded in the plan's own superseding rulings (the W0 row now
+    names `storyhook-test-support`, not the abandoned `tests/support/mod.rs` sketch). Design
+    changes go there; execution state stays here.
+  - **The flip checklist corrected two of the plan's estimates**, both upward:
+    - `.storyhook` path refs: plan said ~85 across 18 files; actual **104 across 26 files**
+      (99 in `tests/`, 5 in the support crate). The two named hot spots were right
+      (`init_command.rs` 20, `session_start.rs` 14).
+    - Raw-state fabricators: plan said ~8 tests writing raw JSONL. **8 tests is right, but they
+      occupy 10 sites**, and two corrupt by *deleting* (a directory, a `project.toml`) and one
+      by writing TOML — so `inject_events()` needs a raw-bytes form and a delete form, not just
+      `Vec<StoryEvent>`. The plan's named files were partly wrong: `cli_grammar.rs`,
+      `story_delete.rs` and `story_state_archive.rs` only *assert on* the JSONL, they do not
+      fabricate; the real fabricators are `doctor.rs`, `error_contract.rs`, `session_start.rs`
+      and `tui_integration.rs`.
+  - **New finding the plan did not enumerate: 85 white-box call sites** into
+    `storyhook::{storage,lock,registry}` + `ProjectPaths` across 6 files — APIs W4 *deletes*, so
+    these are hard compile breaks, not silent ones. **70 of the 85 are in `tui_integration.rs`
+    (50) and `tui_undo.rs` (20), which W2c already owns.** If W2c ships without porting them,
+    W4's budget grows by the largest single chunk in the checklist. Flagged in the checklist's
+    category C.
+  - Two decisions the checklist refuses to make on W4's behalf, both user-visible: where the
+    scaffolded `.storyhook/CLAUDE.md` goes (23 refs depend on the answer), and whether
+    user-authored `plugin-config.toml`/`hooks.toml` stay in the repo (15 refs). Also flagged:
+    `help_flag_sweep.rs`'s tree-fingerprint (`:135`) becomes a tautology over an empty directory
+    unless it is re-pointed at the store — **a green tautology there re-opens SH-52**.
+  - `TODO(rearch)` migration list: **45 files** (42 in `tests/`, 3 in `src/`), unchanged by this
+    step.
 
 ## Resume protocol (fresh session)
 
