@@ -32,6 +32,7 @@ pub mod config;
 pub mod project;
 pub mod relation;
 pub mod story;
+pub mod system;
 pub mod templates;
 pub mod view;
 
@@ -50,6 +51,7 @@ pub use config::{ConfigService, StateEdit, StateListing};
 pub use project::{InitOptions, InitOutcome, ProjectPointer, ProjectService};
 pub use relation::{RelationOutcome, RelationService};
 pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
+pub use system::SystemService;
 
 /// Where a service reads "now" from.
 ///

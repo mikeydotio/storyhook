@@ -15,13 +15,16 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::app;
-use crate::cli::{CliOptions, Invocation, StateAction, TypeAction};
+use crate::cli::{
+    CliOptions, HELP_TEXT, HooksAction, Invocation, PluginAction, StateAction, TypeAction,
+};
 use crate::domain::{FieldEdit, StateChanges, SuperState};
 use crate::error::AppError;
+use crate::help_topics;
 use crate::output::Response;
 use crate::service::{
     Clock, ConfigService, Ctx, FieldEdits, InitOptions, InitOutcome, NewStoryInput, ProjectService,
-    RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService,
+    RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService, SystemService,
 };
 use crate::store::Store;
 
@@ -121,13 +124,18 @@ impl Invoker for LegacyInvoker<'_> {
 ///
 /// # Completeness
 ///
-/// Only the story-lifecycle and relation invocations are ported so far.
-/// Everything else answers with [`not_yet_ported`], which is an internal error
-/// naming the variant: nothing routes production traffic here yet, and the
-/// wave that finishes the port has "every variant dispatches" as its exit
-/// criterion. A silent fallback to the legacy path is exactly what this must
-/// not do — a half-ported dispatcher that quietly works is one nobody
-/// finishes.
+/// The story lifecycle, relations, project initialization, configuration and
+/// the system commands are ported. The query surfaces (`list`, `show`,
+/// `summary`, `graph`, `phase`, `epic`, …), the integrity commands and the
+/// git/GitHub family are not. Everything unported answers with
+/// [`not_yet_ported`], which is an internal error naming the variant: nothing
+/// routes production traffic here yet, and the wave that finishes the port has
+/// "every variant dispatches" as its exit criterion. A silent fallback to the
+/// legacy path is exactly what this must not do — a half-ported dispatcher
+/// that quietly works is one nobody finishes.
+///
+/// `tests/differential_lifecycle.rs` holds the roster and asserts that the
+/// ported and unported lists together account for every variant.
 pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Response, AppError> {
     match invocation {
         Invocation::New {
@@ -245,10 +253,38 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         Invocation::MemberAdd { input } => ConfigService::new(ctx)
             .add_member(&input)
             .map(|member| Response::Message(format!("added member {}", member.id))),
-        Invocation::Init { .. } => {
-            dispatch_unscoped(ctx.store(), ctx.cwd(), &ctx.now(), invocation)
+        Invocation::Scaffold { kind } => SystemService::new(ctx)
+            .scaffold(&kind)
+            .map(Response::Message),
+        Invocation::Hooks { action } => dispatch_hooks(ctx, action),
+        Invocation::Plugin { action } => {
+            let service = SystemService::new(ctx);
+            match action {
+                PluginAction::Install { target } => service.install_plugin(&target),
+                PluginAction::Uninstall { target } => service.uninstall_plugin(&target),
+            }
+            .map(Response::Message)
         }
+        Invocation::Init { .. }
+        | Invocation::Help
+        | Invocation::HelpTopic { .. }
+        | Invocation::HelpCompact
+        | Invocation::HelpAll
+        | Invocation::Version => dispatch_unscoped(ctx.store(), ctx.cwd(), &ctx.now(), invocation),
         other => Err(not_yet_ported(&other)),
+    }
+}
+
+/// The `story hooks …` family.
+fn dispatch_hooks<S: Store>(ctx: &Ctx<'_, S>, action: HooksAction) -> Result<Response, AppError> {
+    let service = SystemService::new(ctx);
+    match action {
+        HooksAction::Install => service.install_git_hooks().map(Response::Message),
+        HooksAction::Uninstall => service.uninstall_git_hooks().map(Response::Message),
+        HooksAction::List => Ok(Response::Message(service.list_event_hooks())),
+        HooksAction::Test { event_type } => {
+            service.test_event_hook(&event_type).map(Response::Message)
+        }
     }
 }
 
@@ -438,6 +474,25 @@ pub fn dispatch_unscoped<S: Store>(
                 })?;
             Ok(Response::Message(init_message(&outcome)))
         }
+        // Pure functions of compiled-in text. They need neither a project nor
+        // a store, and answering them here is what lets `story --help` work in
+        // a directory storyhook has never heard of.
+        Invocation::Help => Ok(Response::Message(HELP_TEXT.to_string())),
+        Invocation::HelpCompact => Ok(Response::Message(
+            help_topics::compact_reference().to_string(),
+        )),
+        Invocation::HelpAll => Ok(Response::Message(help_topics::all_topics_text())),
+        Invocation::HelpTopic { topic } => match help_topics::get_help_topic(&topic) {
+            Some(text) => Ok(Response::Message(text.to_string())),
+            None => Err(AppError::Usage(format!(
+                "unknown help topic `{topic}`. Available: {}",
+                help_topics::list_topics().join(", ")
+            ))),
+        },
+        Invocation::Version => Ok(Response::Message(format!(
+            "story {}",
+            env!("CARGO_PKG_VERSION")
+        ))),
         other => Err(not_yet_ported(&other)),
     }
 }
