@@ -7,31 +7,25 @@
 //! `tests/fix_cycle_5.rs`.
 
 use assert_cmd::Command;
-use tempfile::tempdir;
+use storyhook_test_support::{Project, TestEnv};
 
+/// Every `story` invocation in this file runs in the shared test
+/// environment's private HOME/XDG directories, so nothing here can reach the
+/// developer's own storyhook state.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
-fn init_and_create(dir: &std::path::Path) -> String {
-    story(dir)
-        .args(["init", "--prefix", "TST"])
-        .assert()
-        .success();
-    let output = story(dir)
-        .args(["new", "Test story", "--json"])
-        .output()
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    json["story"]["story"]["id"].as_str().unwrap().to_string()
+/// A `TST`-prefixed project holding one story, and that story's id.
+fn init_and_create() -> (Project<'static>, String) {
+    let project = TestEnv::shared().project().prefix("TST").build();
+    let id = project.new_story("Test story");
+    (project, id)
 }
 
 #[test]
 fn move_with_matching_if_state_succeeds() {
-    let dir = tempdir().unwrap();
-    let id = init_and_create(dir.path());
+    let (dir, id) = init_and_create();
 
     // Whatever state `new` seeds stories into — read it back rather than
     // hardcoding, so this test doesn't assume storyhook's default state name.
@@ -50,8 +44,7 @@ fn move_with_matching_if_state_succeeds() {
 
 #[test]
 fn move_with_stale_if_state_conflicts_not_errors() {
-    let dir = tempdir().unwrap();
-    let id = init_and_create(dir.path());
+    let (dir, id) = init_and_create();
 
     // First mover wins.
     story(dir.path())
@@ -82,8 +75,7 @@ fn move_with_stale_if_state_conflicts_not_errors() {
 fn move_without_if_state_is_unconditional_as_before() {
     // Backward compatibility: existing callers (humans, the web dashboard,
     // /storyhook:work) that never pass --if-state keep today's behavior.
-    let dir = tempdir().unwrap();
-    let id = init_and_create(dir.path());
+    let (dir, id) = init_and_create();
     story(dir.path())
         .args(["move", &id, "in-progress"])
         .assert()
@@ -99,8 +91,7 @@ fn move_comment_starting_with_double_dash_is_preserved_verbatim() {
     // the one position immediately after <state>, so a comment argument
     // that happens to begin with `--` must never be mistaken for an
     // unrecognized flag and rejected.
-    let dir = tempdir().unwrap();
-    let id = init_and_create(dir.path());
+    let (dir, id) = init_and_create();
 
     story(dir.path())
         .args(["move", &id, "done", "-- deployed to prod"])
@@ -131,8 +122,7 @@ fn move_comment_containing_if_state_token_is_not_spliced_or_dropped() {
     // only when it is the very first trailing token (immediately after
     // <state>); anywhere else it is inert comment text, exactly like the
     // pre-existing unconditional `join_tokens(&args[3..])` behavior.
-    let dir = tempdir().unwrap();
-    let id = init_and_create(dir.path());
+    let (dir, id) = init_and_create();
 
     story(dir.path())
         .args([
@@ -170,8 +160,7 @@ fn move_with_typoed_flag_name_immediately_after_state_is_comment_not_error() {
     // comment text, and the move proceeds unconditionally (exactly as it
     // would have before `--if-state` existed), rather than being rejected
     // or silently treated as a defeated CAS guard.
-    let dir = tempdir().unwrap();
-    let id = init_and_create(dir.path());
+    let (dir, id) = init_and_create();
 
     story(dir.path())
         .args(["move", &id, "in-progress", "--if-stat", "todo"])
@@ -197,8 +186,7 @@ fn move_if_state_against_closed_story_reports_conflict_not_generic_error() {
     // modified" validation error, since a caller branching on
     // result == "conflict" must not misclassify a benign lost race as a
     // fatal, unexpected error.
-    let dir = tempdir().unwrap();
-    let id = init_and_create(dir.path());
+    let (dir, id) = init_and_create();
 
     story(dir.path())
         .args(["move", &id, "done"])
@@ -232,8 +220,7 @@ fn move_if_state_against_deleted_story_reports_conflict_not_generic_error() {
     // error instead of a conflict -- exactly the failure mode this test
     // pins shut, mirroring move_if_state_against_closed_story_reports_
     // conflict_not_generic_error for the delete path specifically.
-    let dir = tempdir().unwrap();
-    let id = init_and_create(dir.path());
+    let (dir, id) = init_and_create();
 
     let show = story(dir.path())
         .args(["show", &id, "--json"])
@@ -286,10 +273,9 @@ fn move_if_state_under_real_concurrency_yields_exactly_one_winner() {
     // (src/lock.rs), so a future reordering of the if_state comparison
     // relative to `lock::with_project_lock` (a TOCTOU regression) would
     // fail this test even though every sequential test above stays green.
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    let dir = tempdir().unwrap();
-    let id = init_and_create(dir.path());
+    let (dir, id) = init_and_create();
 
     let show = story(dir.path())
         .args(["show", &id, "--json"])
@@ -301,7 +287,7 @@ fn move_if_state_under_real_concurrency_yields_exactly_one_winner() {
         .unwrap()
         .to_string();
 
-    let binary = assert_cmd::cargo::cargo_bin("story");
+    let env = dir.env();
     const ATTEMPTS: usize = 20;
 
     // Spawn every attempt before waiting on any of them — this is what
@@ -309,8 +295,7 @@ fn move_if_state_under_real_concurrency_yields_exactly_one_winner() {
     // just inferring concurrency safety from back-to-back sequential calls.
     let children: Vec<_> = (0..ATTEMPTS)
         .map(|_| {
-            Command::new(&binary)
-                .current_dir(dir.path())
+            env.raw_story(dir.path())
                 .args([
                     "move",
                     &id,
