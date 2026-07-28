@@ -900,3 +900,262 @@ fn init_leaves_no_pointer_file_before_the_flip() {
     store_init(store_root.path(), &store, None, true).expect("store init");
     assert!(!pointer_path(&store_root.path().canonicalize().unwrap()).exists());
 }
+
+// --- phases and epics ------------------------------------------------------
+
+fn phase(action: storyhook::cli::PhaseAction) -> Invocation {
+    Invocation::Phase { action }
+}
+
+fn epic(action: storyhook::cli::EpicAction) -> Invocation {
+    Invocation::Epic { action }
+}
+
+#[test]
+fn the_phase_family_agrees_from_an_empty_project_onward() {
+    use storyhook::cli::PhaseAction;
+    let differential = Differential::new();
+    differential.step("phase list on an empty project", phase(PhaseAction::List));
+    differential.step(
+        "phase show on an empty project",
+        phase(PhaseAction::Show { phase: "1".into() }),
+    );
+
+    let created = differential.step_id(
+        "phase create with a title",
+        phase(PhaseAction::Create {
+            phase: "1".into(),
+            title: Some("the migration".into()),
+        }),
+    );
+    differential.step(
+        "phase create without a title",
+        phase(PhaseAction::Create {
+            phase: "2".into(),
+            title: None,
+        }),
+    );
+    differential.show("the phase story", &created);
+    differential.step("phase list", phase(PhaseAction::List));
+    differential.step("phase show", phase(PhaseAction::Show { phase: "1".into() }));
+}
+
+#[test]
+fn assigning_and_clearing_a_phase_agrees() {
+    use storyhook::cli::PhaseAction;
+    let differential = Differential::new();
+    let id = differential.step_id("new", new_story("needs a phase"));
+
+    differential.step(
+        "phase remove before there is one",
+        phase(PhaseAction::Remove { id: id.clone() }),
+    );
+    differential.step(
+        "phase add",
+        phase(PhaseAction::Add {
+            id: id.clone(),
+            phase: "1".into(),
+        }),
+    );
+    differential.show("after being assigned", &id);
+    differential.step(
+        "phase add again, to a different phase",
+        phase(PhaseAction::Add {
+            id: id.clone(),
+            phase: "2".into(),
+        }),
+    );
+    differential.show("a story belongs to one phase", &id);
+    differential.step(
+        "phase remove",
+        phase(PhaseAction::Remove { id: id.clone() }),
+    );
+    differential.show("after being cleared", &id);
+    differential.step(
+        "phase add to an unknown story",
+        phase(PhaseAction::Add {
+            id: "SH-999".into(),
+            phase: "1".into(),
+        }),
+    );
+    differential.step(
+        "phase remove from an unknown story",
+        phase(PhaseAction::Remove {
+            id: "SH-999".into(),
+        }),
+    );
+}
+
+#[test]
+fn phasing_a_closed_story_agrees_that_it_is_refused() {
+    use storyhook::cli::PhaseAction;
+    let differential = Differential::new();
+    let id = differential.step_id("new", new_story("already done"));
+    differential.step("close", move_to(&id, "done"));
+    differential.step(
+        "phase add",
+        phase(PhaseAction::Add {
+            id: id.clone(),
+            phase: "1".into(),
+        }),
+    );
+    differential.step(
+        "phase remove",
+        phase(PhaseAction::Remove { id: id.clone() }),
+    );
+}
+
+#[test]
+fn a_phase_rollup_agrees_across_every_bucket() {
+    use storyhook::cli::PhaseAction;
+    let differential = Differential::new();
+    let ids: Vec<String> = ["one", "two", "three", "four", "five"]
+        .iter()
+        .map(|title| differential.step_id("new", new_story(title)))
+        .collect();
+    for id in &ids {
+        differential.step(
+            "phase add",
+            phase(PhaseAction::Add {
+                id: id.clone(),
+                phase: "1".into(),
+            }),
+        );
+    }
+    differential.step("in progress", move_to(&ids[1], "in-progress"));
+    differential.step("closed", move_to(&ids[2], "done"));
+    differential.step(
+        "blocked by an open story",
+        Invocation::Relate {
+            a: ids[4].clone(),
+            relation: "blocks".into(),
+            b: ids[3].clone(),
+            remove: false,
+        },
+    );
+    differential.step("phase list", phase(PhaseAction::List));
+    differential.step("phase show", phase(PhaseAction::Show { phase: "1".into() }));
+}
+
+#[test]
+fn phases_agree_on_their_ordering_including_ten_before_two() {
+    use storyhook::cli::PhaseAction;
+    let differential = Differential::new();
+    for number in ["2", "10", "1"] {
+        differential.step(
+            "phase create",
+            phase(PhaseAction::Create {
+                phase: number.to_string(),
+                title: None,
+            }),
+        );
+    }
+    differential.step("phase list", phase(PhaseAction::List));
+}
+
+#[test]
+fn the_epic_family_agrees_including_every_rejection() {
+    use storyhook::cli::EpicAction;
+    let differential = Differential::new();
+    differential.step("epic list on an empty project", epic(EpicAction::List));
+    let id = differential.step_id(
+        "epic create",
+        epic(EpicAction::Create {
+            title: "the big one".into(),
+        }),
+    );
+    differential.step("epic list", epic(EpicAction::List));
+    differential.step("epic show", epic(EpicAction::Show { id: id.clone() }));
+    differential.step(
+        "epic show an unknown story",
+        epic(EpicAction::Show {
+            id: "SH-999".into(),
+        }),
+    );
+
+    let child = differential.step_id("new", new_story("a child"));
+    differential.step(
+        "epic add",
+        epic(EpicAction::Add {
+            epic_id: id.clone(),
+            story_id: child.clone(),
+        }),
+    );
+    differential.show("the epic", &id);
+    differential.show("the child", &child);
+    differential.step(
+        "epic add the same child again",
+        epic(EpicAction::Add {
+            epic_id: id.clone(),
+            story_id: child.clone(),
+        }),
+    );
+    differential.step(
+        "epic add a story to itself",
+        epic(EpicAction::Add {
+            epic_id: id.clone(),
+            story_id: id.clone(),
+        }),
+    );
+    differential.step(
+        "epic add an unknown story",
+        epic(EpicAction::Add {
+            epic_id: id.clone(),
+            story_id: "SH-999".into(),
+        }),
+    );
+    differential.step(
+        "epic add to an unknown epic",
+        epic(EpicAction::Add {
+            epic_id: "SH-999".into(),
+            story_id: child.clone(),
+        }),
+    );
+}
+
+#[test]
+fn a_second_parent_agrees_that_it_is_refused() {
+    use storyhook::cli::EpicAction;
+    let differential = Differential::new();
+    let first = differential.step_id(
+        "epic create",
+        epic(EpicAction::Create {
+            title: "first".into(),
+        }),
+    );
+    let second = differential.step_id(
+        "epic create",
+        epic(EpicAction::Create {
+            title: "second".into(),
+        }),
+    );
+    let child = differential.step_id("new", new_story("a child"));
+    differential.step(
+        "epic add",
+        epic(EpicAction::Add {
+            epic_id: first.clone(),
+            story_id: child.clone(),
+        }),
+    );
+    differential.step(
+        "epic add to a second parent",
+        epic(EpicAction::Add {
+            epic_id: second.clone(),
+            story_id: child.clone(),
+        }),
+    );
+    differential.show("the child has one parent", &child);
+}
+
+#[test]
+fn creating_an_epic_without_the_epic_type_agrees() {
+    use storyhook::cli::EpicAction;
+    let differential = Differential::new();
+    differential.step("type remove epic", remove_type("epic"));
+    differential.step(
+        "epic create",
+        epic(EpicAction::Create {
+            title: "no type for this".into(),
+        }),
+    );
+}
