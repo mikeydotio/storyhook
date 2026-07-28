@@ -15,6 +15,7 @@ pub mod lock;
 pub mod output;
 pub mod plugin;
 pub mod registry;
+pub mod service;
 pub mod storage;
 pub mod store;
 pub mod tui;

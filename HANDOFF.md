@@ -1,97 +1,96 @@
-# Handoff — end of wave W0 (data-layer rearchitecture)
+# Handoff — end of wave W2a (data-layer rearchitecture)
 
-**Read first:** [`docs/rearch/STATE.md`](docs/rearch/STATE.md) (execution ledger) and
+**Read first:** [`docs/rearch/STATE.md`](docs/rearch/STATE.md) (execution ledger — the W2a step
+log carries the service API and every deviation) and
 [`docs/spec/data-layer-rearchitecture.md`](docs/spec/data-layer-rearchitecture.md) (the design).
-This file is the wave boundary summary; the ledger is the detail.
+This file is the wave-boundary summary; the ledger is the detail.
 
 ## State
 
-- **Wave W0 complete** — `test: repair the quality gate and unify the integration harness`.
-- **Branch:** `rearch/w0-gate-repair`, based on `main@838d68a`.
-- **PR:** [#60](https://github.com/mikeydotio/storyhook/pull/60).
-- **Merge state: MERGED 2026-07-28.** Work happened in a linked worktree, so the wave stopped
-  at "PR opened" by design. W0b was built **stacked on this branch** rather than blocked on it,
-  and merged into `main` behind it (`rearch/w0b-envelope`).
+- **Wave W2a complete** — `feat(service): story lifecycle and relation services over Store`.
+- **Branch:** `rearch/w2a-lifecycle`, based on merged `main@271c7cf` (which contains W0/W0b/W1).
+- **PR:** opened against `main`. Work happens in a linked worktree, so this wave stops at
+  "PR opened" by design; the orchestrator merges it.
+- **W1 merged** as [PR #62](https://github.com/mikeydotio/storyhook/pull/62).
 
 ## Exit-criteria evidence
 
-- **Flake census 10/10 green.** Ten consecutive `make test` runs; the verdict is per-*test*, not
-  per-run — every one of the 1170 `ok` lines parsed from each run's log (1171 Rust tests, minus
-  the 2 ignored, plus 1 doctest) was clean in all ten, and all ten reported identical counts
-  (rust 1170/0/2, bash 16/0). No count drift hiding behind a green verdict.
-- **Gate median 36.4s** over those ten runs (36.14–37.66, ±2%) on Psamathe (M1 Max, rustc
-  1.97.1). Pre-W0 warm baseline was ~29s; W0 added ~7s, of which 5s is one unavoidable real
-  `LockTimeout` deadline in `error_contract.rs` and 2.3s is the golden corpus.
-- **Inventory: 1171 Rust tests / 52 binaries / 2 ignored**, 1 doctest, 16 bash files.
-- **The two ignored tests are the program's headline REDs** — `worktree_truth.rs:118` and
-  `:158`, both `#[ignore = "SH-46: …goes green at the W4 flip"]`. Their captured red evidence is
-  in STATE.md. `scripts/capture-baseline.sh` asserts the ignored count against
-  `docs/rearch/baseline/known-red.md`, so a new `#[ignore]` cannot enter quietly.
-- **Baseline committed** to `docs/rearch/baseline/` (regenerate + diff at any wave boundary):
-  test-name inventory, error-code table (all 10 `AppError` variants, extracted not transcribed),
-  golden CLI corpus (177 invocations / 27 snapshots, `INSTA_UPDATE=no` in the gate), this repo's
-  live `.storyhook/` tarball + its golden export (61 stories / 486 events / 44 archived),
-  archive.db schema as version 0, timings.
-- **The flake mechanism was proven, not guessed** — two orphaned `web_test-*` processes holding
-  ~100 LISTEN sockets. Fixed at the source (kernel-assigned ports, real readiness handshake,
-  bounded tailnet probe, orphan-check bracketing `make test`).
+- **`make test` green twice consecutively at the tip**, plus once after every commit.
+- **1422 → 1575 tests** (+153): 86 `service_story`, 24 `service_relations`,
+  39 `differential_lifecycle`, 4 `domain` fold units. 2 ignored, unchanged — still the W4
+  headline REDs in `worktree_truth.rs`.
+- **`src/app.rs` is untouched.** `git diff 271c7cf..HEAD -- src/app.rs` is empty.
+- **Zero assertion or snapshot edits.** `git diff --stat 271c7cf..HEAD -- tests/` reports only
+  the three new files; the golden corpus is byte-unchanged under `INSTA_UPDATE=no`.
+- **The differential harness works** — it caught a real legacy defect on its first full run
+  (below), and deleting the `progress` rollup from the view builder fails five of its tests.
+- **The drift guard bites** — two `should_panic` tests damage a read model through a second
+  connection to prove it is not vacuously green.
+- **Timing: 62.7s and 62.5s warm**, against W1's ~56s — **+6.5s**, of which 2.0s is the three
+  new binaries actually running (`service_story` 0.46s, `service_relations` 0.27s,
+  `differential_lifecycle` 1.31s) and the rest is linking them. Mid-wave runs measured ~2:07;
+  that is not the steady state — touching `src/domain.rs` invalidates every downstream binary,
+  so any commit that changed it paid a full rebuild.
 
-## Entry criteria for the next waves
+## What landed
 
-**W1 is entry-ready** now that this PR has merged. W0b, the other parallel wave, is already
-done — see below.
+Four commits, each green under `make test`:
 
-- **W0b is DONE** — branch `rearch/w0b-envelope`, stacked on this branch rather than waiting for
-  the merge (`d272a7b` the export fix, `2db8310` the envelope, `ef717f2` the seam). It also
-  shipped the `story export --json` double-encoding fix. See STATE.md's W0b step-log entry for
-  the `Invoker`/`InvokeRequest` API and the `WireError` design rationale.
-- **W1** starts from `docs/rearch/baseline/archive-schema.sql` (legacy = schema version 0) and
-  must commit old-schema fixture DBs while the legacy code still exists to generate them.
-- Resumption checklist (from the spec): confirm tip → read this file → **`make test` green
-  before touching anything** → `story list` → `gh pr list` → reconfirm worktree constraints.
-- If `web_test` mass-fails on resume, check for orphaned `web_test-*` listeners in 19xxx first.
+| SHA | What |
+|---|---|
+| `845afb9` | `fold_story` retracts `closed_at`/`deleted`/`deleted_reason` on a move into an OPEN state |
+| `c67642b` | `Ctx`/`Clock`, `invoke::dispatch`, `service::view`, `StoryService`, `ServiceFixture` |
+| `fa4d610` | `RelationService` — both ends' events, folds and rows in one transaction |
+| `757bc7b` | the differential harness, and the legacy defect it found |
 
-## Deviations from the plan
+Nothing is wired into production: `dispatch` is reachable only from tests, every unported
+`Invocation` answers with a loud internal error, and the legacy path still serves every user.
 
-None in scope or sequencing. Three recorded additions, all inside W0's mandate:
+## Deviations (all recorded in the ledger)
 
-1. **A fifth `fix:` commit** (`e8d4cf8`) beyond the four planned — the readiness fix exposed a
-   production defect: `tailnet_identity()` shelled out to `tailscale status --json` with an
-   unbounded `Command::output()` *after* the loopback listener binds, so a wedged `tailscaled`
-   left the server bound-and-silent forever. That is the orphan-maker, and it affects the real
-   `story web start` daemon on :3456, not just tests.
-2. **Test-support became a workspace crate** (`crates/storyhook-test-support/`) rather than the
-   plan's earlier `tests/support/mod.rs` sketch — the plan's own architect ruling; the spec now
-   states only the crate form.
-3. **The W4 flip checklist found more than the plan estimated** (see below).
+1. **The dispatch skeleton is not its own commit** — its helpers exist only for the services,
+   so a skeleton-only commit fails `clippy -D warnings` on dead code.
+2. **BulkUpdate stays best-effort per item**, against the brief's "one failure → whole batch
+   rolled back". The legacy output has a per-item `error —` line; making the batch atomic
+   changes user-visible behaviour, and byte-compat is the higher rule. Each item *is* now
+   atomic on its own, which is the property the old three-filesystem-op sequence lacked.
+3. **`fold_story` changed** — outside `src/service/`, but reopen is not expressible
+   append-only without it. Own commit, own tests, zero assertion edits.
+4. **`StoreError` gained `Rejected(Box<AppError>)`** — the service→store error channel, without
+   which `Usage` and `StateConflict` cannot survive a rollback intact.
+5. **A `Clock` lives on `Ctx`** three waves before W5's `Environment` absorbs it.
 
-## Scope-creep ledger
+## Defect found, unfixed, needs a story
 
-Six defects were discovered en route and **deliberately left unfixed** — W0 ships `fix:` commits
-only for the four absorbed stories plus the orphan-maker. Full detail, with file:line evidence,
-is in **STATE.md's "Key facts discovered"** section:
+**A rejected `--state` burns a story number.** `storage::create_story_with_events` increments
+the on-disk counter *before* validating the requested state, so `story new --state nonsense`
+exits 2 and still consumes the number, leaving a permanent gap. Only `--state` shows it; type,
+priority and assignee are validated earlier, in `app.rs`. The store does not have the defect
+(the allocation is inside the transaction that uses it), so this is a deliberate behaviour
+change at the flip rather than a regression — **W4 should list it in the flip's
+behaviour-change notes.** Pinned by
+`differential_lifecycle.rs::a_rejected_initial_state_burns_a_story_number_in_the_legacy_leg_only`.
 
-1. `tailnet_identity()` unbounded probe (fixed here, but needs its own story — production).
-2. Positional-taking verbs still swallow unknown `--flags` as data (`story new --typo x`).
-3. **`story next` is nondeterministic** — `priority ASC, created_at ASC` with second-precision
-   timestamps; same-second ties fall back to file-read order. Production-visible.
-4. Id ordering is inconsistent across commands (numeric in `list`/`search`, lexicographic in
-   `graph`/`handoff`/`context`/`summary`).
-5. `story export --json` double-encodes — **fixed in W0b** (`d272a7b`); still needs a story
-   for the record, as does its unfixed sibling `context --format json`.
-6. `AppError::SyncConflict` is a dead variant, constructed nowhere in `src/`.
+## Next entry criteria (W2b / W2c / W2d)
 
-**None have story IDs yet, on purpose:** minting an ID from this worktree collides with IDs
-minted elsewhere — which is the exact corruption `worktree_truth.rs` proves. File them after the
-W4 flip.
+1. Confirm the tip, read the ledger's **W2a step log** — it carries the full service API and the
+   traps below — then `make test` green before touching anything.
+2. **Use `tx.states()`, not `tx.state_map()`, wherever order is part of the contract.** The map
+   is a `BTreeMap`; iterating it is alphabetical, and the default open state taken off it is
+   `in-progress` rather than `todo`.
+3. **Call `append_and_fold` inside your own `store.write(|tx| …)`** so the one-transaction
+   invariant stays visible at your call site.
+4. **Fire hooks after the commit, never inside it** — a hook shells out to `story` and needs its
+   own connection.
+5. **W2c's QueryService should absorb `service::view`**, not duplicate it.
+6. **Update `the_ported_arms_are_exactly_the_ones_this_wave_claims`** as you port arms; an arm
+   ported without a roster update fails there. Dispatch completeness is W2d's exit gate.
+7. W2c still owns the 70 white-box TUI call sites flagged in the W0.5 flip checklist; leaving
+   them grows W4's budget by the checklist's largest single chunk.
 
-## Story disposition
+## Worktree constraints (unchanged)
 
-- **Fixed in this PR, close on merge:** SH-51 (readiness handshake + OS-assigned ports), SH-52
-  (`--help` no longer creates a story), SH-53 (Spotlight/`$TMPDIR` fixtures), SH-59 (errors to
-  stderr). These are storyhook stories, not GitHub issues — they close via story-sync at merge,
-  not via a `Fixes #N` keyword.
-- **Blocked on the rearchitecture** (marked in `be1601c` so concurrent sessions don't pick them
-  up): SH-42, SH-43, SH-44 (web UI — deferred past W5; SH-43's "archived state" must not leak
-  into the W1 schema), SH-49, SH-50 (want the daemon — re-spec after W5).
-- **Goes green at W4:** SH-46, whose acceptance test is already in the tree and ignored.
+No version bumps, no deploys, no force-pushes, no touching `main` from here. Push over HTTPS
+(`git -c url."https://github.com/".insteadOf="git@github.com:" push origin <branch>`). Story IDs
+belong in commit **bodies**, never subjects. No story minting from this worktree — discovered
+defects go to the ledger's Key facts until the flip removes the id-collision hazard.
