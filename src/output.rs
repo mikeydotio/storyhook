@@ -1,16 +1,16 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::{Priority, ProgressRollup, StoryRelation, StorySnapshot, SuperState};
 use crate::error::AppError;
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StaleInfo {
     pub last_activity_at: String,
     pub last_activity_type: String,
     pub days_stale: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoryView {
     pub story: StorySnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -25,7 +25,7 @@ pub struct StoryView {
     pub progress: Option<ProgressRollup>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SummaryView {
     pub total_open: usize,
     pub total_closed: usize,
@@ -38,7 +38,7 @@ pub struct SummaryView {
     pub ready_stories: Vec<StoryView>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReportData {
     pub summary: SummaryView,
     pub stories: Vec<StoryView>,
@@ -46,7 +46,7 @@ pub struct ReportData {
     pub blocked_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GraphView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub critical_path: Option<Vec<String>>,
@@ -58,13 +58,13 @@ pub struct GraphView {
     pub overview: Option<GraphOverview>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlockedChainView {
     pub source: String,
     pub blocked: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GraphOverview {
     pub total_open: usize,
     pub total_edges: usize,
@@ -72,7 +72,7 @@ pub struct GraphOverview {
     pub leaves: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseView {
     pub phase: String,
     pub title: Option<String>,
@@ -84,7 +84,24 @@ pub struct PhaseView {
     pub story_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+/// Everything a command can return, before any rendering decision is made.
+///
+/// This is the **wire envelope**: `app::run` produces it, and every renderer
+/// in this module consumes it. Its serde form is deliberately *not* the
+/// `--json` envelope [`render_json`] emits — that one is a presentation
+/// format aimed at a human's `jq`, this one is a transport format aimed at
+/// another storyhook process. Externally tagged so the variant travels as
+/// the key (`{"story": {…}}`), which keeps every payload a plain object
+/// rather than a variant-name-and-payload pair.
+///
+/// The round trip is load-bearing: `render_response` of a `Response` and of
+/// that same `Response` after a serialize/deserialize hop must produce
+/// identical bytes, in all four `(json, quiet)` combinations. That property
+/// is what makes carrying this envelope over HTTP output-preserving *by
+/// construction* rather than by inspection, and it is pinned in
+/// `tests/wire_envelope.rs`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Response {
     Message(String),
     Story(Box<StoryView>),
