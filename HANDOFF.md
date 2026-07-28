@@ -9,9 +9,9 @@ This file is the wave boundary summary; the ledger is the detail.
 - **Wave W0 complete** — `test: repair the quality gate and unify the integration harness`.
 - **Branch:** `rearch/w0-gate-repair`, based on `main@838d68a`.
 - **PR:** [#60](https://github.com/mikeydotio/storyhook/pull/60).
-- **Merge state: OPEN, awaiting merge.** Work happened in a linked worktree, so the wave stops
-  at "PR opened" by design. W0b was subsequently **stacked on this branch** rather than blocked
-  on it (`rearch/w0b-envelope`, PR retargets to `main` once #60 merges).
+- **Merge state: MERGED 2026-07-28.** Work happened in a linked worktree, so the wave stopped
+  at "PR opened" by design. W0b was built **stacked on this branch** rather than blocked on it,
+  and merged into `main` behind it (`rearch/w0b-envelope`).
 
 ## Exit-criteria evidence
 
@@ -38,8 +38,8 @@ This file is the wave boundary summary; the ledger is the detail.
 
 ## Entry criteria for the next waves
 
-**W1 becomes entry-ready the moment this PR merges.** W0b, the other parallel wave, is
-already done and stacked — see below.
+**W1 is entry-ready** now that this PR has merged. W0b, the other parallel wave, is already
+done — see below.
 
 - **W0b is DONE** — branch `rearch/w0b-envelope`, stacked on this branch rather than waiting for
   the merge (`d272a7b` the export fix, `2db8310` the envelope, `ef717f2` the seam). It also
