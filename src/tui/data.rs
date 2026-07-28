@@ -1,16 +1,20 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 
+use crate::cli::Invocation;
 use crate::domain::{Member, StateDef, StorySnapshot, SuperState};
 use crate::error::AppError;
-use crate::storage;
+use crate::invoke::{InvokeRequest, Invoker};
+use crate::output::{ProjectSnapshotView, Response};
 
 use super::action::FilterSpec;
 
-/// Bridge between the storage layer and TUI state.
+/// The project as the TUI holds it: one [`Invocation::ProjectSnapshot`],
+/// unpacked.
 ///
-/// Loads project data from disk WITHOUT holding the project lock.
-/// Called on startup and after every refresh.
+/// Rebuilt on startup and after every change. It is a *snapshot* in the
+/// literal sense — every field comes from the same read, so the board can
+/// never draw a catalog from one instant beside stories from another, which
+/// the five separate filesystem reads this replaced could do.
 pub struct DataStore {
     pub states: Vec<StateDef>,
     pub state_map: BTreeMap<String, StateDef>,
@@ -20,22 +24,31 @@ pub struct DataStore {
 }
 
 impl DataStore {
-    /// Load everything from disk without holding the project lock.
-    pub fn load(root: &Path) -> Result<Self, AppError> {
-        storage::ensure_project(root)?;
-        let states = storage::load_states(root)?;
-        let state_map = storage::load_state_map(root)?;
-        let stories = storage::load_open_snapshots_tolerant(root)?;
-        let prefix = storage::load_project_prefix(root)?;
-        let members = storage::load_members(root)?;
+    /// Loads the whole project through the seam, in one invocation.
+    pub fn load(invoker: &dyn Invoker) -> Result<Self, AppError> {
+        match invoker.invoke(InvokeRequest::new(Invocation::ProjectSnapshot))? {
+            Response::ProjectSnapshot(view) => Ok(Self::from_snapshot(*view)),
+            other => Err(AppError::Storage(format!(
+                "internal: a project snapshot answered with {other:?}"
+            ))),
+        }
+    }
 
-        Ok(Self {
-            states,
+    /// Unpacks a snapshot, deriving the state map from the state *list* so the
+    /// two cannot disagree.
+    fn from_snapshot(view: ProjectSnapshotView) -> Self {
+        let state_map = view
+            .states
+            .iter()
+            .map(|state| (state.slug.clone(), state.clone()))
+            .collect();
+        Self {
+            states: view.states,
             state_map,
-            stories,
-            prefix,
-            members,
-        })
+            stories: view.stories,
+            prefix: view.prefix,
+            members: view.members,
+        }
     }
 
     /// Construct a DataStore from pre-built data, for testing without filesystem.
@@ -79,7 +92,8 @@ impl DataStore {
     }
 
     /// Resolve a typed assignee (member id or GitHub handle) against the
-    /// loaded members, mirroring [`storage::find_member`]'s matching rule.
+    /// loaded members, mirroring the matching rule the assignment invocations
+    /// use.
     ///
     /// Operates entirely in memory so TUI components can validate user input
     /// before dispatching a mutation, without touching the filesystem.
@@ -198,6 +212,7 @@ fn matches_filter(filter: &FilterSpec, story: &StorySnapshot) -> bool {
 mod tests {
     use super::*;
     use crate::domain::Priority;
+    use crate::invoke::LegacyInvoker;
 
     fn test_states() -> Vec<StateDef> {
         vec![
@@ -370,20 +385,38 @@ mod tests {
         assert_eq!(store.story_count(), 3);
     }
 
+    /// A project with `prefix`, built through the seam.
+    fn seeded_project(prefix: &str, titles: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let invoker = LegacyInvoker::new(&root);
+        invoker
+            .invoke(InvokeRequest::new(Invocation::Init {
+                prefix: Some(prefix.to_string()),
+                no_agents_md: true,
+            }))
+            .unwrap();
+        for title in titles {
+            invoker
+                .invoke(InvokeRequest::new(Invocation::New {
+                    title: (*title).to_string(),
+                    state: None,
+                    story_type: None,
+                    description: None,
+                    priority: None,
+                    labels: None,
+                    assignee: None,
+                }))
+                .unwrap();
+        }
+        (dir, root)
+    }
+
     #[test]
     fn load_from_disk_with_tempdir() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        storage::init_project(root, Some("TEST")).unwrap();
+        let (_dir, root) = seeded_project("TEST", &["First story", "Second story"]);
 
-        crate::lock::with_project_lock(root, || {
-            storage::create_story(root, "First story", None)?;
-            storage::create_story(root, "Second story", None)?;
-            Ok(())
-        })
-        .unwrap();
-
-        let store = DataStore::load(root).unwrap();
+        let store = DataStore::load(&LegacyInvoker::new(&root)).unwrap();
         assert_eq!(store.story_count(), 2);
         assert_eq!(store.prefix, "TEST");
         assert!(store.find_story("TEST-1").is_some());
@@ -392,18 +425,11 @@ mod tests {
 
     #[test]
     fn tolerant_read_skips_incomplete_trailing_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        storage::init_project(root, Some("SH")).unwrap();
+        let (_dir, root) = seeded_project("SH", &["Test story"]);
 
-        // Create a story normally
-        crate::lock::with_project_lock(root, || {
-            storage::create_story(root, "Test story", None)?;
-            Ok(())
-        })
-        .unwrap();
-
-        // Append an incomplete JSON line (simulating concurrent write)
+        // Append an incomplete JSON line (simulating concurrent write). This
+        // one stays a filesystem write on purpose: it fabricates a state no
+        // API can produce, which is the whole point of the case.
         let story_path = root.join(".storyhook/open/stories/SH-1.jsonl");
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
@@ -413,7 +439,7 @@ mod tests {
         write!(file, "{{\"kind\":\"StoryCommentAdd").unwrap();
 
         // Loading should succeed, skipping the incomplete trailing line
-        let store = DataStore::load(root).unwrap();
+        let store = DataStore::load(&LegacyInvoker::new(&root)).unwrap();
         assert_eq!(store.story_count(), 1);
         assert_eq!(store.find_story("SH-1").unwrap().title, "Test story");
     }
