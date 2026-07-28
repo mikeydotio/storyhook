@@ -13,6 +13,7 @@ pub mod hooks;
 pub mod invoke;
 pub mod lock;
 pub mod output;
+pub mod paths;
 pub mod plugin;
 pub mod registry;
 pub mod service;

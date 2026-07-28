@@ -5,15 +5,13 @@ pub mod conflict;
 pub mod diff;
 pub mod field_map;
 pub mod initial;
+pub mod storage;
 pub mod sync_state;
 pub mod types;
-
-use std::path::Path;
 
 use crate::domain::{Member, Priority, StateDef, StoryEvent, StorySnapshot};
 use crate::error::AppError;
 use crate::output::Response;
-use crate::storage;
 
 use self::client::GithubClient;
 use self::conflict::{Resolution, ResolvedConflict, resolve_conflicts_interactive};
@@ -23,10 +21,9 @@ use self::field_map::{
     issue_to_remote_snapshot, story_to_create_request, updates_to_issue_request,
 };
 use self::initial::{get_github_token, run_initial_setup};
+use self::storage::SyncStorage;
 use self::sync_state::{
-    GithubSyncConfig, StoryIssueMapping, SyncMode, create_backup, find_mapping,
-    find_mapping_by_issue, load_base_snapshot, load_sync_config, save_base_snapshot,
-    save_sync_config,
+    GithubSyncConfig, StoryIssueMapping, SyncMode, find_mapping, find_mapping_by_issue,
 };
 
 // ---------------------------------------------------------------------------
@@ -146,11 +143,28 @@ enum SyncStoryResult {
 // run_sync -- main entry point
 // ---------------------------------------------------------------------------
 
-/// Run GitHub sync. If `story_id` is Some, sync only that story.
-/// If `dry_run` is true, preview changes without applying them.
-pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Response, AppError> {
+/// Runs GitHub sync against a repository's `.storyhook/` directory.
+///
+/// The pre-rearchitecture entry point, kept as a wrapper so that
+/// [`crate::app::run`] calls it unchanged: everything below takes a
+/// [`SyncStorage`] and does not know which side of the flip it is on.
+pub fn run_sync(
+    root: &std::path::Path,
+    story_id: Option<&str>,
+    dry_run: bool,
+) -> Result<Response, AppError> {
+    run_sync_with(&storage::LegacySyncStorage::new(root), story_id, dry_run)
+}
+
+/// Runs GitHub sync against whatever storage `sync` names. If `story_id` is
+/// `Some`, syncs only that story; if `dry_run`, previews without writing.
+pub fn run_sync_with(
+    sync: &dyn SyncStorage,
+    story_id: Option<&str>,
+    dry_run: bool,
+) -> Result<Response, AppError> {
     // 1. Load sync config
-    let mut config = match load_sync_config(root)? {
+    let mut config = match sync.load_config()? {
         Some(cfg) => {
             if cfg.sync.mode == SyncMode::Off {
                 return Err(AppError::Usage(
@@ -161,7 +175,7 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
             }
             cfg
         }
-        None => run_initial_setup(root)?,
+        None => run_initial_setup(sync)?,
     };
 
     // If initial setup returned Off mode, bail
@@ -180,10 +194,10 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
     );
 
     // 3. Load local context
-    let states = storage::load_states(root)?;
-    let members = storage::load_members(root)?;
-    let prefix = storage::load_project_prefix(root)?;
-    let open_stories = storage::load_all_open_snapshots(root)?;
+    let states = sync.states()?;
+    let members = sync.members()?;
+    let prefix = sync.prefix()?;
+    let open_stories = sync.open_stories()?;
 
     let mut report = SyncReport::new();
 
@@ -198,7 +212,7 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
         })?;
 
         match sync_single_story(
-            root,
+            sync,
             &client,
             &mut config,
             story,
@@ -212,8 +226,8 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
         }
 
         if !dry_run {
-            config.sync.last_sync_at = Some(storage::now());
-            save_sync_config(root, &config)?;
+            config.sync.last_sync_at = Some(sync.now());
+            sync.save_config(&config)?;
         }
 
         return Ok(Response::Message(report.to_message()));
@@ -256,7 +270,7 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
                 }
 
                 match create_story_from_issue(
-                    root,
+                    sync,
                     &client,
                     &mut config,
                     issue,
@@ -288,7 +302,7 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
             };
 
             match sync_single_story(
-                root,
+                sync,
                 &client,
                 &mut config,
                 story,
@@ -331,7 +345,7 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
             }
 
             match create_story_from_issue(
-                root,
+                sync,
                 &client,
                 &mut config,
                 issue,
@@ -363,7 +377,7 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
         if find_mapping(&config, &story.id).is_some() {
             // Mapped but not in pull results -- check for local-only changes to push
             match sync_single_story(
-                root,
+                sync,
                 &client,
                 &mut config,
                 story,
@@ -387,7 +401,7 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
             }
 
             match create_issue_from_story(
-                root,
+                sync,
                 &client,
                 &mut config,
                 story,
@@ -407,10 +421,10 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
 
     // 6. Update sync state
     if !dry_run {
-        let now = storage::now();
+        let now = sync.now();
         config.sync.last_sync_at = Some(now.clone());
         config.sync.last_full_sync_at = Some(now);
-        save_sync_config(root, &config)?;
+        sync.save_config(&config)?;
     }
 
     Ok(Response::Message(report.to_message()))
@@ -422,7 +436,7 @@ pub fn run_sync(root: &Path, story_id: Option<&str>, dry_run: bool) -> Result<Re
 
 #[allow(clippy::too_many_arguments)]
 fn sync_single_story(
-    root: &Path,
+    sync: &dyn SyncStorage,
     client: &GithubClient,
     config: &mut GithubSyncConfig,
     story: &StorySnapshot,
@@ -447,7 +461,7 @@ fn sync_single_story(
     let remote_as_story = remote_snapshot_to_story_snapshot(&remote_snap, &issue, &story.id);
 
     // Load base snapshot (falls back to current local state for first sync)
-    let base = load_base_snapshot(root, &story.id)?.unwrap_or_else(|| story.clone());
+    let base = sync.load_base(&story.id)?.unwrap_or_else(|| story.clone());
 
     // Fetch remote comments
     let remote_comments = client.list_comments(mapping.issue_number, None)?;
@@ -510,23 +524,23 @@ fn sync_single_story(
     // Apply local updates (pull from remote)
     let mut did_pull = false;
     if has_local_updates || has_new_remote_comments {
-        create_backup(root, &story.id)?;
-        apply_local_updates(root, &story.id, &merge_result.local_updates)?;
+        sync.backup(&story.id)?;
+        apply_local_updates(sync, &story.id, &merge_result.local_updates)?;
 
         // Apply resolved conflicts that chose KeepRemote
         for rc in &resolved_conflicts {
             if matches!(rc.resolution, Resolution::KeepRemote) {
-                apply_conflict_locally(root, &story.id, rc, &merge_result.conflicts)?;
+                apply_conflict_locally(sync, &story.id, rc, &merge_result.conflicts)?;
             }
         }
 
         // Import new remote comments
         for comment in &merge_result.new_remote_comments {
             let event = StoryEvent::StoryCommentAdded {
-                at: storage::now(),
+                at: sync.now(),
                 text: format!("[github] {}", comment.text),
             };
-            storage::write_story_events(root, &story.id, &[event])?;
+            sync.write_events(&story.id, &[event])?;
         }
 
         did_pull = true;
@@ -573,8 +587,8 @@ fn sync_single_story(
         for rc in &resolved_conflicts {
             match rc.resolution {
                 Resolution::KeepRemote => {
-                    create_backup(root, &story.id)?;
-                    apply_conflict_locally(root, &story.id, rc, &merge_result.conflicts)?;
+                    sync.backup(&story.id)?;
+                    apply_conflict_locally(sync, &story.id, rc, &merge_result.conflicts)?;
                     did_pull = true;
                 }
                 Resolution::KeepLocal => {
@@ -595,11 +609,11 @@ fn sync_single_story(
     }
 
     // Save base snapshot for next sync
-    let updated_story = storage::load_open_story_snapshot(root, &story.id)?;
-    save_base_snapshot(root, &story.id, &updated_story)?;
+    let updated_story = sync.story(&story.id)?;
+    sync.save_base(&story.id, &updated_story)?;
 
     // Update mapping's last_synced_at
-    update_mapping_timestamp(config, &story.id);
+    update_mapping_timestamp(sync, config, &story.id);
 
     if !unresolved_conflicts.is_empty() {
         return Ok(SyncStoryResult::Conflicts(unresolved_conflicts));
@@ -619,7 +633,7 @@ fn sync_single_story(
 
 #[allow(clippy::too_many_arguments)]
 fn create_story_from_issue(
-    root: &Path,
+    sync: &dyn SyncStorage,
     client: &GithubClient,
     config: &mut GithubSyncConfig,
     issue: &types::GithubIssue,
@@ -629,12 +643,12 @@ fn create_story_from_issue(
     _prefix: &str,
 ) -> Result<String, AppError> {
     // Create the story via storage
-    let snapshot = storage::create_story(root, &issue.title, None)?;
+    let snapshot = sync.create_story(&issue.title)?;
     let story_id = snapshot.id.clone();
 
     // Append events for additional fields
     let mut events = Vec::new();
-    let now = storage::now();
+    let now = sync.now();
 
     if remote_snap.state != snapshot.state {
         events.push(StoryEvent::StoryStateChanged {
@@ -679,7 +693,7 @@ fn create_story_from_issue(
     }
 
     if !events.is_empty() {
-        storage::write_story_events(root, &story_id, &events)?;
+        sync.write_events(&story_id, &events)?;
     }
 
     // Import comments from the issue
@@ -687,8 +701,7 @@ fn create_story_from_issue(
     for comment in &comments {
         if !comment.body.starts_with("[storyhook]") {
             let sc = github_comment_to_story(comment);
-            storage::write_story_events(
-                root,
+            sync.write_events(
                 &story_id,
                 &[StoryEvent::StoryCommentAdded {
                     at: sc.at,
@@ -699,7 +712,7 @@ fn create_story_from_issue(
     }
 
     // Update the issue body with the storyhook block so future syncs can find the mapping
-    let story_for_block = storage::load_open_story_snapshot(root, &story_id)?;
+    let story_for_block = sync.story(&story_id)?;
     let block = field_map::story_to_block(&story_for_block);
     let body_text = issue.body.as_deref().unwrap_or("");
     let clean_body = match body_block::extract_block(body_text) {
@@ -714,8 +727,8 @@ fn create_story_from_issue(
     client.update_issue(issue.number, &update_req)?;
 
     // Save base snapshot
-    let final_snapshot = storage::load_open_story_snapshot(root, &story_id)?;
-    save_base_snapshot(root, &story_id, &final_snapshot)?;
+    let final_snapshot = sync.story(&story_id)?;
+    sync.save_base(&story_id, &final_snapshot)?;
 
     // Add or update mapping
     let mapping_idx = config
@@ -726,7 +739,7 @@ fn create_story_from_issue(
     let new_mapping = StoryIssueMapping {
         story_id: story_id.clone(),
         issue_number: issue.number,
-        last_synced_at: storage::now(),
+        last_synced_at: sync.now(),
         last_local_event_index: None,
     };
 
@@ -742,11 +755,10 @@ fn create_story_from_issue(
             .iter()
             .find(|s| s.super_state == crate::domain::SuperState::Closed)
     {
-        storage::write_story_events(
-            root,
+        sync.write_events(
             &story_id,
             &[StoryEvent::StoryStateChanged {
-                at: storage::now(),
+                at: sync.now(),
                 state: closed_state.slug.clone(),
             }],
         )?;
@@ -760,7 +772,7 @@ fn create_story_from_issue(
 // ---------------------------------------------------------------------------
 
 fn create_issue_from_story(
-    root: &Path,
+    sync: &dyn SyncStorage,
     client: &GithubClient,
     config: &mut GithubSyncConfig,
     story: &StorySnapshot,
@@ -772,13 +784,13 @@ fn create_issue_from_story(
     let created_issue = client.create_issue(&create_req)?;
 
     // Save base snapshot
-    save_base_snapshot(root, &story.id, story)?;
+    sync.save_base(&story.id, story)?;
 
     // Add mapping
     config.mappings.push(StoryIssueMapping {
         story_id: story.id.clone(),
         issue_number: created_issue.number,
-        last_synced_at: storage::now(),
+        last_synced_at: sync.now(),
         last_local_event_index: None,
     });
 
@@ -798,12 +810,12 @@ fn create_issue_from_story(
 // ---------------------------------------------------------------------------
 
 fn apply_local_updates(
-    root: &Path,
+    sync: &dyn SyncStorage,
     story_id: &str,
     updates: &FieldUpdates,
 ) -> Result<(), AppError> {
     let mut events = Vec::new();
-    let now = storage::now();
+    let now = sync.now();
 
     if let Some(ref title) = updates.title {
         events.push(StoryEvent::StoryTitleSet {
@@ -867,7 +879,7 @@ fn apply_local_updates(
     }
 
     if !events.is_empty() {
-        storage::write_story_events(root, story_id, &events)?;
+        sync.write_events(story_id, &events)?;
     }
 
     Ok(())
@@ -878,7 +890,7 @@ fn apply_local_updates(
 // ---------------------------------------------------------------------------
 
 fn apply_conflict_locally(
-    root: &Path,
+    sync: &dyn SyncStorage,
     story_id: &str,
     resolved: &ResolvedConflict,
     conflicts: &[FieldConflict],
@@ -888,7 +900,7 @@ fn apply_conflict_locally(
         None => return Ok(()),
     };
 
-    let now = storage::now();
+    let now = sync.now();
     let event = match conflict.field.as_str() {
         "title" => StoryEvent::StoryTitleSet {
             at: now,
@@ -944,7 +956,7 @@ fn apply_conflict_locally(
         _ => return Ok(()),
     };
 
-    storage::write_story_events(root, story_id, &[event])
+    sync.write_events(story_id, &[event])
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,8 +1059,8 @@ fn remote_snapshot_to_story_snapshot(
 // Helper: update mapping timestamp
 // ---------------------------------------------------------------------------
 
-fn update_mapping_timestamp(config: &mut GithubSyncConfig, story_id: &str) {
-    let now = storage::now();
+fn update_mapping_timestamp(sync: &dyn SyncStorage, config: &mut GithubSyncConfig, story_id: &str) {
+    let now = sync.now();
     if let Some(m) = config.mappings.iter_mut().find(|m| m.story_id == story_id) {
         m.last_synced_at = now;
     }

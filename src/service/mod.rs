@@ -30,6 +30,8 @@
 
 pub mod config;
 pub mod git;
+#[cfg(feature = "github-sync")]
+pub mod github;
 pub mod grouping;
 pub mod integrity;
 pub mod project;
@@ -53,6 +55,8 @@ use crate::store::{
 
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
+#[cfg(feature = "github-sync")]
+pub use github::{GithubSyncService, StoreSyncStorage};
 pub use grouping::{GroupingService, PhaseCleared};
 pub use integrity::IntegrityService;
 pub use project::{InitOptions, InitOutcome, ProjectPointer, ProjectService};
