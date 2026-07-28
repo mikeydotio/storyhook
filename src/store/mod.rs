@@ -58,6 +58,7 @@
 //! exception is [`diff_read_model`], whose entire job is to fold independently
 //! and disagree.
 
+pub mod conformance;
 pub mod error;
 pub mod fault;
 pub mod ids;
@@ -71,6 +72,7 @@ use std::path::Path;
 
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 
+pub use conformance::ConformanceFixture;
 pub use error::StoreError;
 pub use fault::FaultPoint;
 pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, PathKind, ProjectId, StoryNo};
@@ -82,7 +84,7 @@ pub use rebuild::{
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
     FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord, ProjectSettings,
-    RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort,
+    RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort,
     UnknownEventDiagnostic, partition_known,
 };
 
@@ -265,6 +267,23 @@ pub trait WriteOps: ReadOps {
         story: StoryNo,
         expected: ExpectedSeq,
         events: &[StoryEvent],
+    ) -> Result<EventSeq, StoreError>;
+
+    /// [`append_events`](Self::append_events), for a caller holding an event's
+    /// bytes rather than a decoded [`StoryEvent`].
+    ///
+    /// Same compare-and-swap, same sequencing; the difference is that the
+    /// payload is written exactly as given. The legacy importer needs it — a
+    /// byte-identical round trip has to preserve event kinds this binary does
+    /// not know — and it is how the unknown-kind path is tested. Prefer
+    /// `append_events` everywhere else: it derives `kind` and `at` from the
+    /// payload, so the three cannot disagree.
+    fn append_raw_events(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        expected: ExpectedSeq,
+        events: &[RawEvent],
     ) -> Result<EventSeq, StoreError>;
 
     /// Writes a folded snapshot into the read model, recording the event `head`

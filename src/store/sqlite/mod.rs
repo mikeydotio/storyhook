@@ -41,7 +41,7 @@ use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, PathKind, ProjectId, S
 use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version};
 use crate::store::types::{
     FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord, ProjectSettings,
-    RelationEdge, StoredEvent, StoryQuery, StoryRow,
+    RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
 };
 use crate::store::{ReadOps, Store, WriteOps};
 
@@ -546,6 +546,16 @@ impl WriteOps for SqliteWriteTx<'_> {
         events: &[StoryEvent],
     ) -> Result<EventSeq, StoreError> {
         write::append_events(&self.conn, project, story, expected, events)
+    }
+
+    fn append_raw_events(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+        expected: ExpectedSeq,
+        events: &[RawEvent],
+    ) -> Result<EventSeq, StoreError> {
+        write::append_raw_events(&self.conn, project, story, expected, events)
     }
 
     fn put_story(
