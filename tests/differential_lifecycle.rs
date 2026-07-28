@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use storyhook::cli::{Invocation, WebAction};
+use storyhook::cli::Invocation;
 use storyhook::invoke::dispatch;
 
 mod differential_support;
@@ -1327,11 +1327,22 @@ fn the_story_view_agrees_on_derived_relationships_and_progress() {
 #[test]
 fn an_unported_invocation_fails_loudly_rather_than_silently() {
     let differential = Differential::new();
-    let error = dispatch(&differential.ctx(), Invocation::SessionStart)
-        .expect_err("session-start is not ported in this wave");
+    // Every *variant* dispatches now, so the loudness contract is carried by
+    // the one action that is still owed a design: restoring a story's history
+    // means replacing it, which an append-only store cannot do.
+    let error = dispatch(
+        &differential.ctx(),
+        Invocation::History {
+            action: storyhook::cli::HistoryAction::Restore {
+                id: "SH-1".into(),
+                events: Vec::new(),
+            },
+        },
+    )
+    .expect_err("history restore is not ported");
     let message = error.to_string();
     assert!(message.contains("not yet ported"), "{message}");
-    assert!(message.contains("session-start"), "{message}");
+    assert!(message.contains("flip-checklist"), "{message}");
 }
 
 #[test]
@@ -1384,6 +1395,10 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "decompose",
         "commit-sync",
         "github-sync",
+        "session-start",
+        "history",
+        "web",
+        "update",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1414,31 +1429,15 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         48,
         "an invocation is on neither the ported roster nor the unported probes"
     );
-    assert_eq!(ported.len(), 44);
+    assert_eq!(ported.len(), 48);
 }
 
-/// One probe per invocation this wave does *not* port.
+/// One probe per invocation that is still unported.
+///
+/// Empty: every `Invocation` variant now dispatches. It stays as a function
+/// rather than being deleted so that a wave adding a variant has somewhere to
+/// declare it unfinished, and so that the roster assertion below keeps its
+/// shape.
 fn unported_probes() -> Vec<(&'static str, Invocation)> {
-    vec![
-        (
-            "history",
-            Invocation::History {
-                action: storyhook::cli::HistoryAction::Read { id: "SH-1".into() },
-            },
-        ),
-        ("session-start", Invocation::SessionStart),
-        (
-            "web",
-            Invocation::Web {
-                action: WebAction::Status,
-            },
-        ),
-        (
-            "update",
-            Invocation::Update {
-                check: true,
-                force: false,
-            },
-        ),
-    ]
+    Vec::new()
 }

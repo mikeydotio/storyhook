@@ -103,6 +103,25 @@ pub(super) fn touch_project_path(
     Ok(())
 }
 
+/// Forgets one checkout of a project, reporting whether there was one.
+///
+/// The project itself survives: a checkout that is deleted, moved, or removed
+/// from the dashboard is not a reason to lose its stories.
+pub(super) fn forget_project_path(
+    conn: &Connection,
+    project: ProjectId,
+    path: &Path,
+) -> Result<bool, StoreError> {
+    let removed = sql(
+        conn.execute(
+            "DELETE FROM project_paths WHERE project_id = ?1 AND path = ?2",
+            params![project.get(), path.to_string_lossy()],
+        ),
+        "forgetting a project path",
+    )?;
+    Ok(removed > 0)
+}
+
 // ---------------------------------------------------------------------------
 // Allocation
 // ---------------------------------------------------------------------------

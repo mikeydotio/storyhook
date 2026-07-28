@@ -17,18 +17,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::app;
 use crate::cli::{
-    CliOptions, EpicAction, HELP_TEXT, HooksAction, Invocation, PhaseAction, PluginAction,
-    StateAction, TypeAction,
+    CliOptions, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, PhaseAction,
+    PluginAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
 use crate::error::AppError;
 use crate::help_topics;
 use crate::output::{Response, render_html_report};
 use crate::service::{
-    Clock, ConfigService, Ctx, FieldEdits, GitService, GroupingService, ImportBatch, InitOptions,
-    InitOutcome, IntegrityService, ListFilters, NewStoryInput, PhaseCleared, ProjectService,
-    QueryService, RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService,
-    SystemService, TransferService, transfer,
+    CatalogService, Clock, ConfigService, Ctx, FieldEdits, GitService, GroupingService,
+    ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters, NewStoryInput,
+    PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService, ReopenOutcome,
+    SessionService, StateListing, StoryService, SystemService, TransferService, session, transfer,
 };
 use crate::storage::ProjectExport;
 use crate::store::Store;
@@ -129,18 +129,17 @@ impl Invoker for LegacyInvoker<'_> {
 ///
 /// # Completeness
 ///
-/// The story lifecycle, relations, project initialization, configuration, the
-/// system commands and the whole read surface are ported. The importer, the
-/// git/GitHub family, the updater, the dashboard and the session hook are not.
-/// Everything unported answers with
-/// [`not_yet_ported`], which is an internal error naming the variant: nothing
-/// routes production traffic here yet, and the wave that finishes the port has
-/// "every variant dispatches" as its exit criterion. A silent fallback to the
-/// legacy path is exactly what this must not do — a half-ported dispatcher
-/// that quietly works is one nobody finishes.
+/// **Every [`Invocation`] variant dispatches.** The match is exhaustive without
+/// a catch-all, so a new variant stops this file compiling until somebody
+/// decides what it does — which is the property the port was building towards
+/// and the reason [`not_yet_ported`] now has only one caller left.
 ///
-/// `tests/differential_lifecycle.rs` holds the roster and asserts that the
-/// ported and unported lists together account for every variant.
+/// One *action* is still owed a design rather than a port:
+/// `History::Restore` replaces a story's history, which an append-only store
+/// cannot do; it answers loudly and points at the flip checklist.
+///
+/// `tests/differential_lifecycle.rs` holds the roster and asserts that it
+/// accounts for every variant.
 pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Response, AppError> {
     match invocation {
         Invocation::New {
@@ -361,6 +360,23 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 }
             }
         }
+        Invocation::SessionStart => SessionService::new(ctx)
+            .context()
+            .map(Response::RawJson),
+        Invocation::History { action } => match action {
+            HistoryAction::Read { id } => session::history(ctx, &id).map(Response::StoryHistory),
+            // Restoring means *replacing* a story's history, which an
+            // append-only store cannot do and which needs a compensating-event
+            // design rather than a port. `docs/rearch/flip-checklist.md`
+            // category C carries the item; until it is answered the TUI's undo
+            // works on the legacy path only.
+            HistoryAction::Restore { .. } => Err(AppError::Storage(
+                "internal: `history restore` is not yet ported to the store-backed                  dispatcher — see docs/rearch/flip-checklist.md, category C"
+                    .to_string(),
+            )),
+        },
+        Invocation::Web { action } => dispatch_web(ctx.store(), action),
+        Invocation::Update { check, force } => update(check, force),
         Invocation::GithubSync { id, dry_run } => {
             #[cfg(feature = "github-sync")]
             {
@@ -429,7 +445,6 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::HelpCompact
         | Invocation::HelpAll
         | Invocation::Version => dispatch_unscoped(ctx.store(), ctx.cwd(), &ctx.now(), invocation),
-        other => Err(not_yet_ported(&other)),
     }
 }
 
@@ -446,6 +461,82 @@ fn query<S: Store, T>(
     let now = ctx.now();
     ctx.store()
         .read(|tx| Ok(f(&QueryService::new(tx, ctx.project(), &now))))?
+}
+
+/// The `story web …` family.
+///
+/// Only the catalog arms are ported. The daemon commands — start, stop, status,
+/// open, address — are process management rather than storage, they are
+/// identical on both sides of the flip, and the wave that promotes the daemon
+/// owns them; they delegate to the same functions the legacy path calls.
+fn dispatch_web<S: Store>(store: &S, action: WebAction) -> Result<Response, AppError> {
+    let service = CatalogService::new(store);
+    match action {
+        WebAction::Register { path, name } => {
+            let entry = service.register(Path::new(&path), name.as_deref())?;
+            Ok(Response::Message(format!(
+                "Registered `{}` as `{}`",
+                entry.path.unwrap_or_default().display(),
+                entry.id
+            )))
+        }
+        WebAction::Deregister { target } => {
+            let entry = service.deregister(&target)?;
+            Ok(Response::Message(format!(
+                "Deregistered `{}` ({})",
+                entry.id,
+                entry.path.unwrap_or_default().display()
+            )))
+        }
+        WebAction::List => {
+            let entries = service.list()?;
+            if entries.is_empty() {
+                return Ok(Response::Message(
+                    "No repos registered. Run `story web register` from a project to add one."
+                        .to_string(),
+                ));
+            }
+            let mut lines = vec![format!("{} registered repo(s):", entries.len())];
+            for entry in &entries {
+                lines.push(format!(
+                    "  {} — {} ({})",
+                    entry.id,
+                    entry.name,
+                    entry.path.clone().unwrap_or_default().display()
+                ));
+            }
+            Ok(Response::Message(lines.join("\n")))
+        }
+        WebAction::Start { port } => crate::web::handle_start(port).map(Response::Message),
+        WebAction::Stop => crate::web::handle_stop().map(Response::Message),
+        WebAction::Status => crate::web::handle_status().map(Response::Message),
+        WebAction::Open => crate::web::handle_open().map(Response::Message),
+        WebAction::Address => crate::web::handle_address().map(Response::Message),
+        // `main` intercepts this before any dispatcher sees it: the foreground
+        // server is a process that never returns, not a command with an answer.
+        WebAction::Serve { .. } => Err(AppError::Usage(
+            "`story web --serve` is handled before dispatch".to_string(),
+        )),
+    }
+}
+
+/// `story update` — self-update, which touches no project data at all.
+fn update(check: bool, force: bool) -> Result<Response, AppError> {
+    #[cfg(feature = "github-sync")]
+    {
+        crate::update::run(check, force).map(Response::Message)
+    }
+    #[cfg(not(feature = "github-sync"))]
+    {
+        let _ = (check, force);
+        Err(AppError::Usage(
+            "self-update requires the `github-sync` feature. \
+             Reinstall via the official installer \
+             (curl -fsSL https://raw.githubusercontent.com/mikeydotio/storyhook/main/install.sh | sh) \
+             or rebuild with: cargo install storyhook --features github-sync"
+                .to_string(),
+        ))
+    }
 }
 
 /// The `story phase …` family.
@@ -789,10 +880,11 @@ fn init_message(outcome: &InitOutcome) -> String {
 
 /// The error an unported [`Invocation`] answers with.
 ///
-/// Loud and specific on purpose. This dispatcher is built additively while the
-/// legacy path keeps serving users, so an unported arm has to be impossible to
-/// mistake for a working one — in a test, in a differential run, or in the
-/// wave that switches the default over.
+/// Loud and specific on purpose. Only [`dispatch_unscoped`] still reaches it,
+/// and only for a variant handed to the project-less entry point that does not
+/// belong there — a caller mistake rather than an unfinished port. It stays
+/// because a silent fallback to the legacy path is exactly what this must not
+/// do.
 fn not_yet_ported(invocation: &Invocation) -> AppError {
     AppError::Storage(format!(
         "internal: `{}` is not yet ported to the store-backed dispatcher",
