@@ -158,7 +158,11 @@ fn web_address_not_running_fails_with_summary() {
 fn web_open_and_address_succeed_when_running() {
     let home = scratch_dir();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
-    let port = pick_port();
+    let port = reserve_port();
+    let _daemon = DaemonGuard {
+        home: home.path().to_path_buf(),
+        cwd: dir.path().to_path_buf(),
+    };
 
     story(dir.path())
         .env("HOME", home.path())
@@ -212,7 +216,11 @@ fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
 
     let home = scratch_dir();
     let dir = scratch_dir();
-    let port = pick_port();
+    let port = reserve_port();
+    let _daemon = DaemonGuard {
+        home: home.path().to_path_buf(),
+        cwd: dir.path().to_path_buf(),
+    };
 
     story(dir.path())
         .env("HOME", home.path())
@@ -254,7 +262,11 @@ fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
 fn web_start_succeeds_outside_a_project() {
     let home = scratch_dir();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
-    let port = pick_port();
+    let port = reserve_port();
+    let _daemon = DaemonGuard {
+        home: home.path().to_path_buf(),
+        cwd: dir.path().to_path_buf(),
+    };
 
     story(dir.path())
         .env("HOME", home.path())
@@ -279,15 +291,8 @@ fn web_serve_and_query_root() {
     let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
 
-    // Start server in foreground in a thread
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    let handle = std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-
-    // Wait for server to start
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     // GET / should return HTML
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/"))
@@ -304,8 +309,6 @@ fn web_serve_and_query_root() {
     assert!(ct.contains("text/html"));
     let body = resp.into_body().read_to_string().unwrap();
     assert!(body.contains("Storyhook"));
-
-    drop(handle); // server thread runs until process dies — that's OK for test
 }
 
 /// The redesigned dashboard is still a single self-contained embedded file
@@ -318,11 +321,7 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(format!("http://127.0.0.1:{port}/"))
         .call()
@@ -385,11 +384,7 @@ fn web_serve_api_data_empty_project() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -426,11 +421,7 @@ fn web_serve_api_data_with_stories() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -468,11 +459,7 @@ fn web_serve_api_data_excludes_deleted_stories() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -498,11 +485,7 @@ fn web_serve_404_unknown_route() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     // ureq v3 returns non-2xx as errors
     let err = ureq::get(&format!("http://127.0.0.1:{port}/nonexistent"))
@@ -596,11 +579,7 @@ fn web_serve_post_returns_405() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = ureq::post(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .send(&[] as &[u8])
@@ -624,11 +603,7 @@ fn web_serve_api_data_special_chars_in_title() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -654,11 +629,7 @@ fn web_serve_api_data_unicode_title() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -679,11 +650,7 @@ fn web_serve_root_has_no_cache_header() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/"))
         .call()
@@ -704,11 +671,7 @@ fn web_serve_api_data_has_no_cache_header() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -740,11 +703,7 @@ fn web_serve_api_json_structure_matches_dashboard() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -822,11 +781,7 @@ fn web_serve_api_data_meta_states_are_ordered() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -869,11 +824,7 @@ fn web_serve_api_data_meta_has_types_priorities_relations_members() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -928,11 +879,7 @@ fn web_meta_includes_sorted_unique_labels() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -959,11 +906,7 @@ fn web_serve_api_data_meta_includes_members() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -992,11 +935,7 @@ fn web_serve_get_story_by_id() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
@@ -1027,11 +966,7 @@ fn web_serve_get_story_by_id_unknown_returns_404() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = ureq::get(&format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999"
@@ -1053,11 +988,7 @@ fn web_serve_error_reply_has_security_headers() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     // Disable ureq's default "non-2xx is an Err" behavior so we can inspect
     // the 404 response's headers and body directly.
@@ -1088,11 +1019,7 @@ fn web_serve_error_reply_uses_standard_envelope() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999"
@@ -1163,11 +1090,7 @@ fn web_create_story_returns_201_and_story() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1195,11 +1118,7 @@ fn web_create_story_missing_title_is_400() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1215,11 +1134,7 @@ fn web_create_story_with_description_labels_priority() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1243,11 +1158,7 @@ fn web_create_story_invalid_priority_is_422() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1271,11 +1182,7 @@ fn web_create_story_without_guard_header_is_403() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json_unguarded(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1304,11 +1211,7 @@ fn web_move_story_changes_state() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -1331,11 +1234,7 @@ fn web_move_story_to_closed_state_archives() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -1365,11 +1264,7 @@ fn web_move_story_invalid_state_is_422() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -1385,11 +1280,7 @@ fn web_move_unknown_story_is_404() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999/move"),
@@ -1408,11 +1299,7 @@ fn web_comment_story_appends_comment() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/comment"),
@@ -1433,11 +1320,7 @@ fn web_priority_story_sets_priority() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/priority"),
@@ -1461,11 +1344,7 @@ fn web_assign_story_to_valid_member_succeeds() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/assign"),
@@ -1485,11 +1364,7 @@ fn web_assign_story_to_missing_member_is_404() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     // storage::find_member returns AppError::NotFound (not Validation) for
     // an unknown member id, matching `story assign <id> <unknown-member>`
@@ -1509,11 +1384,7 @@ fn web_labels_add_and_remove() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/labels"),
@@ -1555,11 +1426,7 @@ fn web_labels_empty_body_is_400() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/labels"),
@@ -1576,11 +1443,7 @@ fn web_block_and_unblock_story() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/block"),
@@ -1612,11 +1475,7 @@ fn web_reopen_archived_story() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
@@ -1646,11 +1505,7 @@ fn web_reopen_deleted_story_without_force_is_422() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
@@ -1683,11 +1538,7 @@ fn web_reopen_deleted_story_with_force_undeletes() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
@@ -1712,11 +1563,7 @@ fn web_reopen_malformed_json_is_400() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
@@ -1741,11 +1588,7 @@ fn web_reopen_soft_deleted_story_is_rejected_without_force() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let del = delete_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1778,11 +1621,7 @@ fn web_patch_story_updates_multiple_fields() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = patch_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1803,11 +1642,7 @@ fn web_patch_story_no_fields_is_400() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = patch_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1824,11 +1659,7 @@ fn web_patch_story_sets_description() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = patch_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1848,11 +1679,7 @@ fn web_patch_story_description_without_guard_header_is_403() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = ureq::patch(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
@@ -1882,11 +1709,7 @@ fn web_relate_and_unrelate_stories() {
     story(dir.path()).args(["new", "B"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/relate"),
@@ -1928,11 +1751,7 @@ fn web_delete_story_soft_deletes_it() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = delete_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1970,11 +1789,7 @@ fn web_delete_story_without_reason_is_400() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = delete_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1993,11 +1808,7 @@ fn web_move_story_malformed_json_is_400() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -2016,11 +1827,7 @@ fn web_mutation_without_guard_header_is_403() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = post_json_unguarded(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -2045,11 +1852,7 @@ fn web_mutation_with_spoofed_host_is_403() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = ureq::post(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
@@ -2069,11 +1872,7 @@ fn web_mutation_wrong_content_type_is_415() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = ureq::post(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
@@ -2092,11 +1891,7 @@ fn web_put_on_story_path_is_405() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = ureq::put(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
@@ -2117,11 +1912,7 @@ fn web_mutation_success_has_security_headers() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/priority"),
@@ -2147,11 +1938,7 @@ fn web_mutation_guard_reject_has_security_headers() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::post(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/priority"
@@ -2183,11 +1970,7 @@ fn serve_project() -> (tempfile::TempDir, tempfile::TempDir, u16, String) {
     let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
     (dir, registry_dir, port, repo_id)
 }
 
@@ -2504,11 +2287,7 @@ fn web_serve_repos_list_reports_available_repo_with_summary() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
         .call()
@@ -2534,11 +2313,7 @@ fn web_serve_repos_list_reports_unavailable_repo_without_failing() {
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
     std::fs::remove_dir_all(dir.path().join(".storyhook")).unwrap();
 
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
         .call()
@@ -2563,11 +2338,7 @@ fn web_serve_unknown_repo_id_is_404() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = ureq::get(format!(
         "http://127.0.0.1:{port}/api/repos/nonexistent-id/data"
@@ -2584,12 +2355,7 @@ fn web_register_repo_via_api() {
 
     let registry_dir = scratch_dir();
     let registry_path = registry_dir.path().join("registry.toml");
-    let port = pick_port();
-    let registry_path_for_server = registry_path.clone();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path_for_server, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let body = serde_json::json!({"path": dir.path().to_string_lossy()}).to_string();
     let resp = post_json(&format!("http://127.0.0.1:{port}/api/repos"), &body).unwrap();
@@ -2613,12 +2379,7 @@ fn web_register_repo_requires_guard_header() {
 
     let registry_dir = scratch_dir();
     let registry_path = registry_dir.path().join("registry.toml");
-    let port = pick_port();
-    let registry_path_for_server = registry_path.clone();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path_for_server, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let body = serde_json::json!({"path": dir.path().to_string_lossy()}).to_string();
     let err =
@@ -2632,11 +2393,7 @@ fn web_deregister_repo_via_api() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = delete_json(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}"), "").unwrap();
     assert_eq!(resp.status(), 200);
@@ -2658,11 +2415,7 @@ fn web_deregister_repo_requires_guard_header() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let err = ureq::delete(format!("http://127.0.0.1:{port}/api/repos/{repo_id}"))
         .call()
@@ -2946,11 +2699,7 @@ fn web_serve_handles_concurrent_requests() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     // Fire 10 concurrent requests
     let handles: Vec<_> = (0..10)
@@ -3225,11 +2974,7 @@ fn web_serve_api_data_ready_and_blocked_flags_correct() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -3313,11 +3058,7 @@ fn web_serve_binds_tailnet_ip_when_available() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
     // The tailnet listener binds promptly (same as loopback) but doesn't
     // start *serving* until the watcher's own setup finishes — poll for a
     // clear failure message if it never comes up at all; the `ureq::get`
@@ -3356,11 +3097,7 @@ fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
     // The tailnet listener binds promptly (same as loopback), but doesn't
     // start *serving* until the watcher's own setup finishes — poll for a
     // clear failure message if it never comes up at all; the `ureq::post`
@@ -3429,11 +3166,7 @@ fn web_serve_trusts_magic_dns_fqdn_for_mutations() {
         .success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
     wait_for_addr(&format!("{tailnet_ip}:{port}"));
 
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
@@ -3469,11 +3202,7 @@ fn web_serve_rejects_bare_magic_dns_short_label_for_mutations() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
     wait_for_addr(&format!("{tailnet_ip}:{port}"));
 
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
@@ -3507,11 +3236,7 @@ fn web_serve_rejects_foreign_ts_net_host_for_mutations() {
     story(dir.path()).args(["new", "Story"]).assert().success();
 
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
     wait_for_addr(&format!("{tailnet_ip}:{port}"));
 
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
@@ -3535,11 +3260,7 @@ fn web_serve_never_binds_wildcard_address() {
     story(dir.path()).arg("init").assert().success();
 
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
     std::thread::sleep(Duration::from_millis(200));
 
     let Ok(output) = std::process::Command::new("lsof")
@@ -3616,11 +3337,7 @@ fn sse_delivers_repo_changed_on_story_mutation() {
     let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let mut sse = connect_sse(port);
     story(dir.path())
@@ -3650,11 +3367,7 @@ fn sse_delivers_repo_changed_on_state_configuration_change() {
     let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let mut sse = connect_sse(port);
     post_json(
@@ -3684,11 +3397,7 @@ fn sse_coalesces_rapid_mutations_within_debounce_window() {
     let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     story(dir.path())
         .args(["new", "Debounce target"])
@@ -3747,11 +3456,7 @@ fn sse_disconnect_does_not_break_server_for_other_clients() {
     let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     {
         let _first = connect_sse(port); // subscribes, then drops at end of this block
@@ -3789,14 +3494,7 @@ fn sse_detects_runtime_repo_registration_and_watches_it() {
     let dir_a = scratch_dir();
     story(dir_a.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, _repo_a_id) = register_repo(dir_a.path());
-    let port = pick_port();
-    {
-        let registry_path = registry_path.clone();
-        std::thread::spawn(move || {
-            storyhook::web::start_server(&registry_path, port).ok();
-        });
-    }
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let mut sse = connect_sse(port);
 
@@ -3854,14 +3552,7 @@ fn sse_one_unreachable_repo_does_not_break_stream_for_others() {
     })
     .expect("registering the healthy repo must succeed");
 
-    let port = pick_port();
-    {
-        let registry_path = registry_path.clone();
-        std::thread::spawn(move || {
-            storyhook::web::start_server(&registry_path, port).ok();
-        });
-    }
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let mut sse = connect_sse(port);
 
@@ -3905,7 +3596,11 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
     let _sse_guard = sse_test_lock();
     let home = scratch_dir();
     let dir = scratch_dir();
-    let port = pick_port();
+    let port = reserve_port();
+    let _daemon = DaemonGuard {
+        home: home.path().to_path_buf(),
+        cwd: dir.path().to_path_buf(),
+    };
 
     story(dir.path())
         .env("HOME", home.path())
@@ -3939,11 +3634,7 @@ fn sse_connection_does_not_block_other_requests() {
     let dir = scratch_dir();
     story(dir.path()).arg("init").assert().success();
     let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = pick_port();
-    std::thread::spawn(move || {
-        storyhook::web::start_server(&registry_path, port).ok();
-    });
-    wait_for_server(port);
+    let port = serve(&registry_path);
 
     let _sse = connect_sse(port); // held open for the rest of the test
 
@@ -3967,7 +3658,6 @@ fn sse_connection_does_not_block_other_requests() {
 
 // --- Utilities ---
 
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 /// The root every fixture directory in this suite is created under.
@@ -4041,11 +3731,181 @@ fn scratch_dirs_live_outside_the_spotlight_indexed_tmpdir() {
     }
 }
 
-// Use a fixed high-range counter to avoid port reuse across parallel tests
-static PORT_COUNTER: AtomicU16 = AtomicU16::new(19000);
+/// Picks a port for the handful of tests that must know one *before* the
+/// thing that binds it exists — `story web start --port N` binds in a child
+/// process, and reports success as soon as it has spawned that child, so a
+/// port it loses is never reported to anyone.
+///
+/// Two properties, both learned from SH-51:
+///
+/// - **Outside the kernel's ephemeral range.** Every in-process server here
+///   binds port 0, so anything drawn from the ephemeral range can be handed
+///   to one of those in the window between this reservation being released
+///   and the child binding it — after which the test talks to whichever won.
+/// - **Not a fixed sequence.** The old counter started every run at 19000 and
+///   marched upward, so any run collided with the survivors of the previous
+///   one. The band here is entered at a random offset, and each candidate is
+///   bind-tested before being handed out.
+fn reserve_port() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
 
-fn pick_port() -> u16 {
-    PORT_COUNTER.fetch_add(1, Ordering::Relaxed)
+    // Above the registered-port range, below the ephemeral range macOS and
+    // Linux draw from (49152+ / 32768+ — the band avoids both).
+    const BAND: std::ops::Range<u16> = 19000..29000;
+
+    static NEXT: std::sync::LazyLock<AtomicU16> = std::sync::LazyLock::new(|| {
+        let entropy = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+            ^ std::process::id();
+        let span = (BAND.end - BAND.start) as u32;
+        AtomicU16::new(BAND.start + (entropy % span) as u16)
+    });
+
+    for _ in 0..64 {
+        let candidate = NEXT.fetch_add(1, Ordering::Relaxed);
+        let candidate = if BAND.contains(&candidate) {
+            candidate
+        } else {
+            NEXT.store(BAND.start, Ordering::Relaxed);
+            BAND.start
+        };
+        // Binding and immediately releasing proves nothing else holds it —
+        // including a daemon leaked by an earlier run, the exact hazard the
+        // fixed counter walked straight into.
+        if std::net::TcpListener::bind(("127.0.0.1", candidate)).is_ok() {
+            return candidate;
+        }
+    }
+    panic!("no free port in {BAND:?} — is an earlier run's daemon still holding them?");
+}
+
+/// Starts a dashboard server for `registry_path` on an OS-assigned port and
+/// returns that port once the server is serving. The sanctioned way for this
+/// suite to get a server: no test picks its own port, and no test waits on
+/// anything weaker than the server's own readiness signal.
+fn serve(registry_path: &std::path::Path) -> u16 {
+    try_serve_on(registry_path, 0).unwrap_or_else(|e| panic!("starting a test server: {e}"))
+}
+
+/// [`serve`], but on a caller-chosen `port` and returning the server's own
+/// start-up failure instead of panicking.
+///
+/// The failure must never be swallowed. A server that loses the bind leaves
+/// whatever *else* holds that port answering the test's requests, and a
+/// stranger's registry answers `404` to everything the test asks about — the
+/// mass-failure mode of SH-51. Readiness comes from the server's `ready`
+/// callback rather than a `connect()` probe for the same reason: only the
+/// server can attest that the address is one it actually bound, and that it
+/// has finished loading state (see `web::start_server_with_ready`).
+fn try_serve_on(registry_path: &std::path::Path, port: u16) -> Result<u16, String> {
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel::<Result<u16, String>>();
+    let ready_tx = tx.clone();
+    let path = registry_path.to_path_buf();
+    std::thread::spawn(move || {
+        let outcome = storyhook::web::start_server_with_ready(&path, port, move |addr| {
+            let _ = ready_tx.send(Ok(addr.port()));
+        });
+        if let Err(e) = outcome {
+            let _ = tx.send(Err(e.to_string()));
+        }
+    });
+
+    match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(bound)) => {
+            wait_for_server(bound);
+            Ok(bound)
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(format!(
+            "a server for {} neither became ready nor reported a failure within 10s",
+            registry_path.display()
+        )),
+    }
+}
+
+/// Stops the `story web start` daemon a test launched, even if the test
+/// panics first. Test-spawned servers that outlive the test are exactly what
+/// poisoned later runs in SH-51; the in-process ones die with the test
+/// binary, but a daemon is a detached child process and only an explicit
+/// stop reaps it.
+struct DaemonGuard {
+    home: std::path::PathBuf,
+    cwd: std::path::PathBuf,
+}
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let _ = Command::cargo_bin("story")
+            .expect("locating the story binary")
+            .current_dir(&self.cwd)
+            .env("HOME", &self.home)
+            .args(["web", "stop"])
+            .output();
+    }
+}
+
+/// A foreign listener on the port the harness is about to use stands in for
+/// the orphaned `web_test` server from an earlier run that caused SH-51:
+/// having lost the bind, the harness must fail loudly rather than hand the
+/// test a port answered by somebody else's registry (which surfaced as a wall
+/// of inexplicable 404s).
+#[test]
+fn serving_an_occupied_port_fails_loudly_instead_of_trusting_the_squatter() {
+    let dir = scratch_dir();
+    story(dir.path()).arg("init").assert().success();
+    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
+
+    let squatter = std::net::TcpListener::bind("127.0.0.1:0").expect("binding the squatter");
+    let squatted = squatter.local_addr().unwrap().port();
+
+    let outcome = try_serve_on(&registry_path, squatted);
+    let error = match outcome {
+        Err(error) => error,
+        Ok(port) => panic!(
+            "the harness reported a ready server on port {port}, which is held by a foreign \
+             listener — every request the test makes would go to that stranger (SH-51)"
+        ),
+    };
+    assert!(
+        error.to_lowercase().contains("in use"),
+        "the failure must name the real cause (the port is taken), got: {error}"
+    );
+}
+
+/// Two servers started in the same run must never be handed the same port,
+/// and each must answer only for the registry it was started with — the
+/// property that the fixed 19000-based counter could not guarantee across
+/// concurrent runs.
+#[test]
+fn concurrent_servers_get_distinct_ports_and_serve_only_their_own_registry() {
+    let dir_a = scratch_dir();
+    story(dir_a.path()).arg("init").assert().success();
+    let (_registry_dir_a, registry_a, id_a) = register_repo(dir_a.path());
+
+    let dir_b = scratch_dir();
+    story(dir_b.path()).arg("init").assert().success();
+    let (_registry_dir_b, registry_b, id_b) = register_repo(dir_b.path());
+
+    assert_ne!(id_a, id_b, "the two fixtures must be distinguishable");
+
+    let port_a = serve(&registry_a);
+    let port_b = serve(&registry_b);
+    assert_ne!(port_a, port_b, "two servers must not share a port");
+
+    let own = ureq::get(format!("http://127.0.0.1:{port_a}/api/repos/{id_a}/data"))
+        .call()
+        .expect("a server must serve the registry it was started with");
+    assert_eq!(own.status(), 200);
+
+    let cross = ureq::get(format!("http://127.0.0.1:{port_b}/api/repos/{id_a}/data")).call();
+    assert_eq!(
+        status_of(cross.expect_err("a server must not answer for another server's repo")),
+        404
+    );
 }
 
 fn wait_for_server(port: u16) {
@@ -4092,7 +3952,17 @@ fn connect_sse(port: u16) -> std::io::BufReader<std::net::TcpStream> {
     .expect("writing the SSE request line");
 
     let mut reader = BufReader::new(stream);
+    // Bounded, because a bound-but-not-serving listener accepts the
+    // connection and then says nothing at all: without a deadline this loop
+    // retried forever and took the whole suite down with it (it holds the SSE
+    // lock while it waits), turning a diagnosable failure into a hang.
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
+        assert!(
+            Instant::now() < deadline,
+            "127.0.0.1:{port} accepted the /api/events connection but never sent a response \
+             head — the listener is bound but not serving"
+        );
         let mut line = String::new();
         // A per-read timeout surfaces as an `Err`, not an `Ok(0)`, so retry
         // on timeout rather than treating it as a closed connection.
