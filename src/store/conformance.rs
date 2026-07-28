@@ -3549,6 +3549,43 @@ macro_rules! store_conformance_suite {
                 );
             }
 
+            /// A write the engine rejects **at commit time** must leave the
+            /// store usable.
+            ///
+            /// Deferred referential checks mean some failures cannot surface
+            /// until `COMMIT`, so "the closure returned `Err`" is not the only
+            /// way a transaction ends badly. A store that treats a failed
+            /// commit as a finished transaction leaves the connection it was
+            /// running on mid-transaction, and every later write on that
+            /// connection fails with an error about the *previous* caller's
+            /// mistake.
+            #[test]
+            fn a_write_rejected_at_commit_does_not_poison_the_store() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let story = new_story(f.store(), project, "First");
+
+                // A relation to a story that does not exist: nothing rejects
+                // it until the referential check runs at commit.
+                let mut dangling = snapshot(f.store(), project, story);
+                dangling.relationships.push($crate::domain::StoryRelation {
+                    relation: "blocks".into(),
+                    other_id: "SH-404".into(),
+                });
+                let rejected = f
+                    .store()
+                    .write(|tx| tx.put_story(project, &dangling, EventSeq::new(1)));
+                assert!(rejected.is_err(), "a dangling edge must be refused");
+
+                // The store still works, and the rejected write left nothing.
+                let after = new_story(f.store(), project, "Second");
+                assert_eq!(after, StoryNo::new(2));
+                assert!(
+                    snapshot(f.store(), project, story).relationships.is_empty(),
+                    "the rejected write left a relation behind"
+                );
+            }
+
             #[test]
             fn the_catalog_survives_a_reopen() {
                 let f = <$fixture>::create();
