@@ -1,0 +1,209 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story show SH-1 --json",
+    "stdout": {
+      "result": "ok",
+      "story": {
+        "progress": {
+          "children_done": 0,
+          "children_total": 3
+        },
+        "story": {
+          "awaiting": null,
+          "comments": [],
+          "created_at": "[timestamp]",
+          "id": "SH-1",
+          "priority": "critical",
+          "relationships": [
+            {
+              "other_id": "SH-2",
+              "relation": "parent-of"
+            },
+            {
+              "other_id": "SH-3",
+              "relation": "parent-of"
+            },
+            {
+              "other_id": "SH-4",
+              "relation": "parent-of"
+            }
+          ],
+          "state": "todo",
+          "story_type": "epic",
+          "superstate": "OPEN",
+          "title": "Design the storage engine",
+          "updated_at": "[timestamp]"
+        }
+      }
+    }
+  },
+  {
+    "argv": "story show SH-5 --json",
+    "stdout": {
+      "result": "ok",
+      "story": {
+        "story": {
+          "assignee": "grace-hopper",
+          "awaiting": null,
+          "comments": [
+            {
+              "at": "[timestamp]",
+              "text": "Reproduced with two linked worktrees."
+            },
+            {
+              "at": "[timestamp]",
+              "text": "Root cause is the committed next-id counter."
+            }
+          ],
+          "created_at": "[timestamp]",
+          "id": "SH-5",
+          "labels": [
+            "defect"
+          ],
+          "priority": "critical",
+          "relationships": [
+            {
+              "other_id": "SH-9",
+              "relation": "blocks"
+            }
+          ],
+          "state": "todo",
+          "story_type": "bug",
+          "superstate": "OPEN",
+          "title": "Fix the id collision across worktrees",
+          "updated_at": "[timestamp]"
+        }
+      }
+    }
+  },
+  {
+    "argv": "story show SH-6 --json",
+    "stdout": {
+      "result": "ok",
+      "story": {
+        "story": {
+          "awaiting": "waiting on the benchmark harness",
+          "comments": [],
+          "created_at": "[timestamp]",
+          "id": "SH-6",
+          "priority": "low",
+          "relationships": [],
+          "state": "todo",
+          "story_type": "spike",
+          "superstate": "OPEN",
+          "title": "Benchmark the rebuild path",
+          "updated_at": "[timestamp]"
+        }
+      }
+    }
+  },
+  {
+    "argv": "story show SH-7 --json",
+    "stdout": {
+      "result": "ok",
+      "story": {
+        "story": {
+          "awaiting": null,
+          "comments": [],
+          "created_at": "[timestamp]",
+          "id": "SH-7",
+          "priority": "none",
+          "relationships": [],
+          "state": "todo",
+          "story_type": "chore",
+          "superstate": "OPEN",
+          "title": "Document the data layer",
+          "updated_at": "[timestamp]"
+        }
+      }
+    }
+  },
+  {
+    "argv": "story show SH-3 --json",
+    "stdout": {
+      "result": "ok",
+      "story": {
+        "story": {
+          "awaiting": null,
+          "comments": [],
+          "created_at": "[timestamp]",
+          "id": "SH-3",
+          "labels": [
+            "backend",
+            "phase:1"
+          ],
+          "priority": "high",
+          "relationships": [
+            {
+              "other_id": "SH-2",
+              "relation": "blocked-by"
+            },
+            {
+              "other_id": "SH-1",
+              "relation": "child-of"
+            }
+          ],
+          "state": "in-progress",
+          "story_type": "story",
+          "superstate": "OPEN",
+          "title": "Implement the SQLite engine",
+          "updated_at": "[timestamp]"
+        }
+      }
+    }
+  },
+  {
+    "argv": "story show SH-8 --json",
+    "stdout": {
+      "result": "ok",
+      "story": {
+        "story": {
+          "awaiting": null,
+          "closed_at": "[timestamp]",
+          "comments": [],
+          "created_at": "[timestamp]",
+          "id": "SH-8",
+          "priority": "low",
+          "relationships": [],
+          "state": "done",
+          "story_type": "chore",
+          "superstate": "CLOSED",
+          "title": "Retire the JSONL reader",
+          "updated_at": "[timestamp]"
+        }
+      }
+    }
+  },
+  {
+    "argv": "story show SH-13 --json",
+    "stdout": {
+      "result": "ok",
+      "story": {
+        "story": {
+          "awaiting": null,
+          "closed_at": "[timestamp]",
+          "comments": [
+            {
+              "at": "[timestamp]",
+              "text": "[deleted] superseded by the global store"
+            }
+          ],
+          "created_at": "[timestamp]",
+          "deleted": true,
+          "deleted_reason": "superseded by the global store",
+          "id": "SH-13",
+          "priority": "low",
+          "relationships": [],
+          "state": "todo",
+          "story_type": "chore",
+          "superstate": "CLOSED",
+          "title": "Old approach: file-per-story",
+          "updated_at": "[timestamp]"
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,16 @@
+---
+source: tests/golden_cli.rs
+---
+$ story phase list
+Phase 1 -- 2 (0/2 done, 1 blocked)
+Phase 2 -- 1 (0/1 done, 1 blocked)
+
+$ story phase show 1
+SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
+SH-3 [in-progress] (high) [story] Implement the SQLite engine [backend, phase:1]
+
+$ story phase show 2
+SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
+
+$ story phase show 9
+no stories found

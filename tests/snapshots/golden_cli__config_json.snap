@@ -1,0 +1,19 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story state list --json",
+    "stdout": {
+      "message": "todo (OPEN) — 9 open\nin-progress (OPEN, active) — 1 open\ndone (CLOSED) — 2 archived\nreview (OPEN) — 1 open — Awaiting code review",
+      "result": "ok"
+    }
+  },
+  {
+    "argv": "story type list --json",
+    "stdout": {
+      "message": "story — A user story or feature\nepic — A large initiative containing child stories\nbug — A defect or regression\nchore — Maintenance or infrastructure work\ntask — A discrete unit of work\nspike — A timeboxed investigation",
+      "result": "ok"
+    }
+  }
+]

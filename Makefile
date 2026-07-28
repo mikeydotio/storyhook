@@ -25,10 +25,17 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # The orphan check brackets the run: before, because a survivor of an earlier
 # run makes this one lie (SH-51), and after, because a run that leaks one has
 # just armed the same trap for the next person.
+#
+# INSTA_UPDATE=no makes the golden CLI corpus (tests/golden_cli.rs) a real gate.
+# insta's default is to WRITE a .snap.new beside any snapshot that no longer
+# matches; a developer who then runs `cargo insta accept` has silently rewritten
+# the byte-compatibility contract the whole rearchitecture is measured against.
+# Under `no`, a mismatch fails the run and writes nothing -- updating a snapshot
+# becomes a deliberate `INSTA_UPDATE=always cargo test` plus a reviewed diff.
 test: check-no-orphan-servers
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
-	cargo test --workspace
+	INSTA_UPDATE=no cargo test --workspace
 	cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
 	@bash scripts/check-no-orphan-servers.sh postlude

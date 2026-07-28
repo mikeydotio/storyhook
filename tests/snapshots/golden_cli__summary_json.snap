@@ -1,0 +1,435 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story summary --json",
+    "stdout": {
+      "result": "ok",
+      "summary": {
+        "blocked_count": 3,
+        "by_priority": [
+          [
+            "critical",
+            2
+          ],
+          [
+            "high",
+            3
+          ],
+          [
+            "low",
+            4
+          ],
+          [
+            "medium",
+            4
+          ]
+        ],
+        "by_state": [
+          [
+            "done",
+            2
+          ],
+          [
+            "in-progress",
+            1
+          ],
+          [
+            "review",
+            1
+          ],
+          [
+            "todo",
+            10
+          ]
+        ],
+        "by_type": [
+          [
+            "bug",
+            1
+          ],
+          [
+            "chore",
+            3
+          ],
+          [
+            "epic",
+            1
+          ],
+          [
+            "spike",
+            2
+          ],
+          [
+            "story",
+            4
+          ],
+          [
+            "task",
+            3
+          ]
+        ],
+        "flagged_count": 0,
+        "ready_count": 8,
+        "ready_stories": [
+          {
+            "progress": {
+              "children_done": 0,
+              "children_total": 3
+            },
+            "story": {
+              "awaiting": null,
+              "comments": [],
+              "created_at": "[timestamp]",
+              "id": "SH-1",
+              "priority": "critical",
+              "relationships": [
+                {
+                  "other_id": "SH-2",
+                  "relation": "parent-of"
+                },
+                {
+                  "other_id": "SH-3",
+                  "relation": "parent-of"
+                },
+                {
+                  "other_id": "SH-4",
+                  "relation": "parent-of"
+                }
+              ],
+              "state": "todo",
+              "story_type": "epic",
+              "superstate": "OPEN",
+              "title": "Design the storage engine",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "story": {
+              "assignee": "grace-hopper",
+              "awaiting": null,
+              "comments": [
+                {
+                  "at": "[timestamp]",
+                  "text": "Reproduced with two linked worktrees."
+                },
+                {
+                  "at": "[timestamp]",
+                  "text": "Root cause is the committed next-id counter."
+                }
+              ],
+              "created_at": "[timestamp]",
+              "id": "SH-5",
+              "labels": [
+                "defect"
+              ],
+              "priority": "critical",
+              "relationships": [
+                {
+                  "other_id": "SH-9",
+                  "relation": "blocks"
+                }
+              ],
+              "state": "todo",
+              "story_type": "bug",
+              "superstate": "OPEN",
+              "title": "Fix the id collision across worktrees",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "story": {
+              "assignee": "ada-lovelace",
+              "awaiting": null,
+              "comments": [
+                {
+                  "at": "[timestamp]",
+                  "text": "Trait shape settled: one method per verb."
+                }
+              ],
+              "created_at": "[timestamp]",
+              "id": "SH-2",
+              "labels": [
+                "api",
+                "backend",
+                "phase:1"
+              ],
+              "priority": "high",
+              "relationships": [
+                {
+                  "other_id": "SH-3",
+                  "relation": "blocks"
+                },
+                {
+                  "other_id": "SH-1",
+                  "relation": "child-of"
+                }
+              ],
+              "state": "todo",
+              "story_type": "story",
+              "superstate": "OPEN",
+              "title": "Define the Store trait",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "story": {
+              "awaiting": null,
+              "comments": [],
+              "created_at": "[timestamp]",
+              "id": "SH-12",
+              "priority": "high",
+              "relationships": [],
+              "state": "todo",
+              "story_type": "story",
+              "superstate": "OPEN",
+              "title": "Harden concurrent writes",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "story": {
+              "awaiting": null,
+              "comments": [],
+              "created_at": "[timestamp]",
+              "id": "SH-4",
+              "labels": [
+                "backend"
+              ],
+              "priority": "medium",
+              "relationships": [
+                {
+                  "other_id": "SH-1",
+                  "relation": "child-of"
+                }
+              ],
+              "state": "review",
+              "story_type": "task",
+              "superstate": "OPEN",
+              "title": "Write the migration runner",
+              "updated_at": "[timestamp]"
+            }
+          }
+        ],
+        "total_closed": 3,
+        "total_open": 11
+      }
+    }
+  },
+  {
+    "argv": "story report --json",
+    "stdout": {
+      "result": "ok",
+      "summary": {
+        "blocked_count": 3,
+        "by_priority": [
+          [
+            "critical",
+            2
+          ],
+          [
+            "high",
+            3
+          ],
+          [
+            "low",
+            4
+          ],
+          [
+            "medium",
+            4
+          ]
+        ],
+        "by_state": [
+          [
+            "done",
+            2
+          ],
+          [
+            "in-progress",
+            1
+          ],
+          [
+            "review",
+            1
+          ],
+          [
+            "todo",
+            10
+          ]
+        ],
+        "by_type": [
+          [
+            "bug",
+            1
+          ],
+          [
+            "chore",
+            3
+          ],
+          [
+            "epic",
+            1
+          ],
+          [
+            "spike",
+            2
+          ],
+          [
+            "story",
+            4
+          ],
+          [
+            "task",
+            3
+          ]
+        ],
+        "flagged_count": 0,
+        "ready_count": 8,
+        "ready_stories": [
+          {
+            "progress": {
+              "children_done": 0,
+              "children_total": 3
+            },
+            "story": {
+              "awaiting": null,
+              "comments": [],
+              "created_at": "[timestamp]",
+              "id": "SH-1",
+              "priority": "critical",
+              "relationships": [
+                {
+                  "other_id": "SH-2",
+                  "relation": "parent-of"
+                },
+                {
+                  "other_id": "SH-3",
+                  "relation": "parent-of"
+                },
+                {
+                  "other_id": "SH-4",
+                  "relation": "parent-of"
+                }
+              ],
+              "state": "todo",
+              "story_type": "epic",
+              "superstate": "OPEN",
+              "title": "Design the storage engine",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "story": {
+              "assignee": "grace-hopper",
+              "awaiting": null,
+              "comments": [
+                {
+                  "at": "[timestamp]",
+                  "text": "Reproduced with two linked worktrees."
+                },
+                {
+                  "at": "[timestamp]",
+                  "text": "Root cause is the committed next-id counter."
+                }
+              ],
+              "created_at": "[timestamp]",
+              "id": "SH-5",
+              "labels": [
+                "defect"
+              ],
+              "priority": "critical",
+              "relationships": [
+                {
+                  "other_id": "SH-9",
+                  "relation": "blocks"
+                }
+              ],
+              "state": "todo",
+              "story_type": "bug",
+              "superstate": "OPEN",
+              "title": "Fix the id collision across worktrees",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "story": {
+              "assignee": "ada-lovelace",
+              "awaiting": null,
+              "comments": [
+                {
+                  "at": "[timestamp]",
+                  "text": "Trait shape settled: one method per verb."
+                }
+              ],
+              "created_at": "[timestamp]",
+              "id": "SH-2",
+              "labels": [
+                "api",
+                "backend",
+                "phase:1"
+              ],
+              "priority": "high",
+              "relationships": [
+                {
+                  "other_id": "SH-3",
+                  "relation": "blocks"
+                },
+                {
+                  "other_id": "SH-1",
+                  "relation": "child-of"
+                }
+              ],
+              "state": "todo",
+              "story_type": "story",
+              "superstate": "OPEN",
+              "title": "Define the Store trait",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "story": {
+              "awaiting": null,
+              "comments": [],
+              "created_at": "[timestamp]",
+              "id": "SH-12",
+              "priority": "high",
+              "relationships": [],
+              "state": "todo",
+              "story_type": "story",
+              "superstate": "OPEN",
+              "title": "Harden concurrent writes",
+              "updated_at": "[timestamp]"
+            }
+          },
+          {
+            "story": {
+              "awaiting": null,
+              "comments": [],
+              "created_at": "[timestamp]",
+              "id": "SH-4",
+              "labels": [
+                "backend"
+              ],
+              "priority": "medium",
+              "relationships": [
+                {
+                  "other_id": "SH-1",
+                  "relation": "child-of"
+                }
+              ],
+              "state": "review",
+              "story_type": "task",
+              "superstate": "OPEN",
+              "title": "Write the migration runner",
+              "updated_at": "[timestamp]"
+            }
+          }
+        ],
+        "total_closed": 3,
+        "total_open": 11
+      }
+    }
+  }
+]
