@@ -50,6 +50,8 @@ Standing rules for every wave:
 - Every commit passes `make test`; history stays bisectable and two-hats clean.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
-- Waves end at "PR opened". The work happens in a linked worktree: no version bumps, no
-  deploys, no direct pushes to `main`, no force-pushes.
+- A wave's implementing session ends at "PR opened" and never merges its own PR. The
+  **orchestrator** merges the wave PR (merge commit), verifies it landed, and deletes the
+  branch, escalating only what genuinely warrants attention. Work happens in a linked worktree:
+  no version bumps, no deploys, no direct pushes to `main`, no force-pushes.
 - Deviations from the spec get recorded in STATE.md rather than edited into the spec.
