@@ -501,7 +501,8 @@ Every command accepts the global `--json` flag and, on success, wraps its payloa
 - **`story graph --json`** → `.graph.{critical_path,parallel_groups,overview}` with no mode flag; passing `--critical-path`, `--blocked-by <id>`, or `--parallel-groups` populates only that one field
 - **`story doctor --json`** → `.issues[]` (array of strings)
 - **Message-only commands** (`init`, `member add`, `state add/remove`, `handoff`, `commit-sync`, `github-sync`, `hooks *`, `scaffold`) → `.message` (a plain string) when the **global** `--json` flag is passed
-- **Commands that are already JSON without the global flag** (`export`, `load-context --format json`): these print raw JSON directly as their normal output. Adding the global `--json` on top re-wraps that same JSON as an escaped *string* inside `.message` — for scripting, prefer the un-wrapped form (e.g. `story export > backup.json`, not `story export --json > backup.json`)
+- **`story export`** prints the export document as raw JSON — no envelope. The global `--json` and `--quiet` flags do not change it: `story export`, `story export --json` and `story export --quiet` all emit the same bytes, and all of them are accepted by `story import-project`
+- **`load-context --format json` / `context --format json`** print raw JSON as their normal output, but adding the global `--json` on top re-wraps that same JSON as an escaped *string* inside `.message` — for scripting, prefer the un-wrapped form (`story load-context --format json`, not `... --format json --json`)
 
 Errors (any command) look like:
 

@@ -15,10 +15,11 @@ use fs4::FileExt;
 use notify::Watcher;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::app::{self, build_report_data};
-use crate::cli::{CliOptions, Invocation, StateAction};
+use crate::app::build_report_data;
+use crate::cli::{Invocation, StateAction};
 use crate::domain::Priority;
 use crate::error::AppError;
+use crate::invoke::{InvokeRequest, Invoker, LegacyInvoker};
 use crate::output::{render_error, render_response};
 use crate::registry;
 use crate::storage;
@@ -175,19 +176,13 @@ fn error_reply(error: &AppError) -> Reply {
     }
 }
 
-/// Dispatches `invocation` through `app::run` — the same entrypoint the CLI
-/// uses — and renders the result as a `Reply` at `status` on success, or the
+/// Dispatches `invocation` through the Invoker seam — the same entrypoint
+/// the CLI uses — and renders the result as a `Reply` at `status` on success, or the
 /// standard error envelope on failure. Centralizing this means every
 /// mutation route gets locking, validation, event-hook firing, and
 /// CLOSED-state archiving for free, identically to its CLI counterpart.
 fn run_and_reply(root: &Path, status: u16, invocation: Invocation) -> Reply {
-    let options = CliOptions {
-        json: true,
-        quiet: false,
-        no_hooks: false,
-        invocation,
-    };
-    match app::run(root, options) {
+    match LegacyInvoker::new(root).invoke(InvokeRequest::new(invocation)) {
         Ok(response) => json_reply(status, render_response(&response, true, false)),
         Err(e) => error_reply(&e),
     }
@@ -197,17 +192,11 @@ fn run_and_reply(root: &Path, status: u16, invocation: Invocation) -> Reply {
 /// backs `PATCH`) that report success as a plain text `Response::Message`
 /// rather than the updated story. Every mutation route's success body should
 /// be the story so the frontend can reconcile optimistic UI state uniformly,
-/// so on success this re-fetches `id` via a second, independent `app::run`
+/// so on success this re-fetches `id` via a second, independent invocation
 /// call (its own lock acquired and released in turn — never nested inside
 /// the first) and returns that instead.
 fn run_mutation_and_reply_with_story(root: &Path, id: &str, invocation: Invocation) -> Reply {
-    let options = CliOptions {
-        json: true,
-        quiet: false,
-        no_hooks: false,
-        invocation,
-    };
-    match app::run(root, options) {
+    match LegacyInvoker::new(root).invoke(InvokeRequest::new(invocation)) {
         Ok(_) => run_and_reply(root, 200, Invocation::Show { id: id.to_string() }),
         Err(e) => error_reply(&e),
     }
@@ -838,19 +827,14 @@ fn build_states_json(root: &Path, message: Option<&str>) -> Result<String, AppEr
         .map_err(|e| AppError::Storage(format!("JSON serialization failed: {e}")))
 }
 
-/// Dispatches a state mutation through `app::run` — same locking, migration,
-/// and validation as the CLI — then replies with the refreshed list rather
+/// Dispatches a state mutation through the Invoker seam — same locking,
+/// migration and validation as the CLI — then replies with the refreshed
+/// list rather
 /// than the bare success message, so the editor always redraws from server
 /// truth instead of guessing what its own edit did (an edit can move
 /// stories, which changes counts on *two* states at once).
 fn run_state_mutation_and_reply(root: &Path, status: u16, invocation: Invocation) -> Reply {
-    let options = CliOptions {
-        json: true,
-        quiet: false,
-        no_hooks: false,
-        invocation,
-    };
-    match app::run(root, options) {
+    match LegacyInvoker::new(root).invoke(InvokeRequest::new(invocation)) {
         Ok(response) => {
             // `Response` here is tiny_http's; the app's lives in `output`.
             let message = match response {

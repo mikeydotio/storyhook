@@ -10,6 +10,7 @@ pub mod event_hooks;
 pub mod github;
 pub mod help_topics;
 pub mod hooks;
+pub mod invoke;
 pub mod lock;
 pub mod output;
 pub mod plugin;

@@ -652,9 +652,10 @@ fn export_document() {
     settings().bind(|| assert_json_golden!("export_document", parsed));
 }
 
-/// `export --json` wraps the same document as an escaped string inside the
-/// standard envelope. Snapshotted separately because the *wrapping* is the
-/// contract here, not the payload.
+/// `export --json` emits the same document, un-wrapped: the export *is* the
+/// machine-readable result, so the envelope has nothing to add. Snapshotted
+/// separately because the absence of wrapping is the contract here, not the
+/// payload — `tests/story_export.rs` proves the document stays importable.
 #[test]
 fn export_envelope_shape() {
     let raw = stdout_of(&["export", "--json"]);
@@ -662,11 +663,9 @@ fn export_envelope_shape() {
         serde_json::from_str(&raw).expect("`story export --json` must print JSON");
     let shape = serde_json::json!({
         "keys": parsed.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()),
-        "result": parsed.get("result"),
-        "message_is_a_string": parsed.get("message").map(|m| m.is_string()),
-        "message_parses_as_the_export_document":
-            parsed.get("message").and_then(|m| m.as_str())
-                .map(|s| serde_json::from_str::<serde_json::Value>(s).is_ok()),
+        "is_the_export_document": parsed.get("schema").is_some(),
+        "is_wrapped_in_an_envelope": parsed.get("result").is_some(),
+        "byte_identical_to_unflagged_export": raw == stdout_of(&["export"]),
     });
     settings().bind(|| assert_json_golden!("export_envelope_shape", shape));
 }
