@@ -16,15 +16,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::app;
 use crate::cli::{
-    CliOptions, HELP_TEXT, HooksAction, Invocation, PluginAction, StateAction, TypeAction,
+    CliOptions, EpicAction, HELP_TEXT, HooksAction, Invocation, PhaseAction, PluginAction,
+    StateAction, TypeAction,
 };
 use crate::domain::{FieldEdit, StateChanges, SuperState};
 use crate::error::AppError;
 use crate::help_topics;
 use crate::output::Response;
 use crate::service::{
-    Clock, ConfigService, Ctx, FieldEdits, InitOptions, InitOutcome, NewStoryInput, ProjectService,
-    RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService, SystemService,
+    Clock, ConfigService, Ctx, FieldEdits, GroupingService, InitOptions, InitOutcome,
+    NewStoryInput, PhaseCleared, ProjectService, RelationOutcome, RelationService, ReopenOutcome,
+    StateListing, StoryService, SystemService,
 };
 use crate::store::Store;
 
@@ -265,6 +267,8 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             }
             .map(Response::Message)
         }
+        Invocation::Phase { action } => dispatch_phase(ctx, action),
+        Invocation::Epic { action } => dispatch_epic(ctx, action),
         Invocation::Init { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
@@ -272,6 +276,46 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::HelpAll
         | Invocation::Version => dispatch_unscoped(ctx.store(), ctx.cwd(), &ctx.now(), invocation),
         other => Err(not_yet_ported(&other)),
+    }
+}
+
+/// The `story phase …` family.
+fn dispatch_phase<S: Store>(ctx: &Ctx<'_, S>, action: PhaseAction) -> Result<Response, AppError> {
+    let service = GroupingService::new(ctx);
+    match action {
+        PhaseAction::List => service.phases().map(Response::PhaseList),
+        PhaseAction::Show { phase } => service
+            .phase_stories(&phase)
+            .map(|views| Response::Stories(views, None)),
+        PhaseAction::Add { id, phase } => {
+            service.assign_phase(&id, &phase)?;
+            Ok(Response::Message(format!("assigned {id} to phase {phase}")))
+        }
+        PhaseAction::Remove { id } => Ok(Response::Message(match service.clear_phase(&id)? {
+            PhaseCleared::Removed(_) => format!("removed phase assignment from {id}"),
+            PhaseCleared::NoAssignment => format!("{id} has no phase assignment"),
+        })),
+        PhaseAction::Create { phase, title } => {
+            let story = service.create_phase(&phase, title.as_deref())?;
+            ctx.story_view(&story.id)
+        }
+    }
+}
+
+/// The `story epic …` family.
+fn dispatch_epic<S: Store>(ctx: &Ctx<'_, S>, action: EpicAction) -> Result<Response, AppError> {
+    let service = GroupingService::new(ctx);
+    match action {
+        EpicAction::List => service.epics().map(|views| Response::Stories(views, None)),
+        EpicAction::Show { id } => ctx.story_view(&id),
+        EpicAction::Create { title } => {
+            let story = service.create_epic(&title)?;
+            ctx.story_view(&story.id)
+        }
+        EpicAction::Add { epic_id, story_id } => {
+            service.add_to_epic(&epic_id, &story_id)?;
+            ctx.story_view(&epic_id)
+        }
     }
 }
 

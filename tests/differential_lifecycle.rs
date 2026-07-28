@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use storyhook::cli::{EpicAction, GraphMode, Invocation, PhaseAction, WebAction};
+use storyhook::cli::{GraphMode, Invocation, WebAction};
 use storyhook::invoke::dispatch;
 
 mod differential_support;
@@ -1365,6 +1365,8 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "help-compact",
         "help-all",
         "version",
+        "phase",
+        "epic",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1395,7 +1397,7 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         46,
         "an invocation is on neither the ported roster nor the unported probes"
     );
-    assert_eq!(ported.len(), 25);
+    assert_eq!(ported.len(), 27);
 }
 
 /// One probe per invocation this wave does *not* port.
@@ -1439,18 +1441,6 @@ fn unported_probes() -> Vec<(&'static str, Invocation)> {
             "graph",
             Invocation::Graph {
                 mode: GraphMode::Overview,
-            },
-        ),
-        (
-            "phase",
-            Invocation::Phase {
-                action: PhaseAction::List,
-            },
-        ),
-        (
-            "epic",
-            Invocation::Epic {
-                action: EpicAction::List,
             },
         ),
         (

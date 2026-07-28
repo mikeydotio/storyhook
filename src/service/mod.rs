@@ -29,6 +29,7 @@
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
 pub mod config;
+pub mod grouping;
 pub mod project;
 pub mod relation;
 pub mod story;
@@ -48,6 +49,7 @@ use crate::store::{
 };
 
 pub use config::{ConfigService, StateEdit, StateListing};
+pub use grouping::{GroupingService, PhaseCleared};
 pub use project::{InitOptions, InitOutcome, ProjectPointer, ProjectService};
 pub use relation::{RelationOutcome, RelationService};
 pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
