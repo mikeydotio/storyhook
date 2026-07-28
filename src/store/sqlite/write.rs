@@ -136,6 +136,32 @@ pub(super) fn allocate_story_no(
         .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))
 }
 
+/// Raises a project's story-number counter so that nothing at or below
+/// `highest` is ever handed out.
+///
+/// `MAX`, never assignment: a caller that has just written story 40 into a
+/// project whose counter already stands at 100 must not walk it backwards, or
+/// the next `story new` mints an id that already exists.
+pub(super) fn reserve_story_no(
+    conn: &Connection,
+    project: ProjectId,
+    highest: StoryNo,
+) -> Result<(), StoreError> {
+    let updated = sql(
+        conn.execute(
+            "UPDATE projects SET next_story_no = MAX(next_story_no, ?2) WHERE id = ?1",
+            params![project.get(), highest.get() + 1],
+        ),
+        "reserving a story number",
+    )?;
+    if updated == 0 {
+        return Err(StoreError::NotFound(format!(
+            "project {project} does not exist"
+        )));
+    }
+    Ok(())
+}
+
 /// Reserves `count` consecutive change-feed positions.
 fn allocate_global_seqs(
     conn: &Connection,

@@ -20,15 +20,17 @@ use crate::cli::{
     CliOptions, EpicAction, HELP_TEXT, HooksAction, Invocation, PhaseAction, PluginAction,
     StateAction, TypeAction,
 };
-use crate::domain::{FieldEdit, StateChanges, SuperState};
+use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
 use crate::error::AppError;
 use crate::help_topics;
 use crate::output::{Response, render_html_report};
 use crate::service::{
-    Clock, ConfigService, Ctx, FieldEdits, GroupingService, InitOptions, InitOutcome,
+    Clock, ConfigService, Ctx, FieldEdits, GroupingService, ImportBatch, InitOptions, InitOutcome,
     IntegrityService, ListFilters, NewStoryInput, PhaseCleared, ProjectService, QueryService,
     RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService, SystemService,
+    TransferService, transfer,
 };
+use crate::storage::ProjectExport;
 use crate::store::Store;
 
 /// One unit of work for an [`Invoker`]: the command, plus the execution
@@ -359,7 +361,51 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 }
             }
         }
-        Invocation::Init { .. }
+        Invocation::Export => TransferService::new(ctx)
+            .export()
+            .and_then(|export| Ok(serde_json::to_string_pretty(&export)?))
+            // `RawJson`, not `Message`: the export document *is* the result, so
+            // wrapping it in the `--json` envelope would make it an escaped
+            // string that `story import-project` then refuses.
+            .map(Response::RawJson),
+        Invocation::Import { file } => {
+            let stories: Vec<ImportStory> = serde_json::from_str(&read_input(file.as_deref())?)?;
+            if stories.is_empty() {
+                return Ok(Response::Message("no stories to import".to_string()));
+            }
+            TransferService::new(ctx)
+                .import(&stories)
+                .map(|batch| Response::Stories(batch.views, None))
+        }
+        Invocation::Decompose {
+            file,
+            stdin,
+            dry_run,
+        } => {
+            let content = if stdin {
+                read_input(None)?
+            } else if let Some(path) = file.as_deref() {
+                read_input(Some(path))?
+            } else {
+                return Err(AppError::Usage(
+                    "usage: story decompose <file> [--dry-run] | story decompose --stdin \
+                     [--dry-run]"
+                        .to_string(),
+                ));
+            };
+            let stories = crate::decompose::decompose(file.as_deref(), &content)?;
+            if dry_run {
+                return Ok(Response::Message(serde_json::to_string_pretty(&stories)?));
+            }
+            if stories.is_empty() {
+                return Ok(Response::Message("no stories to import".to_string()));
+            }
+            let batch = TransferService::new(ctx).import(&stories)?;
+            let summary = decompose_summary(&batch);
+            Ok(Response::Stories(batch.views, Some(summary)))
+        }
+        Invocation::ImportProject { .. }
+        | Invocation::Init { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact
@@ -642,8 +688,66 @@ pub fn dispatch_unscoped<S: Store>(
             "story {}",
             env!("CARGO_PKG_VERSION")
         ))),
+        // Project-less for the same reason `init` is: `story import-project`
+        // into an empty directory is how a backup is restored, so the arm has
+        // to be able to create the project it is importing into.
+        Invocation::ImportProject { file } => {
+            let raw = std::fs::read_to_string(&file)
+                .map_err(|e| AppError::Storage(format!("failed to read {file}: {e}")))?;
+            let export: ProjectExport = serde_json::from_str(&raw)?;
+            let imported =
+                transfer::import_project(store, root, &Clock::Fixed(now.to_string()), &export)?;
+            Ok(Response::Message(format!(
+                "imported project with {imported} stories"
+            )))
+        }
         other => Err(not_yet_ported(&other)),
     }
+}
+
+/// Reads a command's input document from a file, or from standard input when
+/// no file is named.
+///
+/// One helper for the two commands that take a document, because they disagreed
+/// about the wording of the failure: `import` said `failed to read stdin` and
+/// `decompose` said the same, but only one of them said which *file* it could
+/// not read.
+fn read_input(file: Option<&str>) -> Result<String, AppError> {
+    match file {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| AppError::Storage(format!("failed to read {path}: {e}"))),
+        None => {
+            use std::io::Read as _;
+            let mut buffer = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buffer)
+                .map_err(|e| AppError::Storage(format!("failed to read stdin: {e}")))?;
+            Ok(buffer)
+        }
+    }
+}
+
+/// The `Created 3 stories with 2 relationships:` block `story decompose` prints
+/// under the stories it created.
+fn decompose_summary(batch: &ImportBatch) -> String {
+    let stories = batch.views.len();
+    let relations = batch.relationship_lines.len();
+    let mut summary = format!(
+        "Created {stories} {} with {relations} {}",
+        if stories == 1 { "story" } else { "stories" },
+        if relations == 1 {
+            "relationship"
+        } else {
+            "relationships"
+        },
+    );
+    if !batch.relationship_lines.is_empty() {
+        summary.push(':');
+        for line in &batch.relationship_lines {
+            summary.push_str(&format!("\n  {line}"));
+        }
+    }
+    summary
 }
 
 /// What `story init` tells the user.

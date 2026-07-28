@@ -1327,11 +1327,11 @@ fn the_story_view_agrees_on_derived_relationships_and_progress() {
 #[test]
 fn an_unported_invocation_fails_loudly_rather_than_silently() {
     let differential = Differential::new();
-    let error = dispatch(&differential.ctx(), Invocation::Export)
-        .expect_err("export is not ported in this wave");
+    let error = dispatch(&differential.ctx(), Invocation::SessionStart)
+        .expect_err("session-start is not ported in this wave");
     let message = error.to_string();
     assert!(message.contains("not yet ported"), "{message}");
-    assert!(message.contains("export"), "{message}");
+    assert!(message.contains("session-start"), "{message}");
 }
 
 #[test]
@@ -1378,6 +1378,10 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "handoff",
         "doctor",
         "project-snapshot",
+        "export",
+        "import",
+        "import-project",
+        "decompose",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1408,13 +1412,12 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         48,
         "an invocation is on neither the ported roster nor the unported probes"
     );
-    assert_eq!(ported.len(), 38);
+    assert_eq!(ported.len(), 42);
 }
 
 /// One probe per invocation this wave does *not* port.
 fn unported_probes() -> Vec<(&'static str, Invocation)> {
     vec![
-        ("export", Invocation::Export),
         (
             "history",
             Invocation::History {
@@ -1422,24 +1425,11 @@ fn unported_probes() -> Vec<(&'static str, Invocation)> {
             },
         ),
         ("session-start", Invocation::SessionStart),
-        ("import", Invocation::Import { file: None }),
-        (
-            "decompose",
-            Invocation::Decompose {
-                file: None,
-                stdin: false,
-                dry_run: true,
-            },
-        ),
         (
             "web",
             Invocation::Web {
                 action: WebAction::Status,
             },
-        ),
-        (
-            "import-project",
-            Invocation::ImportProject { file: "x".into() },
         ),
         ("commit-sync", Invocation::CommitSync { since: None }),
         (

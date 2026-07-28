@@ -687,6 +687,40 @@ macro_rules! store_conformance_suite {
                 assert!(matches!(error, StoreError::NotFound(_)), "{error}");
             }
 
+            /// The importer writes story numbers it did not allocate, so it has
+            /// to tell the counter what it used — and a counter that could be
+            /// moved *down* would hand out an id that already exists.
+            #[test]
+            fn reserving_a_story_number_only_ever_raises_the_counter() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                f.store()
+                    .write(|tx| tx.reserve_story_no(project, StoryNo::new(40)))
+                    .unwrap();
+                assert_eq!(
+                    f.store().write(|tx| tx.allocate_story_no(project)).unwrap(),
+                    StoryNo::new(41)
+                );
+                f.store()
+                    .write(|tx| tx.reserve_story_no(project, StoryNo::new(3)))
+                    .unwrap();
+                assert_eq!(
+                    f.store().write(|tx| tx.allocate_story_no(project)).unwrap(),
+                    StoryNo::new(42),
+                    "reserving a lower number must not walk the counter back"
+                );
+            }
+
+            #[test]
+            fn reserving_for_an_unknown_project_says_so() {
+                let f = <$fixture>::create();
+                let error = f
+                    .store()
+                    .write(|tx| tx.reserve_story_no(ProjectId::new(404), StoryNo::new(1)))
+                    .unwrap_err();
+                assert!(matches!(error, StoreError::NotFound(_)), "{error}");
+            }
+
             #[test]
             fn the_allocation_counter_is_visible_on_the_project_record() {
                 let f = <$fixture>::create();
