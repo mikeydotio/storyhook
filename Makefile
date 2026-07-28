@@ -6,7 +6,7 @@
 # (and pass) before every push; skipping it is how a non-compiling commit
 # reaches `main` undetected (see #23).
 
-.PHONY: test build fmt lint clippy check release-build install
+.PHONY: test build fmt lint clippy check release-build install check-no-orphan-servers
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
@@ -21,12 +21,22 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # possibly-stale globally-installed one, and never a fake -- a fake can't
 # catch a genuine CAS race or a real is_ready() interaction), so `cargo
 # build` runs first and target/debug is prepended to PATH for that one step.
-test:
+#
+# The orphan check brackets the run: before, because a survivor of an earlier
+# run makes this one lie (SH-51), and after, because a run that leaks one has
+# just armed the same trap for the next person.
+test: check-no-orphan-servers
 	cargo fmt -- --check
 	cargo clippy --all-targets -- -D warnings
 	cargo test
 	cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
+	@bash scripts/check-no-orphan-servers.sh postlude
+
+# Fails if a test-spawned server from this worktree is still running. Never
+# looks at the installed dashboard daemon on :3456 — that one is production.
+check-no-orphan-servers:
+	@bash scripts/check-no-orphan-servers.sh preflight
 
 # Debug build of the `story` binary.
 build:

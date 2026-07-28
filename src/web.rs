@@ -1549,6 +1549,31 @@ fn accept_loop(
 /// or any other wildcard/public-facing address, and no plain LAN IP is
 /// bound either — only loopback and, when present, the tailnet.
 pub fn start_server(registry_path: &Path, port: u16) -> Result<(), AppError> {
+    start_server_with_ready(registry_path, port, |_| {})
+}
+
+/// [`start_server`], plus a `ready` callback invoked with the loopback
+/// listener's real address at the moment the server is initialized and about
+/// to accept requests.
+///
+/// Two things only the server itself can report, and which no probe from the
+/// outside can establish:
+///
+/// - **Which address it actually got.** Pass port 0 to have the OS assign a
+///   free one; `ready` is how the caller learns which. (The tailnet listener,
+///   when there is one, is bound on the same resolved port, so the dashboard
+///   is reachable at one port on every interface it serves.)
+/// - **That the address is the server's own.** A caller that merely connects
+///   to a port cannot tell this server apart from some other process holding
+///   it. Being told the address *after* a successful bind, on a channel this
+///   server owns, can only come from this server.
+///
+/// `ready` fires after the filesystem watcher handshake below, so it means
+/// "ready to serve", not merely "bound".
+pub fn start_server_with_ready<F>(registry_path: &Path, port: u16, ready: F) -> Result<(), AppError>
+where
+    F: FnOnce(std::net::SocketAddr),
+{
     let loopback_addr = format!("127.0.0.1:{port}");
     let loopback_server = Server::http(&loopback_addr).map_err(|e| {
         if e.to_string().contains("Address already in use")
@@ -1562,6 +1587,15 @@ pub fn start_server(registry_path: &Path, port: u16) -> Result<(), AppError> {
             AppError::Storage(format!("Failed to start web server: {e}"))
         }
     })?;
+
+    // The address the kernel actually gave us, which differs from `port`
+    // whenever the caller asked for 0. Everything below reports and binds
+    // this resolved port, never the requested one.
+    let bound = loopback_server
+        .server_addr()
+        .to_ip()
+        .ok_or_else(|| AppError::Storage("web server bound a non-IP address".to_string()))?;
+    let port = bound.port();
 
     eprintln!("Storyhook dashboard: http://127.0.0.1:{port}");
 
@@ -1626,6 +1660,8 @@ pub fn start_server(registry_path: &Path, port: u16) -> Result<(), AppError> {
     // without sending — i.e. it's already given up — so there's nothing to
     // keep waiting for either way.
     let _ = watcher_ready_rx.recv();
+
+    ready(bound);
 
     if let Some(tailnet_server) = tailnet_listener {
         let tailnet_registry_path = registry_path.to_path_buf();
