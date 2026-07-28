@@ -19,7 +19,8 @@ use crate::cli::{CliOptions, Invocation};
 use crate::error::AppError;
 use crate::output::Response;
 use crate::service::{
-    Ctx, FieldEdits, NewStoryInput, RelationOutcome, RelationService, ReopenOutcome, StoryService,
+    Clock, Ctx, FieldEdits, InitOptions, InitOutcome, NewStoryInput, ProjectService,
+    RelationOutcome, RelationService, ReopenOutcome, StoryService,
 };
 use crate::store::Store;
 
@@ -238,8 +239,72 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 if remove { "removed" } else { "added" }
             ))),
         },
+        Invocation::Init { .. } => {
+            dispatch_unscoped(ctx.store(), ctx.cwd(), &ctx.now(), invocation)
+        }
         other => Err(not_yet_ported(&other)),
     }
+}
+
+/// Dispatch for the invocations that run *before* a project is resolved.
+///
+/// `story init` is the reason this exists. Every other command names a project
+/// and therefore takes a [`Ctx`]; init is the command that creates one, so on
+/// a virgin store there is no [`ProjectId`](crate::store::ProjectId) for a
+/// context to hold. Rather than let a caller invent one, the arms that do not
+/// need a project live here and take the store and the checkout directly.
+///
+/// [`dispatch`] forwards its own project-less variants here, so the two entry
+/// points cannot answer the same invocation differently and the roster of
+/// ported arms stays a property of one function.
+///
+/// `now` is passed rather than read so that the answer is stamped once per
+/// invocation, from whichever clock the caller is using.
+pub fn dispatch_unscoped<S: Store>(
+    store: &S,
+    root: &Path,
+    now: &str,
+    invocation: Invocation,
+) -> Result<Response, AppError> {
+    match invocation {
+        Invocation::Init {
+            prefix,
+            no_agents_md,
+        } => {
+            let outcome = ProjectService::new(store, root)
+                .clock(Clock::Fixed(now.to_string()))
+                .init(&InitOptions {
+                    prefix,
+                    agents_md: !no_agents_md,
+                    // The pointer file is the store's claim on the repository,
+                    // and while the legacy tree is still the identity of record
+                    // a second claim could only ever disagree with it. The wave
+                    // that flips the default turns this on.
+                    pointer: false,
+                })?;
+            Ok(Response::Message(init_message(&outcome)))
+        }
+        other => Err(not_yet_ported(&other)),
+    }
+}
+
+/// What `story init` tells the user.
+///
+/// The text still describes the legacy storage model — a `.storyhook/`
+/// directory to commit — because it is the text users and scripts see today
+/// and byte-compatibility is this port's governing rule. It becomes wrong at
+/// the moment the store becomes the identity of record, and the wave that
+/// makes that switch owns rewriting it; changing it here would move a
+/// user-visible string in a wave whose entire claim is that it moves none.
+fn init_message(outcome: &InitOutcome) -> String {
+    let mut message = "initialized story project\n\n\
+         The .storyhook/ directory contains your project data.\n\
+         Remember to commit it to git — it should travel with the repository."
+        .to_string();
+    if outcome.agents_md {
+        message.push_str("\n\nGenerated AGENTS.md for AI agent discoverability.");
+    }
+    message
 }
 
 /// The error an unported [`Invocation`] answers with.

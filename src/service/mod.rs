@@ -28,8 +28,10 @@
 //! `story`, which needs a second connection to the same database, and holding
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
+pub mod project;
 pub mod relation;
 pub mod story;
+pub mod templates;
 pub mod view;
 
 use std::collections::BTreeMap;
@@ -43,6 +45,7 @@ use crate::store::{
     partition_known,
 };
 
+pub use project::{InitOptions, InitOutcome, ProjectPointer, ProjectService};
 pub use relation::{RelationOutcome, RelationService};
 pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
 

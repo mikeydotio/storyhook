@@ -64,6 +64,10 @@ serde_json = "1.0.145"
 serde_yml = "0.0.12"
 thiserror = "2.0.17"
 toml = "0.8.23"
+# The portable identity of a project, minted by `story init` and carried in the
+# repository's committed pointer file. It has to survive being copied to
+# another machine, so it cannot be derived from a path or a counter.
+uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
 
 # Web dashboard
