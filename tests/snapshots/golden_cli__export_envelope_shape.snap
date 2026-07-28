@@ -2,11 +2,15 @@
 source: tests/golden_cli.rs
 ---
 {
+  "byte_identical_to_unflagged_export": true,
+  "is_the_export_document": true,
+  "is_wrapped_in_an_envelope": false,
   "keys": [
-    "message",
-    "result"
-  ],
-  "message_is_a_string": true,
-  "message_parses_as_the_export_document": true,
-  "result": "ok"
+    "members",
+    "prefix",
+    "schema",
+    "states",
+    "stories",
+    "types"
+  ]
 }
