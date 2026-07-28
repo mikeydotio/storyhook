@@ -1,5 +1,9 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use storyhook_test_support::{
+    ChildGuard, DaemonGuard, http_status_line, reserve_port, scratch_dir, serve, wait_for_addr,
+    wait_for_server,
+};
 
 fn story(dir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("story").unwrap();
@@ -159,10 +163,7 @@ fn web_open_and_address_succeed_when_running() {
     let home = scratch_dir();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
     let port = reserve_port();
-    let _daemon = DaemonGuard {
-        home: home.path().to_path_buf(),
-        cwd: dir.path().to_path_buf(),
-    };
+    let _daemon = DaemonGuard::new(home.path(), dir.path());
 
     story(dir.path())
         .env("HOME", home.path())
@@ -217,10 +218,7 @@ fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
     let home = scratch_dir();
     let dir = scratch_dir();
     let port = reserve_port();
-    let _daemon = DaemonGuard {
-        home: home.path().to_path_buf(),
-        cwd: dir.path().to_path_buf(),
-    };
+    let _daemon = DaemonGuard::new(home.path(), dir.path());
 
     story(dir.path())
         .env("HOME", home.path())
@@ -263,10 +261,7 @@ fn web_start_succeeds_outside_a_project() {
     let home = scratch_dir();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
     let port = reserve_port();
-    let _daemon = DaemonGuard {
-        home: home.path().to_path_buf(),
-        cwd: dir.path().to_path_buf(),
-    };
+    let _daemon = DaemonGuard::new(home.path(), dir.path());
 
     story(dir.path())
         .env("HOME", home.path())
@@ -3597,10 +3592,7 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
     let home = scratch_dir();
     let dir = scratch_dir();
     let port = reserve_port();
-    let _daemon = DaemonGuard {
-        home: home.path().to_path_buf(),
-        cwd: dir.path().to_path_buf(),
-    };
+    let _daemon = DaemonGuard::new(home.path(), dir.path());
 
     story(dir.path())
         .env("HOME", home.path())
@@ -3660,284 +3652,6 @@ fn sse_connection_does_not_block_other_requests() {
 
 use std::time::{Duration, Instant};
 
-/// The root every fixture directory in this suite is created under.
-///
-/// Deliberately *not* `$TMPDIR`. On macOS `$TMPDIR` (`/var/folders/…/T/`) is
-/// Spotlight-indexed, and this suite creates hundreds of tiny files per run
-/// (temp git repos, storyhook project trees, registries); `mds_stores`
-/// backlogs behind them and starves the fixture-heavy web tests until they
-/// fail as unexplained 404s — a diagnosis that points nowhere near the
-/// filesystem (SH-53). `/private/tmp` (the real path behind `/tmp`) is never
-/// indexed. On every other platform the OS temp dir carries no such hazard.
-fn scratch_root() -> std::path::PathBuf {
-    let unindexed = std::path::Path::new("/private/tmp");
-    if cfg!(target_os = "macos") && unindexed.is_dir() {
-        unindexed.to_path_buf()
-    } else {
-        std::env::temp_dir()
-    }
-}
-
-/// Best-effort: mark `$TMPDIR` itself Spotlight-exempt, for the sake of the
-/// suites that still build fixtures there. The marker is untracked machine
-/// state that an OS upgrade wipes (SH-53), so the harness creates it rather
-/// than assuming a human did — a failure to create it is advisory, and
-/// `scratch_dirs_live_outside_the_spotlight_indexed_tmpdir` is what makes it
-/// loud.
-fn ensure_tmpdir_is_spotlight_exempt() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        if cfg!(target_os = "macos") {
-            let marker = std::env::temp_dir().join(".metadata_never_index");
-            if !marker.exists() {
-                let _ = std::fs::File::create(&marker);
-            }
-        }
-    });
-}
-
-/// Creates a fixture directory under [`scratch_root`]. Every temp directory
-/// this suite creates goes through here — never `tempfile::tempdir()`, which
-/// lands in the indexed `$TMPDIR`.
-fn scratch_dir() -> tempfile::TempDir {
-    ensure_tmpdir_is_spotlight_exempt();
-    tempfile::Builder::new()
-        .prefix("storyhook-web-test-")
-        .tempdir_in(scratch_root())
-        .expect("creating a scratch directory")
-}
-
-#[test]
-fn scratch_dirs_live_outside_the_spotlight_indexed_tmpdir() {
-    let dir = scratch_dir();
-    let indexed = std::env::temp_dir();
-    assert!(
-        !dir.path().starts_with(&indexed),
-        "fixtures must not be created under {} — macOS Spotlight indexes it, and this \
-         suite's file churn backlogs mds_stores until the web tests fail as unexplained \
-         404s (SH-53); got {}",
-        indexed.display(),
-        dir.path().display()
-    );
-
-    if cfg!(target_os = "macos") {
-        let marker = indexed.join(".metadata_never_index");
-        assert!(
-            marker.exists(),
-            "the harness must create {} so the suites that still use $TMPDIR are \
-             Spotlight-exempt too (SH-53)",
-            marker.display()
-        );
-    }
-}
-
-/// Picks a port for the handful of tests that must know one *before* the
-/// thing that binds it exists — `story web start --port N` binds in a child
-/// process, and reports success as soon as it has spawned that child, so a
-/// port it loses is never reported to anyone.
-///
-/// Two properties, both learned from SH-51:
-///
-/// - **Outside the kernel's ephemeral range.** Every in-process server here
-///   binds port 0, so anything drawn from the ephemeral range can be handed
-///   to one of those in the window between this reservation being released
-///   and the child binding it — after which the test talks to whichever won.
-/// - **Not a fixed sequence.** The old counter started every run at 19000 and
-///   marched upward, so any run collided with the survivors of the previous
-///   one. The band here is entered at a random offset, and each candidate is
-///   bind-tested before being handed out.
-fn reserve_port() -> u16 {
-    use std::sync::atomic::{AtomicU16, Ordering};
-
-    // Above the registered-port range, below the ephemeral range macOS and
-    // Linux draw from (49152+ / 32768+ — the band avoids both).
-    const BAND: std::ops::Range<u16> = 19000..29000;
-
-    static NEXT: std::sync::LazyLock<AtomicU16> = std::sync::LazyLock::new(|| {
-        let entropy = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0)
-            ^ std::process::id();
-        let span = (BAND.end - BAND.start) as u32;
-        AtomicU16::new(BAND.start + (entropy % span) as u16)
-    });
-
-    for _ in 0..64 {
-        let candidate = NEXT.fetch_add(1, Ordering::Relaxed);
-        let candidate = if BAND.contains(&candidate) {
-            candidate
-        } else {
-            NEXT.store(BAND.start, Ordering::Relaxed);
-            BAND.start
-        };
-        // Binding and immediately releasing proves nothing else holds it —
-        // including a daemon leaked by an earlier run, the exact hazard the
-        // fixed counter walked straight into.
-        if std::net::TcpListener::bind(("127.0.0.1", candidate)).is_ok() {
-            return candidate;
-        }
-    }
-    panic!("no free port in {BAND:?} — is an earlier run's daemon still holding them?");
-}
-
-/// Starts a dashboard server for `registry_path` on an OS-assigned port and
-/// returns that port once the server is serving. The sanctioned way for this
-/// suite to get a server: no test picks its own port, and no test waits on
-/// anything weaker than the server's own readiness signal.
-fn serve(registry_path: &std::path::Path) -> u16 {
-    try_serve_on(registry_path, 0).unwrap_or_else(|e| panic!("starting a test server: {e}"))
-}
-
-/// [`serve`], but on a caller-chosen `port` and returning the server's own
-/// start-up failure instead of panicking.
-///
-/// The failure must never be swallowed. A server that loses the bind leaves
-/// whatever *else* holds that port answering the test's requests, and a
-/// stranger's registry answers `404` to everything the test asks about — the
-/// mass-failure mode of SH-51. Readiness comes from the server's `ready`
-/// callback rather than a `connect()` probe for the same reason: only the
-/// server can attest that the address is one it actually bound, and that it
-/// has finished loading state (see `web::start_server_with_ready`).
-fn try_serve_on(registry_path: &std::path::Path, port: u16) -> Result<u16, String> {
-    use std::sync::mpsc;
-
-    let (tx, rx) = mpsc::channel::<Result<u16, String>>();
-    let ready_tx = tx.clone();
-    let path = registry_path.to_path_buf();
-    std::thread::spawn(move || {
-        let outcome = storyhook::web::start_server_with_ready(&path, port, move |addr| {
-            let _ = ready_tx.send(Ok(addr.port()));
-        });
-        if let Err(e) = outcome {
-            let _ = tx.send(Err(e.to_string()));
-        }
-    });
-
-    match rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(bound)) => {
-            wait_for_server(bound);
-            Ok(bound)
-        }
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(format!(
-            "a server for {} neither became ready nor reported a failure within 10s",
-            registry_path.display()
-        )),
-    }
-}
-
-/// Stops the `story web start` daemon a test launched, even if the test
-/// panics first. Test-spawned servers that outlive the test are exactly what
-/// poisoned later runs in SH-51; the in-process ones die with the test
-/// binary, but a daemon is a detached child process and only an explicit
-/// stop reaps it.
-struct DaemonGuard {
-    home: std::path::PathBuf,
-    cwd: std::path::PathBuf,
-}
-
-impl Drop for DaemonGuard {
-    fn drop(&mut self) {
-        let _ = Command::cargo_bin("story")
-            .expect("locating the story binary")
-            .current_dir(&self.cwd)
-            .env("HOME", &self.home)
-            .args(["web", "stop"])
-            .output();
-    }
-}
-
-/// A foreign listener on the port the harness is about to use stands in for
-/// the orphaned `web_test` server from an earlier run that caused SH-51:
-/// having lost the bind, the harness must fail loudly rather than hand the
-/// test a port answered by somebody else's registry (which surfaced as a wall
-/// of inexplicable 404s).
-#[test]
-fn serving_an_occupied_port_fails_loudly_instead_of_trusting_the_squatter() {
-    let dir = scratch_dir();
-    story(dir.path()).arg("init").assert().success();
-    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-
-    let squatter = std::net::TcpListener::bind("127.0.0.1:0").expect("binding the squatter");
-    let squatted = squatter.local_addr().unwrap().port();
-
-    let outcome = try_serve_on(&registry_path, squatted);
-    let error = match outcome {
-        Err(error) => error,
-        Ok(port) => panic!(
-            "the harness reported a ready server on port {port}, which is held by a foreign \
-             listener — every request the test makes would go to that stranger (SH-51)"
-        ),
-    };
-    assert!(
-        error.to_lowercase().contains("in use"),
-        "the failure must name the real cause (the port is taken), got: {error}"
-    );
-}
-
-/// Two servers started in the same run must never be handed the same port,
-/// and each must answer only for the registry it was started with — the
-/// property that the fixed 19000-based counter could not guarantee across
-/// concurrent runs.
-#[test]
-fn concurrent_servers_get_distinct_ports_and_serve_only_their_own_registry() {
-    let dir_a = scratch_dir();
-    story(dir_a.path()).arg("init").assert().success();
-    let (_registry_dir_a, registry_a, id_a) = register_repo(dir_a.path());
-
-    let dir_b = scratch_dir();
-    story(dir_b.path()).arg("init").assert().success();
-    let (_registry_dir_b, registry_b, id_b) = register_repo(dir_b.path());
-
-    assert_ne!(id_a, id_b, "the two fixtures must be distinguishable");
-
-    let port_a = serve(&registry_a);
-    let port_b = serve(&registry_b);
-    assert_ne!(port_a, port_b, "two servers must not share a port");
-
-    let own = ureq::get(format!("http://127.0.0.1:{port_a}/api/repos/{id_a}/data"))
-        .call()
-        .expect("a server must serve the registry it was started with");
-    assert_eq!(own.status(), 200);
-
-    let cross = ureq::get(format!("http://127.0.0.1:{port_b}/api/repos/{id_a}/data")).call();
-    assert_eq!(
-        status_of(cross.expect_err("a server must not answer for another server's repo")),
-        404
-    );
-}
-
-/// Kills a child process on drop, so a server a test started can never
-/// outlive it.
-struct ChildGuard(std::process::Child);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// Sends `GET /` and returns the response's status line, or `None` while the
-/// server is not answering. A read timeout is essential: the failure being
-/// tested is a listener that accepts the connection and then says nothing.
-fn http_status_line(port: u16, timeout: Duration) -> Option<String> {
-    use std::io::{BufRead, BufReader, Write};
-
-    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
-    stream.set_read_timeout(Some(timeout)).ok()?;
-    let mut writer = stream.try_clone().ok()?;
-    write!(
-        writer,
-        "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-    )
-    .ok()?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).ok()?;
-    Some(line)
-}
-
 /// `tailscale status --json` is shelled out to during server start-up, and
 /// the CLI talks to `tailscaled`, which wedges: probes stuck for minutes were
 /// observed on this machine, orphaned by servers that had already exited.
@@ -3972,7 +3686,7 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawning the dashboard");
-    let _guard = ChildGuard(child);
+    let _guard = ChildGuard::new(child);
 
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut last = None;
@@ -3986,29 +3700,6 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
     panic!(
         "the dashboard never served a request while `tailscale` hung; last response line: {last:?}"
     );
-}
-
-fn wait_for_server(port: u16) {
-    wait_for_addr(&format!("127.0.0.1:{port}"));
-}
-
-/// Like [`wait_for_server`], but against an arbitrary `host:port` — for the
-/// tailnet listener, which `start_server` no longer starts *serving* until
-/// its filesystem watcher's one-time setup finishes (see `web.rs`'s
-/// `watcher_ready_rx` handshake), so a fixed sleep after `wait_for_server`
-/// (loopback-only) isn't a reliable proxy for "the tailnet listener is
-/// accepting requests too" under load.
-fn wait_for_addr(addr: &str) {
-    let start = Instant::now();
-    loop {
-        if std::net::TcpStream::connect(addr).is_ok() {
-            return;
-        }
-        if start.elapsed() > Duration::from_secs(5) {
-            panic!("{addr} did not start accepting connections within 5 seconds");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
 }
 
 /// Opens a raw `GET /api/events` connection and reads past the response
