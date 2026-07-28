@@ -5,6 +5,30 @@ use storyhook::app;
 use storyhook::cli::{self, CliOptions, Invocation, WebAction};
 use storyhook::output;
 
+/// Reports `error` on the stream its consumer reads, and exits with the
+/// error's code.
+///
+/// Plain-text diagnostics go to stderr, so a caller can suppress them
+/// (`story move ... --quiet 2>/dev/null || true`, which storyhook's own
+/// post-merge hook uses) without them landing in the middle of unrelated
+/// output.
+///
+/// `--json` is deliberately different: there, stdout is a machine-readable
+/// result channel carrying exactly one self-describing document per run, and
+/// the error envelope is the result the caller asked for. See
+/// `tests/cli_error_streams.rs` for the contract, and
+/// plugin/claude-code/bin/story.sh, whose CAS claim reads a conflict envelope
+/// off stdout.
+fn fail(error: &storyhook::error::AppError, json: bool) -> ! {
+    let rendered = output::render_error(error, json);
+    if json {
+        print!("{rendered}");
+    } else {
+        eprint!("{rendered}");
+    }
+    process::exit(error.exit_code());
+}
+
 fn main() {
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
 
@@ -24,10 +48,7 @@ fn main() {
 
     let invocation = match cli::parse_invocation(&filtered_args) {
         Ok(invocation) => invocation,
-        Err(error) => {
-            print!("{}", output::render_error(&error, json));
-            process::exit(error.exit_code());
-        }
+        Err(error) => fail(&error, json),
     };
 
     // Web server foreground mode: `story web --serve --port N`. Runs the
@@ -65,8 +86,7 @@ fn main() {
             let error = storyhook::error::AppError::Storage(format!(
                 "failed to resolve current directory: {error}"
             ));
-            print!("{}", output::render_error(&error, json));
-            process::exit(error.exit_code());
+            fail(&error, json);
         }
     };
 
@@ -77,9 +97,6 @@ fn main() {
                 print!("{rendered}");
             }
         }
-        Err(error) => {
-            print!("{}", output::render_error(&error, options.json));
-            process::exit(error.exit_code());
-        }
+        Err(error) => fail(&error, options.json),
     }
 }

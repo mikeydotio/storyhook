@@ -374,7 +374,7 @@ fn set_json_patch_unknown_assignee_is_rejected_and_does_not_set() {
         .args(["set", "SH-1", "--json", r#"{"assignee":"nobody"}"#])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("member `nobody` not found"));
+        .stderr(predicate::str::contains("member `nobody` not found"));
 
     story(dir.path())
         .args(["show", "SH-1"])

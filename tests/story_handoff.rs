@@ -73,7 +73,7 @@ fn handoff_invalid_duration() {
         .args(["handoff", "--since", "xyz"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid duration"));
+        .stderr(predicate::str::contains("invalid duration"));
 }
 
 #[test]

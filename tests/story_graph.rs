@@ -154,5 +154,5 @@ fn graph_blocked_by_nonexistent() {
         .args(["graph", "--blocked-by", "SH-999"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("not found"));
+        .stderr(predicate::str::contains("not found"));
 }

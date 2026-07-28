@@ -141,7 +141,7 @@ fn sync_git_not_a_git_repo() {
         .assert()
         .failure()
         .code(2)
-        .stdout(predicate::str::contains("not a git repository"));
+        .stderr(predicate::str::contains("not a git repository"));
 }
 
 #[test]

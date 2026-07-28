@@ -175,7 +175,7 @@ fn help_with_unknown_topic_still_fails() {
         .args(["help", "nonexistent-command"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown help topic"));
+        .stderr(predicate::str::contains("unknown help topic"));
 }
 
 #[test]

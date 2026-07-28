@@ -22,7 +22,7 @@ fn unknown_command_returns_clear_error() {
         .args(["frobnicate"])
         .assert()
         .code(2)
-        .stdout(contains("unknown command `frobnicate`"));
+        .stderr(contains("unknown command `frobnicate`"));
 }
 
 #[test]
@@ -32,5 +32,5 @@ fn unknown_command_with_hyphen_not_story_id() {
         .args(["mcp-config-old"])
         .assert()
         .code(2)
-        .stdout(contains("unknown command"));
+        .stderr(contains("unknown command"));
 }

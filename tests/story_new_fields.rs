@@ -72,7 +72,7 @@ fn new_with_invalid_priority_is_rejected_and_creates_no_story() {
         .args(["new", "Bad priority", "--priority", "urgent"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid priority"));
+        .stderr(predicate::str::contains("invalid priority"));
 
     story(dir.path()).args(["show", "SH-1"]).assert().failure();
 }
@@ -141,7 +141,7 @@ fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
         .args(["new", "Bad assignee", "--assignee", "nobody"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("member `nobody` not found"));
+        .stderr(predicate::str::contains("member `nobody` not found"));
 
     story(dir.path()).args(["show", "SH-1"]).assert().failure();
 }

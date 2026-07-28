@@ -250,7 +250,7 @@ fn reopen_deleted_story_without_force_fails_and_stays_closed() {
         .args(["reopen", "SH-1"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("--force"));
+        .stderr(predicate::str::contains("--force"));
 
     // Still closed/deleted — the failed attempt must not have partially
     // mutated anything.

@@ -157,7 +157,7 @@ fn hooks_install_fails_outside_git_repo() {
         .args(["hooks", "install"])
         .assert()
         .code(2)
-        .stdout(predicate::str::contains("not a git repository"));
+        .stderr(predicate::str::contains("not a git repository"));
 }
 
 #[test]
