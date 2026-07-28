@@ -1382,6 +1382,7 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "import",
         "import-project",
         "decompose",
+        "commit-sync",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1412,7 +1413,7 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         48,
         "an invocation is on neither the ported roster nor the unported probes"
     );
-    assert_eq!(ported.len(), 42);
+    assert_eq!(ported.len(), 43);
 }
 
 /// One probe per invocation this wave does *not* port.
@@ -1431,7 +1432,6 @@ fn unported_probes() -> Vec<(&'static str, Invocation)> {
                 action: WebAction::Status,
             },
         ),
-        ("commit-sync", Invocation::CommitSync { since: None }),
         (
             "github-sync",
             Invocation::GithubSync {

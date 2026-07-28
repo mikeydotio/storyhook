@@ -25,10 +25,10 @@ use crate::error::AppError;
 use crate::help_topics;
 use crate::output::{Response, render_html_report};
 use crate::service::{
-    Clock, ConfigService, Ctx, FieldEdits, GroupingService, ImportBatch, InitOptions, InitOutcome,
-    IntegrityService, ListFilters, NewStoryInput, PhaseCleared, ProjectService, QueryService,
-    RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService, SystemService,
-    TransferService, transfer,
+    Clock, ConfigService, Ctx, FieldEdits, GitService, GroupingService, ImportBatch, InitOptions,
+    InitOutcome, IntegrityService, ListFilters, NewStoryInput, PhaseCleared, ProjectService,
+    QueryService, RelationOutcome, RelationService, ReopenOutcome, StateListing, StoryService,
+    SystemService, TransferService, transfer,
 };
 use crate::storage::ProjectExport;
 use crate::store::Store;
@@ -361,6 +361,9 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 }
             }
         }
+        Invocation::CommitSync { since } => GitService::new(ctx)
+            .commit_sync(since.as_deref())
+            .map(Response::Message),
         Invocation::Export => TransferService::new(ctx)
             .export()
             .and_then(|export| Ok(serde_json::to_string_pretty(&export)?))

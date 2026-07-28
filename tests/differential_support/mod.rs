@@ -53,7 +53,23 @@ impl Differential {
     /// transcribed, so the two cannot drift apart the day `story init`'s
     /// defaults change.
     pub fn new() -> Self {
-        let legacy = TestEnv::shared().project().build();
+        Self::seeded(TestEnv::shared().project().build())
+    }
+
+    /// [`new`](Self::new), with the legacy project inside a real git
+    /// repository.
+    ///
+    /// `commit-sync` shells out to `git` in the project directory, and both
+    /// legs run against the *same* directory — so one repository, one log, and
+    /// any disagreement is about what the two legs did with it rather than
+    /// about what they read.
+    pub fn with_git() -> Self {
+        Self::seeded(TestEnv::shared().project().git().build())
+    }
+
+    /// Builds the store leg's project from the catalog the legacy leg already
+    /// has.
+    fn seeded(legacy: Project<'static>) -> Self {
         let root = legacy.path();
         let prefix = storage::load_project_prefix(root).expect("reading the legacy prefix");
         let states = storage::load_states(root).expect("reading the legacy states");
@@ -84,6 +100,27 @@ impl Differential {
             project,
             _dir: dir,
         }
+    }
+
+    /// Makes an empty commit with `subject` in the legacy project's
+    /// repository.
+    ///
+    /// Empty on purpose: `commit-sync` reads subjects, so what a commit touches
+    /// is irrelevant and a fixture that writes files would only add ways to
+    /// fail.
+    pub fn commit(&self, subject: &str) {
+        let mut command = std::process::Command::new("git");
+        command
+            .current_dir(self.legacy.path())
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["commit", "-q", "--allow-empty", "-m", subject]);
+        TestEnv::shared().apply(&mut command);
+        let output = command.output().expect("running git commit");
+        assert!(
+            output.status.success(),
+            "`git commit -m {subject}` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// Adds the same member to both projects.
