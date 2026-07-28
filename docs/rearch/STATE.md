@@ -26,8 +26,9 @@
 |---|---|---|
 | W0 gate repair + harness | `rearch/w0-gate-repair` / [PR #60](https://github.com/mikeydotio/storyhook/pull/60) | **MERGED** 2026-07-28 |
 | W0b envelope + Invoker seam | `rearch/w0b-envelope` / [PR #61](https://github.com/mikeydotio/storyhook/pull/61) | **MERGED** 2026-07-28 |
-| W1 store engine | `rearch/w1-store` | **PR OPENED** — awaiting merge |
-| W2a/b/c/d services | — | pending |
+| W1 store engine | `rearch/w1-store` / [PR #62](https://github.com/mikeydotio/storyhook/pull/62) | **MERGED** 2026-07-28 |
+| W2a services (lifecycle + relations) | `rearch/w2a-lifecycle` | **PR OPENED** — awaiting merge |
+| W2b/c/d services | — | pending |
 | W3 importer | — | pending |
 | W4 THE FLIP | — | pending (one uninterrupted session; revert only while W3 round-trip green) |
 | W5 daemon | — | pending |
@@ -73,6 +74,13 @@
   slug constraint — a defect this wave's own tests found), `e792a3e` (the
   162-case conformance suite), `9f7d0e4` (property tests). See Step log for the
   public API W2a builds on and the deviations.
+
+## W2a step plan
+
+- **W2a DONE** — `src/service/` + `invoke::dispatch`, additive; `src/app.rs` untouched.
+  Four commits: `845afb9` (the fold fix reopen needs), `c67642b` (context, dispatch
+  skeleton, StoryService), `fa4d610` (RelationService), `757bc7b` (the differential
+  harness). See Step log for the service API W2b/c/d builds on and the deviations.
 
 ## Key facts discovered (do not re-derive)
 
@@ -194,6 +202,59 @@
   the feature; cargo's v2 resolver keeps dev-dependency features out of
   non-test builds. If someone ever removes that `features = [...]`, the store's
   crash tests silently stop compiling into the gate.
+- **W2a finding, unfixed, needs a story — a rejected `--state` BURNS a story number.**
+  `storage::create_story_with_events` (`src/storage.rs:936`) calls `next_story_id`, which
+  increments the on-disk counter, and validates the requested initial state *afterwards*
+  (`:937-956`). So `story new --state nonsense` exits 2 and still consumes the number,
+  leaving a permanent gap in the numbering. Every *other* enrichment field (type,
+  priority, assignee) is validated in `app.rs` before that call, which is why only
+  `--state` shows it. Found by the differential harness on its first full run — the two
+  legs disagreed on the id of the next story, and nothing else would have surfaced it.
+  **The store does not have the defect** (the allocation is inside the transaction that
+  uses it, so a rollback returns the number), so this is a deliberate behaviour change at
+  the flip, not a regression. Pinned by
+  `differential_lifecycle.rs::a_rejected_initial_state_burns_a_story_number_in_the_legacy_leg_only`;
+  W4 should list it in the flip's behaviour-change notes.
+- **W2a: `fold_story` was not total, and reopen is why.** `closed_at`, `deleted` and
+  `deleted_reason` had events that set them and none that cleared them, so the only way to
+  reopen a story was `storage::unarchive_story`'s *rewrite* of the event log with the
+  closure markers filtered out. An append-only store cannot do that, and the rewrite
+  destroys audit history besides. `845afb9` makes `StoryStateChanged` into a state the
+  project defines **and** calls OPEN retract the three flags. Deliberately that narrow: an
+  unrecognised slug leaves them alone, so a deleted story whose state slug was later
+  removed from the catalog keeps folding (its `deleted` flag is what forces its
+  superstate) instead of becoming a hard fold failure. **No reachable legacy log contains
+  the ordering it reacts to** — every `StoryStateChanged` writer appends to a story's *open*
+  log, and a closed story has no open log until `unarchive_story` has already stripped the
+  markers; a scan of this repo's own 61 logs (open + archived) found zero occurrences. Full
+  suite green with zero assertion or snapshot edits.
+- **W2a: `tx.state_map()` is a `BTreeMap`, so iterating it is ALPHABETICAL, not configured
+  order.** The default open state is "the first *configured* state that is OPEN"; taken off
+  the map it would be `in-progress` rather than `todo`, and every new story would open in
+  the wrong state. Use `tx.states()` (ordered `Vec`) wherever order is part of the
+  contract — the default open state, and the "Available OPEN states: …" error message —
+  and derive the map from that same list for the fold. `service::story::state_map` does
+  exactly this. W2b/c must not reintroduce the shortcut.
+- **W2a: `StoreError::Rejected(Box<AppError>)` is the service→store error channel.**
+  `Store::write` decides commit or rollback from the closure's `Result`, so a service that
+  aborts on its own rules has to express that as a `StoreError`. Flattening into
+  `StoreError::Validation` costs the error contract two things it is pinned on: `Usage` and
+  `Validation` share an exit code but not a wire form, and `StateConflict` carries two state
+  slugs no store-level variant has room for. `From<AppError> for StoreError` wraps and
+  `From<StoreError> for AppError` unwraps, so the round trip is the identity — which is why
+  services can just use `?` on `Result<_, AppError>` inside a write closure.
+- **W2a: `story assign` and `story set --assignee` disagree about a missing member ON
+  PURPOSE.** The first is `NotFound` (exit 3), the second `Validation` (exit 2). Both are
+  pinned by the error contract and by the differential harness; a later wave "unifying"
+  them changes user-visible exit codes.
+- **W2a: BulkUpdate stays best-effort per item, contradicting the wave brief's
+  "one failure → whole batch rolled back".** The legacy output format has a per-item
+  `error — …` line, so a caller can already see which items failed, and making the batch
+  atomic would silently discard work a script has been told landed. Byte-compat wins.
+  What the store *does* add is that each item is atomic **on its own** — the event append,
+  the fold, the snapshot write and the archived flag land together or not at all, where the
+  legacy path had three separate filesystem operations and a failure between them left the
+  SH-20 split-brain shape. Pinned by `service_story.rs::each_bulk_item_is_atomic_on_its_own`.
 - Baseline `make test` cold: 83s wall (230% CPU) incl. build; failed only in web_test (orphans).
 - Post-W0.1 `make test` warm: ~29s wall, 3 consecutive green runs (49 Rust targets + 15 bash).
 - `git commit --amend` silently fails in this environment — use reset --soft + fresh commit.
@@ -605,6 +666,103 @@
   names them; making `put_story` drop one label fails
   `the_read_model_always_equals_a_rebuild`, which shrinks to a two-operation counterexample
   naming the field.
+
+- 2026-07-28 W2a: branch `rearch/w2a-lifecycle` off merged main `271c7cf`. Four commits,
+  `make test` green after each; two consecutive green full runs at the end (see below).
+  Test count 1422 → **1575** (+153: 86 `service_story`, 24 `service_relations`, 39
+  `differential_lifecycle`, 4 `domain` fold units). `src/app.rs` has **zero** changes:
+  `git diff 271c7cf..HEAD -- src/app.rs` is empty, and `git diff --stat 271c7cf..HEAD -- tests/`
+  reports only the three new files.
+  - `845afb9` — `fold_story` retracts the closure markers on a move into an open state
+    (see Key facts). The one change outside `src/service/` besides `pub mod service;` and
+    the `StoreError::Rejected` variant.
+  - `c67642b` — `Ctx`, `Clock`, `invoke::dispatch`, `service::view`, `StoryService`,
+    `ServiceFixture` + the drift guard.
+  - `fa4d610` — `RelationService`: both ends' events, both folds, both rows in one tx.
+  - `757bc7b` — the differential harness, and the legacy id-burn defect it found.
+
+  **The service API W2b/W2c/W2d build on** (`storyhook::service`):
+
+  ```rust
+  Ctx::new(&store, project, cwd)            // borrows the store; rebuild per invocation
+      .no_hooks(bool) .hook_depth(u32) .clock(Clock)     // #[must_use] builders
+      .store() .project() .cwd() .depth() .now() .hooks_enabled()
+      .story_view(id) -> Result<Response, AppError>      // fresh read tx, post-hooks
+  enum Clock { System, Fixed(String) }       // W5's Environment absorbs this
+
+  StoryService::new(&ctx)
+      .create(&NewStoryInput) -> StorySnapshot
+      .comment / .assign / .set_priority / .set_awaiting / .clear_awaiting -> StorySnapshot
+      .set_labels(id, &[add], &[remove]) -> StorySnapshot
+      .set_state(id, state, comment: Option<&str>, if_state: Option<&str>) -> StorySnapshot
+      .set_fields(id, &FieldEdits) -> String        // the "updated SH-1: …" summary
+      .bulk_update(&[(id, state)]) -> String
+      .delete(id, reason) -> String
+      .reopen(id, force) -> ReopenOutcome::{Reopened(Box<StorySnapshot>), Aborted(String)}
+  RelationService::new(&ctx)
+      .relate(a, relation, b, remove)
+          -> RelationOutcome::{Changed(Box<StorySnapshot>), Unchanged { remove }}
+
+  // pub(crate), for the services W2b/c/d add:
+  service::resolve_story / resolve_open_story / project_prefix / append_and_fold
+  service::view::{story_map, story_views, story_view}   // pub
+  ```
+
+  Things W2b/W2c/W2d should know:
+  - **`append_and_fold` is the mandated store pattern written once.** Call it *inside* your
+    own `store.write(|tx| …)`, so the "one transaction" part stays visible at your call site
+    while the four-line append/re-read/fold/put boilerplate does not get copied a ninth time.
+  - **Hooks fire after the commit, never inside it.** A hook shells out to `story`, which
+    opens a second connection; firing inside the write transaction is a deadlock with a
+    five-second fuse. `Ctx::story_view` is deliberately a *separate* read tx taken after the
+    hooks, because the legacy path built its view after firing and a hook can write.
+  - **`service::view` is the minimal read side this wave needed** — `story_map`,
+    `story_views`, `story_view`, mirroring `app::build_story_views` minus its
+    open-and-archive duplicate check (not representable: a story is one row). **W2c's
+    QueryService should absorb and extend it, not duplicate it.**
+  - **`ServiceFixture`'s `Drop` runs `assert_no_drift`** (skipped while panicking), so every
+    service test in every later wave is also a read-model consistency check for free. Two
+    `should_panic` tests in `service_relations.rs` damage a read model through a second
+    rusqlite connection to prove the guard is not vacuously green.
+  - **The differential harness normalizes exactly one thing: timestamps**, and says so in
+    its module docs. Both legs read the system clock at second precision microseconds apart.
+    Everything else — ids, states, comments, relationships, derived relationships, progress,
+    flagged reasons, error variant, error message, exit code — is compared verbatim.
+    `the_ported_arms_are_exactly_the_ones_this_wave_claims` holds the roster of ported arms,
+    so **W2b/c/d must update that list as they port**, and an accidentally un-ported arm
+    fails there.
+  - **`story show` has no dispatch arm yet**, so the harness's view assertions call
+    `Ctx::story_view` directly. W2c porting `Show` should point them back through dispatch.
+
+  Gate: **two consecutive green full runs, 2:07 and 2:04 wall** — against W1's 55.8s/56.5s.
+  The jump is **build, not tests**: `cargo test --workspace` alone is ~62s warm, and the
+  three new binaries contribute **2.0s of runtime** (`service_story` 0.46s,
+  `service_relations` 0.27s, `differential_lifecycle` 1.31s), inside the per-wave budget.
+  The rest is linking three more test binaries plus recompiling the lib after `domain.rs`
+  changed, which invalidates every downstream binary. `web_test` again measured 21s against
+  its 7.2s baseline, unchanged code, parallel-binary contention as in W1.
+
+  Verification that the tests bite, not merely pass: the differential harness found the
+  legacy id-burn defect on its first full run (Key facts); deleting the `progress` rollup
+  from `service::view` fails five of its tests; and the two drift-guard `should_panic`
+  tests fail if the guard is removed.
+
+  Deviations from the wave brief, all deliberate and all recorded above or in Key facts:
+  - **The dispatch skeleton is not its own commit.** Its helpers (`resolve_story`,
+    `append_and_fold`, …) exist only for the services that consume them, so a
+    skeleton-only commit fails `clippy -D warnings` on dead code. Adding `#[allow]` in one
+    commit to delete it in the next is worse than one honest commit; it is folded into
+    `c67642b`.
+  - **BulkUpdate is not atomic across items** — see Key facts. The brief asked for
+    "one failure → whole batch rolled back"; that would change user-visible output, and
+    byte-compat is the higher rule.
+  - **`fold_story` changed**, which is outside `src/service/`. Reopen is not expressible
+    append-only without it; the alternative was dropping a named deliverable. Its own
+    commit, its own tests, zero assertion edits elsewhere.
+  - **`StoreError` gained a variant.** W1's store is otherwise untouched.
+  - **A `Clock` on `Ctx`.** The spec puts the injectable clock in W5's `Environment`; the
+    service tests need a pinned "now" three waves earlier, and 20 lines now beats an
+    untestable service.
 
 ## Resume protocol (fresh session)
 
