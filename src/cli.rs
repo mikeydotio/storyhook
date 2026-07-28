@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::error::AppError;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HooksAction {
     Install,
     Uninstall,
@@ -8,7 +10,7 @@ pub enum HooksAction {
     Test { event_type: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GraphMode {
     Overview,
     CriticalPath,
@@ -16,7 +18,7 @@ pub enum GraphMode {
     ParallelGroups,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PhaseAction {
     List,
     Show {
@@ -35,7 +37,7 @@ pub enum PhaseAction {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TypeAction {
     List,
     Add {
@@ -52,7 +54,7 @@ pub enum TypeAction {
 ///
 /// Values stay as the raw strings the user typed; `app::run` parses and
 /// validates them, like every other invocation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StateAction {
     List,
     Add {
@@ -84,7 +86,7 @@ pub enum StateAction {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EpicAction {
     List,
     Show { id: String },
@@ -179,7 +181,14 @@ Global options:
   -V, --version   Print the installed story version
 "#;
 
-#[derive(Clone, Debug)]
+/// One parsed command line: what to do, plus the three global flags.
+///
+/// Only `no_hooks` reaches the layer that executes the invocation — `json`
+/// and `quiet` are rendering decisions, consumed by
+/// [`crate::output::render_response`] after the work is done. That split is
+/// why [`crate::invoke::InvokeRequest`], not this type, is what crosses a
+/// process boundary.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CliOptions {
     pub json: bool,
     pub quiet: bool,
@@ -187,13 +196,22 @@ pub struct CliOptions {
     pub invocation: Invocation,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemberInput {
     Identity(String),
     Github(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Every command storyhook can execute, fully parsed and validated for
+/// *shape* — field values stay as the raw strings the user typed, because
+/// interpreting them needs project data the parser cannot see.
+///
+/// This is the request half of the wire envelope (the response half is
+/// [`crate::output::Response`]): it is what a client sends and a server
+/// executes, so it must stay serializable and free of anything
+/// process-local. Every field is currently a `String`, `bool`, `usize`,
+/// `u16`, `PathBuf` or a collection of those.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Invocation {
     Help,
     Init {
@@ -368,7 +386,7 @@ pub enum Invocation {
     Version,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PluginAction {
     Install { target: String },
     Uninstall { target: String },
@@ -378,7 +396,7 @@ pub enum PluginAction {
 /// and the internal `story web --serve` daemon entrypoint.
 pub const DEFAULT_WEB_PORT: u16 = 3456;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAction {
     Start {
         port: u16,

@@ -1,0 +1,931 @@
+//! The wire envelope's round-trip contract.
+//!
+//! The data-layer rearchitecture moves command execution out of the CLI
+//! process and behind a transport, which is only safe because rendering never
+//! moves with it: `app::run` returns an unrendered
+//! [`Response`]/[`AppError`] pair, and `output.rs` turns that into bytes on
+//! the caller's side. So *if* the envelope survives a serialize/deserialize
+//! hop with its rendering unchanged, then carrying it over a wire cannot
+//! change a single byte of CLI output — by construction, not by inspection.
+//!
+//! This file is the proof of that "if". It is deliberately about rendering
+//! equality rather than value equality: `Response` has no `PartialEq` (its
+//! view types carry `f64`-adjacent rollups and deeply nested snapshots), and
+//! rendered bytes are the thing users and scripts actually depend on.
+//!
+//! Sibling files: `tests/golden_cli.rs` pins what the renderers produce,
+//! `tests/error_contract.rs` pins exit codes and stream placement. This one
+//! pins that a hop through JSON changes neither.
+
+use storyhook::cli::{
+    EpicAction, GraphMode, HooksAction, Invocation, MemberInput, PhaseAction, PluginAction,
+    StateAction, TypeAction, WebAction,
+};
+use storyhook::domain::{
+    Priority, ProgressRollup, StoryComment, StoryRelation, StorySnapshot, SuperState,
+};
+use storyhook::error::{AppError, WireError};
+use storyhook::output::{
+    BlockedChainView, GraphOverview, GraphView, PhaseView, Response, StaleInfo, StoryView,
+    SummaryView, render_error, render_response,
+};
+
+/// The four ways a `Response` can be rendered. Every case in this file is
+/// checked in all of them, because `--quiet` and `--json` route through
+/// different arms of `render_response` and `RawJson` deliberately ignores
+/// both.
+const RENDER_MODES: [(bool, bool); 4] =
+    [(false, false), (true, false), (false, true), (true, true)];
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+/// A `Response` after a full JSON serialize/deserialize hop — the exact
+/// treatment `/api/v1/invoke` will give it.
+fn hop(response: &Response) -> Response {
+    let encoded = serde_json::to_string(response).expect("a Response must serialize");
+    serde_json::from_str(&encoded).unwrap_or_else(|e| {
+        panic!("a Response must deserialize from its own output: {e}\n{encoded}")
+    })
+}
+
+/// An `AppError` after the same hop, through its [`WireError`] mirror.
+fn hop_error(error: &AppError) -> AppError {
+    let encoded =
+        serde_json::to_string(&WireError::from(error)).expect("a WireError must serialize");
+    let decoded: WireError = serde_json::from_str(&encoded).unwrap_or_else(|e| {
+        panic!("a WireError must deserialize from its own output: {e}\n{encoded}")
+    });
+    decoded.into()
+}
+
+fn snapshot(id: &str, title: &str) -> StorySnapshot {
+    StorySnapshot {
+        id: id.to_string(),
+        title: title.to_string(),
+        created_at: "2026-07-28T09:00:00Z".to_string(),
+        updated_at: "2026-07-28T09:30:00Z".to_string(),
+        state: "todo".to_string(),
+        superstate: SuperState::Open,
+        assignee: None,
+        awaiting: None,
+        comments: Vec::new(),
+        relationships: Vec::new(),
+        priority: Priority::None,
+        labels: Vec::new(),
+        story_type: None,
+        description: None,
+        closed_at: None,
+        deleted: false,
+        deleted_reason: None,
+    }
+}
+
+fn view(story: StorySnapshot) -> StoryView {
+    StoryView {
+        story,
+        derived_relationships: Vec::new(),
+        warnings: Vec::new(),
+        flagged_reasons: Vec::new(),
+        stale_info: None,
+        progress: None,
+    }
+}
+
+/// A story with every optional field populated — the case where a dropped
+/// `#[serde(skip_serializing_if)]` without a matching `#[serde(default)]`
+/// would show up.
+fn maximal_view() -> StoryView {
+    StoryView {
+        story: StorySnapshot {
+            assignee: Some("ada-lovelace".to_string()),
+            awaiting: Some("SH-9 to land".to_string()),
+            comments: vec![
+                StoryComment {
+                    at: "2026-07-28T10:00:00Z".to_string(),
+                    text: "Settled the shape of the trait.".to_string(),
+                },
+                StoryComment {
+                    at: "2026-07-28T11:00:00Z".to_string(),
+                    // Quotes, a backslash, a newline and non-ASCII: the four
+                    // things a naive escaping bug loses.
+                    text: "said \"ship it\" — path C:\\tmp\nsecond line".to_string(),
+                },
+            ],
+            relationships: vec![
+                StoryRelation {
+                    relation: "blocks".to_string(),
+                    other_id: "SH-2".to_string(),
+                },
+                StoryRelation {
+                    relation: "parent-of".to_string(),
+                    other_id: "SH-3".to_string(),
+                },
+            ],
+            priority: Priority::Critical,
+            labels: vec!["backend".to_string(), "api".to_string()],
+            story_type: Some("spike".to_string()),
+            description: Some("Multi\nline\tdescription with ünïcödé".to_string()),
+            closed_at: Some("2026-07-28T12:00:00Z".to_string()),
+            deleted: true,
+            deleted_reason: Some("superseded".to_string()),
+            superstate: SuperState::Closed,
+            state: "done".to_string(),
+            ..snapshot("SH-1", "Everything, everywhere")
+        },
+        derived_relationships: vec![StoryRelation {
+            relation: "sibling-of".to_string(),
+            other_id: "SH-4".to_string(),
+        }],
+        warnings: vec!["a warning".to_string()],
+        flagged_reasons: vec!["stale for 30 days".to_string(), "no assignee".to_string()],
+        stale_info: Some(StaleInfo {
+            last_activity_at: "2026-06-01T00:00:00Z".to_string(),
+            last_activity_type: "comment".to_string(),
+            days_stale: 57,
+        }),
+        progress: Some(ProgressRollup {
+            children_done: 2,
+            children_total: 5,
+        }),
+    }
+}
+
+fn summary() -> SummaryView {
+    SummaryView {
+        total_open: 9,
+        total_closed: 4,
+        by_state: vec![("todo".to_string(), 5), ("done".to_string(), 4)],
+        by_priority: vec![("critical".to_string(), 1), ("none".to_string(), 8)],
+        by_type: vec![("story".to_string(), 12), ("bug".to_string(), 1)],
+        blocked_count: 3,
+        flagged_count: 2,
+        ready_count: 4,
+        ready_stories: vec![maximal_view(), view(snapshot("SH-2", "Second"))],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Response
+// ---------------------------------------------------------------------------
+
+/// Every `Response` variant, in both its empty and its populated shape where
+/// the renderers treat those differently (`Stories`, `Issues` and
+/// `PhaseList` all have dedicated "nothing here" branches).
+fn response_corpus() -> Vec<(&'static str, Response)> {
+    vec![
+        (
+            "message",
+            Response::Message("initialized story project".to_string()),
+        ),
+        (
+            "message_multiline_unicode",
+            Response::Message("line one\nline two\ttabbed — ünïcödé \"quoted\"".to_string()),
+        ),
+        ("message_empty", Response::Message(String::new())),
+        (
+            "story_minimal",
+            Response::Story(Box::new(view(snapshot("SH-1", "A story")))),
+        ),
+        ("story_maximal", Response::Story(Box::new(maximal_view()))),
+        ("stories_empty", Response::Stories(Vec::new(), None)),
+        (
+            "stories_with_message",
+            Response::Stories(
+                vec![maximal_view(), view(snapshot("SH-2", "Second"))],
+                Some("2 ready stories".to_string()),
+            ),
+        ),
+        (
+            "stories_without_message",
+            Response::Stories(vec![view(snapshot("SH-3", "Third"))], None),
+        ),
+        ("summary", Response::Summary(Box::new(summary()))),
+        (
+            "summary_empty",
+            Response::Summary(Box::new(SummaryView {
+                total_open: 0,
+                total_closed: 0,
+                by_state: Vec::new(),
+                by_priority: Vec::new(),
+                by_type: Vec::new(),
+                blocked_count: 0,
+                flagged_count: 0,
+                ready_count: 0,
+                ready_stories: Vec::new(),
+            })),
+        ),
+        (
+            "graph_overview",
+            Response::Graph(Box::new(GraphView {
+                critical_path: None,
+                blocked_chain: None,
+                parallel_groups: None,
+                overview: Some(GraphOverview {
+                    total_open: 9,
+                    total_edges: 4,
+                    roots: vec!["SH-1".to_string()],
+                    leaves: vec!["SH-8".to_string(), "SH-9".to_string()],
+                }),
+            })),
+        ),
+        (
+            "graph_all_modes",
+            Response::Graph(Box::new(GraphView {
+                critical_path: Some(vec!["SH-1".to_string(), "SH-2".to_string()]),
+                blocked_chain: Some(BlockedChainView {
+                    source: "SH-1".to_string(),
+                    blocked: vec!["SH-2".to_string(), "SH-3".to_string()],
+                }),
+                parallel_groups: Some(vec![
+                    vec!["SH-1".to_string()],
+                    vec!["SH-2".to_string(), "SH-3".to_string()],
+                ]),
+                overview: Some(GraphOverview {
+                    total_open: 3,
+                    total_edges: 2,
+                    roots: Vec::new(),
+                    leaves: Vec::new(),
+                }),
+            })),
+        ),
+        (
+            "graph_empty_modes",
+            Response::Graph(Box::new(GraphView {
+                critical_path: Some(Vec::new()),
+                blocked_chain: Some(BlockedChainView {
+                    source: "SH-1".to_string(),
+                    blocked: Vec::new(),
+                }),
+                parallel_groups: Some(Vec::new()),
+                overview: None,
+            })),
+        ),
+        ("issues_empty", Response::Issues(Vec::new())),
+        (
+            "issues",
+            Response::Issues(vec![
+                "SH-1: dangling relation to SH-99".to_string(),
+                "SH-2: unknown state `wip`".to_string(),
+            ]),
+        ),
+        ("phase_list_empty", Response::PhaseList(Vec::new())),
+        (
+            "phase_list",
+            Response::PhaseList(vec![
+                PhaseView {
+                    phase: "1".to_string(),
+                    title: Some("Foundations".to_string()),
+                    total: 4,
+                    done: 2,
+                    in_progress: 1,
+                    todo: 1,
+                    blocked: 0,
+                    story_ids: vec!["SH-1".to_string(), "SH-2".to_string()],
+                },
+                PhaseView {
+                    phase: "2".to_string(),
+                    title: None,
+                    total: 0,
+                    done: 0,
+                    in_progress: 0,
+                    todo: 0,
+                    blocked: 0,
+                    story_ids: Vec::new(),
+                },
+            ]),
+        ),
+        (
+            "raw_json",
+            Response::RawJson("{\n  \"schema\": 1,\n  \"stories\": []\n}".to_string()),
+        ),
+    ]
+}
+
+/// The headline property: a hop through JSON changes nothing a caller can
+/// see, in any of the four rendering modes.
+#[test]
+fn every_response_renders_identically_after_a_wire_hop() {
+    for (label, response) in response_corpus() {
+        let hopped = hop(&response);
+        for (json, quiet) in RENDER_MODES {
+            assert_eq!(
+                render_response(&response, json, quiet),
+                render_response(&hopped, json, quiet),
+                "`{label}` rendered differently after a wire hop (json={json}, quiet={quiet})"
+            );
+        }
+    }
+}
+
+/// A second hop must not drift either: a first pass that quietly normalizes
+/// something (dropping an empty vec, reordering a map) can still be stable
+/// afterwards, and would pass the test above while having lost data.
+#[test]
+fn a_second_wire_hop_is_a_fixed_point() {
+    for (label, response) in response_corpus() {
+        let once = serde_json::to_string(&hop(&response)).expect("serializing");
+        let twice = serde_json::to_string(&hop(&hop(&response))).expect("serializing");
+        assert_eq!(once, twice, "`{label}` was not stable across two wire hops");
+    }
+}
+
+/// `Response`'s wire form is externally tagged, so the variant travels as the
+/// single top-level key. Pinned because a receiver that has to *guess* the
+/// variant from the payload's shape is the failure mode this envelope exists
+/// to avoid, and because `rename_all` is easy to lose in a refactor.
+#[test]
+fn response_variants_travel_as_snake_case_keys() {
+    let expected = [
+        ("message", "message"),
+        ("story_minimal", "story"),
+        ("stories_empty", "stories"),
+        ("summary", "summary"),
+        ("graph_overview", "graph"),
+        ("issues", "issues"),
+        ("phase_list", "phase_list"),
+        ("raw_json", "raw_json"),
+    ];
+    let corpus = response_corpus();
+    for (label, key) in expected {
+        let response = &corpus
+            .iter()
+            .find(|(name, _)| *name == label)
+            .unwrap_or_else(|| panic!("corpus must contain `{label}`"))
+            .1;
+        let encoded: serde_json::Value =
+            serde_json::to_value(response).expect("a Response must serialize");
+        let keys: Vec<&String> = encoded
+            .as_object()
+            .unwrap_or_else(|| panic!("`{label}` must serialize to an object: {encoded}"))
+            .keys()
+            .collect();
+        assert_eq!(
+            keys,
+            vec![key],
+            "`{label}` must travel under exactly one key, `{key}`"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AppError
+// ---------------------------------------------------------------------------
+
+/// Every `AppError` variant, constructed with a payload that would survive a
+/// lossy hop only by accident.
+fn error_corpus() -> Vec<AppError> {
+    vec![
+        AppError::Usage("unknown flag `--typo`".to_string()),
+        AppError::Validation("invalid priority `urgent`".to_string()),
+        AppError::NotFound("story `SH-99` not found".to_string()),
+        AppError::LockTimeout("another process holds the project lock".to_string()),
+        AppError::Integrity("SH-1: dangling relation".to_string()),
+        AppError::Storage("failed to read .storyhook/stories: no such file".to_string()),
+        // The prefixed variants: their `Display` is not their payload, so a
+        // wire form that carried the rendered message would double the prefix.
+        AppError::GithubAuth("token expired".to_string()),
+        AppError::GithubApi("422 Unprocessable Entity".to_string()),
+        AppError::SyncConflict("remote moved SH-1 to `done`".to_string()),
+        AppError::StateConflict("todo".to_string(), "in-progress".to_string()),
+    ]
+}
+
+/// An exhaustive `match`, so an eleventh `AppError` variant stops this file
+/// compiling until it has a wire form and a corpus row. The same guard
+/// `tests/error_contract.rs` uses for the exit-code table.
+fn variant_name(error: &AppError) -> &'static str {
+    match error {
+        AppError::Usage(_) => "Usage",
+        AppError::Validation(_) => "Validation",
+        AppError::NotFound(_) => "NotFound",
+        AppError::LockTimeout(_) => "LockTimeout",
+        AppError::Integrity(_) => "Integrity",
+        AppError::Storage(_) => "Storage",
+        AppError::GithubAuth(_) => "GithubAuth",
+        AppError::GithubApi(_) => "GithubApi",
+        AppError::SyncConflict(_) => "SyncConflict",
+        AppError::StateConflict(..) => "StateConflict",
+    }
+}
+
+/// The corpus must name every variant — the compile-time guard above only
+/// forces a *name*, this forces an actual value to round-trip.
+#[test]
+fn the_error_corpus_covers_every_variant() {
+    let mut names: Vec<&str> = error_corpus().iter().map(variant_name).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(
+        names.len(),
+        10,
+        "every AppError variant needs a row in `error_corpus`; found {names:?}"
+    );
+}
+
+/// What the CLI does with an error is exactly two things — render it and exit
+/// with its code — so those two are what must survive the hop. The variant
+/// identity is checked as well, because two variants can share an exit code
+/// (`Integrity` and `Storage` are both 5) and the daemon's HTTP status
+/// mapping in `web.rs` discriminates on the variant, not the code.
+#[test]
+fn every_error_survives_a_wire_hop() {
+    for error in error_corpus() {
+        let hopped = hop_error(&error);
+
+        assert_eq!(
+            variant_name(&error),
+            variant_name(&hopped),
+            "`{}` came back as a different variant",
+            variant_name(&error)
+        );
+        assert_eq!(
+            error.exit_code(),
+            hopped.exit_code(),
+            "`{}` came back with a different exit code",
+            variant_name(&error)
+        );
+        assert_eq!(
+            error.to_string(),
+            hopped.to_string(),
+            "`{}` came back with a different message",
+            variant_name(&error)
+        );
+        for json in [false, true] {
+            assert_eq!(
+                render_error(&error, json),
+                render_error(&hopped, json),
+                "`{}` rendered differently after a wire hop (json={json})",
+                variant_name(&error)
+            );
+        }
+    }
+}
+
+/// `StateConflict` is the one variant whose payload is structured rather than
+/// prose: `tests/move_if_state.rs` and `story.sh`'s compare-and-swap claim
+/// both read `expected`/`actual` out of the JSON envelope, and `web.rs` maps
+/// it to HTTP 409. Flattening it to a string on the wire would force a
+/// receiver to parse the two values back out of the rendered sentence.
+#[test]
+fn state_conflict_keeps_its_two_fields_apart_on_the_wire() {
+    let error = AppError::StateConflict("todo".to_string(), "in-progress".to_string());
+    let encoded = serde_json::to_value(WireError::from(&error)).expect("serializing");
+    assert_eq!(
+        encoded,
+        serde_json::json!({
+            "kind": "state_conflict",
+            "expected": "todo",
+            "actual": "in-progress",
+        })
+    );
+
+    // And the rendered conflict envelope — the bytes `story.sh` parses — is
+    // reproduced exactly from the wire form alone.
+    let rendered = render_error(&error, true);
+    let value: serde_json::Value = serde_json::from_str(&rendered).expect("the envelope is JSON");
+    assert_eq!(value["result"], "conflict");
+    assert_eq!(value["expected"], "todo");
+    assert_eq!(value["actual"], "in-progress");
+    assert_eq!(render_error(&hop_error(&error), true), rendered);
+}
+
+/// The wire form names its variant in snake_case under `kind`, which is the
+/// shape the daemon's error envelope is specified to carry.
+#[test]
+fn error_variants_travel_under_a_kind_tag() {
+    let kinds: Vec<String> = error_corpus()
+        .iter()
+        .map(|e| {
+            serde_json::to_value(WireError::from(e)).expect("serializing")["kind"]
+                .as_str()
+                .expect("`kind` must be a string")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "usage",
+            "validation",
+            "not_found",
+            "lock_timeout",
+            "integrity",
+            "storage",
+            "github_auth",
+            "github_api",
+            "sync_conflict",
+            "state_conflict",
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Invocation
+// ---------------------------------------------------------------------------
+
+/// Every `Invocation` variant, plus every variant of the six action enums
+/// they nest. `Invocation` derives `PartialEq`, so unlike `Response` this one
+/// can assert on values directly.
+fn invocation_corpus() -> Vec<Invocation> {
+    vec![
+        Invocation::Help,
+        Invocation::Init {
+            prefix: Some("API".to_string()),
+            no_agents_md: true,
+        },
+        Invocation::New {
+            title: "A story — with ünïcödé and \"quotes\"".to_string(),
+            state: Some("todo".to_string()),
+            story_type: Some("spike".to_string()),
+            description: Some("multi\nline".to_string()),
+            priority: Some("high".to_string()),
+            labels: Some(vec!["backend".to_string(), "api".to_string()]),
+            assignee: Some("ada-lovelace".to_string()),
+        },
+        Invocation::MemberAdd {
+            input: MemberInput::Identity("Ada Lovelace <ada@example.com>".to_string()),
+        },
+        Invocation::MemberAdd {
+            input: MemberInput::Github("ada".to_string()),
+        },
+        Invocation::State {
+            action: StateAction::List,
+        },
+        Invocation::State {
+            action: StateAction::Add {
+                slug: "review".to_string(),
+                superstate: "OPEN".to_string(),
+                role: Some("active".to_string()),
+                description: Some("Awaiting code review".to_string()),
+            },
+        },
+        Invocation::State {
+            action: StateAction::Set {
+                slug: "review".to_string(),
+                superstate: None,
+                role: Some("none".to_string()),
+                description: None,
+                clear_description: true,
+                move_stories_to: Some("todo".to_string()),
+            },
+        },
+        Invocation::State {
+            action: StateAction::Remove {
+                slug: "review".to_string(),
+                move_stories_to: None,
+            },
+        },
+        Invocation::State {
+            action: StateAction::Reorder {
+                order: vec!["todo".to_string(), "done".to_string()],
+            },
+        },
+        Invocation::List {
+            state: Some("todo".to_string()),
+            assignee: Some("ada".to_string()),
+            flagged: true,
+            priority: Some("high".to_string()),
+            label: Some("api".to_string()),
+            created_after: Some("7d".to_string()),
+            updated_after: Some("2h".to_string()),
+            blocked: true,
+            ready: true,
+            stale: Some("30d".to_string()),
+            phase: Some("1".to_string()),
+            story_type: Some("bug".to_string()),
+        },
+        Invocation::Search {
+            query: "trait".to_string(),
+        },
+        Invocation::Next {
+            count: 3,
+            phase: Some("2".to_string()),
+        },
+        Invocation::Summary,
+        Invocation::Report { html: true },
+        Invocation::Doctor { fix: true },
+        Invocation::Show {
+            id: "SH-1".to_string(),
+        },
+        Invocation::Comment {
+            id: "SH-1".to_string(),
+            text: "a comment".to_string(),
+        },
+        Invocation::Assign {
+            id: "SH-1".to_string(),
+            member: "ada".to_string(),
+        },
+        Invocation::SetState {
+            id: "SH-1".to_string(),
+            state: "done".to_string(),
+            comment: Some("shipped".to_string()),
+            if_state: Some("in-progress".to_string()),
+        },
+        Invocation::SetAwaiting {
+            id: "SH-1".to_string(),
+            awaiting: "SH-2".to_string(),
+        },
+        Invocation::ClearAwaiting {
+            id: "SH-1".to_string(),
+        },
+        Invocation::SetPriority {
+            id: "SH-1".to_string(),
+            priority: "critical".to_string(),
+        },
+        Invocation::SetLabels {
+            id: "SH-1".to_string(),
+            add: vec!["api".to_string()],
+            remove: vec!["backend".to_string()],
+        },
+        Invocation::Reopen {
+            id: "SH-1".to_string(),
+            force: true,
+        },
+        Invocation::Delete {
+            id: "SH-1".to_string(),
+            reason: "superseded".to_string(),
+        },
+        Invocation::BulkUpdate {
+            updates: vec![
+                ("SH-1".to_string(), "done".to_string()),
+                ("SH-2".to_string(), "todo".to_string()),
+            ],
+        },
+        Invocation::Import {
+            file: Some("stories.yaml".to_string()),
+        },
+        Invocation::Decompose {
+            file: None,
+            stdin: true,
+            dry_run: true,
+        },
+        Invocation::Export,
+        Invocation::ImportProject {
+            file: "export.json".to_string(),
+        },
+        Invocation::Context {
+            format: Some("json".to_string()),
+        },
+        Invocation::Handoff {
+            since: Some("7d".to_string()),
+        },
+        Invocation::Phase {
+            action: PhaseAction::List,
+        },
+        Invocation::Phase {
+            action: PhaseAction::Show {
+                phase: "1".to_string(),
+            },
+        },
+        Invocation::Phase {
+            action: PhaseAction::Add {
+                id: "SH-1".to_string(),
+                phase: "1".to_string(),
+            },
+        },
+        Invocation::Phase {
+            action: PhaseAction::Remove {
+                id: "SH-1".to_string(),
+            },
+        },
+        Invocation::Phase {
+            action: PhaseAction::Create {
+                phase: "2".to_string(),
+                title: Some("Foundations".to_string()),
+            },
+        },
+        Invocation::Type {
+            action: TypeAction::List,
+        },
+        Invocation::Type {
+            action: TypeAction::Add {
+                slug: "spike".to_string(),
+                description: Some("A timeboxed investigation".to_string()),
+            },
+        },
+        Invocation::Type {
+            action: TypeAction::Remove {
+                slug: "spike".to_string(),
+            },
+        },
+        Invocation::Epic {
+            action: EpicAction::List,
+        },
+        Invocation::Epic {
+            action: EpicAction::Show {
+                id: "SH-1".to_string(),
+            },
+        },
+        Invocation::Epic {
+            action: EpicAction::Create {
+                title: "An epic".to_string(),
+            },
+        },
+        Invocation::Epic {
+            action: EpicAction::Add {
+                epic_id: "SH-1".to_string(),
+                story_id: "SH-2".to_string(),
+            },
+        },
+        Invocation::Graph {
+            mode: GraphMode::Overview,
+        },
+        Invocation::Graph {
+            mode: GraphMode::CriticalPath,
+        },
+        Invocation::Graph {
+            mode: GraphMode::BlockedBy("SH-1".to_string()),
+        },
+        Invocation::Graph {
+            mode: GraphMode::ParallelGroups,
+        },
+        Invocation::SetFields {
+            id: "SH-1".to_string(),
+            title: Some("New title".to_string()),
+            state: Some("done".to_string()),
+            priority: Some("low".to_string()),
+            assignee: Some("none".to_string()),
+            labels: Some("api,backend".to_string()),
+            blocked: Some("SH-2".to_string()),
+            unblocked: true,
+            json: Some("{\"title\":\"x\"}".to_string()),
+            story_type: Some("bug".to_string()),
+            description: Some("new description".to_string()),
+        },
+        Invocation::Relate {
+            a: "SH-1".to_string(),
+            relation: "blocks".to_string(),
+            b: "SH-2".to_string(),
+            remove: true,
+        },
+        Invocation::Hooks {
+            action: HooksAction::Install,
+        },
+        Invocation::Hooks {
+            action: HooksAction::Uninstall,
+        },
+        Invocation::Hooks {
+            action: HooksAction::List,
+        },
+        Invocation::Hooks {
+            action: HooksAction::Test {
+                event_type: "story-created".to_string(),
+            },
+        },
+        Invocation::Scaffold {
+            kind: "claude".to_string(),
+        },
+        Invocation::CommitSync {
+            since: Some("7d".to_string()),
+        },
+        Invocation::GithubSync {
+            id: Some("SH-1".to_string()),
+            dry_run: true,
+        },
+        Invocation::HelpTopic {
+            topic: "states".to_string(),
+        },
+        Invocation::HelpCompact,
+        Invocation::HelpAll,
+        Invocation::Plugin {
+            action: PluginAction::Install {
+                target: "claude".to_string(),
+            },
+        },
+        Invocation::Plugin {
+            action: PluginAction::Uninstall {
+                target: "claude".to_string(),
+            },
+        },
+        Invocation::Web {
+            action: WebAction::Start { port: 3456 },
+        },
+        Invocation::Web {
+            action: WebAction::Stop,
+        },
+        Invocation::Web {
+            action: WebAction::Status,
+        },
+        Invocation::Web {
+            action: WebAction::Serve { port: 19000 },
+        },
+        Invocation::Web {
+            action: WebAction::Register {
+                // A path is the one non-string field in the whole enum.
+                path: std::path::PathBuf::from("/Volumes/Code/some repo/with spaces"),
+                name: Some("some repo".to_string()),
+            },
+        },
+        Invocation::Web {
+            action: WebAction::Deregister {
+                target: "some repo".to_string(),
+            },
+        },
+        Invocation::Web {
+            action: WebAction::List,
+        },
+        Invocation::Web {
+            action: WebAction::Open,
+        },
+        Invocation::Web {
+            action: WebAction::Address,
+        },
+        Invocation::SessionStart,
+        Invocation::Update {
+            check: true,
+            force: true,
+        },
+        Invocation::Version,
+    ]
+}
+
+/// An exhaustive `match`, so a new `Invocation` variant stops this file
+/// compiling until someone has decided how it crosses the wire.
+fn invocation_name(invocation: &Invocation) -> &'static str {
+    match invocation {
+        Invocation::Help => "Help",
+        Invocation::Init { .. } => "Init",
+        Invocation::New { .. } => "New",
+        Invocation::MemberAdd { .. } => "MemberAdd",
+        Invocation::State { .. } => "State",
+        Invocation::List { .. } => "List",
+        Invocation::Search { .. } => "Search",
+        Invocation::Next { .. } => "Next",
+        Invocation::Summary => "Summary",
+        Invocation::Report { .. } => "Report",
+        Invocation::Doctor { .. } => "Doctor",
+        Invocation::Show { .. } => "Show",
+        Invocation::Comment { .. } => "Comment",
+        Invocation::Assign { .. } => "Assign",
+        Invocation::SetState { .. } => "SetState",
+        Invocation::SetAwaiting { .. } => "SetAwaiting",
+        Invocation::ClearAwaiting { .. } => "ClearAwaiting",
+        Invocation::SetPriority { .. } => "SetPriority",
+        Invocation::SetLabels { .. } => "SetLabels",
+        Invocation::Reopen { .. } => "Reopen",
+        Invocation::Delete { .. } => "Delete",
+        Invocation::BulkUpdate { .. } => "BulkUpdate",
+        Invocation::Import { .. } => "Import",
+        Invocation::Decompose { .. } => "Decompose",
+        Invocation::Export => "Export",
+        Invocation::ImportProject { .. } => "ImportProject",
+        Invocation::Context { .. } => "Context",
+        Invocation::Handoff { .. } => "Handoff",
+        Invocation::Phase { .. } => "Phase",
+        Invocation::Type { .. } => "Type",
+        Invocation::Epic { .. } => "Epic",
+        Invocation::Graph { .. } => "Graph",
+        Invocation::SetFields { .. } => "SetFields",
+        Invocation::Relate { .. } => "Relate",
+        Invocation::Hooks { .. } => "Hooks",
+        Invocation::Scaffold { .. } => "Scaffold",
+        Invocation::CommitSync { .. } => "CommitSync",
+        Invocation::GithubSync { .. } => "GithubSync",
+        Invocation::HelpTopic { .. } => "HelpTopic",
+        Invocation::HelpCompact => "HelpCompact",
+        Invocation::HelpAll => "HelpAll",
+        Invocation::Plugin { .. } => "Plugin",
+        Invocation::Web { .. } => "Web",
+        Invocation::SessionStart => "SessionStart",
+        Invocation::Update { .. } => "Update",
+        Invocation::Version => "Version",
+    }
+}
+
+/// Forces a corpus row for every variant, not just a name in the `match`
+/// above. The count is the number of `Invocation` variants; a new one lands
+/// here as a failure with the missing name spelled out.
+#[test]
+fn the_invocation_corpus_covers_every_variant() {
+    let mut names: Vec<&str> = invocation_corpus().iter().map(invocation_name).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(
+        names.len(),
+        46,
+        "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
+    );
+}
+
+/// The request half of the envelope, round-tripped by value — `Invocation`
+/// derives `Eq`, so this is an exact comparison rather than a rendering one.
+#[test]
+fn every_invocation_survives_a_wire_hop() {
+    for invocation in invocation_corpus() {
+        let encoded = serde_json::to_string(&invocation).expect("an Invocation must serialize");
+        let decoded: Invocation = serde_json::from_str(&encoded).unwrap_or_else(|e| {
+            panic!(
+                "`{}` must deserialize from its own output: {e}\n{encoded}",
+                invocation_name(&invocation)
+            )
+        });
+        assert_eq!(
+            invocation,
+            decoded,
+            "`{}` changed across a wire hop",
+            invocation_name(&invocation)
+        );
+    }
+}
