@@ -1,0 +1,60 @@
+---
+source: tests/golden_cli.rs
+---
+$ story summary
+stories: 14 (11 open, 3 closed)
+by state:
+  done: 2
+  in-progress: 1
+  review: 1
+  todo: 10
+by priority:
+  critical: 2
+  high: 3
+  low: 4
+  medium: 4
+by type:
+  bug: 1
+  chore: 3
+  epic: 1
+  spike: 2
+  story: 4
+  task: 3
+blocked: 3
+flagged: 0
+ready: 8
+ready stories:
+  SH-1 [todo] (critical) Design the storage engine
+  SH-5 [todo] (critical) Fix the id collision across worktrees
+  SH-2 [todo] (high) Define the Store trait
+  SH-12 [todo] (high) Harden concurrent writes
+  SH-4 [review] (medium) Write the migration runner
+
+$ story report
+stories: 14 (11 open, 3 closed)
+by state:
+  done: 2
+  in-progress: 1
+  review: 1
+  todo: 10
+by priority:
+  critical: 2
+  high: 3
+  low: 4
+  medium: 4
+by type:
+  bug: 1
+  chore: 3
+  epic: 1
+  spike: 2
+  story: 4
+  task: 3
+blocked: 3
+flagged: 0
+ready: 8
+ready stories:
+  SH-1 [todo] (critical) Design the storage engine
+  SH-5 [todo] (critical) Fix the id collision across worktrees
+  SH-2 [todo] (high) Define the Store trait
+  SH-12 [todo] (high) Harden concurrent writes
+  SH-4 [review] (medium) Write the migration runner

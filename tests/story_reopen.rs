@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
@@ -49,7 +52,7 @@ fn reopen_already_open_story_fails() {
         .args(["reopen", "SH-1"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("already open"));
+        .stderr(predicate::str::contains("already open"));
 }
 
 #[test]
@@ -61,7 +64,7 @@ fn reopen_nonexistent_story_fails() {
         .args(["reopen", "SH-999"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("not found"));
+        .stderr(predicate::str::contains("not found"));
 }
 
 #[test]

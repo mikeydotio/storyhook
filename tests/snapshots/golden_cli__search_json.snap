@@ -1,0 +1,311 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story search engine --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story search worktrees --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story search backend --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-4",
+            "labels": [
+              "backend"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "review",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Write the migration runner",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story search ENGINE --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story search the storage engine --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story search nothing-matches-this --json",
+    "stdout": {
+      "result": "ok",
+      "stories": []
+    }
+  }
+]

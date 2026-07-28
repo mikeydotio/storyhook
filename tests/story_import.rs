@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
@@ -198,8 +201,8 @@ fn import_rejects_invalid_story_type() {
         .write_stdin(json)
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown types: bar, foo"))
-        .stdout(predicate::str::contains("Available types:"));
+        .stderr(predicate::str::contains("unknown types: bar, foo"))
+        .stderr(predicate::str::contains("Available types:"));
 }
 
 #[test]

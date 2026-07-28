@@ -1518,6 +1518,8 @@ fn open_archive_connection(root: &Path) -> Result<Connection, AppError> {
     Ok(connection)
 }
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#[allow(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

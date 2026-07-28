@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
@@ -72,7 +75,7 @@ fn new_with_invalid_priority_is_rejected_and_creates_no_story() {
         .args(["new", "Bad priority", "--priority", "urgent"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid priority"));
+        .stderr(predicate::str::contains("invalid priority"));
 
     story(dir.path()).args(["show", "SH-1"]).assert().failure();
 }
@@ -141,7 +144,7 @@ fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
         .args(["new", "Bad assignee", "--assignee", "nobody"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("member `nobody` not found"));
+        .stderr(predicate::str::contains("member `nobody` not found"));
 
     story(dir.path()).args(["show", "SH-1"]).assert().failure();
 }

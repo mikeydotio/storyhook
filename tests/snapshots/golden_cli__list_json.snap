@@ -1,0 +1,2230 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story list --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "progress": {
+            "children_done": 0,
+            "children_total": 3
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-4",
+            "labels": [
+              "backend"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "review",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Write the migration runner",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": "waiting on the benchmark harness",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-6",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "spike",
+            "superstate": "OPEN",
+            "title": "Benchmark the rebuild path",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-7",
+            "priority": "none",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "OPEN",
+            "title": "Document the data layer",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-8",
+            "priority": "low",
+            "relationships": [],
+            "state": "done",
+            "story_type": "chore",
+            "superstate": "CLOSED",
+            "title": "Retire the JSONL reader",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-9",
+            "labels": [
+              "phase:2"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-5",
+                "relation": "blocked-by"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Add the daemon transport",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-10",
+            "priority": "medium",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Ship the CLI shim",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-11",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Audit error codes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-12",
+            "priority": "high",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Harden concurrent writes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "[deleted] superseded by the global store"
+              }
+            ],
+            "created_at": "[timestamp]",
+            "deleted": true,
+            "deleted_reason": "superseded by the global store",
+            "id": "SH-13",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "CLOSED",
+            "title": "Old approach: file-per-story",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-14",
+            "priority": "medium",
+            "relationships": [],
+            "state": "done",
+            "story_type": "spike",
+            "superstate": "CLOSED",
+            "title": "Prototype the archive format",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --state todo --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "progress": {
+            "children_done": 0,
+            "children_total": 3
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": "waiting on the benchmark harness",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-6",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "spike",
+            "superstate": "OPEN",
+            "title": "Benchmark the rebuild path",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-7",
+            "priority": "none",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "OPEN",
+            "title": "Document the data layer",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-9",
+            "labels": [
+              "phase:2"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-5",
+                "relation": "blocked-by"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Add the daemon transport",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-10",
+            "priority": "medium",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Ship the CLI shim",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-11",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Audit error codes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-12",
+            "priority": "high",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Harden concurrent writes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "[deleted] superseded by the global store"
+              }
+            ],
+            "created_at": "[timestamp]",
+            "deleted": true,
+            "deleted_reason": "superseded by the global store",
+            "id": "SH-13",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "CLOSED",
+            "title": "Old approach: file-per-story",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --state review --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-4",
+            "labels": [
+              "backend"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "review",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Write the migration runner",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --state done --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-8",
+            "priority": "low",
+            "relationships": [],
+            "state": "done",
+            "story_type": "chore",
+            "superstate": "CLOSED",
+            "title": "Retire the JSONL reader",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-14",
+            "priority": "medium",
+            "relationships": [],
+            "state": "done",
+            "story_type": "spike",
+            "superstate": "CLOSED",
+            "title": "Prototype the archive format",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --type bug --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --type spike --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "awaiting": "waiting on the benchmark harness",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-6",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "spike",
+            "superstate": "OPEN",
+            "title": "Benchmark the rebuild path",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-14",
+            "priority": "medium",
+            "relationships": [],
+            "state": "done",
+            "story_type": "spike",
+            "superstate": "CLOSED",
+            "title": "Prototype the archive format",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --type none --json",
+    "stdout": {
+      "result": "ok",
+      "stories": []
+    }
+  },
+  {
+    "argv": "story list --priority critical,high --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "progress": {
+            "children_done": 0,
+            "children_total": 3
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-12",
+            "priority": "high",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Harden concurrent writes",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --priority none --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-7",
+            "priority": "none",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "OPEN",
+            "title": "Document the data layer",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --label backend --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-4",
+            "labels": [
+              "backend"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "review",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Write the migration runner",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --label api,defect --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --assignee ada-lovelace --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --assignee nobody --json",
+    "stdout": {
+      "result": "ok",
+      "stories": []
+    }
+  },
+  {
+    "argv": "story list --flagged --json",
+    "stdout": {
+      "result": "ok",
+      "stories": []
+    }
+  },
+  {
+    "argv": "story list --blocked --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": "waiting on the benchmark harness",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-6",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "spike",
+            "superstate": "OPEN",
+            "title": "Benchmark the rebuild path",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-9",
+            "labels": [
+              "phase:2"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-5",
+                "relation": "blocked-by"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Add the daemon transport",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --ready --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "progress": {
+            "children_done": 0,
+            "children_total": 3
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-4",
+            "labels": [
+              "backend"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "review",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Write the migration runner",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-7",
+            "priority": "none",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "OPEN",
+            "title": "Document the data layer",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-10",
+            "priority": "medium",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Ship the CLI shim",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-11",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Audit error codes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-12",
+            "priority": "high",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Harden concurrent writes",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --phase 1 --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --phase 9 --json",
+    "stdout": {
+      "result": "ok",
+      "stories": []
+    }
+  },
+  {
+    "argv": "story list --stale 1h --json",
+    "stdout": {
+      "result": "ok",
+      "stories": []
+    }
+  },
+  {
+    "argv": "story list --created-after 2000-01-01 --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "progress": {
+            "children_done": 0,
+            "children_total": 3
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-4",
+            "labels": [
+              "backend"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "review",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Write the migration runner",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": "waiting on the benchmark harness",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-6",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "spike",
+            "superstate": "OPEN",
+            "title": "Benchmark the rebuild path",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-7",
+            "priority": "none",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "OPEN",
+            "title": "Document the data layer",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-8",
+            "priority": "low",
+            "relationships": [],
+            "state": "done",
+            "story_type": "chore",
+            "superstate": "CLOSED",
+            "title": "Retire the JSONL reader",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-9",
+            "labels": [
+              "phase:2"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-5",
+                "relation": "blocked-by"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Add the daemon transport",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-10",
+            "priority": "medium",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Ship the CLI shim",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-11",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Audit error codes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-12",
+            "priority": "high",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Harden concurrent writes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "[deleted] superseded by the global store"
+              }
+            ],
+            "created_at": "[timestamp]",
+            "deleted": true,
+            "deleted_reason": "superseded by the global store",
+            "id": "SH-13",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "CLOSED",
+            "title": "Old approach: file-per-story",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-14",
+            "priority": "medium",
+            "relationships": [],
+            "state": "done",
+            "story_type": "spike",
+            "superstate": "CLOSED",
+            "title": "Prototype the archive format",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --created-after 2999-01-01 --json",
+    "stdout": {
+      "result": "ok",
+      "stories": []
+    }
+  },
+  {
+    "argv": "story list --updated-after 2000-01-01 --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "progress": {
+            "children_done": 0,
+            "children_total": 3
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-4",
+            "labels": [
+              "backend"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "review",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Write the migration runner",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": "waiting on the benchmark harness",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-6",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "spike",
+            "superstate": "OPEN",
+            "title": "Benchmark the rebuild path",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-7",
+            "priority": "none",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "OPEN",
+            "title": "Document the data layer",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-8",
+            "priority": "low",
+            "relationships": [],
+            "state": "done",
+            "story_type": "chore",
+            "superstate": "CLOSED",
+            "title": "Retire the JSONL reader",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-9",
+            "labels": [
+              "phase:2"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-5",
+                "relation": "blocked-by"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Add the daemon transport",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-10",
+            "priority": "medium",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Ship the CLI shim",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-11",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "task",
+            "superstate": "OPEN",
+            "title": "Audit error codes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-12",
+            "priority": "high",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Harden concurrent writes",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "[deleted] superseded by the global store"
+              }
+            ],
+            "created_at": "[timestamp]",
+            "deleted": true,
+            "deleted_reason": "superseded by the global store",
+            "id": "SH-13",
+            "priority": "low",
+            "relationships": [],
+            "state": "todo",
+            "story_type": "chore",
+            "superstate": "CLOSED",
+            "title": "Old approach: file-per-story",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "closed_at": "[timestamp]",
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-14",
+            "priority": "medium",
+            "relationships": [],
+            "state": "done",
+            "story_type": "spike",
+            "superstate": "CLOSED",
+            "title": "Prototype the archive format",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --state todo --priority critical --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "progress": {
+            "children_done": 0,
+            "children_total": 3
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "assignee": "grace-hopper",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Reproduced with two linked worktrees."
+              },
+              {
+                "at": "[timestamp]",
+                "text": "Root cause is the committed next-id counter."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-5",
+            "labels": [
+              "defect"
+            ],
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-9",
+                "relation": "blocks"
+              }
+            ],
+            "state": "todo",
+            "story_type": "bug",
+            "superstate": "OPEN",
+            "title": "Fix the id collision across worktrees",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story list --type story --label backend --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  }
+]

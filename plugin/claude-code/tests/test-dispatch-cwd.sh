@@ -34,10 +34,11 @@ sub_rc=0
 assert_eq "$sub_rc" "3" "fixture sanity: bare \`story show\` in a subdir exits 3 (not initialized)"
 
 # --- from inside a dispatched worktree (the silent-wrong-tracker case) ---
-# Build a second checkout of the same repo whose .storyhook/ is a genuinely
-# DIFFERENT copy: the story dispatched below exists only in the main repo's
-# tracker. If story.sh read the worktree's copy, the id would come back "not
-# found" -- so a successful dispatch proves it read the main repo's.
+# Build a second checkout of the same repo. Its tracker is not the main
+# repo's: `.storyhook/` is untracked in the fixture, so a linked worktree
+# resolves no tracker there at all, and the story dispatched below exists only
+# in the main repo's. If story.sh read from the worktree, the id would come
+# back "not found" -- so a successful dispatch proves it read the main repo's.
 only_in_main=$(new_story "$repo" "Only in the main checkout")
 (cd "$repo" && git worktree add -q --no-track -b probe-wt "$repo/.claude/worktrees/probe" HEAD) >/dev/null 2>&1
 

@@ -1,0 +1,12 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story doctor --json",
+    "stdout": {
+      "issues": [],
+      "result": "ok"
+    }
+  }
+]

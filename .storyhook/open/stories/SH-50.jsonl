@@ -1,3 +1,4 @@
 {"kind":"StoryCreated","at":"2026-07-26T00:43:57Z","title":"Add a Dispatch button to the dashboard story detail view","state":"todo"}
 {"kind":"StoryDescriptionSet","at":"2026-07-26T00:43:57Z","description":"Add a Dispatch button to the bottom-right corner which, when activated, performs a storyhook dispatch event (creating the tmux window, worktree, etc.) and initiates work on the story."}
 {"kind":"StoryTypeSet","at":"2026-07-26T00:43:57Z","story_type":"story"}
+{"kind":"StoryAwaitingSet","at":"2026-07-28T13:23:42Z","awaiting":"Blocked by the rearch: daemon-initiated dispatch; re-spec after the daemon wave"}

@@ -24,3 +24,32 @@ When you notice the user has completed a logical unit of work, suggest running `
 ### Configuration
 Versioning settings are in `.semver/config.yaml`. Do not modify this file unless the user explicitly asks to change semver settings.
 <!-- semver:end -->
+
+## Rearchitecture roadmap
+
+Story data is moving out of per-repo `.storyhook/` directories into one global SQLite store
+behind a local daemon. Design of record: [`docs/spec/data-layer-rearchitecture.md`](docs/spec/data-layer-rearchitecture.md).
+Execution state — wave status, step log, discovered defects — lives in
+[`docs/rearch/STATE.md`](docs/rearch/STATE.md); read it before resuming this program.
+
+| Wave | Scope | Status |
+|---|---|---|
+| W0 | quality-gate repair, shared test harness, baseline capture | **complete — PR open, awaiting merge** |
+| W0b | wire-serializable envelope + the `Invoker` seam | entry-ready (parallel with W1) |
+| W1 | `Store` trait, SQLite engine, migrations, rebuild-diff | entry-ready |
+| W2a–d | services over the store (`app.rs` frozen) | pending |
+| W3 | legacy importer (`story migrate`) — also W4's rollback path | pending (parallel with W2) |
+| W4 | **the flip**: the global store becomes the default | pending; one uninterrupted session |
+| W5 | daemon promotion + `/api/v1/invoke` transport | pending |
+| W6 | git features re-pointed; full commit-body scanning | pending (gated on W4) |
+| W7 | migrate this repo; retire `.storyhook/` | pending |
+| W8 | crash, concurrency, and corruption hardening | pending |
+
+Standing rules for every wave:
+
+- Every commit passes `make test`; history stays bisectable and two-hats clean.
+- Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
+  post-commit hook re-dirty the tree.
+- Waves end at "PR opened". The work happens in a linked worktree: no version bumps, no
+  deploys, no direct pushes to `main`, no force-pushes.
+- Deviations from the spec get recorded in STATE.md rather than edited into the spec.

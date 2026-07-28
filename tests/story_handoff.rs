@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
@@ -73,7 +76,7 @@ fn handoff_invalid_duration() {
         .args(["handoff", "--since", "xyz"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid duration"));
+        .stderr(predicate::str::contains("invalid duration"));
 }
 
 #[test]

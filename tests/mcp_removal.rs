@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 /// Tests verifying that MCP functionality has been completely removed.
 ///
 /// These tests assert the negative — that MCP-related commands, flags,
@@ -58,7 +61,7 @@ fn mcp_config_command_returns_unknown_command_error() {
         .args(["mcp-config"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown command"));
+        .stderr(predicate::str::contains("unknown command"));
 }
 
 #[test]
@@ -68,7 +71,7 @@ fn mcp_config_with_install_flag_returns_unknown_command() {
         .args(["mcp-config", "--install", "claude"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown command"));
+        .stderr(predicate::str::contains("unknown command"));
 }
 
 #[test]
@@ -78,7 +81,7 @@ fn mcp_config_with_scope_flag_returns_unknown_command() {
         .args(["mcp-config", "--scope", "project"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown command"));
+        .stderr(predicate::str::contains("unknown command"));
 }
 
 // ============================================================
@@ -92,7 +95,7 @@ fn help_topic_mcp_config_not_found() {
         .args(["help", "mcp-config"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown help topic"));
+        .stderr(predicate::str::contains("unknown help topic"));
 }
 
 #[test]

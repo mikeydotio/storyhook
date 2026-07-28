@@ -1,0 +1,83 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story epic list --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "progress": {
+            "children_done": 0,
+            "children_total": 3
+          },
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-1",
+            "priority": "critical",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-3",
+                "relation": "parent-of"
+              },
+              {
+                "other_id": "SH-4",
+                "relation": "parent-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "epic",
+            "superstate": "OPEN",
+            "title": "Design the storage engine",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story epic show SH-1 --json",
+    "stdout": {
+      "result": "ok",
+      "story": {
+        "progress": {
+          "children_done": 0,
+          "children_total": 3
+        },
+        "story": {
+          "awaiting": null,
+          "comments": [],
+          "created_at": "[timestamp]",
+          "id": "SH-1",
+          "priority": "critical",
+          "relationships": [
+            {
+              "other_id": "SH-2",
+              "relation": "parent-of"
+            },
+            {
+              "other_id": "SH-3",
+              "relation": "parent-of"
+            },
+            {
+              "other_id": "SH-4",
+              "relation": "parent-of"
+            }
+          ],
+          "state": "todo",
+          "story_type": "epic",
+          "superstate": "OPEN",
+          "title": "Design the storage engine",
+          "updated_at": "[timestamp]"
+        }
+      }
+    }
+  }
+]

@@ -4,6 +4,9 @@
 //! error (rejected before any HTTP call) or a help/version query. The live
 //! download/replace path is exercised manually, not in CI.
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use predicates::str::contains;
@@ -22,7 +25,7 @@ fn update_rejects_unknown_flag() {
         .args(["update", "--bogus"])
         .assert()
         .code(2)
-        .stdout(contains("usage: story update"));
+        .stderr(contains("usage: story update"));
 }
 
 #[test]
@@ -32,7 +35,7 @@ fn update_rejects_stray_positional() {
         .args(["update", "foo"])
         .assert()
         .code(2)
-        .stdout(contains("usage: story update"));
+        .stderr(contains("usage: story update"));
 }
 
 #[test]
@@ -42,7 +45,7 @@ fn update_check_and_force_are_mutually_exclusive() {
         .args(["update", "--check", "--force"])
         .assert()
         .code(2)
-        .stdout(contains("mutually exclusive"));
+        .stderr(contains("mutually exclusive"));
 }
 
 #[test]
@@ -54,7 +57,7 @@ fn update_is_a_recognized_command() {
         .args(["update", "--bogus"])
         .assert()
         .code(2)
-        .stdout(contains("usage: story update").and(contains("unknown command").not()));
+        .stderr(contains("usage: story update").and(contains("unknown command").not()));
 }
 
 #[test]

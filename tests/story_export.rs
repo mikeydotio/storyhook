@@ -1,17 +1,17 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` invocation in this file runs in the shared test
+/// environment's private HOME/XDG directories, so nothing here can reach the
+/// developer's own storyhook state.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 #[test]
 fn export_and_import_roundtrip() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    let dir = TestEnv::shared().project().build();
     story(dir.path())
         .args(["new", "Task one"])
         .assert()
@@ -38,7 +38,7 @@ fn export_and_import_roundtrip() {
     let export_json = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
     // Import into new directory
-    let dir2 = tempdir().unwrap();
+    let dir2 = scratch_dir();
     let export_file = dir2.path().join("export.json");
     std::fs::write(&export_file, &export_json).unwrap();
 
@@ -75,8 +75,7 @@ fn export_and_import_roundtrip() {
 
 #[test]
 fn export_import_roundtrips_description() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    let dir = TestEnv::shared().project().build();
     story(dir.path())
         .args([
             "new",
@@ -90,7 +89,7 @@ fn export_import_roundtrips_description() {
     let output = story(dir.path()).args(["export"]).assert().success();
     let export_json = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
-    let dir2 = tempdir().unwrap();
+    let dir2 = scratch_dir();
     let export_file = dir2.path().join("export.json");
     std::fs::write(&export_file, &export_json).unwrap();
 
@@ -110,8 +109,7 @@ fn export_import_roundtrips_description() {
 
 #[test]
 fn export_json_output() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    let dir = TestEnv::shared().project().build();
     story(dir.path())
         .args(["new", "A story"])
         .assert()
@@ -126,11 +124,7 @@ fn export_json_output() {
 
 #[test]
 fn export_preserves_custom_prefix() {
-    let dir = tempdir().unwrap();
-    story(dir.path())
-        .args(["init", "--prefix", "API"])
-        .assert()
-        .success();
+    let dir = TestEnv::shared().project().prefix("API").build();
     story(dir.path())
         .args(["new", "Endpoint"])
         .assert()
@@ -139,7 +133,7 @@ fn export_preserves_custom_prefix() {
     let output = story(dir.path()).args(["export"]).assert().success();
     let export_json = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
-    let dir2 = tempdir().unwrap();
+    let dir2 = scratch_dir();
     let export_file = dir2.path().join("export.json");
     std::fs::write(&export_file, &export_json).unwrap();
 
@@ -158,8 +152,7 @@ fn export_preserves_custom_prefix() {
 
 #[test]
 fn export_and_import_roundtrip_with_types() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    let dir = TestEnv::shared().project().build();
 
     // Define a custom type (not one of the defaults)
     story(dir.path())
@@ -189,7 +182,7 @@ fn export_and_import_roundtrip_with_types() {
     assert!(export_json.contains("\"hotfix\""));
 
     // Import into a new directory
-    let dir2 = tempdir().unwrap();
+    let dir2 = scratch_dir();
     let export_file = dir2.path().join("export.json");
     std::fs::write(&export_file, &export_json).unwrap();
 
@@ -210,4 +203,161 @@ fn export_and_import_roundtrip_with_types() {
     // Verify types.toml was restored with the custom type:
     // doctor should not flag "hotfix" as unknown
     story(dir2.path()).args(["doctor"]).assert().success();
+}
+
+/// Export → import into a fresh project → export again must produce **byte-
+/// identical** JSON, and must stay identical when the round-trip is repeated.
+///
+/// This is the oracle W3's legacy importer is measured against. `story migrate`
+/// has to move a `.storyhook/` directory into the global store without losing
+/// anything, and "nothing was lost" is only checkable against a representation
+/// that survives a round-trip unchanged. If this test is red, the export
+/// document is not a faithful description of a project and cannot be used to
+/// verify a migration.
+///
+/// The fixture carries the things a round-trip most easily drops: a custom id
+/// prefix, a custom state and type (which live in separate config files, not in
+/// the story records), a member, relations in both directions, a comment, an
+/// assignee, an archived story (which lives in SQLite rather than in a JSONL
+/// file) and a soft-deleted one.
+///
+/// Byte equality is asserted directly, with no redaction. That is not an
+/// accident of the fixture: every timestamp in the document comes from the
+/// stored event log, and import replays those events verbatim rather than
+/// re-stamping them. A future change that makes this test need a timestamp
+/// filter has changed that property, and the failure is the point.
+#[test]
+fn export_import_export_is_byte_identical() {
+    let env = TestEnv::shared();
+    let source = env.project().prefix("API").build();
+
+    story(source.path())
+        .args(["member", "add", "Ada Lovelace <ada@example.com>"])
+        .assert()
+        .success();
+    story(source.path())
+        .args([
+            "type",
+            "add",
+            "spike",
+            "--description",
+            "A timeboxed investigation",
+        ])
+        .assert()
+        .success();
+    story(source.path())
+        .args([
+            "state",
+            "add",
+            "review",
+            "--super",
+            "OPEN",
+            "--description",
+            "Awaiting code review",
+        ])
+        .assert()
+        .success();
+
+    story(source.path())
+        .args([
+            "new",
+            "Parent story",
+            "--type",
+            "story",
+            "--priority",
+            "high",
+            "--labels",
+            "backend,api",
+        ])
+        .assert()
+        .success();
+    story(source.path())
+        .args(["new", "Child story", "--type", "spike", "--priority", "low"])
+        .assert()
+        .success();
+    story(source.path())
+        .args(["new", "Finished story", "--type", "bug"])
+        .assert()
+        .success();
+    story(source.path())
+        .args(["new", "Abandoned story", "--type", "chore"])
+        .assert()
+        .success();
+
+    story(source.path())
+        .args(["relate", "API-1", "parent-of", "API-2"])
+        .assert()
+        .success();
+    story(source.path())
+        .args(["relate", "API-1", "blocks", "API-3"])
+        .assert()
+        .success();
+    story(source.path())
+        .args(["comment", "API-1", "Settled the shape of the trait."])
+        .assert()
+        .success();
+    story(source.path())
+        .args(["assign", "API-1", "ada-lovelace"])
+        .assert()
+        .success();
+    story(source.path())
+        .args(["move", "API-2", "review"])
+        .assert()
+        .success();
+    // Archived: moves out of the JSONL directory and into the archive database.
+    story(source.path())
+        .args(["move", "API-3", "done"])
+        .assert()
+        .success();
+    story(source.path())
+        .args(["delete", "API-4", "superseded by the global store"])
+        .assert()
+        .success();
+
+    let first = export_of(source.path());
+    assert!(
+        first.contains("\"spike\"") && first.contains("\"review\"") && first.contains("API-3"),
+        "fixture: the export must actually carry the custom type, the custom state \
+         and the archived story, or this test proves nothing: {first}"
+    );
+
+    let round_one = reimport(&first);
+    assert_eq!(
+        first, round_one,
+        "one export/import round trip must be lossless and byte-identical"
+    );
+
+    // Twice, because a round trip that is merely *stable* after the first pass
+    // can still have dropped something on that first pass.
+    let round_two = reimport(&round_one);
+    assert_eq!(
+        first, round_two,
+        "the round trip must stay byte-identical when repeated"
+    );
+}
+
+/// Imports `document` into a brand-new project and exports it again.
+fn reimport(document: &str) -> String {
+    let dir = scratch_dir();
+    let file = dir.path().join("export.json");
+    std::fs::write(&file, document).expect("writing the export document");
+    story(dir.path())
+        .args(["import-project", file.to_str().unwrap()])
+        .assert()
+        .success();
+    export_of(dir.path())
+}
+
+/// The `story export` document for the project at `root`.
+fn export_of(root: &std::path::Path) -> String {
+    let out = story(root)
+        .args(["export"])
+        .output()
+        .expect("running export");
+    assert!(
+        out.status.success(),
+        "`story export` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("the export document must be UTF-8")
 }

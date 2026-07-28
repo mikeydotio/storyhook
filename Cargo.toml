@@ -1,3 +1,26 @@
+# `storyhook` is both the workspace root package and a workspace member, so the
+# crate keeps its historic top-level layout (`src/`, `tests/`) and every path in
+# git blame stays valid.
+#
+# `storyhook-test-support` is a *dev*-dependency here and depends on `storyhook`
+# in turn. Cargo permits a dependency cycle that passes through a
+# dev-dependency, and this one buys the thing the 44 integration-test binaries
+# could not have otherwise: one compilation of the shared harness instead of one
+# per binary, and a fixture builder that can be unit-tested in its own right.
+# `cargo publish` strips path-only dev-dependencies, so the cycle never reaches
+# a published manifest.
+[workspace]
+members = ["crates/storyhook-test-support"]
+resolver = "3"
+
+[workspace.dependencies]
+assert_cmd = "2.1.1"
+insta = { version = "1.44.1", features = ["json", "redactions", "filters"] }
+predicates = "3.1.3"
+serde_json = "1.0.145"
+tempfile = "3.23.0"
+ureq = "3"
+
 [package]
 name = "storyhook"
 version = "0.17.0"
@@ -47,8 +70,10 @@ notify = "7"
 ureq = { version = "3", optional = true, features = ["json"] }
 
 [dev-dependencies]
-assert_cmd = "2.1.1"
-predicates = "3.1.3"
-serde_json = "1.0.145"
-tempfile = "3.23.0"
-ureq = "3"
+assert_cmd = { workspace = true }
+insta = { workspace = true }
+predicates = { workspace = true }
+serde_json = { workspace = true }
+storyhook-test-support = { path = "crates/storyhook-test-support" }
+tempfile = { workspace = true }
+ureq = { workspace = true }

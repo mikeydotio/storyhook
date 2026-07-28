@@ -1,0 +1,664 @@
+{
+  "machine": {
+    "captured_at": "2026-07-28T15:49:31Z",
+    "host": "Psamathe",
+    "commit": "4179f48a5b89c41bca0b190710b2a50dd6e67d8f",
+    "branch": "rearch/w0-gate-repair",
+    "tree_state": "clean",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
+    "os": "Darwin 26.5.2",
+    "arch": "arm64",
+    "cpu": "Apple M1 Max",
+    "cores": 10
+  },
+  "method": {
+    "unit": "seconds of wall clock, /usr/bin/time -p",
+    "per_binary": "test binaries invoked directly with INSTA_UPDATE=no, 3 runs each, median reported",
+    "whole_gate": "`make test` end to end, sampled from the 10-run flake census",
+    "warm": "cargo build --workspace --tests ran to completion first; no measurement includes a cold compile"
+  },
+  "whole_gate": {
+    "runs": 10,
+    "median_s": 36.375,
+    "samples_s": [
+      37.45,
+      36.14,
+      37.45,
+      36.73,
+      36.44,
+      36.22,
+      36.31,
+      36.26,
+      37.66,
+      36.23
+    ]
+  },
+  "per_binary_serial_sum_s": 19.090,
+  "binaries": [
+    {
+      "target": "web_test",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 140,
+      "median_s": 7.170,
+      "samples_s": [
+        7.31,
+        7.04,
+        7.17
+      ]
+    },
+    {
+      "target": "error_contract",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 3,
+      "median_s": 5.220,
+      "samples_s": [
+        5.22,
+        5.23,
+        5.22
+      ]
+    },
+    {
+      "target": "golden_cli",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 27,
+      "median_s": 1.640,
+      "samples_s": [
+        1.65,
+        1.62,
+        1.64
+      ]
+    },
+    {
+      "target": "help_flag_sweep",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 3,
+      "median_s": 0.800,
+      "samples_s": [
+        0.81,
+        0.80,
+        0.78
+      ]
+    },
+    {
+      "target": "story_sync_git",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 13,
+      "median_s": 0.410,
+      "samples_s": [
+        0.41,
+        0.41,
+        0.40
+      ]
+    },
+    {
+      "target": "storyhook_test_support",
+      "kind": "lib",
+      "package": "storyhook-test-support",
+      "tests": 23,
+      "median_s": 0.380,
+      "samples_s": [
+        0.42,
+        0.38,
+        0.37
+      ]
+    },
+    {
+      "target": "registry_test",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 19,
+      "median_s": 0.290,
+      "samples_s": [
+        0.30,
+        0.29,
+        0.18
+      ]
+    },
+    {
+      "target": "session_start",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 31,
+      "median_s": 0.240,
+      "samples_s": [
+        0.24,
+        0.25,
+        0.24
+      ]
+    },
+    {
+      "target": "move_if_state",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 9,
+      "median_s": 0.230,
+      "samples_s": [
+        0.29,
+        0.19,
+        0.23
+      ]
+    },
+    {
+      "target": "cli_grammar",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 35,
+      "median_s": 0.200,
+      "samples_s": [
+        0.20,
+        0.19,
+        0.21
+      ]
+    },
+    {
+      "target": "story_types",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 35,
+      "median_s": 0.180,
+      "samples_s": [
+        0.18,
+        0.18,
+        0.18
+      ]
+    },
+    {
+      "target": "storyhook",
+      "kind": "lib",
+      "package": "storyhook",
+      "tests": 521,
+      "median_s": 0.170,
+      "samples_s": [
+        0.17,
+        0.17,
+        0.17
+      ]
+    },
+    {
+      "target": "story_export",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 6,
+      "median_s": 0.160,
+      "samples_s": [
+        0.16,
+        0.16,
+        0.16
+      ]
+    },
+    {
+      "target": "semver_hook_test",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 1,
+      "median_s": 0.130,
+      "samples_s": [
+        0.13,
+        0.13,
+        0.12
+      ]
+    },
+    {
+      "target": "tui_integration",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 23,
+      "median_s": 0.120,
+      "samples_s": [
+        0.13,
+        0.12,
+        0.12
+      ]
+    },
+    {
+      "target": "story_states",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 28,
+      "median_s": 0.110,
+      "samples_s": [
+        0.11,
+        0.11,
+        0.13
+      ]
+    },
+    {
+      "target": "event_hooks",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 6,
+      "median_s": 0.100,
+      "samples_s": [
+        0.10,
+        0.10,
+        0.10
+      ]
+    },
+    {
+      "target": "story_next",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 11,
+      "median_s": 0.100,
+      "samples_s": [
+        0.10,
+        0.11,
+        0.09
+      ]
+    },
+    {
+      "target": "hooks",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 7,
+      "median_s": 0.090,
+      "samples_s": [
+        0.08,
+        0.09,
+        0.09
+      ]
+    },
+    {
+      "target": "session_start_hook",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 15,
+      "median_s": 0.090,
+      "samples_s": [
+        0.09,
+        0.09,
+        0.09
+      ]
+    },
+    {
+      "target": "story_decompose",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 15,
+      "median_s": 0.090,
+      "samples_s": [
+        0.09,
+        0.08,
+        0.09
+      ]
+    },
+    {
+      "target": "relationships",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 6,
+      "median_s": 0.080,
+      "samples_s": [
+        0.08,
+        0.08,
+        0.08
+      ]
+    },
+    {
+      "target": "story_delete",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 11,
+      "median_s": 0.080,
+      "samples_s": [
+        0.10,
+        0.08,
+        0.08
+      ]
+    },
+    {
+      "target": "story_import",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 10,
+      "median_s": 0.070,
+      "samples_s": [
+        0.07,
+        0.07,
+        0.07
+      ]
+    },
+    {
+      "target": "story_list_filters",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 7,
+      "median_s": 0.070,
+      "samples_s": [
+        0.07,
+        0.07,
+        0.07
+      ]
+    },
+    {
+      "target": "story_new_fields",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 12,
+      "median_s": 0.070,
+      "samples_s": [
+        0.07,
+        0.07,
+        0.08
+      ]
+    },
+    {
+      "target": "story_graph",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 7,
+      "median_s": 0.060,
+      "samples_s": [
+        0.06,
+        0.06,
+        0.06
+      ]
+    },
+    {
+      "target": "story_report",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 9,
+      "median_s": 0.060,
+      "samples_s": [
+        0.06,
+        0.06,
+        0.06
+      ]
+    },
+    {
+      "target": "story_summary",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 6,
+      "median_s": 0.060,
+      "samples_s": [
+        0.06,
+        0.06,
+        0.06
+      ]
+    },
+    {
+      "target": "cli_error_streams",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 5,
+      "median_s": 0.050,
+      "samples_s": [
+        0.06,
+        0.04,
+        0.05
+      ]
+    },
+    {
+      "target": "story_labels",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 6,
+      "median_s": 0.050,
+      "samples_s": [
+        0.05,
+        0.05,
+        0.05
+      ]
+    },
+    {
+      "target": "story_priority",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 7,
+      "median_s": 0.050,
+      "samples_s": [
+        0.06,
+        0.05,
+        0.05
+      ]
+    },
+    {
+      "target": "configurable_prefix",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 4,
+      "median_s": 0.040,
+      "samples_s": [
+        0.04,
+        0.04,
+        0.04
+      ]
+    },
+    {
+      "target": "doctor",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 4,
+      "median_s": 0.040,
+      "samples_s": [
+        0.04,
+        0.04,
+        0.04
+      ]
+    },
+    {
+      "target": "story_context",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 6,
+      "median_s": 0.040,
+      "samples_s": [
+        0.04,
+        0.04,
+        0.04
+      ]
+    },
+    {
+      "target": "story_flow",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 3,
+      "median_s": 0.040,
+      "samples_s": [
+        0.07,
+        0.04,
+        0.04
+      ]
+    },
+    {
+      "target": "story_handoff",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 5,
+      "median_s": 0.040,
+      "samples_s": [
+        0.04,
+        0.04,
+        0.03
+      ]
+    },
+    {
+      "target": "story_reopen",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 5,
+      "median_s": 0.040,
+      "samples_s": [
+        0.04,
+        0.04,
+        0.05
+      ]
+    },
+    {
+      "target": "story_search",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 7,
+      "median_s": 0.040,
+      "samples_s": [
+        0.04,
+        0.04,
+        0.04
+      ]
+    },
+    {
+      "target": "story_state_archive",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 2,
+      "median_s": 0.040,
+      "samples_s": [
+        0.04,
+        0.04,
+        0.04
+      ]
+    },
+    {
+      "target": "mcp_removal",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 14,
+      "median_s": 0.030,
+      "samples_s": [
+        0.03,
+        0.03,
+        0.03
+      ]
+    },
+    {
+      "target": "story_list_flagged",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 1,
+      "median_s": 0.030,
+      "samples_s": [
+        0.03,
+        0.03,
+        0.04
+      ]
+    },
+    {
+      "target": "init_command",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 5,
+      "median_s": 0.020,
+      "samples_s": [
+        0.02,
+        0.02,
+        0.02
+      ]
+    },
+    {
+      "target": "scaffold",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 11,
+      "median_s": 0.020,
+      "samples_s": [
+        0.02,
+        0.02,
+        0.02
+      ]
+    },
+    {
+      "target": "fix_cycle_5",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 12,
+      "median_s": 0.010,
+      "samples_s": [
+        0.01,
+        0.01,
+        0.01
+      ]
+    },
+    {
+      "target": "help_new_flags",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 15,
+      "median_s": 0.010,
+      "samples_s": [
+        0.01,
+        0.01,
+        0.01
+      ]
+    },
+    {
+      "target": "member_add",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 1,
+      "median_s": 0.010,
+      "samples_s": [
+        0.01,
+        0.01,
+        0.01
+      ]
+    },
+    {
+      "target": "story_update",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 7,
+      "median_s": 0.010,
+      "samples_s": [
+        0.01,
+        0.01,
+        0.01
+      ]
+    },
+    {
+      "target": "tui_undo",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 7,
+      "median_s": 0.010,
+      "samples_s": [
+        0.02,
+        0.01,
+        0.01
+      ]
+    },
+    {
+      "target": "story",
+      "kind": "bin",
+      "package": "storyhook",
+      "tests": 0,
+      "median_s": 0.000,
+      "samples_s": [
+        0.00,
+        0.00,
+        0.00
+      ]
+    },
+    {
+      "target": "cli_help",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 3,
+      "median_s": 0.000,
+      "samples_s": [
+        0.00,
+        0.00,
+        0.00
+      ]
+    },
+    {
+      "target": "worktree_truth",
+      "kind": "test",
+      "package": "storyhook",
+      "tests": 2,
+      "median_s": 0.000,
+      "samples_s": [
+        0.00,
+        0.00,
+        0.00
+      ]
+    }
+  ]
+}

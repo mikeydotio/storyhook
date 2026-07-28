@@ -1549,6 +1549,31 @@ fn accept_loop(
 /// or any other wildcard/public-facing address, and no plain LAN IP is
 /// bound either — only loopback and, when present, the tailnet.
 pub fn start_server(registry_path: &Path, port: u16) -> Result<(), AppError> {
+    start_server_with_ready(registry_path, port, |_| {})
+}
+
+/// [`start_server`], plus a `ready` callback invoked with the loopback
+/// listener's real address at the moment the server is initialized and about
+/// to accept requests.
+///
+/// Two things only the server itself can report, and which no probe from the
+/// outside can establish:
+///
+/// - **Which address it actually got.** Pass port 0 to have the OS assign a
+///   free one; `ready` is how the caller learns which. (The tailnet listener,
+///   when there is one, is bound on the same resolved port, so the dashboard
+///   is reachable at one port on every interface it serves.)
+/// - **That the address is the server's own.** A caller that merely connects
+///   to a port cannot tell this server apart from some other process holding
+///   it. Being told the address *after* a successful bind, on a channel this
+///   server owns, can only come from this server.
+///
+/// `ready` fires after the filesystem watcher handshake below, so it means
+/// "ready to serve", not merely "bound".
+pub fn start_server_with_ready<F>(registry_path: &Path, port: u16, ready: F) -> Result<(), AppError>
+where
+    F: FnOnce(std::net::SocketAddr),
+{
     let loopback_addr = format!("127.0.0.1:{port}");
     let loopback_server = Server::http(&loopback_addr).map_err(|e| {
         if e.to_string().contains("Address already in use")
@@ -1562,6 +1587,15 @@ pub fn start_server(registry_path: &Path, port: u16) -> Result<(), AppError> {
             AppError::Storage(format!("Failed to start web server: {e}"))
         }
     })?;
+
+    // The address the kernel actually gave us, which differs from `port`
+    // whenever the caller asked for 0. Everything below reports and binds
+    // this resolved port, never the requested one.
+    let bound = loopback_server
+        .server_addr()
+        .to_ip()
+        .ok_or_else(|| AppError::Storage("web server bound a non-IP address".to_string()))?;
+    let port = bound.port();
 
     eprintln!("Storyhook dashboard: http://127.0.0.1:{port}");
 
@@ -1626,6 +1660,8 @@ pub fn start_server(registry_path: &Path, port: u16) -> Result<(), AppError> {
     // without sending — i.e. it's already given up — so there's nothing to
     // keep waiting for either way.
     let _ = watcher_ready_rx.recv();
+
+    ready(bound);
 
     if let Some(tailnet_server) = tailnet_listener {
         let tailnet_registry_path = registry_path.to_path_buf();
@@ -1768,18 +1804,76 @@ fn parse_tailnet_identity(status_json: &str) -> Option<TailnetIdentity> {
     Some(TailnetIdentity { bind_ip, magic_dns })
 }
 
+/// How long `tailscale status --json` gets to answer before the dashboard
+/// gives up on the tailnet and serves loopback only.
+///
+/// The probe is not optional-in-timing the way it is optional-in-outcome:
+/// it runs *after* the loopback listener is bound, so for as long as it
+/// blocks, the dashboard accepts connections and answers nothing — a state a
+/// client cannot tell from a healthy server. The CLI talks to `tailscaled`,
+/// which does wedge (probes stuck for minutes, orphaned by servers that had
+/// already exited, observed on macOS). No tailnet is a degraded dashboard; a
+/// dashboard that never answers is a broken one.
+const TAILNET_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Shells out to `tailscale status --json` and parses this machine's
-/// [`TailnetIdentity`]. `None` if the CLI is absent, exits non-zero, or
-/// reports nothing usable (see [`parse_tailnet_identity`]).
+/// [`TailnetIdentity`]. `None` if the CLI is absent, exits non-zero, wedges
+/// (see [`TAILNET_PROBE_TIMEOUT`]), or reports nothing usable (see
+/// [`parse_tailnet_identity`]).
 fn tailnet_identity() -> Option<TailnetIdentity> {
-    let output = Command::new("tailscale")
+    let stdout = tailscale_status_json(TAILNET_PROBE_TIMEOUT)?;
+    parse_tailnet_identity(&stdout)
+}
+
+/// Runs `tailscale status --json`, returning its stdout, or `None` if it
+/// fails or outlives `timeout`. A probe that overruns is killed rather than
+/// left behind: an abandoned one holds a pipe this process owns and lingers
+/// after it exits.
+fn tailscale_status_json(timeout: Duration) -> Option<String> {
+    let mut command = Command::new("tailscale");
+    command
         .args(["status", "--json"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    // Its own process group, so a timeout can kill whatever the probe
+    // started as well as the probe itself — killing the leader alone leaves
+    // its children orphaned and still running.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let child = command.spawn().ok()?;
+    let pid = child.id();
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) if output.status.success() => {
+            Some(String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        Ok(_) => None,
+        Err(_) => {
+            eprintln!(
+                "warning: `tailscale status --json` did not answer within {}s; serving \
+                 localhost only",
+                timeout.as_secs()
+            );
+            // Negative pid = the whole process group (established above), so
+            // nothing the probe spawned survives it. The reaper thread is
+            // still in `wait_with_output`, so the killed process is collected
+            // rather than left a zombie.
+            #[cfg(unix)]
+            // SAFETY: libc::kill with the group id of a process this process
+            // just spawned and has not yet reaped, so it cannot have been
+            // recycled onto an unrelated group.
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            None
+        }
     }
-    parse_tailnet_identity(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// The best host to show or copy for reaching this machine, used by `story

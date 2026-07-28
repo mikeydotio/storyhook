@@ -5,6 +5,9 @@
 //! both `Cargo.toml` and `Cargo.lock` before the plugin creates the pathspec-less
 //! release commit. A post-bump edit (the old behavior) left them dirty afterward.
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use std::fs;
 use std::process::Command;
 

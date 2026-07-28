@@ -6,7 +6,7 @@
 # (and pass) before every push; skipping it is how a non-compiling commit
 # reaches `main` undetected (see #23).
 
-.PHONY: test build fmt lint clippy check release-build install
+.PHONY: test build fmt lint clippy check release-build install check-no-orphan-servers
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
@@ -21,12 +21,29 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # possibly-stale globally-installed one, and never a fake -- a fake can't
 # catch a genuine CAS race or a real is_ready() interaction), so `cargo
 # build` runs first and target/debug is prepended to PATH for that one step.
-test:
-	cargo fmt -- --check
-	cargo clippy --all-targets -- -D warnings
-	cargo test
+#
+# The orphan check brackets the run: before, because a survivor of an earlier
+# run makes this one lie (SH-51), and after, because a run that leaks one has
+# just armed the same trap for the next person.
+#
+# INSTA_UPDATE=no makes the golden CLI corpus (tests/golden_cli.rs) a real gate.
+# insta's default is to WRITE a .snap.new beside any snapshot that no longer
+# matches; a developer who then runs `cargo insta accept` has silently rewritten
+# the byte-compatibility contract the whole rearchitecture is measured against.
+# Under `no`, a mismatch fails the run and writes nothing -- updating a snapshot
+# becomes a deliberate `INSTA_UPDATE=always cargo test` plus a reviewed diff.
+test: check-no-orphan-servers
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets -- -D warnings
+	INSTA_UPDATE=no cargo test --workspace
 	cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
+	@bash scripts/check-no-orphan-servers.sh postlude
+
+# Fails if a test-spawned server from this worktree is still running. Never
+# looks at the installed dashboard daemon on :3456 — that one is production.
+check-no-orphan-servers:
+	@bash scripts/check-no-orphan-servers.sh preflight
 
 # Debug build of the `story` binary.
 build:
@@ -38,11 +55,11 @@ fmt:
 
 # Lint only (warnings treated as errors).
 lint clippy:
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings
 
 # Fast type-check without producing a binary.
 check:
-	cargo check --all-targets
+	cargo check --workspace --all-targets
 
 # Optimized release build.
 release-build:
