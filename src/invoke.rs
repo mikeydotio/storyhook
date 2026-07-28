@@ -361,6 +361,21 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 }
             }
         }
+        Invocation::GithubSync { id, dry_run } => {
+            #[cfg(feature = "github-sync")]
+            {
+                crate::service::GithubSyncService::new(ctx).sync(id.as_deref(), dry_run)
+            }
+            #[cfg(not(feature = "github-sync"))]
+            {
+                let _ = (id, dry_run);
+                Err(AppError::Usage(
+                    "github-sync requires the `github-sync` feature. \
+                     Rebuild with: cargo install storyhook --features github-sync"
+                        .to_string(),
+                ))
+            }
+        }
         Invocation::CommitSync { since } => GitService::new(ctx)
             .commit_sync(since.as_deref())
             .map(Response::Message),
