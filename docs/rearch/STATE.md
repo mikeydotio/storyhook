@@ -16,7 +16,7 @@
 
 | Wave | Branch/PR | Status |
 |---|---|---|
-| W0 gate repair + harness | `rearch/w0-gate-repair` | **IN PROGRESS** — step W0.4 next |
+| W0 gate repair + harness | `rearch/w0-gate-repair` | **IN PROGRESS** — step W0.5 next |
 | W0b envelope + Invoker seam | — | pending (after W0) |
 | W1 store engine | — | pending |
 | W2a/b/c/d services | — | pending |
@@ -40,9 +40,9 @@
 - **W0.3 DONE** — RED worktree pair (ignored, W4's exit criterion), insta golden CLI corpus
   (177 invocations / 27 snapshots), error-code table (all 10 variants), byte-identical export
   round-trip: `9aa8df1`, `b7539f3`, plus this commit. See Step log.
-- **W0.4** — baseline capture: committed script → docs/rearch/baseline/ (test-name inventory,
-  3-run median timings, golden export + legacy tarball of this repo's .storyhook, archive.db
-  schema snapshot as "version 0", known-red list); 10-run flake census.
+- **W0.4 DONE** — baseline capture: `scripts/capture-baseline.sh` (`4179f48`) →
+  `docs/rearch/baseline/` (this commit). **Census 10/10 green**, 1171 Rust tests / 52
+  binaries / 2 ignored, gate median 36.4s. See Step log.
 - **W0.5** — commit plan as docs/spec/data-layer-rearchitecture.md; CLAUDE.md mini-roadmap;
   W4 flip checklist enumeration (path-assertion tests + ~8 raw-JSONL corruption fabricators);
   HANDOFF.md; open PR `test: repair the quality gate and unify the integration harness`.
@@ -85,6 +85,18 @@
   `numeric_story_id`, `src/app.rs:2652`); `graph`, `handoff`, `context` and `summary`'s ready
   list sort LEXICOGRAPHICALLY (`SH-1, SH-10, SH-11, SH-12, SH-2, …`). Frozen as-is in the
   corpus with a `// KNOWN-DEFECT:` comment — the 14-story fixture exists to make it visible.
+- **W0.4 finding, unfixed, needs a story — `story export --json` DOUBLE-ENCODES its document.**
+  `Invocation::Export` returns `Response::Message(json)` (`src/app.rs:983`), and the `--json`
+  renderer puts a `Message` into the envelope's `message` field as a plain string
+  (`src/output.rs:170`). So `story export --json` emits `{"message":"{\n \"schema\": 1,…",
+  "result":"ok"}` — the whole export document as an ESCAPED STRING that a consumer must parse
+  twice. **Verified**: feeding that output to `story import-project` fails with exit 5,
+  ``error: missing field `schema` ``. `Response::RawJson` already exists for exactly this
+  ("Raw JSON output — bypasses normal envelope wrapping", `src/output.rs:96`) and is what
+  `Export` should return. Consequence for the baseline: `golden-export.json` freezes the
+  **plain** `story export` document, because that is the form the round-trip test and the
+  importer actually consume. **W0b owns this** — it is the envelope wave, and the fix is one
+  variant swap plus a golden-corpus update.
 - **W0.3 finding #3, needs a story (or a deletion):** `AppError::SyncConflict` (exit 8) is a
   **dead variant** — constructed nowhere in `src/`; only `web.rs:161` maps it to HTTP 409.
   `tests/error_contract.rs` lists it in `UNREACHABLE` and covers its exit code at the enum
@@ -251,6 +263,49 @@
   - Three defects the corpus and the table surfaced are in Key facts above (nondeterministic
     `story next`; lexicographic-vs-numeric id ordering; dead `SyncConflict`). None were fixed:
     this step ships `test:` commits only.
+- 2026-07-28 W0.4: two commits — `4179f48` (the script) and this one (the artifacts).
+  `docs/rearch/baseline/` is the pre-rearch reference point; regenerate at any wave boundary
+  with `scripts/capture-baseline.sh` and diff. `--skip-census` gives everything but the 10
+  gate runs in ~1min; `--out DIR` captures elsewhere for an A/B.
+
+  **Census: 10/10 green, and 0 tests were anything other than `ok` in any run.** That is a
+  per-TEST verdict, not per-run: every `test NAME ... ok` line is parsed out of each run's log
+  (1170 per run — 1171 Rust tests minus the 2 ignored, plus 1 doctest) and any test not clean
+  in all 10 is named. All ten runs also reported *identical* counts (rust 1170/0/2, bash 16/0),
+  so there is no count drift hiding behind a green verdict either. **No ordering flake appeared**
+  — the `story next` nondeterminism stayed latent, as the golden corpus's `>=1s` sleep intends.
+
+  **Numbers to diff against later** (Psamathe, M1 Max, rustc 1.97.1 — absolute seconds compare
+  only on this machine; ratios compare anywhere):
+  - gate median **36.4s** over 10 runs (36.14–37.66, i.e. ±2%)
+  - inventory **1171 Rust tests / 52 binaries / 2 ignored**, 1 doctest, 16 bash files
+  - per-binary serial sum 19.1s; `web_test` 7.17s (140 tests), `error_contract` 5.22s (3 tests,
+    ~5s of it the one real LockTimeout), `golden_cli` 1.64s (27 snapshots). Everything else is
+    under 0.9s.
+  - legacy tree 26 files / 222093 bytes; 61 stories / 486 events / 44 archived
+
+  Things the next steps should know:
+  - **Every bare test name is unique workspace-wide**, and the script asserts it. That is the
+    only reason the census can attribute a bare `test NAME ... ok` line — cargo never names the
+    binary on those lines. If a future duplicate appears, the inventory says so under Totals
+    and the census's per-test table silently merges the two.
+  - **The known-red count is asserted**, not reported: the script scrapes `#[ignore]` reasons
+    from source and fails if the count disagrees with `--list --ignored`. An `#[ignore]` cannot
+    enter the tree without appearing in `known-red.md`.
+  - **`error-codes.md` is extracted from `tests/error_contract.rs`**, not transcribed from it,
+    and the extractor fails loudly if that file's shape changes. It cannot drift.
+  - **The legacy fixture was verified, not just archived**: restored → `story list` works →
+    its `story export` is byte-identical to `golden-export.json` → `import-project` + re-export
+    is byte-identical again. That third property is W3's target.
+  - **What the legacy fixture does NOT cover:** its 5 states and 5 types are the *defaults* and
+    `members` is **empty**. Custom states, custom types and members are covered only by
+    `story_export.rs::export_import_export_is_byte_identical`'s synthetic project (spike/review/
+    Ada Lovelace). **W3 needs both fixtures**; neither alone is sufficient.
+  - Two capture bugs were found and fixed before the artifacts were trusted, both of the
+    silent-wrong-answer kind: cargo omits `@version` from `package_id` when a package name
+    matches its directory, and jq's array construction drops an ELEMENT when `capture` matches
+    nothing — which reported `storyhook-test-support`'s 23 tests as zero. A field-count
+    assertion and an `-x "$exe"` check now refuse to let either pass quietly.
 
 ## Resume protocol (fresh session)
 
