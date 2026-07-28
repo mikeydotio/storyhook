@@ -124,8 +124,9 @@ END;
 -- has a close timestamp.
 --
 -- `priority_rank` is `priority` in sortable form, tied to it by a CHECK. The
--- CHECK also validates the slug: an unknown priority makes the CASE yield NULL
--- and the constraint fail.
+-- slug is constrained *separately* and deliberately: a CHECK that evaluated to
+-- NULL would pass — SQL rejects a row only when a constraint is FALSE — so the
+-- `CASE` alone would have let an unknown priority through with any rank at all.
 CREATE TABLE stories (
     project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     story_no      INTEGER NOT NULL,
@@ -149,6 +150,7 @@ CREATE TABLE stories (
     CHECK (story_no >= 1),
     CHECK (head_seq >= 0),
     CHECK (archived = (closed_at IS NOT NULL)),
+    CHECK (priority IN ('critical', 'high', 'medium', 'low', 'none')),
     CHECK (priority_rank = CASE priority
         WHEN 'critical' THEN 0
         WHEN 'high'     THEN 1

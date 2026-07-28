@@ -16,6 +16,105 @@ use storyhook::store::{
 };
 
 // ---------------------------------------------------------------------------
+// Schema constraints the store's own API cannot violate
+//
+// These are the defence-in-depth half of the schema: rules the current write
+// path already respects, asserted against a *raw* connection so that a future
+// writer — a migration, an importer, a hand-run statement — cannot quietly
+// break them. Without these cases the constraints would be untested, because
+// nothing reachable through `WriteOps` can trip them.
+// ---------------------------------------------------------------------------
+
+fn rejects(store: &storyhook::store::SqliteStore, sql: &str, expected: &str) {
+    let error = raw(store)
+        .execute(sql, [])
+        .expect_err(&format!("the schema should have refused: {sql}"));
+    assert!(
+        error.to_string().contains(expected),
+        "expected `{expected}` in: {error}"
+    );
+}
+
+#[test]
+fn the_archive_flag_cannot_be_set_without_a_close_timestamp() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+
+    rejects(
+        &store,
+        "UPDATE stories SET archived = 1",
+        "archived = (closed_at IS NOT NULL)",
+    );
+    rejects(
+        &store,
+        "UPDATE stories SET closed_at = '2026-01-01T00:01:00Z'",
+        "archived = (closed_at IS NOT NULL)",
+    );
+}
+
+#[test]
+fn a_priority_slug_and_its_sort_rank_cannot_disagree() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+
+    rejects(
+        &store,
+        "UPDATE stories SET priority_rank = 0",
+        "priority_rank",
+    );
+    // And a priority storyhook has never heard of is refused by its own
+    // constraint. It needs one: `priority_rank = CASE priority ... END` yields
+    // NULL for an unknown slug, and a constraint that evaluates to NULL passes.
+    rejects(
+        &store,
+        "UPDATE stories SET priority = 'urgent'",
+        "priority IN",
+    );
+}
+
+#[test]
+fn the_event_log_cannot_be_rewritten_or_erased() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+
+    rejects(
+        &store,
+        "UPDATE events SET payload = '{}'",
+        "events are append-only",
+    );
+    rejects(&store, "DELETE FROM events", "events are append-only");
+}
+
+#[test]
+fn a_story_cannot_be_given_a_superstate_outside_the_two_that_exist() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+
+    rejects(&store, "UPDATE stories SET superstate = 'PENDING'", "CHECK");
+}
+
+#[test]
+fn a_checkout_path_cannot_be_claimed_by_two_projects_even_by_hand() {
+    let (_dir, store) = new_store();
+    let alpha = seed_project(&store, "alpha", "SH");
+    let beta = seed_project(&store, "beta", "SH");
+
+    let error = raw(&store)
+        .execute(
+            "INSERT INTO project_paths (project_id, path, kind, last_seen_at) \
+             VALUES (?1, ?2, 'main', '2026-01-01T00:00:00Z')",
+            rusqlite::params![beta.get(), "/checkouts/alpha"],
+        )
+        .expect_err("the unique index should have refused it");
+    assert!(error.to_string().contains("project_paths.path"), "{error}");
+    let _ = alpha;
+}
+
+// ---------------------------------------------------------------------------
 // A healthy project
 // ---------------------------------------------------------------------------
 
