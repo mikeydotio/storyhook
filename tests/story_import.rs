@@ -198,8 +198,8 @@ fn import_rejects_invalid_story_type() {
         .write_stdin(json)
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown types: bar, foo"))
-        .stdout(predicate::str::contains("Available types:"));
+        .stderr(predicate::str::contains("unknown types: bar, foo"))
+        .stderr(predicate::str::contains("Available types:"));
 }
 
 #[test]

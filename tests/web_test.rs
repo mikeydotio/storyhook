@@ -31,7 +31,7 @@ fn web_no_subcommand_shows_usage() {
         .arg("web")
         .assert()
         .failure()
-        .stdout(predicate::str::contains("usage:"));
+        .stderr(predicate::str::contains("usage:"));
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn web_invalid_subcommand_shows_usage() {
         .args(["web", "restart"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("usage:"));
+        .stderr(predicate::str::contains("usage:"));
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn web_start_invalid_port_non_numeric() {
         .args(["web", "start", "--port", "abc"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid port"));
+        .stderr(predicate::str::contains("invalid port"));
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn web_start_invalid_port_zero() {
         .args(["web", "start", "--port", "0"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid port"));
+        .stderr(predicate::str::contains("invalid port"));
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn web_start_invalid_port_too_large() {
         .args(["web", "start", "--port", "99999"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid port"));
+        .stderr(predicate::str::contains("invalid port"));
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn web_start_port_missing_value() {
         .args(["web", "start", "--port"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("--port requires a value"));
+        .stderr(predicate::str::contains("--port requires a value"));
 }
 
 // --- Status tests ---
@@ -137,8 +137,8 @@ fn web_open_not_running_fails_with_summary() {
         .args(["web", "open"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("not running"))
-        .stdout(predicate::str::contains("story web start"));
+        .stderr(predicate::str::contains("not running"))
+        .stderr(predicate::str::contains("story web start"));
 }
 
 #[test]
@@ -150,8 +150,8 @@ fn web_address_not_running_fails_with_summary() {
         .args(["web", "address"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("not running"))
-        .stdout(predicate::str::contains("story web start"));
+        .stderr(predicate::str::contains("not running"))
+        .stderr(predicate::str::contains("story web start"));
 }
 
 #[test]
@@ -2507,7 +2507,7 @@ fn web_register_non_project_fails() {
         .args(["web", "register", "."])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("not initialized"));
+        .stderr(predicate::str::contains("not initialized"));
 }
 
 #[test]
@@ -2893,7 +2893,7 @@ fn web_start_extra_unknown_flag_errors() {
         .args(["web", "start", "--verbose"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("usage:"));
+        .stderr(predicate::str::contains("usage:"));
 }
 
 // --- Port boundary tests ---
@@ -2940,7 +2940,7 @@ fn web_start_port_65536_is_invalid() {
         .args(["web", "start", "--port", "65536"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid port"));
+        .stderr(predicate::str::contains("invalid port"));
 }
 
 #[test]
@@ -2950,7 +2950,7 @@ fn web_start_port_negative_is_invalid() {
         .args(["web", "start", "--port", "-1"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid port"));
+        .stderr(predicate::str::contains("invalid port"));
 }
 
 // --- is_ready and is_blocked correctness ---

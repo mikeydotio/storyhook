@@ -180,7 +180,7 @@ fn parent_cycle_is_rejected() {
         .args(["relate", "SH-3", "parent-of", "SH-1"])
         .assert()
         .code(2)
-        .stdout(contains("would create a cycle"));
+        .stderr(contains("would create a cycle"));
 }
 
 #[test]
