@@ -9,8 +9,9 @@ This file is the wave boundary summary; the ledger is the detail.
 - **Wave W0 complete** — `test: repair the quality gate and unify the integration harness`.
 - **Branch:** `rearch/w0-gate-repair`, based on `main@838d68a`.
 - **PR:** [#60](https://github.com/mikeydotio/storyhook/pull/60).
-- **Merge state: OPEN, awaiting merge.** Work happened in a linked worktree, so the wave stops
-  at "PR opened" by design. **Nothing in W0b or W1 may start until this merges.**
+- **Merge state: MERGED 2026-07-28.** Work happened in a linked worktree, so the wave stopped
+  at "PR opened" by design. W0b was built **stacked on this branch** rather than blocked on it,
+  and merged into `main` behind it (`rearch/w0b-envelope`).
 
 ## Exit-criteria evidence
 
@@ -37,15 +38,13 @@ This file is the wave boundary summary; the ledger is the detail.
 
 ## Entry criteria for the next waves
 
-**Both W0b and W1 become entry-ready the moment this PR merges** — they are parallel.
+**W1 is entry-ready** now that this PR has merged. W0b, the other parallel wave, is already
+done — see below.
 
-- **W0b** (`feat(output): wire-serializable envelope and the Invoker seam`) additionally carries
-  the **`story export --json` double-encoding fix**: `Invocation::Export` returns
-  `Response::Message` (`src/app.rs:983`) and the `--json` renderer stringifies it
-  (`src/output.rs:170`), so `story export --json` emits the whole document as an escaped string.
-  Verified: feeding that output to `story import-project` fails with exit 5,
-  ``missing field `schema` ``. `Response::RawJson` already exists for exactly this. The fix is
-  one variant swap plus a golden-corpus update. W0b owns it because it is the envelope wave.
+- **W0b is DONE** — branch `rearch/w0b-envelope`, stacked on this branch rather than waiting for
+  the merge (`d272a7b` the export fix, `2db8310` the envelope, `ef717f2` the seam). It also
+  shipped the `story export --json` double-encoding fix. See STATE.md's W0b step-log entry for
+  the `Invoker`/`InvokeRequest` API and the `WireError` design rationale.
 - **W1** starts from `docs/rearch/baseline/archive-schema.sql` (legacy = schema version 0) and
   must commit old-schema fixture DBs while the legacy code still exists to generate them.
 - Resumption checklist (from the spec): confirm tip → read this file → **`make test` green
@@ -78,7 +77,8 @@ is in **STATE.md's "Key facts discovered"** section:
    timestamps; same-second ties fall back to file-read order. Production-visible.
 4. Id ordering is inconsistent across commands (numeric in `list`/`search`, lexicographic in
    `graph`/`handoff`/`context`/`summary`).
-5. `story export --json` double-encodes (W0b owns the fix — see above).
+5. `story export --json` double-encodes — **fixed in W0b** (`d272a7b`); still needs a story
+   for the record, as does its unfixed sibling `context --format json`.
 6. `AppError::SyncConflict` is a dead variant, constructed nowhere in `src/`.
 
 **None have story IDs yet, on purpose:** minting an ID from this worktree collides with IDs

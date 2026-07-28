@@ -17,9 +17,9 @@
 
 | Wave | Branch/PR | Status |
 |---|---|---|
-| W0 gate repair + harness | `rearch/w0-gate-repair` / [PR #60](https://github.com/mikeydotio/storyhook/pull/60) | **PR OPENED** — awaiting merge |
-| W0b envelope + Invoker seam | — | entry-ready once W0 merges |
-| W1 store engine | — | entry-ready once W0 merges (parallel with W0b) |
+| W0 gate repair + harness | `rearch/w0-gate-repair` / [PR #60](https://github.com/mikeydotio/storyhook/pull/60) | **MERGED** 2026-07-28 |
+| W0b envelope + Invoker seam | `rearch/w0b-envelope` | **PR OPENED** — awaiting merge |
+| W1 store engine | — | **entry-ready** |
 | W2a/b/c/d services | — | pending |
 | W3 importer | — | pending |
 | W4 THE FLIP | — | pending (one uninterrupted session; revert only while W3 round-trip green) |
@@ -47,6 +47,16 @@
 - **W0.5 DONE** — spec of record at `docs/spec/data-layer-rearchitecture.md`; W4 flip checklist
   at `docs/rearch/flip-checklist.md`; CLAUDE.md mini-roadmap; HANDOFF.md; PR opened. See Step
   log for the checklist's corrections to the plan's estimates.
+
+## W0b step plan
+
+- **W0b.1 DONE** — `story export --json` double-encoding fixed at origin (`Response::RawJson`),
+  red→green with an import round-trip regression test: `d272a7b`.
+- **W0b.2 DONE** — wire-serializable envelope: `Deserialize` on `Response` + every view type,
+  `Serialize + Deserialize` on `Invocation`/`CliOptions`/the six action enums, `WireError`
+  mirror for `AppError`, and `tests/wire_envelope.rs` (9 tests): `2db8310`.
+- **W0b.3 DONE** — `Invoker`/`InvokeRequest`/`LegacyInvoker` in `src/invoke.rs`, adopted by
+  `main.rs` and `web.rs`'s three dispatchers; `tests/invoker_seam.rs` (4 tests): `ef717f2`.
 
 ## Key facts discovered (do not re-derive)
 
@@ -86,7 +96,8 @@
   `numeric_story_id`, `src/app.rs:2652`); `graph`, `handoff`, `context` and `summary`'s ready
   list sort LEXICOGRAPHICALLY (`SH-1, SH-10, SH-11, SH-12, SH-2, …`). Frozen as-is in the
   corpus with a `// KNOWN-DEFECT:` comment — the 14-story fixture exists to make it visible.
-- **W0.4 finding, unfixed, needs a story — `story export --json` DOUBLE-ENCODES its document.**
+- **W0.4 finding — FIXED in W0b (`d272a7b`), still needs a story for the record.**
+  `story export --json` DOUBLE-ENCODED its document.
   `Invocation::Export` returns `Response::Message(json)` (`src/app.rs:983`), and the `--json`
   renderer puts a `Message` into the envelope's `message` field as a plain string
   (`src/output.rs:170`). So `story export --json` emits `{"message":"{\n \"schema\": 1,…",
@@ -98,6 +109,21 @@
   **plain** `story export` document, because that is the form the round-trip test and the
   importer actually consume. **W0b owns this** — it is the envelope wave, and the fix is one
   variant swap plus a golden-corpus update.
+  **Fix as shipped:** `Response::RawJson`, one variant swap, plus the golden-corpus update.
+  Plain `story export` is byte-for-byte unchanged (`export_document` snapshot untouched). One
+  deliberate side effect, pinned by `export_is_not_suppressed_by_quiet`: `RawJson` renders
+  ahead of the `--quiet` check, so `story export --quiet` now emits the document where it used
+  to emit nothing — correct for a command whose whole output is the result, and previously a
+  silent empty-backup footgun. No caller anywhere in the repo uses `export --quiet`.
+- **W0b sibling finding, unfixed, needs a story — `context`/`load-context --format json` has
+  the same shape as the export defect.** `Invocation::Context` returns
+  `Response::Message(json_string)` when `--format json` is given (`src/app.rs:1061`), so the
+  *global* `--json` on top wraps that JSON as an escaped string in `.message`. Left unfixed
+  deliberately: unlike export, no consumer parses it (agents read it as text), and the golden
+  corpus's `narrative_json` freezes the wrapped form. Whoever fixes it should expect
+  `golden_cli__narrative_json.snap` to move, and should decide the same `--quiet` question the
+  export fix answered. `plugin/claude-code/references/cli-reference.md` now documents the two
+  commands separately, since their behavior has diverged.
 - **W0.3 finding #3, needs a story (or a deletion):** `AppError::SyncConflict` (exit 8) is a
   **dead variant** — constructed nowhere in `src/`; only `web.rs:161` maps it to HTTP 409.
   `tests/error_contract.rs` lists it in `UNREACHABLE` and covers its exit code at the enum
@@ -338,6 +364,70 @@
     unless it is re-pointed at the store — **a green tautology there re-opens SH-52**.
   - `TODO(rearch)` migration list: **45 files** (42 in `tests/`, 3 in `src/`), unchanged by this
     step.
+- 2026-07-28 W0b: branch `rearch/w0b-envelope` off W0's tip `c01c116` — **deliberately stacked**,
+  because W0's PR #60 was still open. Three commits, `make test` green after each, two
+  consecutive green full runs at the end: **39.7s and 39.6s warm**, against W0's 36.4s median —
+  +3.3s, of which 0.9s is the two new test binaries running (`invoker_seam` 0.88s,
+  `wire_envelope` 0.00s) and the rest is the extra link/startup of two more binaries. Test count
+  1170 → **1185** (+9 `wire_envelope`, +4 `invoker_seam`, +2 `story_export`).
+  - `d272a7b` — the export fix (see Key facts for the shipped behavior, including the `--quiet`
+    side effect and the sibling that was left alone).
+  - `2db8310` — the envelope. `Deserialize` on `Response` + `StaleInfo`/`StoryView`/
+    `SummaryView`/`ReportData`/`GraphView`/`BlockedChainView`/`GraphOverview`/`PhaseView`;
+    `Serialize + Deserialize` on `Invocation`, `CliOptions`, `MemberInput` and the six action
+    enums; `WireError` in `src/error.rs`. `tests/wire_envelope.rs`, 9 tests, +0.01s.
+  - `ef717f2` — the seam. `src/invoke.rs`; `main.rs` and `web.rs`'s three dispatchers adopt it.
+    `tests/invoker_seam.rs`, 4 tests, +0.9s. **Zero assertion or snapshot edits** —
+    `git diff --stat ef717f2^ ef717f2 -- tests/` reports one file, the new one.
+
+  **The API W1/W2a/W5 build on** (`storyhook::invoke`):
+
+  ```rust
+  pub struct InvokeRequest { pub invocation: Invocation, pub no_hooks: bool }  // #[non_exhaustive]
+  impl InvokeRequest {
+      pub fn new(invocation: Invocation) -> Self;      // no_hooks: false
+      pub fn no_hooks(self, no_hooks: bool) -> Self;   // #[must_use] builder
+  }
+  pub trait Invoker { fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError>; }
+  pub struct LegacyInvoker<'a>;  impl<'a> LegacyInvoker<'a> { pub fn new(root: &'a Path) -> Self }
+  ```
+
+  `InvokeRequest` is `#[non_exhaustive]` **on purpose**: W4 adds cwd/project selection and W5
+  adds `hook_depth`, and construction must keep compiling. Build it with `new()`, never a struct
+  literal — a literal will not compile outside the crate anyway, which is the point.
+
+  Things the next steps should know:
+  - **`json`/`quiet` do not cross the seam and must not start.** `app::run` reads only
+    `options.no_hooks` and `options.invocation` off `CliOptions` — verified, not assumed — so
+    `LegacyInvoker` fills the other two with `false` and nothing observes it. This is the
+    structural reason the rearch's byte-compat argument holds: rendering is a *client* concern
+    applied to a transported envelope, and `CliOptions` now says so in its doc comment.
+  - **The `WireError` design choice, so W5 does not relitigate it:** a mirror enum, internally
+    tagged `{"kind": "state_conflict", …}`, **not** serde on `AppError`. `AppError` is a
+    `thiserror` type whose `Display` is the CLI's user-facing contract and whose `From` impls
+    pull in `std::io::Error`/`rusqlite::Error`; deriving on it would either freeze the enum as a
+    public data format or punch `#[serde(skip)]` holes into the error path. Each variant carries
+    its payload by name (`detail`, or `expected`/`actual`), **never the rendered message** —
+    `GithubAuth`'s `Display` is `github auth: {0}`, so a message-carrying wire form doubles the
+    prefix per hop. **Message and exit code are not transported**: they are recomputed from the
+    reconstructed `AppError`, so a transported copy cannot disagree with the real value. If W5's
+    HTTP envelope wants them visible to `curl`, it should emit them *alongside* a `WireError`,
+    derived from the same value — not inside it.
+  - **`Response`'s serde form is externally tagged snake_case** (`{"story": {…}}`) and is
+    deliberately NOT the `--json` envelope `render_json` emits. Two different formats with two
+    different audiences: transport vs. a human's `jq`. Nothing serialized `Response` before this
+    commit, so there was no compatibility surface to preserve.
+  - **The round-trip tests were verified to bite**, not merely to pass: reverting one
+    `#[serde(default)]` on `StoryView::flagged_reasons` fails two of them with ``missing field
+    `flagged_reasons` ``, and making `WireError::GithubAuth` carry the rendered message fails
+    with "`GithubAuth` came back with a different message".
+  - **Two exhaustiveness guards now exist in `tests/wire_envelope.rs`**, both of the
+    stops-compiling kind: `variant_name` over `AppError` (10) and `invocation_name` over
+    `Invocation` (46), each paired with a corpus-count assertion so a *name* alone is not enough
+    — a value has to round-trip. Adding an `Invocation` variant therefore costs a corpus row.
+  - `tests/invoker_seam.rs` calls `storyhook::app::run` in-process alongside
+    `storyhook_test_support`. Safe — integration tests link ONE copy of `storyhook`. The
+    two-copies trap in Key facts applies only to `src/`'s own `#[cfg(test)]` modules.
 
 ## Resume protocol (fresh session)
 

@@ -122,6 +122,88 @@ fn export_json_output() {
     assert!(stdout.contains("\"stories\""));
 }
 
+/// The global `--json` flag must not change *what* `story export` emits.
+///
+/// `export`'s response body already is the machine-readable result, so the
+/// envelope has nothing to add: wrapping it as an escaped string inside
+/// `.message` made the only documented consumer — `story import-project` —
+/// reject its own export. The contract is byte-equality with the un-flagged
+/// form, proved by feeding the flagged output straight back in.
+#[test]
+fn export_json_flag_emits_the_document_itself() {
+    let env = TestEnv::shared();
+    let source = env.project().prefix("API").build();
+    story(source.path())
+        .args(["new", "A story worth backing up"])
+        .assert()
+        .success();
+
+    let out = story(source.path())
+        .args(["export", "--json"])
+        .output()
+        .expect("running export --json");
+    assert!(
+        out.status.success(),
+        "`story export --json` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let flagged = String::from_utf8(out.stdout).expect("the export document must be UTF-8");
+
+    let document: serde_json::Value =
+        serde_json::from_str(&flagged).expect("`story export --json` must print JSON");
+    assert!(
+        document.get("schema").is_some() && document.get("stories").is_some(),
+        "`story export --json` must print the export document, not an envelope \
+         wrapping it: {flagged}"
+    );
+
+    assert_eq!(
+        export_of(source.path()),
+        flagged,
+        "`story export --json` and `story export` must emit the same bytes"
+    );
+
+    // The failure this test exists to prevent: the flagged form was not
+    // importable at all (exit 5, "missing field `schema`").
+    assert_eq!(
+        flagged,
+        reimport(&flagged),
+        "the `--json` export document must round-trip through `story import-project`"
+    );
+}
+
+/// `--quiet` suppresses *success chatter*, and `export` has none: its whole
+/// output is the backup a caller asked for. Emitting nothing for
+/// `story export --quiet > backup.json` writes an empty backup, which is the
+/// same silent-data-loss shape as the double-encoding this pins the fix for.
+#[test]
+fn export_is_not_suppressed_by_quiet() {
+    let env = TestEnv::shared();
+    let source = env.project().build();
+    story(source.path())
+        .args(["new", "A story worth backing up"])
+        .assert()
+        .success();
+
+    let expected = export_of(source.path());
+    for flags in [
+        vec!["export", "--quiet"],
+        vec!["export", "--quiet", "--json"],
+    ] {
+        let out = story(source.path())
+            .args(&flags)
+            .output()
+            .expect("running export");
+        assert!(out.status.success(), "`story {}` failed", flags.join(" "));
+        assert_eq!(
+            expected,
+            String::from_utf8(out.stdout).expect("the export document must be UTF-8"),
+            "`story {}` must still emit the export document",
+            flags.join(" ")
+        );
+    }
+}
+
 #[test]
 fn export_preserves_custom_prefix() {
     let dir = TestEnv::shared().project().prefix("API").build();
