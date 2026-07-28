@@ -35,8 +35,8 @@ Execution state — wave status, step log, discovered defects — lives in
 | Wave | Scope | Status |
 |---|---|---|
 | W0 | quality-gate repair, shared test harness, baseline capture | **complete — merged** |
-| W0b | wire-serializable envelope + the `Invoker` seam | **complete — PR open** |
-| W1 | `Store` trait, SQLite engine, migrations, rebuild-diff | entry-ready |
+| W0b | wire-serializable envelope + the `Invoker` seam | **complete — merged** |
+| W1 | `Store` trait, SQLite engine, migrations, rebuild-diff | **complete — PR open** |
 | W2a–d | services over the store (`app.rs` frozen) | pending |
 | W3 | legacy importer (`story migrate`) — also W4's rollback path | pending (parallel with W2) |
 | W4 | **the flip**: the global store becomes the default | pending; one uninterrupted session |
@@ -50,6 +50,8 @@ Standing rules for every wave:
 - Every commit passes `make test`; history stays bisectable and two-hats clean.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
-- Waves end at "PR opened". The work happens in a linked worktree: no version bumps, no
-  deploys, no direct pushes to `main`, no force-pushes.
+- A wave's implementing session ends at "PR opened" and never merges its own PR. The
+  **orchestrator** merges the wave PR (merge commit), verifies it landed, and deletes the
+  branch, escalating only what genuinely warrants attention. Work happens in a linked worktree:
+  no version bumps, no deploys, no direct pushes to `main`, no force-pushes.
 - Deviations from the spec get recorded in STATE.md rather than edited into the spec.

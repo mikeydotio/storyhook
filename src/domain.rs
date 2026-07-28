@@ -90,7 +90,7 @@ impl SuperState {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateDef {
     pub slug: String,
     #[serde(rename = "super")]
@@ -176,7 +176,7 @@ impl StateUsage {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeDef {
     pub slug: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -189,7 +189,7 @@ pub struct ProgressRollup {
     pub children_total: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub id: String,
     pub display_name: String,
@@ -200,7 +200,7 @@ pub struct Member {
     pub created_at: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoryComment {
     pub at: String,
     pub text: String,
@@ -212,7 +212,7 @@ pub struct StoryRelation {
     pub other_id: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorySnapshot {
     pub id: String,
     pub title: String,
@@ -253,7 +253,7 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum StoryEvent {
     StoryCreated {

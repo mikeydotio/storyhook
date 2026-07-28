@@ -17,6 +17,7 @@ resolver = "3"
 assert_cmd = "2.1.1"
 insta = { version = "1.44.1", features = ["json", "redactions", "filters"] }
 predicates = "3.1.3"
+proptest = "1.8.0"
 serde_json = "1.0.145"
 tempfile = "3.23.0"
 ureq = "3"
@@ -36,6 +37,18 @@ categories = ["command-line-utilities", "development-tools"]
 [features]
 default = ["github-sync"]
 github-sync = ["dep:ureq"]
+
+# Named crash points inside the store (`src/store/fault.rs`). NEVER in
+# `default`: with the feature off, every injection point is an inlined
+# `Ok(())`, so a release binary carries no arming machinery at all.
+#
+# `cargo test` still gets it, because `storyhook-test-support` — a
+# dev-dependency of this package — depends on `storyhook` *with* the feature.
+# Cargo's v2 feature resolver keeps dev-dependency features out of non-test
+# builds, so `cargo build` and `cargo build --release` are unaffected. That is
+# what lets the store's crash tests run under the ordinary `make test` gate
+# instead of behind a flag nothing remembers to pass.
+fault-injection = []
 
 [[bin]]
 name = "story"
@@ -73,6 +86,7 @@ ureq = { version = "3", optional = true, features = ["json"] }
 assert_cmd = { workspace = true }
 insta = { workspace = true }
 predicates = { workspace = true }
+proptest = { workspace = true }
 serde_json = { workspace = true }
 storyhook-test-support = { path = "crates/storyhook-test-support" }
 tempfile = { workspace = true }
