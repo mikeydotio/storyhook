@@ -628,6 +628,65 @@ fn handoff_agrees_on_an_empty_project() {
     differential.step("handoff", Invocation::Handoff { since: None });
 }
 
+// --- the bulk read ---------------------------------------------------------
+
+/// `Invocation::ProjectSnapshot` is not a CLI verb, but it is the only read
+/// the TUI makes — so a divergence here is a divergence in everything the
+/// board renders.
+#[test]
+fn the_project_snapshot_agrees_field_for_field() {
+    let differential = seeded();
+    differential.step("snapshot", Invocation::ProjectSnapshot);
+
+    // And after the catalog and the membership change, since both travel in it.
+    differential.step(
+        "a new state",
+        Invocation::State {
+            action: storyhook::cli::StateAction::Add {
+                slug: "review".into(),
+                superstate: "OPEN".into(),
+                role: None,
+                description: Some("waiting on a reviewer".into()),
+            },
+        },
+    );
+    differential.step(
+        "reordered",
+        Invocation::State {
+            action: storyhook::cli::StateAction::Reorder {
+                order: vec![
+                    "review".into(),
+                    "todo".into(),
+                    "in-progress".into(),
+                    "done".into(),
+                ],
+            },
+        },
+    );
+    differential.step("snapshot again", Invocation::ProjectSnapshot);
+}
+
+#[test]
+fn the_project_snapshot_agrees_on_an_empty_project() {
+    let differential = Differential::new();
+    differential.step("snapshot", Invocation::ProjectSnapshot);
+}
+
+/// Archived stories are outside the snapshot in both legs — the legacy path
+/// reads the open directory, the store filters on `archived`.
+#[test]
+fn the_project_snapshot_agrees_that_archived_stories_are_excluded() {
+    let differential = seeded();
+    differential.step(
+        "delete one",
+        Invocation::Delete {
+            id: "SH-4".into(),
+            reason: "obsolete".into(),
+        },
+    );
+    differential.step("snapshot", Invocation::ProjectSnapshot);
+}
+
 // --- doctor ----------------------------------------------------------------
 
 /// Every integrity shape the legacy doctor reports needs a project the public

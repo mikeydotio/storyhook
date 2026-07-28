@@ -1226,6 +1226,69 @@ pub fn load_all_archived_snapshots(root: &Path) -> Result<Vec<StorySnapshot>, Ap
     Ok(stories)
 }
 
+/// Loads every open snapshot, tolerating a trailing incomplete JSON line.
+///
+/// A concurrent append-mode write can leave a partial final line in a JSONL
+/// event file. A reader that must not fail on that — the TUI reloads on every
+/// filesystem event, including the one the writer is still in the middle of —
+/// skips it rather than propagating the parse error.
+///
+/// Lives here rather than in the TUI because `Invocation::ProjectSnapshot`
+/// answers with it: the tolerance is a property of the storage format, and the
+/// clients that need it reach storage through the seam.
+pub fn load_open_snapshots_tolerant(root: &Path) -> Result<Vec<StorySnapshot>, AppError> {
+    use std::io::{BufRead, BufReader};
+
+    ensure_project(root)?;
+    let paths = ProjectPaths::new(root);
+    let states = load_state_map(root)?;
+    let mut stories = Vec::new();
+
+    let stories_dir = paths.open_stories_dir();
+    if !stories_dir.exists() {
+        return Ok(stories);
+    }
+
+    let mut entries = fs::read_dir(&stories_dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let id = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| AppError::Storage("invalid story filename".to_string()))?;
+
+        let file = fs::OpenOptions::new().read(true).open(&path)?;
+        let reader = BufReader::new(file);
+        let mut events = Vec::new();
+        let lines: Vec<String> = reader.lines().collect::<Result<Vec<_>, _>>()?;
+        let line_count = lines.len();
+
+        for (i, line) in lines.into_iter().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str(&line) {
+                Ok(event) => events.push(event),
+                Err(_) if i == line_count - 1 => {
+                    // Skip incomplete trailing line from concurrent write
+                }
+                Err(e) => return Err(AppError::from(e)),
+            }
+        }
+
+        if !events.is_empty() {
+            stories.push(fold_story(id, &events, &states)?);
+        }
+    }
+
+    Ok(stories)
+}
+
 pub fn load_all_snapshots(root: &Path) -> Result<Vec<StorySnapshot>, AppError> {
     let mut stories = load_all_open_snapshots(root)?;
     stories.extend(load_all_archived_snapshots(root)?);

@@ -346,6 +346,8 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         Invocation::Handoff { since } => {
             query(ctx, |service| service.handoff(since.as_deref())).map(Response::Message)
         }
+        Invocation::ProjectSnapshot => query(ctx, |service| service.project_snapshot())
+            .map(|view| Response::ProjectSnapshot(Box::new(view))),
         Invocation::Doctor { fix } => {
             let service = IntegrityService::new(ctx);
             if fix {
@@ -730,5 +732,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::SessionStart => "session-start",
         Invocation::Update { .. } => "update",
         Invocation::Version => "version",
+        Invocation::ProjectSnapshot => "project-snapshot",
+        Invocation::History { .. } => "history",
     }
 }
