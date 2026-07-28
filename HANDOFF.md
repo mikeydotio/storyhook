@@ -8,7 +8,7 @@ This file is the wave boundary summary; the ledger is the detail.
 
 - **Wave W0 complete** — `test: repair the quality gate and unify the integration harness`.
 - **Branch:** `rearch/w0-gate-repair`, based on `main@838d68a`.
-- **PR:** *recorded on the follow-up commit; run `gh pr list` if this line is still here.*
+- **PR:** [#60](https://github.com/mikeydotio/storyhook/pull/60).
 - **Merge state: OPEN, awaiting merge.** Work happened in a linked worktree, so the wave stops
   at "PR opened" by design. **Nothing in W0b or W1 may start until this merges.**
 

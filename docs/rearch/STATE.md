@@ -17,7 +17,7 @@
 
 | Wave | Branch/PR | Status |
 |---|---|---|
-| W0 gate repair + harness | `rearch/w0-gate-repair` | **PR OPENED** — awaiting merge (number in HANDOFF.md) |
+| W0 gate repair + harness | `rearch/w0-gate-repair` / [PR #60](https://github.com/mikeydotio/storyhook/pull/60) | **PR OPENED** — awaiting merge |
 | W0b envelope + Invoker seam | — | entry-ready once W0 merges |
 | W1 store engine | — | entry-ready once W0 merges (parallel with W0b) |
 | W2a/b/c/d services | — | pending |
