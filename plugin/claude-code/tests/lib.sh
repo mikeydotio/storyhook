@@ -21,6 +21,33 @@ _TMP_REPOS=()
 _cleanup() { local d; for d in "${_TMP_REPOS[@]:-}"; do [ -n "$d" ] && rm -rf "$d"; done; }
 trap _cleanup EXIT
 
+# --- data-home isolation ---------------------------------------------------
+#
+# storyhook is moving from per-project `.storyhook/` directories to a single
+# global store under the XDG data home. The moment that lands, a suite which
+# has not redirected these variables writes its fixtures into the developer's
+# real ~/.local/share/storyhook on every `make test` -- thousands of junk
+# stories in the tracker this project uses to track itself, with no undo and
+# nothing in the output to say it happened. They are redirected now, while
+# they are still unread, because doing it afterwards is doing it too late.
+#
+# run-tests.sh exports these for the whole run and refuses to start if they
+# are wrong; this block is what makes a single `bash test-foo.sh` just as
+# safe. STORYHOOK_REAL_HOME survives so a test can assert the real data home
+# was left alone.
+if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
+  export STORYHOOK_REAL_HOME="$HOME"
+  STORYHOOK_TEST_HOME="$(mktemp -d /tmp/storyhook-plugin-home.XXXXXX)"
+  export STORYHOOK_TEST_HOME
+  _TMP_REPOS+=("$STORYHOOK_TEST_HOME")
+  export HOME="$STORYHOOK_TEST_HOME/home"
+  export XDG_DATA_HOME="$HOME/.local/share"
+  export XDG_CONFIG_HOME="$HOME/.config"
+  export XDG_STATE_HOME="$HOME/.local/state"
+  export STORYHOOK_DATA_DIR="$HOME/.local/share/storyhook"
+  mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$STORYHOOK_DATA_DIR"
+fi
+
 # mk_story_repo — build a temp git repo with a real storyhook project
 # initialized (`story init`), and a LOCAL bare origin so dispatch's `git
 # fetch` resolves fully offline and deterministically (no network, no
@@ -46,10 +73,13 @@ mk_story_repo() {
     git commit -qm init
     git push -qu origin main
     git remote set-head origin main >/dev/null 2>&1 || true
+    # Deliberately NOT committed: storyhook's state is moving out of the repo
+    # and into a global store, after which there is no `.storyhook` to add and
+    # this line would be a silent failure inside a `|| true`. Nothing in the
+    # suite needs it tracked -- a linked worktree resolving no tracker at all
+    # proves the same anchoring property as one resolving a different tracker
+    # (see test-dispatch-cwd.sh).
     story init --prefix TST >/dev/null 2>&1
-    git add .storyhook
-    git commit -qm "chore: init storyhook" >/dev/null 2>&1 || true
-    git push -q origin main >/dev/null 2>&1 || true
   ) >/dev/null 2>&1
   printf '%s' "$repo"
 }

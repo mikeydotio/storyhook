@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
@@ -180,7 +183,7 @@ fn parent_cycle_is_rejected() {
         .args(["relate", "SH-3", "parent-of", "SH-1"])
         .assert()
         .code(2)
-        .stdout(contains("would create a cycle"));
+        .stderr(contains("would create a cycle"));
 }
 
 #[test]

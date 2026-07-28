@@ -1,0 +1,133 @@
+---
+source: tests/golden_cli.rs
+---
+$ story report --html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storyhook Report</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a2e;
+  --bg-card: #f8f9fa;
+  --border: #e2e8f0;
+  --muted: #94a3b8;
+  --row-blocked-bg: #fef2f2;
+  --row-ready-bg: #f0fdf4;
+  --row-blocked-border: #fca5a5;
+  --row-ready-border: #86efac;
+  --table-header-bg: #f1f5f9;
+  --table-hover: #f8fafc;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f172a;
+    --fg: #e2e8f0;
+    --bg-card: #1e293b;
+    --border: #334155;
+    --muted: #64748b;
+    --row-blocked-bg: #450a0a;
+    --row-ready-bg: #052e16;
+    --row-blocked-border: #991b1b;
+    --row-ready-border: #166534;
+    --table-header-bg: #1e293b;
+    --table-hover: #1e293b;
+  }
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg); line-height:1.6; padding:2rem; max-width:1200px; margin:0 auto; }
+h1 { font-size:1.5rem; font-weight:700; margin-bottom:0.25rem; }
+.subtitle { color:var(--muted); font-size:0.875rem; margin-bottom:1.5rem; }
+.stats { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:1.5rem; }
+.stat-card { background:var(--bg-card); border:1px solid var(--border); border-radius:0.5rem; padding:1rem 1.25rem; min-width:120px; }
+.stat-value { font-size:1.5rem; font-weight:700; }
+.stat-label { font-size:0.75rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; }
+.section { margin-bottom:1.5rem; }
+.section-title { font-size:0.875rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:0.5rem; }
+.bar-chart { display:flex; height:1.5rem; border-radius:0.375rem; overflow:hidden; margin-bottom:0.5rem; }
+.bar-segment { min-width:2px; transition:width 0.3s; }
+.legend { display:flex; flex-wrap:wrap; gap:0.75rem; font-size:0.8125rem; }
+.legend-item { display:inline-flex; align-items:center; gap:0.25rem; }
+.legend-dot { width:0.625rem; height:0.625rem; border-radius:50%; display:inline-block; }
+.priorities { display:flex; gap:0.5rem; flex-wrap:wrap; }
+.priority-badge { font-size:0.75rem; padding:0.125rem 0.5rem; border-radius:9999px; font-weight:500; }
+.priority-critical { background:#fef2f2; color:#dc2626; border:1px solid #fca5a5; }
+.priority-high { background:#fff7ed; color:#ea580c; border:1px solid #fdba74; }
+.priority-medium { background:#fefce8; color:#ca8a04; border:1px solid #fde047; }
+.priority-low { background:#f0fdf4; color:#16a34a; border:1px solid #86efac; }
+.priority-none { background:var(--bg-card); color:var(--muted); border:1px solid var(--border); }
+@media (prefers-color-scheme: dark) {
+  .priority-critical { background:#450a0a; color:#f87171; border-color:#991b1b; }
+  .priority-high { background:#431407; color:#fb923c; border-color:#9a3412; }
+  .priority-medium { background:#422006; color:#facc15; border-color:#854d0e; }
+  .priority-low { background:#052e16; color:#4ade80; border-color:#166534; }
+}
+table { width:100%; border-collapse:collapse; font-size:0.875rem; }
+thead th { text-align:left; padding:0.625rem 0.75rem; background:var(--table-header-bg); border-bottom:2px solid var(--border); font-weight:600; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); }
+tbody td { padding:0.5rem 0.75rem; border-bottom:1px solid var(--border); vertical-align:top; }
+tbody tr:hover { background:var(--table-hover); }
+.row-blocked { background:var(--row-blocked-bg); border-left:3px solid var(--row-blocked-border); }
+.row-ready { background:var(--row-ready-bg); border-left:3px solid var(--row-ready-border); }
+.col-id { font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; font-size:0.8125rem; }
+.col-date { white-space:nowrap; color:var(--muted); font-size:0.8125rem; }
+.label { display:inline-block; font-size:0.6875rem; padding:0.0625rem 0.375rem; border-radius:9999px; background:var(--bg-card); border:1px solid var(--border); margin-right:0.25rem; }
+.muted { color:var(--muted); }
+.empty { text-align:center; padding:2rem; color:var(--muted); }
+</style>
+</head>
+<body>
+<h1>Storyhook Report</h1>
+<p class="subtitle">Generated [timestamp] &middot; 14 stories</p>
+
+<div class="stats">
+<div class="stat-card"><div class="stat-value">14</div><div class="stat-label">Total</div></div>
+<div class="stat-card"><div class="stat-value">11</div><div class="stat-label">Open</div></div>
+<div class="stat-card"><div class="stat-value">3</div><div class="stat-label">Closed</div></div>
+<div class="stat-card"><div class="stat-value">3</div><div class="stat-label">Blocked</div></div>
+<div class="stat-card"><div class="stat-value">8</div><div class="stat-label">Ready</div></div>
+</div>
+
+<div class="section">
+<div class="section-title">State Distribution</div>
+<div class="bar-chart"><div class="bar-segment" style="width:14.3%;background:#3b82f6" title="done: 2 (14%)"></div><div class="bar-segment" style="width:7.1%;background:#10b981" title="in-progress: 1 (7%)"></div><div class="bar-segment" style="width:7.1%;background:#f59e0b" title="review: 1 (7%)"></div><div class="bar-segment" style="width:71.4%;background:#ef4444" title="todo: 10 (71%)"></div></div>
+<div class="legend"><span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>done 2 (14%)</span><span class="legend-item"><span class="legend-dot" style="background:#10b981"></span>in-progress 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>review 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>todo 10 (71%)</span></div>
+</div>
+
+<div class="section">
+<div class="section-title">Priority Breakdown</div>
+<div class="priorities"><span class="priority-badge priority-critical">critical: 2</span><span class="priority-badge priority-high">high: 3</span><span class="priority-badge priority-low">low: 4</span><span class="priority-badge priority-medium">medium: 4</span></div>
+</div>
+
+<div class="section">
+<div class="section-title">Type Breakdown</div>
+<div class="priorities"><span class="priority-badge priority-none">bug: 1</span><span class="priority-badge priority-none">chore: 3</span><span class="priority-badge priority-none">epic: 1</span><span class="priority-badge priority-none">spike: 2</span><span class="priority-badge priority-none">story: 4</span><span class="priority-badge priority-none">task: 3</span></div>
+</div>
+
+<div class="section">
+<div class="section-title">Stories</div>
+<table>
+<thead><tr><th>ID</th><th>Title</th><th>State</th><th>Priority</th><th>Labels</th><th>Assignee</th><th>Updated</th></tr></thead>
+<tbody>
+<tr class="row-ready"><td class="col-id">SH-1</td><td>Design the storage engine</td><td>todo</td><td><span class="priority-badge priority-critical">critical</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-ready"><td class="col-id">SH-5</td><td>Fix the id collision across worktrees</td><td>todo</td><td><span class="priority-badge priority-critical">critical</span></td><td><span class="label">defect</span></td><td>grace-hopper</td><td class="col-date">[date]</td></tr>
+<tr class="row-blocked"><td class="col-id">SH-3</td><td>Implement the SQLite engine</td><td>in-progress</td><td><span class="priority-badge priority-high">high</span></td><td><span class="label">backend</span> <span class="label">phase:1</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-ready"><td class="col-id">SH-2</td><td>Define the Store trait</td><td>todo</td><td><span class="priority-badge priority-high">high</span></td><td><span class="label">api</span> <span class="label">backend</span> <span class="label">phase:1</span></td><td>ada-lovelace</td><td class="col-date">[date]</td></tr>
+<tr class="row-ready"><td class="col-id">SH-12</td><td>Harden concurrent writes</td><td>todo</td><td><span class="priority-badge priority-high">high</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr><td class="col-id">SH-14</td><td>Prototype the archive format</td><td>done</td><td><span class="priority-badge priority-medium">medium</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-ready"><td class="col-id">SH-4</td><td>Write the migration runner</td><td>review</td><td><span class="priority-badge priority-medium">medium</span></td><td><span class="label">backend</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-blocked"><td class="col-id">SH-9</td><td>Add the daemon transport</td><td>todo</td><td><span class="priority-badge priority-medium">medium</span></td><td><span class="label">phase:2</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-ready"><td class="col-id">SH-10</td><td>Ship the CLI shim</td><td>todo</td><td><span class="priority-badge priority-medium">medium</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr><td class="col-id">SH-8</td><td>Retire the JSONL reader</td><td>done</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-ready"><td class="col-id">SH-11</td><td>Audit error codes</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-blocked"><td class="col-id">SH-6</td><td>Benchmark the rebuild path</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr><td class="col-id">SH-13</td><td>Old approach: file-per-story</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr class="row-ready"><td class="col-id">SH-7</td><td>Document the data layer</td><td>todo</td><td><span class="priority-badge priority-none">none</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+</tbody>
+</table>
+</div>
+
+</body>
+</html>

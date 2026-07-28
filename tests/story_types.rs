@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
@@ -61,7 +64,7 @@ fn type_add_duplicate_rejected() {
         .args(["type", "add", "story"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("already exists"));
+        .stderr(predicate::str::contains("already exists"));
 }
 
 #[test]
@@ -73,7 +76,7 @@ fn type_add_none_slug_rejected() {
         .args(["type", "add", "none"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("reserved"));
+        .stderr(predicate::str::contains("reserved"));
 }
 
 #[test]
@@ -85,7 +88,7 @@ fn type_add_none_titlecase_rejected() {
         .args(["type", "add", "None"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("reserved"));
+        .stderr(predicate::str::contains("reserved"));
 }
 
 #[test]
@@ -97,7 +100,7 @@ fn type_add_none_uppercase_rejected() {
         .args(["type", "add", "NONE"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("reserved"));
+        .stderr(predicate::str::contains("reserved"));
 }
 
 #[test]
@@ -109,7 +112,7 @@ fn type_add_none_mixedcase_rejected() {
         .args(["type", "add", "nOnE"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("reserved"));
+        .stderr(predicate::str::contains("reserved"));
 }
 
 #[test]
@@ -122,21 +125,21 @@ fn type_add_rejects_reserved_default_slug() {
         .args(["type", "add", "default"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("reserved"));
+        .stderr(predicate::str::contains("reserved"));
 
     // Mixed-case "Default" should also be rejected (case-insensitive)
     story(dir.path())
         .args(["type", "add", "Default"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("reserved"));
+        .stderr(predicate::str::contains("reserved"));
 
     // All-caps "DEFAULT" should also be rejected
     story(dir.path())
         .args(["type", "add", "DEFAULT"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("reserved"));
+        .stderr(predicate::str::contains("reserved"));
 }
 
 #[test]
@@ -170,7 +173,7 @@ fn type_remove_in_use_rejected() {
         .args(["type", "remove", "bug"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("still used"));
+        .stderr(predicate::str::contains("still used"));
 }
 
 #[test]
@@ -182,7 +185,7 @@ fn type_remove_nonexistent_rejected() {
         .args(["type", "remove", "nonexistent"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("not found"));
+        .stderr(predicate::str::contains("not found"));
 }
 
 // ============================================================
@@ -215,7 +218,7 @@ fn new_with_unknown_type_rejected() {
         .args(["new", "Something", "--type", "nonexistent"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown type `nonexistent`"));
+        .stderr(predicate::str::contains("unknown type `nonexistent`"));
 }
 
 #[test]
@@ -248,7 +251,7 @@ fn set_unknown_type_rejected() {
         .args(["set", "SH-1", "--type", "nonexistent"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown type `nonexistent`"));
+        .stderr(predicate::str::contains("unknown type `nonexistent`"));
 }
 
 #[test]
@@ -528,7 +531,7 @@ fn epic_create_rejects_when_epic_type_not_defined() {
         .args(["epic", "create", "Auth System"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("type `epic` is not defined"));
+        .stderr(predicate::str::contains("type `epic` is not defined"));
 }
 
 // ============================================================
@@ -630,7 +633,7 @@ fn type_remove_last_type_rejected() {
         .args(["type", "remove", "story"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("last"));
+        .stderr(predicate::str::contains("last"));
 }
 
 // ============================================================
@@ -675,7 +678,7 @@ fn json_patch_rejects_invalid_story_type() {
         .args(["set", "SH-1", "--json", r#"{"story_type":"nonexistent"}"#])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown type"));
+        .stderr(predicate::str::contains("unknown type"));
 }
 
 #[test]
@@ -692,7 +695,7 @@ fn json_patch_unknown_field_error_lists_story_type() {
         .args(["set", "SH-1", "--json", r#"{"bogus":"value"}"#])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("story_type"));
+        .stderr(predicate::str::contains("story_type"));
 }
 
 // ============================================================

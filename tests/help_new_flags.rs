@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 /// Tests for the new `story help --compact` and `story help --all` flags.
 ///
 /// These flags add LLM-optimized output modes to the help system:
@@ -175,7 +178,7 @@ fn help_with_unknown_topic_still_fails() {
         .args(["help", "nonexistent-command"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("unknown help topic"));
+        .stderr(predicate::str::contains("unknown help topic"));
 }
 
 #[test]

@@ -251,6 +251,8 @@ fn load_open_snapshots_tolerant(root: &Path) -> Result<Vec<StorySnapshot>, AppEr
     Ok(stories)
 }
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#[allow(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;

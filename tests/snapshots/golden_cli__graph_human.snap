@@ -1,0 +1,43 @@
+---
+source: tests/golden_cli.rs
+---
+$ story graph
+open stories: 11
+dependency edges: 4
+roots (no predecessors): SH-1, SH-10, SH-11, SH-12, SH-2, SH-4, SH-5, SH-6, SH-7
+leaves (no successors): SH-1, SH-10, SH-11, SH-12, SH-3, SH-4, SH-6, SH-7, SH-9
+critical path (2 stories):
+  SH-5 -> SH-9
+parallel groups: 9
+  group 1: SH-1
+  group 2: SH-10
+  group 3: SH-11
+  group 4: SH-12
+  group 5: SH-2, SH-3
+  group 6: SH-4
+  group 7: SH-5, SH-9
+  group 8: SH-6
+  group 9: SH-7
+
+$ story graph --critical-path
+critical path (2 stories):
+  SH-5 -> SH-9
+
+$ story graph --blocked-by SH-5
+blocked by SH-5 (1 stories):
+  SH-9
+
+$ story graph --blocked-by SH-1
+nothing is blocked by SH-1
+
+$ story graph --parallel-groups
+parallel groups: 9
+  group 1: SH-1
+  group 2: SH-10
+  group 3: SH-11
+  group 4: SH-12
+  group 5: SH-2, SH-3
+  group 6: SH-4
+  group 7: SH-5, SH-9
+  group 8: SH-6
+  group 9: SH-7

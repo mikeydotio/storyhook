@@ -7,3 +7,8 @@
 
 # issue per-issue git worktrees (ephemeral — never commit)
 .claude/worktrees/
+
+# insta's pending-snapshot scratch files. `make test` pins INSTA_UPDATE=no so
+# the gate never writes these, but a bare `cargo test` still does, and a
+# committed .snap.new is an un-reviewed contract change waiting to be accepted.
+*.snap.new

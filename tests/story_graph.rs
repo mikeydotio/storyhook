@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
@@ -154,5 +157,5 @@ fn graph_blocked_by_nonexistent() {
         .args(["graph", "--blocked-by", "SH-999"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("not found"));
+        .stderr(predicate::str::contains("not found"));
 }

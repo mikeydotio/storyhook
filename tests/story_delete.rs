@@ -8,6 +8,9 @@
 //! `deleted_reason` on the snapshot, and makes `story reopen` a guarded
 //! undelete for soft-deleted stories.
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::Connection;
@@ -250,7 +253,7 @@ fn reopen_deleted_story_without_force_fails_and_stays_closed() {
         .args(["reopen", "SH-1"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("--force"));
+        .stderr(predicate::str::contains("--force"));
 
     // Still closed/deleted — the failed attempt must not have partially
     // mutated anything.

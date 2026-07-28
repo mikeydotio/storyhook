@@ -1,0 +1,5 @@
+---
+source: tests/golden_cli.rs
+---
+$ story doctor
+no integrity issues found

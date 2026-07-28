@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::str::contains;
 use tempfile::tempdir;
@@ -22,7 +25,7 @@ fn unknown_command_returns_clear_error() {
         .args(["frobnicate"])
         .assert()
         .code(2)
-        .stdout(contains("unknown command `frobnicate`"));
+        .stderr(contains("unknown command `frobnicate`"));
 }
 
 #[test]
@@ -32,5 +35,5 @@ fn unknown_command_with_hyphen_not_story_id() {
         .args(["mcp-config-old"])
         .assert()
         .code(2)
-        .stdout(contains("unknown command"));
+        .stderr(contains("unknown command"));
 }

@@ -1,0 +1,147 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story phase list --json",
+    "stdout": {
+      "phases": [
+        {
+          "blocked": 1,
+          "done": 0,
+          "in_progress": 0,
+          "phase": "1",
+          "story_ids": [
+            "SH-2",
+            "SH-3"
+          ],
+          "title": null,
+          "todo": 1,
+          "total": 2
+        },
+        {
+          "blocked": 1,
+          "done": 0,
+          "in_progress": 0,
+          "phase": "2",
+          "story_ids": [
+            "SH-9"
+          ],
+          "title": null,
+          "todo": 0,
+          "total": 1
+        }
+      ],
+      "result": "ok"
+    }
+  },
+  {
+    "argv": "story phase show 1 --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "assignee": "ada-lovelace",
+            "awaiting": null,
+            "comments": [
+              {
+                "at": "[timestamp]",
+                "text": "Trait shape settled: one method per verb."
+              }
+            ],
+            "created_at": "[timestamp]",
+            "id": "SH-2",
+            "labels": [
+              "api",
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-3",
+                "relation": "blocks"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Define the Store trait",
+            "updated_at": "[timestamp]"
+          }
+        },
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-3",
+            "labels": [
+              "backend",
+              "phase:1"
+            ],
+            "priority": "high",
+            "relationships": [
+              {
+                "other_id": "SH-2",
+                "relation": "blocked-by"
+              },
+              {
+                "other_id": "SH-1",
+                "relation": "child-of"
+              }
+            ],
+            "state": "in-progress",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Implement the SQLite engine",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story phase show 2 --json",
+    "stdout": {
+      "result": "ok",
+      "stories": [
+        {
+          "story": {
+            "awaiting": null,
+            "comments": [],
+            "created_at": "[timestamp]",
+            "id": "SH-9",
+            "labels": [
+              "phase:2"
+            ],
+            "priority": "medium",
+            "relationships": [
+              {
+                "other_id": "SH-5",
+                "relation": "blocked-by"
+              }
+            ],
+            "state": "todo",
+            "story_type": "story",
+            "superstate": "OPEN",
+            "title": "Add the daemon transport",
+            "updated_at": "[timestamp]"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "argv": "story phase show 9 --json",
+    "stdout": {
+      "result": "ok",
+      "stories": []
+    }
+  }
+]

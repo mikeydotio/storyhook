@@ -1,0 +1,48 @@
+//! Shared integration-test harness for storyhook.
+//!
+//! Every one of storyhook's integration-test binaries used to declare its own
+//! `fn story(dir)`, its own temp-directory helper, and its own idea of how
+//! isolated a test needs to be. Thirty-four copies of the same four lines is
+//! not merely repetitive: it is thirty-four places that have to be found and
+//! corrected when the isolation contract changes, and the data-layer
+//! rearchitecture changes it — storyhook is moving from per-project
+//! `.storyhook/` directories to a single global store, and on the day that
+//! lands, every test that was not isolating `$HOME` and the XDG directories
+//! starts writing into the developer's real data.
+//!
+//! So the contract lives here, in one crate that compiles once:
+//!
+//! - [`TestEnv`] — a private `HOME`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`,
+//!   `XDG_STATE_HOME` and `STORYHOOK_DATA_DIR`, applied to every command it
+//!   builds, whether or not today's code reads them.
+//! - [`ProjectBuilder`] — storyhook project fixtures, from a bare initialized
+//!   directory up to a git repo with a local origin and a linked worktree.
+//! - [`scratch_dir`] — fixture directories outside the Spotlight-indexed
+//!   `$TMPDIR` (SH-53). `clippy.toml` bans the alternatives.
+//! - [`serve`] and friends — dashboard servers that cannot be handed a port
+//!   somebody else holds, and cannot outlive the test that started them
+//!   (SH-51).
+//!
+//! # Using it
+//!
+//! ```no_run
+//! use storyhook_test_support::TestEnv;
+//!
+//! let env = TestEnv::shared();
+//! let project = env.project().prefix("TST").build();
+//! let id = project.new_story("something to do");
+//! project.run(&["move", &id, "in-progress"]).success();
+//! ```
+
+mod env;
+mod project;
+mod scratch;
+mod server;
+
+pub use env::{TestEnv, story_binary};
+pub use project::{Project, ProjectBuilder};
+pub use scratch::{scratch_dir, scratch_dir_named, scratch_root};
+pub use server::{
+    ChildGuard, DaemonGuard, http_status_line, reserve_port, serve, try_serve_on, wait_for_addr,
+    wait_for_server,
+};

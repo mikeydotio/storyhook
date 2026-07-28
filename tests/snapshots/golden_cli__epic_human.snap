@@ -1,0 +1,19 @@
+---
+source: tests/golden_cli.rs
+---
+$ story epic list
+SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
+
+$ story epic show SH-1
+SH-1 Design the storage engine
+state: todo (OPEN)
+assignee: -
+priority: critical
+type: epic
+labels: -
+flagged: no
+relationships:
+- parent-of SH-2
+- parent-of SH-3
+- parent-of SH-4
+progress: 0/3 children done (0%)

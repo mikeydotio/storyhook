@@ -1,0 +1,47 @@
+---
+source: tests/golden_cli.rs
+---
+$ story next
+SH-5 Fix the id collision across worktrees
+state: todo (OPEN)
+assignee: grace-hopper
+priority: critical
+type: bug
+labels: defect
+flagged: no
+relationships:
+- blocks SH-9
+comments:
+- [timestamp] Reproduced with two linked worktrees.
+- [timestamp] Root cause is the committed next-id counter.
+
+$ story next --count 3
+SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
+SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
+SH-12 [todo] (high) [story] Harden concurrent writes
+
+$ story next --count 99
+SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
+SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
+SH-12 [todo] (high) [story] Harden concurrent writes
+SH-4 [review] (medium) [task] Write the migration runner [backend]
+SH-10 [todo] (medium) [task] Ship the CLI shim
+SH-11 [todo] (low) [task] Audit error codes
+SH-7 [todo] [chore] Document the data layer
+
+$ story next --phase 1
+SH-2 Define the Store trait
+state: todo (OPEN)
+assignee: ada-lovelace
+priority: high
+type: story
+labels: api, backend, phase:1
+flagged: no
+relationships:
+- blocks SH-3
+- child-of SH-1
+comments:
+- [timestamp] Trait shape settled: one method per verb.
+
+$ story next --phase 9
+no ready stories

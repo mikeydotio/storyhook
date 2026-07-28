@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
@@ -141,7 +144,7 @@ fn sync_git_not_a_git_repo() {
         .assert()
         .failure()
         .code(2)
-        .stdout(predicate::str::contains("not a git repository"));
+        .stderr(predicate::str::contains("not a git repository"));
 }
 
 #[test]

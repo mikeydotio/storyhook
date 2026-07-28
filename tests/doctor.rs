@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
@@ -42,7 +45,7 @@ fn doctor_reports_missing_inverse_edge() {
         .arg("doctor")
         .assert()
         .code(5)
-        .stdout(contains("missing inverse relation"));
+        .stderr(contains("missing inverse relation"));
 }
 
 #[test]
@@ -93,7 +96,7 @@ fn doctor_reports_parent_cycle_and_show_suppresses_virtual_relationships() {
         .arg("doctor")
         .assert()
         .code(5)
-        .stdout(contains("parent/child cycle detected"));
+        .stderr(contains("parent/child cycle detected"));
 
     Command::cargo_bin("story")
         .unwrap()
@@ -139,7 +142,7 @@ fn doctor_flags_unknown_story_type() {
         .arg("doctor")
         .assert()
         .code(5)
-        .stdout(contains("unknown type `nonexistent-type`"));
+        .stderr(contains("unknown type `nonexistent-type`"));
 }
 
 #[test]

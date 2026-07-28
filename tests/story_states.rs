@@ -1,6 +1,9 @@
 //! `story state list|add|set|remove|reorder` — the CLI half of per-repo
 //! status configuration (SH-41).
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
@@ -142,7 +145,7 @@ fn state_add_rejects_an_invalid_slug() {
         .args(["state", "add", "In Review", "--super", "OPEN"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("invalid state slug"));
+        .stderr(predicate::str::contains("invalid state slug"));
 }
 
 #[test]
@@ -154,7 +157,7 @@ fn state_add_rejects_an_invalid_superstate() {
         .args(["state", "add", "review", "--super", "MAYBE"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("OPEN or CLOSED"));
+        .stderr(predicate::str::contains("OPEN or CLOSED"));
 }
 
 #[test]
@@ -166,7 +169,7 @@ fn state_add_requires_a_superstate() {
         .args(["state", "add", "review"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("usage: story state add"));
+        .stderr(predicate::str::contains("usage: story state add"));
 }
 
 // ============================================================
@@ -219,7 +222,7 @@ fn state_set_rejects_a_second_active_role() {
         .args(["state", "set", "todo", "--role", "active"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("only one state may have role"));
+        .stderr(predicate::str::contains("only one state may have role"));
 }
 
 #[test]
@@ -238,7 +241,7 @@ fn state_set_rejects_contradictory_description_flags() {
         ])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("contradict"));
+        .stderr(predicate::str::contains("contradict"));
 }
 
 #[test]
@@ -250,7 +253,7 @@ fn state_set_rejects_an_empty_change_set() {
         .args(["state", "set", "todo"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("nothing to change"));
+        .stderr(predicate::str::contains("nothing to change"));
 }
 
 #[test]
@@ -266,8 +269,8 @@ fn state_set_superstate_requires_a_destination_when_occupied() {
         .args(["state", "set", "todo", "--super", "CLOSED"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("1 open story"))
-        .stdout(predicate::str::contains("in-progress"));
+        .stderr(predicate::str::contains("1 open story"))
+        .stderr(predicate::str::contains("in-progress"));
 
     // Refused edits change nothing.
     story(dir.path())
@@ -335,7 +338,7 @@ fn state_remove_requires_a_destination_when_occupied() {
         .args(["state", "remove", "todo"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("1 open story"));
+        .stderr(predicate::str::contains("1 open story"));
 }
 
 #[test]
@@ -388,7 +391,7 @@ fn state_remove_refuses_a_state_with_archived_history() {
         .args(["state", "remove", "cancelled", "--move-stories-to", "todo"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("1 archived story"));
+        .stderr(predicate::str::contains("1 archived story"));
 }
 
 /// Removing the only CLOSED state fails on the structural rule first — a
@@ -411,7 +414,7 @@ fn state_remove_reports_the_structural_rule_before_story_counts() {
         .args(["state", "remove", "done"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("at least one OPEN state"));
+        .stderr(predicate::str::contains("at least one OPEN state"));
 }
 
 #[test]
@@ -423,7 +426,7 @@ fn state_remove_refuses_the_last_closed_state() {
         .args(["state", "remove", "done"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("at least one OPEN state"));
+        .stderr(predicate::str::contains("at least one OPEN state"));
 }
 
 // ============================================================
@@ -478,7 +481,7 @@ fn state_reorder_rejects_a_partial_order() {
         .args(["state", "reorder", "todo,done"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("must list every state"));
+        .stderr(predicate::str::contains("must list every state"));
 }
 
 #[test]
@@ -490,7 +493,7 @@ fn state_reorder_rejects_unknown_slugs() {
         .args(["state", "reorder", "todo,in-progress,done,nope"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("`nope` not found"));
+        .stderr(predicate::str::contains("`nope` not found"));
 }
 
 #[test]
@@ -502,7 +505,7 @@ fn state_reorder_requires_an_order() {
         .args(["state", "reorder"])
         .assert()
         .failure()
-        .stdout(predicate::str::contains("usage: story state reorder"));
+        .stderr(predicate::str::contains("usage: story state reorder"));
 }
 
 // ============================================================
@@ -518,7 +521,7 @@ fn state_without_a_subcommand_shows_usage() {
         .arg("state")
         .assert()
         .failure()
-        .stdout(predicate::str::contains("usage: story state list"));
+        .stderr(predicate::str::contains("usage: story state list"));
 }
 
 #[test]

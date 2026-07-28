@@ -10,7 +10,7 @@ use std::path::Path;
 
 use storyhook::error::AppError;
 use storyhook::registry::{self, RegisteredRepo, Registry};
-use tempfile::tempdir;
+use storyhook_test_support::scratch_dir;
 
 /// Initializes a real storyhook project at `dir` so it passes the
 /// `storage::ensure_project` check `Registry::register` performs.
@@ -22,7 +22,7 @@ fn init_project(dir: &Path) {
 
 #[test]
 fn load_from_missing_path_returns_empty_registry() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let path = dir.path().join("registry.toml");
 
     let registry = Registry::load_from(&path).unwrap();
@@ -32,7 +32,7 @@ fn load_from_missing_path_returns_empty_registry() {
 
 #[test]
 fn save_then_load_roundtrips() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let registry_path = dir.path().join("registry.toml");
     let project_dir = dir.path().join("proj");
     std::fs::create_dir_all(&project_dir).unwrap();
@@ -53,7 +53,7 @@ fn save_then_load_roundtrips() {
 
 #[test]
 fn register_valid_project_succeeds() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let project_dir = dir.path().join("my-app");
     std::fs::create_dir_all(&project_dir).unwrap();
     init_project(&project_dir);
@@ -69,7 +69,7 @@ fn register_valid_project_succeeds() {
 
 #[test]
 fn register_accepts_explicit_name_override() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let project_dir = dir.path().join("my-app");
     std::fs::create_dir_all(&project_dir).unwrap();
     init_project(&project_dir);
@@ -86,7 +86,7 @@ fn register_accepts_explicit_name_override() {
 
 #[test]
 fn register_non_project_directory_fails() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let not_a_project = dir.path().join("empty-dir");
     std::fs::create_dir_all(&not_a_project).unwrap();
 
@@ -99,7 +99,7 @@ fn register_non_project_directory_fails() {
 
 #[test]
 fn register_nonexistent_path_fails() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let missing = dir.path().join("does-not-exist");
 
     let mut registry = Registry::load_from(&dir.path().join("registry.toml")).unwrap();
@@ -110,7 +110,7 @@ fn register_nonexistent_path_fails() {
 
 #[test]
 fn register_duplicate_path_is_rejected() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let project_dir = dir.path().join("my-app");
     std::fs::create_dir_all(&project_dir).unwrap();
     init_project(&project_dir);
@@ -129,7 +129,7 @@ fn register_duplicate_path_is_rejected() {
 
 #[test]
 fn register_same_basename_different_paths_mints_unique_ids() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let parent_a = dir.path().join("a");
     let parent_b = dir.path().join("b");
     let project_a = parent_a.join("app");
@@ -150,7 +150,7 @@ fn register_same_basename_different_paths_mints_unique_ids() {
 
 #[test]
 fn register_slugifies_non_alphanumeric_basenames() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let project_dir = dir.path().join("My Cool App!!");
     std::fs::create_dir_all(&project_dir).unwrap();
     init_project(&project_dir);
@@ -166,7 +166,7 @@ fn register_slugifies_non_alphanumeric_basenames() {
 
 #[test]
 fn deregister_by_id_removes_entry() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let project_dir = dir.path().join("my-app");
     std::fs::create_dir_all(&project_dir).unwrap();
     init_project(&project_dir);
@@ -181,7 +181,7 @@ fn deregister_by_id_removes_entry() {
 
 #[test]
 fn deregister_by_path_removes_entry() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let project_dir = dir.path().join("my-app");
     std::fs::create_dir_all(&project_dir).unwrap();
     init_project(&project_dir);
@@ -197,7 +197,7 @@ fn deregister_by_path_removes_entry() {
 
 #[test]
 fn deregister_unknown_target_fails() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let mut registry = Registry::load_from(&dir.path().join("registry.toml")).unwrap();
 
     let err = registry.deregister("does-not-exist").unwrap_err();
@@ -208,7 +208,7 @@ fn deregister_unknown_target_fails() {
 fn deregister_does_not_touch_the_registered_repos_files() {
     // Deregistering is a registry-only operation; it must never delete or
     // modify the target repo's own .storyhook/ directory.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let project_dir = dir.path().join("my-app");
     std::fs::create_dir_all(&project_dir).unwrap();
     init_project(&project_dir);
@@ -224,7 +224,7 @@ fn deregister_does_not_touch_the_registered_repos_files() {
 
 #[test]
 fn find_returns_registered_repo_by_id() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let project_dir = dir.path().join("my-app");
     std::fs::create_dir_all(&project_dir).unwrap();
     init_project(&project_dir);
@@ -238,7 +238,7 @@ fn find_returns_registered_repo_by_id() {
 
 #[test]
 fn find_returns_none_for_unknown_id() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let registry = Registry::load_from(&dir.path().join("registry.toml")).unwrap();
     assert!(registry.find("nope").is_none());
 }
@@ -248,7 +248,7 @@ fn find_returns_none_for_unknown_id() {
 
 #[test]
 fn with_lock_at_persists_successful_mutation() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let registry_path = dir.path().join("registry.toml");
     let project_dir = dir.path().join("my-app");
     std::fs::create_dir_all(&project_dir).unwrap();
@@ -264,7 +264,7 @@ fn with_lock_at_persists_successful_mutation() {
 
 #[test]
 fn with_lock_at_does_not_persist_a_failed_mutation() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let registry_path = dir.path().join("registry.toml");
     let not_a_project = dir.path().join("empty-dir");
     std::fs::create_dir_all(&not_a_project).unwrap();
@@ -280,7 +280,7 @@ fn with_lock_at_does_not_persist_a_failed_mutation() {
 
 #[test]
 fn with_lock_at_serializes_concurrent_registrations() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let registry_path = dir.path().join("registry.toml");
 
     let project_dirs: Vec<_> = (0..8)

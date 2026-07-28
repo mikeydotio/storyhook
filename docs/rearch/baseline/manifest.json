@@ -1,0 +1,88 @@
+{
+  "captured_at": "2026-07-28T15:49:31Z",
+  "generator": "scripts/capture-baseline.sh",
+  "machine": {
+    "host": "Psamathe",
+    "os": "Darwin 26.5.2",
+    "arch": "arm64",
+    "cpu": "Apple M1 Max",
+    "cores": 10,
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)"
+  },
+  "source": {
+    "commit": "4179f48a5b89c41bca0b190710b2a50dd6e67d8f",
+    "branch": "rearch/w0-gate-repair",
+    "tree_state": "clean"
+  },
+  "inventory": {
+    "test_binaries": 52,
+    "rust_tests": 1171,
+    "rust_ignored": 2,
+    "doctests": 1,
+    "bash_test_files": 16
+  },
+  "legacy_tree": {
+    "files": 26,
+    "uncompressed_bytes": 222093
+  },
+  "census": {
+    "runs": 10,
+    "green": 10,
+    "red": 0,
+    "tests_not_clean_in_every_run": 0
+  },
+  "timing_runs": 3,
+  "artifacts": [
+    {
+      "file": "archive-schema.sql",
+      "bytes": 1286,
+      "sha256": "3eb4cdc450bf04f1142dd4b5bb5fa43be3b4c3d8cfa95affdc9a66987e04efa3"
+    },
+    {
+      "file": "error-codes.md",
+      "bytes": 3743,
+      "sha256": "3e0c16d8cc4c19c0ec53d4fd7456265b768292aa3fde03f885ea54608bcbf403"
+    },
+    {
+      "file": "flake-census.md",
+      "bytes": 2573,
+      "sha256": "3da46ee22129682034f8d2fddacbc6a37dec3caef92546c4c10653856e7659c9"
+    },
+    {
+      "file": "golden-export.json",
+      "bytes": 150228,
+      "sha256": "b8b728886a2653d10f1af2353f36b0ca8580787c880351f3875f91afc0a0e27d"
+    },
+    {
+      "file": "known-red.md",
+      "bytes": 1688,
+      "sha256": "041e2ce62e6f0d1fd611a7accd1844b6800313b5f44460c05ca6852a746dc7f6"
+    },
+    {
+      "file": "legacy-tree.tar.gz",
+      "bytes": 39761,
+      "sha256": "d646a53a175813ea0a70f83bee2941a5d7573f9fc112b9ba06239b0db05ccb25"
+    },
+    {
+      "file": "legacy-tree.txt",
+      "bytes": 4172,
+      "sha256": "7dc42737947f77b84a2ec987e857dc4e4d9a0ed6f6e16397e09353f583ed19c6"
+    },
+    {
+      "file": "test-inventory.txt",
+      "bytes": 57777,
+      "sha256": "b7795f8f24aad547e6475f5dca47b53d85e6126e8093090706785f27edf25be2"
+    },
+    {
+      "file": "timings.json",
+      "bytes": 12055,
+      "sha256": "9521f1669f6234091c0c649f856755368fddf9f559595f259480ecd4d30eac09"
+    },
+    {
+      "file": "timings.md",
+      "bytes": 5892,
+      "sha256": "aa126dfb840b5a1df465bf614ce24c3b50b400946eb6a8f11caea1ad910a1a1b"
+    }
+  ]
+}

@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 /// Tests for the session-start.sh hook used by Claude Code.
 ///
 /// The hook at plugin/claude-code/hooks/session-start.sh reads stdin JSON
