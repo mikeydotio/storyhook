@@ -28,6 +28,7 @@
 //! `story`, which needs a second connection to the same database, and holding
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
+pub mod config;
 pub mod project;
 pub mod relation;
 pub mod story;
@@ -45,6 +46,7 @@ use crate::store::{
     partition_known,
 };
 
+pub use config::{ConfigService, StateEdit, StateListing};
 pub use project::{InitOptions, InitOutcome, ProjectPointer, ProjectService};
 pub use relation::{RelationOutcome, RelationService};
 pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
@@ -268,6 +270,29 @@ pub(crate) fn append_and_fold(
     events: &[StoryEvent],
 ) -> Result<StorySnapshot, AppError> {
     let head = tx.append_events(project, story, expected, events)?;
+    let stored = tx.events_for(project, story)?;
+    let (known, _unknown) = partition_known(story, &stored);
+    let snapshot = fold_story(&story.to_id(prefix), &known, states)?;
+    tx.put_story(project, &snapshot, head)?;
+    Ok(snapshot)
+}
+
+/// Re-derives one story's read model from the history it already has.
+///
+/// [`append_and_fold`] without the append. There is exactly one reason to
+/// need it: a story's row is a fold of its events *against the project's
+/// state definitions*, so changing a definition can invalidate a row without
+/// anything having happened to that story. Nothing else may use it — a fold
+/// that is not preceded by an append is otherwise a sign that a caller is
+/// papering over a row it should have written correctly the first time.
+pub(crate) fn refold_story(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    story: StoryNo,
+    prefix: &str,
+    states: &BTreeMap<String, StateDef>,
+) -> Result<StorySnapshot, AppError> {
+    let head = tx.head_seq(project, story)?;
     let stored = tx.events_for(project, story)?;
     let (known, _unknown) = partition_known(story, &stored);
     let snapshot = fold_story(&story.to_id(prefix), &known, states)?;
