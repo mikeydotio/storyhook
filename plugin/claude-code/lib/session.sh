@@ -81,11 +81,16 @@ refuse() {
 }
 
 # ---- helpers ----------------------------------------------------------------
-render_template() {  # render_template <template> <id> [<name>]
+render_template() {  # render_template <template> <id> [<name>] [<dir>]
   # <n>    -> the story id (kept as "n" for parity with the agentics original)
   # <name> -> the resolved window/worktree name; empty when not passed.
-  local tpl="$1" n="$2" name="${3:-}"
+  # <dir>  -> the main checkout's absolute path (SH-62's auto charter uses
+  #           this to anchor `story` writes at the tracker that actually holds
+  #           the story — see story.sh's AUTO_PROMPT_TPL); empty when not
+  #           passed, and no other template references it.
+  local tpl="$1" n="$2" name="${3:-}" dir="${4:-}"
   tpl="${tpl//<name>/$name}"
+  tpl="${tpl//<dir>/$dir}"
   printf '%s' "${tpl//<n>/$n}"
 }
 
