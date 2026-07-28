@@ -19,7 +19,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 phase="${1:-check}"
 
-orphans="$(pgrep -f "${repo_root}/target/debug/(deps/web_test-|story web --serve)" || true)"
+orphans="$(pgrep -f "${repo_root}/target/debug/(deps/(web_test|storyhook_test_support)-|story web --serve)" || true)"
 
 if [ -z "$orphans" ]; then
   exit 0
