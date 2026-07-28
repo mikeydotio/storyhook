@@ -120,7 +120,7 @@ run `/story-install` and the plugin will install and verify the CLI for you.
 | `/story <id>` | Shows the story, then offers to start work on it |
 | `/story new <description>` | Interrogates you, drafts the story, files it after you confirm |
 | `/story view <id>` | Prints the story and its comments, then stops |
-| `/story do <id>` | Claims a **ready** story and dispatches it to a fresh plan-mode Claude session in a new tmux window rooted in a per-story git worktree |
+| `/story do <id> [--auto]` | Claims a **ready** story and dispatches it to a fresh plan-mode Claude session in a new tmux window rooted in a per-story git worktree |
 | `/story complete <id>` | Closes the story and reclaims its worktree and merged branch, after showing you a plan and asking |
 | `/story capture <id>` | Dumps the recent output of a dispatched session's window (read-only) |
 | `/story doctor` | Checks project data integrity, and whether this Claude build's readiness and paste behavior is still recognised |
@@ -128,6 +128,13 @@ run `/story-install` and the plugin will install and verify the CLI for you.
 `do`, `capture`, and `doctor` need tmux. `do` refuses a story that isn't ready —
 closed, blocked, awaiting, obviated, or already in progress — and names the
 reason rather than dispatching it.
+
+`--auto` keeps plan approval as the *only* human interaction: choose
+auto-accept edits when you approve, and the session runs to completion on its
+own — resolving open questions by `/council-vote`, running the full test
+suite, merging its own PR with a merge commit, and closing the story if the
+work is genuinely done (or blocking it and stopping on a hard stop, such as
+red tests or a failed merge, that a vote can't resolve).
 
 `complete` is conservative by design. It never deletes an unmerged branch, never
 removes a dirty, locked, or current worktree, and never touches `main` or the
