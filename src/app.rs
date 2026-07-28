@@ -980,7 +980,11 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             storage::ensure_project(root)?;
             let export = storage::export_project(root)?;
             let json = serde_json::to_string_pretty(&export)?;
-            Ok(Response::Message(json))
+            // `RawJson`, not `Message`: the export document *is* the result, so
+            // the `--json` envelope has nothing to add and wrapping it as an
+            // escaped string makes `story import-project` reject it. See
+            // `tests/story_export.rs::export_json_flag_emits_the_document_itself`.
+            Ok(Response::RawJson(json))
         }
         Invocation::ImportProject { file } => lock::with_project_lock(root, || {
             let input = std::fs::read_to_string(&file)
