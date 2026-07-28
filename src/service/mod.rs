@@ -28,6 +28,7 @@
 //! `story`, which needs a second connection to the same database, and holding
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
+pub mod relation;
 pub mod story;
 pub mod view;
 
@@ -42,6 +43,7 @@ use crate::store::{
     partition_known,
 };
 
+pub use relation::{RelationOutcome, RelationService};
 pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
 
 /// Where a service reads "now" from.

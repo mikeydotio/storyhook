@@ -18,7 +18,9 @@ use crate::app;
 use crate::cli::{CliOptions, Invocation};
 use crate::error::AppError;
 use crate::output::Response;
-use crate::service::{Ctx, FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
+use crate::service::{
+    Ctx, FieldEdits, NewStoryInput, RelationOutcome, RelationService, ReopenOutcome, StoryService,
+};
 use crate::store::Store;
 
 /// One unit of work for an [`Invoker`]: the command, plus the execution
@@ -223,6 +225,18 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         Invocation::Reopen { id, force } => match StoryService::new(ctx).reopen(&id, force)? {
             ReopenOutcome::Reopened(_) => ctx.story_view(&id),
             ReopenOutcome::Aborted(message) => Ok(Response::Message(message)),
+        },
+        Invocation::Relate {
+            a,
+            relation,
+            b,
+            remove,
+        } => match RelationService::new(ctx).relate(&a, &relation, &b, remove)? {
+            RelationOutcome::Changed(_) => ctx.story_view(&a),
+            RelationOutcome::Unchanged { remove } => Ok(Response::Message(format!(
+                "no changes; relationship already {}",
+                if remove { "removed" } else { "added" }
+            ))),
         },
         other => Err(not_yet_ported(&other)),
     }
