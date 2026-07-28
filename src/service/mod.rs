@@ -37,6 +37,7 @@ pub mod relation;
 pub mod story;
 pub mod system;
 pub mod templates;
+pub mod transfer;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -57,6 +58,7 @@ pub use query::{ListFilters, QueryService};
 pub use relation::{RelationOutcome, RelationService};
 pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
 pub use system::SystemService;
+pub use transfer::{ImportBatch, TransferService};
 
 /// Where a service reads "now" from.
 ///

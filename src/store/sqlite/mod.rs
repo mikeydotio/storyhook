@@ -550,6 +550,10 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::allocate_story_no(&self.conn, project)
     }
 
+    fn reserve_story_no(&mut self, project: ProjectId, highest: StoryNo) -> Result<(), StoreError> {
+        write::reserve_story_no(&self.conn, project, highest)
+    }
+
     fn append_events(
         &mut self,
         project: ProjectId,
