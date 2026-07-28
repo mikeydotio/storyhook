@@ -16,7 +16,7 @@
 
 | Wave | Branch/PR | Status |
 |---|---|---|
-| W0 gate repair + harness | `rearch/w0-gate-repair` | **IN PROGRESS** — step W0.3 next |
+| W0 gate repair + harness | `rearch/w0-gate-repair` | **IN PROGRESS** — step W0.4 next |
 | W0b envelope + Invoker seam | — | pending (after W0) |
 | W1 store engine | — | pending |
 | W2a/b/c/d services | — | pending |
@@ -37,9 +37,9 @@
   scratch_dir, server/daemon helpers), clippy `$TMPDIR` ban, 3 proof files migrated,
   bash suite data-home isolation: `877c31f`, `a170106`, `c444313`, `f4eefe1`, `ca2b4a7`.
   See Step log for the API surface W0.3 builds on.
-- **W0.3** — RED `two_worktrees_mint_colliding_ids`; insta golden CLI corpus (~200 invocations,
-  ≥12-story fixture, timestamp redactions, INSTA_UPDATE=no in gate); error-code table;
-  export-idempotency tests.
+- **W0.3 DONE** — RED worktree pair (ignored, W4's exit criterion), insta golden CLI corpus
+  (177 invocations / 27 snapshots), error-code table (all 10 variants), byte-identical export
+  round-trip: `9aa8df1`, `b7539f3`, plus this commit. See Step log.
 - **W0.4** — baseline capture: committed script → docs/rearch/baseline/ (test-name inventory,
   3-run median timings, golden export + legacy tarball of this repo's .storyhook, archive.db
   schema snapshot as "version 0", known-red list); 10-run flake census.
@@ -69,6 +69,26 @@
 - **Second finding, unfixed, needs a story:** positional-taking verbs still swallow unknown
   `--flags` as data (`story new --typo x` creates a story titled `--typo x`). Same shape as
   SH-52, different defect; SH-52's fix covers help flags only.
+- **W0.3 finding #1, unfixed, needs a story — `story next` is NONDETERMINISTIC.** The
+  ready-list comparator is `priority ASC, then created_at ASC` (`src/app.rs:302`, repeated at
+  335/664/1033/2326) but `created_at` has **second** precision. Stories created within one
+  second tie on *both* keys; the stable sort then falls back to the order the story files
+  happened to be read in, so `story next`, `story summary`, `story context` and `story handoff`
+  return **different orderings for identical input**. Found the hard way: the golden corpus
+  flaked ~1 run in 3 with SH-2 and SH-12 (both `high`) swapping places. This is a production
+  defect, not a test artifact — an agent asking `story next` twice can get two different
+  stories. `tests/golden_cli.rs` works around it with one `>=1s` sleep placed so that every
+  same-priority ready PAIR straddles it (no tie can then form within either half); the sleep
+  goes away when the comparator gets a total order.
+- **W0.3 finding #2, unfixed, needs a story:** id ordering is inconsistent across commands.
+  `list`, `search`, `epic list` and `phase show` sort NUMERICALLY (`sort_story_views` →
+  `numeric_story_id`, `src/app.rs:2652`); `graph`, `handoff`, `context` and `summary`'s ready
+  list sort LEXICOGRAPHICALLY (`SH-1, SH-10, SH-11, SH-12, SH-2, …`). Frozen as-is in the
+  corpus with a `// KNOWN-DEFECT:` comment — the 14-story fixture exists to make it visible.
+- **W0.3 finding #3, needs a story (or a deletion):** `AppError::SyncConflict` (exit 8) is a
+  **dead variant** — constructed nowhere in `src/`; only `web.rs:161` maps it to HTTP 409.
+  `tests/error_contract.rs` lists it in `UNREACHABLE` and covers its exit code at the enum
+  level; if a CLI path ever raises it, it needs a real row.
 - **The harness lives in `crates/storyhook-test-support/` (W0.2).** `storyhook` is both the
   workspace root package and a member, so `src/`/`tests/` paths are unchanged. The crate is a
   dev-dependency of `storyhook` AND depends on `storyhook` — cargo permits a cycle through a
@@ -175,6 +195,62 @@
     worktree now resolves *no* tracker where it used to resolve a *different* one. Same
     anchoring property, weaker fixture. Its comment was corrected to say so. **W7 (repo
     cutover) should restore the stronger form** once the global store makes it expressible.
+- 2026-07-28 W0.3: three commits, `make test` green after each; two consecutive green full runs
+  at the end (37.6s, 37.4s warm — the pre-step baseline was ~29.4s, so this step costs ~8s, of
+  which 5s is one unavoidable lock deadline; see below).
+  - `9aa8df1` — `tests/worktree_truth.rs`: the headline RED pair, `#[ignore]`d.
+    **Removing the two `#[ignore]` attributes is W4's exit criterion.** The fixture uses
+    `env.project().git().worktree("a").worktree("b").build()` and then *commits* `.storyhook/`
+    and fast-forwards both worktrees onto that commit — without that step the worktrees resolve
+    no tracker at all (exit 3, "not initialized"), which is a different failure from the
+    silently-divergent one under test; a fixture assertion pins it.
+
+    **Captured red evidence** (`cargo test --workspace --test worktree_truth -- --ignored`):
+
+    ```text
+    ---- two_worktrees_of_one_repo_mint_colliding_ids stdout ----
+    assertion `left != right` failed: two checkouts of one repository must not mint the
+    same story id; both `story new` calls returned SH-2.
+      left: "SH-2"
+     right: "SH-2"
+
+    ---- a_story_created_in_one_checkout_is_visible_from_the_other stdout ----
+    a story created in worktree `a` must be visible from worktree `b` — they are one
+    project. `story show SH-2` in b exited with code 3 and said: error: story `SH-2` not found
+    ```
+
+    They collide at `SH-2`, not `SH-1`, because the fixture seeds one story *before* the
+    split — proof the counters start shared and then drift, rather than never having agreed.
+  - `b7539f3` — `tests/golden_cli.rs` + `tests/snapshots/`: **177 invocations, 27 snapshots,
+    +2.3s.** ~all read-surface commands in human and `--json` form, plus 24 error cases in
+    both. Grouped one snapshot per family per form with each invocation labelled inside
+    (`$ story list --state todo`) — 177 single-invocation files would be unreviewable and a
+    grouped diff still names the invocation that moved. Error snapshots record exit code +
+    stdout + stderr, which pins SH-59's stream ruling. **`INSTA_UPDATE=no` is now in the
+    Makefile's test target**; proved it gates by perturbing a snapshot (run failed, no
+    `.snap.new` written). `*.snap.new` gitignored. **Snapshot tests live in this file only.**
+  - This commit — `tests/error_contract.rs` (all 10 `AppError` variants: exit code, stream
+    placement, envelope key set, in both forms) and `export_import_export_is_byte_identical`
+    in `tests/story_export.rs`. The round trip is **byte-identical with no redaction at all**
+    (import replays stored events verbatim rather than re-stamping them), asserted twice so a
+    first-pass loss cannot hide behind later stability. This is W3's importer oracle.
+
+  Things the next steps should know:
+  - **The error table costs ~5s** and cannot be made cheaper without a production change:
+    `with_project_lock` polls a hard-coded 5s deadline (`src/lock.rs:23`) with no env override,
+    so provoking a real `LockTimeout` takes that long. The two output forms are provoked
+    concurrently so the row is paid once rather than twice (11.1s → 5.9s). If W5 makes the
+    deadline configurable, this drops to ~1s.
+  - `storyhook::lock::with_project_lock` is public, so a test can hold the real lock from its
+    own process; the LockTimeout row uses a channel to prove the lock is *held* before the
+    child starts, rather than hoping.
+  - `AppError` exhaustiveness is enforced by a `match` in `error_contract.rs::variant_name`:
+    an 11th variant stops that file compiling until it is given a row or listed unreachable.
+  - The corpus fixture is built entirely through **public CLI verbs**, deliberately — a fixture
+    built by importing a legacy export document would stop being constructible at the W4 flip.
+  - Three defects the corpus and the table surfaced are in Key facts above (nondeterministic
+    `story next`; lexicographic-vs-numeric id ordering; dead `SyncConflict`). None were fixed:
+    this step ships `test:` commits only.
 
 ## Resume protocol (fresh session)
 
