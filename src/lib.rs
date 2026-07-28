@@ -16,6 +16,7 @@ pub mod output;
 pub mod plugin;
 pub mod registry;
 pub mod storage;
+pub mod store;
 pub mod tui;
 #[cfg(feature = "github-sync")]
 pub mod update;
