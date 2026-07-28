@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use storyhook::app;
-use storyhook::cli::{CliOptions, Invocation};
+use storyhook::cli::{CliOptions, EpicAction, GraphMode, Invocation, PhaseAction, WebAction};
 use storyhook::domain::Member;
 use storyhook::error::{AppError, WireError};
 use storyhook::invoke::dispatch;
@@ -1614,6 +1614,14 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
         "state",
         "type",
         "member-add",
+        "scaffold",
+        "hooks",
+        "plugin",
+        "help",
+        "help-topic",
+        "help-compact",
+        "help-all",
+        "version",
     ];
     let differential = Differential::new();
     let ctx = differential.ctx();
@@ -1636,19 +1644,23 @@ fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
             "`{name}` is on the ported roster but reports itself unported"
         );
     }
-    assert_eq!(ported.len(), 17);
+    // Roster plus probes must account for *every* `Invocation` variant, so an
+    // arm cannot be ported — or added — without appearing on one of the two
+    // lists. 46 is the variant count `wire_envelope.rs` pins independently.
+    assert_eq!(
+        ported.len() + unported_probes().len(),
+        46,
+        "an invocation is on neither the ported roster nor the unported probes"
+    );
+    assert_eq!(ported.len(), 25);
 }
 
 /// One probe per invocation this wave does *not* port.
 fn unported_probes() -> Vec<(&'static str, Invocation)> {
     vec![
-        ("help", Invocation::Help),
         ("summary", Invocation::Summary),
         ("export", Invocation::Export),
-        ("version", Invocation::Version),
         ("session-start", Invocation::SessionStart),
-        ("help-compact", Invocation::HelpCompact),
-        ("help-all", Invocation::HelpAll),
         ("show", Invocation::Show { id: "SH-1".into() }),
         ("search", Invocation::Search { query: "x".into() }),
         ("doctor", Invocation::Doctor { fix: false }),
@@ -1664,10 +1676,58 @@ fn unported_probes() -> Vec<(&'static str, Invocation)> {
         ("handoff", Invocation::Handoff { since: None }),
         ("import", Invocation::Import { file: None }),
         (
+            "list",
+            Invocation::List {
+                state: None,
+                assignee: None,
+                flagged: false,
+                priority: None,
+                label: None,
+                created_after: None,
+                updated_after: None,
+                blocked: false,
+                ready: false,
+                stale: None,
+                phase: None,
+                story_type: None,
+            },
+        ),
+        (
+            "graph",
+            Invocation::Graph {
+                mode: GraphMode::Overview,
+            },
+        ),
+        (
+            "phase",
+            Invocation::Phase {
+                action: PhaseAction::List,
+            },
+        ),
+        (
+            "epic",
+            Invocation::Epic {
+                action: EpicAction::List,
+            },
+        ),
+        (
+            "decompose",
+            Invocation::Decompose {
+                file: None,
+                stdin: false,
+                dry_run: true,
+            },
+        ),
+        (
+            "web",
+            Invocation::Web {
+                action: WebAction::Status,
+            },
+        ),
+        (
             "import-project",
             Invocation::ImportProject { file: "x".into() },
         ),
-        ("scaffold", Invocation::Scaffold { kind: "x".into() }),
         ("commit-sync", Invocation::CommitSync { since: None }),
         (
             "github-sync",
@@ -1676,7 +1736,6 @@ fn unported_probes() -> Vec<(&'static str, Invocation)> {
                 dry_run: true,
             },
         ),
-        ("help-topic", Invocation::HelpTopic { topic: "x".into() }),
         (
             "update",
             Invocation::Update {
