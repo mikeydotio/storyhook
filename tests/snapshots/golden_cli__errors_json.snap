@@ -1,0 +1,170 @@
+---
+source: tests/golden_cli.rs
+---
+$ story no-such-verb --json
+exit: 2
+stdout: 
+{"error":"unknown command `no-such-verb`. Run `story --help` for usage.","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story list --no-such-flag --json
+exit: 2
+stdout: 
+{"error":"usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story list --state --json
+exit: 2
+stdout: 
+{"error":"usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story show --json
+exit: 2
+stdout: 
+{"error":"usage: story show <id>","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story show SH-999 --json
+exit: 3
+stdout: 
+{"error":"story `SH-999` not found","exit_code":3,"result":"error"}
+
+stderr: <empty>
+
+$ story show SH-1 extra --json
+exit: 2
+stdout: 
+{"error":"usage: story show <id>","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story next --count 0 --json
+exit: 2
+stdout: 
+{"error":"--count must be a positive integer","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story next --count many --json
+exit: 2
+stdout: 
+{"error":"--count must be a positive integer","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story search --json
+exit: 2
+stdout: 
+{"error":"usage: story search <query>","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story graph --blocked-by --json
+exit: 2
+stdout: 
+{"error":"usage: story graph --blocked-by <id>","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story graph --no-such-mode --json
+exit: 2
+stdout: 
+{"error":"usage: story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story report --no-such-flag --json
+exit: 2
+stdout: 
+{"error":"usage: story report [--html]","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story context --format --json
+exit: 2
+stdout: 
+{"error":"usage: story load-context [--format markdown|json]","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story handoff --since --json
+exit: 2
+stdout: 
+{"error":"usage: story handoff [--since <duration>]","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story handoff --since 1s --json
+exit: 2
+stdout: 
+{"error":"invalid duration `1s` (use e.g. 2h, 1d, 1w)","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story list --stale 1s --json
+exit: 2
+stdout: 
+{"error":"invalid duration `1s` (use e.g. 2h, 1d, 1w)","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story doctor --no-such-flag --json
+exit: 2
+stdout: 
+{"error":"usage: story doctor [--fix]","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story phase show 0 --json
+exit: 2
+stdout: 
+{"error":"phase must be >= 1","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story phase show not-a-number --json
+exit: 2
+stdout: 
+{"error":"phase must be a positive integer, got `not-a-number`","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story phase no-such-subcommand --json
+exit: 2
+stdout: 
+{"error":"usage: story phase list|show <N>|add <id> <N>|remove <id>|create <N> [\"<title>\"]","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story type no-such-subcommand --json
+exit: 2
+stdout: 
+{"error":"usage: story type list | story type add <slug> [--description \"<text>\"] | story type remove <slug>","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story state no-such-subcommand --json
+exit: 2
+stdout: 
+{"error":"usage: story state list | story state add <slug> --super OPEN|CLOSED | story state set <slug> [...] | story state remove <slug> | story state reorder <slug,...>","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story epic show SH-999 --json
+exit: 3
+stdout: 
+{"error":"story `SH-999` not found","exit_code":3,"result":"error"}
+
+stderr: <empty>
+
+$ story member no-such-subcommand --json
+exit: 2
+stdout: 
+{"error":"usage: story member add \"<name <email>>\" | story member add -g <github-handle>","exit_code":2,"result":"error"}
+
+stderr: <empty>

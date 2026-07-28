@@ -1,0 +1,555 @@
+---
+source: tests/golden_cli.rs
+---
+{
+  "members": [
+    {
+      "created_at": "[timestamp]",
+      "display_name": "Ada Lovelace",
+      "email": "ada@example.com",
+      "id": "ada-lovelace"
+    },
+    {
+      "created_at": "[timestamp]",
+      "display_name": "grace-hopper",
+      "github": "grace-hopper",
+      "id": "grace-hopper"
+    }
+  ],
+  "prefix": null,
+  "schema": 1,
+  "states": [
+    {
+      "slug": "todo",
+      "super": "OPEN"
+    },
+    {
+      "role": "active",
+      "slug": "in-progress",
+      "super": "OPEN"
+    },
+    {
+      "slug": "done",
+      "super": "CLOSED"
+    },
+    {
+      "description": "Awaiting code review",
+      "slug": "review",
+      "super": "OPEN"
+    }
+  ],
+  "stories": [
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Design the storage engine"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "critical"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "epic"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-2",
+          "relation": "parent-of"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-3",
+          "relation": "parent-of"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-4",
+          "relation": "parent-of"
+        }
+      ],
+      "id": "SH-1"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Ship the CLI shim"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "medium"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "task"
+        }
+      ],
+      "id": "SH-10"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Audit error codes"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "low"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "task"
+        }
+      ],
+      "id": "SH-11"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Harden concurrent writes"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "high"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "story"
+        }
+      ],
+      "id": "SH-12"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Define the Store trait"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "high"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryLabelsSet",
+          "labels": [
+            "api",
+            "backend"
+          ]
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "story"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-1",
+          "relation": "child-of"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-3",
+          "relation": "blocks"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryAssigned",
+          "member_id": "ada-lovelace"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCommentAdded",
+          "text": "Trait shape settled: one method per verb."
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryLabelsSet",
+          "labels": [
+            "api",
+            "backend",
+            "phase:1"
+          ]
+        }
+      ],
+      "id": "SH-2"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Implement the SQLite engine"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "high"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryLabelsSet",
+          "labels": [
+            "backend"
+          ]
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "story"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-1",
+          "relation": "child-of"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-2",
+          "relation": "blocked-by"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryLabelsSet",
+          "labels": [
+            "backend",
+            "phase:1"
+          ]
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryStateChanged",
+          "state": "in-progress"
+        }
+      ],
+      "id": "SH-3"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Write the migration runner"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "medium"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryLabelsSet",
+          "labels": [
+            "backend"
+          ]
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "task"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-1",
+          "relation": "child-of"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryStateChanged",
+          "state": "review"
+        }
+      ],
+      "id": "SH-4"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Fix the id collision across worktrees"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "critical"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryLabelsSet",
+          "labels": [
+            "defect"
+          ]
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "bug"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-9",
+          "relation": "blocks"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryAssigned",
+          "member_id": "grace-hopper"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCommentAdded",
+          "text": "Reproduced with two linked worktrees."
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCommentAdded",
+          "text": "Root cause is the committed next-id counter."
+        }
+      ],
+      "id": "SH-5"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Benchmark the rebuild path"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "low"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "spike"
+        },
+        {
+          "at": "[timestamp]",
+          "awaiting": "waiting on the benchmark harness",
+          "kind": "StoryAwaitingSet"
+        }
+      ],
+      "id": "SH-6"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Document the data layer"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "chore"
+        }
+      ],
+      "id": "SH-7"
+    },
+    {
+      "archived": false,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Add the daemon transport"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "medium"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "story"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryRelationshipAdded",
+          "other_id": "SH-5",
+          "relation": "blocked-by"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryLabelsSet",
+          "labels": [
+            "phase:2"
+          ]
+        }
+      ],
+      "id": "SH-9"
+    },
+    {
+      "archived": true,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Old approach: file-per-story"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "low"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "chore"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCommentAdded",
+          "text": "[deleted] superseded by the global store"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryDeleted",
+          "reason": "superseded by the global store"
+        }
+      ],
+      "id": "SH-13"
+    },
+    {
+      "archived": true,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Prototype the archive format"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "medium"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "spike"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryStateChanged",
+          "state": "done"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryClosedAndArchived",
+          "state": "done"
+        }
+      ],
+      "id": "SH-14"
+    },
+    {
+      "archived": true,
+      "events": [
+        {
+          "at": "[timestamp]",
+          "kind": "StoryCreated",
+          "state": "todo",
+          "title": "Retire the JSONL reader"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryPrioritySet",
+          "priority": "low"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryTypeSet",
+          "story_type": "chore"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryStateChanged",
+          "state": "done"
+        },
+        {
+          "at": "[timestamp]",
+          "kind": "StoryClosedAndArchived",
+          "state": "done"
+        }
+      ],
+      "id": "SH-8"
+    }
+  ],
+  "types": [
+    {
+      "description": "A user story or feature",
+      "slug": "story"
+    },
+    {
+      "description": "A large initiative containing child stories",
+      "slug": "epic"
+    },
+    {
+      "description": "A defect or regression",
+      "slug": "bug"
+    },
+    {
+      "description": "Maintenance or infrastructure work",
+      "slug": "chore"
+    },
+    {
+      "description": "A discrete unit of work",
+      "slug": "task"
+    },
+    {
+      "description": "A timeboxed investigation",
+      "slug": "spike"
+    }
+  ]
+}

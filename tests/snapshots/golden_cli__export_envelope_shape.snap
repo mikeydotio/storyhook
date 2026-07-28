@@ -1,0 +1,12 @@
+---
+source: tests/golden_cli.rs
+---
+{
+  "keys": [
+    "message",
+    "result"
+  ],
+  "message_is_a_string": true,
+  "message_parses_as_the_export_document": true,
+  "result": "ok"
+}

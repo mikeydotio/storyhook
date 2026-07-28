@@ -1,0 +1,151 @@
+---
+source: tests/golden_cli.rs
+---
+[
+  {
+    "argv": "story graph --json",
+    "stdout": {
+      "graph": {
+        "critical_path": [
+          "SH-5",
+          "SH-9"
+        ],
+        "overview": {
+          "leaves": [
+            "SH-1",
+            "SH-10",
+            "SH-11",
+            "SH-12",
+            "SH-3",
+            "SH-4",
+            "SH-6",
+            "SH-7",
+            "SH-9"
+          ],
+          "roots": [
+            "SH-1",
+            "SH-10",
+            "SH-11",
+            "SH-12",
+            "SH-2",
+            "SH-4",
+            "SH-5",
+            "SH-6",
+            "SH-7"
+          ],
+          "total_edges": 4,
+          "total_open": 11
+        },
+        "parallel_groups": [
+          [
+            "SH-1"
+          ],
+          [
+            "SH-10"
+          ],
+          [
+            "SH-11"
+          ],
+          [
+            "SH-12"
+          ],
+          [
+            "SH-2",
+            "SH-3"
+          ],
+          [
+            "SH-4"
+          ],
+          [
+            "SH-5",
+            "SH-9"
+          ],
+          [
+            "SH-6"
+          ],
+          [
+            "SH-7"
+          ]
+        ]
+      },
+      "result": "ok"
+    }
+  },
+  {
+    "argv": "story graph --critical-path --json",
+    "stdout": {
+      "graph": {
+        "critical_path": [
+          "SH-5",
+          "SH-9"
+        ]
+      },
+      "result": "ok"
+    }
+  },
+  {
+    "argv": "story graph --blocked-by SH-5 --json",
+    "stdout": {
+      "graph": {
+        "blocked_chain": {
+          "blocked": [
+            "SH-9"
+          ],
+          "source": "SH-5"
+        }
+      },
+      "result": "ok"
+    }
+  },
+  {
+    "argv": "story graph --blocked-by SH-1 --json",
+    "stdout": {
+      "graph": {
+        "blocked_chain": {
+          "blocked": [],
+          "source": "SH-1"
+        }
+      },
+      "result": "ok"
+    }
+  },
+  {
+    "argv": "story graph --parallel-groups --json",
+    "stdout": {
+      "graph": {
+        "parallel_groups": [
+          [
+            "SH-1"
+          ],
+          [
+            "SH-10"
+          ],
+          [
+            "SH-11"
+          ],
+          [
+            "SH-12"
+          ],
+          [
+            "SH-2",
+            "SH-3"
+          ],
+          [
+            "SH-4"
+          ],
+          [
+            "SH-5",
+            "SH-9"
+          ],
+          [
+            "SH-6"
+          ],
+          [
+            "SH-7"
+          ]
+        ]
+      },
+      "result": "ok"
+    }
+  }
+]

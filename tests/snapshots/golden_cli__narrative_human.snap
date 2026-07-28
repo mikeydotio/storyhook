@@ -1,0 +1,212 @@
+---
+source: tests/golden_cli.rs
+---
+$ story context
+# Project Status
+
+Stories: 14 (11 open, 3 closed)
+
+## State Distribution
+
+- done: 2
+- in-progress: 1
+- review: 1
+- todo: 10
+
+## Type Distribution
+
+- bug: 1
+- chore: 3
+- epic: 1
+- spike: 2
+- story: 4
+- task: 3
+
+## Ready to Work (8 total)
+
+- SH-1 Design the storage engine (critical)
+- SH-5 Fix the id collision across worktrees (critical)
+- SH-2 Define the Store trait (high)
+- SH-12 Harden concurrent writes (high)
+- SH-4 Write the migration runner (medium)
+
+## Blocked (3)
+
+- SH-3 Implement the SQLite engine
+- SH-6 Benchmark the rebuild path — awaiting: waiting on the benchmark harness
+- SH-9 Add the daemon transport
+
+## Phase Progress
+
+- Phase 1 -- 0/2 done, 1 in-progress, 1 blocked
+- Phase 2 -- 0/1 done, 1 blocked
+
+
+$ story context --format json
+{
+  "blocked_count": 3,
+  "by_state": {
+    "done": 2,
+    "in-progress": 1,
+    "review": 1,
+    "todo": 10
+  },
+  "by_type": {
+    "bug": 1,
+    "chore": 3,
+    "epic": 1,
+    "spike": 2,
+    "story": 4,
+    "task": 3
+  },
+  "closed": 3,
+  "open": 11,
+  "ready_count": 8,
+  "ready_stories": [
+    {
+      "id": "SH-1",
+      "priority": "critical",
+      "state": "todo",
+      "title": "Design the storage engine"
+    },
+    {
+      "id": "SH-5",
+      "priority": "critical",
+      "state": "todo",
+      "title": "Fix the id collision across worktrees"
+    },
+    {
+      "id": "SH-2",
+      "priority": "high",
+      "state": "todo",
+      "title": "Define the Store trait"
+    },
+    {
+      "id": "SH-12",
+      "priority": "high",
+      "state": "todo",
+      "title": "Harden concurrent writes"
+    },
+    {
+      "id": "SH-4",
+      "priority": "medium",
+      "state": "review",
+      "title": "Write the migration runner"
+    }
+  ],
+  "total_stories": 14
+}
+
+$ story load-context
+# Project Status
+
+Stories: 14 (11 open, 3 closed)
+
+## State Distribution
+
+- done: 2
+- in-progress: 1
+- review: 1
+- todo: 10
+
+## Type Distribution
+
+- bug: 1
+- chore: 3
+- epic: 1
+- spike: 2
+- story: 4
+- task: 3
+
+## Ready to Work (8 total)
+
+- SH-1 Design the storage engine (critical)
+- SH-5 Fix the id collision across worktrees (critical)
+- SH-2 Define the Store trait (high)
+- SH-12 Harden concurrent writes (high)
+- SH-4 Write the migration runner (medium)
+
+## Blocked (3)
+
+- SH-3 Implement the SQLite engine
+- SH-6 Benchmark the rebuild path — awaiting: waiting on the benchmark harness
+- SH-9 Add the daemon transport
+
+## Phase Progress
+
+- Phase 1 -- 0/2 done, 1 in-progress, 1 blocked
+- Phase 2 -- 0/1 done, 1 blocked
+
+
+$ story handoff
+# Session Handoff
+
+## Created (11)
+
+- SH-1 Design the storage engine [todo]
+- SH-10 Ship the CLI shim [todo]
+- SH-11 Audit error codes [todo]
+- SH-12 Harden concurrent writes [todo]
+- SH-2 Define the Store trait [todo]
+- SH-3 Implement the SQLite engine [in-progress]
+- SH-4 Write the migration runner [review]
+- SH-5 Fix the id collision across worktrees [todo]
+- SH-6 Benchmark the rebuild path [todo]
+- SH-7 Document the data layer [todo]
+- SH-9 Add the daemon transport [todo]
+
+## Closed (3)
+
+- SH-13 Old approach: file-per-story [todo]
+- SH-14 Prototype the archive format [done]
+- SH-8 Retire the JSONL reader [done]
+
+
+
+$ story handoff --since 7d
+# Session Handoff
+
+## Created (11)
+
+- SH-1 Design the storage engine [todo]
+- SH-10 Ship the CLI shim [todo]
+- SH-11 Audit error codes [todo]
+- SH-12 Harden concurrent writes [todo]
+- SH-2 Define the Store trait [todo]
+- SH-3 Implement the SQLite engine [in-progress]
+- SH-4 Write the migration runner [review]
+- SH-5 Fix the id collision across worktrees [todo]
+- SH-6 Benchmark the rebuild path [todo]
+- SH-7 Document the data layer [todo]
+- SH-9 Add the daemon transport [todo]
+
+## Closed (3)
+
+- SH-13 Old approach: file-per-story [todo]
+- SH-14 Prototype the archive format [done]
+- SH-8 Retire the JSONL reader [done]
+
+
+
+$ story handoff --since 2h
+# Session Handoff
+
+## Created (11)
+
+- SH-1 Design the storage engine [todo]
+- SH-10 Ship the CLI shim [todo]
+- SH-11 Audit error codes [todo]
+- SH-12 Harden concurrent writes [todo]
+- SH-2 Define the Store trait [todo]
+- SH-3 Implement the SQLite engine [in-progress]
+- SH-4 Write the migration runner [review]
+- SH-5 Fix the id collision across worktrees [todo]
+- SH-6 Benchmark the rebuild path [todo]
+- SH-7 Document the data layer [todo]
+- SH-9 Add the daemon transport [todo]
+
+## Closed (3)
+
+- SH-13 Old approach: file-per-story [todo]
+- SH-14 Prototype the archive format [done]
+- SH-8 Retire the JSONL reader [done]
