@@ -83,6 +83,25 @@ pub fn story_views(
     Ok(views)
 }
 
+/// Orders views the way `list`, `search` and the grouping commands do:
+/// by story *number*, not by the lexicographic order of the id.
+///
+/// `SH-10` sorts after `SH-2` here and before it in a string comparison, which
+/// is the difference between a list a human reads and one they re-sort in
+/// their head.
+pub fn sort_story_views(views: &mut [StoryView]) {
+    views.sort_by_key(|view| numeric_story_id(&view.story.id));
+}
+
+/// The number half of a story id, or `u64::MAX` for an id that has none — so
+/// an unparseable id sorts last rather than first.
+fn numeric_story_id(id: &str) -> u64 {
+    id.split('-')
+        .nth(1)
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(u64::MAX)
+}
+
 /// The response for one story, with its derived family relationships included.
 pub fn story_view(tx: &impl ReadOps, project: ProjectId, id: &str) -> Result<Response, AppError> {
     let view = story_views(tx, project, true)?

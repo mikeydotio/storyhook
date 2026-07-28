@@ -15,11 +15,18 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::app;
-use crate::cli::{CliOptions, Invocation};
+use crate::cli::{
+    CliOptions, EpicAction, HELP_TEXT, HooksAction, Invocation, PhaseAction, PluginAction,
+    StateAction, TypeAction,
+};
+use crate::domain::{FieldEdit, StateChanges, SuperState};
 use crate::error::AppError;
+use crate::help_topics;
 use crate::output::Response;
 use crate::service::{
-    Ctx, FieldEdits, NewStoryInput, RelationOutcome, RelationService, ReopenOutcome, StoryService,
+    Clock, ConfigService, Ctx, FieldEdits, GroupingService, InitOptions, InitOutcome,
+    NewStoryInput, PhaseCleared, ProjectService, RelationOutcome, RelationService, ReopenOutcome,
+    StateListing, StoryService, SystemService,
 };
 use crate::store::Store;
 
@@ -119,13 +126,18 @@ impl Invoker for LegacyInvoker<'_> {
 ///
 /// # Completeness
 ///
-/// Only the story-lifecycle and relation invocations are ported so far.
-/// Everything else answers with [`not_yet_ported`], which is an internal error
-/// naming the variant: nothing routes production traffic here yet, and the
-/// wave that finishes the port has "every variant dispatches" as its exit
-/// criterion. A silent fallback to the legacy path is exactly what this must
-/// not do — a half-ported dispatcher that quietly works is one nobody
-/// finishes.
+/// The story lifecycle, relations, project initialization, configuration and
+/// the system commands are ported. The query surfaces (`list`, `show`,
+/// `summary`, `graph`, `phase`, `epic`, …), the integrity commands and the
+/// git/GitHub family are not. Everything unported answers with
+/// [`not_yet_ported`], which is an internal error naming the variant: nothing
+/// routes production traffic here yet, and the wave that finishes the port has
+/// "every variant dispatches" as its exit criterion. A silent fallback to the
+/// legacy path is exactly what this must not do — a half-ported dispatcher
+/// that quietly works is one nobody finishes.
+///
+/// `tests/differential_lifecycle.rs` holds the roster and asserts that the
+/// ported and unported lists together account for every variant.
 pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Response, AppError> {
     match invocation {
         Invocation::New {
@@ -238,8 +250,314 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 if remove { "removed" } else { "added" }
             ))),
         },
+        Invocation::State { action } => dispatch_state(ctx, action),
+        Invocation::Type { action } => dispatch_type(ctx, action),
+        Invocation::MemberAdd { input } => ConfigService::new(ctx)
+            .add_member(&input)
+            .map(|member| Response::Message(format!("added member {}", member.id))),
+        Invocation::Scaffold { kind } => SystemService::new(ctx)
+            .scaffold(&kind)
+            .map(Response::Message),
+        Invocation::Hooks { action } => dispatch_hooks(ctx, action),
+        Invocation::Plugin { action } => {
+            let service = SystemService::new(ctx);
+            match action {
+                PluginAction::Install { target } => service.install_plugin(&target),
+                PluginAction::Uninstall { target } => service.uninstall_plugin(&target),
+            }
+            .map(Response::Message)
+        }
+        Invocation::Phase { action } => dispatch_phase(ctx, action),
+        Invocation::Epic { action } => dispatch_epic(ctx, action),
+        Invocation::Init { .. }
+        | Invocation::Help
+        | Invocation::HelpTopic { .. }
+        | Invocation::HelpCompact
+        | Invocation::HelpAll
+        | Invocation::Version => dispatch_unscoped(ctx.store(), ctx.cwd(), &ctx.now(), invocation),
         other => Err(not_yet_ported(&other)),
     }
+}
+
+/// The `story phase …` family.
+fn dispatch_phase<S: Store>(ctx: &Ctx<'_, S>, action: PhaseAction) -> Result<Response, AppError> {
+    let service = GroupingService::new(ctx);
+    match action {
+        PhaseAction::List => service.phases().map(Response::PhaseList),
+        PhaseAction::Show { phase } => service
+            .phase_stories(&phase)
+            .map(|views| Response::Stories(views, None)),
+        PhaseAction::Add { id, phase } => {
+            service.assign_phase(&id, &phase)?;
+            Ok(Response::Message(format!("assigned {id} to phase {phase}")))
+        }
+        PhaseAction::Remove { id } => Ok(Response::Message(match service.clear_phase(&id)? {
+            PhaseCleared::Removed(_) => format!("removed phase assignment from {id}"),
+            PhaseCleared::NoAssignment => format!("{id} has no phase assignment"),
+        })),
+        PhaseAction::Create { phase, title } => {
+            let story = service.create_phase(&phase, title.as_deref())?;
+            ctx.story_view(&story.id)
+        }
+    }
+}
+
+/// The `story epic …` family.
+fn dispatch_epic<S: Store>(ctx: &Ctx<'_, S>, action: EpicAction) -> Result<Response, AppError> {
+    let service = GroupingService::new(ctx);
+    match action {
+        EpicAction::List => service.epics().map(|views| Response::Stories(views, None)),
+        EpicAction::Show { id } => ctx.story_view(&id),
+        EpicAction::Create { title } => {
+            let story = service.create_epic(&title)?;
+            ctx.story_view(&story.id)
+        }
+        EpicAction::Add { epic_id, story_id } => {
+            service.add_to_epic(&epic_id, &story_id)?;
+            ctx.story_view(&epic_id)
+        }
+    }
+}
+
+/// The `story hooks …` family.
+fn dispatch_hooks<S: Store>(ctx: &Ctx<'_, S>, action: HooksAction) -> Result<Response, AppError> {
+    let service = SystemService::new(ctx);
+    match action {
+        HooksAction::Install => service.install_git_hooks().map(Response::Message),
+        HooksAction::Uninstall => service.uninstall_git_hooks().map(Response::Message),
+        HooksAction::List => Ok(Response::Message(service.list_event_hooks())),
+        HooksAction::Test { event_type } => {
+            service.test_event_hook(&event_type).map(Response::Message)
+        }
+    }
+}
+
+/// The `story state …` family.
+fn dispatch_state<S: Store>(ctx: &Ctx<'_, S>, action: StateAction) -> Result<Response, AppError> {
+    let service = ConfigService::new(ctx);
+    match action {
+        StateAction::List => Ok(Response::Message(
+            service
+                .list_states()?
+                .iter()
+                .map(format_state_line)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )),
+        StateAction::Add {
+            slug,
+            superstate,
+            role,
+            description,
+        } => {
+            let state =
+                service.add_state(&slug, parse_superstate(&superstate)?, role, description)?;
+            Ok(Response::Message(format!(
+                "added state {} ({})",
+                state.slug,
+                state.super_state.as_str()
+            )))
+        }
+        StateAction::Set {
+            slug,
+            superstate,
+            role,
+            description,
+            clear_description,
+            move_stories_to,
+        } => {
+            let changes = StateChanges {
+                super_state: superstate.as_deref().map(parse_superstate).transpose()?,
+                // `--role none` clears; `active` is the only real role, so
+                // `none` cannot collide with one.
+                role: match role.as_deref() {
+                    None => FieldEdit::Keep,
+                    Some("none") => FieldEdit::Clear,
+                    Some(value) => FieldEdit::Set(value.to_string()),
+                },
+                description: if clear_description {
+                    FieldEdit::Clear
+                } else {
+                    description.map_or(FieldEdit::Keep, FieldEdit::Set)
+                },
+            };
+            let edit = service.update_state(&slug, &changes, move_stories_to.as_deref())?;
+            let mut message = format!(
+                "updated state {} ({})",
+                edit.state.slug,
+                edit.state.super_state.as_str()
+            );
+            message.push_str(&moved_suffix(edit.moved, move_stories_to.as_deref()));
+            Ok(Response::Message(message))
+        }
+        StateAction::Remove {
+            slug,
+            move_stories_to,
+        } => {
+            let moved = service.remove_state(&slug, move_stories_to.as_deref())?;
+            let mut message = format!("removed state {slug}");
+            message.push_str(&moved_suffix(moved, move_stories_to.as_deref()));
+            Ok(Response::Message(message))
+        }
+        StateAction::Reorder { order } => Ok(Response::Message(format!(
+            "reordered states: {}",
+            service
+                .reorder_states(&order)?
+                .iter()
+                .map(|state| state.slug.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// The `story type …` family.
+fn dispatch_type<S: Store>(ctx: &Ctx<'_, S>, action: TypeAction) -> Result<Response, AppError> {
+    let service = ConfigService::new(ctx);
+    match action {
+        TypeAction::List => Ok(Response::Message(
+            service
+                .list_types()?
+                .iter()
+                .map(|t| match &t.description {
+                    Some(description) => format!("{} — {description}", t.slug),
+                    None => t.slug.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )),
+        TypeAction::Add { slug, description } => Ok(Response::Message(format!(
+            "added type {}",
+            service.add_type(&slug, description.as_deref())?.slug
+        ))),
+        TypeAction::Remove { slug } => {
+            service.remove_type(&slug)?;
+            Ok(Response::Message(format!("removed type {slug}")))
+        }
+    }
+}
+
+/// `OPEN` or `CLOSED`, as a superstate.
+fn parse_superstate(raw: &str) -> Result<SuperState, AppError> {
+    SuperState::parse(raw)
+        .ok_or_else(|| AppError::Validation("superstate must be OPEN or CLOSED".to_string()))
+}
+
+/// The `; moved 2 stories to done` half of a state edit's answer.
+fn moved_suffix(moved: usize, destination: Option<&str>) -> String {
+    if moved == 0 {
+        return String::new();
+    }
+    format!(
+        "; moved {moved} {} to {}",
+        if moved == 1 { "story" } else { "stories" },
+        destination.unwrap_or("another state")
+    )
+}
+
+/// One `story state list` row: `in-progress (OPEN, active) — 2 open — desc`.
+fn format_state_line(listing: &StateListing) -> String {
+    let state = &listing.state;
+    let mut attributes = vec![state.super_state.as_str().to_string()];
+    if let Some(role) = &state.role {
+        attributes.push(role.clone());
+    }
+    let mut line = format!("{} ({})", state.slug, attributes.join(", "));
+
+    let mut counts = Vec::new();
+    if listing.usage.open > 0 {
+        counts.push(format!("{} open", listing.usage.open));
+    }
+    if listing.usage.archived > 0 {
+        counts.push(format!("{} archived", listing.usage.archived));
+    }
+    if !counts.is_empty() {
+        line.push_str(&format!(" — {}", counts.join(", ")));
+    }
+    if let Some(description) = &state.description {
+        line.push_str(&format!(" — {description}"));
+    }
+    line
+}
+
+/// Dispatch for the invocations that run *before* a project is resolved.
+///
+/// `story init` is the reason this exists. Every other command names a project
+/// and therefore takes a [`Ctx`]; init is the command that creates one, so on
+/// a virgin store there is no [`ProjectId`](crate::store::ProjectId) for a
+/// context to hold. Rather than let a caller invent one, the arms that do not
+/// need a project live here and take the store and the checkout directly.
+///
+/// [`dispatch`] forwards its own project-less variants here, so the two entry
+/// points cannot answer the same invocation differently and the roster of
+/// ported arms stays a property of one function.
+///
+/// `now` is passed rather than read so that the answer is stamped once per
+/// invocation, from whichever clock the caller is using.
+pub fn dispatch_unscoped<S: Store>(
+    store: &S,
+    root: &Path,
+    now: &str,
+    invocation: Invocation,
+) -> Result<Response, AppError> {
+    match invocation {
+        Invocation::Init {
+            prefix,
+            no_agents_md,
+        } => {
+            let outcome = ProjectService::new(store, root)
+                .clock(Clock::Fixed(now.to_string()))
+                .init(&InitOptions {
+                    prefix,
+                    agents_md: !no_agents_md,
+                    // The pointer file is the store's claim on the repository,
+                    // and while the legacy tree is still the identity of record
+                    // a second claim could only ever disagree with it. The wave
+                    // that flips the default turns this on.
+                    pointer: false,
+                })?;
+            Ok(Response::Message(init_message(&outcome)))
+        }
+        // Pure functions of compiled-in text. They need neither a project nor
+        // a store, and answering them here is what lets `story --help` work in
+        // a directory storyhook has never heard of.
+        Invocation::Help => Ok(Response::Message(HELP_TEXT.to_string())),
+        Invocation::HelpCompact => Ok(Response::Message(
+            help_topics::compact_reference().to_string(),
+        )),
+        Invocation::HelpAll => Ok(Response::Message(help_topics::all_topics_text())),
+        Invocation::HelpTopic { topic } => match help_topics::get_help_topic(&topic) {
+            Some(text) => Ok(Response::Message(text.to_string())),
+            None => Err(AppError::Usage(format!(
+                "unknown help topic `{topic}`. Available: {}",
+                help_topics::list_topics().join(", ")
+            ))),
+        },
+        Invocation::Version => Ok(Response::Message(format!(
+            "story {}",
+            env!("CARGO_PKG_VERSION")
+        ))),
+        other => Err(not_yet_ported(&other)),
+    }
+}
+
+/// What `story init` tells the user.
+///
+/// The text still describes the legacy storage model — a `.storyhook/`
+/// directory to commit — because it is the text users and scripts see today
+/// and byte-compatibility is this port's governing rule. It becomes wrong at
+/// the moment the store becomes the identity of record, and the wave that
+/// makes that switch owns rewriting it; changing it here would move a
+/// user-visible string in a wave whose entire claim is that it moves none.
+fn init_message(outcome: &InitOutcome) -> String {
+    let mut message = "initialized story project\n\n\
+         The .storyhook/ directory contains your project data.\n\
+         Remember to commit it to git — it should travel with the repository."
+        .to_string();
+    if outcome.agents_md {
+        message.push_str("\n\nGenerated AGENTS.md for AI agent discoverability.");
+    }
+    message
 }
 
 /// The error an unported [`Invocation`] answers with.
