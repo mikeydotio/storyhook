@@ -5,8 +5,11 @@ use crossterm::event::{MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::domain::StoryEvent;
+use crate::cli::{HistoryAction, Invocation, StateAction};
+use crate::domain::{FieldEdit, StoryEvent, StorySnapshot, SuperState};
 use crate::error::AppError;
+use crate::invoke::{InvokeRequest, Invoker, LegacyInvoker};
+use crate::output::Response;
 
 use super::action::{Action, UndoEntry, View};
 use super::components::Component;
@@ -28,8 +31,14 @@ use super::terminal;
 use super::theme::Theme;
 
 /// Run the TUI application.
+///
+/// `root` survives for exactly one reason: the filesystem watcher in
+/// [`EventSource`], which has no seam equivalent until the daemon publishes a
+/// change feed. Everything else — every read and every mutation — goes
+/// through [`Invoker`].
 pub fn run(root: &Path) -> Result<(), AppError> {
-    let data = DataStore::load(root)?;
+    let invoker = LegacyInvoker::new(root);
+    let data = DataStore::load(&invoker)?;
     let mut state = AppState::new(data);
     let theme = Theme::from_env();
 
@@ -53,7 +62,7 @@ pub fn run(root: &Path) -> Result<(), AppError> {
         &mut term,
         &mut state,
         &rx,
-        root,
+        &invoker,
         &theme,
         &mut board,
         &mut filter_bar,
@@ -84,7 +93,7 @@ fn main_loop(
     term: &mut ratatui::DefaultTerminal,
     state: &mut AppState,
     rx: &std::sync::mpsc::Receiver<Event>,
-    root: &Path,
+    invoker: &dyn Invoker,
     theme: &Theme,
     board: &mut Board,
     filter_bar: &mut FilterBar,
@@ -130,7 +139,7 @@ fn main_loop(
         );
 
         for action in actions {
-            dispatch(action, state, root, term, board, graph, modal_components)?;
+            dispatch(action, state, invoker, term, board, graph, modal_components)?;
         }
 
         // Expire notifications (3s timeout)
@@ -305,9 +314,71 @@ fn determine_key_context(state: &AppState) -> KeyContext {
     KeyContext::Global
 }
 
+/// Runs one invocation through the seam, with the project's event hooks
+/// suppressed.
+///
+/// The TUI has never fired them, and routing through the seam must not start:
+/// a hook is an arbitrary shell command, and a board that ran one on every
+/// keystroke would be a surprise nobody asked for. Every request the TUI makes
+/// carries `no_hooks`, so the behaviour is a property of this function rather
+/// than of each call site remembering.
+fn invoke(invoker: &dyn Invoker, invocation: Invocation) -> Result<Response, AppError> {
+    invoker.invoke(InvokeRequest::new(invocation).no_hooks(true))
+}
+
+/// The story a mutation answered with.
+fn story_of(response: Response) -> Result<StorySnapshot, AppError> {
+    match response {
+        Response::Story(view) => Ok(view.story),
+        other => Err(AppError::Storage(format!(
+            "internal: expected a story, got {other:?}"
+        ))),
+    }
+}
+
+/// The text a `Response::Message` carries.
+fn message_of(response: Response) -> Result<String, AppError> {
+    match response {
+        Response::Message(message) => Ok(message),
+        other => Err(AppError::Storage(format!(
+            "internal: expected a message, got {other:?}"
+        ))),
+    }
+}
+
+/// A `story set` invocation touching exactly one field.
+///
+/// `Invocation::SetFields` has eleven, ten of which are always absent here —
+/// the TUI edits one thing at a time — so the ten `None`s are written once.
+fn set_field(id: &str, title: Option<String>, description: Option<String>) -> Invocation {
+    Invocation::SetFields {
+        id: id.to_string(),
+        title,
+        state: None,
+        priority: None,
+        assignee: None,
+        labels: None,
+        blocked: None,
+        unblocked: false,
+        json: None,
+        story_type: None,
+        description,
+    }
+}
+
 /// Load the current events for a story, returning an empty vec if the story doesn't exist.
-fn snapshot_for_undo(root: &Path, story_id: &str) -> Vec<StoryEvent> {
-    crate::storage::load_open_story_events(root, story_id).unwrap_or_default()
+fn snapshot_for_undo(invoker: &dyn Invoker, story_id: &str) -> Vec<StoryEvent> {
+    match invoke(
+        invoker,
+        Invocation::History {
+            action: HistoryAction::Read {
+                id: story_id.to_string(),
+            },
+        },
+    ) {
+        Ok(Response::StoryHistory(events)) => events,
+        _ => Vec::new(),
+    }
 }
 
 /// Push an undo entry and clear the redo stack (any new mutation invalidates redo history).
@@ -325,79 +396,56 @@ fn push_undo(
     state.redo_stack.clear();
 }
 
-/// Create a story with the given enrichment fields inside the project lock.
+/// Create a story with the given enrichment fields, through the seam.
 ///
-/// A non-empty `assignee` is resolved against real project members via
-/// [`crate::storage::find_member`] *before* any event is written, mirroring
-/// the CLI's `story new --assignee` validation (see [`crate::app`]'s
-/// `Invocation::New` handler). An unknown member aborts the whole creation —
-/// no story is left half-enriched on disk. On success the resolved member's
-/// canonical id (not the raw, possibly-a-GitHub-handle input) is stored.
+/// One `story new` invocation, which is where the enrichment rules already
+/// live: an unknown assignee aborts the whole creation before anything is
+/// written, and the resolved member's canonical id — not the raw,
+/// possibly-a-GitHub-handle input — is what gets stored.
 ///
 /// Extracted from the `Action::CreateStory` dispatch arm so it can be
 /// exercised by tests without a real terminal (`dispatch` takes one and
 /// can't be unit-tested directly).
 fn create_story_mutation(
-    root: &Path,
+    invoker: &dyn Invoker,
     title: &str,
     priority: Option<crate::domain::Priority>,
     labels: &[String],
     assignee: Option<&str>,
     description: Option<&str>,
 ) -> Result<String, AppError> {
-    crate::lock::with_project_lock(root, || {
-        let mut events = Vec::new();
-        if let Some(p) = &priority {
-            events.push(crate::domain::StoryEvent::StoryPrioritySet {
-                at: crate::storage::now(),
-                priority: p.clone(),
-            });
-        }
-        if !labels.is_empty() {
-            events.push(crate::domain::StoryEvent::StoryLabelsSet {
-                at: crate::storage::now(),
-                labels: labels.to_vec(),
-            });
-        }
-        if let Some(a) = assignee {
-            let member = crate::storage::find_member(root, a)?;
-            events.push(crate::domain::StoryEvent::StoryAssigned {
-                at: crate::storage::now(),
-                member_id: member.id,
-            });
-        }
-        if let Some(d) = description {
-            events.push(crate::domain::StoryEvent::StoryDescriptionSet {
-                at: crate::storage::now(),
-                description: d.to_string(),
-            });
-        }
-        let story = crate::storage::create_story_with_events(root, title, None, &events)?;
-        Ok(story.id)
-    })
+    let response = invoke(
+        invoker,
+        Invocation::New {
+            title: title.to_string(),
+            state: None,
+            story_type: None,
+            description: description.map(str::to_string),
+            priority: priority.map(|p| p.as_str().to_string()),
+            labels: (!labels.is_empty()).then(|| labels.to_vec()),
+            assignee: assignee.map(str::to_string),
+        },
+    )?;
+    Ok(story_of(response)?.id)
 }
 
-/// Assign an existing story to a member inside the project lock.
+/// Assign an existing story to a member, through the seam.
 ///
-/// `assignee` is resolved against real project members via
-/// [`crate::storage::find_member`] before the `StoryAssigned` event is
-/// written; an unknown member aborts the mutation and no event is written.
-/// On success the resolved member's canonical id is stored.
+/// `assignee` may be a member id or a GitHub handle; an unknown one aborts the
+/// mutation with nothing written, and a known one is normalized to its
+/// canonical member id.
 ///
 /// Extracted from the `Action::AssignStory` dispatch arm for the same
 /// testability reason as [`create_story_mutation`].
-fn assign_story_mutation(root: &Path, id: &str, assignee: &str) -> Result<(), AppError> {
-    crate::lock::with_project_lock(root, || {
-        let member = crate::storage::find_member(root, assignee)?;
-        crate::storage::write_story_events(
-            root,
-            id,
-            &[crate::domain::StoryEvent::StoryAssigned {
-                at: crate::storage::now(),
-                member_id: member.id,
-            }],
-        )
-    })
+fn assign_story_mutation(invoker: &dyn Invoker, id: &str, assignee: &str) -> Result<(), AppError> {
+    invoke(
+        invoker,
+        Invocation::Assign {
+            id: id.to_string(),
+            member: assignee.to_string(),
+        },
+    )
+    .map(|_| ())
 }
 
 /// Dispatch a single action, mutating AppState.
@@ -410,14 +458,14 @@ fn finish_state_edit(
     board: &mut Board,
     graph: &mut GraphComponent,
     modal_components: &mut ModalComponents,
-    root: &Path,
+    invoker: &dyn Invoker,
     result: Result<String, AppError>,
     action_label: &str,
 ) {
     match result {
         Ok(message) => {
             state.notification = Some((message, Instant::now()));
-            state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+            state.data = DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
             board.on_state_change(state);
             graph.on_state_change(state);
             if let Some(ref mut editor) = modal_components.states_editor {
@@ -433,7 +481,7 @@ fn finish_state_edit(
 fn dispatch(
     action: Action,
     state: &mut AppState,
-    root: &Path,
+    invoker: &dyn Invoker,
     term: &mut ratatui::DefaultTerminal,
     board: &mut Board,
     graph: &mut GraphComponent,
@@ -512,7 +560,7 @@ fn dispatch(
         }
 
         Action::RefreshData => {
-            match DataStore::load(root) {
+            match DataStore::load(invoker) {
                 Ok(data) => {
                     state.data = data;
                     // Notify board of state change so it can reclamp cursor
@@ -615,7 +663,7 @@ fn dispatch(
                                                 text,
                                             },
                                             state,
-                                            root,
+                                            invoker,
                                             term,
                                             board,
                                             graph,
@@ -661,7 +709,7 @@ fn dispatch(
         } => {
             let desc = format!("Created story: {title}");
             let result = create_story_mutation(
-                root,
+                invoker,
                 &title,
                 priority,
                 &labels,
@@ -672,7 +720,8 @@ fn dispatch(
                 Ok(id) => {
                     // Story didn't exist before creation: events_before is empty
                     push_undo(state, desc, id.clone(), Vec::new());
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification = Some((format!("Created {id}"), Instant::now()));
@@ -690,16 +739,21 @@ fn dispatch(
 
         Action::MoveStory { id, target_state } => {
             // Snapshot before mutation for potential undo
-            let events_before = snapshot_for_undo(root, &id);
-            let result = crate::lock::with_project_lock(root, || {
-                let states = crate::storage::load_state_map(root)?;
-                let state_def = states.get(&target_state).ok_or_else(|| {
-                    AppError::Validation(format!("state `{target_state}` is not defined"))
-                })?;
-                // Writing the events and archiving a closed story both happen
-                // inside this closure — i.e. under the project lock.
-                crate::storage::move_story_to_state(root, &id, state_def)
-            });
+            let events_before = snapshot_for_undo(invoker, &id);
+            // The story the move answers with says whether it closed: a move
+            // into a CLOSED state archives, and an archived story cannot be
+            // restored by replaying its log.
+            let result = invoke(
+                invoker,
+                Invocation::SetState {
+                    id: id.clone(),
+                    state: target_state.clone(),
+                    comment: None,
+                    if_state: None,
+                },
+            )
+            .and_then(story_of)
+            .map(|story| story.superstate == SuperState::Closed);
             match result {
                 Ok(is_close) => {
                     if is_close {
@@ -717,7 +771,8 @@ fn dispatch(
                         state.notification =
                             Some((format!("{id} moved to {target_state}"), Instant::now()));
                     }
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                 }
@@ -728,17 +783,8 @@ fn dispatch(
         }
 
         Action::UpdateTitle { id, title } => {
-            let events_before = snapshot_for_undo(root, &id);
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::write_story_events(
-                    root,
-                    &id,
-                    &[crate::domain::StoryEvent::StoryTitleSet {
-                        at: crate::storage::now(),
-                        title: title.clone(),
-                    }],
-                )
-            });
+            let events_before = snapshot_for_undo(invoker, &id);
+            let result = invoke(invoker, set_field(&id, Some(title.clone()), None)).map(|_| ());
             match result {
                 Ok(()) => {
                     push_undo(
@@ -747,7 +793,8 @@ fn dispatch(
                         id.clone(),
                         events_before,
                     );
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification = Some((format!("{id} title updated"), Instant::now()));
@@ -759,17 +806,9 @@ fn dispatch(
         }
 
         Action::SetDescription { id, description } => {
-            let events_before = snapshot_for_undo(root, &id);
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::write_story_events(
-                    root,
-                    &id,
-                    &[crate::domain::StoryEvent::StoryDescriptionSet {
-                        at: crate::storage::now(),
-                        description: description.clone(),
-                    }],
-                )
-            });
+            let events_before = snapshot_for_undo(invoker, &id);
+            let result =
+                invoke(invoker, set_field(&id, None, Some(description.clone()))).map(|_| ());
             match result {
                 Ok(()) => {
                     push_undo(
@@ -778,7 +817,8 @@ fn dispatch(
                         id.clone(),
                         events_before,
                     );
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification =
@@ -791,17 +831,15 @@ fn dispatch(
         }
 
         Action::SetPriority { id, priority } => {
-            let events_before = snapshot_for_undo(root, &id);
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::write_story_events(
-                    root,
-                    &id,
-                    &[crate::domain::StoryEvent::StoryPrioritySet {
-                        at: crate::storage::now(),
-                        priority: priority.clone(),
-                    }],
-                )
-            });
+            let events_before = snapshot_for_undo(invoker, &id);
+            let result = invoke(
+                invoker,
+                Invocation::SetPriority {
+                    id: id.clone(),
+                    priority: priority.as_str().to_string(),
+                },
+            )
+            .map(|_| ());
             match result {
                 Ok(()) => {
                     push_undo(
@@ -810,7 +848,8 @@ fn dispatch(
                         id.clone(),
                         events_before,
                     );
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification = Some((format!("{id} priority set"), Instant::now()));
@@ -823,17 +862,29 @@ fn dispatch(
         }
 
         Action::SetLabels { id, labels } => {
-            let events_before = snapshot_for_undo(root, &id);
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::write_story_events(
-                    root,
-                    &id,
-                    &[crate::domain::StoryEvent::StoryLabelsSet {
-                        at: crate::storage::now(),
-                        labels: labels.clone(),
-                    }],
-                )
-            });
+            let events_before = snapshot_for_undo(invoker, &id);
+            // The editor hands over the label set it wants, and the seam speaks
+            // in additions and removals — so the difference against what the
+            // story carries now is computed here rather than a whole-set write
+            // being invented at the seam for one caller.
+            let current: Vec<String> = state
+                .data
+                .find_story(&id)
+                .map(|story| story.labels.clone())
+                .unwrap_or_default();
+            let remove: Vec<String> = current
+                .into_iter()
+                .filter(|label| !labels.contains(label))
+                .collect();
+            let result = invoke(
+                invoker,
+                Invocation::SetLabels {
+                    id: id.clone(),
+                    add: labels.clone(),
+                    remove,
+                },
+            )
+            .map(|_| ());
             match result {
                 Ok(()) => {
                     push_undo(
@@ -842,7 +893,8 @@ fn dispatch(
                         id.clone(),
                         events_before,
                     );
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification = Some((format!("{id} labels updated"), Instant::now()));
@@ -855,8 +907,8 @@ fn dispatch(
         }
 
         Action::AssignStory { id, assignee } => {
-            let events_before = snapshot_for_undo(root, &id);
-            let result = assign_story_mutation(root, &id, &assignee);
+            let events_before = snapshot_for_undo(invoker, &id);
+            let result = assign_story_mutation(invoker, &id, &assignee);
             match result {
                 Ok(()) => {
                     push_undo(
@@ -865,7 +917,8 @@ fn dispatch(
                         id.clone(),
                         events_before,
                     );
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification =
@@ -878,17 +931,15 @@ fn dispatch(
         }
 
         Action::AddComment { id, text } => {
-            let events_before = snapshot_for_undo(root, &id);
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::write_story_events(
-                    root,
-                    &id,
-                    &[crate::domain::StoryEvent::StoryCommentAdded {
-                        at: crate::storage::now(),
-                        text: text.clone(),
-                    }],
-                )
-            });
+            let events_before = snapshot_for_undo(invoker, &id);
+            let result = invoke(
+                invoker,
+                Invocation::Comment {
+                    id: id.clone(),
+                    text: text.clone(),
+                },
+            )
+            .map(|_| ());
             match result {
                 Ok(()) => {
                     push_undo(
@@ -897,7 +948,8 @@ fn dispatch(
                         id.clone(),
                         events_before,
                     );
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification = Some((format!("{id} comment added"), Instant::now()));
@@ -909,17 +961,15 @@ fn dispatch(
         }
 
         Action::SetAwaiting { id, reason } => {
-            let events_before = snapshot_for_undo(root, &id);
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::write_story_events(
-                    root,
-                    &id,
-                    &[crate::domain::StoryEvent::StoryAwaitingSet {
-                        at: crate::storage::now(),
-                        awaiting: reason.clone(),
-                    }],
-                )
-            });
+            let events_before = snapshot_for_undo(invoker, &id);
+            let result = invoke(
+                invoker,
+                Invocation::SetAwaiting {
+                    id: id.clone(),
+                    awaiting: reason.clone(),
+                },
+            )
+            .map(|_| ());
             match result {
                 Ok(()) => {
                     push_undo(
@@ -928,7 +978,8 @@ fn dispatch(
                         id.clone(),
                         events_before,
                     );
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification = Some((format!("{id} awaiting: {reason}"), Instant::now()));
@@ -941,20 +992,13 @@ fn dispatch(
         }
 
         Action::ClearAwaiting { id } => {
-            let events_before = snapshot_for_undo(root, &id);
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::write_story_events(
-                    root,
-                    &id,
-                    &[crate::domain::StoryEvent::StoryAwaitingCleared {
-                        at: crate::storage::now(),
-                    }],
-                )
-            });
+            let events_before = snapshot_for_undo(invoker, &id);
+            let result = invoke(invoker, Invocation::ClearAwaiting { id: id.clone() }).map(|_| ());
             match result {
                 Ok(()) => {
                     push_undo(state, format!("{id} unblocked"), id.clone(), events_before);
-                    state.data = DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                    state.data =
+                        DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                     board.on_state_change(state);
                     graph.on_state_change(state);
                     state.notification = Some((format!("{id} unblocked"), Instant::now()));
@@ -968,21 +1012,29 @@ fn dispatch(
 
         // --- Project configuration (the statuses editor) ---
         //
-        // These edit `.storyhook/states.toml` through the same storage
-        // operations the CLI and the web dashboard use, so all three enforce
-        // one set of rules. None of them push onto the undo stack: it
-        // replays a single story's event log, and a status edit changes the
-        // project's configuration — sometimes migrating stories as it goes.
+        // These edit the project's state catalog through the same invocations
+        // the CLI and the web dashboard use, so all three enforce one set of
+        // rules. None of them push onto the undo stack: it replays a single
+        // story's event log, and a status edit changes the project's
+        // configuration — sometimes migrating stories as it goes.
         Action::AddState { slug, super_state } => {
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::add_state(root, &slug, super_state, None, None)
-            });
+            let result = invoke(
+                invoker,
+                Invocation::State {
+                    action: StateAction::Add {
+                        slug: slug.clone(),
+                        superstate: super_state.as_str().to_string(),
+                        role: None,
+                        description: None,
+                    },
+                },
+            );
             finish_state_edit(
                 state,
                 board,
                 graph,
                 modal_components,
-                root,
+                invoker,
                 result.map(|_| format!("added status {slug}")),
                 "Add status",
             );
@@ -993,28 +1045,35 @@ fn dispatch(
             changes,
             move_stories_to,
         } => {
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::update_state(root, &slug, &changes, move_stories_to.as_deref())
-            });
-            let message = result.map(|edit| {
-                let mut message = format!("updated status {slug}");
-                if edit.moved > 0 {
-                    message.push_str(&format!(
-                        "; moved {} {} to {}",
-                        edit.moved,
-                        if edit.moved == 1 { "story" } else { "stories" },
-                        move_stories_to.as_deref().unwrap_or("another status")
-                    ));
-                }
-                message
-            });
+            let result = invoke(
+                invoker,
+                Invocation::State {
+                    action: StateAction::Set {
+                        slug: slug.clone(),
+                        superstate: changes.super_state.map(|s| s.as_str().to_string()),
+                        // `--role none` is how the grammar spells "clear".
+                        role: match &changes.role {
+                            FieldEdit::Keep => None,
+                            FieldEdit::Clear => Some("none".to_string()),
+                            FieldEdit::Set(value) => Some(value.clone()),
+                        },
+                        description: match &changes.description {
+                            FieldEdit::Set(value) => Some(value.clone()),
+                            _ => None,
+                        },
+                        clear_description: matches!(changes.description, FieldEdit::Clear),
+                        move_stories_to: move_stories_to.clone(),
+                    },
+                },
+            )
+            .and_then(message_of);
             finish_state_edit(
                 state,
                 board,
                 graph,
                 modal_components,
-                root,
-                message,
+                invoker,
+                result,
                 "Update status",
             );
         }
@@ -1023,41 +1082,42 @@ fn dispatch(
             slug,
             move_stories_to,
         } => {
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::remove_state(root, &slug, move_stories_to.as_deref())
-            });
-            let message = result.map(|moved| {
-                let mut message = format!("removed status {slug}");
-                if moved > 0 {
-                    message.push_str(&format!(
-                        "; moved {moved} {} to {}",
-                        if moved == 1 { "story" } else { "stories" },
-                        move_stories_to.as_deref().unwrap_or("another status")
-                    ));
-                }
-                message
-            });
+            let result = invoke(
+                invoker,
+                Invocation::State {
+                    action: StateAction::Remove {
+                        slug: slug.clone(),
+                        move_stories_to: move_stories_to.clone(),
+                    },
+                },
+            )
+            .and_then(message_of);
             finish_state_edit(
                 state,
                 board,
                 graph,
                 modal_components,
-                root,
-                message,
+                invoker,
+                result,
                 "Remove status",
             );
         }
 
         Action::ReorderStates { order } => {
-            let result = crate::lock::with_project_lock(root, || {
-                crate::storage::reorder_states(root, &order)
-            });
+            let result = invoke(
+                invoker,
+                Invocation::State {
+                    action: StateAction::Reorder {
+                        order: order.clone(),
+                    },
+                },
+            );
             finish_state_edit(
                 state,
                 board,
                 graph,
                 modal_components,
-                root,
+                invoker,
                 result.map(|_| "reordered statuses".to_string()),
                 "Reorder statuses",
             );
@@ -1066,25 +1126,24 @@ fn dispatch(
         Action::Undo => {
             if let Some(entry) = state.undo_stack.pop() {
                 // Snapshot current state for redo
-                let current_events = snapshot_for_undo(root, &entry.story_id);
+                let current_events = snapshot_for_undo(invoker, &entry.story_id);
 
                 let story_id = entry.story_id.clone();
                 let events_before = entry.events_before.clone();
-                let result = crate::lock::with_project_lock(root, || {
-                    if events_before.is_empty() {
-                        // Story was newly created -- undo means delete it
-                        let paths = crate::storage::ProjectPaths::new(root);
-                        let path = paths.open_story_file(&story_id);
-                        if path.exists() {
-                            std::fs::remove_file(&path).map_err(|e| {
-                                AppError::Storage(format!("Failed to delete story file: {e}"))
-                            })?;
-                        }
-                        Ok(())
-                    } else {
-                        crate::storage::rewrite_story_events(root, &story_id, &events_before)
-                    }
-                });
+                // An empty history means the story did not exist before the
+                // mutation, and `Restore` reads that as "it should not exist
+                // now" — so undoing a creation and undoing an edit are one
+                // invocation rather than two code paths.
+                let result = invoke(
+                    invoker,
+                    Invocation::History {
+                        action: HistoryAction::Restore {
+                            id: story_id,
+                            events: events_before,
+                        },
+                    },
+                )
+                .map(|_| ());
 
                 match result {
                     Ok(()) => {
@@ -1094,7 +1153,7 @@ fn dispatch(
                             events_before: current_events,
                         });
                         state.data =
-                            DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                            DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                         board.on_state_change(state);
                         graph.on_state_change(state);
                         state.notification =
@@ -1114,25 +1173,20 @@ fn dispatch(
         Action::Redo => {
             if let Some(entry) = state.redo_stack.pop() {
                 // Snapshot current state for undo
-                let current_events = snapshot_for_undo(root, &entry.story_id);
+                let current_events = snapshot_for_undo(invoker, &entry.story_id);
 
                 let story_id = entry.story_id.clone();
                 let events_before = entry.events_before.clone();
-                let result = crate::lock::with_project_lock(root, || {
-                    if events_before.is_empty() {
-                        // Redo of a creation-undo means delete again
-                        let paths = crate::storage::ProjectPaths::new(root);
-                        let path = paths.open_story_file(&story_id);
-                        if path.exists() {
-                            std::fs::remove_file(&path).map_err(|e| {
-                                AppError::Storage(format!("Failed to delete story file: {e}"))
-                            })?;
-                        }
-                        Ok(())
-                    } else {
-                        crate::storage::rewrite_story_events(root, &story_id, &events_before)
-                    }
-                });
+                let result = invoke(
+                    invoker,
+                    Invocation::History {
+                        action: HistoryAction::Restore {
+                            id: story_id,
+                            events: events_before,
+                        },
+                    },
+                )
+                .map(|_| ());
 
                 match result {
                     Ok(()) => {
@@ -1142,7 +1196,7 @@ fn dispatch(
                             events_before: current_events,
                         });
                         state.data =
-                            DataStore::load(root).unwrap_or(std::mem::take(&mut state.data));
+                            DataStore::load(invoker).unwrap_or(std::mem::take(&mut state.data));
                         board.on_state_change(state);
                         graph.on_state_change(state);
                         state.notification =
@@ -1305,38 +1359,52 @@ mod tests {
 
     // =======================================================================
     // Regression: #39 — create/assign mutations must validate assignee
-    // against real members, mirroring the CLI's `storage::find_member`.
+    // against real members.
+    //
+    // Reconstructed onto the Invoker seam: the fixture is built with
+    // invocations instead of `storage::` calls, and the mutations are handed
+    // an `Invoker` instead of a project root. Every assertion is unchanged.
     // =======================================================================
 
+    /// A project with one member whose canonical id differs from the GitHub
+    /// handle it was created from — `Mikey-Ward` slugifies to `mikey-ward` —
+    /// so "resolves the handle to the id" stays a real claim.
     fn init_test_project() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
-        crate::storage::init_project(&root, Some("SH")).unwrap();
+        LegacyInvoker::new(&root)
+            .invoke(InvokeRequest::new(Invocation::Init {
+                prefix: Some("SH".to_string()),
+                no_agents_md: true,
+            }))
+            .unwrap();
         (dir, root)
     }
 
-    fn store_test_member(root: &Path, id: &str, github: Option<&str>) {
-        crate::storage::store_member(
-            root,
-            &crate::domain::Member {
-                id: id.to_string(),
-                display_name: id.to_string(),
-                email: None,
-                github: github.map(|g| g.to_string()),
-                created_at: crate::storage::now(),
+    fn add_test_member(invoker: &dyn Invoker, handle: &str) {
+        invoke(
+            invoker,
+            Invocation::MemberAdd {
+                input: crate::cli::MemberInput::Github(handle.to_string()),
             },
         )
         .unwrap();
     }
 
+    fn seed_story(invoker: &dyn Invoker, title: &str) -> String {
+        create_story_mutation(invoker, title, None, &[], None, None).unwrap()
+    }
+
     #[test]
     fn create_story_mutation_rejects_unknown_assignee_and_creates_no_story() {
         let (_dir, root) = init_test_project();
+        let invoker = LegacyInvoker::new(&root);
 
-        let result = create_story_mutation(&root, "Bad assignee", None, &[], Some("nobody"), None);
+        let result =
+            create_story_mutation(&invoker, "Bad assignee", None, &[], Some("nobody"), None);
 
         assert!(result.is_err(), "unknown assignee should be rejected");
-        let store = DataStore::load(&root).unwrap();
+        let store = DataStore::load(&invoker).unwrap();
         assert_eq!(
             store.story_count(),
             0,
@@ -1347,16 +1415,24 @@ mod tests {
     #[test]
     fn create_story_mutation_resolves_github_handle_to_member_id() {
         let (_dir, root) = init_test_project();
-        store_test_member(&root, "mikey", Some("mikeyward"));
+        let invoker = LegacyInvoker::new(&root);
+        add_test_member(&invoker, "Mikey-Ward");
 
-        let id = create_story_mutation(&root, "Assigned story", None, &[], Some("mikeyward"), None)
-            .expect("valid github handle should be accepted");
+        let id = create_story_mutation(
+            &invoker,
+            "Assigned story",
+            None,
+            &[],
+            Some("Mikey-Ward"),
+            None,
+        )
+        .expect("valid github handle should be accepted");
 
-        let store = DataStore::load(&root).unwrap();
+        let store = DataStore::load(&invoker).unwrap();
         let story = store.find_story(&id).expect("story should exist");
         assert_eq!(
             story.assignee.as_deref(),
-            Some("mikey"),
+            Some("mikey-ward"),
             "github handle should normalize to the canonical member id"
         );
     }
@@ -1364,33 +1440,30 @@ mod tests {
     #[test]
     fn assign_story_mutation_rejects_unknown_member_and_leaves_story_unassigned() {
         let (_dir, root) = init_test_project();
-        let id = crate::lock::with_project_lock(&root, || {
-            crate::storage::create_story(&root, "Unassigned story", None).map(|s| s.id)
-        })
-        .unwrap();
+        let invoker = LegacyInvoker::new(&root);
+        let id = seed_story(&invoker, "Unassigned story");
 
-        let result = assign_story_mutation(&root, &id, "nobody");
+        let result = assign_story_mutation(&invoker, &id, "nobody");
 
         assert!(result.is_err(), "unknown assignee should be rejected");
-        let store = DataStore::load(&root).unwrap();
+        let store = DataStore::load(&invoker).unwrap();
         assert!(store.find_story(&id).unwrap().assignee.is_none());
     }
 
     #[test]
     fn assign_story_mutation_resolves_valid_handle_to_member_id() {
         let (_dir, root) = init_test_project();
-        store_test_member(&root, "mikey", Some("mikeyward"));
-        let id = crate::lock::with_project_lock(&root, || {
-            crate::storage::create_story(&root, "Story to assign", None).map(|s| s.id)
-        })
-        .unwrap();
+        let invoker = LegacyInvoker::new(&root);
+        add_test_member(&invoker, "Mikey-Ward");
+        let id = seed_story(&invoker, "Story to assign");
 
-        assign_story_mutation(&root, &id, "mikeyward").expect("valid handle should be accepted");
+        assign_story_mutation(&invoker, &id, "Mikey-Ward")
+            .expect("valid handle should be accepted");
 
-        let store = DataStore::load(&root).unwrap();
+        let store = DataStore::load(&invoker).unwrap();
         assert_eq!(
             store.find_story(&id).unwrap().assignee.as_deref(),
-            Some("mikey")
+            Some("mikey-ward")
         );
     }
 

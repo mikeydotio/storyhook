@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::cli::{
-    CliOptions, EpicAction, GraphMode, HELP_TEXT, HooksAction, Invocation, MemberInput,
-    PhaseAction, PluginAction, StateAction, TypeAction, WebAction,
+    CliOptions, EpicAction, GraphMode, HELP_TEXT, HistoryAction, HooksAction, Invocation,
+    MemberInput, PhaseAction, PluginAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{
     DependencyGraph, FieldEdit, ImportStory, Member, Priority, StateChanges, StateDef, StateUsage,
@@ -14,8 +14,8 @@ use crate::domain::{
 use crate::error::AppError;
 use crate::lock;
 use crate::output::{
-    BlockedChainView, GraphOverview, GraphView, PhaseView, ReportData, Response, StaleInfo,
-    StoryView, SummaryView, render_html_report,
+    BlockedChainView, GraphOverview, GraphView, PhaseView, ProjectSnapshotView, ReportData,
+    Response, StaleInfo, StoryView, SummaryView, render_html_report,
 };
 use crate::storage;
 
@@ -2169,6 +2169,43 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
             "story {}",
             env!("CARGO_PKG_VERSION")
         ))),
+        // The two seam-only invocations, served over legacy storage so that
+        // `LegacyInvoker` answers them before the flip. Neither is reachable
+        // from the command line; both exist because a client that holds a
+        // model — the TUI today, the dashboard's resync later — needs a bulk
+        // read and an undo primitive that no CLI verb provides.
+        Invocation::ProjectSnapshot => {
+            storage::ensure_project(root)?;
+            Ok(Response::ProjectSnapshot(Box::new(ProjectSnapshotView {
+                prefix: storage::load_project_prefix(root)?,
+                states: storage::load_states(root)?,
+                members: storage::load_members(root)?,
+                stories: storage::load_open_snapshots_tolerant(root)?,
+            })))
+        }
+        Invocation::History { action } => match action {
+            HistoryAction::Read { id } => {
+                storage::ensure_project(root)?;
+                Ok(Response::StoryHistory(
+                    storage::load_open_story_events(root, &id).unwrap_or_default(),
+                ))
+            }
+            HistoryAction::Restore { id, events } => lock::with_project_lock(root, || {
+                storage::ensure_project(root)?;
+                // An empty history means "this story should not exist":
+                // undoing a creation. The legacy representation of a story
+                // that does not exist is a missing file.
+                if events.is_empty() {
+                    let path = storage::ProjectPaths::new(root).open_story_file(&id);
+                    if path.exists() {
+                        std::fs::remove_file(&path)?;
+                    }
+                } else {
+                    storage::rewrite_story_events(root, &id, &events)?;
+                }
+                Ok(Response::Message(format!("restored {id}")))
+            }),
+        },
         Invocation::Update { check, force } => {
             #[cfg(feature = "github-sync")]
             {

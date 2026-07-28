@@ -20,7 +20,7 @@ use crate::error::AppError;
 use crate::event_hooks::HookEventType;
 use crate::store::{ExpectedSeq, ReadOps, Store};
 
-use super::{Ctx, append_and_fold, project_prefix, resolve_open_story, view};
+use super::{Ctx, append_and_fold, project_prefix, query, resolve_open_story};
 
 /// What [`RelationService::relate`] did.
 #[derive(Clone, Debug)]
@@ -78,7 +78,7 @@ impl<'ctx, S: Store> RelationService<'ctx, S> {
             }
 
             if !remove {
-                let stories = view::story_map(&*tx, project)?;
+                let stories = query::story_map(&*tx, project)?;
                 validate_parent_constraints(
                     &stories,
                     a,

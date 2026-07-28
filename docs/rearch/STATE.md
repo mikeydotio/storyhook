@@ -28,8 +28,9 @@
 | W0b envelope + Invoker seam | `rearch/w0b-envelope` / [PR #61](https://github.com/mikeydotio/storyhook/pull/61) | **MERGED** 2026-07-28 |
 | W1 store engine | `rearch/w1-store` / [PR #62](https://github.com/mikeydotio/storyhook/pull/62) | **MERGED** 2026-07-28 |
 | W2a services (lifecycle + relations) | `rearch/w2a-lifecycle` / [PR #63](https://github.com/mikeydotio/storyhook/pull/63) | **MERGED** 2026-07-28 |
-| W2b services (project + config + system + grouping) | `rearch/w2b-config` | **PR OPENED** — awaiting merge |
-| W2c/d services | — | pending |
+| W2b services (project + config + system + grouping) | `rearch/w2b-config` / [PR #64](https://github.com/mikeydotio/storyhook/pull/64) | **MERGED** 2026-07-28 |
+| W2c services (query + integrity) + TUI on the seam | `rearch/w2c-query` | **PR OPENED** — awaiting merge |
+| W2d services | — | pending |
 | W3 importer | — | pending |
 | W4 THE FLIP | — | pending (one uninterrupted session; revert only while W3 round-trip green) |
 | W5 daemon | — | pending |
@@ -92,7 +93,63 @@
   the shared harness extraction), `ddfe113` (GroupingService). See Step log for the
   service API W2c/W2d build on, the ported-arm roster, and the deviations.
 
+## W2c step plan
+
+- **W2c DONE** — `src/service/{query,integrity}.rs`, the read surface and `doctor` on
+  `dispatch`, `Invocation::{ProjectSnapshot, History}`, and `src/tui/` moved onto the
+  `Invoker` seam. Five commits: `e9e170e` (QueryService), `d3ee37c` (a store `fix:` its
+  own tests found), `eb6aa63` (IntegrityService), `b937e8c` (the two seam-only
+  invocations), `8bf7eeb` (the TUI). See Step log for the API, the roster, the two
+  defects found, and the deviations.
+
 ## Key facts discovered (do not re-derive)
+
+- **W2c: `story doctor --fix` DESTROYS relationships to archived stories.** The legacy
+  repair loop asks "does the other end of this edge exist?" of the *open* stories only
+  (`app.rs::doctor_fix`, `load_all_open_snapshots`). Relate two stories and delete one —
+  an ordinary sequence — and the survivor's edges look dangling, so the repair retracts
+  them; it then reports the asymmetry it just created and exits 5, permanently, with the
+  data gone. Reproduced by hand on the CLI: `story relate SH-3 blocks SH-4` →
+  `story delete SH-3` → `story doctor` clean → `story doctor --fix` → exit 5, SH-4's
+  relationships empty, and every later `story doctor` fails. **The store leg deliberately
+  does not have it** (`IntegrityService::fix` asks the question of every story; appends
+  still go to open ones only), pinned by
+  `differential_query.rs::doctor_fix_retracts_edges_to_deleted_stories_in_the_legacy_leg_only`.
+  Same call as W2a's burnt story number — a user-visible improvement that belongs in the
+  flip's behaviour-change notes rather than arriving as a surprise. **Needs a story.**
+- **W2c, FIXED in-wave (`d3ee37c`) — a failed COMMIT poisoned a pooled connection.**
+  `SqliteWriteTx::commit` cleared its `open` flag *before* running COMMIT, so the drop
+  guard's ROLLBACK was skipped exactly when it was needed. SQLite leaves the transaction
+  open when COMMIT fails, and the connection went back to the pool mid-transaction: the
+  next caller's `BEGIN IMMEDIATE` failed with `cannot start a transaction within a
+  transaction`, describing the *previous* caller's mistake. Reachable in production, not
+  only in tests — `defer_foreign_keys = ON` holds referential checks until COMMIT by
+  design, so a rejected edge is a commit-time failure and one of them poisoned a
+  connection for the life of the process. **Generalize this:** any teardown flag must be
+  cleared *after* the operation it describes succeeds, not before. Regression test is a
+  conformance case (`a_write_rejected_at_commit_does_not_poison_the_store`), so a second
+  engine inherits it; 162 → 163 cases.
+- **W2c: three of `doctor`'s legacy findings are UNREPRESENTABLE in the store.** A
+  dangling relation needs a foreign key violated; a second parent needs the unique
+  `child-of` index violated; a read-model row with no events needs the append-only
+  trigger bypassed. The schema refuses each rather than the doctor detecting it
+  afterwards — the defect *class* is gone. The checks stay in `compute_integrity_issues`
+  because `story show` and `list --flagged` compute the same flags, and because W3's
+  importer must be able to report them about *legacy* data. Pinned by
+  `service_integrity.rs::the_shapes_doctor_used_to_find_are_now_refused_by_the_schema`.
+- **W2c: the doctor's two dimensions must not overlap.** `diff_read_model` also notices a
+  relation only one end's history claims, and so does `compute_integrity_issues` (from the
+  snapshots, in the legacy wording). Printing both says the same thing twice in two
+  vocabularies *and* moves `doctor`'s bytes for a project the legacy path already
+  diagnosed. `IntegrityService` therefore builds its drift lines itself rather than
+  calling `ReadModelDiff::describe`, covering only `missing_rows`, `extra_rows`,
+  `fold_failures` and `divergences` — the question the legacy read model could not ask.
+- **W2c: `summary` and `report` compute the ready count two different ways and must
+  agree.** `summary` counts every `is_ready` story; `report` counts only the *open* ones.
+  `is_ready` is false for a closed story, so the two are equal — but `report_data`'s
+  `ready_count` has to be filled in from its own ready set, because the shared `rollup`
+  deliberately leaves it at zero. Getting that wrong is invisible in the human rendering
+  and visible in `report --html`; the differential row is what caught it.
 
 - **Flake mechanism PROVEN 2026-07-28:** two orphaned `web_test-*` processes (from prior runs)
   held ~100 LISTEN sockets across 19000–19095 on loopback + tailnet IP. Fresh runs restart
@@ -973,6 +1030,120 @@
     to other machines, so it cannot be derived from a path, a counter, or a clock.
   - **The differential harness moved to `tests/differential_support/mod.rs`** — a verbatim
     move, no assertion changes; `differential_lifecycle.rs` keeps all 39 of its rows.
+
+- 2026-07-28 W2c: branch `rearch/w2c-query` off merged main `da446e9`. Five commits,
+  `make test` green after each; two consecutive green full runs at the end (see below).
+  Test count 1716 → **1775** (+59: 19 `service_query`, 9 `service_integrity`, 28
+  `differential_query`, 1 conformance case, 2 wire-envelope corpus rows). 2 ignored,
+  unchanged — still the W4 headline REDs. **`src/app.rs` gains exactly two additive arms
+  and changes no existing one** (`git diff da446e9..HEAD -- src/app.rs` is +42/-2);
+  `tests/snapshots/` is byte-unchanged.
+  - `e9e170e` — `QueryService`, the nine read arms, `service::view` absorbed into
+    `service::query` and deleted, `tests/{service_query,differential_query}.rs`.
+  - `d3ee37c` — the store `fix:` this wave's own tests exposed (see Key facts).
+  - `eb6aa63` — `IntegrityService`, the rebuild-diff doctor, `tests/service_integrity.rs`.
+  - `b937e8c` — `Invocation::{ProjectSnapshot, History}` and their two `Response` variants.
+  - `8bf7eeb` — `src/tui/` onto the seam, and the 30 white-box tests reconstructed.
+
+  **Ported-arm roster: 27 → 38.** Added this wave: `list`, `show`, `search`, `next`,
+  `summary`, `report`, `graph`, `context`, `handoff`, `doctor`, `project-snapshot`.
+  **Remaining 10**, all in `unported_probes()`: `export`, `session-start`, `history`,
+  `import`, `import-project`, `decompose`, `commit-sync`, `github-sync`, `update`, `web`.
+  The roster test now asserts `ported + probes == 48`; `wire_envelope.rs` pins 48
+  independently.
+
+  **The service API W2d/W3/W4/W5 build on** (`storyhook::service`):
+
+  ```rust
+  QueryService::new(tx, project, now)          // takes &impl ReadOps — CANNOT write
+      .story_map() / .story_views(include_derived)
+      .project_snapshot() -> ProjectSnapshotView
+      .show(id) -> StoryView
+      .list(&ListFilters) -> Vec<StoryView>
+      .search(query) / .next(count, phase) -> Vec<StoryView>
+      .summary() / .report_summary() -> SummaryView
+      .report_data() -> ReportData
+      .graph(&GraphMode) -> GraphView
+      .context(json: bool) / .handoff(since) -> String
+  ListFilters { state, assignee, flagged, priority, label, created_after,
+                updated_after, blocked, ready, stale, phase, story_type }
+  service::query::{story_map, story_views, story_view, sort_story_views}  // was service::view
+
+  IntegrityService::new(&ctx)
+      .report() -> Vec<String>     // empty == healthy; caller makes it AppError::Integrity
+      .fix() -> String
+
+  // in invoke.rs, the one place a read arm gets a transaction:
+  fn query<S: Store, T>(ctx, f: impl FnOnce(&QueryService<'_, S::ReadTx<'_>>) -> …) -> …
+  ```
+
+  Things W2d/W3/W4/W5 should know:
+  - **`QueryService` takes a transaction, not a store, and that is the design.** A query
+    arm has no store in scope, so "this command must not mutate" is a type error rather
+    than a review comment. The generic `query()` helper in `invoke.rs` is what makes the
+    lifetimes work; copying it is cheaper than trying to put the helper on `Ctx`, where
+    the higher-ranked bound `S::ReadTx<'r>: 't` cannot be expressed.
+  - **`service::view` is gone.** Its four functions live in `service::query` unchanged;
+    `Ctx::story_view`, `RelationService` and `GroupingService` were re-pointed.
+  - **Ordering is reproduced, defects included.** `list`/`search` sort numerically;
+    `graph`/`handoff`/`context`/`summary` sort lexicographically because they iterate a
+    `BTreeMap` keyed by the id *string*; `handoff` puts every open story before every
+    archived one. `tests/service_query.rs` pins each with a twelve-story fixture, so the
+    wave that normalizes one does it on purpose.
+  - **`Invocation::ProjectSnapshot` is the TUI's only read**, and W5's SSE resync should
+    use it too. Open stories only — the archive would make the payload grow without bound
+    in exchange for rows nothing renders.
+  - **`Invocation::History` is UNPORTED and W4 inherits it.** `Read` is expressible
+    against the store today (`events_for` + `partition_known`); `Restore` is not — the
+    store is append-only with no truncate, and the flip checklist already flags the TUI's
+    undo as needing a store-level design rather than a port. Until then the TUI's undo
+    works on the legacy path only.
+  - **`storage::load_open_snapshots_tolerant` moved out of `src/tui/data.rs`.** The
+    torn-final-line tolerance is a property of the JSONL format, and `ProjectSnapshot`'s
+    legacy arm needs it.
+  - **The TUI holds `root` for one reason: `tui::event.rs`'s notify watcher.** Everything
+    else goes through `&dyn Invoker`, and every request carries `no_hooks` — the TUI has
+    never fired the project's event hooks and must not start. W5 deletes the watcher.
+  - **Flip-checklist category C is 85 → 14 sites**, none of them the TUI's:
+    `registry_test.rs` 3, `web_test.rs` 5, `error_contract.rs` 1,
+    `crates/storyhook-test-support/src/server.rs` 1, plus 4 the differential harness and
+    `differential_config.rs` legitimately need to build a legacy leg. **W4 inherits none
+    of the TUI's 70.**
+
+  Gate: **two consecutive green full runs, 88.8s and 88.4s warm**, against W2b's
+  90.3s/88.2s — i.e. no measurable cost. Load average was 5–7 throughout (the same
+  neighbouring Swift suite W2b noted), so these are contended numbers on both sides of the
+  comparison and neither is a steady state. The three new binaries contribute **1.3s of
+  runtime** (`service_query` 0.14s, `service_integrity` 0.07s, `differential_query` 1.09s).
+
+  Verification that the tests bite, not merely pass:
+  - The `report --html` differential row failed on the first run because `report_data`
+    left `ready_count` at zero — a number invisible in the human rendering.
+  - `a_write_rejected_at_commit_does_not_poison_the_store` was RED before `d3ee37c` with
+    exactly the message the fix names, and green after.
+  - The doctor differential row failed on its first run with the legacy leg's data loss,
+    which is how that defect was found at all.
+
+  Deviations from the wave brief, all deliberate:
+  - **Two additive `src/app.rs` arms, not one.** `app::run`'s match is exhaustive over
+    `Invocation`, so a variant cannot exist without an arm, and the TUI's exit criterion
+    is unreachable while undo needs to read and rewrite a story's log. Rebuilding undo out
+    of compensating invocations loses undo-a-comment outright and changes
+    undo-a-creation's meaning. Grouping `Read`/`Restore` under one `History { action }`
+    variant is what keeps it at two rather than three.
+  - **The differential rows landed with their features** rather than as a sixth commit.
+    Each commit is then green and self-contained; a commit that adds a service and a
+    commit that proves it agrees are the same claim.
+  - **`IntegrityService::fix` diverges from legacy** — see the data-loss defect in Key
+    facts. Reproducing it faithfully would have shipped data loss forward.
+  - **Two small TUI behaviour changes**: labels set from the detail editor arrive sorted
+    (`SetLabels` merges through a `BTreeSet`; same set, different stored order), and the
+    "update status"/"remove status" notifications now show the seam's message because the
+    moved-story count lives in the response.
+  - **`tests/tui_undo.rs` calls the seam invocation directly** rather than
+    `tui::app::dispatch`, which needs a real terminal. That is the same shape as before —
+    the file always duplicated the dispatch logic — except the duplication is now one
+    invocation instead of a lock, a path and a rewrite.
 
 ## Resume protocol (fresh session)
 

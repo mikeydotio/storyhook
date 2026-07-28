@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Priority, ProgressRollup, StoryRelation, StorySnapshot, SuperState};
+use crate::domain::{
+    Member, Priority, ProgressRollup, StateDef, StoryRelation, StorySnapshot, SuperState,
+};
 use crate::error::AppError;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,6 +74,30 @@ pub struct GraphOverview {
     pub leaves: Vec<String>,
 }
 
+/// A whole project in one value: its catalog, its people, and its open
+/// stories.
+///
+/// What a client that holds a *model* needs, as opposed to a client that asks
+/// a question. The TUI rebuilds its board from one of these after every
+/// change; before the seam it made five separate reads and could observe a
+/// different instant in each.
+///
+/// Open stories only, deliberately. That is the set the board renders, and
+/// carrying the archive would make the payload grow without bound in exchange
+/// for rows nothing displays.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSnapshotView {
+    /// The project's story-id prefix.
+    pub prefix: String,
+    /// The state catalog, in configured order — which is the order a board
+    /// puts its columns in, so it is not merely a set.
+    pub states: Vec<StateDef>,
+    /// The project's members, for resolving an assignee client-side.
+    pub members: Vec<Member>,
+    /// Every unarchived story.
+    pub stories: Vec<StorySnapshot>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseView {
     pub phase: String,
@@ -113,6 +139,19 @@ pub enum Response {
     /// Raw JSON output — bypasses normal envelope wrapping.
     /// Used by session-start and similar commands that need exact JSON control.
     RawJson(String),
+    /// A whole project, for a client that holds a model rather than asking a
+    /// question.
+    ///
+    /// Rendered as JSON in both forms. There is no human rendering of a
+    /// project snapshot that a human would want — `story list` is that
+    /// command — and inventing one would be a second, worse `list`.
+    ProjectSnapshot(Box<ProjectSnapshotView>),
+    /// One story's raw event history, oldest first.
+    ///
+    /// Rendered as JSON, for the same reason as [`Response::ProjectSnapshot`]:
+    /// it is a machine's value. A human wanting a story's history has
+    /// `story show`, which renders the *fold* of it.
+    StoryHistory(Vec<crate::domain::StoryEvent>),
 }
 
 #[derive(Serialize)]
@@ -272,6 +311,8 @@ fn render_json(response: &Response) -> String {
             // Should not reach here — render_response handles RawJson before calling render_json.
             return format!("{raw}\n");
         }
+        Response::ProjectSnapshot(view) => serde_json::to_string_pretty(view.as_ref()),
+        Response::StoryHistory(events) => serde_json::to_string_pretty(events),
     }
     .expect("response should serialize");
 
@@ -393,6 +434,21 @@ fn render_human(response: &Response) -> String {
         Response::RawJson(raw) => {
             // Should not reach here — render_response handles RawJson before calling render_human.
             format!("{raw}\n")
+        }
+        // Deliberately the same JSON in both forms: a project snapshot is a
+        // machine's value, and a human asking for one is asking the wrong
+        // command.
+        Response::ProjectSnapshot(view) => {
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(view.as_ref()).unwrap_or_default()
+            )
+        }
+        Response::StoryHistory(events) => {
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(events).unwrap_or_default()
+            )
         }
     }
 }
