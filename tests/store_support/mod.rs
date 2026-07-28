@@ -143,6 +143,47 @@ pub fn create_story(store: &SqliteStore, project: ProjectId, title: &str, at: &s
     story
 }
 
+/// Adds a relation, writing both stories' events and both folded snapshots in
+/// **one** transaction.
+///
+/// This is the shape the relation service is meant to take: under the old
+/// design the two halves were two separate operations, so a failure between
+/// them left a half-written relation that survived indefinitely (SH-60). Here
+/// a rejected edge — a second parent, a relation to a story that does not
+/// exist — rolls back both halves together.
+pub fn link_atomic(
+    store: &SqliteStore,
+    project: ProjectId,
+    from: StoryNo,
+    relation: &str,
+    to: StoryNo,
+) -> Result<(), StoreError> {
+    let inverse = storyhook::domain::inverse_relation(relation)
+        .ok_or_else(|| StoreError::Validation(format!("unknown relation `{relation}`")))?;
+    store.write(|tx| {
+        let prefix = tx.project(project)?.expect("the project exists").prefix;
+        let states = tx.state_map(project)?;
+        for (story, other, relation) in [(from, to, relation), (to, from, inverse)] {
+            let head = tx.append_events(
+                project,
+                story,
+                ExpectedSeq::Any,
+                &[StoryEvent::StoryRelationshipAdded {
+                    at: "2026-01-01T00:10:00Z".to_string(),
+                    other_id: other.to_id(&prefix),
+                    relation: relation.to_string(),
+                }],
+            )?;
+            let stored = tx.events_for(project, story)?;
+            let (known, _) = storyhook::store::partition_known(story, &stored);
+            let snapshot = fold_story(&story.to_id(&prefix), &known, &states)
+                .map_err(|e| StoreError::Invariant(e.to_string()))?;
+            tx.put_story(project, &snapshot, head)?;
+        }
+        Ok(())
+    })
+}
+
 /// Opens a second connection straight to the database file, for tests that need
 /// to *damage* the read model in ways the store's own API forbids.
 ///
