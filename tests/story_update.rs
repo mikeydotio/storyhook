@@ -4,6 +4,9 @@
 //! error (rejected before any HTTP call) or a help/version query. The live
 //! download/replace path is exercised manually, not in CI.
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use predicates::str::contains;

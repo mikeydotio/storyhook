@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 /// Integration tests for TUI undo/redo.
 ///
 /// These tests verify the undo/redo mechanism by exercising the storage-level

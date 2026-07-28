@@ -1,6 +1,9 @@
 //! `story state list|add|set|remove|reorder` — the CLI half of per-repo
 //! status configuration (SH-41).
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;

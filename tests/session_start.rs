@@ -1,3 +1,6 @@
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 /// Tests for the `story session-start` CLI command.
 ///
 /// This command is designed for use by editor plugins and shell hooks.

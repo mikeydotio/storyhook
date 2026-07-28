@@ -8,6 +8,9 @@
 //! `deleted_reason` on the snapshot, and makes `story reopen` a guarded
 //! undelete for soft-deleted stories.
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::Connection;

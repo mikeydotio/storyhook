@@ -1,0 +1,18 @@
+# Fixture directories must never be created in `$TMPDIR`.
+#
+# On macOS `$TMPDIR` (`/var/folders/…/T/`) is Spotlight-indexed. This suite
+# creates hundreds of tiny files per run — temp git repos, storyhook project
+# trees, registries — and `mds_stores` backlogs behind them until the
+# fixture-heavy web tests fail as unexplained 404s. That diagnosis points
+# nowhere near the filesystem, and it cost a full investigation to find
+# (SH-53).
+#
+# `storyhook_test_support::scratch_dir()` builds fixtures under `/private/tmp`,
+# which is never indexed, and reclaims its own long-dead ones. These two entry
+# points are the ways back into `$TMPDIR`, so they are closed.
+# `tempfile::Builder::…::tempdir_in()` is deliberately *not* banned: it takes
+# an explicit parent, and it is what `scratch_dir()` itself is built on.
+disallowed-methods = [
+  { path = "tempfile::tempdir", reason = "$TMPDIR is Spotlight-indexed; use storyhook_test_support::scratch_dir()" },
+  { path = "tempfile::TempDir::new", reason = "$TMPDIR is Spotlight-indexed; use storyhook_test_support::scratch_dir()" },
+]

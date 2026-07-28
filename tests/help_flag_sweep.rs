@@ -10,6 +10,9 @@
 //! regresses one verb at a time: a new positional-taking verb inherits the
 //! bug unless the fix lives ahead of all of them.
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use std::collections::BTreeMap;
 use std::path::Path;

@@ -4,6 +4,9 @@
 //! *before state* (detecting each bug) and will pass once the fix is applied.
 //! Each test exercises real CLI output or real file content — no mocks.
 
+// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
+#![allow(clippy::disallowed_methods)]
+
 use assert_cmd::Command;
 use tempfile::tempdir;
 
