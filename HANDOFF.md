@@ -26,9 +26,11 @@ This file is the wave-boundary summary; the ledger is the detail.
   (below), and deleting the `progress` rollup from the view builder fails five of its tests.
 - **The drift guard bites** — two `should_panic` tests damage a read model through a second
   connection to prove it is not vacuously green.
-- **Timing: 2:07 and 2:04 wall**, against W1's ~56s. The jump is **build, not tests**: the three
-  new binaries contribute 2.0s of runtime; the rest is linking them plus recompiling every
-  downstream binary because `src/domain.rs` changed. `cargo test --workspace` alone is ~62s warm.
+- **Timing: 62.7s and 62.5s warm**, against W1's ~56s — **+6.5s**, of which 2.0s is the three
+  new binaries actually running (`service_story` 0.46s, `service_relations` 0.27s,
+  `differential_lifecycle` 1.31s) and the rest is linking them. Mid-wave runs measured ~2:07;
+  that is not the steady state — touching `src/domain.rs` invalidates every downstream binary,
+  so any commit that changed it paid a full rebuild.
 
 ## What landed
 

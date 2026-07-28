@@ -734,13 +734,14 @@
   - **`story show` has no dispatch arm yet**, so the harness's view assertions call
     `Ctx::story_view` directly. W2c porting `Show` should point them back through dispatch.
 
-  Gate: **two consecutive green full runs, 2:07 and 2:04 wall** — against W1's 55.8s/56.5s.
-  The jump is **build, not tests**: `cargo test --workspace` alone is ~62s warm, and the
-  three new binaries contribute **2.0s of runtime** (`service_story` 0.46s,
-  `service_relations` 0.27s, `differential_lifecycle` 1.31s), inside the per-wave budget.
-  The rest is linking three more test binaries plus recompiling the lib after `domain.rs`
-  changed, which invalidates every downstream binary. `web_test` again measured 21s against
-  its 7.2s baseline, unchanged code, parallel-binary contention as in W1.
+  Gate: **two consecutive green full runs, 62.7s and 62.5s warm** — against W1's 55.8s/56.5s,
+  so **+6.5s**. Of that, the three new binaries contribute **2.0s of runtime**
+  (`service_story` 0.46s, `service_relations` 0.27s, `differential_lifecycle` 1.31s) and the
+  rest is linking three more test binaries, the same ~1.2s-per-binary cost W0b and W1 both
+  measured. Well inside the 180s ceiling. **Mid-wave runs measured ~2:07 and are not the
+  steady-state number**: touching `src/domain.rs` invalidates every downstream binary, so any
+  commit in this wave that changed it paid a full rebuild. `web_test` again measured ~21s
+  against its 7.2s baseline — unchanged code, parallel-binary contention, as in W1.
 
   Verification that the tests bite, not merely pass: the differential harness found the
   legacy id-burn defect on its first full run (Key facts); deleting the `progress` rollup
