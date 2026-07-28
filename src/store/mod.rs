@@ -249,6 +249,14 @@ pub trait WriteOps: ReadOps {
         kind: PathKind,
     ) -> Result<(), StoreError>;
 
+    /// Forgets one checkout of a project, reporting whether there was one.
+    ///
+    /// The project row and its stories survive. A checkout that has been
+    /// deleted, moved, or taken off the dashboard is not a reason to lose the
+    /// work recorded against it — which is exactly the mistake the legacy
+    /// registry made impossible to make only because it held no data.
+    fn forget_project_path(&mut self, project: ProjectId, path: &Path) -> Result<bool, StoreError>;
+
     /// Allocates the next story number for a project.
     ///
     /// The counter moves inside this transaction, so a rollback returns the
