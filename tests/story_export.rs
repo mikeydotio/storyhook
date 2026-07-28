@@ -1,17 +1,17 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::tempdir;
+use storyhook_test_support::{TestEnv, scratch_dir};
 
+/// Every `story` invocation in this file runs in the shared test
+/// environment's private HOME/XDG directories, so nothing here can reach the
+/// developer's own storyhook state.
 fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+    TestEnv::shared().story(dir)
 }
 
 #[test]
 fn export_and_import_roundtrip() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    let dir = TestEnv::shared().project().build();
     story(dir.path())
         .args(["new", "Task one"])
         .assert()
@@ -38,7 +38,7 @@ fn export_and_import_roundtrip() {
     let export_json = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
     // Import into new directory
-    let dir2 = tempdir().unwrap();
+    let dir2 = scratch_dir();
     let export_file = dir2.path().join("export.json");
     std::fs::write(&export_file, &export_json).unwrap();
 
@@ -75,8 +75,7 @@ fn export_and_import_roundtrip() {
 
 #[test]
 fn export_import_roundtrips_description() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    let dir = TestEnv::shared().project().build();
     story(dir.path())
         .args([
             "new",
@@ -90,7 +89,7 @@ fn export_import_roundtrips_description() {
     let output = story(dir.path()).args(["export"]).assert().success();
     let export_json = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
-    let dir2 = tempdir().unwrap();
+    let dir2 = scratch_dir();
     let export_file = dir2.path().join("export.json");
     std::fs::write(&export_file, &export_json).unwrap();
 
@@ -110,8 +109,7 @@ fn export_import_roundtrips_description() {
 
 #[test]
 fn export_json_output() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    let dir = TestEnv::shared().project().build();
     story(dir.path())
         .args(["new", "A story"])
         .assert()
@@ -126,11 +124,7 @@ fn export_json_output() {
 
 #[test]
 fn export_preserves_custom_prefix() {
-    let dir = tempdir().unwrap();
-    story(dir.path())
-        .args(["init", "--prefix", "API"])
-        .assert()
-        .success();
+    let dir = TestEnv::shared().project().prefix("API").build();
     story(dir.path())
         .args(["new", "Endpoint"])
         .assert()
@@ -139,7 +133,7 @@ fn export_preserves_custom_prefix() {
     let output = story(dir.path()).args(["export"]).assert().success();
     let export_json = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
-    let dir2 = tempdir().unwrap();
+    let dir2 = scratch_dir();
     let export_file = dir2.path().join("export.json");
     std::fs::write(&export_file, &export_json).unwrap();
 
@@ -158,8 +152,7 @@ fn export_preserves_custom_prefix() {
 
 #[test]
 fn export_and_import_roundtrip_with_types() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    let dir = TestEnv::shared().project().build();
 
     // Define a custom type (not one of the defaults)
     story(dir.path())
@@ -189,7 +182,7 @@ fn export_and_import_roundtrip_with_types() {
     assert!(export_json.contains("\"hotfix\""));
 
     // Import into a new directory
-    let dir2 = tempdir().unwrap();
+    let dir2 = scratch_dir();
     let export_file = dir2.path().join("export.json");
     std::fs::write(&export_file, &export_json).unwrap();
 
