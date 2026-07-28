@@ -25,7 +25,7 @@ use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, PathKind, ProjectId, StoryNo};
 use crate::store::sqlite::read;
-use crate::store::types::{NewProject, ProjectSettings, priority_rank};
+use crate::store::types::{NewProject, ProjectSettings, RawEvent, priority_rank};
 
 fn sql<T>(result: Result<T, rusqlite::Error>, context: &str) -> Result<T, StoreError> {
     result.map_err(|e| StoreError::from_sqlite(e, context))
@@ -181,10 +181,26 @@ pub(super) fn append_events(
     expected: ExpectedSeq,
     events: &[StoryEvent],
 ) -> Result<EventSeq, StoreError> {
+    let raw = events.iter().map(encode).collect::<Result<Vec<_>, _>>()?;
+    append_raw_events(conn, project, story, expected, &raw)
+}
+
+/// [`append_events`], for callers holding bytes rather than a decoded event.
+pub(super) fn append_raw_events(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+    expected: ExpectedSeq,
+    events: &[RawEvent],
+) -> Result<EventSeq, StoreError> {
     let head = read::head_seq(conn, project, story)?;
     if let ExpectedSeq::Exact(required) = expected
         && required != head
     {
+        // The precondition is evaluated and the insert performed inside one
+        // exclusive transaction, so nothing can land between them. Reporting
+        // the actual head as well as the expected one is what lets a caller
+        // say what happened without re-reading.
         return Err(StoreError::Conflict {
             expected,
             actual: head,
@@ -204,21 +220,22 @@ pub(super) fn append_events(
     )?;
     for (offset, event) in events.iter().enumerate() {
         let offset = i64::try_from(offset).expect("an append fits in i64");
-        let (kind, at, payload) = encode(event)?;
         sql(
             stmt.execute(params![
                 project.get(),
                 story.get(),
                 head.get() + offset + 1,
                 first_global + offset,
-                kind,
-                at,
-                payload
+                event.kind,
+                event.at,
+                event.payload
             ]),
             "appending an event",
         )?;
     }
-    Ok(EventSeq::new(head.get() + events.len() as i64))
+    Ok(EventSeq::new(
+        head.get() + i64::try_from(events.len()).expect("an append fits in i64"),
+    ))
 }
 
 /// Serializes an event and lifts its `kind` and `at` out of the payload.
@@ -226,7 +243,7 @@ pub(super) fn append_events(
 /// The denormalization is what lets a storyhook that has never heard of a kind
 /// still read, report, and retain the row (SH-54): those two columns are
 /// readable without understanding the payload at all.
-fn encode(event: &StoryEvent) -> Result<(String, String, String), StoreError> {
+fn encode(event: &StoryEvent) -> Result<RawEvent, StoreError> {
     let value = serde_json::to_value(event)?;
     let field = |name: &str| -> Result<String, StoreError> {
         value
@@ -239,7 +256,11 @@ fn encode(event: &StoryEvent) -> Result<(String, String, String), StoreError> {
                 ))
             })
     };
-    Ok((field("kind")?, field("at")?, serde_json::to_string(&value)?))
+    Ok(RawEvent {
+        kind: field("kind")?,
+        at: field("at")?,
+        payload: serde_json::to_string(&value)?,
+    })
 }
 
 // ---------------------------------------------------------------------------

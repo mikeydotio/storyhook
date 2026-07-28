@@ -109,6 +109,27 @@ pub enum StoredPayload {
     },
 }
 
+/// An event as bytes, for callers that must write one without understanding it.
+///
+/// The legacy importer needs this: replaying a `.storyhook` event log has to
+/// preserve every event *verbatim*, including kinds a future storyhook added
+/// and this one has never heard of, or the round trip that makes the flip a
+/// two-way door stops being byte-identical. It is also how a test writes the
+/// unknown-kind case that [`StoredPayload::Unknown`] exists for.
+///
+/// [`crate::store::WriteOps::append_events`] is the checked path and should be
+/// used everywhere else: it derives all three fields from a [`StoryEvent`], so
+/// they cannot disagree with the payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawEvent {
+    /// The `kind` discriminant. Must match the payload's own `kind` field.
+    pub kind: String,
+    /// The event's timestamp, RFC3339.
+    pub at: String,
+    /// The payload's JSON text, written byte for byte.
+    pub payload: String,
+}
+
 /// A story that carried at least one event this binary could not decode.
 ///
 /// Produced by [`partition_known`] and by the rebuild oracle, so an unknown
