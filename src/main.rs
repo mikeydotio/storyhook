@@ -1,8 +1,8 @@
 use std::env;
 use std::process;
 
-use storyhook::app;
-use storyhook::cli::{self, CliOptions, Invocation, WebAction};
+use storyhook::cli::{self, Invocation, WebAction};
+use storyhook::invoke::{InvokeRequest, Invoker, LegacyInvoker};
 use storyhook::output;
 
 /// Reports `error` on the stream its consumer reads, and exits with the
@@ -76,13 +76,6 @@ fn main() {
         return;
     }
 
-    let options = CliOptions {
-        json,
-        quiet,
-        no_hooks,
-        invocation,
-    };
-
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
         Err(error) => {
@@ -93,13 +86,17 @@ fn main() {
         }
     };
 
-    match app::run(&cwd, options.clone()) {
+    // The work goes through the Invoker seam; `json` and `quiet` never do,
+    // because rendering is this process's job no matter where the answer
+    // came from.
+    let request = InvokeRequest::new(invocation).no_hooks(no_hooks);
+    match LegacyInvoker::new(&cwd).invoke(request) {
         Ok(response) => {
-            let rendered = output::render_response(&response, options.json, options.quiet);
+            let rendered = output::render_response(&response, json, quiet);
             if !rendered.is_empty() {
                 print!("{rendered}");
             }
         }
-        Err(error) => fail(&error, options.json),
+        Err(error) => fail(&error, json),
     }
 }
