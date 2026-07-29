@@ -1077,11 +1077,23 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
 ///
 /// # Root resolution
 ///
-/// The project is the one registered at the working directory, or the one the
-/// directory's pointer file names. It does **not** walk upwards, because the
-/// legacy path does not: `ensure_project` looks for `<cwd>/.storyhook` and
-/// nowhere else, and a store leg that resolved a parent's project would answer
-/// questions the legacy leg refuses.
+/// The working directory, then each of its ancestors in turn, until one of them
+/// identifies a project: by its committed pointer file first, by its recorded
+/// path second. The nearest directory that answers wins.
+///
+/// **The upward walk is a deliberate behaviour change**, and it is one of the
+/// things the flip is *for*. `storage::ensure_project` looked at `<cwd>` and
+/// nowhere else, so `story list` from `src/` in a storyhook project failed with
+/// "not initialized" — a limitation the plugin worked around by `cd`-ing to the
+/// repository root in a subshell before every call, and one a human standing in
+/// a subdirectory simply lost to. Nothing about a project's identity was ever
+/// per-directory; the tracker's data being per-directory is what made it look
+/// that way.
+///
+/// Within a directory the pointer file outranks the path, because the pointer
+/// is the identity that travels with the repository: a checkout that was moved
+/// on disk, or cloned onto another machine, still resolves to the project it
+/// has always been.
 pub struct StoreInvoker<'a, S: Store> {
     store: &'a S,
     cwd: PathBuf,
@@ -1119,21 +1131,49 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     }
 
     /// The project this working directory belongs to, if any.
+    ///
+    /// Walks the directory and then its ancestors. Reading a pointer file is
+    /// one `stat` plus, at most, one small `read`, so the walk costs a handful
+    /// of syscalls per level even in the failing case where it reaches the
+    /// filesystem root and answers `None`.
     fn resolve(&self) -> Result<Option<ProjectId>, AppError> {
-        let root = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
-        let pointer = crate::service::project::read_pointer(&root)?;
-        Ok(self.store.read(|tx| {
-            // The pointer file wins: it is the identity that travels with the
-            // repository, so a checkout that was moved on disk still resolves
-            // to the project it has always been.
-            if let Some(pointer) = &pointer
-                && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
-            {
-                return Ok(Some(project.id));
+        for dir in ancestors(&self.cwd) {
+            if let Some(project) = resolve_at(self.store, &dir)? {
+                return Ok(Some(project));
             }
-            Ok(tx.project_by_path(&root)?.map(|project| project.id))
-        })?)
+        }
+        Ok(None)
     }
+}
+
+/// A directory and every ancestor of it, nearest first.
+///
+/// Canonicalized once at the start rather than per level: an uncanonicalized
+/// path's ancestors include `..` components that would `stat` the wrong
+/// directories, and a directory that cannot be canonicalized (it does not
+/// exist) has no meaningful ancestry to walk beyond what it was given.
+fn ancestors(cwd: &Path) -> Vec<PathBuf> {
+    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    root.ancestors().map(Path::to_path_buf).collect()
+}
+
+/// The project `dir` itself identifies — its pointer file, then its recorded
+/// path.
+///
+/// A pointer naming a uuid the store does not hold is **not** an answer here.
+/// It falls through, so a directory that carries a stale pointer and a valid
+/// path row still resolves; whether an unresolvable pointer should be reported
+/// rather than ignored is the guard's question, not resolution's.
+fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppError> {
+    let pointer = crate::service::project::read_pointer(dir)?;
+    Ok(store.read(|tx| {
+        if let Some(pointer) = &pointer
+            && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
+        {
+            return Ok(Some(project.id));
+        }
+        Ok(tx.project_by_path(dir)?.map(|project| project.id))
+    })?)
 }
 
 impl<S: Store> Invoker for StoreInvoker<'_, S> {
