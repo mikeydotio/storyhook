@@ -1,70 +1,164 @@
+//! The dashboard's HTTP surface, served from the store.
+//!
+//! # What moved, and what did not
+//!
+//! Every assertion in this file is the one it was before the daemon wave. What
+//! changed is how a fixture is built: the dashboard used to be pointed at a
+//! `registry.toml` naming `.storyhook/` directories, and it is pointed at a
+//! store now. So `register_repo` is gone, `seed` writes through the service
+//! layer instead of through `app::run`, and a test names its project by the
+//! slug the store minted rather than by the id a registry file invented.
+//!
+//! # Why every fixture is isolated
+//!
+//! One store per test, not one per binary. `GET /api/repos` lists *every*
+//! project the store knows, so a shared store would make "the catalog has one
+//! entry" depend on which other tests had run — which is exactly the reason each
+//! test used to get a registry file of its own.
+
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::path::Path;
+use std::sync::Arc;
+use storyhook::cli::parse_invocation;
+use storyhook::env::Environment;
+use storyhook::invoke::{dispatch, dispatch_unscoped};
+use storyhook::service::Ctx;
+use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store};
 use storyhook_test_support::{
-    ChildGuard, DaemonGuard, http_status_line, reserve_port, scratch_dir, serve, wait_for_addr,
-    wait_for_server,
+    ChildGuard, DaemonGuard, TestEnv, http_status_line, reserve_port, scratch_dir, serve,
+    wait_for_addr, wait_for_server,
 };
 
-fn story(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+/// A `story` command in the shared environment, for the tests that only
+/// exercise argument parsing and never reach a project or the daemon's state.
+fn story(dir: &Path) -> Command {
+    TestEnv::shared().story(dir)
 }
 
-/// Runs one storyhook command against a **legacy** `.storyhook/` project, in
-/// process.
+/// A dashboard serving one project, and everything a test needs to talk to it.
 ///
-/// The dashboard reads `.storyhook/` directly — it is the last thing in the
-/// tree that does, and the wave that promotes the daemon is what moves it onto
-/// the store. Its fixtures therefore have to build a legacy tree, and the CLI
-/// no longer writes one: `story init` creates a project in the global store.
-/// So the fixture goes through `app::run`, which is the same call the dashboard
-/// itself makes.
-///
-/// Hooks are suppressed: a hook would shell out to `story`, which is the
-/// store-backed binary, and a fixture is not the place to exercise that.
-/// A `story` command with a **private store**, for the catalog tests.
-///
-/// `story web register|deregister|list` maintain the project catalog, and the
-/// catalog is the store now rather than a per-`HOME` `registry.toml`. Because
-/// the store is shared by every fixture in this binary, a test that asserts
-/// "no repos registered" — or on an exact listing — has to be given a database
-/// of its own, the way it used to be given a registry of its own.
-fn story_with_catalog(dir: &std::path::Path, data: &std::path::Path) -> Command {
-    let mut cmd = story(dir);
-    cmd.env("STORYHOOK_DATA_DIR", data);
-    cmd
+/// Holds its environment: the temporary home lives exactly as long as the test,
+/// and the server thread reading its store dies with the binary.
+struct Served {
+    env: TestEnv,
+    store: Arc<SqliteStore>,
+    project: ProjectId,
+    dir: tempfile::TempDir,
+    /// The loopback port the server reported for itself.
+    port: u16,
+    /// The project's slug — what a dashboard URL calls a repo id.
+    repo_id: String,
 }
 
-fn seed(root: &std::path::Path, args: &[&str]) {
-    let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
-    let invocation = storyhook::cli::parse_invocation(&owned)
-        .unwrap_or_else(|e| panic!("`story {}` did not parse: {e}", args.join(" ")));
-    storyhook::app::run(
-        root,
-        storyhook::cli::CliOptions {
-            json: false,
-            quiet: false,
-            no_hooks: true,
-            invocation,
-        },
+impl Served {
+    /// The checkout the project was initialized in.
+    fn dir(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// The environment this fixture's store and daemon live in.
+    fn environment(&self) -> Environment {
+        self.env.environment()
+    }
+
+    /// Runs one storyhook command against the fixture's project, in process.
+    ///
+    /// The same seam the dashboard itself uses, so a fixture cannot drift from
+    /// the thing it is setting up. Hooks are suppressed: a hook would shell out
+    /// to `story`, and a fixture is not the place to exercise that.
+    fn seed(&self, args: &[&str]) {
+        let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let invocation = parse_invocation(&owned)
+            .unwrap_or_else(|e| panic!("`story {}` did not parse: {e}", args.join(" ")));
+        let ctx =
+            Ctx::new(&*self.store, self.project, self.dir(), self.environment()).no_hooks(true);
+        dispatch(&ctx, invocation)
+            .unwrap_or_else(|e| panic!("`story {}` failed in the fixture: {e}", args.join(" ")));
+    }
+
+    /// The project's report data, read straight from the store.
+    ///
+    /// Replaces `app::build_report_data`, which took a repository path because
+    /// the data was in the repository. `QueryService::report_data` is the
+    /// function that produces it now, and it is the one the dashboard's `/data`
+    /// route calls, so these tests still describe the same value the route
+    /// serves.
+    fn report_data(&self) -> storyhook::output::ReportData {
+        let now = self.environment().now();
+        Store::read(&*self.store, |tx| {
+            Ok(storyhook::service::QueryService::new(tx, self.project, &now).report_data())
+        })
+        .expect("reading the store")
+        .expect("building the report data")
+    }
+
+    /// Adds a second project to the same store, returning its checkout and the
+    /// slug a dashboard URL names it by.
+    ///
+    /// The multi-project tests need one store with two projects in it, which is
+    /// what a real machine looks like — where they used to need one registry
+    /// file naming two directories.
+    fn add_project(&self) -> (tempfile::TempDir, String) {
+        let dir = scratch_dir();
+        dispatch_unscoped(
+            &*self.store,
+            dir.path(),
+            "2026-01-01T00:00:00Z",
+            parse_invocation(&["init".to_string(), "--no-agents-md".to_string()])
+                .expect("`story init` parses"),
+        )
+        .expect("initializing a second project");
+        let project = storyhook_test_support::project_id_at(&self.store, dir.path())
+            .expect("the second project is in the store");
+        let slug = Store::read(&*self.store, |tx| {
+            Ok(tx.project(project)?.expect("the project row").slug)
+        })
+        .expect("reading the second project");
+        (dir, slug)
+    }
+
+    /// Forgets this project's checkout, emptying the catalog.
+    fn deregister(&self) {
+        storyhook::service::CatalogService::new(&*self.store)
+            .deregister(&self.repo_id)
+            .expect("deregistering the fixture checkout");
+    }
+}
+
+/// An isolated environment with one initialized project, served on an
+/// OS-assigned loopback port.
+fn served() -> Served {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let store = Arc::new(env.open_store());
+    let environment = env.environment();
+
+    dispatch_unscoped(
+        &*store,
+        dir.path(),
+        "2026-01-01T00:00:00Z",
+        parse_invocation(&["init".to_string(), "--no-agents-md".to_string()])
+            .expect("`story init` parses"),
     )
-    .unwrap_or_else(|e| panic!("`story {}` failed in the fixture: {e}", args.join(" ")));
-}
+    .expect("initializing the fixture project");
 
-/// Registers `dir` (a fresh, already-`story init`-ed project directory) in a
-/// brand-new temp registry file, returning the registry's own `TempDir`
-/// guard (bind this to a local for the rest of the test, exactly the way
-/// `dir` itself is held, so the file isn't deleted before the server reads
-/// it), the registry's path (pass to `start_server`), and the id
-/// `Registry::register` minted for `dir` (use to build `/api/repos/<id>/...`
-/// URLs).
-fn register_repo(dir: &std::path::Path) -> (tempfile::TempDir, std::path::PathBuf, String) {
-    let registry_dir = scratch_dir();
-    let registry_path = registry_dir.path().join("registry.toml");
-    let repo = storyhook::registry::with_lock_at(&registry_path, |r| r.register(dir, None))
-        .expect("registering the test repo must succeed");
-    (registry_dir, registry_path, repo.id)
+    let project = storyhook_test_support::project_id_at(&store, dir.path())
+        .expect("the fixture project is in the store");
+    let repo_id = Store::read(&*store, |tx| {
+        Ok(tx.project(project)?.expect("the project row").slug)
+    })
+    .expect("reading the fixture project");
+
+    let port = serve(Arc::clone(&store), &environment);
+    Served {
+        env,
+        store,
+        project,
+        dir,
+        port,
+        repo_id,
+    }
 }
 
 // --- CLI parsing tests ---
@@ -138,11 +232,9 @@ fn web_start_port_missing_value() {
 #[test]
 fn web_status_not_running() {
     let dir = scratch_dir();
-    let home = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let env = TestEnv::isolated();
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "status"])
         .assert()
         .success()
@@ -152,11 +244,9 @@ fn web_status_not_running() {
 #[test]
 fn web_stop_when_not_running() {
     let dir = scratch_dir();
-    let home = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let env = TestEnv::isolated();
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "stop"])
         .assert()
         .success()
@@ -176,9 +266,8 @@ fn web_stop_when_not_running() {
 #[test]
 fn web_open_not_running_fails_with_summary() {
     let dir = scratch_dir();
-    let home = scratch_dir();
-    story(dir.path())
-        .env("HOME", home.path())
+    let env = TestEnv::isolated();
+    env.story(dir.path())
         .args(["web", "open"])
         .assert()
         .failure()
@@ -189,9 +278,8 @@ fn web_open_not_running_fails_with_summary() {
 #[test]
 fn web_address_not_running_fails_with_summary() {
     let dir = scratch_dir();
-    let home = scratch_dir();
-    story(dir.path())
-        .env("HOME", home.path())
+    let env = TestEnv::isolated();
+    env.story(dir.path())
         .args(["web", "address"])
         .assert()
         .failure()
@@ -201,21 +289,19 @@ fn web_address_not_running_fails_with_summary() {
 
 #[test]
 fn web_open_and_address_succeed_when_running() {
-    let home = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
     let port = reserve_port();
-    let _daemon = DaemonGuard::new(home.path(), dir.path());
+    let _daemon = DaemonGuard::new(&env, dir.path());
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "start", "--port", &port.to_string()])
         .assert()
         .success();
     wait_for_server(port);
 
     // `web open` targets loopback; browser launch is stubbed via $BROWSER=true.
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .env("BROWSER", "true")
         .args(["web", "open"])
         .assert()
@@ -226,8 +312,7 @@ fn web_open_and_address_succeed_when_running() {
 
     // `web address` copies to the clipboard, stubbed via $STORYHOOK_CLIPBOARD_CMD=cat.
     // Host is left unasserted because the CI/dev host may or may not run Tailscale.
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .env("STORYHOOK_CLIPBOARD_CMD", "cat")
         .args(["web", "address"])
         .assert()
@@ -235,8 +320,7 @@ fn web_open_and_address_succeed_when_running() {
         .stdout(predicate::str::contains(format!(":{port}/")))
         .stdout(predicate::str::contains("clipboard"));
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "stop"])
         .assert()
         .success();
@@ -256,36 +340,32 @@ fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
         return;
     };
 
-    let home = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir();
     let port = reserve_port();
-    let _daemon = DaemonGuard::new(home.path(), dir.path());
+    let _daemon = DaemonGuard::new(&env, dir.path());
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "start", "--port", &port.to_string()])
         .assert()
         .success()
         .stdout(predicate::str::contains(format!("http://{fqdn}:{port}")));
     wait_for_server(port);
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "status"])
         .assert()
         .success()
         .stdout(predicate::str::contains(format!("http://{fqdn}:{port}")));
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .env("STORYHOOK_CLIPBOARD_CMD", "cat")
         .args(["web", "address"])
         .assert()
         .success()
         .stdout(predicate::str::contains(format!("http://{fqdn}:{port}/")));
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "stop"])
         .assert()
         .success();
@@ -299,13 +379,12 @@ fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
 /// end cleans it up so the test doesn't leak a bound port.
 #[test]
 fn web_start_succeeds_outside_a_project() {
-    let home = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir(); // deliberately NOT a storyhook project
     let port = reserve_port();
-    let _daemon = DaemonGuard::new(home.path(), dir.path());
+    let _daemon = DaemonGuard::new(&env, dir.path());
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "start", "--port", &port.to_string()])
         .assert()
         .success()
@@ -313,8 +392,7 @@ fn web_start_succeeds_outside_a_project() {
 
     wait_for_server(port);
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "stop"])
         .assert()
         .success();
@@ -324,11 +402,9 @@ fn web_start_succeeds_outside_a_project() {
 
 #[test]
 fn web_serve_and_query_root() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let port = fixture.port;
 
     // GET / should return HTML
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/"))
@@ -353,11 +429,9 @@ fn web_serve_and_query_root() {
 /// accidentally dropping one of those surfaces.
 #[test]
 fn web_serve_root_html_has_board_list_drawer_markers() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let port = fixture.port;
 
     let resp = ureq::get(format!("http://127.0.0.1:{port}/"))
         .call()
@@ -416,11 +490,9 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
 
 #[test]
 fn web_serve_api_data_empty_project() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -445,13 +517,11 @@ fn web_serve_api_data_empty_project() {
 
 #[test]
 fn web_serve_api_data_with_stories() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Build feature"]);
-    seed(dir.path(), &["new", "Fix bug"]);
+    let fixture = served();
+    fixture.seed(&["new", "Build feature"]);
+    fixture.seed(&["new", "Fix bug"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -473,14 +543,12 @@ fn web_serve_api_data_with_stories() {
 
 #[test]
 fn web_serve_api_data_excludes_deleted_stories() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Build feature"]);
-    seed(dir.path(), &["new", "Fix bug"]);
-    seed(dir.path(), &["delete", "SH-2", "duplicate"]);
+    let fixture = served();
+    fixture.seed(&["new", "Build feature"]);
+    fixture.seed(&["new", "Fix bug"]);
+    fixture.seed(&["delete", "SH-2", "duplicate"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -502,11 +570,9 @@ fn web_serve_api_data_excludes_deleted_stories() {
 
 #[test]
 fn web_serve_404_unknown_route() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let port = fixture.port;
 
     // ureq v3 returns non-2xx as errors
     let err = ureq::get(&format!("http://127.0.0.1:{port}/nonexistent"))
@@ -523,10 +589,9 @@ fn web_serve_404_unknown_route() {
 
 #[test]
 fn build_report_data_empty_project() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let data = storyhook::app::build_report_data(dir.path()).unwrap();
+    let data = fixture.report_data();
     assert_eq!(data.summary.total_open, 0);
     assert_eq!(data.summary.total_closed, 0);
     assert!(data.stories.is_empty());
@@ -536,13 +601,12 @@ fn build_report_data_empty_project() {
 
 #[test]
 fn build_report_data_with_mixed_states() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Open story"]);
-    seed(dir.path(), &["new", "Closed story"]);
-    seed(dir.path(), &["move", "SH-2", "done"]);
+    let fixture = served();
+    fixture.seed(&["new", "Open story"]);
+    fixture.seed(&["new", "Closed story"]);
+    fixture.seed(&["move", "SH-2", "done"]);
 
-    let data = storyhook::app::build_report_data(dir.path()).unwrap();
+    let data = fixture.report_data();
     assert_eq!(data.summary.total_open, 1);
     assert_eq!(data.summary.total_closed, 1);
     assert_eq!(data.stories.len(), 2);
@@ -551,11 +615,10 @@ fn build_report_data_with_mixed_states() {
 
 #[test]
 fn report_data_serializes_to_json() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "JSON test"]);
+    let fixture = served();
+    fixture.seed(&["new", "JSON test"]);
 
-    let data = storyhook::app::build_report_data(dir.path()).unwrap();
+    let data = fixture.report_data();
     let json = serde_json::to_string(&data).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(parsed["summary"].is_object());
@@ -584,11 +647,9 @@ fn help_web_topic_exists() {
 
 #[test]
 fn web_serve_post_returns_405() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = ureq::post(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .send(&[] as &[u8])
@@ -604,15 +665,10 @@ fn web_serve_post_returns_405() {
 
 #[test]
 fn web_serve_api_data_special_chars_in_title() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(
-        dir.path(),
-        &["new", "Fix <script>alert('xss')</script> & \"quotes\""],
-    );
+    let fixture = served();
+    fixture.seed(&["new", "Fix <script>alert('xss')</script> & \"quotes\""]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -630,15 +686,10 @@ fn web_serve_api_data_special_chars_in_title() {
 
 #[test]
 fn web_serve_api_data_unicode_title() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(
-        dir.path(),
-        &["new", "Support emoji: and CJK: \u{4e16}\u{754c}"],
-    );
+    let fixture = served();
+    fixture.seed(&["new", "Support emoji: and CJK: \u{4e16}\u{754c}"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -655,11 +706,9 @@ fn web_serve_api_data_unicode_title() {
 
 #[test]
 fn web_serve_root_has_no_cache_header() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let port = fixture.port;
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/"))
         .call()
@@ -676,11 +725,9 @@ fn web_serve_root_has_no_cache_header() {
 
 #[test]
 fn web_serve_api_data_has_no_cache_header() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -699,14 +746,12 @@ fn web_serve_api_data_has_no_cache_header() {
 
 #[test]
 fn web_serve_api_json_structure_matches_dashboard() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story one"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story one"]);
     // Add a label so we can verify the labels field
-    seed(dir.path(), &["set", "SH-1", "--labels", "backend"]);
+    fixture.seed(&["set", "SH-1", "--labels", "backend"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -773,18 +818,13 @@ fn web_serve_api_json_structure_matches_dashboard() {
 
 #[test]
 fn web_serve_api_data_meta_states_are_ordered() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
     // Append a state whose slug sorts alphabetically first ("archived" < "done"
     // < "in-progress" < "todo"), so an alphabetical (e.g. BTreeMap-derived)
     // ordering bug would put it first instead of last.
-    seed(
-        dir.path(),
-        &["state", "add", "archived", "--super", "CLOSED"],
-    );
+    fixture.seed(&["state", "add", "archived", "--super", "CLOSED"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -823,11 +863,9 @@ fn web_serve_api_data_meta_states_are_ordered() {
 
 #[test]
 fn web_serve_api_data_meta_has_types_priorities_relations_members() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -870,13 +908,11 @@ fn web_serve_api_data_meta_has_types_priorities_relations_members() {
 
 #[test]
 fn web_meta_includes_sorted_unique_labels() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "A", "--labels", "web,bug"]);
-    seed(dir.path(), &["new", "B", "--labels", "web,cli"]);
+    let fixture = served();
+    fixture.seed(&["new", "A", "--labels", "web,bug"]);
+    fixture.seed(&["new", "B", "--labels", "web,cli"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -895,12 +931,10 @@ fn web_meta_includes_sorted_unique_labels() {
 
 #[test]
 fn web_serve_api_data_meta_includes_members() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["member", "add", "Alice"]);
+    let fixture = served();
+    fixture.seed(&["member", "add", "Alice"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -921,12 +955,10 @@ fn web_serve_api_data_meta_includes_members() {
 
 #[test]
 fn web_serve_get_story_by_id() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Fetch me"]);
+    let fixture = served();
+    fixture.seed(&["new", "Fetch me"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
@@ -953,11 +985,9 @@ fn web_serve_get_story_by_id() {
 
 #[test]
 fn web_serve_get_story_by_id_unknown_returns_404() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = ureq::get(&format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999"
@@ -975,11 +1005,9 @@ fn web_serve_get_story_by_id_unknown_returns_404() {
 
 #[test]
 fn web_serve_error_reply_has_security_headers() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     // Disable ureq's default "non-2xx is an Err" behavior so we can inspect
     // the 404 response's headers and body directly.
@@ -1006,11 +1034,9 @@ fn web_serve_error_reply_has_security_headers() {
 
 #[test]
 fn web_serve_error_reply_uses_standard_envelope() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999"
@@ -1077,11 +1103,9 @@ fn story_field(json: &serde_json::Value, field: &str) -> serde_json::Value {
 
 #[test]
 fn web_create_story_returns_201_and_story() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1105,11 +1129,9 @@ fn web_create_story_returns_201_and_story() {
 
 #[test]
 fn web_create_story_missing_title_is_400() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1121,11 +1143,9 @@ fn web_create_story_missing_title_is_400() {
 
 #[test]
 fn web_create_story_with_description_labels_priority() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1145,11 +1165,9 @@ fn web_create_story_with_description_labels_priority() {
 
 #[test]
 fn web_create_story_invalid_priority_is_422() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1169,11 +1187,9 @@ fn web_create_story_invalid_priority_is_422() {
 
 #[test]
 fn web_create_story_without_guard_header_is_403() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json_unguarded(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
@@ -1194,12 +1210,10 @@ fn web_create_story_without_guard_header_is_403() {
 
 #[test]
 fn web_move_story_changes_state() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Movable"]);
+    let fixture = served();
+    fixture.seed(&["new", "Movable"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -1214,12 +1228,10 @@ fn web_move_story_changes_state() {
 
 #[test]
 fn web_move_story_to_closed_state_archives() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Will be archived"]);
+    let fixture = served();
+    fixture.seed(&["new", "Will be archived"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -1244,12 +1256,10 @@ fn web_move_story_to_closed_state_archives() {
 
 #[test]
 fn web_move_story_invalid_state_is_422() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -1261,11 +1271,9 @@ fn web_move_story_invalid_state_is_422() {
 
 #[test]
 fn web_move_unknown_story_is_404() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-999/move"),
@@ -1279,12 +1287,10 @@ fn web_move_unknown_story_is_404() {
 
 #[test]
 fn web_comment_story_appends_comment() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/comment"),
@@ -1300,12 +1306,10 @@ fn web_comment_story_appends_comment() {
 
 #[test]
 fn web_priority_story_sets_priority() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/priority"),
@@ -1320,13 +1324,11 @@ fn web_priority_story_sets_priority() {
 
 #[test]
 fn web_assign_story_to_valid_member_succeeds() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
-    seed(dir.path(), &["member", "add", "Alice"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    fixture.seed(&["member", "add", "Alice"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/assign"),
@@ -1341,12 +1343,10 @@ fn web_assign_story_to_valid_member_succeeds() {
 
 #[test]
 fn web_assign_story_to_missing_member_is_404() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     // storage::find_member returns AppError::NotFound (not Validation) for
     // an unknown member id, matching `story assign <id> <unknown-member>`
@@ -1361,12 +1361,10 @@ fn web_assign_story_to_missing_member_is_404() {
 
 #[test]
 fn web_labels_add_and_remove() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/labels"),
@@ -1403,12 +1401,10 @@ fn web_labels_add_and_remove() {
 
 #[test]
 fn web_labels_empty_body_is_400() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/labels"),
@@ -1420,12 +1416,10 @@ fn web_labels_empty_body_is_400() {
 
 #[test]
 fn web_block_and_unblock_story() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/block"),
@@ -1448,13 +1442,11 @@ fn web_block_and_unblock_story() {
 
 #[test]
 fn web_reopen_archived_story() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
-    seed(dir.path(), &["move", "SH-1", "done"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    fixture.seed(&["move", "SH-1", "done"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
@@ -1475,13 +1467,11 @@ fn web_reopen_archived_story() {
 /// (`AppError::Validation`), and leave the story untouched.
 #[test]
 fn web_reopen_deleted_story_without_force_is_422() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
-    seed(dir.path(), &["delete", "SH-1", "created in error"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    fixture.seed(&["delete", "SH-1", "created in error"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
@@ -1505,13 +1495,11 @@ fn web_reopen_deleted_story_without_force_is_422() {
 /// CLI's `story reopen <id> --force` and successfully undeletes.
 #[test]
 fn web_reopen_deleted_story_with_force_undeletes() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
-    seed(dir.path(), &["delete", "SH-1", "created in error"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    fixture.seed(&["delete", "SH-1", "created in error"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
@@ -1527,13 +1515,11 @@ fn web_reopen_deleted_story_with_force_undeletes() {
 
 #[test]
 fn web_reopen_malformed_json_is_400() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
-    seed(dir.path(), &["move", "SH-1", "done"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    fixture.seed(&["move", "SH-1", "done"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/reopen"),
@@ -1553,12 +1539,10 @@ fn web_reopen_malformed_json_is_400() {
 /// must fail cleanly rather than hang waiting on stdin confirmation.
 #[test]
 fn web_reopen_soft_deleted_story_is_rejected_without_force() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let del = delete_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1586,12 +1570,10 @@ fn web_reopen_soft_deleted_story_is_rejected_without_force() {
 
 #[test]
 fn web_patch_story_updates_multiple_fields() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = patch_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1607,12 +1589,10 @@ fn web_patch_story_updates_multiple_fields() {
 
 #[test]
 fn web_patch_story_no_fields_is_400() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = patch_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1624,12 +1604,10 @@ fn web_patch_story_no_fields_is_400() {
 
 #[test]
 fn web_patch_story_sets_description() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = patch_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1644,12 +1622,10 @@ fn web_patch_story_sets_description() {
 
 #[test]
 fn web_patch_story_description_without_guard_header_is_403() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = ureq::patch(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
@@ -1673,13 +1649,11 @@ fn web_patch_story_description_without_guard_header_is_403() {
 
 #[test]
 fn web_relate_and_unrelate_stories() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "A"]);
-    seed(dir.path(), &["new", "B"]);
+    let fixture = served();
+    fixture.seed(&["new", "A"]);
+    fixture.seed(&["new", "B"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/relate"),
@@ -1716,12 +1690,10 @@ fn web_relate_and_unrelate_stories() {
 
 #[test]
 fn web_delete_story_soft_deletes_it() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = delete_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1754,12 +1726,10 @@ fn web_delete_story_soft_deletes_it() {
 
 #[test]
 fn web_delete_story_without_reason_is_400() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = delete_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"),
@@ -1773,12 +1743,10 @@ fn web_delete_story_without_reason_is_400() {
 
 #[test]
 fn web_move_story_malformed_json_is_400() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -1792,12 +1760,10 @@ fn web_move_story_malformed_json_is_400() {
 
 #[test]
 fn web_mutation_without_guard_header_is_403() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = post_json_unguarded(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
@@ -1817,12 +1783,10 @@ fn web_mutation_without_guard_header_is_403() {
 
 #[test]
 fn web_mutation_with_spoofed_host_is_403() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = ureq::post(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
@@ -1837,12 +1801,10 @@ fn web_mutation_with_spoofed_host_is_403() {
 
 #[test]
 fn web_mutation_wrong_content_type_is_415() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = ureq::post(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
@@ -1856,12 +1818,10 @@ fn web_mutation_wrong_content_type_is_415() {
 
 #[test]
 fn web_put_on_story_path_is_405() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = ureq::put(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
@@ -1877,12 +1837,10 @@ fn web_put_on_story_path_is_405() {
 
 #[test]
 fn web_mutation_success_has_security_headers() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/priority"),
@@ -1903,12 +1861,10 @@ fn web_mutation_success_has_security_headers() {
 
 #[test]
 fn web_mutation_guard_reject_has_security_headers() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::post(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/priority"
@@ -1934,14 +1890,10 @@ fn web_mutation_guard_reject_has_security_headers() {
 
 // --- State configuration API: /api/repos/<id>/states ---
 
-/// Boots a server over a fresh project and returns (dir guard, port, repo id).
-/// Every state test needs the same three lines otherwise.
-fn serve_project() -> (tempfile::TempDir, tempfile::TempDir, u16, String) {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    let (registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
-    (dir, registry_dir, port, repo_id)
+/// Boots a server over a fresh project. Every state test needs the same lines
+/// otherwise.
+fn serve_project() -> Served {
+    served()
 }
 
 fn get_states(port: u16, repo_id: &str) -> serde_json::Value {
@@ -1968,12 +1920,13 @@ fn slugs(json: &serde_json::Value) -> Vec<String> {
 
 #[test]
 fn web_states_list_reports_config_and_counts_in_board_order() {
-    let (dir, _registry_dir, port, repo_id) = serve_project();
-    seed(dir.path(), &["new", "Open one"]);
-    seed(dir.path(), &["new", "Done one"]);
-    seed(dir.path(), &["move", "SH-2", "done"]);
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    fixture.seed(&["new", "Open one"]);
+    fixture.seed(&["new", "Done one"]);
+    fixture.seed(&["move", "SH-2", "done"]);
 
-    let json = get_states(port, &repo_id);
+    let json = get_states(port, repo_id);
     assert_eq!(slugs(&json), vec!["todo", "in-progress", "done"]);
 
     let todo = &json["states"][0];
@@ -1989,7 +1942,8 @@ fn web_states_list_reports_config_and_counts_in_board_order() {
 
 #[test]
 fn web_states_create_adds_a_state_and_returns_the_new_list() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
@@ -2001,12 +1955,13 @@ fn web_states_create_adds_a_state_and_returns_the_new_list() {
     let json = json_body(resp);
     assert_eq!(slugs(&json), vec!["todo", "in-progress", "done", "review"]);
     assert_eq!(json["states"][3]["description"], "Waiting on a reviewer");
-    assert_eq!(slugs(&get_states(port, &repo_id)), slugs(&json));
+    assert_eq!(slugs(&get_states(port, repo_id)), slugs(&json));
 }
 
 #[test]
 fn web_states_create_rejects_an_invalid_slug() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let error = post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
@@ -2018,7 +1973,8 @@ fn web_states_create_rejects_an_invalid_slug() {
 
 #[test]
 fn web_states_create_requires_slug_and_superstate() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states");
 
     for body in [r#"{"super_state":"OPEN"}"#, r#"{"slug":"review"}"#] {
@@ -2029,7 +1985,8 @@ fn web_states_create_requires_slug_and_superstate() {
 
 #[test]
 fn web_states_patch_sets_and_clears_optional_fields() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/todo");
 
     let json = json_body(patch_json(&url, r#"{"description":"Not started yet"}"#).unwrap());
@@ -2043,7 +2000,8 @@ fn web_states_patch_sets_and_clears_optional_fields() {
 
 #[test]
 fn web_states_patch_leaves_unmentioned_fields_alone() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/in-progress");
 
     patch_json(&url, r#"{"description":"Being worked on"}"#).unwrap();
@@ -2055,8 +2013,9 @@ fn web_states_patch_leaves_unmentioned_fields_alone() {
 
 #[test]
 fn web_states_patch_requires_a_destination_for_occupied_states() {
-    let (dir, _registry_dir, port, repo_id) = serve_project();
-    seed(dir.path(), &["new", "A story"]);
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    fixture.seed(&["new", "A story"]);
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/todo");
 
     let error = patch_json(&url, r#"{"super_state":"CLOSED"}"#).unwrap_err();
@@ -2085,7 +2044,8 @@ fn web_states_patch_requires_a_destination_for_occupied_states() {
 
 #[test]
 fn web_states_patch_reorders_the_collection() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let json = json_body(
         patch_json(
@@ -2095,12 +2055,13 @@ fn web_states_patch_reorders_the_collection() {
         .unwrap(),
     );
     assert_eq!(slugs(&json), vec!["done", "todo", "in-progress"]);
-    assert_eq!(slugs(&get_states(port, &repo_id)), slugs(&json));
+    assert_eq!(slugs(&get_states(port, repo_id)), slugs(&json));
 }
 
 #[test]
 fn web_states_reorder_rejects_a_partial_order() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let error = patch_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
@@ -2121,7 +2082,8 @@ fn web_states_reorder_rejects_a_partial_order() {
 /// reachable as a sub-path that would shadow a state with that name.
 #[test]
 fn web_states_a_state_named_reorder_is_still_addressable() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     post_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
         r#"{"slug":"reorder","super_state":"OPEN"}"#,
@@ -2140,14 +2102,15 @@ fn web_states_a_state_named_reorder_is_still_addressable() {
 
 #[test]
 fn web_states_delete_removes_and_migrates() {
-    let (dir, _registry_dir, port, repo_id) = serve_project();
-    seed(dir.path(), &["new", "A story"]);
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    fixture.seed(&["new", "A story"]);
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/todo");
 
     // Occupied and no destination named: refused, nothing changed.
     let error = delete_json(&url, "{}").unwrap_err();
     assert_eq!(status_of(error), 422);
-    assert_eq!(slugs(&get_states(port, &repo_id)).len(), 3);
+    assert_eq!(slugs(&get_states(port, repo_id)).len(), 3);
 
     let json = json_body(delete_json(&url, r#"{"move_stories_to":"in-progress"}"#).unwrap());
     assert_eq!(slugs(&json), vec!["in-progress", "done"]);
@@ -2156,7 +2119,8 @@ fn web_states_delete_removes_and_migrates() {
 
 #[test]
 fn web_states_delete_unknown_state_is_404() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let error = delete_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/nope"),
         "{}",
@@ -2169,7 +2133,8 @@ fn web_states_delete_unknown_state_is_404() {
 /// the story routes require.
 #[test]
 fn web_states_mutations_require_the_guard_header() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let error = post_json_unguarded(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
@@ -2198,7 +2163,8 @@ fn web_states_mutations_require_the_guard_header() {
 
 #[test]
 fn web_states_rejects_disallowed_methods() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let error = ureq::put(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/states"
@@ -2215,7 +2181,8 @@ fn web_states_rejects_disallowed_methods() {
 /// editor writes.
 #[test]
 fn web_data_meta_states_carry_role_and_description() {
-    let (_dir, _registry_dir, port, repo_id) = serve_project();
+    let fixture = serve_project();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     patch_json(
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/in-progress"),
         r#"{"description":"Being worked on"}"#,
@@ -2237,12 +2204,10 @@ fn web_data_meta_states_carry_role_and_description() {
 
 #[test]
 fn web_serve_repos_list_reports_available_repo_with_summary() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
         .call()
@@ -2257,18 +2222,27 @@ fn web_serve_repos_list_reports_available_repo_with_summary() {
     assert_eq!(repos[0]["summary"]["total_open"], 1);
 }
 
-/// A repo that was registered but whose `.storyhook/` later vanished (moved,
-/// deleted) must be reported as `available: false` with an `error`, never
-/// take down the whole `/api/repos` response for every other repo.
+/// **A behaviour change, deliberate.** A registered path whose `.storyhook/`
+/// had since been deleted was the common broken repo, and the list had to keep
+/// serving every other one around it — hence `available: false` with an
+/// `error`.
+///
+/// A project in the store has no directory to lose. Its data is in the database
+/// the daemon already has open, so deleting the checkout leaves the project
+/// perfectly readable, and `available: false` is unreachable through this
+/// surface — the same way `story doctor`'s dangling-relation finding became
+/// unreachable when the schema started refusing the shape.
+///
+/// The flag and the arm that would set it stay: the cost is one match arm, and
+/// the day a project genuinely cannot be read is not the day to discover that
+/// one bad row fails the whole list. This pins what a caller sees today.
 #[test]
-fn web_serve_repos_list_reports_unavailable_repo_without_failing() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+fn a_project_survives_the_deletion_of_its_checkout() {
+    let fixture = served();
+    fixture.seed(&["new", "Still here"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    std::fs::remove_dir_all(dir.path().join(".storyhook")).unwrap();
-
-    let port = serve(&registry_path);
+    std::fs::remove_dir_all(fixture.dir()).unwrap();
 
     let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
         .call()
@@ -2283,17 +2257,18 @@ fn web_serve_repos_list_reports_unavailable_repo_without_failing() {
     let repos = json.as_array().unwrap();
     assert_eq!(repos.len(), 1);
     assert_eq!(repos[0]["id"], repo_id);
-    assert_eq!(repos[0]["available"], false);
-    assert!(repos[0]["error"].is_string());
+    assert_eq!(
+        repos[0]["available"], true,
+        "the stories are in the store, not in the directory that just vanished"
+    );
+    assert_eq!(repos[0]["summary"]["total_open"], 1);
 }
 
 #[test]
 fn web_serve_unknown_repo_id_is_404() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let port = fixture.port;
 
     let err = ureq::get(format!(
         "http://127.0.0.1:{port}/api/repos/nonexistent-id/data"
@@ -2305,14 +2280,14 @@ fn web_serve_unknown_repo_id_is_404() {
 
 #[test]
 fn web_register_repo_via_api() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
+    let port = fixture.port;
+    // `story init` records the checkout, so the catalog starts with it. Forget
+    // it, and the POST below is what puts it back — which is the operation
+    // under test.
+    fixture.deregister();
 
-    let registry_dir = scratch_dir();
-    let registry_path = registry_dir.path().join("registry.toml");
-    let port = serve(&registry_path);
-
-    let body = serde_json::json!({"path": dir.path().to_string_lossy()}).to_string();
+    let body = serde_json::json!({"path": fixture.dir().to_string_lossy()}).to_string();
     let resp = post_json(&format!("http://127.0.0.1:{port}/api/repos"), &body).unwrap();
     assert_eq!(resp.status(), 201);
     let json: serde_json::Value =
@@ -2329,14 +2304,10 @@ fn web_register_repo_via_api() {
 
 #[test]
 fn web_register_repo_requires_guard_header() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
+    let port = fixture.port;
 
-    let registry_dir = scratch_dir();
-    let registry_path = registry_dir.path().join("registry.toml");
-    let port = serve(&registry_path);
-
-    let body = serde_json::json!({"path": dir.path().to_string_lossy()}).to_string();
+    let body = serde_json::json!({"path": fixture.dir().to_string_lossy()}).to_string();
     let err =
         post_json_unguarded(&format!("http://127.0.0.1:{port}/api/repos"), &body).unwrap_err();
     assert_eq!(status_of(err), 403);
@@ -2344,11 +2315,9 @@ fn web_register_repo_requires_guard_header() {
 
 #[test]
 fn web_deregister_repo_via_api() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = delete_json(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}"), "").unwrap();
     assert_eq!(resp.status(), 200);
@@ -2360,17 +2329,17 @@ fn web_deregister_repo_via_api() {
         serde_json::from_str(&list.into_body().read_to_string().unwrap()).unwrap();
     assert_eq!(list_json.as_array().unwrap().len(), 0);
 
-    // Deregistering must never touch the repo's own files.
-    assert!(dir.path().join(".storyhook/project.toml").exists());
+    // Deregistering must never touch the repo's own files. The committed
+    // pointer is the only one there is now, and it names the project this just
+    // forgot the checkout of — so a `story web register` puts it back.
+    assert!(fixture.dir().join(".storyhook.toml").exists());
 }
 
 #[test]
 fn web_deregister_repo_requires_guard_header() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let err = ureq::delete(format!("http://127.0.0.1:{port}/api/repos/{repo_id}"))
         .call()
@@ -2380,28 +2349,23 @@ fn web_deregister_repo_requires_guard_header() {
 
 // --- CLI: story web register|deregister|list ---
 //
-// All isolate $HOME to a temp dir so they never touch the developer's real
-// ~/.storyhook/registry.toml.
+// Each gets a private environment: the catalog spans every project in a store,
+// so a test asserting on an exact listing needs a store of its own, the way it
+// used to need a registry file of its own.
 
 #[test]
 fn web_register_dot_registers_cwd() {
-    let home = scratch_dir();
-    let data = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir();
-    story_with_catalog(dir.path(), data.path())
-        .arg("init")
-        .assert()
-        .success();
+    env.story(dir.path()).arg("init").assert().success();
 
-    story_with_catalog(dir.path(), data.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "register", "."])
         .assert()
         .success()
         .stdout(predicate::str::contains("Registered"));
 
-    story_with_catalog(dir.path(), data.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "list"])
         .assert()
         .success()
@@ -2416,17 +2380,12 @@ fn web_register_dot_registers_cwd() {
 
 #[test]
 fn web_register_explicit_path() {
-    let home = scratch_dir();
-    let data = scratch_dir();
+    let env = TestEnv::isolated();
     let cwd = scratch_dir();
     let target = scratch_dir();
-    story_with_catalog(target.path(), data.path())
-        .arg("init")
-        .assert()
-        .success();
+    env.story(target.path()).arg("init").assert().success();
 
-    story_with_catalog(cwd.path(), data.path())
-        .env("HOME", home.path())
+    env.story(cwd.path())
         .args(["web", "register", &target.path().to_string_lossy()])
         .assert()
         .success()
@@ -2435,16 +2394,11 @@ fn web_register_explicit_path() {
 
 #[test]
 fn web_register_with_name() {
-    let home = scratch_dir();
-    let data = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir();
-    story_with_catalog(dir.path(), data.path())
-        .arg("init")
-        .assert()
-        .success();
+    env.story(dir.path()).arg("init").assert().success();
 
-    story_with_catalog(dir.path(), data.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "register", ".", "--name", "My Project"])
         .assert()
         .success()
@@ -2452,8 +2406,7 @@ fn web_register_with_name() {
 
     // The name is recorded rather than echoed: the catalog is the projects
     // table now, so `--name` has somewhere to go and `web list` reports it.
-    story_with_catalog(dir.path(), data.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "list"])
         .assert()
         .success()
@@ -2462,15 +2415,13 @@ fn web_register_with_name() {
 
 #[test]
 fn web_register_non_project_fails() {
-    let home = scratch_dir();
-    let data = scratch_dir();
+    let env = TestEnv::isolated();
     let not_a_project = scratch_dir();
 
     // The wording changed with the storage model — the catalog now says which
     // directory is not a project, and what to do about it — but the shape is
     // the same: registering something that is not a project fails loudly.
-    story_with_catalog(not_a_project.path(), data.path())
-        .env("HOME", home.path())
+    env.story(not_a_project.path())
         .args(["web", "register", "."])
         .assert()
         .failure()
@@ -2480,26 +2431,20 @@ fn web_register_non_project_fails() {
 
 #[test]
 fn web_deregister_by_id_cli() {
-    let home = scratch_dir();
-    let data = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir();
-    story_with_catalog(dir.path(), data.path())
-        .arg("init")
-        .assert()
-        .success();
+    env.story(dir.path()).arg("init").assert().success();
 
     // `story init` puts the checkout in the catalog itself now, so there is no
     // separate registration step to perform first — which is the point of the
     // catalog *being* the projects table.
-    story_with_catalog(dir.path(), data.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "deregister", "."])
         .assert()
         .success()
         .stdout(predicate::str::contains("Deregistered"));
 
-    story_with_catalog(dir.path(), data.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "list"])
         .assert()
         .success()
@@ -2508,11 +2453,10 @@ fn web_deregister_by_id_cli() {
 
 #[test]
 fn web_deregister_unknown_target_fails() {
-    let home = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir();
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "deregister", "nope"])
         .assert()
         .failure();
@@ -2520,16 +2464,11 @@ fn web_deregister_unknown_target_fails() {
 
 #[test]
 fn web_list_shows_registered_repos() {
-    let home = scratch_dir();
-    let data = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir();
-    story_with_catalog(dir.path(), data.path())
-        .arg("init")
-        .assert()
-        .success();
+    env.story(dir.path()).arg("init").assert().success();
 
-    story_with_catalog(dir.path(), data.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "list"])
         .assert()
         .success()
@@ -2544,12 +2483,10 @@ fn web_list_shows_registered_repos() {
 
 #[test]
 fn web_list_empty_registry_message() {
-    let home = scratch_dir();
-    let data = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir();
 
-    story_with_catalog(dir.path(), data.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "list"])
         .assert()
         .success()
@@ -2567,14 +2504,13 @@ fn default_web_port_constant_is_3456() {
 
 #[test]
 fn build_report_data_with_blocked_story() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Blocking story"]);
-    seed(dir.path(), &["new", "Blocked story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Blocking story"]);
+    fixture.seed(&["new", "Blocked story"]);
     // SH-2 depends on SH-1
-    seed(dir.path(), &["link", "SH-1", "blocks", "SH-2"]);
+    fixture.seed(&["link", "SH-1", "blocks", "SH-2"]);
 
-    let data = storyhook::app::build_report_data(dir.path()).unwrap();
+    let data = fixture.report_data();
     assert_eq!(data.summary.total_open, 2);
     // SH-1 should be ready, SH-2 should be blocked
     assert!(
@@ -2593,13 +2529,12 @@ fn build_report_data_with_blocked_story() {
 
 #[test]
 fn build_report_data_counts_priorities() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "High priority"]);
-    seed(dir.path(), &["set", "SH-1", "--priority", "high"]);
-    seed(dir.path(), &["new", "No priority"]);
+    let fixture = served();
+    fixture.seed(&["new", "High priority"]);
+    fixture.seed(&["set", "SH-1", "--priority", "high"]);
+    fixture.seed(&["new", "No priority"]);
 
-    let data = storyhook::app::build_report_data(dir.path()).unwrap();
+    let data = fixture.report_data();
     // Only non-none priorities are counted in by_priority
     let high_count: usize = data
         .summary
@@ -2615,12 +2550,11 @@ fn build_report_data_counts_priorities() {
 
 #[test]
 fn build_report_data_counts_types() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Epic story", "--type", "epic"]);
-    seed(dir.path(), &["new", "Untyped story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Epic story", "--type", "epic"]);
+    fixture.seed(&["new", "Untyped story"]);
 
-    let data = storyhook::app::build_report_data(dir.path()).unwrap();
+    let data = fixture.report_data();
     let type_names: Vec<&str> = data
         .summary
         .by_type
@@ -2641,12 +2575,10 @@ fn build_report_data_counts_types() {
 
 #[test]
 fn web_serve_handles_concurrent_requests() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Concurrent test"]);
+    let fixture = served();
+    fixture.seed(&["new", "Concurrent test"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     // Fire 10 concurrent requests
     let handles: Vec<_> = (0..10)
@@ -2904,15 +2836,13 @@ fn web_start_port_negative_is_invalid() {
 
 #[test]
 fn web_serve_api_data_ready_and_blocked_flags_correct() {
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Ready story"]);
-    seed(dir.path(), &["new", "Blocked story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Ready story"]);
+    fixture.seed(&["new", "Blocked story"]);
     // SH-2 depends on SH-1 (which is open), so SH-2 is blocked
-    seed(dir.path(), &["link", "SH-1", "blocks", "SH-2"]);
+    fixture.seed(&["link", "SH-1", "blocks", "SH-2"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
         .call()
@@ -2953,16 +2883,27 @@ fn web_serve_api_data_ready_and_blocked_flags_correct() {
     assert!(blocked.contains(&"SH-2"));
 }
 
-// --- build_report_data on non-project directory ---
+// --- A directory that is not a project ---
 
+/// The store answers "no such project" rather than the dashboard discovering it
+/// by failing to read a directory.
+///
+/// The question this used to ask — does `build_report_data` error outside a
+/// project — is not answerable any more: report data is a function of a
+/// `ProjectId`, and there is no way to name one that does not exist. The
+/// property it was protecting, that the dashboard refuses to invent a project
+/// for an unknown id, is asked of the route instead.
 #[test]
-fn build_report_data_non_project_errors() {
-    let dir = scratch_dir();
-    let result = storyhook::app::build_report_data(dir.path());
-    assert!(
-        result.is_err(),
-        "build_report_data on non-project dir should error"
-    );
+fn an_unknown_project_is_refused_rather_than_invented() {
+    let fixture = served();
+    let port = fixture.port;
+
+    let err = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/not-a-project/data"
+    ))
+    .call()
+    .unwrap_err();
+    assert_eq!(status_of(err), 404);
 }
 
 // --- Tailnet dual-bind (skips gracefully where `tailscale` isn't available) ---
@@ -2988,12 +2929,10 @@ fn web_serve_binds_tailnet_ip_when_available() {
         return;
     };
 
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Reachable via tailnet"]);
+    let fixture = served();
+    fixture.seed(&["new", "Reachable via tailnet"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     // The tailnet listener binds promptly (same as loopback) but doesn't
     // start *serving* until the watcher's own setup finishes — poll for a
     // clear failure message if it never comes up at all; the `ureq::get`
@@ -3024,12 +2963,10 @@ fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
         return;
     };
 
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Move me from the tailnet"]);
+    let fixture = served();
+    fixture.seed(&["new", "Move me from the tailnet"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     // The tailnet listener binds promptly (same as loopback), but doesn't
     // start *serving* until the watcher's own setup finishes — poll for a
     // clear failure message if it never comes up at all; the `ureq::post`
@@ -3090,12 +3027,10 @@ fn web_serve_trusts_magic_dns_fqdn_for_mutations() {
         return;
     };
 
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Move me via MagicDNS"]);
+    let fixture = served();
+    fixture.seed(&["new", "Move me via MagicDNS"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     wait_for_addr(&format!("{tailnet_ip}:{port}"));
 
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
@@ -3126,12 +3061,10 @@ fn web_serve_rejects_bare_magic_dns_short_label_for_mutations() {
     };
     let short_label = fqdn.split('.').next().unwrap();
 
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     wait_for_addr(&format!("{tailnet_ip}:{port}"));
 
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
@@ -3160,12 +3093,10 @@ fn web_serve_rejects_foreign_ts_net_host_for_mutations() {
     let suffix = fqdn.split_once('.').map_or(fqdn.as_str(), |(_, rest)| rest);
     let foreign_host = format!("definitely-not-this-host.{suffix}");
 
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    seed(dir.path(), &["new", "Story"]);
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
 
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     wait_for_addr(&format!("{tailnet_ip}:{port}"));
 
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
@@ -3185,11 +3116,9 @@ fn web_serve_never_binds_wildcard_address() {
     // specific tailnet IP — never 0.0.0.0, ::, or `*` (a wildcard bind would
     // make the dashboard reachable from any interface, including a public
     // one). Skips gracefully if `lsof` isn't available.
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
+    let fixture = served();
 
-    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let port = fixture.port;
     std::thread::sleep(Duration::from_millis(200));
 
     let Ok(output) = std::process::Command::new("lsof")
@@ -3263,13 +3192,11 @@ fn sse_test_lock() -> std::sync::MutexGuard<'static, ()> {
 #[test]
 fn sse_delivers_repo_changed_on_story_mutation() {
     let _sse_guard = sse_test_lock();
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let mut sse = connect_sse(port);
-    seed(dir.path(), &["new", "Live update smoke test"]);
+    fixture.seed(&["new", "Live update smoke test"]);
 
     let received = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
     assert!(
@@ -3290,10 +3217,8 @@ fn sse_delivers_repo_changed_on_story_mutation() {
 #[test]
 fn sse_delivers_repo_changed_on_state_configuration_change() {
     let _sse_guard = sse_test_lock();
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let mut sse = connect_sse(port);
     post_json(
@@ -3320,35 +3245,20 @@ fn sse_delivers_repo_changed_on_state_configuration_change() {
 #[test]
 fn sse_coalesces_rapid_mutations_within_debounce_window() {
     let _sse_guard = sse_test_lock();
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    let (_registry_dir, registry_path, _repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let fixture = served();
+    let port = fixture.port;
 
-    seed(dir.path(), &["new", "Debounce target"]);
+    fixture.seed(&["new", "Debounce target"]);
 
     let mut sse = connect_sse(port);
     const MUTATIONS: usize = 6;
-    // Mutate via `app::run` directly (in-process) rather than spawning
-    // `story` subprocesses: subprocess spawn latency is too variable under
-    // the CPU load this whole suite generates to reliably land all of them
-    // inside the 200ms debounce window, which would make this assertion
-    // flaky for reasons that have nothing to do with the debounce logic
-    // under test. A tight in-process loop does.
+    // Mutate in-process rather than by spawning `story` subprocesses:
+    // subprocess spawn latency is too variable under the CPU load this whole
+    // suite generates to reliably land all of them inside the coalescing
+    // window, which would make this assertion flaky for reasons that have
+    // nothing to do with the logic under test. A tight in-process loop does.
     for _ in 0..MUTATIONS {
-        storyhook::app::run(
-            dir.path(),
-            storyhook::cli::CliOptions {
-                json: true,
-                quiet: true,
-                no_hooks: false,
-                invocation: storyhook::cli::Invocation::Comment {
-                    id: "SH-1".to_string(),
-                    text: "rapid update".to_string(),
-                },
-            },
-        )
-        .expect("comment mutation must succeed");
+        fixture.seed(&["comment", "SH-1", "rapid update"]);
     }
 
     // Give the debounce window (200ms) and one more publish cycle to settle,
@@ -3376,10 +3286,8 @@ fn sse_coalesces_rapid_mutations_within_debounce_window() {
 #[test]
 fn sse_disconnect_does_not_break_server_for_other_clients() {
     let _sse_guard = sse_test_lock();
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     {
         let _first = connect_sse(port); // subscribes, then drops at end of this block
@@ -3396,7 +3304,7 @@ fn sse_disconnect_does_not_break_server_for_other_clients() {
 
     // And a fresh SSE subscriber must still receive live events.
     let mut second = connect_sse(port);
-    seed(dir.path(), &["new", "After disconnect"]);
+    fixture.seed(&["new", "After disconnect"]);
     let received = read_sse_until(&mut second, "event: repo-changed", Duration::from_secs(8));
     assert!(
         received.contains("event: repo-changed"),
@@ -3406,24 +3314,22 @@ fn sse_disconnect_does_not_break_server_for_other_clients() {
 
 /// Registering a repo *after* the server (and an SSE client) has already
 /// started is itself detected (`repos-changed`), and the newly-registered
-/// repo is watched from then on (its own `repo-changed` on mutation) —
+/// repo is served from then on (its own `repo-changed` on mutation) —
 /// without restarting the dashboard.
 #[test]
-fn sse_detects_runtime_repo_registration_and_watches_it() {
+fn sse_detects_runtime_repo_registration_and_serves_it() {
     let _sse_guard = sse_test_lock();
-    let dir_a = scratch_dir();
-    seed(dir_a.path(), &["init"]);
-    let (_registry_dir, registry_path, _repo_a_id) = register_repo(dir_a.path());
-    let port = serve(&registry_path);
+    let fixture = served();
+    let port = fixture.port;
+
+    let (dir_b, slug_b) = fixture.add_project();
+    fixture.deregister();
 
     let mut sse = connect_sse(port);
 
-    let dir_b = scratch_dir();
-    seed(dir_b.path(), &["init"]);
-    let repo_b = storyhook::registry::with_lock_at(&registry_path, |r| {
-        r.register(dir_b.path(), Some("repo-b"))
-    })
-    .expect("registering repo B at runtime must succeed");
+    let body = serde_json::json!({"path": dir_b.path().to_string_lossy()}).to_string();
+    post_json(&format!("http://127.0.0.1:{port}/api/repos"), &body)
+        .expect("registering repo B at runtime must succeed");
 
     let after_register = read_sse_until(&mut sse, "event: repos-changed", Duration::from_secs(8));
     assert!(
@@ -3431,67 +3337,128 @@ fn sse_detects_runtime_repo_registration_and_watches_it() {
         "expected repos-changed after a runtime registration, got: {after_register}"
     );
 
-    // `ReposChanged` is only published by `run_change_watcher`'s control
-    // loop *after* `rescan_watched_repos` returns (see its comment), so
-    // seeing the event here is itself proof repo B's directory is already
-    // being watched — no settle delay needed before mutating it.
-    seed(dir_b.path(), &["new", "In the newly-registered repo"]);
-    let after_mutation = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    // The catalog change is published at the request boundary, after the write
+    // has committed — so seeing the event is itself proof repo B is resolvable,
+    // and no settle delay is needed before mutating it.
+    let mutate = serde_json::json!({"title": "In the newly-registered repo"}).to_string();
+    post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{slug_b}/story"),
+        &mutate,
+    )
+    .expect("creating a story in repo B must succeed");
+    let after_mutation = read_sse_until(
+        &mut sse,
+        &format!("\"repo_id\":\"{slug_b}\""),
+        Duration::from_secs(8),
+    );
     assert!(
-        after_mutation.contains(&format!("\"repo_id\":\"{}\"", repo_b.id)),
-        "expected a repo-changed event for the newly-registered repo `{}`, got: {after_mutation}",
-        repo_b.id
+        after_mutation.contains(&format!("\"repo_id\":\"{slug_b}\"")),
+        "expected a repo-changed event for the newly-registered repo `{slug_b}`, \
+         got: {after_mutation}"
     );
 }
 
-/// A registered repo whose directory vanishes from disk (moved, deleted)
-/// *after* it was already being watched must not prevent the watcher from
-/// continuing to serve every other registered repo. This deliberately
-/// disrupts an already-established watch (the realistic "a user deleted a
-/// registered repo's folder" scenario) rather than racing the watcher's own
-/// startup scan with the deletion — the FSEvents backend rebuilds its whole
-/// stream on every `watch`/`unwatch` call (see `run_change_watcher`'s
-/// deadlock-avoidance comment), so which of two repos gets watched first
-/// during that scan is unspecified (`HashMap` iteration order), and
-/// deleting one concurrently with it would make this test's own setup
-/// racy rather than proving anything about `rescan_watched_repos`.
+/// A project whose checkout vanishes from disk (moved, deleted) must not stop
+/// the feed from serving every other project.
+///
+/// This used to be a statement about a filesystem watcher, which held one watch
+/// per repository and could lose one. There are no per-project resources any
+/// more — one store, one connection pool, one bus — so the property is
+/// structural rather than defended. It is asserted anyway, because "structurally
+/// true" is a claim about today's code and this is the test that notices when
+/// somebody reintroduces per-project state.
 #[test]
 fn sse_one_unreachable_repo_does_not_break_stream_for_others() {
     let _sse_guard = sse_test_lock();
-    let dir_broken = scratch_dir();
-    seed(dir_broken.path(), &["init"]);
-    let (_registry_dir, registry_path, broken_id) = register_repo(dir_broken.path());
-
-    let dir_healthy = scratch_dir();
-    seed(dir_healthy.path(), &["init"]);
-    let healthy = storyhook::registry::with_lock_at(&registry_path, |r| {
-        r.register(dir_healthy.path(), Some("healthy"))
-    })
-    .expect("registering the healthy repo must succeed");
-
-    let port = serve(&registry_path);
+    let fixture = served();
+    let port = fixture.port;
+    let broken_id = fixture.repo_id.clone();
+    let (dir_healthy, healthy_id) = fixture.add_project();
 
     let mut sse = connect_sse(port);
 
-    // Baseline: confirm the about-to-break repo is actually being watched
-    // before disrupting anything.
-    seed(dir_broken.path(), &["new", "before break"]);
-    let baseline = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    // Baseline: confirm the about-to-break project's changes are actually
+    // reaching this client before disrupting anything.
+    fixture.seed(&["new", "before break"]);
+    // Waits for *this* project's event rather than for any `repo-changed`: the
+    // second project's creation is itself a change, so the stream legitimately
+    // carries events for both and the order between them is not a contract.
+    let baseline = read_sse_until(
+        &mut sse,
+        &format!("\"repo_id\":\"{broken_id}\""),
+        Duration::from_secs(8),
+    );
     assert!(
         baseline.contains(&format!("\"repo_id\":\"{broken_id}\"")),
-        "expected the soon-to-be-broken repo's watch to be live first, got: {baseline}"
+        "expected the soon-to-be-broken repo's changes to be live first, got: {baseline}"
     );
 
-    // Now its directory vanishes out from under that already-established
-    // watch.
-    std::fs::remove_dir_all(dir_broken.path()).unwrap();
+    // Now its directory vanishes.
+    std::fs::remove_dir_all(fixture.dir()).unwrap();
 
-    seed(dir_healthy.path(), &["new", "Still alive"]);
+    let mutate = serde_json::json!({"title": "Still alive"}).to_string();
+    post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{healthy_id}/story"),
+        &mutate,
+    )
+    .expect("the healthy project must still take writes");
+    drop(dir_healthy);
 
-    let received = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    let received = read_sse_until(
+        &mut sse,
+        &format!("\"repo_id\":\"{healthy_id}\""),
+        Duration::from_secs(8),
+    );
     assert!(
-        received.contains(&format!("\"repo_id\":\"{}\"", healthy.id)),
+        received.contains(&format!("\"repo_id\":\"{healthy_id}\"")),
         "expected the healthy repo's change to still arrive despite the broken repo, got: {received}"
+    );
+}
+
+/// **Proof the filesystem watcher is gone, not merely unused.**
+///
+/// The feed used to be driven by a `notify` watcher over each repository's
+/// story directory, which is why writing a file there produced an event. It is
+/// driven by the store now, so a file appearing in the checkout — a build
+/// artifact, an editor swap file, a `git checkout` rewriting half the tree — is
+/// none of the dashboard's business.
+///
+/// Asserting the *absence* of an event is only meaningful if something proves
+/// the stream is alive, so this touches files first and then makes a real change
+/// afterwards: the story event must arrive, and nothing must precede it.
+#[test]
+fn no_filesystem_watcher_remains() {
+    let _sse_guard = sse_test_lock();
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let mut sse = connect_sse(port);
+
+    // Every shape the old watcher reacted to: a file in the repository root, a
+    // file in the legacy story directory, and a file in the legacy config
+    // directory.
+    let legacy = fixture.dir().join(".storyhook/open/stories");
+    std::fs::create_dir_all(&legacy).expect("creating a legacy-looking directory");
+    std::fs::write(fixture.dir().join("BUILD.log"), "noise").expect("writing a repo file");
+    std::fs::write(legacy.join("SH-1.jsonl"), "{}\n").expect("writing a story-looking file");
+    std::fs::write(fixture.dir().join(".storyhook/states.toml"), "[[state]]\n")
+        .expect("writing a config-looking file");
+
+    // Now something that genuinely changed the store. Its event is the proof
+    // that the stream was live the whole time the files above were being
+    // written and ignored.
+    fixture.seed(&["new", "A real change"]);
+    let received = read_sse_until(
+        &mut sse,
+        &format!("\"repo_id\":\"{repo_id}\""),
+        Duration::from_secs(8),
+    );
+
+    assert_eq!(
+        received.matches("event: repo-changed").count(),
+        1,
+        "exactly one change event — the store write — must have reached the client; \
+         a second one means a filesystem watcher is still running: {received}"
     );
 }
 
@@ -3505,13 +3472,12 @@ fn sse_one_unreachable_repo_does_not_break_stream_for_others() {
 #[test]
 fn sse_heartbeat_ping_arrives_without_any_story_changes() {
     let _sse_guard = sse_test_lock();
-    let home = scratch_dir();
+    let env = TestEnv::isolated();
     let dir = scratch_dir();
     let port = reserve_port();
-    let _daemon = DaemonGuard::new(home.path(), dir.path());
+    let _daemon = DaemonGuard::new(&env, dir.path());
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .env("STORYHOOK_SSE_HEARTBEAT_MS", "300")
         .args(["web", "start", "--port", &port.to_string()])
         .assert()
@@ -3525,8 +3491,7 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
         "expected a heartbeat ping, got: {received}"
     );
 
-    story(dir.path())
-        .env("HOME", home.path())
+    env.story(dir.path())
         .args(["web", "stop"])
         .assert()
         .success();
@@ -3539,10 +3504,8 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
 #[test]
 fn sse_connection_does_not_block_other_requests() {
     let _sse_guard = sse_test_lock();
-    let dir = scratch_dir();
-    seed(dir.path(), &["init"]);
-    let (_registry_dir, registry_path, repo_id) = register_repo(dir.path());
-    let port = serve(&registry_path);
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     let _sse = connect_sse(port); // held open for the rest of the test
 
@@ -3577,7 +3540,7 @@ use std::time::{Duration, Instant};
 /// probe must be bounded, and the dashboard must serve loopback regardless.
 #[test]
 fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
-    let home = scratch_dir();
+    let env = TestEnv::isolated();
     let fake_bin = scratch_dir();
     let fake_tailscale = fake_bin.path().join("tailscale");
     std::fs::write(&fake_tailscale, "#!/bin/sh\nsleep 120\n").expect("writing the fake CLI");
@@ -3593,9 +3556,10 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
         fake_bin.path().display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_story"))
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_story"));
+    env.apply(&mut command);
+    let child = command
         .args(["web", "--serve", "--port", &port.to_string()])
-        .env("HOME", home.path())
         .env("PATH", path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

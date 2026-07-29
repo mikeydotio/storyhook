@@ -15,6 +15,7 @@
 
 use storyhook::app;
 use storyhook::cli::{CliOptions, Invocation};
+use storyhook::env::Environment;
 use storyhook::error::AppError;
 use storyhook::invoke::{InvokeRequest, Invoker, LegacyInvoker};
 use storyhook::output::{render_error, render_response};
@@ -155,6 +156,7 @@ mod resolution {
     use std::path::Path;
 
     use storyhook::cli::Invocation;
+    use storyhook::env::Environment;
     use storyhook::error::AppError;
     use storyhook::invoke::{InvokeRequest, Invoker, StoreInvoker};
     use storyhook::output::Response;
@@ -167,7 +169,8 @@ mod resolution {
     /// A store, and a project rooted at a scratch directory.
     fn project(pointer: bool) -> (TempDir, SqliteStore, TempDir, ProjectId) {
         let dir = scratch_dir();
-        let store = SqliteStore::open(dir.path().join("store.db")).expect("opening the store");
+        let store =
+            SqliteStore::open(Environment::at(dir.path()).store_path()).expect("opening the store");
         store.migrate().expect("migrating");
         let root = scratch_dir();
         let outcome = ProjectService::new(&store, root.path())
@@ -182,7 +185,8 @@ mod resolution {
 
     /// `story summary` from `cwd`, which needs a resolved project to answer.
     fn summary(store: &SqliteStore, cwd: &Path) -> Result<Response, AppError> {
-        StoreInvoker::new(store, cwd).invoke(InvokeRequest::new(Invocation::Summary))
+        StoreInvoker::new(store, cwd, Environment::at(cwd))
+            .invoke(InvokeRequest::new(Invocation::Summary))
     }
 
     #[test]
@@ -301,12 +305,11 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
 
     let data = scratch_dir();
     let cwd = scratch_dir();
-    // `open_store` reads the environment, so point it at a fixture directory
-    // for the duration — this test is single-threaded within its own binary
-    // slot and restores the variable before it returns.
-    let previous = std::env::var_os("STORYHOOK_DATA_DIR");
-    unsafe { std::env::set_var("STORYHOOK_DATA_DIR", data.path()) };
-    let store = open_store().expect("opening a fixture store");
+    // The environment is a value, so the fixture store is named rather than
+    // exported: no `set_var`, and therefore no window in which a sibling test
+    // in this binary sees the wrong data directory.
+    let environment = Environment::at(data.path());
+    let store = open_store(&environment).expect("opening a fixture store");
 
     let cases: Vec<(&str, Invocation)> = vec![
         ("help", Invocation::Help),
@@ -378,19 +381,14 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
 
     let mut refused = Vec::new();
     for (name, invocation) in cases {
-        if let Err(error) =
-            StoreInvoker::new(&store, cwd.path()).invoke(InvokeRequest::new(invocation))
+        if let Err(error) = StoreInvoker::new(&store, cwd.path(), environment.clone())
+            .invoke(InvokeRequest::new(invocation))
             && error
                 .to_string()
                 .contains("not initialized in this directory")
         {
             refused.push(name);
         }
-    }
-
-    match previous {
-        Some(value) => unsafe { std::env::set_var("STORYHOOK_DATA_DIR", value) },
-        None => unsafe { std::env::remove_var("STORYHOOK_DATA_DIR") },
     }
 
     assert!(

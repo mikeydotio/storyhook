@@ -18,8 +18,8 @@
 //! pins that a hop through JSON changes neither.
 
 use storyhook::cli::{
-    EpicAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput, PhaseAction,
-    PluginAction, StateAction, TypeAction, WebAction,
+    DaemonAction, EpicAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
+    PhaseAction, PluginAction, StateAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
     Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent, StoryRelation,
@@ -927,6 +927,9 @@ fn invocation_corpus() -> Vec<Invocation> {
             path: None,
             dry_run: true,
         },
+        Invocation::Daemon {
+            action: DaemonAction::Status,
+        },
     ]
 }
 
@@ -977,6 +980,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::HelpAll => "HelpAll",
         Invocation::Plugin { .. } => "Plugin",
         Invocation::Web { .. } => "Web",
+        Invocation::Daemon { .. } => "Daemon",
         Invocation::SessionStart => "SessionStart",
         Invocation::Update { .. } => "Update",
         Invocation::Version => "Version",
@@ -996,7 +1000,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        49,
+        50,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

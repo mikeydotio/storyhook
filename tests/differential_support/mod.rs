@@ -42,6 +42,7 @@ use tempfile::TempDir;
 pub struct Differential {
     legacy: Project<'static>,
     store: SqliteStore,
+    env: storyhook::env::Environment,
     project: ProjectId,
     _dir: TempDir,
 }
@@ -76,7 +77,8 @@ impl Differential {
         let types = storage::load_types(root).expect("reading the legacy types");
 
         let dir = scratch_dir();
-        let store = SqliteStore::open(dir.path().join("store.db")).expect("opening the store");
+        let env = storyhook::env::Environment::at(dir.path());
+        let store = SqliteStore::open(env.store_path()).expect("opening the store");
         store.migrate().expect("migrating the store");
         let project = store
             .write(|tx| {
@@ -98,6 +100,7 @@ impl Differential {
             legacy,
             store,
             project,
+            env,
             _dir: dir,
         }
     }
@@ -167,7 +170,13 @@ impl Differential {
     /// comparison between a pinned clock and a real one would only ever be
     /// testing the redaction.
     pub fn ctx(&self) -> Ctx<'_, SqliteStore> {
-        Ctx::new(&self.store, self.project, self.legacy.path()).clock(Clock::System)
+        Ctx::new(
+            &self.store,
+            self.project,
+            self.legacy.path(),
+            self.env.clone(),
+        )
+        .clock(Clock::System)
     }
 
     /// Runs one invocation through both legs and asserts they agree.

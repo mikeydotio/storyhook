@@ -110,7 +110,12 @@ fn a_non_default_prefix_is_carried_in_the_document() {
         .read(|tx| tx.project_by_path(&dir.path().canonicalize().unwrap()))
         .expect("reading")
         .expect("the imported project");
-    let ctx = storyhook::service::Ctx::new(&store, project.id, dir.path());
+    let ctx = storyhook::service::Ctx::new(
+        &store,
+        project.id,
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
     assert_eq!(
         TransferService::new(&ctx)
             .export()
@@ -392,7 +397,12 @@ fn a_project_round_trips_through_export_and_import_byte_for_byte() {
         .read(|tx| tx.project_by_path(&dir.path().canonicalize().unwrap()))
         .expect("reading")
         .expect("the imported project");
-    let ctx = storyhook::service::Ctx::new(&store, project.id, dir.path());
+    let ctx = storyhook::service::Ctx::new(
+        &store,
+        project.id,
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
     let second = document(&TransferService::new(&ctx).export().expect("re-exporting"));
 
     assert_eq!(first, second, "the round trip must be byte-identical");
@@ -413,7 +423,12 @@ fn an_imported_project_continues_numbering_after_its_highest_story() {
         .expect("reading")
         .expect("the imported project")
         .id;
-    let ctx = storyhook::service::Ctx::new(&store, project, dir.path());
+    let ctx = storyhook::service::Ctx::new(
+        &store,
+        project,
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
     let next = StoryService::new(&ctx)
         .create(&NewStoryInput {
             title: "After the import".to_string(),

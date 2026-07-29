@@ -32,19 +32,21 @@ use super::theme::Theme;
 
 /// Run the TUI application.
 ///
-/// `root` survives for exactly one reason: the filesystem watcher in
-/// [`EventSource`], which has no seam equivalent until the daemon publishes a
-/// change feed. Everything else — every read and every mutation — goes
-/// through [`Invoker`].
+/// `root` is the directory the project is resolved from, and nothing else reads
+/// it: every read and every mutation goes through [`Invoker`]. Live updates come
+/// from the store's own change token rather than from a watcher over `root` —
+/// see [`EventSource`].
 pub fn run(root: &Path) -> Result<(), AppError> {
-    let store = crate::invoke::open_store()?;
-    let invoker = StoreInvoker::new(&store, root);
+    let environment = crate::env::Environment::from_process()?;
+    let event_environment = environment.clone();
+    let store = crate::invoke::open_store(&environment)?;
+    let invoker = StoreInvoker::new(&store, root, environment);
     let data = DataStore::load(&invoker)?;
     let mut state = AppState::new(data);
     let theme = Theme::from_env();
 
     let mut term = terminal::init()?;
-    let (event_source, rx) = EventSource::new(root);
+    let (event_source, rx) = EventSource::new(&event_environment);
 
     // Get initial terminal size
     if let Ok(size) = term.size() {
@@ -1381,6 +1383,7 @@ mod tests {
     struct TuiFixture {
         store: crate::store::SqliteStore,
         root: std::path::PathBuf,
+        env: crate::env::Environment,
         _data: tempfile::TempDir,
         _repo: tempfile::TempDir,
     }
@@ -1390,11 +1393,13 @@ mod tests {
             use crate::store::Store as _;
             let data = tempfile::tempdir().unwrap();
             let repo = tempfile::tempdir().unwrap();
-            let store = crate::store::SqliteStore::open(data.path().join("store.db")).unwrap();
+            let env = crate::env::Environment::at(data.path());
+            let store = crate::store::SqliteStore::open(env.store_path()).unwrap();
             store.migrate().unwrap();
             let fixture = TuiFixture {
                 store,
                 root: repo.path().to_path_buf(),
+                env,
                 _data: data,
                 _repo: repo,
             };
@@ -1409,7 +1414,7 @@ mod tests {
         }
 
         fn invoker(&self) -> StoreInvoker<'_, crate::store::SqliteStore> {
-            StoreInvoker::new(&self.store, &self.root)
+            StoreInvoker::new(&self.store, &self.root, self.env.clone())
         }
     }
 

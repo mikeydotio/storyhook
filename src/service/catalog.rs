@@ -19,13 +19,15 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
-use crate::store::{ProjectRecord, ReadOps, Store, WriteOps};
+use crate::store::{ProjectId, ProjectRecord, ReadOps, Store, WriteOps};
 
 use super::project::{path_kind, read_pointer};
 
 /// One row of `story web list`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatalogEntry {
+    /// The project this entry describes, for a caller that goes on to read it.
+    pub project: ProjectId,
     /// The project's slug — what the legacy registry called an id.
     pub id: String,
     /// The project's display name.
@@ -86,6 +88,7 @@ impl<'a, S: Store> CatalogService<'a, S> {
                 tx.rename_project(project.id, name)?;
             }
             Ok(CatalogEntry {
+                project: project.id,
                 id: project.slug,
                 name: name.map_or(project.name, str::to_string),
                 path: Some(canonical),
@@ -154,6 +157,7 @@ impl<'a, S: Store> CatalogService<'a, S> {
 /// One catalog row from a project record.
 fn entry(project: ProjectRecord, path: Option<PathBuf>) -> CatalogEntry {
     CatalogEntry {
+        project: project.id,
         id: project.slug,
         name: project.name,
         path,
@@ -179,9 +183,11 @@ pub struct RegistryAdoption {
 ///
 /// Three properties, each of them deliberate:
 ///
-/// * **The file is never written and never deleted.** The legacy dashboard
-///   daemon reads it until the wave that promotes the daemon, and a rollback
-///   past this point has to find it exactly as it was.
+/// * **The file is never written and never deleted.** Nothing reads it any more
+///   — the daemon serves the store — but it is the only copy of a list a user
+///   built by hand, and a rollback has to find it exactly as it was. A
+///   `MIGRATED.txt` marker is dropped beside it saying so, because a directory
+///   full of live-looking state that nothing reads is its own kind of trap.
 /// * **Idempotent**, so it can run on every invocation without a marker file to
 ///   forget to write. Recording a checkout is an upsert, and a path already
 ///   recorded is left alone.
@@ -243,5 +249,25 @@ pub fn adopt_legacy_registry<S: Store>(
             None => adoption.unmigrated.push(canonical),
         }
     }
+    mark_retired(path);
     Ok(adoption)
+}
+
+/// Leaves a note beside a legacy registry saying that nothing reads it.
+///
+/// Written once, never overwritten, and failure is ignored: the marker is a
+/// courtesy to whoever finds the directory, and a read-only home directory is
+/// not a reason to fail a command that has already done its work.
+fn mark_retired(registry_path: &Path) {
+    let Some(dir) = registry_path.parent() else {
+        return;
+    };
+    let marker = dir.join("MIGRATED.txt");
+    if marker.exists() {
+        return;
+    }
+    let _ = std::fs::write(
+        marker,
+        "storyhook no longer reads this directory.\n\n         Story data, the project catalog and the daemon's runtime files now live in\n         storyhook's own store — see `story help storage`. `registry.toml` has been\n         read once and its repositories recorded against the projects they belong to.\n\n         Nothing here is deleted, and nothing here is written to. You may remove this\n         directory yourself once you are satisfied you no longer want what is in it.\n",
+    );
 }

@@ -117,7 +117,8 @@ fn deregistering_by_path_forgets_the_checkout_and_keeps_the_stories() {
         .expect("reading")
         .expect("the project")
         .id;
-    let ctx = storyhook::service::Ctx::new(&store, id, &root);
+    let ctx =
+        storyhook::service::Ctx::new(&store, id, &root, storyhook::env::Environment::at(&root));
     StoryService::new(&ctx)
         .create(&NewStoryInput {
             title: "Worth keeping".to_string(),

@@ -43,23 +43,32 @@ Execution state — wave status, step log, discovered defects — lives in
 | W2d | git/GitHub/transfer services; **all 48 arms ported**; the store test leg | **complete — merged** |
 | W3 | `src/legacy/` reader, `story migrate`, the round-trip rollback gate | **complete — merged** |
 | W4 | **the flip**: the global store is the default; `worktree_truth` green | **complete — PR open**. Revert only while `migrate_round_trip` is 4/4 green — procedure in the flip checklist's section D2 |
-| W5 | daemon promotion + `/api/v1/invoke` transport; **deletes the quarantined legacy path** | next |
-| W6 | git features re-pointed; full commit-body scanning | pending (gated on W4) |
+| W5 | daemon promotion + `/api/v1/invoke` transport | **complete — PR open**, except the quarantine deletion, which is deferred with a measured blast radius in HANDOFF.md |
+| W6 | git features re-pointed; full commit-body scanning | next (unblocked by W4) |
 | W7 | migrate this repo; retire `.storyhook/` | pending |
 | W8 | crash, concurrency, and corruption hardening | pending |
 
 Standing rules for every wave:
 
 - Every commit passes `make test`; history stays bisectable and two-hats clean.
-- **`make test` runs against the store.** The second leg (`make test-store`,
-  `STORYHOOK_INVOKER=local`) retired at the flip: the default suite *is* the store, and a
-  second leg would run the same tests twice against the same stack.
+- **`make test` runs the suite in this process** (`STORYHOOK_INVOKER=local`);
+  **`make test-daemon` runs the identical suite over `/api/v1/invoke`.** They stay separate:
+  two thousand tests each taking a network hop through one daemon would be slower and would
+  couple every test to one process's health, and the in-process-vs-RPC byte-comparison test is
+  what proves the two modes agree. `--test-threads=4` in the daemon leg is a **bound on how
+  many daemons exist at once**, not tuning.
 - **`make test` must keep its isolated `STORYHOOK_DATA_DIR`** (`scripts/run-tests.sh`).
   ~45 test files still build fixtures with `tempfile::tempdir()` and inherit the process
   environment; without the override a test run writes into the developer's real store.
-- **`app::run`, `storage.rs`'s write half, `lock.rs` and `registry.rs` are quarantined**
-  for the web dashboard until W5 deletes them. Do not add callers:
-  `invoker_seam.rs::the_legacy_path_is_reachable_only_from_the_web_dashboard` fails on any.
+- **`app::run`, `storage.rs`'s write half, `lock.rs` and `registry.rs` are quarantined and
+  now genuinely dead** — the dashboard was their last caller and it runs on the services.
+  Deleting them is mechanical; HANDOFF.md carries the measured blast radius. Do not add
+  callers: `invoker_seam.rs::the_legacy_path_is_reachable_only_from_the_web_dashboard` fails
+  on any.
+- **Nothing in any test may bind port 3456 or outlive its run.** Four places export
+  `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` and `STORYHOOK_PARENT_PID`: `scripts/run-tests.sh`,
+  `TestEnv`, and *both* `plugin/claude-code/tests/{lib.sh,run-tests.sh}` — the last two
+  because `run-tests.sh` sets `STORYHOOK_TEST_HOME`, which makes `lib.sh` skip its block.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - A wave's implementing session ends at "PR opened" and never merges its own PR. The

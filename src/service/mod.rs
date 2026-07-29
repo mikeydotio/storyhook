@@ -50,6 +50,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::domain::{StateDef, StoryEvent, StorySnapshot, fold_story};
+use crate::env::Environment;
 use crate::error::AppError;
 use crate::event_hooks::{self, HookEventType};
 use crate::store::{
@@ -81,8 +82,8 @@ pub use transfer::{ImportBatch, TransferService};
 /// [`chrono::Utc::now`] so that a test can pin it, which is what makes a
 /// service's output comparable at all.
 ///
-/// The permanent home for this is the injected `Environment` the daemon wave
-/// builds; until then it lives on [`Ctx`].
+/// It lives on [`Environment`], which every [`Ctx`] carries — so pinning a
+/// context's clock and pinning its data directory are the same gesture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Clock {
     /// The system clock, RFC3339 at second precision — the format every
@@ -115,21 +116,46 @@ pub struct Ctx<'a, S: Store> {
     no_hooks: bool,
     hook_depth: u32,
     cwd: PathBuf,
-    clock: Clock,
+    env: Environment,
+    stdin: Option<String>,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
-    /// A context for `project` in `store`, run from `cwd`, with hooks enabled
-    /// at depth zero and the system clock.
-    pub fn new(store: &'a S, project: ProjectId, cwd: impl Into<PathBuf>) -> Self {
+    /// A context for `project` in `store`, run from `cwd` under `env`, with
+    /// hooks enabled at depth zero.
+    ///
+    /// The environment is a parameter rather than something this constructor
+    /// resolves, and that is the whole point of it: a service that reads a
+    /// global path from the process environment cannot be redirected by an
+    /// in-process caller, which is how two waves of this program wrote into the
+    /// developer's real home directory.
+    pub fn new(
+        store: &'a S,
+        project: ProjectId,
+        cwd: impl Into<PathBuf>,
+        env: Environment,
+    ) -> Self {
         Self {
             store,
             project,
             no_hooks: false,
             hook_depth: 0,
             cwd: cwd.into(),
-            clock: Clock::System,
+            env,
+            stdin: None,
         }
+    }
+
+    /// Supplies the standard input this invocation should read, instead of this
+    /// process's own.
+    ///
+    /// The daemon does not have the client's terminal, so a command that reads
+    /// stdin has it read on the client and carried in the request envelope. A
+    /// `--local` run leaves this unset and reads its own.
+    #[must_use]
+    pub fn with_stdin(mut self, stdin: Option<String>) -> Self {
+        self.stdin = stdin;
+        self
     }
 
     /// Suppresses the project's event hooks, as `--no-hooks` does.
@@ -156,8 +182,15 @@ impl<'a, S: Store> Ctx<'a, S> {
     /// Sets the clock this context's timestamps come from.
     #[must_use]
     pub fn clock(mut self, clock: Clock) -> Self {
-        self.clock = clock;
+        self.env = self.env.clock(clock);
         self
+    }
+
+    /// The environment this invocation runs under — where the store, the state
+    /// home and the backups are, and what time it is.
+    #[must_use]
+    pub fn env(&self) -> &Environment {
+        &self.env
     }
 
     /// The store this context works against.
@@ -186,10 +219,17 @@ impl<'a, S: Store> Ctx<'a, S> {
         self.hook_depth
     }
 
+    /// The standard input this invocation should read, if the caller supplied
+    /// it rather than leaving this process to read its own.
+    #[must_use]
+    pub fn stdin(&self) -> Option<&str> {
+        self.stdin.as_deref()
+    }
+
     /// The current time, from this context's [`Clock`].
     #[must_use]
     pub fn now(&self) -> String {
-        self.clock.now()
+        self.env.now()
     }
 
     /// Whether this invocation may fire event hooks at all.
@@ -212,7 +252,13 @@ impl<'a, S: Store> Ctx<'a, S> {
         let Some(config) = event_hooks::load_hooks_config(&self.cwd) else {
             return;
         };
-        event_hooks::fire_hook(&self.cwd, &config, event, &payload.to_string());
+        event_hooks::fire_hook(
+            &self.cwd,
+            &config,
+            event,
+            &payload.to_string(),
+            self.hook_depth,
+        );
     }
 
     /// The full [`crate::output::StoryView`] response for one story, read
