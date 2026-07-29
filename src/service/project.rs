@@ -62,7 +62,7 @@ pub struct ProjectPointer {
 }
 
 /// The pointer format this build writes.
-const POINTER_SCHEMA: u32 = 1;
+pub(crate) const POINTER_SCHEMA: u32 = 1;
 
 /// Where the pointer file lives: `<root>/.storyhook.toml`.
 ///

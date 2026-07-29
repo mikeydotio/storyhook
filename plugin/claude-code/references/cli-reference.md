@@ -151,6 +151,26 @@ Export the entire project (schema version, prefix, states, types, members, and e
 story export > backup.json
 ```
 
+### `story migrate [<path>] [--dry-run]`
+
+Move an existing `.storyhook/` project into storyhook's store. Reads the legacy tree — states, types, members, every story's event history, the archive, and the story-number counter — and writes it into the store as one project. The `.storyhook/` directory is **never modified**: it is the rollback, and it should stay in the repository until the result has been checked.
+
+With no path argument the command walks up from the working directory to find the project, so it can be run from anywhere inside the repository.
+
+```bash
+story migrate --dry-run       # See the plan, including any repairs, and write nothing
+story migrate                 # Do it
+story migrate ../other-repo   # Migrate a project you are not standing in
+```
+
+Repairs and refusals, both reported per instance:
+
+- A relation only one story's history recorded is **completed** — the missing half is written as an event carrying the original instant.
+- A parentage only one story recorded, where the same child has a parent both stories recorded, is **retracted**: agreement outranks assertion. The original claim stays in the event log; only the read model changes.
+- Anything that cannot be settled without guessing is **refused with nothing imported**: two parents that both agree, a relation pointing at a story that is not there, a story that exists both open and archived, or a story sitting in a state `states.toml` no longer defines.
+
+It refuses to run in a linked git worktree (a worktree's `.storyhook/` is a diverged copy, and migrating it would create a second project with the same prefix), and refuses to run twice against one checkout. Event kinds written by a newer storyhook are carried over verbatim.
+
 ---
 
 ## Finding & Viewing Stories

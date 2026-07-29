@@ -180,7 +180,17 @@ mod tests {
         let root = scratch_root();
         // A foreign, ancient directory: right place, wrong name. Left
         // untouched because only the prefix proves ownership.
-        let foreign = root.join("not-a-storyhook-fixture-do-not-delete");
+        //
+        // Named per process for the same reason `ours` is: `scratch_root()` is
+        // a machine-global path shared by every checkout, and this program runs
+        // `make test` from a worktree while the main checkout may be running it
+        // too. With a constant name the two runs collide on one directory, and
+        // whichever finishes first removes it out from under the other's
+        // assertion — a red gate describing a fixture, not a defect.
+        let foreign = root.join(format!(
+            "not-a-storyhook-fixture-do-not-delete-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&foreign).unwrap();
         filetime_set_epoch(&foreign);
 

@@ -1396,6 +1396,50 @@ Related:
 "#,
         );
 
+        m.insert(
+            "migrate",
+            r#"story migrate [<path>] [--dry-run]
+
+Move an existing .storyhook/ project into storyhook's store. Reads the legacy
+tree — states, types, members, every story's event history, the archive, and
+the story-number counter — and writes it into the store as one project. The
+.storyhook/ directory is never modified: it is your rollback, and it should
+stay in the repository until you are satisfied with the result.
+
+When to use:
+  Once per repository. Run it with --dry-run first.
+
+Flags:
+  --dry-run    Report exactly what would be imported, and write nothing.
+
+Examples:
+  story migrate --dry-run     # See the plan, including any repairs
+  story migrate               # Do it
+  story migrate ../other-repo # Migrate a project you are not standing in
+
+What it repairs, and what it refuses:
+  A relation only one story's history claimed is completed — the missing half
+  is written as an event stamped with the original instant — and every repair
+  is listed. Anything that cannot be represented without guessing is refused
+  with nothing imported: a story with two parents, a relation pointing at a
+  story that is not there, a story that exists both open and archived, or a
+  story sitting in a state that states.toml no longer defines. The message
+  names each one and the command that resolves it.
+
+Notes:
+  - Refuses to run in a linked git worktree. A worktree's .storyhook/ is a
+    diverged copy, and migrating it would create a second project with the
+    same prefix.
+  - Refuses to run twice against one checkout. There is nothing to merge into.
+  - Event kinds written by a newer storyhook are carried over verbatim.
+
+Related:
+  story export          — A portable copy of the project, for backup
+  story import-project  — Restore an export document
+  story doctor          — Check project integrity before migrating
+"#,
+        );
+
         m
     });
 
