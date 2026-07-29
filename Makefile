@@ -32,10 +32,20 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # the byte-compatibility contract the whole rearchitecture is measured against.
 # Under `no`, a mismatch fails the run and writes nothing -- updating a snapshot
 # becomes a deliberate `INSTA_UPDATE=always cargo test` plus a reviewed diff.
+#
+# The isolated data directory is NOT optional, and it is the single most
+# dangerous line in this file to delete. Story data lives in one global store
+# now, and ~45 test files still build their fixtures with `tempfile::tempdir()`
+# and run `story` with this process's environment. Without the override, every
+# one of them writes into the developer's real
+# ~/.local/share/storyhook/store.db. `storyhook_test_support::TestEnv` isolates
+# the tests that use it and overrides this again with its own directory; this
+# covers the ones that do not. /private/tmp rather than $TMPDIR because the
+# latter is Spotlight-indexed (SH-53).
 test: check-no-orphan-servers
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
-	INSTA_UPDATE=no cargo test --workspace
+	@bash scripts/run-tests.sh
 	cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
 	@bash scripts/check-no-orphan-servers.sh postlude

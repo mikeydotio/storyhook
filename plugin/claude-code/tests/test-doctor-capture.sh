@@ -67,19 +67,27 @@ assert_eq "$(jqf "$out" .project_integrity.ok)" "true" "doctor: healthy project 
 assert_contains "$(jqf "$out" .display)" "project integrity: OK" "doctor: display carries both halves"
 
 # --- doctor: an integrity FINDING is a finding, not a failed probe ---
-# A dangling blocked-by relation is exactly what `story doctor` flags. Write
-# the broken relation straight into the event log: the CLI itself refuses to
-# create one, which is the whole reason doctor exists.
-broken=$(new_story "$repo" "Has a dangling blocker")
-printf '{"kind":"StoryRelationshipAdded","at":"2026-01-01T00:00:00Z","relation":"blocked-by","other_id":"TST-9999"}\n' \
-  >>"$repo/.storyhook/open/stories/$broken.jsonl"
-# Fixture sanity: the CLI must really be unhappy, or the assertions below pass
-# vacuously against a healthy project.
-rc=0
-(cd "$repo" && story doctor --json >/dev/null 2>&1) || rc=$?
-assert_eq "$rc" "5" "fixture sanity: \`story doctor\` exits 5 on a finding"
+# The shell property under test is narrow and important: `story doctor` exits 5
+# whenever it finds anything, and story.sh must read that as a finding rather
+# than as a failure of its own readiness probe.
+#
+# The finding is simulated rather than fabricated, and deliberately. Under
+# `.storyhook/` this test wrote a dangling relation straight into a story's
+# JSONL; the store refuses that shape at the schema, so producing one now needs
+# `storyhook::store::test_support` — a Rust API a shell test cannot reach.
+# That the CLI really exits 5 on a real finding is pinned in Rust instead, by
+# `tests/doctor.rs` and by `tests/error_contract.rs`'s Integrity row. See
+# fakes/story-integrity/story.
+export STORY_REAL_BIN
+STORY_REAL_BIN=$(command -v story)
+export STORY_FAKE_FINDING="TST-9999 is referenced by a relation nothing else records"
 
-out=$(cd "$repo" && TMUX=fake TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
+rc=0
+(cd "$repo" && PATH="$TESTS_DIR/fakes/story-integrity:$PATH" story doctor --json >/dev/null 2>&1) || rc=$?
+assert_eq "$rc" "5" "fixture sanity: a finding makes \`story doctor\` exit 5"
+
+out=$(cd "$repo" && PATH="$TESTS_DIR/fakes/story-integrity:$PATH" \
+       TMUX=fake TMUX_PANE=%0 FAKE_TMUX_CAPTURE=marker bash "$SCRIPT" doctor 2>&1)
 assert_eq "$(jqf "$out" .ok)" "true" "doctor: a finding does NOT flip ok:false"
 assert_eq "$(jqf "$out" .project_integrity.ok)" "false" "doctor: integrity reported as not-ok"
 assert_contains "$(jqf "$out" .project_integrity.summary)" "TST-9999" "doctor: summary names the finding"

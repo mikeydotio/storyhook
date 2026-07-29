@@ -6,7 +6,7 @@ use predicates::str::contains;
 use tempfile::tempdir;
 
 #[test]
-fn closed_state_moves_story_to_archive_db() {
+fn closing_a_story_takes_it_out_of_the_open_set_and_keeps_it_readable() {
     let dir = tempdir().unwrap();
     Command::cargo_bin("story")
         .unwrap()
@@ -30,12 +30,16 @@ fn closed_state_moves_story_to_archive_db() {
         .success()
         .stdout(contains("closed_at:"));
 
-    assert!(dir.path().join(".storyhook/archive/archive.db").exists());
-    assert!(
-        !dir.path()
-            .join(".storyhook/open/stories/SH-1.jsonl")
-            .exists()
-    );
+    // The archive was a second storage medium; it is a column now. What it was
+    // ever for is asserted instead: a closed story stops counting as open and
+    // stays readable.
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["--json", "summary"])
+        .assert()
+        .success()
+        .stdout(contains("\"total_open\": 0"));
 
     Command::cargo_bin("story")
         .unwrap()

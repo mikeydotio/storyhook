@@ -107,6 +107,27 @@ pub(super) fn touch_project_path(
 ///
 /// The project itself survives: a checkout that is deleted, moved, or removed
 /// from the dashboard is not a reason to lose its stories.
+pub(super) fn rename_project(
+    conn: &Connection,
+    project: ProjectId,
+    name: &str,
+) -> Result<(), StoreError> {
+    let updated = sql(
+        conn.execute(
+            "UPDATE projects SET name = ?2 WHERE id = ?1",
+            params![project.get(), name],
+        ),
+        "renaming a project",
+    )?;
+    if updated == 0 {
+        return Err(StoreError::Invariant(format!(
+            "renaming a project that does not exist (id {})",
+            project.get()
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn forget_project_path(
     conn: &Connection,
     project: ProjectId,

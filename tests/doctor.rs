@@ -1,108 +1,102 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
+//! `story doctor` — what it finds when the storage is already wrong.
+//!
+//! These fixtures fabricate states the public API refuses to produce, which is
+//! the point: the doctor's whole job is to describe damage nothing was supposed
+//! to be able to do. They used to fabricate it by writing raw JSONL into
+//! `.storyhook/open/stories/`; they fabricate it through
+//! [`storyhook::store::test_support`] now, which bypasses the *service* layer
+//! without bypassing the schema.
+//!
+//! Note what that distinction buys, and what it costs. Two of the three shapes
+//! below — a dangling relation, a second parent — the schema now refuses
+//! outright, so the doctor cannot be shown them at all and the defect *class*
+//! is gone (`service_integrity.rs::the_shapes_doctor_used_to_find_are_now_
+//! refused_by_the_schema` pins that). What remains reachable is the
+//! genuinely-still-possible kind: a relation whose two ends' *histories*
+//! disagree, and a story whose type names something the project's catalog does
+//! not define.
 
-use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
-use tempfile::tempdir;
+use storyhook::domain::StoryEvent;
+use storyhook::store::test_support::inject_events;
+use storyhook_test_support::TestEnv;
+
+/// `at` for injected events: fixed, so a rendering never depends on the clock.
+const AT: &str = "2026-03-11T00:00:01Z";
 
 #[test]
-fn doctor_reports_missing_inverse_edge() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .arg("init")
-        .assert()
-        .success();
+fn doctor_reports_a_relation_only_one_end_records() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").seed_story("B").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["new", "A"])
-        .assert()
-        .success();
-
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["new", "B"])
-        .assert()
-        .success();
-
-    std::fs::write(
-        dir.path().join(".storyhook/open/stories/SH-1.jsonl"),
-        concat!(
-            "{\"kind\":\"StoryCreated\",\"at\":\"2026-03-11T00:00:00Z\",\"title\":\"A\",\"state\":\"todo\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:01Z\",\"other_id\":\"SH-2\",\"relation\":\"blocks\"}\n"
-        ),
+    // `story relate` writes both ends' events in one transaction, so this is
+    // unreachable through the CLI — which is exactly why the doctor has to be
+    // able to report it: a tree migrated from `.storyhook/` can contain it
+    // (SH-60), and so can a database written by an older storyhook.
+    inject_events(
+        &store,
+        id,
+        project.story_no(&store, "SH-1"),
+        &[StoryEvent::StoryRelationshipAdded {
+            at: AT.to_string(),
+            other_id: "SH-2".to_string(),
+            relation: "blocks".to_string(),
+        }],
     )
-    .unwrap();
+    .expect("injecting a one-sided relation");
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .arg("doctor")
-        .assert()
+    project
+        .run(&["doctor"])
         .code(5)
         .stderr(contains("missing inverse relation"));
 }
 
 #[test]
-fn doctor_reports_parent_cycle_and_show_suppresses_virtual_relationships() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .arg("init")
-        .assert()
-        .success();
+fn doctor_flags_a_story_type_the_catalog_does_not_define() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["new", "A"])
-        .assert()
-        .success();
-
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["new", "B"])
-        .assert()
-        .success();
-
-    std::fs::write(
-        dir.path().join(".storyhook/open/stories/SH-1.jsonl"),
-        concat!(
-            "{\"kind\":\"StoryCreated\",\"at\":\"2026-03-11T00:00:00Z\",\"title\":\"A\",\"state\":\"todo\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:01Z\",\"other_id\":\"SH-2\",\"relation\":\"parent-of\"}\n"
-        ),
+    inject_events(
+        &store,
+        id,
+        project.story_no(&store, "SH-1"),
+        &[StoryEvent::StoryTypeSet {
+            at: AT.to_string(),
+            story_type: "nonexistent-type".to_string(),
+        }],
     )
-    .unwrap();
-    std::fs::write(
-        dir.path().join(".storyhook/open/stories/SH-2.jsonl"),
-        concat!(
-            "{\"kind\":\"StoryCreated\",\"at\":\"2026-03-11T00:00:00Z\",\"title\":\"B\",\"state\":\"todo\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:01Z\",\"other_id\":\"SH-1\",\"relation\":\"child-of\"}\n",
-            "{\"kind\":\"StoryRelationshipAdded\",\"at\":\"2026-03-11T00:00:04Z\",\"other_id\":\"SH-1\",\"relation\":\"parent-of\"}\n"
-        ),
-    )
-    .unwrap();
+    .expect("injecting an unknown story type");
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .arg("doctor")
-        .assert()
+    project
+        .run(&["doctor"])
         .code(5)
-        .stderr(contains("parent/child cycle detected"));
+        .stderr(contains("unknown type `nonexistent-type`"));
+}
 
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["--json", "show", "SH-1"])
-        .assert()
+#[test]
+fn show_suppresses_the_derived_halves_of_a_relationship() {
+    // The second half of what the old parent-cycle test asserted, and the half
+    // that is still reachable: a real `parent-of` edge is reported, and the
+    // *virtual* relations the graph derives from it are not — they are a view,
+    // not a fact about the story.
+    //
+    // The cycle itself is gone: `story_relations` has a foreign key at both
+    // ends and a partial unique index on `child-of`, so a story cannot be its
+    // own ancestor. The schema refuses the write instead of the doctor
+    // reporting it afterwards.
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").seed_story("B").build();
+    project
+        .run(&["relate", "SH-1", "parent-of", "SH-2"])
+        .success();
+
+    project
+        .run(&["--json", "show", "SH-1"])
         .success()
         .stdout(contains("\"parent-of\""))
         .stdout(contains("\"ancestor-of\"").not())
@@ -110,78 +104,12 @@ fn doctor_reports_parent_cycle_and_show_suppresses_virtual_relationships() {
 }
 
 #[test]
-fn doctor_flags_unknown_story_type() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .arg("init")
-        .assert()
-        .success();
-
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["new", "A"])
-        .assert()
-        .success();
-
-    // Manually write a story with an unknown type
-    std::fs::write(
-        dir.path().join(".storyhook/open/stories/SH-1.jsonl"),
-        concat!(
-            "{\"kind\":\"StoryCreated\",\"at\":\"2026-03-11T00:00:00Z\",\"title\":\"A\",\"state\":\"todo\"}\n",
-            "{\"kind\":\"StoryTypeSet\",\"at\":\"2026-03-11T00:00:01Z\",\"story_type\":\"nonexistent-type\"}\n"
-        ),
-    )
-    .unwrap();
-
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .arg("doctor")
-        .assert()
-        .code(5)
-        .stderr(contains("unknown type `nonexistent-type`"));
-}
-
-#[test]
 fn doctor_does_not_flag_known_story_type() {
-    let dir = tempdir().unwrap();
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .arg("init")
-        .assert()
-        .success();
+    let env = TestEnv::shared();
+    let project = env.project().build();
+    project.run(&["type", "add", "feature"]).success();
+    project.run(&["new", "A"]).success();
+    project.run(&["set", "SH-1", "--type", "feature"]).success();
 
-    // Add a type
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["type", "add", "feature"])
-        .assert()
-        .success();
-
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["new", "A"])
-        .assert()
-        .success();
-
-    // Set the story type to the known type
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .args(["set", "SH-1", "--type", "feature"])
-        .assert()
-        .success();
-
-    Command::cargo_bin("story")
-        .unwrap()
-        .current_dir(dir.path())
-        .arg("doctor")
-        .assert()
-        .success();
+    project.run(&["doctor"]).success();
 }

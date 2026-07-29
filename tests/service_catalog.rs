@@ -370,3 +370,24 @@ fn a_missing_or_unparseable_registry_is_not_an_error() {
         "a file the dashboard owns must not be able to fail every storyhook command"
     );
 }
+
+#[test]
+fn registering_with_a_name_records_it_rather_than_echoing_it() {
+    // The legacy registry held a display name per repo. The catalog is the
+    // projects table now, so this is the only place `--name` can go — and a
+    // flag that is accepted and silently dropped is worse than one that does
+    // not exist.
+    let (store, dir) = store();
+    let root = project(&store, dir.path(), "alpha");
+
+    let entry = CatalogService::new(&store)
+        .register(&root, Some("The Alpha Project"))
+        .expect("registering");
+    assert_eq!(entry.name, "The Alpha Project");
+
+    assert_eq!(
+        CatalogService::new(&store).list().expect("listing")[0].name,
+        "The Alpha Project",
+        "a later `web list` must report the name it was given"
+    );
+}
