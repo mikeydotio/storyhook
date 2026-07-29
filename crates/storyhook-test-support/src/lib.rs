@@ -35,6 +35,7 @@
 //! ```
 
 mod env;
+mod legacy_tree;
 mod project;
 mod scratch;
 mod server;

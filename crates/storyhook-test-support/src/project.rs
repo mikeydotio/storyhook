@@ -100,36 +100,21 @@ impl<'a> ProjectBuilder<'a> {
     /// Builds a **legacy** `.storyhook/` tree instead of a project in the
     /// store.
     ///
-    /// Two things still read that tree and neither is reachable from the CLI:
-    /// the web dashboard, until the wave that promotes the daemon absorbs it,
-    /// and `story migrate`, whose entire subject is a tree it is importing. A
-    /// fixture for either has to be built in-process through
-    /// [`storyhook::app::run`], because `story init` now creates a project in
-    /// the store and no directory at all.
+    /// Two things still read that tree, and `story init` creates neither: the
+    /// unmigrated-repository guard, which asks whether one is there, and
+    /// `story migrate`, whose entire subject is a tree it is importing. The
+    /// tree is therefore written directly, against the layout
+    /// [`storyhook::legacy`] reads — see [`crate::legacy_tree`] for why that is
+    /// a writer rather than a call into the old entry point.
     ///
     /// The CLI helpers on the resulting [`Project`] — `run`, `json`, `story` —
     /// address the *store*, so on a legacy fixture they answer about a project
-    /// that is not there. Drive a legacy project through `app::run`, or through
-    /// whichever component is under test.
+    /// that is not there, or refuse with the migrate diagnosis. Drive a legacy
+    /// project through `story migrate`, or through whichever component is under
+    /// test.
     pub fn legacy(mut self) -> Self {
         self.legacy = true;
         self
-    }
-
-    /// Runs one invocation against a legacy tree, in process.
-    fn legacy_run(root: &Path, invocation: storyhook::cli::Invocation) {
-        storyhook::app::run(
-            root,
-            storyhook::cli::CliOptions {
-                json: false,
-                quiet: false,
-                // A hook would shell out to `story`, which is the store-backed
-                // binary; a fixture is not the place to exercise that.
-                no_hooks: true,
-                invocation,
-            },
-        )
-        .unwrap_or_else(|e| panic!("building the legacy fixture at {}: {e}", root.display()));
     }
 
     /// Builds the project. Panics — loudly, naming the failing step — rather
@@ -169,13 +154,7 @@ impl<'a> ProjectBuilder<'a> {
         }
 
         if self.legacy {
-            Self::legacy_run(
-                &root,
-                storyhook::cli::Invocation::Init {
-                    prefix: self.prefix.clone(),
-                    no_agents_md: true,
-                },
-            );
+            crate::legacy_tree::init(&root, self.prefix.as_deref());
         } else {
             let mut init = vec!["init"];
             if let Some(prefix) = &self.prefix {
@@ -331,28 +310,7 @@ impl<'a> Project<'a> {
     /// Creates a story and returns the id storyhook minted for it.
     pub fn new_story(&self, title: &str) -> String {
         if self.legacy {
-            let response = storyhook::app::run(
-                self.path(),
-                storyhook::cli::CliOptions {
-                    json: false,
-                    quiet: false,
-                    no_hooks: true,
-                    invocation: storyhook::cli::Invocation::New {
-                        title: title.to_string(),
-                        state: None,
-                        story_type: None,
-                        description: None,
-                        priority: None,
-                        labels: None,
-                        assignee: None,
-                    },
-                },
-            )
-            .unwrap_or_else(|e| panic!("`story new {title}` in the legacy fixture: {e}"));
-            return match response {
-                storyhook::output::Response::Story(view) => view.story.id,
-                other => panic!("`story new` answered with {other:?} rather than a story"),
-            };
+            return crate::legacy_tree::new_story(self.path(), title);
         }
         self.json(&["new", title])["story"]["story"]["id"]
             .as_str()
