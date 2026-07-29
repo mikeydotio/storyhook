@@ -11,6 +11,7 @@ pub mod github;
 pub mod help_topics;
 pub mod hooks;
 pub mod invoke;
+pub mod legacy;
 pub mod lock;
 pub mod output;
 pub mod paths;
