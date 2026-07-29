@@ -2,11 +2,17 @@
 .DS_Store
 .playwright-mcp/
 
-# .storyhook/ is version-controlled project data — do not ignore
 .worktrees
 
 # issue per-issue git worktrees (ephemeral — never commit)
 .claude/worktrees/
+
+# Residue of the retired per-project tracker. Nothing storyhook ships writes
+# here any more — `.storyhook.toml` is the whole repo footprint — but a `story`
+# binary from before the cutover still creates `.storyhook/lock` where it
+# stands, and one `git add -A` would re-commit the directory this repository
+# just retired. Ignored so that cannot happen by accident.
+/.storyhook/
 
 # insta's pending-snapshot scratch files. `make test` pins INSTA_UPDATE=no so
 # the gate never writes these, but a bare `cargo test` still does, and a
