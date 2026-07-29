@@ -919,6 +919,14 @@ fn invocation_corpus() -> Vec<Invocation> {
                 events: Vec::new(),
             },
         },
+        Invocation::Migrate {
+            path: Some("/checkout".to_string()),
+            dry_run: false,
+        },
+        Invocation::Migrate {
+            path: None,
+            dry_run: true,
+        },
     ]
 }
 
@@ -974,6 +982,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Version => "Version",
         Invocation::ProjectSnapshot => "ProjectSnapshot",
         Invocation::History { .. } => "History",
+        Invocation::Migrate { .. } => "Migrate",
     }
 }
 
@@ -987,7 +996,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        48,
+        49,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }
