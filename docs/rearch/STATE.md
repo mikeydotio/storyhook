@@ -34,7 +34,7 @@
 | W3 importer | `rearch/w3-importer` / [PR #67](https://github.com/mikeydotio/storyhook/pull/67) | **MERGED** 2026-07-28 |
 | W4 THE FLIP | `rearch/w4-flip` | **PR OPENED** — revert only while `migrate_round_trip` is 4/4 green |
 | W5 daemon | `rearch/w5-daemon` | **PR OPENED** — the quarantine deletion deferred, see the step log |
-| W6 git features | — | pending |
+| W6 git features | `rearch/w6-git-features` | **PR OPENED** — the quarantine is deleted; body scanning is live |
 | W7 repo cutover | — | pending |
 | W8 hardening | — | pending |
 
@@ -146,7 +146,73 @@
   write half.** See the step log for why and for exactly what the next session
   has to do.
 
+## W6 step plan
+
+- **W6 DONE.** Eight commits; `make test` green after each. `b95dce6` (the legacy
+  fixture writer), `eaf625a` (differential_git's rows carried into service_git),
+  `cf80e54` (**THE DELETION** — 10,849 lines out), `7091c17` (SH-58, body scanning),
+  `2d28aa5` (SH-56, the post-merge hook + nine tests that *run* the hooks),
+  `2b279f0` (SH-61's termination test + the `PATH` trap it exposed), `a72f3da`
+  (a backup-naming race the second migration made reachable), `44ab201`
+  (`StoryCommitLinked` + the unique constraint), plus this docs commit.
+  See the Step log for the deviations and the four defects found.
+
 ## Key facts discovered (do not re-derive)
+
+- **W6: `TestEnv` did not isolate `PATH`, and a managed git hook runs `story` by
+  *name*.** So a `git commit` in any fixture repository spawned the developer's
+  **installed** build — a different version of storyhook, pointed at whatever
+  store it defaults to. Found because a post-flip fixture came back with `??
+  .storyhook/` in `git status`: the installed pre-flip binary had created
+  `.storyhook/lock` where it stood. `TestEnv::apply` and `TestEnv::story` now
+  put the binary under test at the front of `PATH`. HANDOFF had listed this as a
+  trap to remember; a harness that makes it unrepresentable is better than a
+  note, and **every future test that fires a hook inherits the fix**.
+- **W6, FIXED in-wave (`a72f3da`) — the pre-migration backup's filename
+  collides, and the error message names the wrong problem.** `snapshot` built
+  the name from a millisecond timestamp and handed it to `VACUUM INTO`, which
+  refuses an existing output file; eight processes upgrading one store produce
+  one backup and seven failed migrations. **Unreachable until this wave**:
+  `run` skips the backup at `from_version == 0`, and with one migration in the
+  tree that was every fresh store. The second migration makes every existing
+  store take the path, and an upgrade is exactly when a machine has a shell, a
+  git hook and a daemon all running `story`. Reproduced 7-in-8 first try. The
+  message is the trap within the trap: SQLite reported the collision through a
+  stale `sqlite3_errmsg` reading `table schema_migrations already exists`, which
+  is a different statement's error. **Generalize: a rusqlite error string may
+  belong to an earlier statement on that connection — trust the failing call,
+  not the text.**
+- **W6: a `[git] <short>: <subject>` comment cannot be told from a link record
+  by its bytes — only by who wrote it.** Kind #18 puts the sha in a field, but
+  every pre-#18 store and every unmigrated `.storyhook` tree records links as
+  comments, so the store has to project those too or the first `commit-sync`
+  after an upgrade re-links everything. Projecting them *unconditionally*
+  re-opens the hole the kind was added to close: a user types
+  `[git] a04a8c4: …` into `story comment` and silently suppresses a real link.
+  The line is the **append path**: `append_raw_events` (what `story migrate`
+  and the injectors take) reads legacy comments as link records;
+  `append_events` (what a service call takes) does not. One known gap, and it
+  is small: restoring a pre-#18 *export document* through `import-project` goes
+  through `append_events`, so its legacy comments are not projected and one
+  `commit-sync` re-links them.
+- **W6: deleting `github/auto.rs` removed `sync.mode = auto` from the product,
+  not merely from the legacy path.** The flip checklist's section G4 recorded
+  that auto-sync fired only from `app::run`'s tail and that `dispatch` had no
+  equivalent, leaving it as an open question for W4 or W5 to settle. Neither
+  did, so the code has been unreachable since the flip and this wave deleted it
+  with the rest. **Nothing regressed** — it has not run since W4 — but the
+  feature now has no implementation at all, and a user with `sync_mode = auto`
+  in their configuration gets manual behaviour with no diagnostic. W8 owes it a
+  decision: reinstate it on the invoker, or remove it from the configuration
+  vocabulary and say so.
+- **W6: the schema fixture must stay at v1 forever, and `build()` has to pin
+  itself to migration 1.** `tests/fixtures/schema/v1.db` exists so a future
+  migration has an *old* database to migrate; regenerating it against the
+  current list would destroy exactly that. Three tests changed shape rather
+  than the fixture: the comparison is against `MIGRATIONS[..1]`, and
+  `the_committed_fixture_migrates_forward` is new and asserts a real migration
+  runs when the whole list is applied to it. **Every later wave that adds a
+  migration must resist `regenerate.sh`.**
 
 - **W5, the finding that matters most for W8: the daemon leg cannot run at the
   default test parallelism.** `make test-daemon` gives each test *binary*'s
@@ -1872,6 +1938,88 @@
   `app::run`, and it needs replacing with a direct writer against
   `src/legacy/`'s layout (~90 lines, `init` and `new_story` only). HANDOFF.md
   carries the measured blast radius, row by row.
+
+- 2026-07-29 W6: branch `rearch/w6-git-features` off merged main `30176c2`. Eight commits,
+  `make test` green after each. Test count 2084 → **1931**, 0 ignored — the deletion
+  removed 188 and the wave added 35.
+
+  **The quarantine is gone.** 10,849 lines out, 535 in: `app.rs` (3438),
+  `registry.rs` (336), `lock.rs` (64), `github/auto.rs` (74), the six
+  differential files and their harness (4481), `registry_test.rs` (335), and 695
+  lines plus 43 unit tests from `storage.rs`.
+
+  - `b95dce6` — `crates/storyhook-test-support/src/legacy_tree.rs`: legacy
+    fixtures written directly instead of through `app::run`. Its unit tests read
+    the tree back through `legacy::read_project`, so "the writer agrees with the
+    reader" is asserted rather than eyeballed.
+  - `eaf625a` — `differential_git.rs`'s thirteen behavioural rows carried into
+    `service_git.rs` *before* the harness was deleted, plus one new test pinning
+    the rendered comment text character for character.
+  - `cf80e54` — **the deletion**, and the quarantine test flipped from "reachable
+    only from the dashboard" to `the_legacy_write_path_is_gone`.
+  - `7091c17` — SH-58: `%H%x1f%B%x1e`, parsed by separator.
+  - `2d28aa5` — SH-56: the post-merge hook reads `%B`; `tests/hook_execution.rs`
+    *runs* the managed hooks for the first time.
+  - `2b279f0` — SH-61's termination test, and the `PATH` trap it exposed.
+  - `a72f3da` — the backup-naming race the second migration made reachable.
+  - `44ab201` — `StoryCommitLinked` (kind #18) + schema migration 2.
+
+  Gates: `make test` **111.7s**, `make test-daemon` **53.2s**. Both green.
+
+  **What survives of `storage.rs`, and why.** Not the write half's deletion the
+  brief called for, and the difference matters. `tests/migrate_round_trip.rs` —
+  the gate the W4 revert policy is *conditional* on — materializes a legacy tree
+  from an export document through `storage::import_project`, and
+  `tests/legacy_support/` builds `story migrate`'s fixtures the same way,
+  including the archived half, which lives in SQLite and cannot be written by
+  hand. So `storage.rs` keeps `init_project`, the catalog and story writers,
+  `import_project`/`export_project` and the readers that verify them, and loses
+  the twenty-six functions the CLI used to call. It is the far side of the
+  two-way door, and the flipped quarantine test now forbids **any** `src/` file
+  from naming `crate::storage` — a stronger rule than the one it replaced.
+
+  `ProjectExport`/`ExportedStory` moved to `service/transfer.rs`: the document is
+  the contract *between* the two storage layouts, so the layer that is going away
+  was the wrong owner.
+
+  Verification that the tests bite, not merely pass:
+  - The three body-trailer cases in `hook_execution.rs` fail against the old
+    `%s` hook — checked by reverting the token and running them.
+  - All three tests in `commit_sync_termination.rs` fail when `record_commit`'s
+    idempotency check is disabled: 5 links where 1 belongs, an event appended by
+    a re-scan, 15 links across 5 commits.
+  - `store_backup_naming.rs` fails on its own parent commit, where the tree has
+    one migration.
+  - `no_storyhook_path_literal_survives_in_the_github_module` failed on its first
+    run and found three real hits — which turned out to be doc comments, so the
+    rule now skips comment lines, as its sibling always did.
+
+  Deviations from the wave brief, all deliberate:
+  - **`storage.rs` is pruned, not halved.** Above.
+  - **`differential_git`'s rows were ported rather than deleted.** The brief's
+    table said delete the harness; deleting thirteen cases in the same wave that
+    changes what `commit-sync` scans would have been a poor trade.
+  - **`tui_integration.rs` lost a test.** `incomplete_trailing_json_line_tolerated`
+    appended half a JSON object to a `.jsonl`; an event is a row in a transaction
+    now, so the state it tested is unrepresentable.
+  - **Two `tui_integration` assertions changed meaning**, and it is a real
+    behaviour change: a project whose catalog no longer covers its stories used
+    to be *unreadable*, because the legacy reader re-folded against
+    `states.toml` on every read. The store separates the questions — the read
+    model is already folded — so it loads and `diff_read_model` reports the
+    disagreement. That is the hazard `validate_state_defs`'s own doc comment
+    warns about, fixed rather than inherited.
+  - **Migration 2 was not in the brief.** The brief asked for the unique
+    constraint; a constraint needs a table, a table needs a migration, and a
+    migration over existing stores needs a backfill.
+  - **`store_migrations.rs` and `store_schema_fixture.rs` were rewritten to stop
+    hard-coding "one migration".** Counts and versions are derived from
+    `MIGRATIONS` now, so the third migration costs nobody a day.
+  - **`last_activity_type` answers `"comment"` for kind #18**, not
+    `"commit-linked"`. It is rendered by `story list --stale`; the storage shape
+    is not a reason to change what a human reads.
+  - **Zero golden snapshots moved.** `INSTA_UPDATE=no` throughout, which is the
+    rendering-compatibility argument in its strongest form.
 
 ## Resume protocol (fresh session)
 
