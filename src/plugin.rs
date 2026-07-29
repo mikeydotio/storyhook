@@ -167,22 +167,27 @@ pub fn install(target: &str, project_root: &Path) -> Result<String, AppError> {
     add_marketplace(&source)?;
     install_plugin()?;
 
-    // Create default plugin config in the project if .storyhook/ exists.
-    let config_path = project_root.join(".storyhook").join("plugin-config.toml");
-    let mut wrote_config = false;
-    if project_root.join(".storyhook").exists() && !config_path.exists() {
-        fs::write(
-            &config_path,
-            "[plugin]\nenabled = true\ntracking = \"normal\"\n",
-        )?;
-        wrote_config = true;
-    }
-
+    // No configuration file is written.
+    //
+    // This used to seed `.storyhook/plugin-config.toml`, which is now wrong
+    // twice over: that directory is retired, and the plugin's configuration
+    // lives in the `[plugin]` table of the repository's pointer file, which is
+    // *user-authored* — storyhook reads it and never writes it, so that a field
+    // a newer storyhook understands cannot be dropped by an older one
+    // rewriting the file for its own reasons.
+    //
+    // Nothing is lost by not writing it. The defaults the file used to carry
+    // are the defaults the hooks apply when the table is absent, so seeding it
+    // was documentation in the shape of a file. It is documentation again.
     let mut msg = format!(
         "registered storyhook plugin via the `{MARKETPLACE_NAME}` marketplace (source: {source})\n"
     );
-    if wrote_config {
-        msg.push_str("created .storyhook/plugin-config.toml with default settings\n");
+    if crate::service::project::pointer_plugin(project_root).is_none() {
+        msg.push_str(
+            "\nThe plugin runs with default settings. To change them, add this to \
+             `.storyhook.toml`:\n\n    [plugin]\n    enabled = true\n    tracking = \
+             \"normal\"\n",
+        );
     }
     msg.push_str(
         "\nStart a new Claude Code session to load the plugin, then run \
@@ -220,12 +225,14 @@ pub fn uninstall(target: &str, project_root: &Path) -> Result<String, AppError> 
         ));
     }
 
-    // Remove plugin config.
-    let config_path = project_root.join(".storyhook").join("plugin-config.toml");
-    if config_path.exists() {
-        fs::remove_file(&config_path)?;
-        removed.push("removed .storyhook/plugin-config.toml".to_string());
-    }
+    // Deliberately does not delete any plugin configuration. The `[plugin]`
+    // table lives in the repository's pointer file beside its identity, and
+    // rewriting a user-authored file to remove one table is not something an
+    // uninstall should do; a repository that reinstalls the plugin next week
+    // would have lost its settings for no reason. A pre-cutover
+    // `.storyhook/plugin-config.toml` is left alone for the stronger reason
+    // that nothing may write into the legacy directory at all — it is the
+    // user's rollback.
 
     // Remove sentinel-marked section from CLAUDE.md if present.
     let claude_md_path = project_root.join("CLAUDE.md");

@@ -54,9 +54,11 @@ Worth knowing before changing anything here:
   inside a dispatched worktree, `--show-toplevel` would return that worktree's
   root and the next worktree would be nested inside it.
 - **Every `story` call goes through `story_cli()`,** which anchors to the
-  project root. The CLI has no `--repo` flag and doesn't walk up ancestors, and
-  `.storyhook/` is version-controlled so each worktree holds its own copy —
-  an unanchored call reads the wrong tracker rather than failing (SH-46).
+  project root. The CLI resolves a project by walking up from its working
+  directory and every checkout of a repository resolves to the same project, so
+  this is no longer what stands between you and the wrong tracker (SH-46). It
+  is what stands between you and *no* project, or a neighbouring one: these
+  verbs can be invoked from anywhere, including outside the repository.
 - **`is_ready()` is not "unclaimed".** It returns true for an already
   in-progress story, so `dispatch` carries its own guard and `list` filters the
   active state out.

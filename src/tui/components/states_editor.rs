@@ -1,9 +1,9 @@
 //! The statuses editor modal: per-repo configuration of the project's state
 //! set, the TUI half of SH-41.
 //!
-//! Everything here edits `.storyhook/states.toml` through the same storage
-//! operations `story state …` and the web dashboard use, so the three agree
-//! by construction rather than by convention.
+//! Everything here edits the project's state catalog through the same service
+//! calls `story state …` and the web dashboard use, so the three agree by
+//! construction rather than by convention.
 
 use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::Frame;

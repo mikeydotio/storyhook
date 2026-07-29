@@ -2,18 +2,25 @@
 # SH-46 regression: every `story` call must run anchored at the project
 # root, not in the caller's CWD.
 #
-# The story CLI has no --repo/-C/--cwd flag and ensure_project() does NOT
-# walk up ancestors (src/storage.rs) -- the project root is always exactly
-# env::current_dir(). So a dispatch that shells out to `story` from wherever
-# the user happened to stand either fails outright (a plain subdirectory) or,
-# far worse, silently reads a DIFFERENT tracker: `.storyhook/` is
-# version-controlled, so every git worktree carries its own independent copy.
+# Both halves of SH-46 are fixed now, and this file pins both.
 #
-# repo_root() already anchors worktree CREATION to the main repo (it uses
-# --git-common-dir deliberately, see its header). These assertions pin the
-# other half: the story READS and the CAS claim must be anchored there too,
-# or the gate is evaluated against one checkout while the worktree is made
-# in another.
+# It used to be a defence: the CLI resolved a project from exactly its working
+# directory, so a dispatch that shelled out to `story` from wherever the user
+# stood either failed outright (a plain subdirectory) or, far worse, silently
+# read a DIFFERENT tracker, because `.storyhook/` was version-controlled and
+# every git worktree carried its own independent copy.
+#
+# It is now mostly a proof. The CLI walks up from its working directory, and
+# every checkout of a repository resolves to one project in one store — so the
+# assertions below check that the *right* thing happens for the *right*
+# reason, including the two that state the property directly: a bare `story
+# show` succeeds in a subdirectory, and a story created in the main checkout is
+# visible from a linked worktree.
+#
+# What story.sh's own anchoring still buys is the worktree bookkeeping:
+# repo_root() anchors worktree CREATION to the main repo (it uses
+# --git-common-dir deliberately, see its header), so a new worktree is never
+# nested inside the one it was dispatched from.
 source "$(dirname "$0")/lib.sh"
 
 repo=$(mk_story_repo)

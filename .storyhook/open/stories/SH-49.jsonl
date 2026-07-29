@@ -1,5 +1,0 @@
-{"kind":"StoryCreated","at":"2026-07-26T00:43:54Z","title":"Add a linked-PRs field to stories so GitHub PRs can be linked to them","state":"todo"}
-{"kind":"StoryDescriptionSet","at":"2026-07-26T00:43:54Z","description":"Add a linked-PRs field (name it better) to stories, so that GitHub PRs can be linked to stories.\n\nThe storyhook daemon should then monitor GitHub for any PRs linked to active stories to merge.\n\nAny story-to-PR linkage should also carry a \"close on merge\" boolean option which, if true, closes the story when the PR merges. The flag should be enabled by default."}
-{"kind":"StoryTypeSet","at":"2026-07-26T00:43:54Z","story_type":"story"}
-{"kind":"StoryCommentAdded","at":"2026-07-27T23:26:39Z","text":"[git] f59d072: chore(storyhook): close SH-41 and SH-49 as done"}
-{"kind":"StoryAwaitingSet","at":"2026-07-28T13:23:42Z","awaiting":"Blocked by the rearch: explicitly requires the storyhook daemon; re-spec against /api/v1 + change feed after the daemon wave"}

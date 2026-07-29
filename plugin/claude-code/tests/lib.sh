@@ -23,13 +23,13 @@ trap _cleanup EXIT
 
 # --- data-home isolation ---------------------------------------------------
 #
-# storyhook is moving from per-project `.storyhook/` directories to a single
-# global store under the XDG data home. The moment that lands, a suite which
-# has not redirected these variables writes its fixtures into the developer's
-# real ~/.local/share/storyhook on every `make test` -- thousands of junk
-# stories in the tracker this project uses to track itself, with no undo and
-# nothing in the output to say it happened. They are redirected now, while
-# they are still unread, because doing it afterwards is doing it too late.
+# storyhook keeps every project's stories in a single store under the XDG data
+# home. A suite that has not redirected these variables writes its fixtures
+# into the developer's real ~/.local/share/storyhook on every `make test` --
+# hundreds of junk stories in the tracker this project uses to track itself,
+# with no undo and nothing in the output to say it happened. This block was
+# written before the store landed, while the variables were still unread,
+# because adding it afterwards would have been adding it too late.
 #
 # run-tests.sh exports these for the whole run and refuses to start if they
 # are wrong; this block is what makes a single `bash test-foo.sh` just as
@@ -84,13 +84,15 @@ mk_story_repo() {
     git commit -qm init
     git push -qu origin main
     git remote set-head origin main >/dev/null 2>&1 || true
-    # Deliberately NOT committed: storyhook's state is moving out of the repo
-    # and into a global store, after which there is no `.storyhook` to add and
-    # this line would be a silent failure inside a `|| true`. Nothing in the
-    # suite needs it tracked -- a linked worktree resolving no tracker at all
-    # proves the same anchoring property as one resolving a different tracker
-    # (see test-dispatch-cwd.sh).
+    # `story init` writes `.storyhook.toml` and nothing else into the tree;
+    # the stories themselves go to the (isolated) store. Committing the
+    # pointer is what a real project does, and it is what makes a linked
+    # worktree of this fixture resolve the SAME project as the main checkout —
+    # the property test-dispatch-cwd.sh asserts.
     story init --prefix TST >/dev/null 2>&1
+    git add .storyhook.toml
+    git commit -qm 'storyhook pointer'
+    git push -q origin main
   ) >/dev/null 2>&1
   printf '%s' "$repo"
 }

@@ -382,6 +382,16 @@ large share of it, because the files it must rewrite anyway are the same ones.
   directory`). W0 already gave the suite XDG data-home isolation (`f4eefe1`), which is what
   keeps it from writing into the real store the moment the flip lands — that isolation is
   load-bearing between W4 and W7, not a nicety.
+
+  **CLOSED by W7.** The suite's remaining references are four sentences explaining what used
+  to be there and why it is not, plus `story-setup`'s pointer at `story migrate`. The
+  anchoring the count was really measuring is gone with it: the auto charter no longer sends
+  the child `cd`-ing to the main checkout, `project_root` looks for the pointer file, and
+  both session hooks decide "am I in a storyhook project?" by walking ancestors for
+  `.storyhook.toml` rather than by looking for a directory in `$PWD`. W0.2's note that
+  dropping `git add .storyhook` had weakened `test-dispatch-cwd.sh` is also discharged: the
+  fixture commits its pointer, so its linked worktree resolves the *same* project rather than
+  none, which is the property that file exists to assert.
 - **`src/` `.storyhook` literals** — the flip changes them by construction; they are not a
   checklist item.
 
