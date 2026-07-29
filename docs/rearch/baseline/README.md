@@ -91,6 +91,29 @@ mkdir /tmp/round
 That third property is W3's target: the importer must round-trip this document
 without losing a byte.
 
+**W3 result, for anyone diffing a later capture.** `story migrate` reproduces
+this tree exactly, with one documented set of differences and one contract
+quirk:
+
+- **Ten repair events**, and they are the fifteen live SH-60 violations this
+  tree has carried for months. Ten relations are claimed by only one end; five
+  of them are completed with the missing event, and the other five are
+  *unilateral parent claims* that are retracted instead, because completing
+  them would give SH-32 through SH-36 two parents each — which the store
+  refuses. `tests/migrate_round_trip.rs::the_real_trees_export_equals_the_
+  golden_document_modulo_the_repairs` asserts that every golden event is still
+  present in order and that every extra one is a repair the migration report
+  names. 486 events in, 496 out.
+- **`prefix` reads `null` rather than `"SH"`** in the store's export. Contract,
+  not loss: `story export` emits `null` for the default prefix, and this
+  project happens to have been initialized with an explicit `--prefix SH`. Both
+  documents import to the same project.
+
+The tree also exercises the reader's refusals by *not* triggering them: every
+event kind in it is one this binary understands, no story exists twice, no
+relation dangles, and every state slug it names is configured. The synthetic
+fixture in `tests/legacy_support/mod.rs` is where the broken shapes are built.
+
 ## Yes, there is a binary blob in git
 
 `legacy-tree.tar.gz` is ~40KB of gzip committed to a repository that otherwise
