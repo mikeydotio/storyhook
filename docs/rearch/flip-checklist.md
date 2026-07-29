@@ -23,6 +23,7 @@
 | B. Raw-state fabricators needing `inject_events()` | **10 sites in 4 files**, covering 8 tests | W4 |
 | C. White-box calls into APIs W4 deletes | ~~85 sites in 6 files~~ → **14 sites in 6 files** after W2c | W4 |
 | D. `#[ignore]`d worktree-truth tests | **2** — un-ignoring them is W4's exit criterion | W4 |
+| D2. The rollback procedure | written, and gated by a green `migrate_round_trip.rs` | W4 |
 | E. `TODO(rearch)` scratch_dir migrations outstanding | **45 files** | opportunistic, any wave |
 
 The plan estimated "~85 refs across 18 files" for category A. The real figure is **104 across
@@ -252,6 +253,88 @@ edit that would make the whole program unfalsifiable.
 
 ---
 
+## D2. The rollback procedure — paste this into the W4 PR
+
+W3 built the two-way door; this is how it opens. **Read the gate first:**
+
+```sh
+cargo test --workspace --test migrate_round_trip     # must be 4/4 green
+```
+
+That file proves `store → story export → ProjectExport → story import-project
+→ legacy tree` reconstructs a tree whose read models equal the store's, story
+by story and field by field, for both fixtures. **The W4 revert policy is
+conditional on it.** If it is red, the flip is a one-way door and must not be
+merged.
+
+### What the rollback actually is
+
+Three things, in decreasing order of preference. Reach for the first one that
+applies.
+
+1. **Before the repo cutover (W4 → W7): revert the commit.** `.storyhook/`
+   is still in the repository, untouched, and still the identity of record for
+   anyone on the previous binary. `git revert` the flip merge, reinstall, and
+   the tracker is exactly as it was — the store simply stops being consulted.
+   Nothing has to be reconstructed, because nothing was destroyed: `story
+   migrate` never writes to the tree it reads, and
+   `import_does_not_mutate_the_legacy_tree` is what keeps that true.
+   **Anything created *after* the flip and before the revert lives only in the
+   store**, so run step 2 first and merge the result by hand if there is any.
+
+2. **After the cutover, or to recover post-flip work: export and re-import.**
+
+   ```sh
+   story export > /tmp/rollback.json          # from the store, current binary
+   git revert <flip-merge> && make install     # back on the legacy binary
+   cd <checkout> && story import-project /tmp/rollback.json
+   story doctor                                # must be clean
+   ```
+
+   Note which `import-project` is running. The **legacy** one *overwrites*:
+   it rewrites every story's log and `INSERT OR REPLACE`s every archived row,
+   so restoring into a checkout that still has its `.storyhook/` replaces what
+   is there. That is what makes this step work at all after the reverted
+   binary is back — but restore into an empty directory first and diff if the
+   tree is not known to be stale. The **store-backed** one refuses a project
+   that already holds stories (`differential_transfer.rs::import_project_
+   diverges_on_a_project_that_already_has_stories`), so the same command means
+   different things on the two sides of the revert.
+
+3. **Only if the store itself is unreadable:** `store.db` is copied to
+   `<data dir>/backups/storyhook-<stamp>-v<N>.db` before every schema
+   migration, and each copy is `PRAGMA integrity_check`ed before it is
+   trusted (`src/store/migrate.rs::back_up`). Point a throwaway data
+   directory at the newest one and export from it:
+
+   ```sh
+   mkdir /tmp/recover
+   cp ~/.local/share/storyhook/backups/storyhook-<stamp>-v1.db /tmp/recover/store.db
+   STORYHOOK_DATA_DIR=/tmp/recover story export > /tmp/rollback.json
+   ```
+
+   Then continue at step 2. Note these are copies of the *database*, not
+   export documents, and only exist once a migration has run — a store still
+   on its first schema version has none.
+
+### What a rollback does *not* carry, and what to do about it
+
+An export document holds schema, prefix, states, types, members and stories.
+It does **not** hold:
+
+| Lost on the way back | Where to get it |
+|---|---|
+| `project.toml`'s `sync.auto_transition` and `doctor.stale_threshold` | the pre-flip `project.toml` in git history; `story migrate` printed both values in its report |
+| `project.toml`'s `created_at` | same; `import-project` stamps the restore instant instead |
+| The `next-id` counter's *burned* numbers | `import-project` derives `max(story id) + 1`, so numbers minted and never used are reclaimed. Harmless unless something external quotes them. |
+| Event kinds a newer storyhook wrote | `ProjectExport` carries decoded `StoryEvent`s only, so `partition_known` drops them on export. Nothing writes such kinds today; if one ever does, the round trip stops being lossless and this table is where that is recorded. |
+
+The first three are why **`.storyhook/` stays in the repository until W7** even
+though nothing reads it after the flip. It is not dead weight — it is the only
+copy of the three fields the envelope cannot carry.
+
+---
+
 ## E. `TODO(rearch)` scratch_dir migration list
 
 ```sh
@@ -311,6 +394,19 @@ wave that puts it back.
 invoker_seam`, `wire_envelope`. These call the library in-process, so
 `STORYHOOK_INVOKER` has no effect on them at all; running them in the leg would
 run them twice and prove nothing. They stay out after the flip.
+
+`service_migrate` is caught by the `service_` prefix and belongs out for a
+second reason worth writing down: it holds the CLI-level `story migrate` tests
+as well as the in-process ones, and those *must* run on the legacy leg. Their
+fixtures build a `.storyhook` tree by running `story init` and `story new`, and
+under `STORYHOOK_INVOKER=local` those write to the store instead — leaving
+nothing to migrate. `story migrate` is a command about the legacy world by
+definition; the leg's job is to prove the store can serve the existing suite,
+not this.
+
+W3 added two targets to the leg (38 → 40): `legacy_reader` and
+`migrate_round_trip`, both leg-agnostic (they call the library in-process but
+are not `service_`-prefixed, and they pass identically either way).
 
 ### G2. Files excluded whole
 

@@ -40,9 +40,9 @@ Execution state — wave status, step log, discovered defects — lives in
 | W2a | story lifecycle + relation services, differential harness | **complete — merged** |
 | W2b | project, config, system and grouping services; 27 of 46 arms ported | **complete — merged** |
 | W2c | query + integrity services; TUI onto the seam; 38 of 48 arms ported | **complete — merged** |
-| W2d | git/GitHub/transfer services; **all 48 arms ported**; the store test leg | **complete — PR open** |
-| W3 | legacy importer (`story migrate`) — also W4's rollback path | pending (parallel with W2) |
-| W4 | **the flip**: the global store becomes the default | pending; one uninterrupted session |
+| W2d | git/GitHub/transfer services; **all 48 arms ported**; the store test leg | **complete — merged** |
+| W3 | `src/legacy/` reader, `story migrate`, the round-trip rollback gate | **complete — PR open** |
+| W4 | **the flip**: the global store becomes the default | next; one uninterrupted session. Revert policy is gated on `make test`'s `migrate_round_trip` staying green — procedure in the flip checklist's section D2 |
 | W5 | daemon promotion + `/api/v1/invoke` transport | pending |
 | W6 | git features re-pointed; full commit-body scanning | pending (gated on W4) |
 | W7 | migrate this repo; retire `.storyhook/` | pending |
