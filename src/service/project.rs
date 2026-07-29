@@ -174,13 +174,34 @@ pub fn pointer_path(root: &Path) -> PathBuf {
 }
 
 /// Reads a checkout's pointer file, if it has one.
+///
+/// Every failure names the file. That is not politeness: `.storyhook.toml` is
+/// **committed to the repository and hand-authored** — it carries the user's
+/// `[plugin]` and `[hooks]` tables beside the project's identity — so a syntax
+/// error in it is an ordinary mistake made in an ordinary editor. Left to
+/// `toml`'s own words, `story list` reports `TOML parse error at line 1, column
+/// 6` and the user has no file to open. Resolution runs this on almost every
+/// command, so the unattributed version could surface anywhere.
 pub fn read_pointer(root: &Path) -> Result<Option<ProjectPointer>, AppError> {
     let path = pointer_path(root);
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(&path)?;
-    Ok(Some(toml::from_str(&raw)?))
+    let raw = std::fs::read_to_string(&path).map_err(|e| {
+        AppError::Storage(format!(
+            "{} could not be read: {e}. This file names the project this checkout \
+             belongs to.",
+            path.display()
+        ))
+    })?;
+    let pointer = toml::from_str(&raw).map_err(|e: toml::de::Error| {
+        AppError::Storage(format!(
+            "{} is not valid: {e}This file names the project this checkout belongs to; \
+             it is committed, so `git diff` on it is the fastest way to see what changed.",
+            path.display()
+        ))
+    })?;
+    Ok(Some(pointer))
 }
 
 /// Writes a checkout's pointer file, replacing any existing one.
