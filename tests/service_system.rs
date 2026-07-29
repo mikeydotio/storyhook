@@ -63,8 +63,8 @@ fn the_agents_template_follows_a_renamed_closed_state() {
     let rendered = SystemService::new(&ctx)
         .scaffold("agents-md")
         .expect("scaffolding");
-    assert!(rendered.contains("story move <id> shipped"), "{rendered}");
-    assert!(!rendered.contains("story move <id> done"), "{rendered}");
+    assert!(rendered.contains("story move SH-<n> shipped"), "{rendered}");
+    assert!(!rendered.contains("story move SH-<n> done"), "{rendered}");
 }
 
 #[test]

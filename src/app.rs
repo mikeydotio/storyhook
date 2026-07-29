@@ -3183,79 +3183,23 @@ fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Resp
     }
 }
 
+/// `AGENTS.md`, for the legacy leg.
+///
+/// Delegates to [`crate::service::templates::agents_md`] rather than holding a
+/// second copy of the text. The two used to be maintained in parallel and kept
+/// honest by a differential row comparing them byte for byte; one definition
+/// is better than a guard against two definitions drifting, and it is what
+/// lets the flip change the scaffolded guidance in one place.
 fn generate_agents_md(root: &std::path::Path) -> String {
-    let (prefix, done_state) = match read_project_config(root) {
-        Some((p, d)) => (p, d),
-        None => ("SH".to_string(), "done".to_string()),
-    };
-
-    format!(
-        r#"# AGENTS.md — Project Task Management
-
-This project uses **storyhook** for task tracking. All agents must follow the workflow below.
-
-## Workflow
-
-1. **Start of session**: Load project context
-   ```
-   story load-context
-   ```
-
-2. **Pick next task**: Get the highest-priority ready story
-   ```
-   story next
-   ```
-
-3. **Work on the task**: Implement the changes for the assigned story
-
-4. **Complete the task**: Mark the story as done
-   ```
-   story move <id> {done_state}
-   ```
-
-5. **End of session**: Generate a handoff summary
-   ```
-   story handoff --since 2h
-   ```
-
-## Quick Reference
-
-| Action | Command |
-|---|---|
-| List open stories | `story list` |
-| Show a story | `story show {prefix}-<n>` |
-| Create a story | `story new "<title>"` |
-| Move to state | `story move {prefix}-<n> <state>` |
-| Add a comment | `story comment {prefix}-<n> "comment text"` |
-| Set priority | `story prioritize {prefix}-<n> high` |
-| Assign a story | `story assign {prefix}-<n> <member>` |
-| Add a label | `story label {prefix}-<n> <label>` |
-| Block a story | `story block {prefix}-<n> "reason"` |
-| Unblock a story | `story unblock {prefix}-<n>` |
-| Add relationship | `story relate {prefix}-1 blocks {prefix}-2` |
-| Set multiple fields | `story set {prefix}-<n> --priority high --state in-progress` |
-| Search stories | `story search "<query>"` |
-| Project summary | `story summary` |
-| Context (for LLM) | `story load-context` |
-| Phase progress | `story phase list` |
-| Session handoff | `story handoff --since 2h` |
-
-Run `story help --compact` for the full command reference.
-
-## Important
-
-The `.storyhook/` directory is version-controlled project data. Do NOT add it to
-`.gitignore`. It must be committed to git so that project state travels with the repository.
-"#,
-        done_state = done_state,
-        prefix = prefix,
-    )
+    let (prefix, done_state) =
+        read_project_config(root).unwrap_or_else(|| ("SH".to_string(), "done".to_string()));
+    crate::service::templates::agents_md(&prefix, &done_state)
 }
 
 fn generate_claude_md(_root: &std::path::Path) -> String {
     r#"## Storyhook
 
-This project uses **storyhook** for task tracking. Full usage instructions are in `.storyhook/CLAUDE.md` — read that file before starting work.
+This project uses **storyhook** for task tracking. Full usage instructions are in `AGENTS.md` — read that file before starting work.
 
 Quick start: run `story load-context` at session start, `story next` to pick a task.
 

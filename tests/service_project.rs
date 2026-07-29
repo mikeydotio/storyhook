@@ -406,7 +406,7 @@ fn agents_md_names_the_projects_own_closed_state() {
     fixture.init(&InitOptions::default());
     let content = std::fs::read_to_string(fixture.root().canonicalize().unwrap().join("AGENTS.md"))
         .expect("reading AGENTS.md");
-    assert!(content.contains("story move <id> shipped"), "{content}");
+    assert!(content.contains("story move SH-<n> shipped"), "{content}");
 }
 
 #[test]

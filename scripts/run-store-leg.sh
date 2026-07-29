@@ -114,4 +114,7 @@ export XDG_STATE_HOME="$leg_root/state"
 # leg and reporting a meaningless green.
 export STORYHOOK_INVOKER=local
 export INSTA_UPDATE=no
-cargo test --workspace "${targets[@]}" -- ${skips[@]+"${skips[@]}"}
+# `--no-fail-fast`: the leg is a *survey* as much as a gate. Stopping at the
+# first red binary hides how much of the suite the flip would break, which is
+# the one number the burn-down is planned against.
+cargo test --workspace --no-fail-fast "${targets[@]}" -- ${skips[@]+"${skips[@]}"}
