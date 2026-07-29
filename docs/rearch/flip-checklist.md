@@ -384,6 +384,16 @@ large share of it, because the files it must rewrite anyway are the same ones.
   load-bearing between W4 and W7, not a nicety.
 - **`src/` `.storyhook` literals** — the flip changes them by construction; they are not a
   checklist item.
+
+  **CLOSED by W6 for `src/github/`**, which was the one place they survived it. The sync
+  engine kept its configuration in `.storyhook/github-sync.toml`, its merge bases in
+  `.storyhook/github-sync/bases/`, and a pre-sync backup of every story it was about to
+  rewrite in `.storyhook/github-sync/backups/` — so a sync dirtied the user's working tree
+  with files they then had to decide whether to commit. W2d moved all three behind
+  `SyncStorage`; W6 deleted the file-based implementation with the rest of the legacy path,
+  and `invoker_seam.rs::no_storyhook_path_literal_survives_in_the_github_module` is what keeps
+  the count at zero. Everywhere else in `src/` the remaining literals are the reader, the
+  unmigrated-repository guard, and the pointer file's own name, all of which are correct.
 - **The `#[cfg(test)]` modules inside `src/`** — they deliberately do not use the test-support
   crate (see STATE.md's note on linking two copies of `storyhook`), so nothing here applies to
   them.
@@ -467,7 +477,11 @@ or two white-box assertions are skipped rather than the whole file dropped.
 
 ### G4. Open questions the leg surfaced, for W4 to settle
 
-- **Auto-sync does not fire under the store leg.** `app::run` ends with
+- **Auto-sync does not fire under the store leg.** *(Neither W4 nor W5 settled it, and W6
+  deleted the code — `github/auto.rs` was reachable only from `app::run`. Nothing regressed,
+  because it has not run since the flip, but `sync.mode = auto` now has no implementation at
+  all and no diagnostic. **W8 owes the decision**: reinstate it on the invoker, or remove
+  `auto` from the configuration vocabulary and say so. See STATE.md's W6 key facts.)* `app::run` ends with
   `github::auto::maybe_auto_sync`, which re-syncs the affected story after every
   story-modifying command when `sync.mode = auto`. `dispatch` has no equivalent
   tail, so under `STORYHOOK_INVOKER=local` a `story comment` on a project in

@@ -1,126 +1,24 @@
-//! The Invoker seam's equivalence contract, and root resolution.
+//! The Invoker seam's execution contract, and root resolution.
 //!
-//! [`LegacyInvoker`] exists to be *provably* the same thing as calling
-//! `app::run`, so that adopting it across the CLI and the web server is a
-//! no-op that later implementations can be swapped into. It forwards
-//! verbatim, so equivalence is true by construction — this file pins it
-//! anyway, because "forwards verbatim" is exactly the kind of property a
-//! well-meaning refactor breaks quietly.
+//! The seam was introduced with a single implementation — `LegacyInvoker`,
+//! which forwarded to `app::run` — precisely so that adopting it across the
+//! CLI, the TUI and the web dashboard was provably a no-op. Two tests here
+//! pinned that equivalence: they ran an invocation through the seam and
+//! directly, and compared the rendered bytes.
 //!
-//! **`LegacyInvoker` no longer serves the CLI or the TUI.** It is reachable
-//! only from the web dashboard, which still reads `.storyhook/` directly until
-//! the daemon wave absorbs it — so these two tests build their fixture through
-//! `app::run` itself rather than through `ProjectBuilder`, whose `story init`
-//! now creates a project in the store and no directory at all.
+//! **Both are gone, with their subject.** `app::run` and `LegacyInvoker` were
+//! deleted once the dashboard moved onto the services, so there is no direct
+//! call left to compare a seamed one against. What the equivalence bought —
+//! that the flip changed no answers — is now held by the golden CLI corpus and
+//! by `daemon_invoke.rs`'s byte comparison of the two live invokers.
+//!
+//! What is left here is what still has a subject: the request envelope, root
+//! resolution, the project-less roster, the unmigrated-repository guard, and
+//! the deletion itself.
 
-use storyhook::app;
-use storyhook::cli::{CliOptions, Invocation};
+use storyhook::cli::Invocation;
 use storyhook::env::Environment;
-use storyhook::error::AppError;
-use storyhook::invoke::{InvokeRequest, Invoker, LegacyInvoker};
-use storyhook::output::{render_error, render_response};
-use storyhook_test_support::TestEnv;
-
-/// The same four rendering modes `tests/wire_envelope.rs` checks.
-const RENDER_MODES: [(bool, bool); 4] =
-    [(false, false), (true, false), (false, true), (true, true)];
-
-/// Reading and writing invocations both produce, through the seam, exactly
-/// what a direct `app::run` produces — compared as rendered bytes, in every
-/// rendering mode, because rendered bytes are what a caller sees.
-#[test]
-fn the_seam_renders_what_a_direct_app_run_renders() {
-    let project = TestEnv::shared()
-        .project()
-        .legacy()
-        .seed_story("A story to look at")
-        .build();
-    let project = project.path();
-    let id = "SH-1".to_string();
-
-    let cases = [
-        Invocation::Show { id: id.clone() },
-        Invocation::List {
-            state: None,
-            assignee: None,
-            flagged: false,
-            priority: None,
-            label: None,
-            created_after: None,
-            updated_after: None,
-            blocked: false,
-            ready: false,
-            stale: None,
-            phase: None,
-            story_type: None,
-        },
-        Invocation::Summary,
-        // A mutation as well as reads: the seam must not change what a write
-        // returns either. Idempotent, so running it twice is safe.
-        Invocation::SetPriority {
-            id: id.clone(),
-            priority: "high".to_string(),
-        },
-    ];
-
-    for invocation in cases {
-        let direct = app::run(
-            project,
-            CliOptions {
-                json: false,
-                quiet: false,
-                no_hooks: false,
-                invocation: invocation.clone(),
-            },
-        )
-        .expect("the direct call must succeed");
-
-        let seamed = LegacyInvoker::new(project)
-            .invoke(InvokeRequest::new(invocation.clone()))
-            .expect("the seam must succeed");
-
-        for (json, quiet) in RENDER_MODES {
-            assert_eq!(
-                render_response(&direct, json, quiet),
-                render_response(&seamed, json, quiet),
-                "{invocation:?} rendered differently through the seam \
-                 (json={json}, quiet={quiet})"
-            );
-        }
-    }
-}
-
-/// Errors take the same path: same variant, same exit code, same rendering.
-#[test]
-fn the_seam_reports_errors_unchanged() {
-    let project = TestEnv::shared().project().legacy().build();
-    let project = project.path();
-    let invocation = Invocation::Show {
-        id: "SH-404".to_string(),
-    };
-
-    let direct = app::run(
-        project,
-        CliOptions {
-            json: false,
-            quiet: false,
-            no_hooks: false,
-            invocation: invocation.clone(),
-        },
-    )
-    .expect_err("showing a missing story must fail");
-
-    let seamed = LegacyInvoker::new(project)
-        .invoke(InvokeRequest::new(invocation))
-        .expect_err("showing a missing story must fail through the seam too");
-
-    assert!(matches!(direct, AppError::NotFound(_)));
-    assert!(matches!(seamed, AppError::NotFound(_)));
-    assert_eq!(direct.exit_code(), seamed.exit_code());
-    for json in [false, true] {
-        assert_eq!(render_error(&direct, json), render_error(&seamed, json));
-    }
-}
+use storyhook::invoke::{InvokeRequest, Invoker};
 
 /// `no_hooks` is the only execution setting that crosses the seam, so its
 /// default matters: a request built without saying otherwise must run hooks,
@@ -514,21 +412,28 @@ mod unmigrated {
     }
 }
 
-/// The legacy storage path is reachable from the web dashboard and nowhere
-/// else.
+/// The legacy write path is **gone**, and nothing in `src/` can reach what is
+/// left of it.
 ///
-/// `app::run`, `storage.rs`'s write half, `lock.rs` and `registry.rs` all
-/// survive the flip, unused by any `story` command, because the dashboard still
-/// reads `.storyhook/` directories and the wave that promotes the daemon is
-/// what moves it. That is a *quarantine*, and a quarantine nobody checks is a
-/// comment: the natural failure mode is a well-meaning refactor reaching for
-/// `storage::something` because it is there, and nothing noticing until the
-/// deletion wave finds it cannot delete anything.
+/// This test used to say something weaker. `app::run`, `storage.rs`'s write
+/// half, `lock.rs` and `registry.rs` survived the flip because the web
+/// dashboard still read `.storyhook/` directories, so the rule was "reachable
+/// from `src/web.rs` and nowhere else" — a *quarantine*, which is a promise
+/// that something will be deleted rather than a statement that it has been.
 ///
-/// So this greps the source. Crude on purpose — it reads what a human reviewer
-/// would read, needs no build graph, and cannot be satisfied by a re-export.
+/// It has been. `app.rs`, `lock.rs` and `registry.rs` are deleted outright;
+/// `storage.rs` keeps only what materializes a legacy tree from an export
+/// document, because that is the far side of the rearchitecture's two-way door
+/// (`docs/rearch/flip-checklist.md`'s rollback procedure, gated by
+/// `tests/migrate_round_trip.rs`). Nothing under `src/` calls it, and this is
+/// what says so.
+///
+/// The assertion is deliberately crude: it greps the source. That is what a
+/// human reviewer would do, it needs no build graph, and — unlike a
+/// `#[deprecated]` or a visibility change — it cannot be satisfied by a
+/// re-export.
 #[test]
-fn the_legacy_path_is_reachable_only_from_the_web_dashboard() {
+fn the_legacy_write_path_is_gone() {
     use std::path::Path;
 
     /// Every `.rs` file under `src/`, with its path relative to the crate root.
@@ -553,24 +458,26 @@ fn the_legacy_path_is_reachable_only_from_the_web_dashboard() {
         files.len()
     );
 
-    // The doors into the quarantined path. `lock` and `registry` have no
-    // callers outside the dashboard at all; `app::run` and `LegacyInvoker` are
-    // the only entry points to `storage.rs`'s write half.
-    const DOORS: [&str; 4] = [
+    // The three modules are gone as files, which is the part a grep cannot
+    // fake.
+    for gone in ["app.rs", "lock.rs", "registry.rs", "github/auto.rs"] {
+        assert!(
+            !root.join(gone).exists(),
+            "src/{gone} was deleted by the git-features wave and must stay deleted"
+        );
+    }
+
+    // `crate::storage` still compiles, for the rollback path. No production
+    // file may name it — `storage.rs` itself excepted, and it is the only
+    // exception there is.
+    const FORBIDDEN: [&str; 5] = [
         "LegacyInvoker",
         "crate::app::",
         "crate::lock::",
         "crate::registry::",
+        "crate::storage",
     ];
-    // Files allowed to hold them: the dashboard, the module declarations, each
-    // door's own definition, and the seam that *defines* `LegacyInvoker`.
-    const ALLOWED: [&str; 5] = [
-        "src/web.rs",
-        "src/lib.rs",
-        "src/lock.rs",
-        "src/registry.rs",
-        "src/invoke.rs",
-    ];
+    const ALLOWED: [&str; 1] = ["src/storage.rs"];
 
     let mut breaches = Vec::new();
     for (path, text) in &files {
@@ -582,12 +489,12 @@ fn the_legacy_path_is_reachable_only_from_the_web_dashboard() {
             continue;
         }
         for (number, line) in text.lines().enumerate() {
-            // Doc comments describe the quarantine; they do not create callers.
+            // Doc comments describe the deletion; they do not undo it.
             let code = line.trim_start();
             if code.starts_with("//") {
                 continue;
             }
-            for door in DOORS {
+            for door in FORBIDDEN {
                 if code.contains(door) {
                     breaches.push(format!("{relative}:{}: {}", number + 1, code.trim()));
                 }
@@ -597,8 +504,75 @@ fn the_legacy_path_is_reachable_only_from_the_web_dashboard() {
 
     assert!(
         breaches.is_empty(),
-        "the legacy storage path must stay reachable only from the web dashboard, \
-         which the daemon wave deletes together with it. New callers:\n  {}",
+        "the legacy storage path is deleted and `src/storage.rs` survives only as the \
+         rollback writer `tests/migrate_round_trip.rs` drives. Production code must not \
+         reach it:\n  {}",
         breaches.join("\n  ")
+    );
+}
+
+/// `.storyhook` is a path literal, and after the flip a production module that
+/// still holds one is a module that still writes into the user's repository.
+///
+/// `src/github/` was the last place they hid: the sync engine kept its
+/// configuration in `.storyhook/github-sync.toml`, its merge bases in
+/// `.storyhook/github-sync/bases/`, and — worst of the three — a pre-sync
+/// backup of every story it was about to rewrite in
+/// `.storyhook/github-sync/backups/`, so a sync dirtied the working tree with
+/// files the user then had to decide whether to commit. All three moved into
+/// the store or the state home behind `SyncStorage`, and this is what keeps
+/// them there.
+///
+/// Scoped to `src/github/` deliberately. The rest of `src/` still names
+/// `.storyhook` in the places it must: the reader, the unmigrated-repository
+/// guard, and the pointer file's own name.
+#[test]
+fn no_storyhook_path_literal_survives_in_the_github_module() {
+    use std::path::Path;
+
+    fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/github/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/github");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    assert!(files.len() > 5, "expected the module, got {}", files.len());
+
+    let mut found = Vec::new();
+    for (path, text) in &files {
+        for (number, line) in text.lines().enumerate() {
+            // Comments explain where the state used to live; they cannot open
+            // a file. Same rule as `the_legacy_write_path_is_gone` — this test
+            // is about literals the program acts on.
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.contains(".storyhook") {
+                found.push(format!(
+                    "{}:{}: {}",
+                    path.rsplit_once("/src/")
+                        .map_or(path.as_str(), |(_, rest)| rest),
+                    number + 1,
+                    code.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "github-sync must not name the legacy directory anywhere — its state lives in \
+         the store and its backups in the state home:\n  {}",
+        found.join("\n  ")
     );
 }

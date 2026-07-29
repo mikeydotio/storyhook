@@ -999,3 +999,44 @@ fn an_unknown_flag_is_a_usage_error_rather_than_a_path() {
         .code(2)
         .stderr(predicates::str::contains("usage: story migrate"));
 }
+
+/// A migrated project's `[git]` comments become link records, so the first
+/// `commit-sync` afterwards does not re-link the repository's whole log.
+///
+/// Every unmigrated `.storyhook` tree is full of `[git] <short>: <subject>`
+/// comments — that is how `commit-sync` recorded a link before event kind #18
+/// existed. They arrive through `append_raw_events`, which is the replay path,
+/// and the store projects them into `story_commit_links` there precisely so
+/// that this is true.
+#[test]
+fn a_migrated_projects_git_comments_arrive_as_link_records() {
+    use storyhook::store::{ReadOps, StoryNo};
+
+    let env = storyhook_test_support::TestEnv::shared();
+    let project = env.project().legacy().build();
+    let id = project.new_story("Linked before the migration");
+
+    // A link record in its pre-#18 shape, appended to the story's log exactly
+    // as the old `commit-sync` appended it.
+    let log = project
+        .path()
+        .join(format!(".storyhook/open/stories/{id}.jsonl"));
+    let mut text = std::fs::read_to_string(&log).expect("reading the story log");
+    text.push_str(
+        "{\"kind\":\"StoryCommentAdded\",\"at\":\"2026-01-02T00:00:00Z\",\
+         \"text\":\"[git] abc1234: feat: the work\"}\n",
+    );
+    std::fs::write(&log, text).expect("seeding a legacy link comment");
+
+    env.story(project.path()).arg("migrate").assert().success();
+
+    let store = project.open_store();
+    let project_id = project.project_id(&store);
+    assert!(
+        store
+            .read(|tx| tx.commit_linked(project_id, StoryNo::new(1), "abc1234"))
+            .expect("reading the link table"),
+        "the migration must carry the story's existing links across, or the next \
+         `commit-sync` re-links every commit in its window"
+    );
+}

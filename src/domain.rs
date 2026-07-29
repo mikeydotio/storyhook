@@ -341,6 +341,87 @@ pub enum StoryEvent {
         at: String,
         reason: String,
     },
+    /// A git commit that names this story, recorded once and only once.
+    ///
+    /// Storyhook's eighteenth event kind, and the only one that exists for an
+    /// *invariant* rather than for a new fact. `commit-sync` used to write its
+    /// link as a `StoryCommentAdded` reading `[git] <short>: <subject>`, and
+    /// then decide whether it had already done so by scanning every event on
+    /// the story for a comment starting with that prefix — O(events) per
+    /// commit per story, and defeatable by a user typing a comment that starts
+    /// the same way. Here the sha is a field, so `(project, story, sha)` is a
+    /// primary key in the store and a second link record is not a state the
+    /// database can hold.
+    ///
+    /// **It renders exactly as the comment it replaces.** `fold_story` turns it
+    /// into a `StoryComment` whose text is `[git] <short>: <subject>`, in the
+    /// same position in the same stream, so `story show`, the dashboard, an
+    /// export and the golden corpus see no difference. That is deliberate: the
+    /// change is to how idempotency is *guaranteed*, not to what a user reads.
+    ///
+    /// `sha` is the full 40-character hash even though only seven of them are
+    /// rendered — the record is permanent, and an abbreviation that is unique
+    /// in a repository today is not unique in it forever.
+    StoryCommitLinked {
+        at: String,
+        /// The commit's full hash, from `git log --format=%H`.
+        sha: String,
+        /// The commit's subject line — its first line, and all that is
+        /// rendered.
+        subject: String,
+    },
+}
+
+/// The `kind` tag [`StoryEvent::StoryCommitLinked`] serializes with.
+///
+/// Named, unlike the other seventeen, because the store keys a *projection* off
+/// it — `store::sqlite::write::project_commit_link` reads the `kind` column to
+/// decide whether an event carries a sha — and the same literal spelled in two
+/// files is a literal that drifts.
+pub const KIND_STORY_COMMIT_LINKED: &str = "StoryCommitLinked";
+
+/// How much of a commit hash a link record shows.
+///
+/// Seven, which is what `commit-sync` has always abbreviated to and therefore
+/// what every existing `[git]` comment carries.
+const SHORT_SHA: usize = 7;
+
+/// The abbreviated form of `sha`, as it appears in a link record.
+#[must_use]
+pub fn short_sha(sha: &str) -> &str {
+    &sha[..SHORT_SHA.min(sha.len())]
+}
+
+/// The comment text a git link record renders as.
+///
+/// One function, called by [`fold_story`] and by nothing else that formats —
+/// the string `[git] <short>: <subject>` is a user-visible contract with a
+/// test of its own (`service_git.rs::the_comment_reads_git_short_hash_colon_subject`),
+/// and a second copy of it is how such a contract drifts.
+#[must_use]
+pub fn git_link_comment(sha: &str, subject: &str) -> String {
+    format!("[git] {}: {subject}", short_sha(sha))
+}
+
+/// The commit hash a *pre*-#18 link record names, if `text` is one.
+///
+/// Before [`StoryEvent::StoryCommitLinked`] existed, `commit-sync` recorded a
+/// link as an ordinary comment reading `[git] <short>: <subject>`. Those events
+/// are permanent — they are in every store that has run the old code, and in
+/// every `.storyhook` tree `story migrate` has yet to read — so the store
+/// projects them into `story_commit_links` alongside the real thing, and this
+/// is the rule it uses. Schema migration 2 states the same rule in SQL for rows
+/// that were already there; `the_sql_backfill_and_the_rust_parser_agree` is
+/// what keeps the two spellings honest.
+///
+/// Returns the *abbreviation*, because that is all such a comment preserved.
+#[must_use]
+pub fn git_link_sha(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("[git] ")?;
+    let (sha, _) = rest.split_once(':')?;
+    // Hex and non-empty. A user comment that opens `[git] rebase: ...` is not a
+    // link record, and treating it as one would suppress a real commit.
+    (!sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha)
 }
 
 /// Every `kind` tag [`StoryEvent`] answers to.
@@ -355,7 +436,7 @@ pub enum StoryEvent {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 17] = [
+pub const EVENT_KINDS: [&str; 18] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
@@ -373,6 +454,7 @@ pub const EVENT_KINDS: [&str; 17] = [
     "StoryDescriptionSet",
     "StoryClosedAndArchived",
     "StoryDeleted",
+    KIND_STORY_COMMIT_LINKED,
 ];
 
 /// Whether `kind` is an event this binary can decode.
@@ -405,6 +487,7 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryDescriptionSet { .. } => "StoryDescriptionSet",
         StoryEvent::StoryClosedAndArchived { .. } => "StoryClosedAndArchived",
         StoryEvent::StoryDeleted { .. } => "StoryDeleted",
+        StoryEvent::StoryCommitLinked { .. } => KIND_STORY_COMMIT_LINKED,
     }
 }
 
@@ -429,6 +512,13 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryDescriptionSet { .. } => "description-set",
             StoryEvent::StoryClosedAndArchived { .. } => "archived",
             StoryEvent::StoryDeleted { .. } => "deleted",
+            // `"comment"`, not `"commit-linked"`. A link record *is* a comment
+            // to everything that reads a story — see `StoryCommitLinked` — and
+            // this string is rendered to users in `story list --stale`. The
+            // event kind is a storage detail; changing what a human reads
+            // because of it would be a behaviour change smuggled in under a
+            // refactor.
+            StoryEvent::StoryCommitLinked { .. } => "comment",
         })
         .unwrap_or("unknown")
 }
@@ -567,6 +657,17 @@ pub fn fold_story(
                 comments.push(StoryComment {
                     at: at.clone(),
                     text: text.clone(),
+                });
+                updated_at = Some(at.clone());
+            }
+            // Rendered into the comment stream, in the same position and with
+            // the same text the `StoryCommentAdded` it replaced carried. The
+            // difference between the two is visible to the store and to
+            // nothing else.
+            StoryEvent::StoryCommitLinked { at, sha, subject } => {
+                comments.push(StoryComment {
+                    at: at.clone(),
+                    text: git_link_comment(sha, subject),
                 });
                 updated_at = Some(at.clone());
             }
