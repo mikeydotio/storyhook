@@ -78,6 +78,13 @@ impl<'a, S: Store> CatalogService<'a, S> {
                 ))
             })?;
             tx.touch_project_path(project.id, &canonical, path_kind(&canonical))?;
+            // `--name` is *recorded*, not merely echoed. The legacy registry
+            // held a display name per repo; the catalog is the projects table
+            // now, so this is the only place it can go — and a flag that is
+            // accepted and dropped is worse than one that does not exist.
+            if let Some(name) = name {
+                tx.rename_project(project.id, name)?;
+            }
             Ok(CatalogEntry {
                 id: project.slug,
                 name: name.map_or(project.name, str::to_string),

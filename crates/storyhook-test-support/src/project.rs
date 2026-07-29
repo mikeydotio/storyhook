@@ -22,6 +22,7 @@ pub struct ProjectBuilder<'a> {
     prefix: Option<String>,
     git: bool,
     local_origin: bool,
+    legacy: bool,
     worktrees: Vec<String>,
     stories: Vec<String>,
 }
@@ -35,6 +36,7 @@ impl<'a> ProjectBuilder<'a> {
             prefix: None,
             git: false,
             local_origin: false,
+            legacy: false,
             worktrees: Vec::new(),
             stories: Vec::new(),
         }
@@ -95,6 +97,41 @@ impl<'a> ProjectBuilder<'a> {
         self
     }
 
+    /// Builds a **legacy** `.storyhook/` tree instead of a project in the
+    /// store.
+    ///
+    /// Two things still read that tree and neither is reachable from the CLI:
+    /// the web dashboard, until the wave that promotes the daemon absorbs it,
+    /// and `story migrate`, whose entire subject is a tree it is importing. A
+    /// fixture for either has to be built in-process through
+    /// [`storyhook::app::run`], because `story init` now creates a project in
+    /// the store and no directory at all.
+    ///
+    /// The CLI helpers on the resulting [`Project`] — `run`, `json`, `story` —
+    /// address the *store*, so on a legacy fixture they answer about a project
+    /// that is not there. Drive a legacy project through `app::run`, or through
+    /// whichever component is under test.
+    pub fn legacy(mut self) -> Self {
+        self.legacy = true;
+        self
+    }
+
+    /// Runs one invocation against a legacy tree, in process.
+    fn legacy_run(root: &Path, invocation: storyhook::cli::Invocation) {
+        storyhook::app::run(
+            root,
+            storyhook::cli::CliOptions {
+                json: false,
+                quiet: false,
+                // A hook would shell out to `story`, which is the store-backed
+                // binary; a fixture is not the place to exercise that.
+                no_hooks: true,
+                invocation,
+            },
+        )
+        .unwrap_or_else(|e| panic!("building the legacy fixture at {}: {e}", root.display()));
+    }
+
     /// Builds the project. Panics — loudly, naming the failing step — rather
     /// than returning a `Result`: a fixture that half-exists produces failures
     /// that read as bugs in the code under test.
@@ -131,17 +168,27 @@ impl<'a> ProjectBuilder<'a> {
             }
         }
 
-        let mut init = vec!["init"];
-        if let Some(prefix) = &self.prefix {
-            init.push("--prefix");
-            init.push(prefix);
+        if self.legacy {
+            Self::legacy_run(
+                &root,
+                storyhook::cli::Invocation::Init {
+                    prefix: self.prefix.clone(),
+                    no_agents_md: true,
+                },
+            );
+        } else {
+            let mut init = vec!["init"];
+            if let Some(prefix) = &self.prefix {
+                init.push("--prefix");
+                init.push(prefix);
+            }
+            self.env
+                .story(&root)
+                .args(&init)
+                .assert()
+                .try_success()
+                .unwrap_or_else(|e| panic!("`story {}` in the fixture: {e}", init.join(" ")));
         }
-        self.env
-            .story(&root)
-            .args(&init)
-            .assert()
-            .try_success()
-            .unwrap_or_else(|e| panic!("`story {}` in the fixture: {e}", init.join(" ")));
 
         let mut worktrees = BTreeMap::new();
         for name in &self.worktrees {
@@ -167,6 +214,7 @@ impl<'a> ProjectBuilder<'a> {
             dir,
             origin,
             worktrees,
+            legacy: self.legacy,
         };
         for title in &self.stories {
             project.new_story(title);
@@ -210,6 +258,7 @@ pub struct Project<'a> {
     dir: TempDir,
     origin: Option<(TempDir, PathBuf)>,
     worktrees: BTreeMap<String, PathBuf>,
+    legacy: bool,
 }
 
 impl<'a> Project<'a> {
@@ -274,8 +323,37 @@ impl<'a> Project<'a> {
         })
     }
 
+    /// Whether this fixture is a legacy `.storyhook/` tree.
+    pub fn is_legacy(&self) -> bool {
+        self.legacy
+    }
+
     /// Creates a story and returns the id storyhook minted for it.
     pub fn new_story(&self, title: &str) -> String {
+        if self.legacy {
+            let response = storyhook::app::run(
+                self.path(),
+                storyhook::cli::CliOptions {
+                    json: false,
+                    quiet: false,
+                    no_hooks: true,
+                    invocation: storyhook::cli::Invocation::New {
+                        title: title.to_string(),
+                        state: None,
+                        story_type: None,
+                        description: None,
+                        priority: None,
+                        labels: None,
+                        assignee: None,
+                    },
+                },
+            )
+            .unwrap_or_else(|e| panic!("`story new {title}` in the legacy fixture: {e}"));
+            return match response {
+                storyhook::output::Response::Story(view) => view.story.id,
+                other => panic!("`story new` answered with {other:?} rather than a story"),
+            };
+        }
         self.json(&["new", title])["story"]["story"]["id"]
             .as_str()
             .unwrap_or_else(|| panic!("`story new {title} --json` did not report an id"))
@@ -292,8 +370,18 @@ mod tests {
         let env = TestEnv::shared();
         let project = env.project().build();
 
+        // The postcondition is that a *project* exists, asked the way anything
+        // else would ask: the checkout carries the pointer file naming it, and
+        // the store resolves that pointer to a project that can mint an id.
+        // It used to be `.storyhook/project.toml exists`, which was a claim
+        // about a directory rather than about a tracker.
         assert!(
-            project.path().join(".storyhook/project.toml").exists(),
+            project.pointer().is_some(),
+            "build() must leave a checkout that names the project it belongs to"
+        );
+        let store = project.open_store();
+        assert!(
+            project.try_project_id(&store).is_some(),
             "build() must leave a real, initialized storyhook project behind"
         );
         assert_eq!(project.new_story("first"), "SH-1");

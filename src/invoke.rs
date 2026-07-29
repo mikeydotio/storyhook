@@ -85,6 +85,34 @@ pub trait Invoker {
     fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError>;
 }
 
+/// Opens the machine's store, ready to serve an invocation.
+///
+/// Three steps, in this order, and every entry point takes all three:
+///
+/// 1. Open `$STORYHOOK_DATA_DIR`/`$XDG_DATA_HOME`'s `store.db`, creating it if
+///    this is the first run.
+/// 2. Migrate. Schema changes are applied on open rather than by a separate
+///    command, behind a verified backup, so a binary can never read a database
+///    it does not understand.
+/// 3. Adopt the legacy dashboard registry, if there is one — recording the
+///    checkouts it names against the projects they belong to. Idempotent and
+///    non-destructive: `registry.toml` is neither written nor deleted, because
+///    the legacy dashboard still reads it.
+///
+/// Shared by the CLI and the TUI so that "where is the store, and what does
+/// opening it entail" has one answer rather than one per entry point.
+pub fn open_store() -> Result<crate::store::SqliteStore, AppError> {
+    use crate::store::Store as _;
+    let store = crate::store::SqliteStore::open(crate::paths::store_path()?)?;
+    store.migrate()?;
+    // A failure here is not a reason to refuse the command: the registry
+    // belongs to the dashboard, and every storyhook command works without it.
+    if let Ok(dir) = crate::paths::legacy_global_dir() {
+        let _ = crate::service::adopt_legacy_registry(&store, &dir.join("registry.toml"));
+    }
+    Ok(store)
+}
+
 /// Runs commands in this process against a project directory, by calling
 /// [`crate::app::run`].
 ///
@@ -376,8 +404,6 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                     .to_string(),
             )),
         },
-        Invocation::Web { action } => dispatch_web(ctx.store(), action),
-        Invocation::Update { check, force } => update(check, force),
         Invocation::GithubSync { id, dry_run } => {
             #[cfg(feature = "github-sync")]
             {
@@ -429,7 +455,9 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             let summary = decompose_summary(&batch);
             Ok(Response::Stories(batch.views, Some(summary)))
         }
-        Invocation::ImportProject { .. }
+        Invocation::Web { .. }
+        | Invocation::Update { .. }
+        | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Init { .. }
         | Invocation::Help
@@ -752,11 +780,12 @@ pub fn dispatch_unscoped<S: Store>(
     now: &str,
     invocation: Invocation,
 ) -> Result<Response, AppError> {
-    // The pointer file is the store's claim on the repository, and while the
-    // legacy tree is still the identity of record a second claim could only
-    // ever disagree with it. `StoreInvoker` — which serves a process for which
-    // the store *is* the identity of record — asks for it explicitly.
-    dispatch_unscoped_with(store, root, now, invocation, false)
+    // The pointer file is the repository's copy of which project it is, and
+    // the store is the identity of record — so `init` writes it. The parameter
+    // survives on [`dispatch_unscoped_with`] for the legacy web daemon, whose
+    // `init` still builds a `.storyhook/` tree and must not also leave a
+    // pointer claiming a project that tree is not in.
+    dispatch_unscoped_with(store, root, now, invocation, true)
 }
 
 /// [`dispatch_unscoped`], told whether `story init` should write the pointer
@@ -801,6 +830,19 @@ pub fn dispatch_unscoped_with<S: Store>(
             "story {}",
             env!("CARGO_PKG_VERSION")
         ))),
+        // Self-update touches no project data at all — it replaces the
+        // binary. The legacy path answered it anywhere, and a `story update`
+        // that demanded a project would be unusable exactly when it is most
+        // wanted: from a shell that is not standing in a repository.
+        Invocation::Update { check, force } => update(check, force),
+        // The whole `web` family. The daemon commands are process management
+        // and name no project at all; the catalog commands span every project
+        // (`list`) or name theirs by path (`register`). The legacy path
+        // answered all of them without resolving a project, and a `story web
+        // status` that failed in a directory storyhook had never heard of
+        // would be a regression in the one command a user reaches for when
+        // nothing is working.
+        Invocation::Web { action } => dispatch_web(store, action),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
         // answered before it ever looked for a project — so this arm does too,
@@ -983,9 +1025,15 @@ fn decompose_summary(batch: &ImportBatch) -> String {
 /// user-visible string in a wave whose entire claim is that it moves none.
 fn init_message(outcome: &InitOutcome) -> String {
     let mut message = "initialized story project\n\n\
-         The .storyhook/ directory contains your project data.\n\
-         Remember to commit it to git — it should travel with the repository."
+         Your stories live in storyhook's own store, outside this repository — \
+         one truth\nfor every branch, worktree and clone."
         .to_string();
+    if outcome.pointer {
+        message.push_str(
+            "\n\nWrote .storyhook.toml, which names this project. Commit it: a clone \
+             without it\ndoes not know which project it is looking at.",
+        );
+    }
     if outcome.agents_md {
         message.push_str("\n\nGenerated AGENTS.md for AI agent discoverability.");
     }
@@ -1239,6 +1287,8 @@ fn is_project_less(invocation: &Invocation) -> bool {
         | Invocation::HelpCompact
         | Invocation::HelpAll
         | Invocation::Version
+        | Invocation::Web { .. }
+        | Invocation::Update { .. }
         | Invocation::Plugin { .. } => true,
         // `hooks test` is the exception in its own family: it fires a real hook
         // against a real project, and the legacy path calls `ensure_project`

@@ -1,4 +1,4 @@
-//! The Invoker seam's equivalence contract.
+//! The Invoker seam's equivalence contract, and root resolution.
 //!
 //! [`LegacyInvoker`] exists to be *provably* the same thing as calling
 //! `app::run`, so that adopting it across the CLI and the web server is a
@@ -6,6 +6,12 @@
 //! verbatim, so equivalence is true by construction — this file pins it
 //! anyway, because "forwards verbatim" is exactly the kind of property a
 //! well-meaning refactor breaks quietly.
+//!
+//! **`LegacyInvoker` no longer serves the CLI or the TUI.** It is reachable
+//! only from the web dashboard, which still reads `.storyhook/` directly until
+//! the daemon wave absorbs it — so these two tests build their fixture through
+//! `app::run` itself rather than through `ProjectBuilder`, whose `story init`
+//! now creates a project in the store and no directory at all.
 
 use storyhook::app;
 use storyhook::cli::{CliOptions, Invocation};
@@ -23,9 +29,13 @@ const RENDER_MODES: [(bool, bool); 4] =
 /// rendering mode, because rendered bytes are what a caller sees.
 #[test]
 fn the_seam_renders_what_a_direct_app_run_renders() {
-    let env = TestEnv::shared();
-    let project = env.project().build();
-    let id = project.new_story("A story to look at");
+    let project = TestEnv::shared()
+        .project()
+        .legacy()
+        .seed_story("A story to look at")
+        .build();
+    let project = project.path();
+    let id = "SH-1".to_string();
 
     let cases = [
         Invocation::Show { id: id.clone() },
@@ -54,7 +64,7 @@ fn the_seam_renders_what_a_direct_app_run_renders() {
 
     for invocation in cases {
         let direct = app::run(
-            project.path(),
+            project,
             CliOptions {
                 json: false,
                 quiet: false,
@@ -64,7 +74,7 @@ fn the_seam_renders_what_a_direct_app_run_renders() {
         )
         .expect("the direct call must succeed");
 
-        let seamed = LegacyInvoker::new(project.path())
+        let seamed = LegacyInvoker::new(project)
             .invoke(InvokeRequest::new(invocation.clone()))
             .expect("the seam must succeed");
 
@@ -82,14 +92,14 @@ fn the_seam_renders_what_a_direct_app_run_renders() {
 /// Errors take the same path: same variant, same exit code, same rendering.
 #[test]
 fn the_seam_reports_errors_unchanged() {
-    let env = TestEnv::shared();
-    let project = env.project().build();
+    let project = TestEnv::shared().project().legacy().build();
+    let project = project.path();
     let invocation = Invocation::Show {
         id: "SH-404".to_string(),
     };
 
     let direct = app::run(
-        project.path(),
+        project,
         CliOptions {
             json: false,
             quiet: false,
@@ -99,7 +109,7 @@ fn the_seam_reports_errors_unchanged() {
     )
     .expect_err("showing a missing story must fail");
 
-    let seamed = LegacyInvoker::new(project.path())
+    let seamed = LegacyInvoker::new(project)
         .invoke(InvokeRequest::new(invocation))
         .expect_err("showing a missing story must fail through the seam too");
 
@@ -269,4 +279,123 @@ mod resolution {
         );
         summary(&store, clone.path()).expect("the clone answers");
     }
+}
+
+/// Every verb that must answer in a directory storyhook has never heard of.
+///
+/// The trap this guards is specific and it has already been sprung twice in one
+/// wave: an arm answered without a project inside `dispatch_unscoped`, but was
+/// missing from `is_project_less`, so `StoreInvoker` tried to resolve a project
+/// first and the verb failed with "not initialized" in exactly the situation it
+/// exists to serve. `story web status` and `story update --check` were both
+/// broken that way, and neither had a test that would have noticed.
+///
+/// The assertion is deliberately weak about *what* each verb answers — some
+/// succeed, some fail for their own reasons — and strict about the one thing
+/// that must never happen: none of them may be refused for want of a project.
+#[test]
+fn the_project_less_verbs_all_answer_outside_a_project() {
+    use storyhook::cli::{HooksAction, PluginAction, WebAction};
+    use storyhook::invoke::{StoreInvoker, open_store};
+    use storyhook_test_support::scratch_dir;
+
+    let data = scratch_dir();
+    let cwd = scratch_dir();
+    // `open_store` reads the environment, so point it at a fixture directory
+    // for the duration — this test is single-threaded within its own binary
+    // slot and restores the variable before it returns.
+    let previous = std::env::var_os("STORYHOOK_DATA_DIR");
+    unsafe { std::env::set_var("STORYHOOK_DATA_DIR", data.path()) };
+    let store = open_store().expect("opening a fixture store");
+
+    let cases: Vec<(&str, Invocation)> = vec![
+        ("help", Invocation::Help),
+        ("help-compact", Invocation::HelpCompact),
+        ("help-all", Invocation::HelpAll),
+        (
+            "help-topic",
+            Invocation::HelpTopic {
+                topic: "new".to_string(),
+            },
+        ),
+        ("version", Invocation::Version),
+        (
+            "hooks list",
+            Invocation::Hooks {
+                action: HooksAction::List,
+            },
+        ),
+        (
+            "plugin uninstall",
+            Invocation::Plugin {
+                action: PluginAction::Uninstall {
+                    target: "claude".to_string(),
+                },
+            },
+        ),
+        (
+            "scaffold",
+            Invocation::Scaffold {
+                kind: "agents-md".to_string(),
+            },
+        ),
+        ("session-start", Invocation::SessionStart),
+        (
+            "web status",
+            Invocation::Web {
+                action: WebAction::Status,
+            },
+        ),
+        (
+            "web list",
+            Invocation::Web {
+                action: WebAction::List,
+            },
+        ),
+        (
+            "update --check",
+            Invocation::Update {
+                check: true,
+                force: false,
+            },
+        ),
+        (
+            "decompose --dry-run",
+            Invocation::Decompose {
+                file: None,
+                stdin: false,
+                dry_run: true,
+            },
+        ),
+        (
+            "migrate",
+            Invocation::Migrate {
+                path: None,
+                dry_run: true,
+            },
+        ),
+    ];
+
+    let mut refused = Vec::new();
+    for (name, invocation) in cases {
+        if let Err(error) =
+            StoreInvoker::new(&store, cwd.path()).invoke(InvokeRequest::new(invocation))
+            && error
+                .to_string()
+                .contains("not initialized in this directory")
+        {
+            refused.push(name);
+        }
+    }
+
+    match previous {
+        Some(value) => unsafe { std::env::set_var("STORYHOOK_DATA_DIR", value) },
+        None => unsafe { std::env::remove_var("STORYHOOK_DATA_DIR") },
+    }
+
+    assert!(
+        refused.is_empty(),
+        "these verbs answer without a project in `dispatch_unscoped` but are missing \
+         from `is_project_less`, so they are refused before they are reached: {refused:?}"
+    );
 }

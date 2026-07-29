@@ -858,7 +858,7 @@ fn migrating_from_a_linked_worktree_is_refused_and_the_main_checkout_is_named() 
     // second one with the same prefix and overlapping story numbers — the exact
     // corruption the store exists to end.
     let env = storyhook_test_support::TestEnv::shared();
-    let project = env.project().git().worktree("a").build();
+    let project = env.project().git().worktree("a").legacy().build();
     project.new_story("Created before the checkouts diverged");
     git(env, project.path(), &["add", ".storyhook"]);
     git(env, project.path(), &["commit", "-qm", "track the tracker"]);
@@ -910,7 +910,7 @@ fn migrating_from_a_linked_worktree_is_refused_and_the_main_checkout_is_named() 
 #[test]
 fn the_command_finds_the_project_by_walking_up_from_where_it_is_run() {
     let env = storyhook_test_support::TestEnv::shared();
-    let project = env.project().build();
+    let project = env.project().legacy().build();
     project.new_story("A story to migrate");
     let deep = project.path().join("src/inner");
     std::fs::create_dir_all(&deep).unwrap();
@@ -933,7 +933,7 @@ fn the_command_finds_the_project_by_walking_up_from_where_it_is_run() {
 #[test]
 fn the_command_migrates_then_refuses_a_second_run() {
     let env = storyhook_test_support::TestEnv::shared();
-    let project = env.project().build();
+    let project = env.project().legacy().build();
     project.new_story("A story to migrate");
 
     env.story(project.path())
@@ -949,10 +949,9 @@ fn the_command_migrates_then_refuses_a_second_run() {
         .code(2)
         .stderr(predicates::str::contains("has been migrated"));
 
-    // The migrated project is readable through the store leg, which is what
-    // the flip will make the only leg.
+    // The migrated project is readable through the ordinary CLI, which is the
+    // store now — the point of having migrated it.
     env.story(project.path())
-        .env("STORYHOOK_INVOKER", "local")
         .arg("list")
         .assert()
         .success()
@@ -973,7 +972,7 @@ fn migrating_a_directory_with_no_legacy_tree_is_not_found_rather_than_a_crash() 
 #[test]
 fn an_explicit_path_argument_migrates_a_project_you_are_not_standing_in() {
     let env = storyhook_test_support::TestEnv::shared();
-    let project = env.project().build();
+    let project = env.project().legacy().build();
     project.new_story("Elsewhere");
     let elsewhere = storyhook_test_support::scratch_dir();
 
@@ -993,7 +992,7 @@ fn an_explicit_path_argument_migrates_a_project_you_are_not_standing_in() {
 #[test]
 fn an_unknown_flag_is_a_usage_error_rather_than_a_path() {
     let env = storyhook_test_support::TestEnv::shared();
-    let project = env.project().build();
+    let project = env.project().legacy().build();
     env.story(project.path())
         .args(["migrate", "--dry-runn"])
         .assert()

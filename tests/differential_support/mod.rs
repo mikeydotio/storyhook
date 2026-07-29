@@ -53,7 +53,7 @@ impl Differential {
     /// transcribed, so the two cannot drift apart the day `story init`'s
     /// defaults change.
     pub fn new() -> Self {
-        Self::seeded(TestEnv::shared().project().build())
+        Self::seeded(TestEnv::shared().project().legacy().build())
     }
 
     /// [`new`](Self::new), with the legacy project inside a real git
@@ -64,7 +64,7 @@ impl Differential {
     /// any disagreement is about what the two legs did with it rather than
     /// about what they read.
     pub fn with_git() -> Self {
-        Self::seeded(TestEnv::shared().project().git().build())
+        Self::seeded(TestEnv::shared().project().git().legacy().build())
     }
 
     /// Builds the store leg's project from the catalog the legacy leg already

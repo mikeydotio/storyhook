@@ -32,8 +32,8 @@ use rusqlite::Connection;
 
 use crate::domain::{StoryEvent, fold_story};
 use crate::store::{
-    EventSeq, ExpectedSeq, ProjectId, RawEvent, SqliteStore, Store, StoreError, StoryNo, WriteOps,
-    partition_known,
+    EventSeq, ExpectedSeq, ProjectId, RawEvent, ReadOps, SqliteStore, Store, StoreError, StoryNo,
+    WriteOps, partition_known,
 };
 
 /// Appends `events` to a story's log and re-folds its read-model row, bypassing
@@ -134,6 +134,52 @@ pub fn forget_story(
         )?;
         Ok(())
     })
+}
+
+/// Rewrites a story's read-model row to a snapshot its own events do not
+/// support.
+///
+/// The store writes the read model inside the transaction that appends the
+/// events it was folded from, so a row that disagrees with its history is
+/// unreachable through any public path — and *that* is the state `story doctor
+/// --fix` exists to heal. The edit is applied to the stored `StorySnapshot`
+/// JSON, then written back through a second connection, so the columns the
+/// query surface reads are updated from the edited snapshot exactly as
+/// `put_story` would have written them.
+pub fn corrupt_snapshot(
+    store: &SqliteStore,
+    project: ProjectId,
+    story: StoryNo,
+    edit: impl FnOnce(&mut serde_json::Value),
+) -> Result<(), StoreError> {
+    let row = store
+        .read(|tx| tx.story(project, story))?
+        .ok_or_else(|| StoreError::Invariant("corrupting a story that does not exist".into()))?;
+    let mut value = serde_json::to_value(&row.snapshot)
+        .map_err(|e| StoreError::Invariant(format!("encoding a snapshot: {e}")))?;
+    edit(&mut value);
+    let snapshot: crate::domain::StorySnapshot = serde_json::from_value(value)
+        .map_err(|e| StoreError::Invariant(format!("the edited snapshot is not one: {e}")))?;
+
+    let conn = Connection::open(store.path())
+        .map_err(|e| StoreError::from_sqlite(e, "opening the store for corruption"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| StoreError::from_sqlite(e, "setting the corruption busy timeout"))?;
+    let encoded = serde_json::to_string(&snapshot)
+        .map_err(|e| StoreError::Invariant(format!("encoding a snapshot: {e}")))?;
+    conn.execute(
+        "UPDATE stories SET snapshot = ?3, superstate = ?4, state = ?5 \
+         WHERE project_id = ?1 AND story_no = ?2",
+        rusqlite::params![
+            project.get(),
+            story.get(),
+            encoded,
+            snapshot.superstate.as_str(),
+            snapshot.state,
+        ],
+    )
+    .map_err(|e| StoreError::from_sqlite(e, "corrupting a read-model row"))?;
+    Ok(())
 }
 
 /// Re-folds a story from its own events and writes the result back.
