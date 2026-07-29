@@ -4,17 +4,7 @@ set -euo pipefail
 # Claude Code PostToolUse hook for storyhook.
 # After git commit/merge/push operations, syncs commit history with stories.
 
-read_plugin_config() {
-  local key="$1" default="$2"
-  local config=".storyhook/plugin-config.toml"
-  if [[ ! -f "$config" ]]; then
-    printf '%s' "$default"
-    return
-  fi
-  local val
-  val=$(grep "^${key}" "$config" 2>/dev/null | head -1 | sed 's/.*= *"//' | sed 's/".*//' || true)
-  printf '%s' "${val:-$default}"
-}
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # Read stdin JSON (contains tool_input with the command that was run)
 stdin_json=""
@@ -61,15 +51,8 @@ if [[ "$command_str" != *"git commit"* && "$command_str" != *"git merge"* && "$c
   exit 0
 fi
 
-# Check if this is a storyhook project
-if [[ ! -d ".storyhook" ]]; then
-  printf '{}'
-  exit 0
-fi
-
-# Check if plugin is enabled
-enabled=$(read_plugin_config "enabled" "true")
-if [[ "$enabled" == "false" ]]; then
+# Check if this is a storyhook project, and whether it wants the hook
+if ! storyhook_pointer >/dev/null || ! hook_is_enabled; then
   printf '{}'
   exit 0
 fi
