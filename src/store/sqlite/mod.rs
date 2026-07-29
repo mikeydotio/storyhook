@@ -273,8 +273,9 @@ impl SqliteStore {
                 StoreError::Corrupt(format!(
                     "the storyhook store at {} is damaged: {detail}. Nothing has been \
                      changed. storyhook keeps verified snapshots in {} — to restore one: \
-                     delete {name}, {name}-wal and {name}-shm from {dir}, copy the newest \
-                     snapshot there as {name}, then run `story doctor`",
+                     run `story daemon stop`, delete {name}, {name}-wal and {name}-shm \
+                     from {dir}, copy the newest snapshot there as {name}, then run \
+                     `story doctor`",
                     self.config.db_path.display(),
                     self.config.backup_dir.display(),
                 ))
