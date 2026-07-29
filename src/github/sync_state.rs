@@ -1,11 +1,24 @@
+//! github-sync's configuration document, its mapping lookups, and remote
+//! detection.
+//!
+//! It used to persist all of that too — `.storyhook/github-sync.toml`, a
+//! directory of base snapshots, and a directory of pre-sync backups, all
+//! inside the user's repository. Every one of those moved behind
+//! [`super::storage::SyncStorage`] and lives in the store or the state home
+//! now, so what is left here is the *shape* of the configuration and the two
+//! things that are genuinely about the repository rather than about storage:
+//! which GitHub project `origin` names, and how to find a story's mapping
+//! inside a config someone else loaded.
+//!
+//! There are consequently no `.storyhook` paths in this module, and none
+//! anywhere under `src/github/`.
+
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::StorySnapshot;
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
@@ -54,105 +67,6 @@ pub struct StoryIssueMapping {
     pub last_synced_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_local_event_index: Option<usize>,
-}
-
-// ---------------------------------------------------------------------------
-// File-path helpers
-// ---------------------------------------------------------------------------
-
-fn config_path(root: &Path) -> std::path::PathBuf {
-    root.join(".storyhook/github-sync.toml")
-}
-
-fn bases_dir(root: &Path) -> std::path::PathBuf {
-    root.join(".storyhook/github-sync/bases")
-}
-
-fn backups_dir(root: &Path) -> std::path::PathBuf {
-    root.join(".storyhook/github-sync/backups")
-}
-
-// ---------------------------------------------------------------------------
-// Config persistence
-// ---------------------------------------------------------------------------
-
-/// Load github-sync.toml from the .storyhook directory.
-/// Returns `None` if the file does not exist.
-pub fn load_sync_config(root: &Path) -> Result<Option<GithubSyncConfig>, AppError> {
-    let path = config_path(root);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = fs::read_to_string(&path)?;
-    let config: GithubSyncConfig = toml::from_str(&text)?;
-    Ok(Some(config))
-}
-
-/// Save github-sync.toml to the .storyhook directory.
-pub fn save_sync_config(root: &Path, config: &GithubSyncConfig) -> Result<(), AppError> {
-    let path = config_path(root);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let text = toml::to_string_pretty(config)?;
-    fs::write(&path, text)?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Base snapshots
-// ---------------------------------------------------------------------------
-
-/// Load a base snapshot from `.storyhook/github-sync/bases/{story_id}.json`.
-/// Returns `None` if no snapshot exists for this story.
-pub fn load_base_snapshot(root: &Path, story_id: &str) -> Result<Option<StorySnapshot>, AppError> {
-    let path = bases_dir(root).join(format!("{story_id}.json"));
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = fs::read_to_string(&path)?;
-    let snapshot: StorySnapshot = serde_json::from_str(&text)?;
-    Ok(Some(snapshot))
-}
-
-/// Save a base snapshot to `.storyhook/github-sync/bases/{story_id}.json`.
-pub fn save_base_snapshot(
-    root: &Path,
-    story_id: &str,
-    snapshot: &StorySnapshot,
-) -> Result<(), AppError> {
-    let dir = bases_dir(root);
-    fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{story_id}.json"));
-    let text = serde_json::to_string_pretty(snapshot)?;
-    fs::write(&path, text)?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Backups
-// ---------------------------------------------------------------------------
-
-/// Create a backup of the specified story's event log file before sync
-/// modifies it.  Backups go to
-/// `.storyhook/github-sync/backups/{timestamp}/{story_id}.jsonl`.
-pub fn create_backup(root: &Path, story_id: &str) -> Result<(), AppError> {
-    let source = root
-        .join(".storyhook/open/stories")
-        .join(format!("{story_id}.jsonl"));
-    if !source.exists() {
-        return Err(AppError::NotFound(format!(
-            "event log not found for story {story_id}"
-        )));
-    }
-
-    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let dest_dir = backups_dir(root).join(&timestamp);
-    fs::create_dir_all(&dest_dir)?;
-
-    let dest = dest_dir.join(format!("{story_id}.jsonl"));
-    fs::copy(&source, &dest)?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

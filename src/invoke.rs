@@ -6,30 +6,33 @@
 //! what made adopting it provably behaviour-preserving; the flip was then a
 //! constructor swap rather than a rewrite of every call site.
 //!
-//! Two implementations now, and they are not peers:
+//! Two implementations, and they are not peers:
 //!
-//! * [`StoreInvoker`] serves **every** `story` command. It is the stack.
-//! * [`LegacyInvoker`] forwards to [`crate::app::run`], which reads and writes
-//!   `.storyhook/` directly. **It is quarantined**: the web dashboard is the
-//!   only thing that constructs one, because the dashboard still reads those
-//!   directories, and the wave that promotes the daemon deletes both. Nothing
-//!   else in `src/` may reach it — `tests/invoker_seam.rs` asserts that.
+//! * [`StoreInvoker`] runs the work in this process, against the store.
+//! * [`HttpInvoker`] sends it to the daemon, which runs it against the store
+//!   there. It is the default; `--local` picks the other one.
+//!
+//! A third, `LegacyInvoker`, forwarded to the pre-rearchitecture `app::run`
+//! and read and wrote `.storyhook/` directly. It was quarantined at the flip
+//! and deleted with `app.rs` once the dashboard — its last caller — moved onto
+//! the services. `tests/invoker_seam.rs` now asserts that neither it nor
+//! anything it reached can come back.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::app;
 use crate::cli::{
-    CliOptions, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
-    PhaseAction, PluginAction, StateAction, TypeAction, WebAction,
+    DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, PhaseAction,
+    PluginAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::help_topics;
 use crate::output::{Response, render_html_report};
+use crate::service::transfer::ProjectExport;
 use crate::service::{
     CatalogService, Clock, ConfigService, Ctx, FieldEdits, GitService, GroupingService,
     ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters, NewStoryInput,
@@ -37,7 +40,6 @@ use crate::service::{
     SessionService, StateListing, StoryService, SystemService, TransferService, migrate, session,
     system, transfer,
 };
-use crate::storage::ProjectExport;
 use crate::store::{ProjectId, ReadOps, Store};
 
 /// One unit of work for an [`Invoker`]: the command, plus the execution
@@ -142,43 +144,10 @@ pub fn open_store(env: &Environment) -> Result<crate::store::SqliteStore, AppErr
     Ok(store)
 }
 
-/// Runs commands in this process against a project directory, by calling
-/// [`crate::app::run`].
-///
-/// This is the pre-rearchitecture path, wrapped rather than reimplemented:
-/// it forwards verbatim, so it behaves identically to a direct call by
-/// construction. `app::run` reads only `no_hooks` and `invocation` off
-/// [`CliOptions`], so the `json`/`quiet` fields filled in here are inert —
-/// they exist because the struct still carries them for the CLI's own use.
-pub struct LegacyInvoker<'a> {
-    root: &'a Path,
-}
-
-impl<'a> LegacyInvoker<'a> {
-    /// An invoker for the project rooted at `root`.
-    pub fn new(root: &'a Path) -> Self {
-        Self { root }
-    }
-}
-
-impl Invoker for LegacyInvoker<'_> {
-    fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
-        app::run(
-            self.root,
-            CliOptions {
-                json: false,
-                quiet: false,
-                no_hooks: request.no_hooks,
-                invocation: request.invocation,
-            },
-        )
-    }
-}
-
 /// Runs one invocation against the store, in this process.
 ///
-/// This is the new stack's entry point, and the eventual replacement for
-/// [`crate::app::run`]. It is deliberately thin: every arm validates the
+/// This is the stack's entry point, and what replaced the pre-rearchitecture
+/// `app::run`. It is deliberately thin: every arm validates the
 /// CLI-shaped arguments it was handed, makes **one** service call, and turns
 /// the answer into a [`Response`]. An arm that wants to do more than that is an
 /// arm whose logic belongs in a service — that is where the invariants live,

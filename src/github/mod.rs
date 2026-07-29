@@ -1,4 +1,3 @@
-pub mod auto;
 pub mod body_block;
 pub mod client;
 pub mod conflict;
@@ -143,19 +142,6 @@ enum SyncStoryResult {
 // run_sync -- main entry point
 // ---------------------------------------------------------------------------
 
-/// Runs GitHub sync against a repository's `.storyhook/` directory.
-///
-/// The pre-rearchitecture entry point, kept as a wrapper so that
-/// [`crate::app::run`] calls it unchanged: everything below takes a
-/// [`SyncStorage`] and does not know which side of the flip it is on.
-pub fn run_sync(
-    root: &std::path::Path,
-    story_id: Option<&str>,
-    dry_run: bool,
-) -> Result<Response, AppError> {
-    run_sync_with(&storage::LegacySyncStorage::new(root), story_id, dry_run)
-}
-
 /// Runs GitHub sync against whatever storage `sync` names. If `story_id` is
 /// `Some`, syncs only that story; if `dry_run`, previews without writing.
 pub fn run_sync_with(
@@ -168,8 +154,8 @@ pub fn run_sync_with(
         Some(cfg) => {
             if cfg.sync.mode == SyncMode::Off {
                 return Err(AppError::Usage(
-                    "GitHub sync is disabled. Set sync_mode to 'manual' or 'auto' in \
-                     .storyhook/github-sync.toml"
+                    "GitHub sync is disabled for this project (sync mode `off`). Re-run \
+                     `story github-sync` and choose `manual` or `auto`."
                         .to_string(),
                 ));
             }

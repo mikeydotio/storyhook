@@ -10,8 +10,8 @@ use storyhook::domain::{ImportRelationship, ImportStory};
 use storyhook::error::AppError;
 use storyhook::invoke::dispatch;
 use storyhook::output::Response;
+use storyhook::service::transfer::ProjectExport;
 use storyhook::service::{Clock, NewStoryInput, StoryService, TransferService, transfer};
-use storyhook::storage::ProjectExport;
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, StoryQuery};
 use storyhook_test_support::{ServiceFixture, scratch_dir};
 
@@ -469,15 +469,17 @@ fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
         members: Vec::new(),
         stories: Vec::new(),
     };
-    export.stories.push(storyhook::storage::ExportedStory {
-        id: "ZZ-1".to_string(),
-        events: vec![storyhook::domain::StoryEvent::StoryCreated {
-            at: "2026-01-01T00:00:00Z".to_string(),
-            title: "Foreign".to_string(),
-            state: "todo".to_string(),
-        }],
-        archived: false,
-    });
+    export
+        .stories
+        .push(storyhook::service::transfer::ExportedStory {
+            id: "ZZ-1".to_string(),
+            events: vec![storyhook::domain::StoryEvent::StoryCreated {
+                at: "2026-01-01T00:00:00Z".to_string(),
+                title: "Foreign".to_string(),
+                state: "todo".to_string(),
+            }],
+            archived: false,
+        });
 
     let error = transfer::import_project(&store, dir.path(), &Clock::System, &export)
         .expect_err("a foreign prefix must be rejected");

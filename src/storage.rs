@@ -1,29 +1,40 @@
-//! # QUARANTINED (mostly) — legacy-web only, deleted at W5
+//! The legacy `.storyhook/` tree, written and read — the **rollback path**,
+//! and nothing else.
 //!
-//! The **write half** of this module is part of the pre-rearchitecture storage
-//! path: it creates and mutates `.storyhook/` directories, and no `story`
-//! command reaches it. It survives for exactly one reason — the web dashboard
-//! (`src/web.rs`) still reads those directories, through
-//! [`crate::app::run`], and the wave that promotes the daemon is what moves it
-//! onto the store and deletes this.
+//! # No production caller, by design
 //!
-//! **Three things here are NOT quarantined**, and are used by the live path:
+//! Nothing under `src/` calls into this module. Every `story` command runs
+//! against the store; the entry point that used to reach this code
+//! (`src/app.rs`) was deleted along with `lock.rs` and `registry.rs` once the
+//! dashboard moved onto the services.
+//! `tests/invoker_seam.rs::the_legacy_write_path_is_gone` fails if a `src/`
+//! file so much as names `crate::storage`.
 //!
-//! * [`ProjectExport`] and [`ExportedStory`] — the transfer envelope
-//!   `story export` and `story import-project` speak. A data format, not a
-//!   storage path; the store-backed [`crate::service::transfer`] produces and
-//!   consumes it.
-//! * [`now`] — storyhook's timestamp format, in one place.
-//! * [`ProjectPaths`] — still used by the TUI's filesystem watcher, which W5
-//!   also deletes.
+//! # Then why is it still here?
 //!
-//! **Do not add callers to anything else.**
-//! `tests/invoker_seam.rs::the_legacy_path_is_reachable_only_from_the_web_dashboard`
-//! fails if any module other than `web.rs` constructs a
-//! [`LegacyInvoker`](crate::invoke::LegacyInvoker) or calls [`crate::app::run`],
-//! which is the only door into the write half.
+//! Because the rearchitecture is a **two-way door**, and this is the far side
+//! of it. `docs/rearch/flip-checklist.md`'s rollback procedure is `store ->
+//! story export -> ProjectExport -> a legacy tree`, and
+//! [`import_project`] is what materializes that last step.
+//! `tests/migrate_round_trip.rs` runs the whole loop for two fixtures and
+//! compares the read models story by story; the W4 revert policy is
+//! *conditional* on it staying green. Deleting this module would not simplify
+//! the program, it would close the door.
 //!
-use std::collections::{BTreeMap, BTreeSet};
+//! It is also what builds the legacy trees `story migrate` is tested against
+//! (`tests/legacy_support/`), including the archived half — which lives in a
+//! SQLite database and cannot be written by hand.
+//!
+//! # What was deleted
+//!
+//! Twenty-six functions: everything the CLI used to call and the round trip
+//! does not need — `move_story_to_state`, `archive`/`unarchive`, the state and
+//! type editors, `repair_archived_snapshots`, `state_usage`, the `doctor`
+//! helpers. What survives is `init_project`, the catalog writers, the story
+//! writers, `import_project`/`export_project`, and the readers the round trip
+//! verifies with.
+//!
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -33,10 +44,11 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    Member, StateChanges, StateDef, StateUsage, StoryEvent, StorySnapshot, SuperState, TypeDef,
-    fold_story, validate_state_defs, validate_state_defs_for_write,
+    Member, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef, fold_story,
+    validate_state_defs, validate_state_defs_for_write,
 };
 use crate::error::AppError;
+use crate::service::transfer::{ExportedStory, ProjectExport};
 
 #[derive(Clone, Debug)]
 pub struct ProjectPaths {
@@ -383,33 +395,6 @@ pub fn save_states(root: &Path, states: &[StateDef]) -> Result<(), AppError> {
     Ok(())
 }
 
-/// How many stories sit in each configured state.
-///
-/// Deleted stories are excluded on purpose: `fold_story` forces them to
-/// CLOSED without consulting the state map, so they neither block removing a
-/// state nor need migrating out of one. States with no stories are still
-/// present in the map, with zero counts.
-pub fn state_usage(root: &Path) -> Result<BTreeMap<String, StateUsage>, AppError> {
-    let mut usage: BTreeMap<String, StateUsage> = load_states(root)?
-        .into_iter()
-        .map(|state| (state.slug, StateUsage::default()))
-        .collect();
-
-    for story in load_all_open_snapshots(root)? {
-        if story.deleted {
-            continue;
-        }
-        usage.entry(story.state).or_default().open += 1;
-    }
-    for story in load_all_archived_snapshots(root)? {
-        if story.deleted {
-            continue;
-        }
-        usage.entry(story.state).or_default().archived += 1;
-    }
-    Ok(usage)
-}
-
 /// The result of an edit that may have migrated stories out of the state it
 /// changed, so callers can report both halves of what happened.
 #[derive(Clone, Debug)]
@@ -417,301 +402,6 @@ pub struct StateEdit {
     pub state: StateDef,
     /// How many open stories were moved out of the edited state.
     pub moved: usize,
-}
-
-pub fn add_state(
-    root: &Path,
-    slug: &str,
-    superstate: SuperState,
-    role: Option<String>,
-    description: Option<String>,
-) -> Result<StateDef, AppError> {
-    let mut states = load_states(root)?;
-    if states.iter().any(|state| state.slug == slug) {
-        return Err(AppError::Validation(format!(
-            "state `{slug}` already exists"
-        )));
-    }
-
-    let state = StateDef {
-        slug: slug.to_string(),
-        super_state: superstate,
-        role,
-        description,
-    };
-    states.push(state.clone());
-    save_states(root, &states)?;
-    Ok(state)
-}
-
-/// Applies `changes` to the state `slug`.
-///
-/// Changing a state's superstate reclassifies every story sitting in it — a
-/// story in a now-CLOSED state would report as closed while still living in
-/// the open store, unarchived. So when the superstate changes and the state
-/// still holds open stories, the caller must name the state those stories
-/// move into first (`move_stories_to`); they are migrated through the normal
-/// move path, archiving as they would on any other close.
-///
-/// Archived stories don't constrain this: their snapshots are stored, not
-/// re-folded, and the slug they reference still exists afterwards.
-///
-/// Caller must hold the project write lock.
-pub fn update_state(
-    root: &Path,
-    slug: &str,
-    changes: &StateChanges,
-    move_stories_to: Option<&str>,
-) -> Result<StateEdit, AppError> {
-    let states = load_states(root)?;
-    let current = states
-        .iter()
-        .find(|state| state.slug == slug)
-        .ok_or_else(|| AppError::NotFound(format!("state `{slug}` not found")))?;
-
-    if changes.is_empty() {
-        return Err(AppError::Usage(format!(
-            "nothing to change on state `{slug}`"
-        )));
-    }
-
-    let superstate_changed = changes
-        .super_state
-        .as_ref()
-        .is_some_and(|next| *next != current.super_state);
-
-    let updated = StateDef {
-        slug: current.slug.clone(),
-        super_state: changes
-            .super_state
-            .clone()
-            .unwrap_or_else(|| current.super_state.clone()),
-        role: changes.role.clone().apply(current.role.clone()),
-        description: changes
-            .description
-            .clone()
-            .apply(current.description.clone()),
-    };
-
-    let next_states: Vec<StateDef> = states
-        .iter()
-        .map(|state| {
-            if state.slug == slug {
-                updated.clone()
-            } else {
-                state.clone()
-            }
-        })
-        .collect();
-    // Validate the whole resulting set *before* touching any story, so an
-    // edit that would leave the project without an OPEN (or CLOSED) state
-    // fails having changed nothing.
-    validate_state_defs_for_write(&next_states)?;
-
-    let mut moved = 0;
-    if superstate_changed {
-        let destination = resolve_migration(
-            root,
-            &next_states,
-            slug,
-            move_stories_to,
-            "change the superstate of",
-        )?;
-        if let Some(destination) = destination {
-            moved = migrate_open_stories(root, slug, &destination)?;
-        }
-    }
-
-    save_states(root, &next_states)?;
-    Ok(StateEdit {
-        state: updated,
-        moved,
-    })
-}
-
-/// Removes the state `slug`.
-///
-/// Open stories still in it must be given somewhere to go
-/// (`move_stories_to`). Archived stories are a hard stop: their history
-/// records this slug, and `unarchive_story` re-folds that history against
-/// the *current* state set, so reopening one after the state vanished would
-/// fail (`fold_story` rejects an undefined state).
-///
-/// Returns how many open stories were migrated out on the way.
-///
-/// Caller must hold the project write lock.
-pub fn remove_state(
-    root: &Path,
-    slug: &str,
-    move_stories_to: Option<&str>,
-) -> Result<usize, AppError> {
-    let states = load_states(root)?;
-    if !states.iter().any(|state| state.slug == slug) {
-        return Err(AppError::NotFound(format!("state `{slug}` not found")));
-    }
-
-    let retained: Vec<StateDef> = states
-        .iter()
-        .filter(|state| state.slug != slug)
-        .cloned()
-        .collect();
-    validate_state_defs_for_write(&retained)?;
-
-    let archived = state_usage(root)?
-        .get(slug)
-        .map(|usage| usage.archived)
-        .unwrap_or(0);
-    if archived > 0 {
-        return Err(AppError::Validation(format!(
-            "state `{slug}` has {archived} archived {}; a state with archived history cannot be removed, because reopening one would fold against a state that no longer exists",
-            plural_stories(archived)
-        )));
-    }
-
-    let mut moved = 0;
-    if let Some(destination) = resolve_migration(root, &retained, slug, move_stories_to, "remove")?
-    {
-        moved = migrate_open_stories(root, slug, &destination)?;
-    }
-
-    save_states(root, &retained)?;
-    Ok(moved)
-}
-
-/// Rewrites the state set in the given order.
-///
-/// `states.toml` order is user-visible — it drives the dashboard's board
-/// columns and `default_open_state` — so reordering is a real operation
-/// rather than cosmetics. `order` must be a permutation of the configured
-/// slugs; a partial order would silently drop states.
-///
-/// Caller must hold the project write lock.
-pub fn reorder_states(root: &Path, order: &[String]) -> Result<Vec<StateDef>, AppError> {
-    let states = load_states(root)?;
-    let known: BTreeSet<&str> = states.iter().map(|state| state.slug.as_str()).collect();
-
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    for slug in order {
-        if !known.contains(slug.as_str()) {
-            return Err(AppError::NotFound(format!("state `{slug}` not found")));
-        }
-        if !seen.insert(slug.as_str()) {
-            return Err(AppError::Validation(format!(
-                "state `{slug}` is listed more than once"
-            )));
-        }
-    }
-    let missing: Vec<&str> = known
-        .iter()
-        .copied()
-        .filter(|slug| !seen.contains(slug))
-        .collect();
-    if !missing.is_empty() {
-        return Err(AppError::Validation(format!(
-            "the new order must list every state; missing: {}",
-            missing.join(", ")
-        )));
-    }
-
-    let by_slug: BTreeMap<&str, &StateDef> = states
-        .iter()
-        .map(|state| (state.slug.as_str(), state))
-        .collect();
-    let reordered: Vec<StateDef> = order
-        .iter()
-        .map(|slug| (*by_slug.get(slug.as_str()).expect("checked above")).clone())
-        .collect();
-
-    save_states(root, &reordered)?;
-    Ok(reordered)
-}
-
-/// Works out where the open stories in `slug` should go before `slug` is
-/// removed or reclassified, given the state set that will exist afterwards
-/// (`next_states`).
-///
-/// `Ok(None)` means nothing needs moving. `action` names the operation for
-/// error messages ("remove", "change the superstate of").
-fn resolve_migration(
-    root: &Path,
-    next_states: &[StateDef],
-    slug: &str,
-    move_stories_to: Option<&str>,
-    action: &str,
-) -> Result<Option<StateDef>, AppError> {
-    let open = state_usage(root)?
-        .get(slug)
-        .map(|usage| usage.open)
-        .unwrap_or(0);
-    if open == 0 {
-        return Ok(None);
-    }
-
-    let candidates: Vec<&StateDef> = next_states
-        .iter()
-        .filter(|state| state.slug != slug)
-        .collect();
-    if candidates.is_empty() {
-        return Err(AppError::Validation(format!(
-            "cannot {action} state `{slug}`: it holds {open} open {}, and there is no other state to move them into",
-            plural_stories(open)
-        )));
-    }
-
-    let Some(target) = move_stories_to else {
-        let names: Vec<&str> = candidates.iter().map(|state| state.slug.as_str()).collect();
-        return Err(AppError::Validation(format!(
-            "cannot {action} state `{slug}` while it holds {open} open {}: name the state they move into (one of: {})",
-            plural_stories(open),
-            names.join(", ")
-        )));
-    };
-
-    if target == slug {
-        return Err(AppError::Validation(format!(
-            "stories in `{slug}` cannot be moved into `{slug}` itself"
-        )));
-    }
-    candidates
-        .into_iter()
-        .find(|state| state.slug == target)
-        .cloned()
-        .map(Some)
-        .ok_or_else(|| AppError::NotFound(format!("state `{target}` not found")))
-}
-
-/// Moves every open, non-deleted story in `from` into `to`, leaving a
-/// comment on each so the move is traceable to the configuration change that
-/// caused it. Returns how many stories moved.
-///
-/// Runs before the new state set is written: if it fails halfway, the
-/// project is left with stories moved but its configuration unchanged —
-/// a state the user can simply retry, unlike the reverse order, which would
-/// leave stories stranded in a state that no longer means what they assume.
-fn migrate_open_stories(root: &Path, from: &str, to: &StateDef) -> Result<usize, AppError> {
-    let ids: Vec<String> = load_all_open_snapshots(root)?
-        .into_iter()
-        .filter(|story| !story.deleted && story.state == from)
-        .map(|story| story.id)
-        .collect();
-
-    for id in &ids {
-        write_story_events(
-            root,
-            id,
-            &[StoryEvent::StoryCommentAdded {
-                at: now(),
-                text: format!("[states] moved from `{from}` to `{}`", to.slug),
-            }],
-        )?;
-        move_story_to_state(root, id, to)?;
-    }
-    Ok(ids.len())
-}
-
-/// "story" / "stories" for a count.
-fn plural_stories(count: usize) -> &'static str {
-    if count == 1 { "story" } else { "stories" }
 }
 
 fn default_types() -> Vec<TypeDef> {
@@ -756,13 +446,6 @@ pub fn load_types(root: &Path) -> Result<Vec<TypeDef>, AppError> {
     Ok(types_file.types)
 }
 
-pub fn load_type_map(root: &Path) -> Result<BTreeMap<String, TypeDef>, AppError> {
-    Ok(load_types(root)?
-        .into_iter()
-        .map(|t| (t.slug.clone(), t))
-        .collect())
-}
-
 pub fn save_types(root: &Path, types: &[TypeDef]) -> Result<(), AppError> {
     let paths = ProjectPaths::new(root);
     fs::write(
@@ -774,110 +457,11 @@ pub fn save_types(root: &Path, types: &[TypeDef]) -> Result<(), AppError> {
     Ok(())
 }
 
-pub fn add_type(root: &Path, slug: &str, description: Option<&str>) -> Result<TypeDef, AppError> {
-    if slug.eq_ignore_ascii_case("none") {
-        return Err(AppError::Validation(
-            "type slug `none` is reserved and cannot be used".to_string(),
-        ));
-    }
-    if slug.eq_ignore_ascii_case("default") {
-        return Err(AppError::Validation(
-            "type slug `default` is reserved and cannot be used".to_string(),
-        ));
-    }
-
-    let mut types = load_types(root)?;
-    if types.iter().any(|t| t.slug == slug) {
-        return Err(AppError::Validation(format!(
-            "type `{slug}` already exists"
-        )));
-    }
-
-    let type_def = TypeDef {
-        slug: slug.to_string(),
-        description: description.map(|d| d.to_string()),
-    };
-    types.push(type_def.clone());
-    save_types(root, &types)?;
-    Ok(type_def)
-}
-
-pub fn remove_type(root: &Path, slug: &str) -> Result<(), AppError> {
-    let types = load_types(root)?;
-    if types.len() <= 1 {
-        return Err(AppError::Validation(
-            "cannot remove the last type".to_string(),
-        ));
-    }
-    if !types.iter().any(|t| t.slug == slug) {
-        return Err(AppError::NotFound(format!("type `{slug}` not found")));
-    }
-
-    if load_all_snapshots(root)?
-        .into_iter()
-        .any(|story| story.story_type.as_deref() == Some(slug))
-    {
-        return Err(AppError::Validation(format!(
-            "type `{slug}` is still used by an existing story"
-        )));
-    }
-
-    let retained = types
-        .into_iter()
-        .filter(|t| t.slug != slug)
-        .collect::<Vec<_>>();
-    save_types(root, &retained)?;
-    Ok(())
-}
-
-pub fn default_type(root: &Path) -> Result<String, AppError> {
-    let types = load_types(root)?;
-    types
-        .first()
-        .map(|t| t.slug.clone())
-        .ok_or_else(|| AppError::Validation("types.toml has no types defined".to_string()))
-}
-
 pub fn default_open_state(root: &Path) -> Result<StateDef, AppError> {
     load_states(root)?
         .into_iter()
         .find(|state| state.super_state == SuperState::Open)
         .ok_or_else(|| AppError::Validation("project has no OPEN-mapped default state".to_string()))
-}
-
-pub fn is_auto_transition_enabled(root: &Path) -> Result<bool, AppError> {
-    let paths = ProjectPaths::new(root);
-    let raw = fs::read_to_string(paths.project_file())?;
-    let project: ProjectFile = toml::from_str(&raw)?;
-    Ok(project.sync.and_then(|s| s.auto_transition).unwrap_or(true))
-}
-
-pub fn get_stale_threshold(root: &Path) -> Result<String, AppError> {
-    let paths = ProjectPaths::new(root);
-    let raw = fs::read_to_string(paths.project_file())?;
-    let project: ProjectFile = toml::from_str(&raw)?;
-    Ok(project
-        .doctor
-        .and_then(|d| d.stale_threshold)
-        .unwrap_or_else(|| "14d".to_string()))
-}
-
-pub fn find_active_state(root: &Path) -> Result<Option<StateDef>, AppError> {
-    let states = load_states(root)?;
-    // Priority 1: explicit role = "active"
-    if let Some(state) = states.iter().find(|s| s.role.as_deref() == Some("active")) {
-        return Ok(Some(state.clone()));
-    }
-    // Priority 2: heuristic - if exactly 2 OPEN states, the second is "active"
-    let open_states: Vec<&StateDef> = states
-        .iter()
-        .filter(|s| s.super_state == SuperState::Open)
-        .collect();
-    if open_states.len() == 2 {
-        return Ok(Some(open_states[1].clone()));
-    }
-    // No clear active state
-    Ok(None)
 }
 
 pub fn load_members(root: &Path) -> Result<Vec<Member>, AppError> {
@@ -907,14 +491,6 @@ pub fn store_member(root: &Path, member: &Member) -> Result<(), AppError> {
         .open(paths.members_file())?;
     writeln!(file, "{}", serde_json::to_string(member)?)?;
     Ok(())
-}
-
-pub fn find_member(root: &Path, lookup: &str) -> Result<Member, AppError> {
-    let members = load_members(root)?;
-    members
-        .into_iter()
-        .find(|member| member.id == lookup || member.github.as_deref() == Some(lookup))
-        .ok_or_else(|| AppError::NotFound(format!("member `{lookup}` not found")))
 }
 
 pub fn next_story_id(root: &Path) -> Result<String, AppError> {
@@ -991,16 +567,6 @@ pub fn create_story_with_events(
     load_open_story_snapshot(root, &id)
 }
 
-/// Sorted, unique labels across every non-deleted story (open and archived).
-pub fn distinct_labels(root: &Path) -> Result<Vec<String>, AppError> {
-    let labels: BTreeSet<String> = load_all_snapshots(root)?
-        .into_iter()
-        .filter(|s| !s.deleted)
-        .flat_map(|s| s.labels)
-        .collect();
-    Ok(labels.into_iter().collect())
-}
-
 pub fn write_story_events(root: &Path, id: &str, events: &[StoryEvent]) -> Result<(), AppError> {
     let paths = ProjectPaths::new(root);
     let mut file = OpenOptions::new()
@@ -1054,88 +620,6 @@ pub fn load_open_story_snapshot(root: &Path, id: &str) -> Result<StorySnapshot, 
     let states = load_state_map(root)?;
     let events = load_open_story_events(root, id)?;
     fold_story(id, &events, &states)
-}
-
-pub fn load_story_snapshot(root: &Path, id: &str) -> Result<StorySnapshot, AppError> {
-    match load_open_story_snapshot(root, id) {
-        Ok(story) => Ok(story),
-        Err(AppError::NotFound(_)) => load_archived_story(root, id),
-        Err(error) => Err(error),
-    }
-}
-
-/// The event batch that moves an open story into `target`.
-///
-/// Order is `StoryStateChanged`, then `extra` (a caller-supplied comment,
-/// say), then — when `target` is a CLOSED state — the close markers:
-/// `StoryAwaitingCleared` if the story is currently awaiting something,
-/// followed by `StoryClosedAndArchived`.
-///
-/// Every path that changes a story's state (`story move`, `story set
-/// --state`, bulk update, the TUI board) must emit the identical batch:
-/// forgetting the awaiting clear archives a story that still reads as
-/// blocked, and forgetting the close marker leaves a CLOSED story that
-/// `archive_story` will happily archive but that reopens inconsistently.
-pub fn state_transition_events(
-    target: &StateDef,
-    awaiting: bool,
-    at: &str,
-    extra: Vec<StoryEvent>,
-) -> Vec<StoryEvent> {
-    let mut events = vec![StoryEvent::StoryStateChanged {
-        at: at.to_string(),
-        state: target.slug.clone(),
-    }];
-    events.extend(extra);
-    if target.super_state == SuperState::Closed {
-        if awaiting {
-            events.push(StoryEvent::StoryAwaitingCleared { at: at.to_string() });
-        }
-        events.push(StoryEvent::StoryClosedAndArchived {
-            at: at.to_string(),
-            state: target.slug.clone(),
-        });
-    }
-    events
-}
-
-/// Moves the open story `id` into `target`: writes
-/// [`state_transition_events`] and archives the story when `target` closes
-/// it. Returns `true` when the story was archived.
-///
-/// The caller must already hold the project write lock — the write and the
-/// archive have to land inside one lock, or a reader can observe a story
-/// that is marked closed but still sitting in the open store.
-pub fn move_story_to_state(root: &Path, id: &str, target: &StateDef) -> Result<bool, AppError> {
-    let awaiting = load_open_story_snapshot(root, id)
-        .map(|snapshot| snapshot.awaiting.is_some())
-        .unwrap_or(false);
-    let events = state_transition_events(target, awaiting, &now(), Vec::new());
-    write_story_events(root, id, &events)?;
-
-    let closed = target.super_state == SuperState::Closed;
-    if closed {
-        // The events are already written, so a failure here leaves a story
-        // marked closed but still in the open store. Say which stage failed
-        // rather than surfacing a bare "story not found" from `archive_story`.
-        archive_story(root, id).map_err(|error| {
-            AppError::Storage(format!(
-                "story `{id}` moved to `{}` but could not be archived: {error}",
-                target.slug
-            ))
-        })?;
-    }
-    Ok(closed)
-}
-
-pub fn is_archived(root: &Path, id: &str) -> Result<bool, AppError> {
-    let connection = open_archive_connection(root)?;
-    let count = connection.query_row(
-        "SELECT COUNT(*) FROM closed_stories WHERE id = ?1",
-        [id],
-        |row| row.get::<_, i64>(0),
-    )?;
-    Ok(count > 0)
 }
 
 pub fn archive_story(root: &Path, id: &str) -> Result<StorySnapshot, AppError> {
@@ -1200,16 +684,6 @@ pub fn delete_story(root: &Path, id: &str, reason: &str) -> Result<(), AppError>
     Ok(())
 }
 
-pub fn load_archived_story(root: &Path, id: &str) -> Result<StorySnapshot, AppError> {
-    let connection = open_archive_connection(root)?;
-    let mut statement =
-        connection.prepare("SELECT snapshot_json FROM closed_stories WHERE id = ?1 LIMIT 1")?;
-    let snapshot_json = statement
-        .query_row([id], |row| row.get::<_, String>(0))
-        .map_err(|_| AppError::NotFound(format!("story `{id}` not found")))?;
-    Ok(serde_json::from_str(&snapshot_json)?)
-}
-
 pub fn load_all_open_snapshots(root: &Path) -> Result<Vec<StorySnapshot>, AppError> {
     ensure_project(root)?;
     let paths = ProjectPaths::new(root);
@@ -1251,109 +725,10 @@ pub fn load_all_archived_snapshots(root: &Path) -> Result<Vec<StorySnapshot>, Ap
     Ok(stories)
 }
 
-/// Loads every open snapshot, tolerating a trailing incomplete JSON line.
-///
-/// A concurrent append-mode write can leave a partial final line in a JSONL
-/// event file. A reader that must not fail on that — the TUI reloads on every
-/// filesystem event, including the one the writer is still in the middle of —
-/// skips it rather than propagating the parse error.
-///
-/// Lives here rather than in the TUI because `Invocation::ProjectSnapshot`
-/// answers with it: the tolerance is a property of the storage format, and the
-/// clients that need it reach storage through the seam.
-pub fn load_open_snapshots_tolerant(root: &Path) -> Result<Vec<StorySnapshot>, AppError> {
-    use std::io::{BufRead, BufReader};
-
-    ensure_project(root)?;
-    let paths = ProjectPaths::new(root);
-    let states = load_state_map(root)?;
-    let mut stories = Vec::new();
-
-    let stories_dir = paths.open_stories_dir();
-    if !stories_dir.exists() {
-        return Ok(stories);
-    }
-
-    let mut entries = fs::read_dir(&stories_dir)?.collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let id = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .ok_or_else(|| AppError::Storage("invalid story filename".to_string()))?;
-
-        let file = fs::OpenOptions::new().read(true).open(&path)?;
-        let reader = BufReader::new(file);
-        let mut events = Vec::new();
-        let lines: Vec<String> = reader.lines().collect::<Result<Vec<_>, _>>()?;
-        let line_count = lines.len();
-
-        for (i, line) in lines.into_iter().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str(&line) {
-                Ok(event) => events.push(event),
-                Err(_) if i == line_count - 1 => {
-                    // Skip incomplete trailing line from concurrent write
-                }
-                Err(e) => return Err(AppError::from(e)),
-            }
-        }
-
-        if !events.is_empty() {
-            stories.push(fold_story(id, &events, &states)?);
-        }
-    }
-
-    Ok(stories)
-}
-
 pub fn load_all_snapshots(root: &Path) -> Result<Vec<StorySnapshot>, AppError> {
     let mut stories = load_all_open_snapshots(root)?;
     stories.extend(load_all_archived_snapshots(root)?);
     Ok(stories)
-}
-
-pub fn open_story_exists(root: &Path, id: &str) -> bool {
-    let paths = ProjectPaths::new(root);
-    paths.open_story_file(id).exists()
-}
-
-pub fn unarchive_story(root: &Path, id: &str) -> Result<(), AppError> {
-    let connection = open_archive_connection(root)?;
-    let events_json: String = connection
-        .query_row(
-            "SELECT events_json FROM closed_stories WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-        .map_err(|_| AppError::NotFound(format!("story `{id}` not found in archive")))?;
-
-    let events: Vec<StoryEvent> = serde_json::from_str(&events_json)?;
-    // Filter out the close/delete markers so the story reopens cleanly as a
-    // normal open story — `StoryDeleted` is stripped too so that "undeleting"
-    // a soft-deleted story (see `Invocation::Reopen`) folds back to
-    // `deleted: false` rather than staying CLOSED. The `[deleted] <reason>`
-    // comment added by `delete_story` is left in place as audit history.
-    let events: Vec<StoryEvent> = events
-        .into_iter()
-        .filter(|e| {
-            !matches!(
-                e,
-                StoryEvent::StoryClosedAndArchived { .. } | StoryEvent::StoryDeleted { .. }
-            )
-        })
-        .collect();
-
-    rewrite_story_events(root, id, &events)?;
-    connection.execute("DELETE FROM closed_stories WHERE id = ?1", [id])?;
-    Ok(())
 }
 
 /// Outcome of [`repair_archived_snapshots`]: which archived stories' cached
@@ -1366,82 +741,6 @@ pub struct ArchiveRepairReport {
     /// (e.g. their event log references a state slug no longer configured),
     /// left untouched rather than overwritten with a broken snapshot.
     pub issues: Vec<String>,
-}
-
-/// Re-folds every archived story's cached `snapshot_json` from its
-/// authoritative `events_json` and rewrites the cache when the two differ.
-///
-/// Unlike open stories (re-folded on every load, see
-/// [`load_all_open_snapshots`]), archived snapshots are cached in SQLite and
-/// read back verbatim (see [`load_all_archived_snapshots`]) — so a change to
-/// `fold_story`'s behavior (for example, #18's fix making `StoryDeleted`
-/// force `superstate: CLOSED`) does not retroactively apply to stories
-/// archived before the change. `story doctor --fix` calls this to self-heal
-/// those stale caches from the event log, which remains the source of truth.
-pub fn repair_archived_snapshots(root: &Path) -> Result<ArchiveRepairReport, AppError> {
-    let states = load_state_map(root)?;
-    let connection = open_archive_connection(root)?;
-    let mut statement = connection
-        .prepare("SELECT id, snapshot_json, events_json FROM closed_stories ORDER BY id ASC")?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-
-    let mut report = ArchiveRepairReport {
-        repaired: Vec::new(),
-        issues: Vec::new(),
-    };
-    for row in rows {
-        let (id, cached_snapshot_json, events_json) = row?;
-        let events: Vec<StoryEvent> = serde_json::from_str(&events_json)?;
-        let refolded = match fold_story(&id, &events, &states) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                report
-                    .issues
-                    .push(format!("{id}: {error} (archive repair skipped)"));
-                continue;
-            }
-        };
-
-        let refolded_json = serde_json::to_string(&refolded)?;
-        if refolded_json != cached_snapshot_json {
-            connection.execute(
-                "UPDATE closed_stories SET snapshot_json = ?1, closed_at = ?2, state = ?3 WHERE id = ?4",
-                params![
-                    refolded_json,
-                    refolded.closed_at.as_deref().unwrap_or(""),
-                    refolded.state,
-                    id,
-                ],
-            )?;
-            report.repaired.push(id);
-        }
-    }
-
-    Ok(report)
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProjectExport {
-    pub schema: u32,
-    pub prefix: Option<String>,
-    pub states: Vec<StateDef>,
-    #[serde(default)]
-    pub types: Vec<TypeDef>,
-    pub members: Vec<Member>,
-    pub stories: Vec<ExportedStory>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ExportedStory {
-    pub id: String,
-    pub events: Vec<StoryEvent>,
-    pub archived: bool,
 }
 
 pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
@@ -1611,7 +910,7 @@ fn open_archive_connection(root: &Path) -> Result<Connection, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{FieldEdit, Priority};
+    use crate::domain::Priority;
     use tempfile::tempdir;
 
     fn setup_project() -> tempfile::TempDir {
@@ -1702,22 +1001,6 @@ mod tests {
 
     // --- load_type_map ---
 
-    #[test]
-    fn load_type_map_returns_btree_keyed_by_slug() {
-        let dir = setup_project();
-        let map = load_type_map(dir.path()).unwrap();
-        assert_eq!(map.len(), 5);
-        assert!(map.contains_key("story"));
-        assert!(map.contains_key("epic"));
-        assert!(map.contains_key("bug"));
-        assert!(map.contains_key("chore"));
-        assert!(map.contains_key("task"));
-        assert_eq!(
-            map["story"].description.as_deref(),
-            Some("A user story or feature")
-        );
-    }
-
     // --- save_types ---
 
     #[test]
@@ -1735,46 +1018,6 @@ mod tests {
     }
 
     // --- add_type ---
-
-    #[test]
-    fn add_type_appends_new_type() {
-        let dir = setup_project();
-        let result = add_type(dir.path(), "spike", Some("A time-boxed investigation")).unwrap();
-        assert_eq!(result.slug, "spike");
-        assert_eq!(
-            result.description.as_deref(),
-            Some("A time-boxed investigation")
-        );
-        let types = load_types(dir.path()).unwrap();
-        assert_eq!(types.len(), 6);
-        assert_eq!(types[5].slug, "spike");
-    }
-
-    #[test]
-    fn add_type_rejects_duplicate() {
-        let dir = setup_project();
-        let result = add_type(dir.path(), "story", Some("duplicate"));
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("already exists"));
-    }
-
-    #[test]
-    fn add_type_rejects_none_slug() {
-        let dir = setup_project();
-        let result = add_type(dir.path(), "none", Some("reserved"));
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("reserved"));
-    }
-
-    #[test]
-    fn add_type_without_description() {
-        let dir = setup_project();
-        let result = add_type(dir.path(), "spike", None).unwrap();
-        assert_eq!(result.slug, "spike");
-        assert_eq!(result.description, None);
-    }
 
     // --- create_story_with_events ---
 
@@ -1808,74 +1051,7 @@ mod tests {
 
     // --- distinct_labels ---
 
-    #[test]
-    fn distinct_labels_collects_sorted_unique_excluding_deleted() {
-        let dir = setup_project();
-        let a = create_story(dir.path(), "A", None).unwrap();
-        let b = create_story(dir.path(), "B", None).unwrap();
-        let c = create_story(dir.path(), "C", None).unwrap();
-        write_story_events(
-            dir.path(),
-            &a.id,
-            &[StoryEvent::StoryLabelsSet {
-                at: now(),
-                labels: vec!["bug".to_string(), "web".to_string()],
-            }],
-        )
-        .unwrap();
-        write_story_events(
-            dir.path(),
-            &b.id,
-            &[StoryEvent::StoryLabelsSet {
-                at: now(),
-                labels: vec!["web".to_string(), "cli".to_string()],
-            }],
-        )
-        .unwrap();
-        write_story_events(
-            dir.path(),
-            &c.id,
-            &[
-                StoryEvent::StoryLabelsSet {
-                    at: now(),
-                    labels: vec!["ignored".to_string()],
-                },
-                StoryEvent::StoryDeleted {
-                    at: now(),
-                    reason: "duplicate".to_string(),
-                },
-            ],
-        )
-        .unwrap();
-
-        let labels = distinct_labels(dir.path()).unwrap();
-        assert_eq!(labels, vec!["bug", "cli", "web"]);
-    }
-
     // --- state descriptions (SH-49 regression) ---
-
-    /// A `description` written into `states.toml` by hand (or by an earlier
-    /// build) must survive any command that rewrites the file. Before SH-49,
-    /// `StateDef` had no `description` field at all, so every rewrite silently
-    /// dropped it.
-    #[test]
-    fn add_state_preserves_existing_state_descriptions() {
-        let dir = setup_project();
-        let paths = ProjectPaths::new(dir.path());
-        let mut raw = fs::read_to_string(paths.states_file()).unwrap();
-        raw.push_str(
-            "\n[[states]]\nslug = \"review\"\nsuper = \"OPEN\"\ndescription = \"Waiting on a reviewer\"\n",
-        );
-        fs::write(paths.states_file(), raw).unwrap();
-
-        add_state(dir.path(), "qa", SuperState::Open, None, None).unwrap();
-
-        let after = fs::read_to_string(paths.states_file()).unwrap();
-        assert!(
-            after.contains("Waiting on a reviewer"),
-            "rewriting states.toml dropped `review`'s description:\n{after}"
-        );
-    }
 
     #[test]
     fn save_states_round_trips_descriptions() {
@@ -1913,645 +1089,17 @@ mod tests {
 
     // --- state_usage ---
 
-    /// Puts `id` into `state`, closing/archiving it when that state is CLOSED
-    /// — i.e. exactly what a user moving the story would get.
-    fn move_to(root: &Path, id: &str, state: &str) {
-        let states = load_state_map(root).unwrap();
-        let target = states.get(state).expect("test state must exist");
-        move_story_to_state(root, id, target).unwrap();
-    }
-
-    #[test]
-    fn state_usage_counts_open_and_archived_separately() {
-        let dir = setup_project();
-        let root = dir.path();
-        let a = create_story(root, "still open", None).unwrap();
-        let b = create_story(root, "finished", None).unwrap();
-        move_to(root, &b.id, "done");
-
-        let usage = state_usage(root).unwrap();
-        assert_eq!(
-            usage["todo"],
-            StateUsage {
-                open: 1,
-                archived: 0
-            }
-        );
-        assert_eq!(
-            usage["done"],
-            StateUsage {
-                open: 0,
-                archived: 1
-            }
-        );
-        assert_eq!(
-            usage["in-progress"],
-            StateUsage {
-                open: 0,
-                archived: 0
-            },
-            "a state with no stories must still be reported"
-        );
-        assert_eq!(a.state, "todo");
-    }
-
-    /// A deleted story keeps its last state slug, but `fold_story` forces it
-    /// CLOSED without consulting the state map — so it must not count as a
-    /// reason to keep a state around.
-    #[test]
-    fn state_usage_excludes_deleted_stories() {
-        let dir = setup_project();
-        let root = dir.path();
-        let story = create_story(root, "mistake", None).unwrap();
-        delete_story(root, &story.id, "filed twice").unwrap();
-
-        let usage = state_usage(root).unwrap();
-        assert_eq!(usage["todo"].total(), 0);
-    }
-
     // --- add_state ---
-
-    #[test]
-    fn add_state_stores_role_and_description() {
-        let dir = setup_project();
-        let state = add_state(
-            dir.path(),
-            "review",
-            SuperState::Open,
-            None,
-            Some("Waiting on a reviewer".to_string()),
-        )
-        .unwrap();
-        assert_eq!(state.description.as_deref(), Some("Waiting on a reviewer"));
-
-        let loaded = load_states(dir.path()).unwrap();
-        let review = loaded.iter().find(|s| s.slug == "review").unwrap();
-        assert_eq!(review.description.as_deref(), Some("Waiting on a reviewer"));
-        assert_eq!(
-            loaded.last().unwrap().slug,
-            "review",
-            "a new state appends to the end of the order"
-        );
-    }
-
-    #[test]
-    fn add_state_rejects_duplicate_slug() {
-        let dir = setup_project();
-        let error = add_state(dir.path(), "todo", SuperState::Open, None, None).unwrap_err();
-        assert!(error.to_string().contains("already exists"));
-    }
-
-    #[test]
-    fn add_state_rejects_an_unaddressable_slug() {
-        let dir = setup_project();
-        for bad in ["In Review", "in/review", "-review", "in--review", ""] {
-            let error = add_state(dir.path(), bad, SuperState::Open, None, None).unwrap_err();
-            assert!(
-                error.to_string().contains("invalid state slug"),
-                "`{bad}` should have been rejected, got: {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn add_state_rejects_a_second_active_role() {
-        let dir = setup_project();
-        let error = add_state(
-            dir.path(),
-            "doing",
-            SuperState::Open,
-            Some("active".to_string()),
-            None,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("only one state may have role"));
-    }
-
-    #[test]
-    fn add_state_rejects_an_unknown_role() {
-        let dir = setup_project();
-        let error = add_state(
-            dir.path(),
-            "review",
-            SuperState::Open,
-            Some("reviewing".to_string()),
-            None,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("unknown role"));
-    }
 
     // --- update_state ---
 
-    #[test]
-    fn update_state_sets_and_clears_optional_fields() {
-        let dir = setup_project();
-        let root = dir.path();
-
-        update_state(
-            root,
-            "todo",
-            &StateChanges {
-                description: FieldEdit::Set("Not started yet".to_string()),
-                ..StateChanges::default()
-            },
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            load_state_map(root).unwrap()["todo"].description.as_deref(),
-            Some("Not started yet")
-        );
-
-        update_state(
-            root,
-            "todo",
-            &StateChanges {
-                description: FieldEdit::Clear,
-                ..StateChanges::default()
-            },
-            None,
-        )
-        .unwrap();
-        assert_eq!(load_state_map(root).unwrap()["todo"].description, None);
-    }
-
-    /// `FieldEdit::Keep` is the whole reason the type exists: editing the
-    /// superstate must not silently wipe the description alongside it.
-    #[test]
-    fn update_state_leaves_untouched_fields_alone() {
-        let dir = setup_project();
-        let root = dir.path();
-        add_state(
-            root,
-            "review",
-            SuperState::Open,
-            None,
-            Some("Waiting on a reviewer".to_string()),
-        )
-        .unwrap();
-
-        update_state(
-            root,
-            "review",
-            &StateChanges {
-                super_state: Some(SuperState::Closed),
-                ..StateChanges::default()
-            },
-            None,
-        )
-        .unwrap();
-
-        let review = load_state_map(root).unwrap()["review"].clone();
-        assert_eq!(review.super_state, SuperState::Closed);
-        assert_eq!(review.description.as_deref(), Some("Waiting on a reviewer"));
-    }
-
-    #[test]
-    fn update_state_rejects_an_empty_change_set() {
-        let dir = setup_project();
-        let error = update_state(dir.path(), "todo", &StateChanges::default(), None).unwrap_err();
-        assert!(error.to_string().contains("nothing to change"));
-    }
-
-    #[test]
-    fn update_state_rejects_unknown_state() {
-        let dir = setup_project();
-        let error = update_state(
-            dir.path(),
-            "nope",
-            &StateChanges {
-                super_state: Some(SuperState::Closed),
-                ..StateChanges::default()
-            },
-            None,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("not found"));
-    }
-
-    /// Flipping the only remaining OPEN state to CLOSED would leave a project
-    /// no story could ever be opened in.
-    #[test]
-    fn update_state_rejects_flipping_away_the_last_open_state() {
-        let dir = setup_project();
-        let root = dir.path();
-        remove_state(root, "in-progress", None).unwrap();
-
-        let error = update_state(
-            root,
-            "todo",
-            &StateChanges {
-                super_state: Some(SuperState::Closed),
-                ..StateChanges::default()
-            },
-            None,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("at least one OPEN state"));
-    }
-
-    #[test]
-    fn update_state_requires_a_destination_for_occupied_states() {
-        let dir = setup_project();
-        let root = dir.path();
-        let story = create_story(root, "in flight", None).unwrap();
-        move_to(root, &story.id, "in-progress");
-
-        let error = update_state(
-            root,
-            "in-progress",
-            &StateChanges {
-                super_state: Some(SuperState::Closed),
-                ..StateChanges::default()
-            },
-            None,
-        )
-        .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("1 open story"), "got: {message}");
-        assert!(
-            message.contains("todo"),
-            "candidates missing from: {message}"
-        );
-
-        // Nothing changed: not the state, not the story.
-        assert_eq!(
-            load_state_map(root).unwrap()["in-progress"].super_state,
-            SuperState::Open
-        );
-        assert_eq!(
-            load_open_story_snapshot(root, &story.id).unwrap().state,
-            "in-progress"
-        );
-    }
-
-    #[test]
-    fn update_state_migrates_occupants_to_the_named_destination() {
-        let dir = setup_project();
-        let root = dir.path();
-        let story = create_story(root, "in flight", None).unwrap();
-        move_to(root, &story.id, "in-progress");
-
-        let edit = update_state(
-            root,
-            "in-progress",
-            &StateChanges {
-                super_state: Some(SuperState::Closed),
-                ..StateChanges::default()
-            },
-            Some("todo"),
-        )
-        .unwrap();
-        assert_eq!(edit.moved, 1);
-
-        assert_eq!(
-            load_state_map(root).unwrap()["in-progress"].super_state,
-            SuperState::Closed
-        );
-        let moved = load_open_story_snapshot(root, &story.id).unwrap();
-        assert_eq!(moved.state, "todo");
-        assert!(
-            moved
-                .comments
-                .iter()
-                .any(|comment| comment.text.contains("moved from `in-progress` to `todo`")),
-            "the migration should leave an audit trail: {:?}",
-            moved.comments
-        );
-    }
-
-    /// Migrating into a CLOSED state must close and archive the stories, the
-    /// same as moving them there by hand would.
-    #[test]
-    fn update_state_migration_into_a_closed_state_archives() {
-        let dir = setup_project();
-        let root = dir.path();
-        let story = create_story(root, "in flight", None).unwrap();
-        move_to(root, &story.id, "in-progress");
-
-        update_state(
-            root,
-            "in-progress",
-            &StateChanges {
-                super_state: Some(SuperState::Closed),
-                ..StateChanges::default()
-            },
-            Some("done"),
-        )
-        .unwrap();
-
-        assert!(is_archived(root, &story.id).unwrap());
-        assert!(!open_story_exists(root, &story.id));
-    }
-
-    #[test]
-    fn update_state_rejects_an_unknown_destination() {
-        let dir = setup_project();
-        let root = dir.path();
-        let story = create_story(root, "in flight", None).unwrap();
-        move_to(root, &story.id, "in-progress");
-
-        let error = update_state(
-            root,
-            "in-progress",
-            &StateChanges {
-                super_state: Some(SuperState::Closed),
-                ..StateChanges::default()
-            },
-            Some("nowhere"),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("`nowhere` not found"));
-    }
-
-    /// Editing role or description touches no story, so it never needs a
-    /// destination even when the state is full.
-    #[test]
-    fn update_state_does_not_require_a_destination_for_metadata_edits() {
-        let dir = setup_project();
-        let root = dir.path();
-        let story = create_story(root, "in flight", None).unwrap();
-        move_to(root, &story.id, "in-progress");
-
-        update_state(
-            root,
-            "in-progress",
-            &StateChanges {
-                description: FieldEdit::Set("Generator working on this".to_string()),
-                ..StateChanges::default()
-            },
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(
-            load_open_story_snapshot(root, &story.id).unwrap().state,
-            "in-progress"
-        );
-    }
-
     // --- remove_state ---
-
-    #[test]
-    fn remove_state_removes_an_empty_state() {
-        let dir = setup_project();
-        remove_state(dir.path(), "in-progress", None).unwrap();
-        assert!(
-            !load_states(dir.path())
-                .unwrap()
-                .iter()
-                .any(|s| s.slug == "in-progress")
-        );
-    }
-
-    #[test]
-    fn remove_state_rejects_unknown_state() {
-        let dir = setup_project();
-        let error = remove_state(dir.path(), "nope", None).unwrap_err();
-        assert!(error.to_string().contains("not found"));
-    }
-
-    #[test]
-    fn remove_state_rejects_removing_the_last_closed_state() {
-        let dir = setup_project();
-        let error = remove_state(dir.path(), "done", None).unwrap_err();
-        assert!(error.to_string().contains("at least one OPEN state"));
-    }
-
-    #[test]
-    fn remove_state_requires_a_destination_for_occupied_states() {
-        let dir = setup_project();
-        let root = dir.path();
-        let story = create_story(root, "in flight", None).unwrap();
-        move_to(root, &story.id, "in-progress");
-
-        let error = remove_state(root, "in-progress", None).unwrap_err();
-        assert!(error.to_string().contains("1 open story"));
-        assert!(load_state_map(root).unwrap().contains_key("in-progress"));
-    }
-
-    #[test]
-    fn remove_state_migrates_occupants_to_the_named_destination() {
-        let dir = setup_project();
-        let root = dir.path();
-        let first = create_story(root, "one", None).unwrap();
-        let second = create_story(root, "two", None).unwrap();
-        move_to(root, &first.id, "in-progress");
-        move_to(root, &second.id, "in-progress");
-
-        assert_eq!(remove_state(root, "in-progress", Some("todo")).unwrap(), 2);
-
-        assert!(!load_state_map(root).unwrap().contains_key("in-progress"));
-        for id in [&first.id, &second.id] {
-            assert_eq!(load_open_story_snapshot(root, id).unwrap().state, "todo");
-        }
-    }
-
-    /// Archived history pins a state in place: `unarchive_story` re-folds a
-    /// reopened story against the current state set, and `fold_story` rejects
-    /// a state slug it doesn't know.
-    #[test]
-    fn remove_state_rejects_a_state_with_archived_history() {
-        let dir = setup_project();
-        let root = dir.path();
-        add_state(root, "cancelled", SuperState::Closed, None, None).unwrap();
-        let story = create_story(root, "abandoned", None).unwrap();
-        move_to(root, &story.id, "cancelled");
-
-        let error = remove_state(root, "cancelled", Some("todo")).unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("1 archived story"), "got: {message}");
-        assert!(load_state_map(root).unwrap().contains_key("cancelled"));
-    }
-
-    #[test]
-    fn remove_state_ignores_deleted_stories() {
-        let dir = setup_project();
-        let root = dir.path();
-        let story = create_story(root, "mistake", None).unwrap();
-        move_to(root, &story.id, "in-progress");
-        delete_story(root, &story.id, "filed twice").unwrap();
-
-        remove_state(root, "in-progress", None).unwrap();
-        assert!(!load_state_map(root).unwrap().contains_key("in-progress"));
-    }
 
     // --- reorder_states ---
 
-    #[test]
-    fn reorder_states_rewrites_the_order() {
-        let dir = setup_project();
-        let root = dir.path();
-        let order = vec![
-            "done".to_string(),
-            "todo".to_string(),
-            "in-progress".to_string(),
-        ];
-        let reordered = reorder_states(root, &order).unwrap();
-
-        let slugs: Vec<&str> = reordered.iter().map(|s| s.slug.as_str()).collect();
-        assert_eq!(slugs, vec!["done", "todo", "in-progress"]);
-        let persisted: Vec<String> = load_states(root)
-            .unwrap()
-            .into_iter()
-            .map(|s| s.slug)
-            .collect();
-        assert_eq!(persisted, order);
-    }
-
-    /// Reordering must not be able to drop a state: a partial order would
-    /// silently delete every state it omits.
-    #[test]
-    fn reorder_states_rejects_a_partial_order() {
-        let dir = setup_project();
-        let error = reorder_states(dir.path(), &["done".to_string(), "todo".to_string()])
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("must list every state"), "got: {error}");
-        assert!(error.contains("in-progress"), "got: {error}");
-    }
-
-    #[test]
-    fn reorder_states_rejects_duplicates_and_unknown_slugs() {
-        let dir = setup_project();
-        let duplicate = reorder_states(
-            dir.path(),
-            &[
-                "todo".to_string(),
-                "todo".to_string(),
-                "in-progress".to_string(),
-                "done".to_string(),
-            ],
-        )
-        .unwrap_err();
-        assert!(duplicate.to_string().contains("more than once"));
-
-        let unknown = reorder_states(
-            dir.path(),
-            &[
-                "todo".to_string(),
-                "in-progress".to_string(),
-                "done".to_string(),
-                "nope".to_string(),
-            ],
-        )
-        .unwrap_err();
-        assert!(unknown.to_string().contains("`nope` not found"));
-    }
-
-    /// The order drives the board's columns *and* `default_open_state`, which
-    /// is what new stories land in.
-    #[test]
-    fn reorder_states_changes_the_default_open_state() {
-        let dir = setup_project();
-        let root = dir.path();
-        assert_eq!(default_open_state(root).unwrap().slug, "todo");
-
-        reorder_states(
-            root,
-            &[
-                "in-progress".to_string(),
-                "todo".to_string(),
-                "done".to_string(),
-            ],
-        )
-        .unwrap();
-        assert_eq!(default_open_state(root).unwrap().slug, "in-progress");
-    }
-
     // --- remove_type ---
 
-    #[test]
-    fn remove_type_removes_unused_type() {
-        let dir = setup_project();
-        let types_before = load_types(dir.path()).unwrap();
-        assert!(types_before.iter().any(|t| t.slug == "chore"));
-        remove_type(dir.path(), "chore").unwrap();
-        let types_after = load_types(dir.path()).unwrap();
-        assert_eq!(types_after.len(), types_before.len() - 1);
-        assert!(!types_after.iter().any(|t| t.slug == "chore"));
-    }
-
-    #[test]
-    fn remove_type_rejects_nonexistent() {
-        let dir = setup_project();
-        let result = remove_type(dir.path(), "nonexistent");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("not found"));
-    }
-
-    #[test]
-    fn remove_type_rejects_in_use() {
-        let dir = setup_project();
-        // Create a story and set its type to "epic"
-        let story = create_story(dir.path(), "test story", None).unwrap();
-        write_story_events(
-            dir.path(),
-            &story.id,
-            &[StoryEvent::StoryTypeSet {
-                at: now(),
-                story_type: "epic".to_string(),
-            }],
-        )
-        .unwrap();
-        let result = remove_type(dir.path(), "epic");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("still used"));
-    }
-
-    #[test]
-    fn remove_type_rejects_last_type() {
-        let dir = setup_project();
-        let single = vec![TypeDef {
-            slug: "only".to_string(),
-            description: None,
-        }];
-        save_types(dir.path(), &single).unwrap();
-        let result = remove_type(dir.path(), "only");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("last"));
-    }
-
     // --- default_type ---
-
-    #[test]
-    fn default_type_returns_first_slug() {
-        let dir = setup_project();
-        let dt = default_type(dir.path()).unwrap();
-        assert_eq!(dt, "story");
-    }
-
-    #[test]
-    fn default_type_returns_first_after_custom_save() {
-        let dir = setup_project();
-        let custom = vec![
-            TypeDef {
-                slug: "zeta".to_string(),
-                description: None,
-            },
-            TypeDef {
-                slug: "alpha".to_string(),
-                description: None,
-            },
-        ];
-        save_types(dir.path(), &custom).unwrap();
-        let dt = default_type(dir.path()).unwrap();
-        assert_eq!(dt, "zeta");
-    }
-
-    #[test]
-    fn default_type_errors_on_empty_types() {
-        let dir = setup_project();
-        save_types(dir.path(), &[]).unwrap();
-        let result = default_type(dir.path());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("no types defined"));
-    }
 
     // --- TypesFile wraps Vec<TypeDef> ---
 
