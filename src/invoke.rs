@@ -26,6 +26,7 @@ use crate::cli::{
     PluginAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
+use crate::env::Environment;
 use crate::error::AppError;
 use crate::help_topics;
 use crate::output::{Response, render_html_report};
@@ -106,15 +107,23 @@ pub trait Invoker {
 ///
 /// Shared by the CLI and the TUI so that "where is the store, and what does
 /// opening it entail" has one answer rather than one per entry point.
-pub fn open_store() -> Result<crate::store::SqliteStore, AppError> {
+pub fn open_store(env: &Environment) -> Result<crate::store::SqliteStore, AppError> {
     use crate::store::Store as _;
-    let store = crate::store::SqliteStore::open(crate::paths::store_path()?)?;
+    let mut config = crate::store::StoreConfig::new(env.store_path());
+    // Pre-migration backups join the daily snapshots under the state home
+    // rather than sitting beside the database: `data_home` is what a user might
+    // point at a synced directory, and a backup of a database is exactly the
+    // thing that should not be synced back over the database.
+    config.backup_dir = env.backups_dir();
+    config.busy_timeout = env.busy_timeout_value();
+    let store = crate::store::SqliteStore::open_with(config)?;
     store.migrate()?;
     // A failure here is not a reason to refuse the command: the registry
     // belongs to the dashboard, and every storyhook command works without it.
-    if let Ok(dir) = crate::paths::legacy_global_dir() {
-        let _ = crate::service::adopt_legacy_registry(&store, &dir.join("registry.toml"));
-    }
+    let _ = crate::service::adopt_legacy_registry(
+        &store,
+        &env.legacy_global_dir().join("registry.toml"),
+    );
     Ok(store)
 }
 
@@ -1142,20 +1151,22 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
 pub struct StoreInvoker<'a, S: Store> {
     store: &'a S,
     cwd: PathBuf,
+    env: Environment,
     hook_depth: u32,
     pointer: bool,
 }
 
 impl<'a, S: Store> StoreInvoker<'a, S> {
-    /// An invoker over `store`, running from `cwd`.
+    /// An invoker over `store`, running from `cwd` under `env`.
     ///
     /// Writes the pointer file on `story init`, because for a process served
     /// this way the store *is* where the project lives, and a checkout with no
     /// pointer is one a fresh clone cannot identify.
-    pub fn new(store: &'a S, cwd: impl Into<PathBuf>) -> Self {
+    pub fn new(store: &'a S, cwd: impl Into<PathBuf>, env: Environment) -> Self {
         Self {
             store,
             cwd: cwd.into(),
+            env,
             hook_depth: 0,
             pointer: true,
         }
@@ -1223,7 +1234,7 @@ fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppE
 
 impl<S: Store> Invoker for StoreInvoker<'_, S> {
     fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
-        let now = Clock::System.now();
+        let now = self.env.now();
         if is_project_less(&request.invocation) {
             return dispatch_unscoped_with(
                 self.store,
@@ -1266,7 +1277,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             ));
         };
 
-        let ctx = Ctx::new(self.store, project, &self.cwd)
+        let ctx = Ctx::new(self.store, project, &self.cwd, self.env.clone())
             .no_hooks(request.no_hooks)
             .hook_depth(self.hook_depth);
         dispatch(&ctx, request.invocation)

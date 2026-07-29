@@ -19,7 +19,7 @@ use storyhook::github::sync_state::{
 };
 use storyhook::service::{Clock, NewStoryInput, StoreSyncStorage, StoryService};
 use storyhook::store::{ReadOps, Store, StoryNo, WriteOps, partition_known};
-use storyhook_test_support::{ServiceFixture, scratch_dir};
+use storyhook_test_support::ServiceFixture;
 
 fn config() -> GithubSyncConfig {
     GithubSyncConfig {
@@ -179,14 +179,10 @@ fn a_backup_writes_the_story_log_outside_the_repository() {
         .comment(&id, "Something worth keeping.")
         .expect("commenting");
 
-    let backups = scratch_dir();
     let ctx = fixture.ctx();
-    StoreSyncStorage::new(&ctx)
-        .backups_dir(backups.path())
-        .backup(&id)
-        .expect("backing up");
+    StoreSyncStorage::new(&ctx).backup(&id).expect("backing up");
 
-    let written = walk(backups.path());
+    let written = walk(&fixture.env().github_backups_dir());
     assert_eq!(written.len(), 1, "exactly one backup file: {written:?}");
     let contents = std::fs::read_to_string(&written[0]).expect("reading the backup");
     assert_eq!(
@@ -205,10 +201,8 @@ fn a_backup_writes_the_story_log_outside_the_repository() {
 fn backing_up_a_story_with_no_events_says_so_rather_than_writing_an_empty_file() {
     let fixture = ServiceFixture::new();
     create(&fixture, "Real");
-    let backups = scratch_dir();
     let ctx = fixture.ctx();
     let error = StoreSyncStorage::new(&ctx)
-        .backups_dir(backups.path())
         .backup("SH-99")
         .expect_err("a story that does not exist");
     assert!(matches!(error, AppError::NotFound(_)), "{error}");
@@ -332,13 +326,10 @@ fn a_backup_preserves_an_event_kind_this_binary_does_not_understand() {
     storyhook::store::repair_read_model(fixture.store(), fixture.project())
         .expect("repairing the read model");
 
-    let backups = scratch_dir();
     let ctx = fixture.ctx();
-    StoreSyncStorage::new(&ctx)
-        .backups_dir(backups.path())
-        .backup(&id)
-        .expect("backing up");
-    let contents = std::fs::read_to_string(&walk(backups.path())[0]).expect("reading");
+    StoreSyncStorage::new(&ctx).backup(&id).expect("backing up");
+    let contents =
+        std::fs::read_to_string(&walk(&fixture.env().github_backups_dir())[0]).expect("reading");
     assert!(
         contents.contains("StoryTeleported"),
         "an unknown kind must survive the backup: {contents}"
@@ -359,13 +350,12 @@ fn every_story_backed_up_by_one_sync_lands_in_one_directory() {
     let first = create(&fixture, "One");
     let second = create(&fixture, "Two");
 
-    let backups = scratch_dir();
     let ctx = fixture.ctx();
-    let storage = StoreSyncStorage::new(&ctx).backups_dir(backups.path());
+    let storage = StoreSyncStorage::new(&ctx);
     storage.backup(&first).expect("backing up the first");
     storage.backup(&second).expect("backing up the second");
 
-    let directories: Vec<_> = std::fs::read_dir(backups.path())
+    let directories: Vec<_> = std::fs::read_dir(fixture.env().github_backups_dir())
         .expect("reading the backups directory")
         .map(|entry| entry.expect("an entry").file_name())
         .collect();

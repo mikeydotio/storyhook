@@ -81,11 +81,13 @@ fn cases() -> Vec<Case> {
         Case {
             variant: "LockTimeout",
             exit_code: 4,
-            // The only row that costs wall-clock time. A writer waits
-            // `busy_timeout` (5s, `store::sqlite::DEFAULT_BUSY_TIMEOUT`) for
-            // another process's write lock before giving up. Worth it — exit 4
-            // is otherwise unpinned, and W5 moves this contention into a
-            // daemon where it should stop being reachable at all.
+            // The only row that costs wall-clock time, and it used to cost
+            // five whole seconds: a writer waits `busy_timeout` for another
+            // process's write lock before giving up. The deadline is a value on
+            // `Environment` now rather than a constant, so this row asks the
+            // child for a one-second one and the gate gets four seconds back.
+            // What it proves is unchanged — the timeout fires, and exit 4 is
+            // what a caller sees.
             //
             // The lock moved with the storage: it used to be `src/lock.rs`'s
             // advisory file lock over a project directory, and it is SQLite's
@@ -121,7 +123,9 @@ fn cases() -> Vec<Case> {
                 // `new` is a write, so it needs the lock; a read like `show`
                 // runs happily beside a writer under WAL and would never time
                 // out.
-                let out = run(project.path(), env, &["new", "Blocked on the lock"], json);
+                let mut cmd = env.story(project.path());
+                cmd.env("STORYHOOK_BUSY_TIMEOUT_MS", "1000");
+                let out = finish(cmd, &["new", "Blocked on the lock"], json);
                 let _ = release_tx.send(());
                 holder.join().expect("the holder thread panicked");
                 out

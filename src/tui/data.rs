@@ -392,13 +392,14 @@ mod tests {
     struct Fixture {
         store: crate::store::SqliteStore,
         root: std::path::PathBuf,
+        env: crate::env::Environment,
         _data: tempfile::TempDir,
         _repo: tempfile::TempDir,
     }
 
     impl Fixture {
         fn invoker(&self) -> crate::invoke::StoreInvoker<'_, crate::store::SqliteStore> {
-            crate::invoke::StoreInvoker::new(&self.store, &self.root)
+            crate::invoke::StoreInvoker::new(&self.store, &self.root, self.env.clone())
         }
     }
 
@@ -407,11 +408,13 @@ mod tests {
         use crate::store::Store as _;
         let data = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
-        let store = crate::store::SqliteStore::open(data.path().join("store.db")).unwrap();
+        let env = crate::env::Environment::at(data.path());
+        let store = crate::store::SqliteStore::open(env.store_path()).unwrap();
         store.migrate().unwrap();
         let fixture = Fixture {
             store,
             root: repo.path().to_path_buf(),
+            env,
             _data: data,
             _repo: repo,
         };

@@ -23,7 +23,6 @@ use crate::error::AppError;
 use crate::github::storage::SyncStorage;
 use crate::github::sync_state::GithubSyncConfig;
 use crate::output::Response;
-use crate::paths;
 use crate::store::{ExpectedSeq, ReadOps, Store, StoryNo, StoryQuery, WriteOps};
 
 use super::story::{NewStoryInput, StoryService};
@@ -49,40 +48,25 @@ impl<'ctx, S: Store> GithubSyncService<'ctx, S> {
 /// [`SyncStorage`] backed by the store.
 pub struct StoreSyncStorage<'ctx, S: Store> {
     ctx: &'ctx Ctx<'ctx, S>,
-    backups_dir: Option<PathBuf>,
 }
 
 impl<'ctx, S: Store> StoreSyncStorage<'ctx, S> {
-    /// Storage for the project `ctx` names, with backups under the XDG state
-    /// directory.
-    pub fn new(ctx: &'ctx Ctx<'ctx, S>) -> Self {
-        Self {
-            ctx,
-            backups_dir: None,
-        }
-    }
-
-    /// Sends this storage's backups somewhere other than the XDG state
-    /// directory.
+    /// Storage for the project `ctx` names, with backups under that context's
+    /// state home.
     ///
-    /// Not a convenience. A backup destination read from the process
-    /// environment is one an in-process caller cannot redirect — and an
-    /// integration test *is* an in-process caller, because
-    /// `storyhook_test_support::TestEnv` isolates child processes only. Without
-    /// this, running the sync tests writes into the developer's real
-    /// `~/.local/state/storyhook`; it did, once, before this method existed.
-    #[must_use]
-    pub fn backups_dir(mut self, directory: impl Into<PathBuf>) -> Self {
-        self.backups_dir = Some(directory.into());
-        self
+    /// The destination comes from the context's [`crate::env::Environment`]
+    /// rather than from the process environment, and that is load-bearing: an in-process
+    /// caller cannot redirect a variable, and an integration test *is* an
+    /// in-process caller, because `storyhook_test_support::TestEnv` isolates
+    /// child processes only. Before the environment was a value, running the
+    /// sync tests wrote into the developer's real `~/.local/state/storyhook`.
+    pub fn new(ctx: &'ctx Ctx<'ctx, S>) -> Self {
+        Self { ctx }
     }
 
     /// Where this storage writes its backups.
     fn resolve_backups_dir(&self) -> Result<PathBuf, AppError> {
-        match &self.backups_dir {
-            Some(directory) => Ok(directory.clone()),
-            None => Ok(paths::state_dir()?.join("github-sync/backups")),
-        }
+        Ok(self.ctx.env().github_backups_dir())
     }
 
     /// A story's number under this project's prefix.
@@ -239,9 +223,14 @@ impl<S: Store> SyncStorage for StoreSyncStorage<'_, S> {
     /// which fired nothing; pulling fifty issues down from GitHub and firing
     /// fifty `create` hooks would be a new behaviour, not a port.
     fn create_story(&self, title: &str) -> Result<StorySnapshot, AppError> {
-        let quiet = Ctx::new(self.ctx.store(), self.ctx.project(), self.ctx.cwd())
-            .no_hooks(true)
-            .clock(Clock::Fixed(self.ctx.now()));
+        let quiet = Ctx::new(
+            self.ctx.store(),
+            self.ctx.project(),
+            self.ctx.cwd(),
+            self.ctx.env().clone(),
+        )
+        .no_hooks(true)
+        .clock(Clock::Fixed(self.ctx.now()));
         StoryService::new(&quiet).create(&NewStoryInput {
             title: title.to_string(),
             ..NewStoryInput::default()

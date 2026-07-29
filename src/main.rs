@@ -88,12 +88,19 @@ fn main() {
 
     refuse_retired_backend(json);
 
+    // Everything storyhook reads from outside itself, resolved once and passed
+    // down. Nothing below this line calls `env::var` for a path or a clock.
+    let environment = match storyhook::env::Environment::from_process() {
+        Ok(environment) => environment,
+        Err(error) => fail(&error, json),
+    };
+
     // The work goes through the Invoker seam; `json` and `quiet` never do,
     // because rendering is this process's job no matter where the answer
     // came from.
     let request = InvokeRequest::new(invocation).no_hooks(no_hooks);
-    let result = match storyhook::invoke::open_store() {
-        Ok(store) => StoreInvoker::new(&store, &cwd)
+    let result = match storyhook::invoke::open_store(&environment) {
+        Ok(store) => StoreInvoker::new(&store, &cwd, environment.clone())
             .hook_depth(hook_depth())
             .invoke(request),
         Err(error) => Err(error),
