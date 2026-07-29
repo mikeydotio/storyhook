@@ -54,22 +54,20 @@ fn main() {
         Err(error) => fail(&error, json),
     };
 
-    // Web server foreground mode: `story web --serve --port N`. Runs the
-    // HTTP server directly (used by the daemon spawner), against the
-    // registry at its default location — the one piece of storyhook state
-    // that lives outside any single repo's `.storyhook/`.
+    // Foreground server mode: `story web --serve --port N`. Runs the daemon
+    // directly, in this process, which is what the background spawner execs.
     if let Invocation::Web {
         action: WebAction::Serve { port },
     } = invocation
     {
-        let registry_path = match storyhook::registry::default_registry_path() {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("error: {e}");
-                process::exit(e.exit_code());
-            }
+        let environment = match storyhook::env::Environment::from_process() {
+            Ok(environment) => environment,
+            Err(error) => fail(&error, json),
         };
-        if let Err(e) = storyhook::web::start_server(&registry_path, port) {
+        let result = storyhook::invoke::open_store(&environment).and_then(|store| {
+            storyhook::daemon::serve::bind_and_serve(&store, &environment, port, |_| {})
+        });
+        if let Err(e) = result {
             eprintln!("error: {e}");
             process::exit(e.exit_code());
         }
