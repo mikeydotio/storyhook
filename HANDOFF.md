@@ -57,14 +57,24 @@ taken and verified: the junk project `.tmpKGBY3a` — one story, three events, a
 The hole it came through is closed: a test build now refuses to resolve a real
 data home.
 
-**A daemon from this worktree is registered as the machine's daemon.** `~/.local/
-state/storyhook/daemon.json` names pid 71673 running
-`…/worktrees/rearch/target/release/story daemon --serve --port 3456`, which fell
-back to port 52950 because the pre-flip `story web --serve` (pid 8743, started
-2026-07-26) still holds 3456. Two consequences: the worktree's binary will vanish
-when the worktree does, and the thing on the bookmarked port is the *old*
-dashboard, which reads a registry and per-repo directories that no longer exist.
-Neither was touched by W8 — both are Mikey's to decide.
+**No daemon is registered on this machine, and the dashboard on the bookmarked
+port is the old one.** Two things happened during W8 and both are worth knowing:
+
+- A daemon was running from *this worktree's release build*
+  (`…/worktrees/rearch/target/release/story`, pid 71673, started 2026-07-29
+  02:40) and had registered itself in the real state home. W8's story
+  bookkeeping ran the worktree's **debug** binary, which noticed the exe/mtime
+  skew and did what W5 designed it to do: restarted the daemon as itself. That
+  one was then stopped deliberately, so `~/.local/state/storyhook/daemon.json`
+  is now absent and the next `story` command anywhere will start a daemon from
+  whatever binary runs it. Which is the correct resting state, and an argument
+  for doing the reinstall above first.
+- **Port 3456 is still held by the pre-flip `story web --serve`** (pid 8743,
+  started 2026-07-26), which reads a registry and per-repository directories
+  that no longer exist. It was never touched — the charter treats it as
+  production — but it is serving nothing useful now, and it is why every
+  post-flip daemon has fallen back to an ephemeral port. Stopping it is Mikey's
+  call.
 
 *(The W5 item about stray `.jsonl` files in `~/.local/state/storyhook` is
 resolved: checked this wave, the directory holds only the daemon's runtime files
