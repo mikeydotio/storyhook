@@ -1,7 +1,7 @@
 use std::env;
 use std::process;
 
-use storyhook::cli::{self, Invocation, WebAction};
+use storyhook::cli::{self, DaemonAction, Invocation, WebAction};
 use storyhook::invoke::{InvokeRequest, Invoker, StoreInvoker};
 use storyhook::output;
 
@@ -54,19 +54,22 @@ fn main() {
         Err(error) => fail(&error, json),
     };
 
-    // Foreground server mode: `story web --serve --port N`. Runs the daemon
-    // directly, in this process, which is what the background spawner execs.
-    if let Invocation::Web {
-        action: WebAction::Serve { port },
-    } = invocation
-    {
+    // Foreground daemon mode: `story daemon --serve` (and its `story web
+    // --serve` alias). Runs the daemon in this process — what the background
+    // spawner execs and what a launchd agent runs — so it never returns.
+    if let Some(port) = foreground_serve_port(&invocation) {
         let environment = match storyhook::env::Environment::from_process() {
             Ok(environment) => environment,
             Err(error) => fail(&error, json),
         };
-        let result = storyhook::invoke::open_store(&environment).and_then(|store| {
-            storyhook::daemon::serve::bind_and_serve(&store, &environment, port, |_| {})
-        });
+        let environment = match port {
+            Some(port) => {
+                environment.daemon_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)))
+            }
+            None => environment,
+        };
+        let result = storyhook::invoke::open_store(&environment)
+            .and_then(|store| storyhook::daemon::lifecycle::run(&store, &environment));
         if let Err(e) = result {
             eprintln!("error: {e}");
             process::exit(e.exit_code());
@@ -112,6 +115,24 @@ fn main() {
             }
         }
         Err(error) => fail(&error, json),
+    }
+}
+
+/// The port a foreground `--serve` was asked to bind, if this invocation is one.
+///
+/// `Some(None)` means "serve, on whatever port the environment prefers";
+/// `Some(Some(port))` names one. Both spellings land here so that there is
+/// exactly one place in the program where the daemon is started in the
+/// foreground.
+fn foreground_serve_port(invocation: &Invocation) -> Option<Option<u16>> {
+    match invocation {
+        Invocation::Daemon {
+            action: DaemonAction::Serve { port },
+        } => Some(*port),
+        Invocation::Web {
+            action: WebAction::Serve { port },
+        } => Some(Some(*port)),
+        _ => None,
     }
 }
 

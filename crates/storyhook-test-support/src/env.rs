@@ -127,12 +127,35 @@ impl TestEnv {
         ]
     }
 
+    /// The daemon-shaped settings every command this environment builds carries.
+    ///
+    /// Two, and neither is optional:
+    ///
+    /// * **`STORYHOOK_DAEMON_ADDR` is loopback port 0.** The daemon's preferred
+    ///   port is 3456, which is where a developer's own dashboard lives; a suite
+    ///   that could bind it would, on any machine where it happened to be free,
+    ///   and then a test would be talking to something a human was using.
+    /// * **`STORYHOOK_PARENT_PID` is this test binary.** Every `story` this
+    ///   environment runs inherits it, so a daemon one of them spawns inherits
+    ///   it too and exits when this process does — including when this process
+    ///   is killed rather than ended. A leaked daemon poisons every later run on
+    ///   the machine, which is not a hypothetical: it cost 78 of 139 tests once.
+    pub fn daemon_vars(&self) -> [(&'static str, String); 2] {
+        [
+            ("STORYHOOK_DAEMON_ADDR", "127.0.0.1:0".to_string()),
+            ("STORYHOOK_PARENT_PID", std::process::id().to_string()),
+        ]
+    }
+
     /// Points `cmd` at this environment. Every command the harness builds goes
     /// through here, including the `git` invocations behind
     /// [`ProjectBuilder`] — a fixture repo that reads the developer's real
     /// `~/.gitconfig` is not isolated either.
     pub fn apply(&self, cmd: &mut std::process::Command) {
         for (name, value) in self.vars() {
+            cmd.env(name, value);
+        }
+        for (name, value) in self.daemon_vars() {
             cmd.env(name, value);
         }
     }
@@ -144,6 +167,9 @@ impl TestEnv {
         let mut cmd = assert_cmd::Command::new(story_binary());
         cmd.current_dir(cwd.as_ref());
         for (name, value) in self.vars() {
+            cmd.env(name, value);
+        }
+        for (name, value) in self.daemon_vars() {
             cmd.env(name, value);
         }
         cmd
@@ -176,6 +202,12 @@ impl TestEnv {
     #[must_use]
     pub fn environment(&self) -> storyhook::env::Environment {
         storyhook::env::Environment::at(&self.home)
+    }
+
+    /// The daemon this environment's `story` commands share, if one is running.
+    #[must_use]
+    pub fn daemon(&self) -> Option<storyhook::daemon::lifecycle::DaemonInfo> {
+        storyhook::daemon::lifecycle::read_info(&self.environment())
     }
 }
 
@@ -246,6 +278,35 @@ mod tests {
         let env = TestEnv::isolated();
         let names: Vec<_> = env.vars().iter().map(|(name, _)| *name).collect();
         assert_eq!(names, ISOLATED_VARS);
+    }
+
+    /// The production port belongs to whoever is using it, and on a machine
+    /// where it happens to be free a suite that could take it would.
+    #[test]
+    fn no_command_this_harness_builds_can_bind_the_production_port() {
+        let env = TestEnv::isolated();
+        let addr = env
+            .daemon_vars()
+            .into_iter()
+            .find(|(name, _)| *name == "STORYHOOK_DAEMON_ADDR")
+            .map(|(_, value)| value)
+            .expect("the harness must pin the daemon address");
+        assert_eq!(addr, "127.0.0.1:0");
+    }
+
+    #[test]
+    fn every_command_names_this_process_as_the_daemons_parent() {
+        let env = TestEnv::isolated();
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        env.apply(&mut cmd);
+        let out = cmd.output().expect("running env(1)");
+        let seen = String::from_utf8_lossy(&out.stdout).into_owned();
+        let expected = format!("STORYHOOK_PARENT_PID={}", std::process::id());
+        assert!(
+            seen.lines().any(|line| line == expected),
+            "a daemon that does not know its parent cannot outlive it politely; \
+             expected {expected} in:\n{seen}"
+        );
     }
 
     #[test]

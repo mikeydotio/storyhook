@@ -33,7 +33,9 @@ use tiny_http::{Method, Request, Server};
 
 use crate::api::http::{carries_body, finish, read_body, request_path, text_reply};
 use crate::api::rest::{self, Changed};
+use crate::api::rpc;
 use crate::daemon::bus::{Change, ChangeBus};
+use crate::daemon::lifecycle::Hello;
 use crate::daemon::tailnet::tailnet_identity;
 use crate::env::Environment;
 use crate::error::AppError;
@@ -69,6 +71,10 @@ struct Serving<'a, S: Store> {
     env: Environment,
     bus: ChangeBus,
     trusted_hosts: Vec<String>,
+    /// The bearer token `/api/v1/*` requires.
+    token: String,
+    /// This daemon's identity, answered by `/api/v1/hello`.
+    hello: Hello,
 }
 
 /// Serves `listeners` until the process ends.
@@ -80,9 +86,10 @@ struct Serving<'a, S: Store> {
 pub fn serve<S: Store, F>(
     store: &S,
     env: &Environment,
-    listeners: Vec<TcpListener>,
+    listeners: Vec<Listener>,
     trusted_hosts: Vec<String>,
     bus: ChangeBus,
+    token: String,
     ready: F,
 ) -> Result<(), AppError>
 where
@@ -90,10 +97,10 @@ where
 {
     let mut servers = Vec::new();
     for listener in listeners {
-        servers
-            .push(Server::from_listener(listener, None).map_err(|e| {
-                AppError::Storage(format!("failed to serve a bound listener: {e}"))
-            })?);
+        let loopback = listener.loopback;
+        let server = Server::from_listener(listener.listener, None)
+            .map_err(|e| AppError::Storage(format!("failed to serve a bound listener: {e}")))?;
+        servers.push((server, loopback));
     }
 
     let Some(primary) = servers.pop() else {
@@ -108,6 +115,13 @@ where
         env: env.clone(),
         bus: bus.clone(),
         trusted_hosts,
+        token,
+        hello: Hello {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol: crate::daemon::lifecycle::PROTOCOL,
+            pid: std::process::id(),
+            started_at: env.now(),
+        },
     };
 
     // Every background thread lives inside this scope, which is what lets the
@@ -124,14 +138,18 @@ where
             let (bus, stop) = (bus.clone(), Arc::clone(&stop));
             scope.spawn(move || poll_change_token(store, &bus, &stop));
         }
+        {
+            let stop = Arc::clone(&stop);
+            scope.spawn(move || watch_parent(&stop));
+        }
 
         ready();
 
-        for server in servers {
+        for (server, loopback) in servers {
             let serving = &serving;
-            scope.spawn(move || accept_loop(serving, server));
+            scope.spawn(move || accept_loop(serving, server, loopback));
         }
-        accept_loop(&serving, primary);
+        accept_loop(&serving, primary.0, primary.1);
         stop.store(true, Ordering::Relaxed);
     });
     Ok(())
@@ -156,14 +174,30 @@ where
     let (listeners, bound, mut trusted_hosts) = bind_listeners(port)?;
     eprintln!("Storyhook dashboard: http://127.0.0.1:{}", bound.port());
     trusted_hosts.extend(crate::api::http::trusted_hosts_from_env());
+    // No portfile and no token: this entry point serves the dashboard for a
+    // caller that already has a store open, and an empty token is one no
+    // request can present, so the control surface refuses every one.
     serve(
         store,
         env,
         listeners,
         trusted_hosts,
         ChangeBus::new(),
+        String::new(),
         move || ready(bound),
     )
+}
+
+/// A bound listener and whether it is the loopback one.
+///
+/// The distinction is security-relevant rather than cosmetic: `/api/v1/*` is a
+/// full-privilege surface and is answered on loopback only, so the accept loop
+/// has to know which interface a request came in on.
+pub struct Listener {
+    /// The bound socket.
+    pub listener: TcpListener,
+    /// Whether this is the loopback interface.
+    pub loopback: bool,
 }
 
 /// Binds loopback on `port`, then the tailnet interface on whatever port
@@ -174,7 +208,7 @@ where
 /// dashboard, and a dashboard that refuses to start is a broken one.
 pub fn bind_listeners(
     port: u16,
-) -> Result<(Vec<TcpListener>, std::net::SocketAddr, Vec<String>), AppError> {
+) -> Result<(Vec<Listener>, std::net::SocketAddr, Vec<String>), AppError> {
     let loopback = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
             AppError::Usage(format!(
@@ -188,7 +222,10 @@ pub fn bind_listeners(
         .local_addr()
         .map_err(|e| AppError::Storage(format!("bound listener has no address: {e}")))?;
 
-    let mut listeners = vec![loopback];
+    let mut listeners = vec![Listener {
+        listener: loopback,
+        loopback: true,
+    }];
     let mut trusted_hosts = Vec::new();
 
     if let Some(identity) = tailnet_identity() {
@@ -202,7 +239,10 @@ pub fn bind_listeners(
                 // bind, so a name is never trusted unless the interface it
                 // would arrive on is actually being served.
                 trusted_hosts.extend(identity.trusted_hosts());
-                listeners.push(listener);
+                listeners.push(Listener {
+                    listener,
+                    loopback: false,
+                });
             }
             Err(e) => eprintln!(
                 "warning: could not bind tailnet interface {tailnet_addr}: {e}; \
@@ -223,10 +263,40 @@ pub fn bind_listeners(
 /// open. `tiny_http` already reads connections into an internal queue on its own
 /// thread pool, so detaching this one request costs nothing to the ones behind
 /// it.
-fn accept_loop<S: Store>(serving: &Serving<'_, S>, server: Server) {
+fn accept_loop<S: Store>(serving: &Serving<'_, S>, server: Server, loopback: bool) {
     for mut request in server.incoming_requests() {
         let method = request.method().clone();
         let path = request_path(request.url()).to_string();
+
+        // The control surface is checked before anything else: it is the one
+        // part of this daemon that is not the dashboard, and it must not be
+        // reachable through a dashboard route by accident.
+        if let Some(control) = rpc::route(
+            &crate::api::http::path_segments(&path),
+            &method,
+            request.headers(),
+            loopback,
+            &serving.token,
+            &serving.hello,
+        ) {
+            match control {
+                rpc::Control::Reply(reply) => finish(request, reply),
+                rpc::Control::Shutdown(reply) => {
+                    // Tell every connected browser to reconnect *before*
+                    // answering, so a client that is about to lose its stream
+                    // knows why, then let in-flight work finish.
+                    serving.bus.publish(Change::Reload);
+                    finish(request, reply);
+                    let env = serving.env.clone();
+                    thread::spawn(move || {
+                        thread::sleep(crate::daemon::lifecycle::DRAIN_DEADLINE);
+                        crate::daemon::lifecycle::clear_info(&env);
+                        std::process::exit(0);
+                    });
+                }
+            }
+            continue;
+        }
 
         if method == Method::Get && path == "/api/events" {
             let bus = serving.bus.clone();
@@ -372,6 +442,30 @@ fn poll_change_token<S: Store>(store: &S, bus: &ChangeBus, stop: &AtomicBool) {
             bus.publish(Change::Resync);
         }
         seqs = fresh;
+    }
+}
+
+/// Exits when the process named by `STORYHOOK_PARENT_PID` goes away.
+///
+/// The suicide contract, and the layer of orphan defence that catches what the
+/// other three miss. A test binary names itself; every `story` it runs inherits
+/// the variable, so a daemon started by one of them inherits it too. When the
+/// binary ends — cleanly, by panic, or by `kill -9` — the daemon notices and
+/// exits, rather than surviving to answer the *next* run's requests out of a
+/// store that no longer exists. That failure has happened, and it cost 78 of 139
+/// tests and an afternoon.
+///
+/// Production sets nothing, so nothing watches.
+fn watch_parent(stop: &AtomicBool) {
+    let Some(parent) = crate::daemon::lifecycle::parent_pid() else {
+        return;
+    };
+    while !stop.load(Ordering::Relaxed) {
+        thread::sleep(SHUTDOWN_CHECK);
+        if !crate::daemon::lifecycle::pid_is_live(parent) {
+            eprintln!("storyhook daemon: parent process {parent} is gone; exiting");
+            std::process::exit(0);
+        }
     }
 }
 
