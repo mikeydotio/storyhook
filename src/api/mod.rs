@@ -1,0 +1,13 @@
+//! Storyhook's HTTP surface.
+//!
+//! One daemon serves two listeners over these modules:
+//!
+//! * [`http`] — the plumbing both share: response shaping, the security
+//!   headers, the CSRF and DNS-rebinding guard, body reading, SSE framing.
+//!
+//! Keeping the plumbing apart from the routes is not tidiness. The guard code is
+//! the difference between "a page on the internet cannot write to your tracker"
+//! and "it can", and two listeners that each grew their own copy would
+//! eventually disagree about it.
+
+pub mod http;

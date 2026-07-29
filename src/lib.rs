@@ -1,7 +1,9 @@
 #![recursion_limit = "256"]
 
+pub mod api;
 pub mod app;
 pub mod cli;
+pub mod daemon;
 pub mod decompose;
 pub mod domain;
 pub mod env;
