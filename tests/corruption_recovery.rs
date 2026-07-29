@@ -28,6 +28,7 @@
 use std::path::Path;
 use std::process::Output;
 
+use storyhook::store::{ReadOps, Store};
 use storyhook_test_support::{TestEnv, scratch_dir};
 
 /// Runs `story <args>` in `cwd` against `env`'s store, in this process's
@@ -328,5 +329,92 @@ fn a_pointer_file_missing_its_identity_names_the_file_too() {
     assert!(
         message.contains("uuid"),
         "and keep serde's account of what is missing: {message}"
+    );
+}
+
+/// The pointer file's whole reason to exist is that it survives being copied to
+/// another machine: a uuid rather than a path or a counter, committed to the
+/// repository, so a clone knows which project it is.
+///
+/// A clone on a second machine therefore arrives with a pointer naming a
+/// project that machine's store has never seen, and `story init` — which is
+/// what the scaffolded `AGENTS.md` tells the next person to run — has to adopt
+/// that identity. Minting a fresh one instead leaves the committed file naming
+/// a project that does not exist anywhere, and the repository resolves by path
+/// alone from then on: move the checkout, or clone it again, and it stops
+/// resolving at all.
+#[test]
+fn a_clone_whose_pointer_names_an_unknown_project_adopts_that_identity() {
+    let env = TestEnv::isolated();
+    let clone = scratch_dir();
+    let committed =
+        "schema = 1\nuuid = \"11111111-2222-3333-4444-555555555555\"\nprefix = \"ZZ\"\n";
+    std::fs::write(clone.path().join(".storyhook.toml"), committed)
+        .expect("writing the committed pointer");
+
+    let out = story_in(&env, clone.path(), &["init", "--no-agents-md"]);
+    assert!(
+        out.status.success(),
+        "init on a clone must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The committed file is untouched — it is user-authored and carries their
+    // `[plugin]`/`[hooks]` tables.
+    assert_eq!(
+        std::fs::read_to_string(clone.path().join(".storyhook.toml")).expect("the pointer"),
+        committed,
+        "init must not rewrite a pointer file the repository already committed"
+    );
+
+    // And the store now holds exactly the project that file names.
+    let store = env.open_store();
+    let project = store
+        .read(|tx| tx.project_by_uuid("11111111-2222-3333-4444-555555555555"))
+        .expect("reading the store")
+        .expect(
+            "the project the committed pointer names must exist after init — otherwise the \
+             file names nothing and the checkout resolves by path alone",
+        );
+    assert_eq!(
+        project.prefix, "ZZ",
+        "and it must carry the prefix the clone's ids already use; a project that mints \
+         SH-1 for a repository whose history is full of ZZ-* is a second tracker wearing \
+         the first one's name"
+    );
+    drop(store);
+
+    assert!(
+        String::from_utf8_lossy(&story_in(&env, clone.path(), &["new", "first here"]).stdout)
+            .contains("ZZ-1"),
+        "the adopted prefix must reach the ids"
+    );
+}
+
+/// Before that `init`, the same checkout has to be told what is going on.
+///
+/// "not initialized in this directory" is true of a bare directory and
+/// misleading here: this repository *is* initialized, it says so in a committed
+/// file, and what is missing is the project on this machine.
+#[test]
+fn a_checkout_naming_a_project_this_store_does_not_have_says_which_one() {
+    let env = TestEnv::isolated();
+    let clone = scratch_dir();
+    std::fs::write(
+        clone.path().join(".storyhook.toml"),
+        "schema = 1\nuuid = \"11111111-2222-3333-4444-555555555555\"\nprefix = \"ZZ\"\n",
+    )
+    .expect("writing the committed pointer");
+
+    let out = story_in(&env, clone.path(), &["list"]);
+    let message = failure_message(&out, "story list");
+
+    assert!(
+        message.contains("11111111-2222-3333-4444-555555555555"),
+        "the message must name the project the checkout claims: {message}"
+    );
+    assert!(
+        message.contains("story init"),
+        "and the command that adopts it here: {message}"
     );
 }

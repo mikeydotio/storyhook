@@ -1409,6 +1409,20 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
         }
         Ok(None)
     }
+
+    /// The nearest pointer file at or above the working directory, whatever it
+    /// names.
+    ///
+    /// Only consulted once [`Self::resolve`] has already failed, to tell a
+    /// checkout that *claims* a project from a directory that claims nothing.
+    /// Errors are swallowed deliberately: an unreadable pointer file has its own
+    /// message, raised by resolution, and this is a second attempt at explaining
+    /// a failure that has already happened.
+    fn pointer_at_or_above(&self) -> Option<crate::service::project::ProjectPointer> {
+        ancestors(&self.cwd)
+            .into_iter()
+            .find_map(|dir| crate::service::project::read_pointer(&dir).ok().flatten())
+    }
 }
 
 /// A directory and every ancestor of it, nearest first.
@@ -1482,6 +1496,19 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             // mint an empty second project beside data the user still has.
             if let Some(tree) = crate::service::project::legacy_project_at(&self.cwd) {
                 return Err(crate::service::project::unmigrated_error(&tree));
+            }
+            // A checkout carrying a pointer file *is* initialized — it says so,
+            // in a file its repository committed — and what is missing is the
+            // project on this machine. That is what a fresh clone looks like,
+            // and "not initialized in this directory" sends the reader looking
+            // for the wrong thing.
+            if let Some(pointer) = self.pointer_at_or_above() {
+                return Err(AppError::NotFound(format!(
+                    "this checkout belongs to storyhook project {}, which this machine's \
+                     store does not have. Run `story init` here to adopt it, or `story \
+                     import-project` if you have an export of it.",
+                    pointer.uuid
+                )));
             }
             return Err(AppError::NotFound(
                 "story project not initialized in this directory; run `story init`".to_string(),

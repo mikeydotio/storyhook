@@ -327,11 +327,29 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 return Ok((existing.id, false, existing.uuid, existing.prefix));
             }
 
-            let prefix = options
-                .prefix
-                .clone()
-                .unwrap_or_else(|| DEFAULT_PREFIX.to_string());
-            let uuid = uuid::Uuid::new_v4().to_string();
+            // A checkout that already carries a pointer is a *clone*, not a new
+            // repository, and the identity it names is the one to create. The
+            // uuid exists precisely so a project survives being copied to
+            // another machine; minting a fresh one here would leave the
+            // committed file naming a project that exists nowhere, and the
+            // repository resolving by path alone from then on — so moving the
+            // checkout, or cloning it again, would stop resolving entirely.
+            //
+            // The prefix comes with it for the same reason. A clone whose
+            // history is full of `ZZ-*` ids must not get a project that mints
+            // `SH-1`; that is a second tracker wearing the first one's name.
+            // `--prefix` is therefore ignored here, which matches the rule that
+            // `init` on a project that already exists leaves its prefix alone.
+            let (uuid, prefix) = match &existing_pointer {
+                Some(pointer) => (pointer.uuid.clone(), pointer.prefix.clone()),
+                None => (
+                    uuid::Uuid::new_v4().to_string(),
+                    options
+                        .prefix
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_PREFIX.to_string()),
+                ),
+            };
             let name = display_name(&root);
             let project = tx.create_project(&NewProject {
                 uuid: uuid.clone(),
