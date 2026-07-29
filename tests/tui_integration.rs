@@ -7,59 +7,123 @@
 //! WITHOUT launching a terminal, verifying the full data flow from creation
 //! through filtering and display.
 //!
-//! **Reconstructed for the Invoker seam.** Fixtures used to be built by
-//! calling the storage layer under the project lock and by writing events
-//! directly; they are now built out of the same `Invocation`s the TUI itself
-//! issues, and `DataStore::load` takes an `Invoker`. No white-box storage call
-//! is left. The assertions are unchanged — where a fixture could not be
-//! expressed through the seam at all, the file still writes to `.storyhook/`
-//! directly, because those cases fabricate states no API can produce and that
-//! is precisely what they are for.
+//! **Reconstructed for the Invoker seam**, then **moved onto the store**, as
+//! `tui_undo.rs` already was. Fixtures are built out of the same `Invocation`s
+//! the TUI itself issues, and `DataStore::load` takes an `Invoker` — a
+//! `StoreInvoker`, which is what the TUI runs against.
+//!
+//! Three fixtures used to fabricate their subject by writing into
+//! `.storyhook/` because no API could produce it. Two of them still fabricate
+//! it, through the store's own write API rather than a file: a state set with
+//! nothing OPEN in it, and a state set that no longer defines a state a story
+//! occupies. Both are states the *service* layer refuses and the *store* will
+//! hold, which is exactly what makes them worth loading.
+//!
+//! The third is gone: `incomplete_trailing_json_line_tolerated` appended half a
+//! JSON object to a story's `.jsonl` and asserted the reader skipped it. An
+//! event is a row now, written inside a transaction, so a half-written one is
+//! not a state the storage layer can be in. The tolerance it tested was a
+//! property of a file format, and the file format is what the rearchitecture
+//! removed.
 
-use std::path::Path;
 use std::time::Instant;
 
 use storyhook::cli::{Invocation, StateAction};
 use storyhook::domain::{Priority, StateDef, SuperState};
+use storyhook::env::Environment;
 use storyhook::error::AppError;
-use storyhook::invoke::{InvokeRequest, Invoker, LegacyInvoker};
+use storyhook::invoke::{InvokeRequest, Invoker, StoreInvoker};
 use storyhook::output::Response;
+use storyhook::store::{ProjectId, SqliteStore, Store as _, WriteOps, diff_read_model};
 use storyhook::tui::action::{FilterSpec, View};
 use storyhook::tui::components::board::{Board, RowItem};
 use storyhook::tui::data::DataStore;
 use storyhook::tui::focus::{FocusStack, FocusTarget, Modal};
 use storyhook::tui::state::AppState;
 
+/// A store and a checkout with a project initialized in it.
+///
+/// The store's directory is a fixture of its own rather than the machine's:
+/// these are in-process tests, and an in-process test cannot redirect
+/// `STORYHOOK_DATA_DIR` for itself.
+struct Fixture {
+    store: SqliteStore,
+    root: std::path::PathBuf,
+    env: Environment,
+    _data: tempfile::TempDir,
+    _repo: tempfile::TempDir,
+}
+
+impl Fixture {
+    fn invoker(&self) -> StoreInvoker<'_, SqliteStore> {
+        StoreInvoker::new(&self.store, &self.root, self.env.clone())
+    }
+
+    /// The project this checkout belongs to.
+    fn project(&self) -> ProjectId {
+        storyhook_test_support::project_id_at(&self.store, &self.root)
+            .expect("the fixture's checkout must name a project")
+    }
+}
+
 /// Helper: run one invocation through the seam, hooks suppressed as the TUI
 /// does.
-fn run(root: &Path, invocation: Invocation) -> Result<Response, AppError> {
-    LegacyInvoker::new(root).invoke(InvokeRequest::new(invocation).no_hooks(true))
+fn run(fixture: &Fixture, invocation: Invocation) -> Result<Response, AppError> {
+    fixture
+        .invoker()
+        .invoke(InvokeRequest::new(invocation).no_hooks(true))
 }
 
 /// Helper: the project as the TUI sees it — one `ProjectSnapshot`.
-fn load(root: &Path) -> Result<DataStore, AppError> {
-    DataStore::load(&LegacyInvoker::new(root))
+fn load(fixture: &Fixture) -> Result<DataStore, AppError> {
+    DataStore::load(&fixture.invoker())
 }
 
-/// Helper: initialize a storyhook project in a tempdir and return (dir, root path).
-fn init_project(prefix: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+/// Helper: a store and a checkout with a project in it.
+fn init_project(prefix: &str) -> Fixture {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let env = Environment::at(data.path());
+    let store = SqliteStore::open(env.store_path()).unwrap();
+    store.migrate().unwrap();
+    let fixture = Fixture {
+        store,
+        root: repo.path().to_path_buf(),
+        env,
+        _data: data,
+        _repo: repo,
+    };
     run(
-        &root,
+        &fixture,
         Invocation::Init {
             prefix: Some(prefix.to_string()),
             no_agents_md: true,
         },
     )
     .unwrap();
-    (dir, root)
+    fixture
+}
+
+/// Replaces the project's state set, bypassing the validation the service
+/// layer applies on the way in.
+///
+/// Two tests need a catalog `story state …` refuses to create: one with no
+/// OPEN state at all, and one that has dropped a state a story still occupies.
+/// They used to write `states.toml`; the store's write API is the equivalent
+/// back door, and it is a back door on purpose — what is under test is whether
+/// the *reader* survives such a project, which means something has to be able
+/// to make one.
+fn force_states(fixture: &Fixture, states: &[StateDef]) {
+    fixture
+        .store
+        .write(|tx| tx.put_states(fixture.project(), states))
+        .expect("replacing the state set");
 }
 
 /// Helper: create a story and return its ID.
-fn create_story(root: &Path, title: &str) -> String {
+fn create_story(fixture: &Fixture, title: &str) -> String {
     match run(
-        root,
+        fixture,
         Invocation::New {
             title: title.to_string(),
             state: None,
@@ -78,9 +142,9 @@ fn create_story(root: &Path, title: &str) -> String {
 }
 
 /// Helper: add a member so `story assign` has someone to resolve to.
-fn add_member(root: &Path, handle: &str) {
+fn add_member(fixture: &Fixture, handle: &str) {
     run(
-        root,
+        fixture,
         Invocation::MemberAdd {
             input: storyhook::cli::MemberInput::Github(handle.to_string()),
         },
@@ -89,9 +153,9 @@ fn add_member(root: &Path, handle: &str) {
 }
 
 /// Helper: move a story into a state.
-fn set_state(root: &Path, id: &str, state: &str) {
+fn set_state(fixture: &Fixture, id: &str, state: &str) {
     run(
-        root,
+        fixture,
         Invocation::SetState {
             id: id.to_string(),
             state: state.to_string(),
@@ -103,9 +167,9 @@ fn set_state(root: &Path, id: &str, state: &str) {
 }
 
 /// Helper: set a story's labels, which for a story that has none is an add.
-fn set_labels(root: &Path, id: &str, labels: &[&str]) {
+fn set_labels(fixture: &Fixture, id: &str, labels: &[&str]) {
     run(
-        root,
+        fixture,
         Invocation::SetLabels {
             id: id.to_string(),
             add: labels.iter().map(|l| (*l).to_string()).collect(),
@@ -116,9 +180,9 @@ fn set_labels(root: &Path, id: &str, labels: &[&str]) {
 }
 
 /// Helper: set a story's priority.
-fn set_priority(root: &Path, id: &str, priority: &str) {
+fn set_priority(fixture: &Fixture, id: &str, priority: &str) {
     run(
-        root,
+        fixture,
         Invocation::SetPriority {
             id: id.to_string(),
             priority: priority.to_string(),
@@ -131,8 +195,8 @@ fn set_priority(root: &Path, id: &str, priority: &str) {
 
 #[test]
 fn empty_project_loads_with_no_stories() {
-    let (_dir, root) = init_project("TP");
-    let store = load(&root).unwrap();
+    let fixture = init_project("TP");
+    let store = load(&fixture).unwrap();
 
     assert_eq!(store.story_count(), 0);
     assert_eq!(store.prefix, "TP");
@@ -157,14 +221,14 @@ fn empty_project_loads_with_no_stories() {
 
 #[test]
 fn create_and_edit_story_flow() {
-    let (_dir, root) = init_project("CE");
+    let fixture = init_project("CE");
 
     // Create a story
-    let id = create_story(&root, "Initial title");
+    let id = create_story(&fixture, "Initial title");
     assert_eq!(id, "CE-1");
 
     // Verify it appears in DataStore
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(store.story_count(), 1);
     let story = store.find_story("CE-1").unwrap();
     assert_eq!(story.title, "Initial title");
@@ -173,21 +237,21 @@ fn create_and_edit_story_flow() {
     assert!(story.comments.is_empty());
 
     // Set priority
-    set_priority(&root, "CE-1", "high");
-    let store = load(&root).unwrap();
+    set_priority(&fixture, "CE-1", "high");
+    let store = load(&fixture).unwrap();
     assert_eq!(store.find_story("CE-1").unwrap().priority, Priority::High);
 
     // Assign
-    add_member(&root, "mikey");
+    add_member(&fixture, "mikey");
     run(
-        &root,
+        &fixture,
         Invocation::Assign {
             id: "CE-1".to_string(),
             member: "mikey".to_string(),
         },
     )
     .unwrap();
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(
         store.find_story("CE-1").unwrap().assignee.as_deref(),
         Some("mikey")
@@ -195,14 +259,14 @@ fn create_and_edit_story_flow() {
 
     // Add comment
     run(
-        &root,
+        &fixture,
         Invocation::Comment {
             id: "CE-1".to_string(),
             text: "Work in progress".to_string(),
         },
     )
     .unwrap();
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(store.find_story("CE-1").unwrap().comments.len(), 1);
     assert_eq!(
         store.find_story("CE-1").unwrap().comments[0].text,
@@ -214,19 +278,19 @@ fn create_and_edit_story_flow() {
 
 #[test]
 fn move_story_through_states() {
-    let (_dir, root) = init_project("MV");
+    let fixture = init_project("MV");
 
     // `in-progress` is a default state, so the board already has a second
     // OPEN column to move into.
-    let id = create_story(&root, "Move me");
+    let id = create_story(&fixture, "Move me");
 
     // Story starts in "todo" (default open state)
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(store.find_story(&id).unwrap().state, "todo");
 
     // Move to in-progress
-    set_state(&root, &id, "in-progress");
-    let store = load(&root).unwrap();
+    set_state(&fixture, &id, "in-progress");
+    let store = load(&fixture).unwrap();
     assert_eq!(store.find_story(&id).unwrap().state, "in-progress");
 
     // Verify board groups it correctly
@@ -263,18 +327,18 @@ fn move_story_through_states() {
 
 #[test]
 fn move_to_closed_state_archives_story() {
-    let (_dir, root) = init_project("CL");
-    let id = create_story(&root, "Close me");
+    let fixture = init_project("CL");
+    let id = create_story(&fixture, "Close me");
 
     // Story exists in open snapshots
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(store.story_count(), 1);
 
     // Move to "done" (closed state) - archive it
-    set_state(&root, &id, "done");
+    set_state(&fixture, &id, "done");
 
     // Story should be gone from open snapshots
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(store.story_count(), 0);
     assert!(store.find_story(&id).is_none());
 }
@@ -283,20 +347,20 @@ fn move_to_closed_state_archives_story() {
 
 #[test]
 fn filter_narrows_visible_stories() {
-    let (_dir, root) = init_project("FL");
+    let fixture = init_project("FL");
 
-    let id1 = create_story(&root, "Fix login bug");
-    let id2 = create_story(&root, "Add search feature");
-    let id3 = create_story(&root, "Refactor database");
+    let id1 = create_story(&fixture, "Fix login bug");
+    let id2 = create_story(&fixture, "Add search feature");
+    let id3 = create_story(&fixture, "Refactor database");
 
     // Set different priorities and labels
-    add_member(&root, "mikey");
-    set_priority(&root, &id1, "high");
-    set_labels(&root, &id1, &["bug"]);
-    set_priority(&root, &id2, "medium");
-    set_labels(&root, &id3, &["tech-debt"]);
+    add_member(&fixture, "mikey");
+    set_priority(&fixture, &id1, "high");
+    set_labels(&fixture, &id1, &["bug"]);
+    set_priority(&fixture, &id2, "medium");
+    set_labels(&fixture, &id3, &["tech-debt"]);
     run(
-        &root,
+        &fixture,
         Invocation::Assign {
             id: id3.clone(),
             member: "mikey".to_string(),
@@ -304,7 +368,7 @@ fn filter_narrows_visible_stories() {
     )
     .unwrap();
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(store.story_count(), 3);
 
     // Filter by text
@@ -322,7 +386,7 @@ fn filter_narrows_visible_stories() {
     assert_eq!(story_rows.len(), 1);
 
     // Filter by priority
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let mut state = AppState::new(store);
     state.filters.push(FilterSpec {
         priority: Some(Priority::High),
@@ -336,7 +400,7 @@ fn filter_narrows_visible_stories() {
     assert_eq!(story_rows.len(), 1);
 
     // Filter by label
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let mut state = AppState::new(store);
     state.filters.push(FilterSpec {
         label: Some("bug".to_string()),
@@ -350,7 +414,7 @@ fn filter_narrows_visible_stories() {
     assert_eq!(story_rows.len(), 1);
 
     // Combined filters (priority + assignee) should AND together
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let mut state = AppState::new(store);
     state.filters.push(FilterSpec {
         assignee: Some("mikey".to_string()),
@@ -416,10 +480,10 @@ fn focus_stack_manages_modals_correctly() {
 
 #[test]
 fn stale_modal_detected_after_story_archived() {
-    let (_dir, root) = init_project("SM");
-    let id = create_story(&root, "Will be archived");
+    let fixture = init_project("SM");
+    let id = create_story(&fixture, "Will be archived");
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let mut state = AppState::new(store);
 
     // Simulate opening the detail modal
@@ -429,10 +493,10 @@ fn stale_modal_detected_after_story_archived() {
     assert!(state.focus.has_modal());
 
     // Now archive the story externally (simulating CLI action)
-    set_state(&root, &id, "done");
+    set_state(&fixture, &id, "done");
 
     // Refresh data (simulates what RefreshData action does)
-    let new_data = load(&root).unwrap();
+    let new_data = load(&fixture).unwrap();
     state.data = new_data;
 
     // Check stale modal: story is gone, modal should be closed
@@ -461,11 +525,11 @@ fn stale_modal_detected_after_story_archived() {
 
 #[test]
 fn collapsed_sections_hide_story_rows() {
-    let (_dir, root) = init_project("CS");
-    create_story(&root, "Story A");
-    create_story(&root, "Story B");
+    let fixture = init_project("CS");
+    create_story(&fixture, "Story A");
+    create_story(&fixture, "Story B");
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let state = AppState::new(store);
 
     let mut board = Board::new();
@@ -504,17 +568,17 @@ fn collapsed_sections_hide_story_rows() {
 
 #[test]
 fn stories_grouped_correctly_across_multiple_states() {
-    let (_dir, root) = init_project("GR");
+    let fixture = init_project("GR");
 
     // `in-progress` is a default state.
-    let id1 = create_story(&root, "Todo story");
-    let id2 = create_story(&root, "In progress story");
-    let id3 = create_story(&root, "Another todo");
+    let id1 = create_story(&fixture, "Todo story");
+    let id2 = create_story(&fixture, "In progress story");
+    let id3 = create_story(&fixture, "Another todo");
 
     // Move id2 to in-progress
-    set_state(&root, &id2, "in-progress");
+    set_state(&fixture, &id2, "in-progress");
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let state = AppState::new(store);
     let board = Board::new();
     let rows = board.build_visible_rows(&state);
@@ -543,10 +607,10 @@ fn stories_grouped_correctly_across_multiple_states() {
 
 #[test]
 fn view_switching_preserves_board_state() {
-    let (_dir, root) = init_project("VS");
-    create_story(&root, "Test story");
+    let fixture = init_project("VS");
+    create_story(&fixture, "Test story");
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let mut state = AppState::new(store);
 
     // Set up some board state
@@ -574,17 +638,17 @@ fn view_switching_preserves_board_state() {
 
 #[test]
 fn data_refresh_picks_up_external_changes() {
-    let (_dir, root) = init_project("RX");
-    let id = create_story(&root, "Original");
+    let fixture = init_project("RX");
+    let id = create_story(&fixture, "Original");
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(store.find_story(&id).unwrap().priority, Priority::None);
 
     // External write (simulating CLI changing priority)
-    set_priority(&root, &id, "critical");
+    set_priority(&fixture, &id, "critical");
 
     // Refresh
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(
         store.find_story(&id).unwrap().priority,
         Priority::Critical,
@@ -600,10 +664,10 @@ fn data_refresh_picks_up_external_changes() {
 
 #[test]
 fn story_deleted_externally_closes_modal_with_notification() {
-    let (_dir, root) = init_project("ED");
-    let id = create_story(&root, "Ephemeral");
+    let fixture = init_project("ED");
+    let id = create_story(&fixture, "Ephemeral");
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let mut state = AppState::new(store);
 
     // Open detail modal for the story
@@ -611,12 +675,21 @@ fn story_deleted_externally_closes_modal_with_notification() {
         story_id: id.clone(),
     });
 
-    // Externally delete the story file (simulating a race condition)
-    let story_file = root.join(format!(".storyhook/open/stories/{id}.jsonl"));
-    std::fs::remove_file(&story_file).unwrap();
+    // The story goes away underneath the open modal. It used to go away by
+    // `rm`-ing its `.jsonl`; a story leaves the project through `story delete`
+    // now, and what is under test is the modal's reaction to a story that has
+    // stopped being there, not how it stopped.
+    run(
+        &fixture,
+        Invocation::Delete {
+            id: id.clone(),
+            reason: "raced".to_string(),
+        },
+    )
+    .unwrap();
 
     // Refresh data
-    let new_data = load(&root).unwrap();
+    let new_data = load(&fixture).unwrap();
     state.data = new_data;
 
     // Stale modal protection logic (mirrors app.rs dispatch for RefreshData)
@@ -632,25 +705,44 @@ fn story_deleted_externally_closes_modal_with_notification() {
     assert!(state.notification.is_some());
 }
 
-// ─── Edge 2: Empty states.toml (no valid states) ────────────────────
+// ─── Edge 2: a catalog that no longer covers the project ────────────
 
+/// A project whose state set has been emptied out from under it still opens,
+/// and the damage is reported by the integrity check rather than by refusing
+/// to read.
+///
+/// **This is a behaviour change, and it is the intended one.** The legacy
+/// reader re-folded every story against `states.toml` on every read, so an
+/// unusable catalog made the project *unreadable* — the exact hazard
+/// `domain::validate_state_defs` warns about in its own doc comment ("a rule
+/// added here can make an existing project unreadable rather than merely
+/// uneditable"). The store splits the two questions: the read model is already
+/// folded, so a reader is not hostage to the catalog, and
+/// `diff_read_model` — `story doctor`'s integrity check — is what says the
+/// events and the catalog disagree.
 #[test]
-fn empty_states_file_produces_validation_error() {
-    let (_dir, root) = init_project("ES");
+fn an_emptied_state_set_still_loads_and_is_reported_by_the_integrity_check() {
+    let fixture = init_project("ES");
+    let id = create_story(&fixture, "Occupying todo");
 
-    // Overwrite states.toml with empty states
-    std::fs::write(root.join(".storyhook/states.toml"), "states = []\n").unwrap();
+    // `story state remove` refuses to leave a project with no states, so this
+    // goes in through the store's own write API.
+    force_states(&fixture, &[]);
 
-    // DataStore::load should return an error, not panic
-    let result = load(&root);
+    let data = load(&fixture).expect("the TUI must still open the project");
+    assert_eq!(data.story_count(), 1);
+    assert_eq!(data.find_story(&id).unwrap().state, "todo");
+
+    let diff = diff_read_model(&fixture.store, fixture.project()).expect("the integrity check");
     assert!(
-        result.is_err(),
-        "empty states should produce a validation error"
+        diff.has_integrity_issues(),
+        "an emptied catalog must be reported, not ignored: {}",
+        diff.describe()
     );
-    let err_msg = format!("{}", result.err().unwrap());
     assert!(
-        err_msg.contains("OPEN") || err_msg.contains("state"),
-        "error should mention state validation: {err_msg}"
+        diff.describe().contains("undefined state"),
+        "and must name what is wrong: {}",
+        diff.describe()
     );
 }
 
@@ -658,11 +750,11 @@ fn empty_states_file_produces_validation_error() {
 
 #[test]
 fn very_long_title_does_not_panic_in_board() {
-    let (_dir, root) = init_project("LT");
+    let fixture = init_project("LT");
     let long_title = "A".repeat(300);
-    create_story(&root, &long_title);
+    create_story(&fixture, &long_title);
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let story = store.find_story("LT-1").unwrap();
     assert_eq!(story.title.len(), 300);
 
@@ -681,12 +773,12 @@ fn very_long_title_does_not_panic_in_board() {
 
 #[test]
 fn many_labels_do_not_panic() {
-    let (_dir, root) = init_project("ML");
-    let id = create_story(&root, "Many labels");
+    let fixture = init_project("ML");
+    let id = create_story(&fixture, "Many labels");
 
     let labels: Vec<String> = (0..25).map(|i| format!("label-{i}")).collect();
     run(
-        &root,
+        &fixture,
         Invocation::SetLabels {
             id: id.clone(),
             add: labels,
@@ -695,7 +787,7 @@ fn many_labels_do_not_panic() {
     )
     .unwrap();
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let story = store.find_story(&id).unwrap();
     assert_eq!(story.labels.len(), 25);
 
@@ -713,11 +805,11 @@ fn many_labels_do_not_panic() {
 
 #[test]
 fn unicode_content_handled_gracefully() {
-    let (_dir, root) = init_project("UC");
-    let id = create_story(&root, "Fix emoji rendering \u{1F680}\u{1F30D}");
+    let fixture = init_project("UC");
+    let id = create_story(&fixture, "Fix emoji rendering \u{1F680}\u{1F30D}");
 
     set_labels(
-        &root,
+        &fixture,
         &id,
         &[
             "\u{2705} done",
@@ -726,7 +818,7 @@ fn unicode_content_handled_gracefully() {
         ],
     );
     run(
-        &root,
+        &fixture,
         Invocation::Comment {
             id: id.clone(),
             text: "Added CJK characters: \u{65E5}\u{672C}\u{8A9E}".to_string(),
@@ -734,7 +826,7 @@ fn unicode_content_handled_gracefully() {
     )
     .unwrap();
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let story = store.find_story(&id).unwrap();
     assert!(story.title.contains('\u{1F680}'));
     assert_eq!(story.labels.len(), 3);
@@ -750,42 +842,26 @@ fn unicode_content_handled_gracefully() {
     );
 }
 
-// ─── Edge 6: Concurrent write tolerance (incomplete trailing line) ──
+// ─── Edge 6: deleted with its subject ───────────────────────────────
+//
+// `incomplete_trailing_json_line_tolerated` appended half a JSON object to a
+// story's `.jsonl` and asserted the reader skipped it, because an append-mode
+// write to a text file can be interrupted between the bytes. An event is a row
+// inside a transaction now: a half-written one is not a state the storage layer
+// can be in, and the tolerance the test pinned was a property of the file
+// format rather than of the TUI. Crash-mid-write is still tested — against the
+// store, where it means something, by `tests/store_*.rs`'s fault-injection
+// points.
+
+// ─── Edge 7: Refresh after a state is removed from the catalog ──────
 
 #[test]
-fn incomplete_trailing_json_line_tolerated() {
-    let (_dir, root) = init_project("CW");
-    let id = create_story(&root, "Concurrent write test");
-
-    // Append a partial JSON line (simulating a concurrent write in progress)
-    let story_path = root.join(format!(".storyhook/open/stories/{id}.jsonl"));
-    {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&story_path)
-            .unwrap();
-        write!(file, "\n{{\"kind\":\"StoryCommentAdd").unwrap();
-    }
-
-    // DataStore::load should succeed, skipping the incomplete line
-    let store = load(&root).unwrap();
-    assert_eq!(store.story_count(), 1);
-    assert_eq!(
-        store.find_story(&id).unwrap().title,
-        "Concurrent write test"
-    );
-}
-
-// ─── Edge 7: Refresh after state removal from states.toml ───────────
-
-#[test]
-fn state_removal_during_runtime_returns_error() {
-    let (_dir, root) = init_project("SR");
+fn state_removal_during_runtime_is_survivable_and_reported() {
+    let fixture = init_project("SR");
 
     // Add "review" state
     run(
-        &root,
+        &fixture,
         Invocation::State {
             action: StateAction::Add {
                 slug: "review".to_string(),
@@ -797,19 +873,19 @@ fn state_removal_during_runtime_returns_error() {
     )
     .unwrap();
 
-    let id = create_story(&root, "Will lose its state");
+    let id = create_story(&fixture, "Will lose its state");
 
     // Move to review
-    set_state(&root, &id, "review");
+    set_state(&fixture, &id, "review");
 
     // Verify it loads fine with "review" still defined
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert_eq!(store.find_story(&id).unwrap().state, "review");
 
     // Now remove the "review" state out from under the story. `story state
     // remove` refuses while a story occupies it — which is the point: this
-    // case fabricates a project the API will not produce, so it writes the
-    // catalog directly.
+    // case fabricates a project the API will not produce, so it goes in
+    // through the store.
     let states = vec![
         StateDef {
             slug: "todo".to_string(),
@@ -824,18 +900,20 @@ fn state_removal_during_runtime_returns_error() {
             description: None,
         },
     ];
-    let states_toml = toml::to_string(&StatesFileHelper { states: &states }).unwrap();
-    std::fs::write(root.join(".storyhook/states.toml"), states_toml).unwrap();
+    force_states(&fixture, &states);
 
-    // DataStore::load returns an error because fold_story validates that
-    // the story's state exists in the state map. This error is caught by
-    // the TUI's RefreshData handler and shown as a notification.
-    let result = load(&root);
-    assert!(result.is_err(), "should error on undefined state reference");
-    let err_msg = format!("{}", result.err().unwrap());
+    // The story keeps the state it is in — the read model holds a folded
+    // snapshot, not a re-derivation — so the TUI refreshes rather than failing.
+    // See `an_emptied_state_set_still_loads_and_is_reported_by_the_integrity_check`
+    // for why that is the intended change.
+    let refreshed = load(&fixture).expect("a refresh must survive a catalog edit");
+    assert_eq!(refreshed.find_story(&id).unwrap().state, "review");
+
+    let diff = diff_read_model(&fixture.store, fixture.project()).expect("the integrity check");
     assert!(
-        err_msg.contains("undefined state"),
-        "error should mention undefined state: {err_msg}"
+        diff.describe().contains("undefined state"),
+        "removing a state out from under a story must be reported: {}",
+        diff.describe()
     );
 }
 
@@ -845,18 +923,18 @@ fn state_removal_during_runtime_returns_error() {
 
 #[test]
 fn datastore_load_100_stories_under_500ms() {
-    let (_dir, root) = init_project("PF");
+    let fixture = init_project("PF");
 
     // Create 100 stories with varying attributes
     for i in 1..=100 {
-        create_story(&root, &format!("Performance test story {i}"));
+        create_story(&fixture, &format!("Performance test story {i}"));
     }
 
     // Add events to some stories (priorities, labels, comments)
     for i in 1..=50 {
         let id = format!("PF-{i}");
         set_priority(
-            &root,
+            &fixture,
             &id,
             match i % 4 {
                 0 => "critical",
@@ -866,11 +944,11 @@ fn datastore_load_100_stories_under_500ms() {
             },
         );
         if i % 3 == 0 {
-            set_labels(&root, &id, &["perf", "test"]);
+            set_labels(&fixture, &id, &["perf", "test"]);
         }
         if i % 5 == 0 {
             run(
-                &root,
+                &fixture,
                 Invocation::Comment {
                     id: id.clone(),
                     text: format!("Comment on story {i}"),
@@ -882,7 +960,7 @@ fn datastore_load_100_stories_under_500ms() {
 
     // Measure load time
     let start = Instant::now();
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let elapsed = start.elapsed();
 
     assert_eq!(store.story_count(), 100);
@@ -919,8 +997,8 @@ fn datastore_load_100_stories_under_500ms() {
 /// reorder from the editor is visible work, not bookkeeping.
 #[test]
 fn reordering_statuses_reorders_the_board_columns() {
-    let (_dir, root) = init_project("TP");
-    let before: Vec<String> = load(&root)
+    let fixture = init_project("TP");
+    let before: Vec<String> = load(&fixture)
         .unwrap()
         .states
         .iter()
@@ -929,7 +1007,7 @@ fn reordering_statuses_reorders_the_board_columns() {
     assert_eq!(before, vec!["todo", "in-progress", "done"]);
 
     run(
-        &root,
+        &fixture,
         Invocation::State {
             action: StateAction::Reorder {
                 order: vec![
@@ -942,7 +1020,7 @@ fn reordering_statuses_reorders_the_board_columns() {
     )
     .unwrap();
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let columns: Vec<&str> = store
         .stories_by_state()
         .iter()
@@ -957,9 +1035,9 @@ fn reordering_statuses_reorders_the_board_columns() {
 
 #[test]
 fn adding_a_status_makes_it_available_to_the_board() {
-    let (_dir, root) = init_project("TP");
+    let fixture = init_project("TP");
     run(
-        &root,
+        &fixture,
         Invocation::State {
             action: StateAction::Add {
                 slug: "review".to_string(),
@@ -971,7 +1049,7 @@ fn adding_a_status_makes_it_available_to_the_board() {
     )
     .unwrap();
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     let review = store
         .states
         .iter()
@@ -990,11 +1068,11 @@ fn adding_a_status_makes_it_available_to_the_board() {
 /// is gone afterwards.
 #[test]
 fn removing_an_occupied_status_migrates_its_stories() {
-    let (_dir, root) = init_project("TP");
-    let id = create_story(&root, "Needs a home");
+    let fixture = init_project("TP");
+    let id = create_story(&fixture, "Needs a home");
 
     run(
-        &root,
+        &fixture,
         Invocation::State {
             action: StateAction::Remove {
                 slug: "todo".to_string(),
@@ -1004,7 +1082,7 @@ fn removing_an_occupied_status_migrates_its_stories() {
     )
     .unwrap();
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert!(!store.states.iter().any(|s| s.slug == "todo"));
     assert_eq!(store.find_story(&id).unwrap().state, "in-progress");
 }
@@ -1013,11 +1091,11 @@ fn removing_an_occupied_status_migrates_its_stories() {
 /// error into a notification rather than losing the stories.
 #[test]
 fn removing_an_occupied_status_without_a_destination_is_refused() {
-    let (_dir, root) = init_project("TP");
-    create_story(&root, "Still here");
+    let fixture = init_project("TP");
+    create_story(&fixture, "Still here");
 
     let error = run(
-        &root,
+        &fixture,
         Invocation::State {
             action: StateAction::Remove {
                 slug: "todo".to_string(),
@@ -1028,13 +1106,8 @@ fn removing_an_occupied_status_without_a_destination_is_refused() {
     .unwrap_err();
     assert!(error.to_string().contains("1 open story"));
 
-    let store = load(&root).unwrap();
+    let store = load(&fixture).unwrap();
     assert!(store.states.iter().any(|s| s.slug == "todo"));
 }
 
 // ─── Helper struct for TOML serialization of states ─────────────────
-
-#[derive(serde::Serialize)]
-struct StatesFileHelper<'a> {
-    states: &'a [StateDef],
-}

@@ -28,7 +28,6 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::output::StoryView;
-use crate::storage::{ExportedStory, ProjectExport};
 use crate::store::{
     EventSeq, ExpectedSeq, NewProject, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery,
     WriteOps, partition_known,
@@ -36,6 +35,53 @@ use crate::store::{
 
 use super::project::{DEFAULT_PREFIX, path_kind, unique_slug};
 use super::{Clock, Ctx, append_and_fold, project_prefix};
+
+/// A whole project, as `story export` writes it and `story import-project`
+/// reads it.
+///
+/// The **rollback envelope**, and that is why it is a type of its own rather
+/// than a serialization of whatever the store happens to hold. `docs/rearch/
+/// flip-checklist.md` names exactly what it does and does not carry, and the
+/// two-way door out of the rearchitecture is `store -> export -> this document
+/// -> a legacy tree`. `tests/migrate_round_trip.rs` runs that loop and
+/// compares the read models story by story.
+///
+/// It lived in `src/storage.rs` until the legacy path was deleted. It never
+/// belonged there: the document is the *contract between* the two storage
+/// layouts, so the layer that is going away is the wrong owner for it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ProjectExport {
+    /// The legacy project file's schema version — see [`EXPORT_SCHEMA`].
+    pub schema: u32,
+    /// The story-id prefix, absent when the project uses the default.
+    pub prefix: Option<String>,
+    /// The configured states, in order.
+    pub states: Vec<StateDef>,
+    /// The configured story types, in order.
+    #[serde(default)]
+    pub types: Vec<TypeDef>,
+    /// The project's members.
+    pub members: Vec<Member>,
+    /// Every story, open ones first.
+    pub stories: Vec<ExportedStory>,
+}
+
+/// One story inside a [`ProjectExport`]: its whole event history, not a
+/// snapshot.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ExportedStory {
+    /// The story id, prefix included.
+    pub id: String,
+    /// Every event, oldest first.
+    ///
+    /// Decoded events only: an event kind this binary does not understand is
+    /// dropped on export, which is the one lossy edge of the round trip and is
+    /// recorded as such in the flip checklist.
+    pub events: Vec<StoryEvent>,
+    /// Whether the story lives in the legacy archive rather than as an open
+    /// log.
+    pub archived: bool,
+}
 
 /// The `schema` an export document declares.
 ///
