@@ -4,6 +4,12 @@ A story lifecycle toolkit for [storyhook](https://github.com/mikeydotio/storyhoo
 Install with `story plugin install claude-code`, or `/plugin marketplace add
 mikeydotio/storyhook` then `/plugin install story@storyhook`.
 
+**Requires the store-backed `story` CLI (1.0+).** Since plugin 0.4.0, story data
+lives in storyhook's global store behind a local daemon — not in a `.storyhook/`
+directory — and the plugin's enable/tracking switches live in the repository's
+`.storyhook.toml` under `[plugin]` (they moved from `.storyhook/plugin-config.toml`).
+Repositories still carrying a `.storyhook/` tree migrate once with `story migrate`.
+
 ## Layout
 
 ```
