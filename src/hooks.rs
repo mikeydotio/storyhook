@@ -12,18 +12,40 @@ command -v story >/dev/null 2>&1 || exit 0
 story commit-sync --since 1h --quiet 2>/dev/null || true
 "#;
 
+/// Auto-closes stories a merge says it closes.
+///
+/// `%B`, not `%s` (SH-56). The subject line is reserved for a summary under 72
+/// characters by every Conventional Commits guide there is, so a `Closes SH-12`
+/// reference lives in the body as a trailer — and this hook read subjects, so
+/// following the convention guaranteed it never fired. It had plausibly never
+/// worked for a body trailer at all.
+///
+/// The outer `while read` loop went with the change and did not need replacing:
+/// `%B` emits multi-line records, so a per-line loop no longer receives one
+/// commit per iteration, and it never had to — its only job was feeding text to
+/// `grep -oiE`, which is line-oriented already and emits one match per line.
+/// Piping the log straight into `grep` is both simpler and correct.
+///
+/// `[[:space:]]` rather than `\s`: `\s` is a GNU extension, this runs under
+/// `/bin/sh` on whatever the user has, and a hook that silently matches nothing
+/// on BSD grep is exactly the failure mode SH-56 already was.
+///
+/// `tests/hook_execution.rs` runs this script — the real file, installed into a
+/// real repository, over a real merge. The defect class here is "hook logic
+/// shipped as an untested string literal", and a `&str` nothing executes is how
+/// it survived.
 const POST_MERGE_HOOK: &str = r#"#!/bin/sh
 # storyhook managed hook -- do not edit this line
 command -v story >/dev/null 2>&1 || exit 0
 BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null)"
 case "$BRANCH" in main|master) ;; *) exit 0 ;; esac
 ORIG_HEAD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || exit 0
-git log --format='%s' "$ORIG_HEAD..HEAD" 2>/dev/null | while IFS= read -r msg; do
-  echo "$msg" | grep -oiE '(closes?|fixes?|resolves?)\s+[A-Z]+-[0-9]+' | while IFS= read -r match; do
+git log --format='%B' "$ORIG_HEAD..HEAD" 2>/dev/null |
+  grep -oiE '(closes?|fixes?|resolves?)[[:space:]]+[A-Z]+-[0-9]+' |
+  while IFS= read -r match; do
     STORY_ID="$(echo "$match" | grep -oE '[A-Z]+-[0-9]+' | head -1)"
     [ -n "$STORY_ID" ] && story move "$STORY_ID" done "auto-closed by merge" --quiet 2>/dev/null || true
   done
-done
 "#;
 
 const PREPARE_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
