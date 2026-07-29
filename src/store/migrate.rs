@@ -42,11 +42,18 @@ pub struct Migration {
 ///
 /// Embedded in the binary rather than read from disk: a migration that can go
 /// missing is a migration that can half-apply.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial",
-    sql: include_str!("schema/0001_initial.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        sql: include_str!("schema/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "commit_links",
+        sql: include_str!("schema/0002_commit_links.sql"),
+    },
+];
 
 /// The newest schema version this binary understands.
 #[must_use]
@@ -335,7 +342,7 @@ mod tests {
     #[test]
     fn the_embedded_migration_list_is_contiguous() {
         validate_sequence(MIGRATIONS);
-        assert_eq!(current_schema_version(), 1);
+        assert_eq!(current_schema_version(), 2);
     }
 
     /// The mirror triggers look inverses up in `relation_inverses`, so that

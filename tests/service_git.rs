@@ -68,15 +68,20 @@ fn commit_at(fixture: &ServiceFixture, subject: &str, date: &str) {
     );
 }
 
-/// The abbreviated hash of `HEAD`, as `commit-sync` writes it into a comment.
-fn head_short_hash(fixture: &ServiceFixture) -> String {
+/// The full hash of `HEAD`, as a link record stores it.
+fn head_full_hash(fixture: &ServiceFixture) -> String {
     let output = Command::new("git")
         .current_dir(fixture.cwd())
         .args(["rev-parse", "HEAD"])
         .output()
         .expect("running git rev-parse");
     assert!(output.status.success(), "`git rev-parse HEAD` failed");
-    String::from_utf8_lossy(&output.stdout).trim()[..7].to_string()
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// The abbreviated hash of `HEAD`, as `commit-sync` renders it into a comment.
+fn head_short_hash(fixture: &ServiceFixture) -> String {
+    head_full_hash(fixture)[..7].to_string()
 }
 
 fn run_git(fixture: &ServiceFixture, args: &[&str]) {
@@ -174,8 +179,8 @@ fn the_comment_and_the_transition_are_one_atomic_batch() {
 
     let events = events_of(&fixture, StoryNo::new(1));
     assert!(
-        matches!(events[1], StoryEvent::StoryCommentAdded { .. }),
-        "the comment comes first: {events:?}"
+        matches!(events[1], StoryEvent::StoryCommitLinked { .. }),
+        "the link record comes first: {events:?}"
     );
     assert!(
         matches!(events[2], StoryEvent::StoryStateChanged { ref state, .. } if state == "in-progress"),
@@ -487,7 +492,7 @@ fn a_pinned_clock_stamps_every_event_the_run_writes() {
 
     for event in events_of(&fixture, StoryNo::new(1)).iter().skip(1) {
         let at = match event {
-            StoryEvent::StoryCommentAdded { at, .. } | StoryEvent::StoryStateChanged { at, .. } => {
+            StoryEvent::StoryCommitLinked { at, .. } | StoryEvent::StoryStateChanged { at, .. } => {
                 at.as_str()
             }
             other => panic!("unexpected event {other:?}"),
@@ -611,4 +616,130 @@ fn a_multi_paragraph_body_is_scanned_to_its_last_line() {
         message.contains("added 1 comments to 1 stories"),
         "{message}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency as a database constraint (event kind #18)
+// ---------------------------------------------------------------------------
+
+/// A second link record for the same commit on the same story is not a state
+/// the store can hold.
+///
+/// The check `commit-sync` makes first is a courtesy — it lets the command
+/// report "added 0 comments" rather than fail. This is what makes the property
+/// true regardless of any caller, which is the difference between an invariant
+/// and a convention.
+#[test]
+fn a_second_link_record_for_one_commit_is_rejected_by_the_store() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Linked once");
+    commit(&fixture, &format!("feat: land {id}"));
+    sync(&fixture).expect("syncing");
+
+    let sha = head_full_hash(&fixture);
+    let second = fixture.store().write(|tx| {
+        tx.append_events(
+            fixture.project(),
+            StoryNo::new(1),
+            storyhook::store::ExpectedSeq::Any,
+            &[StoryEvent::StoryCommitLinked {
+                at: "2030-01-01T00:00:00Z".to_string(),
+                sha: sha.clone(),
+                subject: "feat: land it again".to_string(),
+            }],
+        )?;
+        Ok(())
+    });
+
+    assert!(
+        second.is_err(),
+        "the store must refuse a duplicate link record: {second:?}"
+    );
+    assert_eq!(
+        comments_of(&fixture, StoryNo::new(1)).len(),
+        1,
+        "and the refusal must have rolled the whole append back"
+    );
+}
+
+/// The same commit legitimately links to *different* stories.
+#[test]
+fn one_commit_may_link_to_several_stories() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let first = create(&fixture, "First");
+    let second = create(&fixture, "Second");
+    commit(&fixture, &format!("chore: {first} and {second}"));
+
+    sync(&fixture).expect("syncing");
+    assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(comments_of(&fixture, StoryNo::new(2)).len(), 1);
+}
+
+/// A user comment that opens like a link record must not suppress a real one.
+///
+/// The old idempotency check scanned every event for a comment starting
+/// `[git] <short>:`, so typing that prefix by hand silently stopped the next
+/// `commit-sync` from linking that commit. The constraint is keyed on a field,
+/// not on rendered text, so a comment cannot reach it.
+#[test]
+fn a_hand_written_comment_that_looks_like_a_link_does_not_suppress_the_real_one() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "About to be impersonated");
+    commit(&fixture, &format!("feat: land {id}"));
+    let short = head_short_hash(&fixture);
+
+    StoryService::new(&fixture.ctx())
+        .comment(&id, &format!("[git] {short}: I typed this myself"))
+        .expect("commenting");
+
+    sync(&fixture).expect("syncing");
+    let comments = comments_of(&fixture, StoryNo::new(1));
+    assert_eq!(
+        comments.len(),
+        2,
+        "the real link must still be recorded beside the impostor: {comments:?}"
+    );
+}
+
+/// The link record renders into the comment stream where the comment it
+/// replaced did, and reports the same last-activity type.
+#[test]
+fn a_link_record_is_indistinguishable_from_the_comment_it_replaced() {
+    use storyhook::domain::last_activity_type;
+
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Rendered the same");
+    fixture
+        .store()
+        .write(|tx| {
+            tx.put_settings(
+                fixture.project(),
+                &ProjectSettings {
+                    sync_auto_transition: Some(false),
+                    ..ProjectSettings::default()
+                },
+            )
+        })
+        .expect("writing settings");
+    let subject = format!("feat: land {id}");
+    commit(&fixture, &subject);
+    let short = head_short_hash(&fixture);
+    sync(&fixture).expect("syncing");
+
+    let snapshot = snapshot_of(&fixture, StoryNo::new(1));
+    assert_eq!(
+        snapshot.comments.last().map(|c| c.text.as_str()),
+        Some(format!("[git] {short}: {subject}").as_str())
+    );
+    assert_eq!(
+        last_activity_type(&events_of(&fixture, StoryNo::new(1))),
+        "comment",
+        "a link record is a comment to everything that reads a story; this \
+         string is rendered by `story list --stale`"
+    );
+    fixture.assert_no_drift();
 }
