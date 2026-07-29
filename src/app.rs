@@ -1016,9 +1016,8 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         // repo cutover is what proves the flip is safe. It takes no project
         // lock: it never writes to `root`.
         Invocation::Migrate { .. } => {
-            use crate::store::Store as _;
-            let store = crate::store::SqliteStore::open(crate::paths::store_path()?)?;
-            store.migrate()?;
+            let environment = crate::env::Environment::from_process()?;
+            let store = crate::invoke::open_store(&environment)?;
             crate::invoke::dispatch_unscoped(&store, root, &storage::now(), options.invocation)
         }
         Invocation::Context { format } => {

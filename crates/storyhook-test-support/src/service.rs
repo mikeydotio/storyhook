@@ -21,6 +21,7 @@
 use std::path::Path;
 
 use storyhook::domain::{Member, StateDef, SuperState, TypeDef};
+use storyhook::env::Environment;
 use storyhook::service::{Clock, Ctx};
 use storyhook::store::{
     NewProject, PathKind, ProjectId, SqliteStore, Store, WriteOps, diff_read_model,
@@ -42,6 +43,7 @@ pub struct ServiceFixture {
     project: ProjectId,
     cwd: TempDir,
     clock: Clock,
+    env: Environment,
     _dir: TempDir,
 }
 
@@ -57,8 +59,13 @@ impl ServiceFixture {
     #[must_use]
     pub fn with_states(states: &[StateDef]) -> Self {
         let dir = scratch_dir();
-        let store =
-            SqliteStore::open(dir.path().join("store.db")).expect("opening the fixture store");
+        // The environment is rooted in the fixture's own directory, so a
+        // service that writes beside the store — github-sync's backups, the
+        // daemon's runtime files — writes there too rather than into the
+        // developer's real state home. An in-process test cannot redirect an
+        // environment variable; this is how it redirects the same thing.
+        let env = Environment::at(dir.path());
+        let store = SqliteStore::open(env.store_path()).expect("opening the fixture store");
         store.migrate().expect("migrating the fixture store");
         let project = store
             .write(|tx| {
@@ -81,6 +88,7 @@ impl ServiceFixture {
             project,
             cwd: scratch_dir(),
             clock: Clock::Fixed(FIXTURE_NOW.to_string()),
+            env,
             _dir: dir,
         }
     }
@@ -120,6 +128,13 @@ impl ServiceFixture {
         self.project
     }
 
+    /// The environment every context this fixture builds runs under — the one
+    /// place to look for anything a service writes outside the store.
+    #[must_use]
+    pub fn env(&self) -> &Environment {
+        &self.env
+    }
+
     /// The directory contexts run from — where `hooks.toml` goes.
     #[must_use]
     pub fn cwd(&self) -> &Path {
@@ -132,7 +147,8 @@ impl ServiceFixture {
     /// and a struct holding both would be self-referential.
     #[must_use]
     pub fn ctx(&self) -> Ctx<'_, SqliteStore> {
-        Ctx::new(&self.store, self.project, self.cwd.path()).clock(self.clock.clone())
+        Ctx::new(&self.store, self.project, self.cwd.path(), self.env.clone())
+            .clock(self.clock.clone())
     }
 
     /// Installs a `hooks.toml` in the fixture's working directory.

@@ -40,13 +40,14 @@ use storyhook::tui::state::AppState;
 struct Fixture {
     store: SqliteStore,
     root: std::path::PathBuf,
+    env: storyhook::env::Environment,
     _data: tempfile::TempDir,
     _repo: tempfile::TempDir,
 }
 
 impl Fixture {
     fn invoker(&self) -> StoreInvoker<'_, SqliteStore> {
-        StoreInvoker::new(&self.store, &self.root)
+        StoreInvoker::new(&self.store, &self.root, self.env.clone())
     }
 }
 
@@ -54,12 +55,14 @@ impl Fixture {
 fn init_project(prefix: &str) -> (Fixture, std::path::PathBuf) {
     let data = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
-    let store = SqliteStore::open(data.path().join("store.db")).unwrap();
+    let env = storyhook::env::Environment::at(data.path());
+    let store = SqliteStore::open(env.store_path()).unwrap();
     store.migrate().unwrap();
     let root = repo.path().to_path_buf();
     let fixture = Fixture {
         store,
         root: root.clone(),
+        env,
         _data: data,
         _repo: repo,
     };

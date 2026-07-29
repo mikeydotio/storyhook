@@ -230,9 +230,14 @@ impl<'ctx, S: Store> GroupingService<'ctx, S> {
     /// delegate to the services that own those writes without also changing
     /// when a user's hook runs.
     fn quiet(&self) -> Ctx<'_, S> {
-        Ctx::new(self.ctx.store(), self.ctx.project(), self.ctx.cwd())
-            .no_hooks(true)
-            .clock(Clock::Fixed(self.ctx.now()))
+        Ctx::new(
+            self.ctx.store(),
+            self.ctx.project(),
+            self.ctx.cwd(),
+            self.ctx.env().clone(),
+        )
+        .no_hooks(true)
+        .clock(Clock::Fixed(self.ctx.now()))
     }
 
     /// Rewrites one open story's label set, writing nothing when `edit`
