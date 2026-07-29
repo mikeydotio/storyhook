@@ -17,8 +17,8 @@ the CLI with it, so this skill bootstraps it.
 
 Run `command -v story`.
 
-- **If found**, the CLI is already installed. Confirm it works by running `story doctor`
-  (or `story --help` — note there is no `--version` flag) and stop here. Nothing to do.
+- **If found**, the CLI is already installed. Confirm it works by running `story --version`
+  and stop here. Nothing to do.
 - **If not found**, continue to step 2.
 
 ### 2. Ask permission and choose an install method
@@ -45,7 +45,10 @@ Run the command the user selected.
 
 ### 4. Verify the install
 
-Run `story --help` to confirm the binary is on `PATH` and working.
+Run `story --version` to confirm the binary is on `PATH` and working. It prints the
+installed version, which is the one fact worth having here — and unlike `story doctor`
+it says nothing about any project, so it cannot fail for a reason that has nothing to
+do with the install.
 
 - **If `story` is still not found**, the install directory is probably not on `PATH`.
   Tell the user to add `~/.local/bin` to their `PATH` (the official installer prints the
