@@ -212,7 +212,6 @@ fn matches_filter(filter: &FilterSpec, story: &StorySnapshot) -> bool {
 mod tests {
     use super::*;
     use crate::domain::Priority;
-    use crate::invoke::LegacyInvoker;
 
     fn test_states() -> Vec<StateDef> {
         vec![
@@ -385,11 +384,38 @@ mod tests {
         assert_eq!(store.story_count(), 3);
     }
 
+    /// A store, a checkout, and a project in it.
+    ///
+    /// The store's directory is a fixture of its own rather than the machine's:
+    /// these are in-process tests, and an in-process test cannot redirect
+    /// `STORYHOOK_DATA_DIR` for itself.
+    struct Fixture {
+        store: crate::store::SqliteStore,
+        root: std::path::PathBuf,
+        _data: tempfile::TempDir,
+        _repo: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn invoker(&self) -> crate::invoke::StoreInvoker<'_, crate::store::SqliteStore> {
+            crate::invoke::StoreInvoker::new(&self.store, &self.root)
+        }
+    }
+
     /// A project with `prefix`, built through the seam.
-    fn seeded_project(prefix: &str, titles: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        let invoker = LegacyInvoker::new(&root);
+    fn seeded_project(prefix: &str, titles: &[&str]) -> Fixture {
+        use crate::store::Store as _;
+        let data = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let store = crate::store::SqliteStore::open(data.path().join("store.db")).unwrap();
+        store.migrate().unwrap();
+        let fixture = Fixture {
+            store,
+            root: repo.path().to_path_buf(),
+            _data: data,
+            _repo: repo,
+        };
+        let invoker = fixture.invoker();
         invoker
             .invoke(InvokeRequest::new(Invocation::Init {
                 prefix: Some(prefix.to_string()),
@@ -409,14 +435,15 @@ mod tests {
                 }))
                 .unwrap();
         }
-        (dir, root)
+        drop(invoker);
+        fixture
     }
 
     #[test]
     fn load_from_disk_with_tempdir() {
-        let (_dir, root) = seeded_project("TEST", &["First story", "Second story"]);
+        let fixture = seeded_project("TEST", &["First story", "Second story"]);
 
-        let store = DataStore::load(&LegacyInvoker::new(&root)).unwrap();
+        let store = DataStore::load(&fixture.invoker()).unwrap();
         assert_eq!(store.story_count(), 2);
         assert_eq!(store.prefix, "TEST");
         assert!(store.find_story("TEST-1").is_some());
@@ -424,22 +451,18 @@ mod tests {
     }
 
     #[test]
-    fn tolerant_read_skips_incomplete_trailing_line() {
-        let (_dir, root) = seeded_project("SH", &["Test story"]);
+    fn a_torn_trailing_write_is_no_longer_representable() {
+        // This case used to append an incomplete JSON line to a story's log,
+        // simulating a concurrent write caught mid-flush, and asserted that the
+        // reader skipped it. **The failure mode is gone**: a story's events are
+        // rows inside a transaction now, and SQLite cannot expose a half-written
+        // one — so there is nothing to tolerate and nothing to fabricate.
+        //
+        // What survives is the claim the tolerance existed to protect: a load
+        // that races a writer still returns a complete, coherent project.
+        let fixture = seeded_project("SH", &["Test story"]);
 
-        // Append an incomplete JSON line (simulating concurrent write). This
-        // one stays a filesystem write on purpose: it fabricates a state no
-        // API can produce, which is the whole point of the case.
-        let story_path = root.join(".storyhook/open/stories/SH-1.jsonl");
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&story_path)
-            .unwrap();
-        write!(file, "{{\"kind\":\"StoryCommentAdd").unwrap();
-
-        // Loading should succeed, skipping the incomplete trailing line
-        let store = DataStore::load(&LegacyInvoker::new(&root)).unwrap();
+        let store = DataStore::load(&fixture.invoker()).unwrap();
         assert_eq!(store.story_count(), 1);
         assert_eq!(store.find_story("SH-1").unwrap().title, "Test story");
     }

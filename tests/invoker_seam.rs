@@ -515,3 +515,92 @@ mod unmigrated {
         assert!(!stderr.contains("story migrate"), "{stderr}");
     }
 }
+
+/// The legacy storage path is reachable from the web dashboard and nowhere
+/// else.
+///
+/// `app::run`, `storage.rs`'s write half, `lock.rs` and `registry.rs` all
+/// survive the flip, unused by any `story` command, because the dashboard still
+/// reads `.storyhook/` directories and the wave that promotes the daemon is
+/// what moves it. That is a *quarantine*, and a quarantine nobody checks is a
+/// comment: the natural failure mode is a well-meaning refactor reaching for
+/// `storage::something` because it is there, and nothing noticing until the
+/// deletion wave finds it cannot delete anything.
+///
+/// So this greps the source. Crude on purpose — it reads what a human reviewer
+/// would read, needs no build graph, and cannot be satisfied by a re-export.
+#[test]
+fn the_legacy_path_is_reachable_only_from_the_web_dashboard() {
+    use std::path::Path;
+
+    /// Every `.rs` file under `src/`, with its path relative to the crate root.
+    fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    assert!(
+        files.len() > 20,
+        "expected the whole tree, got {}",
+        files.len()
+    );
+
+    // The doors into the quarantined path. `lock` and `registry` have no
+    // callers outside the dashboard at all; `app::run` and `LegacyInvoker` are
+    // the only entry points to `storage.rs`'s write half.
+    const DOORS: [&str; 4] = [
+        "LegacyInvoker",
+        "crate::app::",
+        "crate::lock::",
+        "crate::registry::",
+    ];
+    // Files allowed to hold them: the dashboard, the module declarations, each
+    // door's own definition, and the seam that *defines* `LegacyInvoker`.
+    const ALLOWED: [&str; 5] = [
+        "src/web.rs",
+        "src/lib.rs",
+        "src/lock.rs",
+        "src/registry.rs",
+        "src/invoke.rs",
+    ];
+
+    let mut breaches = Vec::new();
+    for (path, text) in &files {
+        let relative = path
+            .rsplit_once("/src/")
+            .map(|(_, rest)| format!("src/{rest}"))
+            .unwrap_or_else(|| path.clone());
+        if ALLOWED.contains(&relative.as_str()) {
+            continue;
+        }
+        for (number, line) in text.lines().enumerate() {
+            // Doc comments describe the quarantine; they do not create callers.
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            for door in DOORS {
+                if code.contains(door) {
+                    breaches.push(format!("{relative}:{}: {}", number + 1, code.trim()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        breaches.is_empty(),
+        "the legacy storage path must stay reachable only from the web dashboard, \
+         which the daemon wave deletes together with it. New callers:\n  {}",
+        breaches.join("\n  ")
+    );
+}
