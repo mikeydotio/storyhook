@@ -36,11 +36,11 @@
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryQuery, diff_read_model};
 use storyhook_test_support::{TestEnv, project_id_at, scratch_dir};
-use wait_timeout::ChildExt;
 
 /// How many clients run at once.
 ///
@@ -65,25 +65,32 @@ const DEADLINE: Duration = Duration::from_secs(30);
 /// Runs a command with a deadline, and fails loudly rather than hanging.
 ///
 /// A deadlocked suite reports nothing useful: it is killed by a timeout several
-/// layers up, long after the evidence is gone. This kills the child itself and
-/// says which command stopped.
+/// layers up, long after the evidence is gone. This one names the command that
+/// stopped.
 fn run_bounded(mut cmd: Command, what: &str) -> Output {
-    let mut child = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|e| panic!("spawning `{what}`: {e}"));
+    // The deadline covers spawning, waiting *and* collecting the output, which
+    // is one bound rather than two on purpose. Waiting on the process and then
+    // reading its pipes leaves the second half unbounded — and a pipe outlives
+    // the process that was handed it, so "the child exited" is not "the read
+    // will return". A `make test` run stalled for twelve minutes inside exactly
+    // that shape.
+    //
+    // The worker thread is not joined on timeout: it is blocked in a syscall
+    // nothing here can interrupt, and leaving it is the price of reporting the
+    // failure at all. The process ends at the end of the run.
+    let (tx, rx) = mpsc::channel();
+    let label = what.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output());
+    });
 
-    match child.wait_timeout(DEADLINE).expect("waiting for a client") {
-        Some(_) => child.wait_with_output().expect("collecting output"),
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!(
-                "`{what}` did not finish within {DEADLINE:?} — under this load that is a \
-                 deadlock, not slowness"
-            );
-        }
+    match rx.recv_timeout(DEADLINE) {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => panic!("spawning `{label}`: {e}"),
+        Err(_) => panic!(
+            "`{label}` did not finish within {DEADLINE:?} — under this load that is a \
+             deadlock, not slowness"
+        ),
     }
 }
 

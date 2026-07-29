@@ -35,8 +35,12 @@
 | W4 THE FLIP | `rearch/w4-flip` / [PR #68](https://github.com/mikeydotio/storyhook/pull/68) | **MERGED** 2026-07-29 — revert only while `migrate_round_trip` is 4/4 green |
 | W5 daemon | `rearch/w5-daemon` / [PR #69](https://github.com/mikeydotio/storyhook/pull/69) | **MERGED** 2026-07-29 — the quarantine deletion deferred, see the step log |
 | W6 git features | `rearch/w6-git-features` / [PR #70](https://github.com/mikeydotio/storyhook/pull/70) | **MERGED** 2026-07-29 — the quarantine is deleted; body scanning is live |
-| W7 repo cutover | `rearch/w7-cutover` | **PR OPENED** — the tracker is in the store, `.storyhook/` is gone, the ledger is filed |
-| W8 hardening | — | pending — **the last wave** |
+| W7 repo cutover | `rearch/w7-cutover` / [PR #71](https://github.com/mikeydotio/storyhook/pull/71) | **PR OPENED** |
+| W8 hardening | `rearch/w8-hardening` | **PR OPENED** — the last wave. Stacked on W7; retarget to `main` when #71 merges |
+
+**The program is complete.** What remains is release-from-`main` and is listed
+in HANDOFF.md: reinstall the `story` binary, `story web register` from the main
+checkout, and a major version bump. None of it happens from this worktree.
 
 ## W0 step plan
 
@@ -168,7 +172,85 @@
   are closed as records of defects already fixed), and five pre-W0 blocks
   cleared. See the Step log.
 
+## W8 step plan
+
+- **W8 DONE — the program is complete.** Twelve commits; `make test` green
+  after each, `make test-daemon` green at the end. The wave's own record,
+  including the matrix, the soak parameters, the corruption table, the restore
+  drill and the rulings, is [`hardening.md`](hardening.md). Five defects found
+  and fixed at their origin, each red→green in its own commit:
+  `1d3fcfa` (a bare `cargo test` could write the real store), `912b205`
+  (a damaged store named the pragma that noticed it), `e955611` (a pointer
+  file's parse error named no file), `20b9a8f` (`story init` on a clone minted
+  a *new* identity), `6fef03e`+`9a25b2f` (the restore instructions were
+  incomplete and only fired on open), `92c7b50` (no daemon call had a
+  deadline). Tests: `82a82d3` (the crash matrix), `c4c6325` (the soaks),
+  `5319bcb` (the corruption matrix), `00821dd` (`ProjectBuilder::local`).
+  Rulings: `c19ce50` (G4 — `sync.mode = auto` removed), `12fd848` (`make gate`,
+  and `--test-threads=4` documented as measured).
+
 ## Key facts discovered (do not re-derive)
+
+- **W8: `story init` in a clone minted a NEW identity and left the committed
+  pointer naming nothing.** The pointer file's whole purpose is surviving a copy
+  to another machine — a uuid rather than a path or a counter — and it did not.
+  A checkout carrying a pointer whose uuid this store does not have got a fresh
+  uuid and the default prefix, with the committed file untouched: `.storyhook.
+  toml` naming a project that exists nowhere, a store row with a different
+  identity, and resolution falling back to *path* from then on. Move that
+  checkout, or clone it again, and it stops resolving at all. Reproduced by
+  hand — a pointer saying `prefix = "ZZ"` produced a project minting `SH-1`.
+  **This is the first thing that happens to every user who clones a
+  storyhook-tracked repository onto a second machine.** `init` now creates the
+  project with the uuid *and* the prefix the pointer names; `--prefix` is
+  ignored in that case, matching the rule that `init` on an existing project
+  leaves its prefix alone.
+- **W8: no call storyhook made to a daemon had a timeout, and one of them hung a
+  gate run for twelve minutes.** `hello`, `request_shutdown` and the invoker's
+  `send` all used a bare `ureq` call. The tempting assumption is that loopback
+  either answers or refuses; a process that accepts and never writes does
+  neither. Reachable three ways, all real: a daemon wedged on a long operation,
+  a daemon stuck in a probe (W0's `tailscale status` hang), and — the case
+  `hello` exists for — something that is not storyhook holding the port, which
+  could therefore hang the very check written to detect it. Now: a 5s **global**
+  timeout on the two control calls, and a 5s **connect** timeout on `send`,
+  which carries real work and must not have its exchange bounded. **Generalize
+  this: the same audit belongs on anything that waits on a peer it did not
+  start.**
+- **W8: a fixture that is about the file must not have a daemon, and the daemon
+  leg is how you find out.** `make test-daemon` failed six tests across two of
+  this wave's new files, every one of them asserting something only true when
+  nothing else holds the store: a daemon keeps the database open with its own
+  page cache and its own write-ahead-log handle, so it answers reads from
+  memory, keeps alive a log that would otherwise be discarded, and does not
+  notice the file being replaced underneath it. Fixed structurally with
+  `ProjectBuilder::local()` rather than assertion by assertion. **The
+  operational consequence is in the product, not just the tests: a restore has
+  to stop the daemon first, and the diagnostic now says so.**
+- **W8: `abort()` and `kill -9` are equivalent for SQLite and not equivalent for
+  an argument.** `STORYHOOK_FAULT` now sends `SIGKILL` to the process itself.
+  Neither unwinds and neither flushes, and the database's state is in the log
+  and the page cache rather than in the process — but `abort` raises a catchable
+  signal and runs whatever handler a linked library installed, and `SIGKILL`
+  cannot be caught, blocked or handled by anyone.
+- **W8: the `fault-injection` feature is an exact test-build sentinel, and now
+  carries a second load.** `Environment::from_process` refuses to resolve a data
+  home when `is_test_build()` and `$STORYHOOK_DATA_DIR` is unset — the refusal a
+  bare `cargo test` cannot route around, which is what W7's `.tmpKGBY3a` junk
+  project needed. It earned its keep immediately: a W8 baseline capture, which
+  runs test binaries directly and outside the Makefile, failed five
+  `cli_error_streams` tests naming a `$TMPDIR` fixture that was about to run
+  `story init` against the real home. `scripts/capture-baseline.sh` now exports
+  the same isolation `run-tests.sh` does. **Consequence to remember: `cargo
+  test` and `cargo build` write the same `target/debug/story`, so the binary
+  left after a test run refuses to touch a real store — `cargo build` (which
+  `make test` ends with) produces a usable one.**
+- **W8, a tooling trap that cost an hour: `mv file.bak file` restores the
+  content and the *old mtime*, so cargo does not rebuild.** A `sed -i.bak`
+  experiment on `src/env.rs` was reverted this way, and the next three test runs
+  silently ran the experiment's binary — including one `make test` that failed
+  with assertions the restored source would have satisfied. `touch` the file
+  after any such restore, or use `git checkout --`.
 
 - **W7: the machine's INSTALLED `story` predates the flip, and it writes
   `.storyhook/lock` into whatever directory it is standing in.** Observed on
@@ -2151,6 +2233,47 @@
     the directory; the new one is its opposite, and it exists because the residue is
     real and observed.
   - **The scratch path had to be deregistered by hand.** See the Key fact.
+
+- 2026-07-29 W8: twelve commits, `make test` green after each; `make test` and
+  `make test-daemon` both green at the end (114s / 60s). Branch
+  `rearch/w8-hardening` off `8a57466` (W7's tip — PR #71 was still open, checked
+  before opening this one, so the PR is stacked and needs retargeting to `main`
+  once #71 merges). Full record in [`hardening.md`](hardening.md).
+
+  Tests first, in the charter's order:
+  - `82a82d3` **the crash matrix** — thirteen cases, all five fault points, real
+    `SIGKILL` at a named instruction. `STORYHOOK_FAULT` sends `SIGKILL` rather
+    than calling `abort()`; see the Key fact.
+  - `c4c6325` **the concurrency soaks** — four, all mixing daemon and local
+    clients, all bounded by a 30s per-child deadline so a deadlock is reported
+    rather than hung.
+  - `5319bcb` **the corruption matrix**, starting with the five shapes that
+    already behaved; the rest arrived with their fixes.
+  - `00821dd` `ProjectBuilder::local()` — the harness answer to what the daemon
+    leg found.
+
+  Five defects, each red→green in its own commit: `1d3fcfa`, `912b205`,
+  `e955611`, `20b9a8f`, `6fef03e` + `9a25b2f`, `92c7b50`. Each has a Key fact
+  above or a paragraph in `hardening.md`.
+
+  Rulings: `c19ce50` (**G4** — `sync.mode = auto` removed from the vocabulary,
+  SH-68 left open for the redesign), `12fd848` (**SH-69** — `make gate` = `test`
+  + `test-daemon`, and `--test-threads=4` kept as a measured decision).
+
+  Deviations from the wave brief, all deliberate:
+  - **The junk project was NOT deleted from the real store.** The backup was
+    taken and verified first; the permission classifier declined the write. The
+    exact procedure is in `hardening.md`, ready to paste. Same shape as W5's
+    `.jsonl` item — which, checked this wave, is **resolved**: the stray files
+    are gone from `~/.local/state/storyhook`, which now holds only the daemon's
+    runtime files and the backups.
+  - **Seven of the nine ledger stories in W7's handoff are untouched** (SH-62
+    … SH-67, SH-70). They are ordinary product defects, not rearchitecture work,
+    and the charter listed only G4 and the harness items. Said so in
+    `hardening.md` and in HANDOFF.
+  - **Three defects were fixed that the brief did not anticipate** — the clone
+    identity, the daemon timeouts, and the restore procedure. All three were
+    found by the wave's own tests, which is what the charter asked for.
 
 ## Resume protocol (fresh session)
 

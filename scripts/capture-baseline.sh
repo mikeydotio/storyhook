@@ -137,6 +137,33 @@ median() {
 }
 
 # ---------------------------------------------------------------------------
+# Isolation — the same contract `scripts/run-tests.sh` provides
+# ---------------------------------------------------------------------------
+
+# This script runs test binaries **directly**, outside the Makefile, so it does
+# not inherit the wrapper's isolated data directory — and dozens of test files
+# build a fixture with `tempfile::tempdir()` and run `story` with whatever
+# environment they were handed. Without this block a baseline capture writes
+# projects into the developer's real store, which is exactly how the junk
+# project W7 found got there.
+#
+# Not hypothetical here either: the binary's own test-build guard
+# (`storyhook::env::is_test_build`) failed five tests in `cli_error_streams`
+# during a W8 capture, naming a fixture at a `$TMPDIR` path that was about to
+# run `story init` against the real home.
+#
+# `/private/tmp` rather than `$TMPDIR`, matching run-tests.sh: the latter is
+# Spotlight-indexed (SH-53).
+CAPTURE_DATA_ROOT="$(mktemp -d /private/tmp/storyhook-baseline.XXXXXX)"
+trap 'rm -rf "$CAPTURE_DATA_ROOT"' EXIT
+export STORYHOOK_DATA_DIR="$CAPTURE_DATA_ROOT/data"
+export XDG_STATE_HOME="$CAPTURE_DATA_ROOT/state"
+export INSTA_UPDATE=no
+export STORYHOOK_INVOKER="${STORYHOOK_INVOKER:-local}"
+export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
+export STORYHOOK_PARENT_PID="$$"
+
+# ---------------------------------------------------------------------------
 # Machine tag
 # ---------------------------------------------------------------------------
 
