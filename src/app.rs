@@ -1,3 +1,16 @@
+//! # QUARANTINED — legacy-web only, deleted at W5
+//!
+//! This module is part of the pre-rearchitecture storage path. Story data lives
+//! in a single global store now ([`crate::store`]), and no `story` command
+//! reaches this code. It survives for exactly one reason: the web dashboard
+//! (`src/web.rs`) still reads `.storyhook/` directories directly, and the wave
+//! that promotes the daemon is what moves it onto the store and deletes this.
+//!
+//! **Do not add callers.** `tests/invoker_seam.rs::the_legacy_path_is_reachable_
+//! only_from_the_web_dashboard` fails if any module other than `web.rs` reaches
+//! it, so an accidental dependency is a failing test rather than a surprise a
+//! wave later.
+//!
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

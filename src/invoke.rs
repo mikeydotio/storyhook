@@ -1,14 +1,19 @@
 //! The seam between *deciding what to do* and *doing it*.
 //!
-//! Everything that can run a storyhook command — the CLI, the web dashboard,
-//! and later the TUI — goes through [`Invoker`]. Today there is exactly one
-//! implementation, [`LegacyInvoker`], which forwards to [`crate::app::run`]
-//! in the same process. The point of introducing the trait before there is
-//! anything to choose between is that adopting it is provably behavior-
-//! preserving *now*, when the only implementation is the existing call, and
-//! therefore cheap to verify; a later implementation that talks to a store or
-//! a daemon becomes a constructor swap rather than a rewrite of every call
-//! site.
+//! Everything that can run a storyhook command — the CLI, the TUI and the web
+//! dashboard — goes through [`Invoker`]. The trait was introduced when there
+//! was only one implementation and nothing to choose between, which is exactly
+//! what made adopting it provably behaviour-preserving; the flip was then a
+//! constructor swap rather than a rewrite of every call site.
+//!
+//! Two implementations now, and they are not peers:
+//!
+//! * [`StoreInvoker`] serves **every** `story` command. It is the stack.
+//! * [`LegacyInvoker`] forwards to [`crate::app::run`], which reads and writes
+//!   `.storyhook/` directly. **It is quarantined**: the web dashboard is the
+//!   only thing that constructs one, because the dashboard still reads those
+//!   directories, and the wave that promotes the daemon deletes both. Nothing
+//!   else in `src/` may reach it — `tests/invoker_seam.rs` asserts that.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -1111,11 +1116,9 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
 /// Runs one invocation against the store, resolving the project from the
 /// working directory first.
 ///
-/// The counterpart to [`LegacyInvoker`]: same seam, same envelope, the new
-/// stack underneath. It exists before the flip so that the whole integration
-/// suite can be run against the store — `STORYHOOK_INVOKER=local` — which is
-/// how the flip's surprises are found while the legacy path is still the
-/// default and a surprise is cheap.
+/// The invoker every `story` command runs through. [`LegacyInvoker`] is the
+/// one it replaced, and survives only to serve the web dashboard until the
+/// wave that promotes the daemon.
 ///
 /// # Root resolution
 ///

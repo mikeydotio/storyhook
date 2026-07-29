@@ -1,3 +1,28 @@
+//! # QUARANTINED (mostly) — legacy-web only, deleted at W5
+//!
+//! The **write half** of this module is part of the pre-rearchitecture storage
+//! path: it creates and mutates `.storyhook/` directories, and no `story`
+//! command reaches it. It survives for exactly one reason — the web dashboard
+//! (`src/web.rs`) still reads those directories, through
+//! [`crate::app::run`], and the wave that promotes the daemon is what moves it
+//! onto the store and deletes this.
+//!
+//! **Three things here are NOT quarantined**, and are used by the live path:
+//!
+//! * [`ProjectExport`] and [`ExportedStory`] — the transfer envelope
+//!   `story export` and `story import-project` speak. A data format, not a
+//!   storage path; the store-backed [`crate::service::transfer`] produces and
+//!   consumes it.
+//! * [`now`] — storyhook's timestamp format, in one place.
+//! * [`ProjectPaths`] — still used by the TUI's filesystem watcher, which W5
+//!   also deletes.
+//!
+//! **Do not add callers to anything else.**
+//! `tests/invoker_seam.rs::the_legacy_path_is_reachable_only_from_the_web_dashboard`
+//! fails if any module other than `web.rs` constructs a
+//! [`LegacyInvoker`](crate::invoke::LegacyInvoker) or calls [`crate::app::run`],
+//! which is the only door into the write half.
+//!
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
