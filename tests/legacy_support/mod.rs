@@ -13,7 +13,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use storyhook::domain::{Member, StateDef, StoryEvent, SuperState, TypeDef};
+use storyhook::domain::{Member, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef};
+use storyhook::legacy;
+use storyhook::service::{MigrationPlan, MigrationReport};
 use storyhook::storage;
 use tempfile::TempDir;
 
@@ -285,4 +287,47 @@ pub fn assert_tree_unchanged(root: &Path, before: &BTreeMap<PathBuf, Vec<u8>>, w
             path.display()
         );
     }
+}
+
+/// An open, migrated, empty store in its own fixture directory.
+///
+/// The path is a parameter all the way down (`SqliteStore::open` takes one), so
+/// an in-process test never reaches the developer's real data directory — the
+/// trap W2d hit twice.
+pub fn new_store() -> (TempDir, storyhook::store::SqliteStore) {
+    use storyhook::store::Store as _;
+    let dir = scratch_dir_named("migrate-store-");
+    let store = storyhook::store::SqliteStore::open(dir.path().join("store.db"))
+        .expect("opening a fresh store");
+    store.migrate().expect("migrating a fresh store");
+    (dir, store)
+}
+
+/// Migrates `root` into a brand-new store, returning both plus the report.
+pub fn migrate(root: &Path) -> (TempDir, storyhook::store::SqliteStore, MigrationReport) {
+    let (dir, store) = new_store();
+    let report = plan(root)
+        .apply(&store, root)
+        .expect("applying the migration");
+    (dir, store, report)
+}
+
+/// The plan for `root`, or a panic naming why it could not be built.
+pub fn plan(root: &Path) -> MigrationPlan {
+    MigrationPlan::build(legacy::read_project(root).expect("reading the legacy tree"))
+        .unwrap_or_else(|e| panic!("planning a migration of {}: {e}", root.display()))
+}
+
+/// Every story in the store's only project, folded.
+pub fn store_snapshots(store: &storyhook::store::SqliteStore) -> BTreeMap<String, StorySnapshot> {
+    use storyhook::store::{ReadOps, Store as _};
+    store
+        .read(|tx| {
+            let project = tx.projects()?.first().expect("one project").id;
+            Ok(
+                storyhook::service::QueryService::new(tx, project, "2026-01-01T00:00:00Z")
+                    .story_map()?,
+            )
+        })
+        .expect("reading the store")
 }

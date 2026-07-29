@@ -356,6 +356,31 @@ pub fn is_known_event_kind(kind: &str) -> bool {
     EVENT_KINDS.contains(&kind)
 }
 
+/// The serde `kind` tag `event` serializes with.
+///
+/// An exhaustive match, so a new variant cannot reach the store's `kind` column
+/// without a name being chosen for it here.
+#[must_use]
+pub fn event_kind(event: &StoryEvent) -> &'static str {
+    match event {
+        StoryEvent::StoryCreated { .. } => "StoryCreated",
+        StoryEvent::StoryCommentAdded { .. } => "StoryCommentAdded",
+        StoryEvent::StoryAssigned { .. } => "StoryAssigned",
+        StoryEvent::StoryAwaitingSet { .. } => "StoryAwaitingSet",
+        StoryEvent::StoryAwaitingCleared { .. } => "StoryAwaitingCleared",
+        StoryEvent::StoryStateChanged { .. } => "StoryStateChanged",
+        StoryEvent::StoryRelationshipAdded { .. } => "StoryRelationshipAdded",
+        StoryEvent::StoryRelationshipRemoved { .. } => "StoryRelationshipRemoved",
+        StoryEvent::StoryPrioritySet { .. } => "StoryPrioritySet",
+        StoryEvent::StoryTypeSet { .. } => "StoryTypeSet",
+        StoryEvent::StoryLabelsSet { .. } => "StoryLabelsSet",
+        StoryEvent::StoryTitleSet { .. } => "StoryTitleSet",
+        StoryEvent::StoryDescriptionSet { .. } => "StoryDescriptionSet",
+        StoryEvent::StoryClosedAndArchived { .. } => "StoryClosedAndArchived",
+        StoryEvent::StoryDeleted { .. } => "StoryDeleted",
+    }
+}
+
 pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
     events
         .last()
@@ -2372,6 +2397,36 @@ mod event_kind_tests {
             EVENT_KINDS.to_vec(),
             "EVENT_KINDS must list exactly the variants `StoryEvent` defines, in order"
         );
+    }
+
+    /// `event_kind` must agree with the tag serde actually writes, or the
+    /// store's `kind` column describes a payload it does not match.
+    #[test]
+    fn every_variants_tag_is_the_one_serde_writes() {
+        for event in [
+            StoryEvent::StoryCreated {
+                at: "t".into(),
+                title: "t".into(),
+                state: "todo".into(),
+            },
+            StoryEvent::StoryRelationshipRemoved {
+                at: "t".into(),
+                other_id: "SH-2".into(),
+                relation: "child-of".into(),
+            },
+            StoryEvent::StoryDeleted {
+                at: "t".into(),
+                reason: "r".into(),
+            },
+        ] {
+            let encoded: serde_json::Value = serde_json::to_value(&event).unwrap();
+            assert_eq!(
+                encoded["kind"].as_str().unwrap(),
+                event_kind(&event),
+                "event_kind disagrees with serde for {event:?}"
+            );
+            assert!(is_known_event_kind(event_kind(&event)));
+        }
     }
 
     #[test]
