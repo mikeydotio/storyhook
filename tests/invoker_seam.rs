@@ -136,3 +136,137 @@ fn a_request_survives_a_wire_hop() {
         serde_json::from_str(&encoded).expect("an InvokeRequest must deserialize");
     assert_eq!(request, decoded);
 }
+
+// ---------------------------------------------------------------------------
+// Root resolution: the upward walk
+// ---------------------------------------------------------------------------
+
+mod resolution {
+    use std::path::Path;
+
+    use storyhook::cli::Invocation;
+    use storyhook::error::AppError;
+    use storyhook::invoke::{InvokeRequest, Invoker, StoreInvoker};
+    use storyhook::output::Response;
+    use storyhook::service::project::{ProjectPointer, write_pointer};
+    use storyhook::service::{InitOptions, ProjectService};
+    use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store};
+    use storyhook_test_support::scratch_dir;
+    use tempfile::TempDir;
+
+    /// A store, and a project rooted at a scratch directory.
+    fn project(pointer: bool) -> (TempDir, SqliteStore, TempDir, ProjectId) {
+        let dir = scratch_dir();
+        let store = SqliteStore::open(dir.path().join("store.db")).expect("opening the store");
+        store.migrate().expect("migrating");
+        let root = scratch_dir();
+        let outcome = ProjectService::new(&store, root.path())
+            .init(&InitOptions {
+                agents_md: false,
+                pointer,
+                ..InitOptions::default()
+            })
+            .expect("initializing");
+        (dir, store, root, outcome.project)
+    }
+
+    /// `story summary` from `cwd`, which needs a resolved project to answer.
+    fn summary(store: &SqliteStore, cwd: &Path) -> Result<Response, AppError> {
+        StoreInvoker::new(store, cwd).invoke(InvokeRequest::new(Invocation::Summary))
+    }
+
+    #[test]
+    fn a_command_run_in_a_subdirectory_finds_the_project_above_it() {
+        let (_dir, store, root, _project) = project(true);
+        let deep = root.path().join("src/service/nested");
+        std::fs::create_dir_all(&deep).expect("creating a subdirectory");
+
+        summary(&store, &deep).expect(
+            "a command run from a subdirectory must resolve the project above it — \
+             this is the behaviour change the flip makes, and the reason the plugin's \
+             cd-to-the-repo-root subshell exists",
+        );
+    }
+
+    #[test]
+    fn the_nearest_project_wins_over_an_outer_one() {
+        let (_dir, store, outer, outer_id) = project(true);
+        let inner_root = outer.path().join("vendor/embedded");
+        std::fs::create_dir_all(&inner_root).expect("creating the inner checkout");
+        let inner_id = ProjectService::new(&store, &inner_root)
+            .init(&InitOptions {
+                agents_md: false,
+                pointer: true,
+                ..InitOptions::default()
+            })
+            .expect("initializing the inner project")
+            .project;
+        assert_ne!(outer_id, inner_id);
+
+        let deep = inner_root.join("a/b");
+        std::fs::create_dir_all(&deep).expect("creating a subdirectory");
+
+        // Both would answer; the walk stops at the first that does.
+        let ctx_project = storyhook_test_support::project_id_at(&store, &deep);
+        assert_eq!(
+            ctx_project, None,
+            "the leaf itself identifies nothing — the answer has to come from the walk"
+        );
+        summary(&store, &deep).expect("the inner project answers");
+        let paths = store
+            .read(|tx| tx.project_paths(inner_id))
+            .expect("reading checkouts");
+        assert_eq!(paths.len(), 1, "resolution must not register new checkouts");
+    }
+
+    #[test]
+    fn a_directory_under_no_project_at_all_still_refuses() {
+        let (_dir, store, _root, _project) = project(true);
+        let stranger = scratch_dir();
+        let error = summary(&store, stranger.path()).expect_err("nothing to resolve");
+        assert!(matches!(error, AppError::NotFound(_)), "{error}");
+    }
+
+    #[test]
+    fn the_walk_resolves_by_a_recorded_path_when_there_is_no_pointer() {
+        // Repositories migrated before the pointer existed, and the legacy web
+        // daemon's checkouts, have a path row and no committed file.
+        let (_dir, store, root, _project) = project(false);
+        let deep = root.path().join("deep/er/still");
+        std::fs::create_dir_all(&deep).expect("creating a subdirectory");
+        summary(&store, &deep).expect("a recorded path is an identity too");
+    }
+
+    #[test]
+    fn a_pointer_naming_an_unknown_project_does_not_shadow_a_valid_path_row() {
+        let (_dir, store, root, _project) = project(false);
+        write_pointer(
+            root.path(),
+            &ProjectPointer::new("no-such-uuid".to_string(), "SH".to_string()),
+        )
+        .expect("writing a stale pointer");
+
+        summary(&store, root.path()).expect(
+            "a pointer the store cannot resolve must fall through to the path rather \
+             than making the directory unusable",
+        );
+    }
+
+    #[test]
+    fn two_checkouts_of_one_project_resolve_to_the_same_project() {
+        // The rearchitecture's headline property, at the level resolution owns
+        // it: the pointer file is committed, so a second checkout carries it and
+        // answers with the same project id.
+        let (_dir, store, root, project_id) = project(true);
+        let pointer = std::fs::read_to_string(root.path().join(".storyhook.toml"))
+            .expect("reading the pointer");
+        let clone = scratch_dir();
+        std::fs::write(clone.path().join(".storyhook.toml"), pointer).expect("cloning it");
+
+        assert_eq!(
+            storyhook_test_support::project_id_at(&store, clone.path()),
+            Some(project_id)
+        );
+        summary(&store, clone.path()).expect("the clone answers");
+    }
+}
