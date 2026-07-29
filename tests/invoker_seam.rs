@@ -399,3 +399,119 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
          from `is_project_less`, so they are refused before they are reached: {refused:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The unmigrated-repository guard
+// ---------------------------------------------------------------------------
+
+mod unmigrated {
+    use storyhook_test_support::TestEnv;
+
+    /// A checkout that still keeps its stories in `.storyhook/`.
+    fn legacy_checkout() -> storyhook_test_support::Project<'static> {
+        TestEnv::shared()
+            .project()
+            .legacy()
+            .seed_story("Still in the directory")
+            .build()
+    }
+
+    #[test]
+    fn an_unmigrated_repository_is_told_to_migrate_rather_than_to_init() {
+        let project = legacy_checkout();
+        project
+            .run(&["list"])
+            .code(3)
+            .stderr(predicates::str::contains("story migrate"))
+            .stderr(predicates::str::contains("`.storyhook/` directory"))
+            .stderr(predicates::str::contains(
+                "never writes to the directory it reads",
+            ));
+    }
+
+    #[test]
+    fn the_guard_reaches_up_from_a_subdirectory() {
+        let project = legacy_checkout();
+        let deep = project.path().join("src/inner");
+        std::fs::create_dir_all(&deep).expect("creating a subdirectory");
+
+        let out = project
+            .env()
+            .story(&deep)
+            .args(["show", "SH-1"])
+            .output()
+            .expect("running story show");
+        assert_eq!(out.status.code(), Some(3));
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("story migrate"),
+            "a subdirectory of an unmigrated repository must get the same diagnosis: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn init_refuses_rather_than_minting_an_empty_project_beside_real_data() {
+        // The dangerous case. `story init` in an unmigrated repository would
+        // create a project with no stories in it, leave the user's data in the
+        // directory, and look like it worked.
+        let project = legacy_checkout();
+        project
+            .run(&["init"])
+            .code(3)
+            .stderr(predicates::str::contains("story migrate"));
+    }
+
+    #[test]
+    fn migrate_itself_is_never_refused_by_the_guard() {
+        // The guard's whole job is to send people here, so it must not stand in
+        // the way. `migrate` is project-less, which is what keeps it reachable.
+        let project = legacy_checkout();
+        project
+            .run(&["migrate", "--dry-run"])
+            .success()
+            .stdout(predicates::str::contains("would import 1 stories"));
+    }
+
+    #[test]
+    fn a_migrated_repository_stops_tripping_the_guard() {
+        let project = legacy_checkout();
+        project.run(&["migrate"]).success();
+
+        // The directory is still there — `migrate` never writes to the tree it
+        // reads — so the guard has to be answered by the pointer file rather
+        // than by the directory's absence.
+        assert!(project.path().join(".storyhook/project.toml").is_file());
+        assert!(project.path().join(".storyhook.toml").is_file());
+        project
+            .run(&["list"])
+            .success()
+            .stdout(predicates::str::contains("Still in the directory"));
+    }
+
+    #[test]
+    fn a_directory_with_only_legacy_config_is_not_reported_as_unmigrated() {
+        // `.storyhook/hooks.toml` and `plugin-config.toml` are still read from
+        // their old home. A repository that has those and no `project.toml` has
+        // not been left behind by anything.
+        let env = TestEnv::shared();
+        let dir = storyhook_test_support::scratch_dir();
+        std::fs::create_dir_all(dir.path().join(".storyhook")).expect("creating the config dir");
+        std::fs::write(
+            dir.path().join(".storyhook/hooks.toml"),
+            "[on_create]\ncommand = \"true\"\n",
+        )
+        .expect("writing hooks");
+
+        let out = env
+            .story(dir.path())
+            .args(["list"])
+            .output()
+            .expect("running story list");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("run `story init`"),
+            "expected the ordinary not-initialized message, got: {stderr}"
+        );
+        assert!(!stderr.contains("story migrate"), "{stderr}");
+    }
+}

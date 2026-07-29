@@ -107,6 +107,42 @@ impl ProjectPointer {
     }
 }
 
+/// The nearest ancestor of `root` (itself included) holding a legacy
+/// `.storyhook/` project, if there is one.
+///
+/// A *project*, not merely a directory: `<dir>/.storyhook/project.toml` is what
+/// `storage::ensure_project` looked for, and a repository that has only a
+/// `.storyhook/hooks.toml` — configuration in its old home, which is still read
+/// — has not been left behind by anything and must not be reported as
+/// unmigrated.
+#[must_use]
+pub fn legacy_project_at(root: &Path) -> Option<PathBuf> {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    canonical
+        .ancestors()
+        .find(|dir| dir.join(".storyhook/project.toml").is_file())
+        .map(Path::to_path_buf)
+}
+
+/// What to tell someone standing in a repository storyhook has not imported.
+///
+/// Loud and specific, because the alternative is worse in both directions: a
+/// bare "not initialized" invites `story init`, which would mint an *empty*
+/// second project beside data the user still has, and a silent fallback to
+/// reading the directory is the thing this whole rearchitecture exists to
+/// stop.
+#[must_use]
+pub fn unmigrated_error(tree: &Path) -> AppError {
+    AppError::NotFound(format!(
+        "`{}` still keeps its stories in a `.storyhook/` directory, and storyhook now \
+         reads a single store outside your repositories. Run `story migrate` there to \
+         bring them across — it never writes to the directory it reads, so your data \
+         stays where it is until you are satisfied. `story migrate --dry-run` shows what \
+         it would import.",
+        tree.display()
+    ))
+}
+
 /// The repository's `[hooks]` table, if it has a readable one.
 ///
 /// Fails **open** at every step, and deliberately: a repository whose pointer
@@ -246,6 +282,17 @@ impl<'a, S: Store> ProjectService<'a, S> {
         let root = canonical(&self.root);
         let now = self.clock.now();
         let existing_pointer = read_pointer(&root)?;
+
+        // A repository whose stories are still in `.storyhook/` is not an
+        // uninitialized one, and treating it as such is how a user ends up with
+        // an empty project beside their real data. `story migrate` is the
+        // command for it, and this says so before anything is written.
+        if existing_pointer.is_none()
+            && self.store.read(|tx| tx.project_by_path(&root))?.is_none()
+            && root.join(".storyhook/project.toml").is_file()
+        {
+            return Err(unmigrated_error(&root));
+        }
 
         let (project, created, uuid, prefix) = self.store.write(|tx| {
             if let Some(pointer) = &existing_pointer
