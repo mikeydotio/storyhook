@@ -54,7 +54,14 @@ use storyhook_test_support::{Project, TestEnv, project_id_at, scratch_dir};
 /// to a daemon, and a daemon that crashed would be a different experiment with
 /// a different subject: this file is about the process that owns the write
 /// transaction, so the process that owns the write transaction has to be the one
-/// holding the knife.
+/// holding the knife. (The daemon-side crash has its own case below, which sets
+/// its experiment up explicitly.)
+///
+/// The fixtures are built with [`ProjectBuilder::local`] for the same reason
+/// one step further out: the *questions* asked after the crash are about the
+/// file, and a daemon holding the store answers them from its own page cache.
+///
+/// [`ProjectBuilder::local`]: storyhook_test_support::ProjectBuilder::local
 fn crash(project: &Project<'_>, point: FaultPoint, args: &[&str]) -> ExitStatus {
     let mut cmd = project.env().raw_story(project.path());
     cmd.env("STORYHOOK_INVOKER", "local")
@@ -160,7 +167,7 @@ fn relations_of(project: &Project<'_>, id: &str) -> String {
 #[test]
 fn sigkill_before_commit_creates_nothing_and_burns_no_story_number() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CR").build();
+    let project = env.project().local().prefix("CR").build();
     let first = project.new_story("survives");
 
     crash(&project, FaultPoint::BeforeCommit, &["new", "vanishes"]);
@@ -188,7 +195,7 @@ fn sigkill_before_commit_creates_nothing_and_burns_no_story_number() {
 #[test]
 fn sigkill_before_commit_leaves_a_compare_and_swap_unapplied() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CR").build();
+    let project = env.project().local().prefix("CR").build();
     let id = project.new_story("to be moved");
     let before = state_of(&project, &id);
 
@@ -223,7 +230,7 @@ fn sigkill_before_commit_leaves_a_compare_and_swap_unapplied() {
 #[test]
 fn sigkill_before_commit_leaves_neither_end_of_a_relation() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CR").build();
+    let project = env.project().local().prefix("CR").build();
     let a = project.new_story("blocker");
     let b = project.new_story("blocked");
 
@@ -265,7 +272,7 @@ fn sigkill_before_commit_leaves_neither_end_of_a_relation() {
 #[test]
 fn sigkill_after_commit_before_ack_does_not_report_false_success() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CR").build();
+    let project = env.project().local().prefix("CR").build();
 
     let status = crash(
         &project,
@@ -305,7 +312,7 @@ fn sigkill_after_commit_before_ack_does_not_report_false_success() {
 #[test]
 fn sigkill_after_commit_before_ack_keeps_a_move_and_a_relation() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CR").build();
+    let project = env.project().local().prefix("CR").build();
     let a = project.new_story("blocker");
     let b = project.new_story("blocked");
     let before = state_of(&project, &a);
@@ -349,7 +356,7 @@ fn sigkill_after_commit_before_ack_keeps_a_move_and_a_relation() {
 #[test]
 fn a_commit_that_survives_a_crash_is_replayed_from_the_write_ahead_log() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CR").build();
+    let project = env.project().local().prefix("CR").build();
 
     crash(
         &project,
@@ -464,7 +471,7 @@ fn a_daemon_killed_after_commit_tells_the_client_it_cannot_know() {
 #[test]
 fn sigkill_mid_read_model_update_leaves_no_half_written_story() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CR").build();
+    let project = env.project().local().prefix("CR").build();
 
     crash(
         &project,
@@ -499,7 +506,7 @@ fn sigkill_mid_read_model_update_leaves_no_half_written_story() {
 #[test]
 fn sigkill_mid_read_model_update_leaves_no_one_sided_edge() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CR").build();
+    let project = env.project().local().prefix("CR").build();
     let a = project.new_story("blocker");
     let b = project.new_story("blocked");
 
@@ -638,60 +645,74 @@ fn sigkill_during_backup_verification_migrates_nothing() {
 
 /// The concurrency case, with a crash in the middle of it.
 ///
-/// Eight processes open one un-migrated store at once — which is what a machine
-/// looks like the first time a new storyhook runs on it, with a shell, a git
-/// hook and a daemon all racing — and one of them is killed mid-migration. The
-/// migration must still be applied exactly once, every survivor must agree, and
-/// the crash must not be able to leave a version that is a lie.
+/// A machine looks like this the first time a new storyhook runs on it: a shell,
+/// a git hook and a daemon all reaching for one un-migrated store at once. This
+/// adds the participant threads cannot model — one that **dies holding its
+/// turn** — and then asks whether the seven that arrive afterwards finish the
+/// job exactly once between them.
+///
+/// The two phases are deliberately ordered rather than raced. An armed process
+/// only fires `mid_migration` if it finds a migration still pending, so throwing
+/// it into the race with seven others means it sometimes arrives to find the
+/// work done and exits cleanly — the test would then pass while proving nothing,
+/// or fail on a machine that scheduled it late. Observed at
+/// `--test-threads=2`. Killing it first makes the crash a *precondition* of the
+/// race instead of a lottery.
 ///
 /// The in-process sibling
 /// (`store_migrations.rs::concurrent_migrations_of_one_store_apply_exactly_once`)
 /// proves the `BEGIN IMMEDIATE` re-read serializes eight threads. This proves it
-/// across eight *processes*, which is the case that reaches production, and adds
-/// the one thing threads cannot model: a participant that dies holding its turn.
+/// across eight processes, after a crash.
 #[test]
 fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
     let env = env_with_a_v1_store();
     let cwd = scratch_dir();
 
+    // Phase one: a process dies inside the migration loop, alone, so that it
+    // certainly finds work pending.
+    let mut doomed = env.raw_story(cwd.path());
+    doomed
+        .env("STORYHOOK_INVOKER", "local")
+        .env("STORYHOOK_FAULT", FaultPoint::MidMigration.as_str())
+        .arg("help")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    assert_eq!(
+        doomed.status().expect("running the doomed racer").signal(),
+        Some(libc::SIGKILL),
+        "the crash this test is about has to actually happen"
+    );
+    assert_eq!(
+        user_version(&env.store_path()),
+        1,
+        "and it must have died before applying anything"
+    );
+
+    // Phase two: eight processes arrive at the store the corpse left.
     let mut children: Vec<std::process::Child> = Vec::new();
-    for index in 0..8 {
+    for _ in 0..8 {
         let mut cmd = env.raw_story(cwd.path());
-        cmd.env("STORYHOOK_INVOKER", "local").arg("help");
-        // One of the eight dies inside the migration loop. The other seven are
-        // ordinary racers.
-        if index == 0 {
-            cmd.env("STORYHOOK_FAULT", FaultPoint::MidMigration.as_str());
-        }
-        cmd.stdout(std::process::Stdio::null())
+        cmd.env("STORYHOOK_INVOKER", "local")
+            .arg("help")
+            .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped());
         children.push(cmd.spawn().expect("spawning a racer"));
     }
-
-    let mut killed = 0;
-    let mut finished = 0;
     for child in children {
         let out = child.wait_with_output().expect("waiting for a racer");
-        if out.status.signal() == Some(libc::SIGKILL) {
-            killed += 1;
-        } else {
-            assert!(
-                out.status.success(),
-                "a racer that was not killed must have succeeded, not failed: {:?}\n{}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr)
-            );
-            finished += 1;
-        }
+        assert!(
+            out.status.success(),
+            "every racer after the crash must succeed: {:?}\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
-    assert_eq!(killed, 1, "exactly one racer was armed to die");
-    assert_eq!(finished, 7);
 
     assert_eq!(integrity_of(&env.store_path()), "ok");
     assert_eq!(
         user_version(&env.store_path()),
         storyhook::store::current_schema_version(),
-        "seven survivors racing one crash must still land on the current schema"
+        "eight survivors racing one crash must land on the current schema"
     );
 
     // `schema_migrations` is the history, and it is where a doubly-applied
@@ -772,7 +793,7 @@ fn every_named_point_survives_a_kill_with_the_database_intact() {
             }
             Driver::Writing => {
                 let env = TestEnv::isolated();
-                let project = env.project().prefix("SW").build();
+                let project = env.project().local().prefix("SW").build();
                 crash(
                     &project,
                     point,
