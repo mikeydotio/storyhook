@@ -31,8 +31,8 @@
 | W2b services (project + config + system + grouping) | `rearch/w2b-config` / [PR #64](https://github.com/mikeydotio/storyhook/pull/64) | **MERGED** 2026-07-28 |
 | W2c services (query + integrity) + TUI on the seam | `rearch/w2c-query` / [PR #65](https://github.com/mikeydotio/storyhook/pull/65) | **MERGED** 2026-07-28 |
 | W2d services (git + GitHub + transfer) + the store test leg | `rearch/w2d-git` / [PR #66](https://github.com/mikeydotio/storyhook/pull/66) | **MERGED** 2026-07-28 |
-| W3 importer | `rearch/w3-importer` | **PR OPENED** — awaiting merge |
-| W4 THE FLIP | — | pending (one uninterrupted session; revert only while W3 round-trip green) |
+| W3 importer | `rearch/w3-importer` / [PR #67](https://github.com/mikeydotio/storyhook/pull/67) | **MERGED** 2026-07-28 |
+| W4 THE FLIP | `rearch/w4-flip` | **PR OPENED** — revert only while `migrate_round_trip` is 4/4 green |
 | W5 daemon | — | pending |
 | W6 git features | — | pending |
 | W7 repo cutover | — | pending |
@@ -121,7 +121,91 @@
   invocations), `8bf7eeb` (the TUI). See Step log for the API, the roster, the two
   defects found, and the deviations.
 
+## W4 step plan
+
+- **W4 DONE** — the flip. Eleven commits; `make test` green after each.
+  `e97ca5f` (the injection API + store fixtures), `ff634f8` (a differential flake),
+  `1c512d0` (pointer config + registry adoption), `ab6b2ff` (the ancestor walk),
+  `e8c1d1c` (the pre-flip diff harness), `1e70f58` (the exclusion-list burn-down),
+  `4b932ed` (**THE SWAP**), `1445291` (the exit criterion), `c50a650` (the guard),
+  `ca4f4f7` (compensating undo), `eef531d` (deletions + quarantine), plus this
+  docs commit. See Step log for the deviations — the commit *order* changed, and
+  the reason matters.
+
 ## Key facts discovered (do not re-derive)
+
+- **W4, THE most important structural finding: the brief's commit order could not
+  be green, and inverting two slots fixed it.** The plan was swap-then-rewrite-tests
+  (slots 4 then 6). But `make test` runs the legacy leg before the swap and the store
+  leg after it, so **every file on `make test-store`'s exclusion list is a file the swap
+  turns red** — 57 tests across 15 files, measured. A swap commit that leaves 57 tests
+  failing is not a bisect atom, it is a broken commit with a small production diff.
+  The burn-down therefore has to come *first*: each test rewritten to assert the same
+  thing on either storage model, verified green on **both** legs, and only then the
+  default flipped. 57 → 16 before the swap; the last 16 are irreducibly leg-specific
+  (they fabricate corruption in one model or the other) and rode with the swap.
+  **Generalize this: in a strangler, the test suite crosses over before the default
+  does, and the exclusion list reaching zero is the swap's precondition rather than its
+  consequence.**
+- **W4: after the flip, any test that builds a fixture with `tempfile::tempdir()` and
+  runs `story` writes into the DEVELOPER'S REAL STORE.** ~45 files are in that shape.
+  `make test-store` was safe only because `run-store-leg.sh` exported an isolated
+  `STORYHOOK_DATA_DIR` for the whole run; plain `make test` had no such export. Fixed by
+  `scripts/run-tests.sh`, which sets one and **refuses to run** if it is not under
+  `/private/tmp`. That refusal is not decoration: the consequence of losing the override
+  is silent and expensive, and there is no way to detect it after the fact.
+- **W4: `is_project_less` is a trap that springs repeatedly, and it sprang twice more.**
+  `story web status` and `story update --check` both failed with "story project not
+  initialized" — in exactly the situations they exist for. Both answer without a project
+  inside `dispatch_unscoped`; both were missing from `is_project_less`, so resolution
+  refused them before they were reached. STATE.md already carried a warning about this
+  shape from W2d, and it happened anyway. It is now a **test** rather than a warning:
+  `invoker_seam.rs::the_project_less_verbs_all_answer_outside_a_project` sweeps all
+  fourteen from an empty directory.
+- **W4, FIXED in-wave — `story web register --name` silently dropped the name.** The
+  legacy registry held a display name per repo; the catalog is the projects table now and
+  `register` had nowhere to put one, so the flag was accepted and discarded. Added
+  `WriteOps::rename_project`. A flag that is accepted and ignored is worse than one that
+  does not exist, and this was a regression the flip would have introduced.
+- **W4: the undo redesign needed exactly two new event kinds, and no more.**
+  `StoryCommentRetracted` (comments are the one part of a story that only accumulates)
+  and `StoryAssigneeCleared` (the sibling of `StoryAwaitingCleared`). `EVENT_KINDS`
+  15 → 17. A story's **type** deliberately has no clearing event: nothing in the TUI sets
+  a type, so the undo stack cannot produce that case, and `restore` refuses loudly naming
+  the field. **Consequence for the rollback, which belongs in D2's table**: an older
+  storyhook cannot decode either kind, so `story export` of a project containing one and
+  `import-project` on the reverted binary fails *loudly* with serde's unknown-variant
+  error. Loud, not silent — but it narrows the revert window for any project whose undo
+  has been used.
+- **W4: `domain::EVENT_KINDS`'s drift test earned its keep on the first try.** The first
+  attempt put `StoryAssigneeCleared` after `StoryAwaitingSet` rather than after
+  `StoryAssigned`, and `every_known_kind_is_a_variant_and_every_variant_is_known` failed
+  with the two orderings side by side. A hand-maintained list next to a derive is exactly
+  the thing that rots; this one cannot.
+- **W4, FIXED in-wave — `differential_git`'s empty-window row was a latent flake**, and it
+  fired on the wave's first full run. Both legs read one git repository but each resolves
+  `--since=0d` against *its own* `now`, and they do not run in the same second: a commit
+  made in the current second lands on whichever side of the cutoff each leg falls. Fixed
+  in the fixture (`Differential::commit_at` pins the commit's date) because neither leg is
+  wrong. **`GIT_AUTHOR_DATE` does not accept relative expressions** — `1 hour ago` fails
+  with `fatal: invalid date format` rather than falling back to now, which turned the flake
+  into a deterministic 20/20 failure before it was noticed.
+- **W4: `story doctor` has no CLI-reachable finding any more, and that is the design
+  working.** Every shape it used to report is refused by the schema, and the two that
+  remain (histories that disagree about an edge; a type the catalog does not define) need
+  `store::test_support` to fabricate. Consequence: the *bash* suite cannot build one, so
+  `test-doctor-capture.sh` exercises the shell property it actually owns — that story.sh
+  reads exit 5 as a finding rather than as a failure of its own probe — through
+  `fakes/story-integrity/story`, with the CLI's real exit code pinned in Rust.
+- **W4: the pointer file's `[plugin]`/`[hooks]` tables are `toml::Value`, not typed
+  structs, and this is load-bearing.** Resolution must not depend on configuration: a
+  typed `[hooks]` table would mean a misspelled `timeout_seconds` failed the whole parse
+  and left storyhook unable to say which project it was standing in. Pinned by
+  `a_broken_config_table_does_not_make_the_repository_unresolvable`.
+- **W4: `story init` must resolve by pointer before path.** On a fresh clone the checkout
+  is at a path the store has never seen while its pointer names a project the store may
+  well know; answering by path alone mints a second project for a repository that already
+  has one, leaving the clone pointing at the old identity and storing into the new.
 
 - **W3, the single most important finding of the wave: this repository's 15
   live SH-60 violations are 10 one-sided relations AND 5 stories with two
@@ -1560,14 +1644,97 @@
     `src/legacy/` and `src/service/`. The corrupt-versus-unknown distinction cannot be made
     without them and it is a property of `StoryEvent`, so it lives next to `StoryEvent`.
 
+- 2026-07-29 W4: branch `rearch/w4-flip` off merged main `e70a632`. Eleven commits,
+  `make test` green after each. Test count 1946 → **2003**, and **2 ignored → 0**: the
+  headline REDs this program was written to turn green are green.
+
+  **The commit order changed, and the change is the wave's principal deviation.** The
+  brief's slots were swap (4) then test-rewrite (6). Measured against reality that
+  ordering cannot be green-per-commit: `make test` runs the legacy leg before the swap
+  and the store leg after it, so every file on `make test-store`'s exclusion list is one
+  the swap turns red — 57 tests across 15 files. The burn-down therefore moved *ahead*
+  of the swap, and the swap's precondition became "the exclusion list is empty". See Key
+  facts; the generalization is that in a strangler the suite crosses over before the
+  default does.
+
+  - `e97ca5f` — `store::test_support` (inject/forget/corrupt) + store-default fixtures.
+  - `ff634f8` — a latent differential flake that fired on the first full run.
+  - `1c512d0` — the pointer file's `[plugin]`/`[hooks]` tables, `paths::legacy_global_dir`,
+    `service::adopt_legacy_registry`. Additive; nothing called it yet.
+  - `ab6b2ff` — **ancestor-walking root resolution**, its own commit and its own tests,
+    because it is a semantics change: `story <verb>` in a subdirectory starts succeeding.
+  - `e8c1d1c` — the pre-flip old-vs-new `--json` diff harness. **49 of 49 commands
+    byte-identical** on a fourteen-story fixture (39 exiting 0, 8 exiting 3, 2 exiting 2).
+    Deleted in `eef531d`; this commit is where it can be re-run.
+  - `1e70f58` — the burn-down: store-leg failures **57 → 16** with no file exclusions.
+  - `4b932ed` — **THE SWAP.** Small production diff; the last 16 leg-specific tests rode
+    with it because they cannot be written to pass on both models.
+  - `1445291` — the exit criterion un-ignored. 20/20 stable.
+  - `c50a650` — the unmigrated-repository guard.
+  - `ca4f4f7` — compensating-events undo; `EVENT_KINDS` 15 → 17.
+  - `eef531d` — `make test-store` retired, the quarantine made enforceable.
+
+  **The API W5 builds on:**
+
+  ```rust
+  invoke::open_store() -> Result<SqliteStore, AppError>   // open + migrate + adopt
+  invoke::StoreInvoker::new(&store, cwd)                  // the only CLI/TUI invoker
+  service::history::restore(&ctx, id, &[StoryEvent]) -> Vec<StoryEvent>
+  service::adopt_legacy_registry(&store, path) -> RegistryAdoption
+  service::project::{legacy_project_at, unmigrated_error, pointer_hooks, pointer_plugin}
+  paths::legacy_global_dir() -> ~/.storyhook
+  store::WriteOps::rename_project
+  store::test_support::{inject_events, inject_raw_events, forget_events, forget_story,
+                        corrupt_snapshot}          // feature = "fault-injection"
+  storyhook_test_support::{TestEnv::{store_path, open_store},
+                           Project::{open_store, project_id, pointer, story_no, is_legacy},
+                           ProjectBuilder::legacy, project_id_at}
+  ```
+
+  Gate: **two consecutive green full runs, 49.7s and 50.7s warm** — against W3's 43.7s,
+  so +6s for 57 more tests and one more test binary. `migrate_round_trip` **4/4 green**,
+  which is what keeps the revert window open. Load average 2–4 throughout.
+
+  Verification that the tests bite, not merely pass:
+  - Reverting root resolution to a single level fails three of the six new resolution
+    tests, naming the subdirectory, the nested project and the path-row cases.
+  - `the_legacy_path_is_reachable_only_from_the_web_dashboard` failed on its first run and
+    found real leftovers: `src/tui/data.rs`'s fixtures were still building a
+    `LegacyInvoker`, so they were green about a stack the TUI had stopped running on.
+  - `EVENT_KINDS`'s drift test failed on the first attempt at the two new variants,
+    with the two orderings side by side.
+  - The store leg found `story web status` and `story update --check` broken by a missing
+    `is_project_less` arm — two real bugs the flip would have shipped.
+
+  Deviations from the wave brief, all deliberate:
+  - **The commit order**, above. Nine slots became eleven commits.
+  - **`StoreInvoker` keeps its name**; the spec calls it `LocalInvoker`. Renaming inside
+    the swap would have inflated the bisect atom for no behaviour, and `StoreInvoker` vs
+    `HttpInvoker` reads correctly for the daemon wave.
+  - **`STORYHOOK_INVOKER=local` still parses** (as the no-op it now is) and only `legacy`
+    is refused. The spec calls `--local` a permanent documented mode; refusing the value
+    that names today's only stack would be gratuitous.
+  - **Two new `StoryEvent` variants**, which the brief did not anticipate. An append-only
+    undo of a comment or of an assignment is not expressible without them; the scope is
+    exactly the operations the TUI can undo, and a story's *type* is deliberately left
+    without one.
+  - **`WriteOps::rename_project` added** to stop the flip regressing
+    `story web register --name`.
+  - **The bash plugin suite was touched**, which the checklist filed under W7. Three of
+    its tests asserted the defects this wave removes; leaving them would have left the
+    gate red. Only those assertions and `story.sh`'s two state-reading helpers changed —
+    the `.storyhook` literals W7 owns are untouched.
+  - **`docs/rearch/baseline/` is NOT regenerated.** It is the pre-rearch reference point,
+    including its "Ignored: 2 of 1171" line, and regenerating it would destroy the thing
+    it exists to be. The current counts are here instead.
+
 ## Resume protocol (fresh session)
 
 1. `cd` the worktree; `git log --oneline -5`; read this file + HANDOFF.md if present.
 2. `make test` MUST be green before touching anything (if web_test mass-fails: check for
    orphaned `web_test-*` listeners in 19xxx first, then `uptime` and
    `ps aux | sort -nrk 3` — see Key facts).
-3. `make test-store` MUST be green too, from W2d onwards, and both times go in the
-   Step log. It is the flip's early-warning system; a red store leg is a thing the
-   flip would break.
+3. `make test-store` is **gone** as of W4 — the default suite is the store. Do not
+   reintroduce a second leg; it would run the same tests twice against the same stack.
 4. Continue at the first non-DONE step above via a fresh subagent; orchestrator keeps its own
    context minimal (delegate reads/edits; terse reports only).
