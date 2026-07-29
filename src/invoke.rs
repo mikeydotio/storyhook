@@ -1252,13 +1252,33 @@ impl HttpInvoker {
         self
     }
 
+    /// The HTTP client this invoker uses. See [`Self::send`] for why the
+    /// timeout is on the connection rather than on the exchange.
+    fn agent() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .timeout_connect(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .into()
+    }
+
     /// Posts one envelope to a daemon and reconstructs its answer.
     fn send(
         daemon: &crate::daemon::lifecycle::DaemonInfo,
         request: &crate::api::wire::WireRequest,
     ) -> Result<Result<Response, AppError>, Transport> {
         let url = format!("http://127.0.0.1:{}/api/v1/invoke", daemon.port);
-        let response = ureq::post(&url)
+        // A connect timeout, and deliberately *not* a global one. This request
+        // carries the user's actual work — an import of a large document, a
+        // `github-sync` that talks to the network — so a deadline on the whole
+        // exchange would abandon operations that are merely long, and abandoning
+        // a mutation is the expensive direction: the caller is then told it may
+        // or may not have run.
+        //
+        // Connecting is different. The peer is on loopback and either accepts
+        // at once or is not there, so a connect that has not completed in five
+        // seconds is not slow, it is a socket nothing is servicing.
+        let response = Self::agent()
+            .post(&url)
             .header(crate::api::rpc::TOKEN_HEADER, &daemon.token)
             .header("Content-Type", "application/json")
             .send(serde_json::to_string(request).map_err(|e| Transport::Sent(e.to_string()))?)
@@ -1409,6 +1429,20 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
         }
         Ok(None)
     }
+
+    /// The nearest pointer file at or above the working directory, whatever it
+    /// names.
+    ///
+    /// Only consulted once [`Self::resolve`] has already failed, to tell a
+    /// checkout that *claims* a project from a directory that claims nothing.
+    /// Errors are swallowed deliberately: an unreadable pointer file has its own
+    /// message, raised by resolution, and this is a second attempt at explaining
+    /// a failure that has already happened.
+    fn pointer_at_or_above(&self) -> Option<crate::service::project::ProjectPointer> {
+        ancestors(&self.cwd)
+            .into_iter()
+            .find_map(|dir| crate::service::project::read_pointer(&dir).ok().flatten())
+    }
 }
 
 /// A directory and every ancestor of it, nearest first.
@@ -1482,6 +1516,19 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             // mint an empty second project beside data the user still has.
             if let Some(tree) = crate::service::project::legacy_project_at(&self.cwd) {
                 return Err(crate::service::project::unmigrated_error(&tree));
+            }
+            // A checkout carrying a pointer file *is* initialized — it says so,
+            // in a file its repository committed — and what is missing is the
+            // project on this machine. That is what a fresh clone looks like,
+            // and "not initialized in this directory" sends the reader looking
+            // for the wrong thing.
+            if let Some(pointer) = self.pointer_at_or_above() {
+                return Err(AppError::NotFound(format!(
+                    "this checkout belongs to storyhook project {}, which this machine's \
+                     store does not have. Run `story init` here to adopt it, or `story \
+                     import-project` if you have an export of it.",
+                    pointer.uuid
+                )));
             }
             return Err(AppError::NotFound(
                 "story project not initialized in this directory; run `story init`".to_string(),

@@ -46,6 +46,12 @@ export STORYHOOK_PARENT_PID="$$"
 # The guard, because the consequence of losing the override is silent and
 # expensive: a store path under the real home means a test run is about to eat
 # real data.
+#
+# There is a second guard inside the binary — `storyhook::env::is_test_build`
+# refuses to *resolve* a data home a test build was not given — and the two
+# cover different holes. This one catches an override that points somewhere
+# real; that one catches the absence of an override at all, which is the case a
+# bare `cargo test` produces and no wrapper script can reach.
 case "$STORYHOOK_DATA_DIR" in
     /private/tmp/*) ;;
     *)

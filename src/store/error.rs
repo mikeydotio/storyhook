@@ -149,8 +149,17 @@ impl StoreError {
             Some(ErrorCode::ConstraintViolation) => {
                 Self::Invariant(format!("{context}: {}", constraint_detail(&error)))
             }
+            // No `context`, deliberately. Every other arm names the operation
+            // because it tells the caller something: *which* write was rejected,
+            // *what* was waiting for the lock. Corruption is different — the
+            // store runs half a dozen statements on open and which of them
+            // tripped over the bad bytes is an accident of ordering, so
+            // prefixing it produces "setting synchronous mode: file is not a
+            // database", which is the least useful sentence available. The
+            // caller that has the path and the backups directory composes the
+            // message a user sees; see `SqliteStore::explain_unopenable`.
             Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase) => {
-                Self::Corrupt(format!("{context}: {error}"))
+                Self::Corrupt(error.to_string())
             }
             _ => Self::Sqlite(error),
         }

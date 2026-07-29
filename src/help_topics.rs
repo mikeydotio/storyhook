@@ -483,9 +483,13 @@ Examples:
 Configuration (per project, in the store):
   sync_mode = "manual"    # off | manual
 
-  Note: "auto" is accepted and currently does nothing — the code that
-  acted on it was removed with the legacy write path and has not been
-  reinstated. Treat it as "manual" until it is.
+  Note: "auto" is no longer offered. It fired from the tail of the
+  pre-rearchitecture write path, was never given an equivalent on the
+  invoker, and was deleted with that path. A project migrated from
+  before then may still carry it; storyhook says so and treats it as
+  "manual". Honest auto-sync means a GitHub call on the tail of every
+  story-modifying command, in the daemon as well as locally — a feature
+  with a failure policy and a timeout to design, not a switch to flip.
 
 Related:
   story commit-sync  — Link git commits to stories

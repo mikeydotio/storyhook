@@ -137,6 +137,33 @@ median() {
 }
 
 # ---------------------------------------------------------------------------
+# Isolation — the same contract `scripts/run-tests.sh` provides
+# ---------------------------------------------------------------------------
+
+# This script runs test binaries **directly**, outside the Makefile, so it does
+# not inherit the wrapper's isolated data directory — and dozens of test files
+# build a fixture with `tempfile::tempdir()` and run `story` with whatever
+# environment they were handed. Without this block a baseline capture writes
+# projects into the developer's real store, which is exactly how the junk
+# project W7 found got there.
+#
+# Not hypothetical here either: the binary's own test-build guard
+# (`storyhook::env::is_test_build`) failed five tests in `cli_error_streams`
+# during a W8 capture, naming a fixture at a `$TMPDIR` path that was about to
+# run `story init` against the real home.
+#
+# `/private/tmp` rather than `$TMPDIR`, matching run-tests.sh: the latter is
+# Spotlight-indexed (SH-53).
+CAPTURE_DATA_ROOT="$(mktemp -d /private/tmp/storyhook-baseline.XXXXXX)"
+trap 'rm -rf "$CAPTURE_DATA_ROOT"' EXIT
+export STORYHOOK_DATA_DIR="$CAPTURE_DATA_ROOT/data"
+export XDG_STATE_HOME="$CAPTURE_DATA_ROOT/state"
+export INSTA_UPDATE=no
+export STORYHOOK_INVOKER="${STORYHOOK_INVOKER:-local}"
+export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
+export STORYHOOK_PARENT_PID="$$"
+
+# ---------------------------------------------------------------------------
 # Machine tag
 # ---------------------------------------------------------------------------
 
@@ -506,20 +533,26 @@ fi
 # Legacy fixtures — the frozen .storyhook tree, its export, its archive schema
 # ---------------------------------------------------------------------------
 
-say "freezing the legacy .storyhook tree"
-
-# This step is HISTORICAL and can no longer run in this repository: the W7
+# This whole section is HISTORICAL and no longer runs in this repository: the W7
 # cutover migrated storyhook's own tracker into the store and deleted the
 # directory. `docs/rearch/baseline/legacy-tree.tar.gz` — captured while it still
 # existed — is the permanent artifact, and `tests/migrate_round_trip.rs` is what
-# keeps reading it. The step survives so the script still documents how that
-# fixture was made, and so it can be pointed at some other repository's legacy
-# tree with `REPO_ROOT=` if one ever needs freezing.
-[ -d "$REPO_ROOT/.storyhook" ] || {
-  echo "capture-baseline: no .storyhook/ directory to freeze — this repository" >&2
-  echo "  was migrated in W7; the frozen tree is docs/rearch/baseline/legacy-tree.tar.gz" >&2
-  exit 1
-}
+# keeps reading it. It survives so the script still documents how that fixture
+# was made, and so it can be pointed at some other repository's legacy tree with
+# `REPO_ROOT=` if one ever needs freezing.
+#
+# Skipped rather than fatal, and the difference matters at a wave boundary: this
+# script's *other* job is the timings and the test inventory, which are exactly
+# what a later wave needs to diff against the baseline. Aborting here because a
+# directory the program deliberately retired is missing would make the tool
+# unusable for the comparison it was built to enable — and W8 is the wave that
+# needed it. `project.toml` rather than the directory itself is the test, because
+# a pre-flip `story` on `PATH` still creates a bare `.storyhook/lock` beside any
+# repository it runs in.
+TREE_FILE_COUNT=0
+TREE_BYTES=0
+if [ -f "$REPO_ROOT/.storyhook/project.toml" ]; then
+say "freezing the legacy .storyhook tree"
 
 # Runtime files are excluded exactly as .storyhook/.gitignore excludes them: a
 # lock file and SQLite's sidecars are not project data, and a stray `lock` in an
@@ -615,6 +648,12 @@ ARCHIVE_DB="$REPO_ROOT/.storyhook/archive/archive.db"
     printf -- '-- It is created lazily, by the first `story move <id> <a-DONE-state>`.\n'
   fi
 } >"$OUT/archive-schema.sql"
+else
+  say "no legacy .storyhook/ tree here — leaving the frozen fixtures alone"
+  echo "  This repository was migrated in W7. legacy-tree.tar.gz, legacy-tree.txt," >&2
+  echo "  golden-export.json and archive-schema.sql in docs/rearch/baseline/ are" >&2
+  echo "  permanent historical artifacts and are neither regenerated nor removed." >&2
+fi
 
 # ---------------------------------------------------------------------------
 # Timings — per test binary
