@@ -100,7 +100,6 @@ tui-textarea = "0.7"
 tui-input = "0.11"
 ratatui-macros = "0.6"
 tui-scrollview = "0.6"
-notify = "7"
 
 # The RPC client. Not optional: the CLI's default invoker talks to the daemon
 # over HTTP (locked decision 2), so a storyhook built without an HTTP client

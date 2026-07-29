@@ -32,12 +32,13 @@ use super::theme::Theme;
 
 /// Run the TUI application.
 ///
-/// `root` survives for exactly one reason: the filesystem watcher in
-/// [`EventSource`], which has no seam equivalent until the daemon publishes a
-/// change feed. Everything else — every read and every mutation — goes
-/// through [`Invoker`].
+/// `root` is the directory the project is resolved from, and nothing else reads
+/// it: every read and every mutation goes through [`Invoker`]. Live updates come
+/// from the store's own change token rather than from a watcher over `root` —
+/// see [`EventSource`].
 pub fn run(root: &Path) -> Result<(), AppError> {
     let environment = crate::env::Environment::from_process()?;
+    let event_environment = environment.clone();
     let store = crate::invoke::open_store(&environment)?;
     let invoker = StoreInvoker::new(&store, root, environment);
     let data = DataStore::load(&invoker)?;
@@ -45,7 +46,7 @@ pub fn run(root: &Path) -> Result<(), AppError> {
     let theme = Theme::from_env();
 
     let mut term = terminal::init()?;
-    let (event_source, rx) = EventSource::new(root);
+    let (event_source, rx) = EventSource::new(&event_environment);
 
     // Get initial terminal size
     if let Ok(size) = term.size() {
