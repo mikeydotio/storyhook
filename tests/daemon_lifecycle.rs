@@ -178,6 +178,29 @@ fn stopping_nothing_says_so_and_succeeds() {
         .stdout(predicates::str::contains("not running"));
 }
 
+/// The backups are reported by `daemon status` rather than by `doctor`: a
+/// project's integrity and a machine's copies of the database are different
+/// questions, and only one of them has an exit code that means something.
+#[test]
+fn status_reports_the_backups() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+
+    env.story(dir.path())
+        .args(["daemon", "status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("backups:"));
+
+    let _guard = DaemonGuard(&env);
+    start(&env);
+    env.story(dir.path())
+        .args(["daemon", "status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("backups: 1"));
+}
+
 #[test]
 fn status_describes_a_running_daemon_and_an_absent_one() {
     let env = TestEnv::isolated();

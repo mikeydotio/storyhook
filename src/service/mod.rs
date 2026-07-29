@@ -117,6 +117,7 @@ pub struct Ctx<'a, S: Store> {
     hook_depth: u32,
     cwd: PathBuf,
     env: Environment,
+    stdin: Option<String>,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
@@ -141,7 +142,20 @@ impl<'a, S: Store> Ctx<'a, S> {
             hook_depth: 0,
             cwd: cwd.into(),
             env,
+            stdin: None,
         }
+    }
+
+    /// Supplies the standard input this invocation should read, instead of this
+    /// process's own.
+    ///
+    /// The daemon does not have the client's terminal, so a command that reads
+    /// stdin has it read on the client and carried in the request envelope. A
+    /// `--local` run leaves this unset and reads its own.
+    #[must_use]
+    pub fn with_stdin(mut self, stdin: Option<String>) -> Self {
+        self.stdin = stdin;
+        self
     }
 
     /// Suppresses the project's event hooks, as `--no-hooks` does.
@@ -203,6 +217,13 @@ impl<'a, S: Store> Ctx<'a, S> {
     #[must_use]
     pub fn depth(&self) -> u32 {
         self.hook_depth
+    }
+
+    /// The standard input this invocation should read, if the caller supplied
+    /// it rather than leaving this process to read its own.
+    #[must_use]
+    pub fn stdin(&self) -> Option<&str> {
+        self.stdin.as_deref()
     }
 
     /// The current time, from this context's [`Clock`].

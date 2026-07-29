@@ -267,6 +267,17 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
         info.version, info.port, info.pid
     );
 
+    // Before serving anything: one global database is one global blast radius,
+    // and a daemon start is the only moment on this machine that reliably
+    // happens both after a reboot and after every upgrade. A backup that cannot
+    // be taken is reported and not fatal — a machine with a read-only backup
+    // directory should still get a tracker.
+    match crate::daemon::backup::run_if_due(store, env) {
+        Ok(Some(path)) => eprintln!("storyhook daemon: wrote a backup to {}", path.display()),
+        Ok(None) => {}
+        Err(e) => eprintln!("warning: storyhook could not write a backup: {e}"),
+    }
+
     let bus = crate::daemon::bus::ChangeBus::new();
     super::serve::serve(
         store,

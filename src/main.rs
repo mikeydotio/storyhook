@@ -100,9 +100,23 @@ fn main() {
     // The work goes through the Invoker seam; `json` and `quiet` never do,
     // because rendering is this process's job no matter where the answer
     // came from.
-    let request = InvokeRequest::new(invocation).no_hooks(flags.no_hooks);
+    // A command that reads standard input has it read *here*, before anything
+    // is dispatched. This process is the one with a terminal; a daemon has no
+    // way to reach it, and a `--local` run gets the same content by the same
+    // route rather than by a second code path.
+    let piped = if storyhook::invoke::reads_stdin(&invocation) {
+        match read_stdin() {
+            Ok(content) => Some(content),
+            Err(error) => fail(&error, json),
+        }
+    } else {
+        None
+    };
+    let request = InvokeRequest::new(invocation)
+        .no_hooks(flags.no_hooks)
+        .stdin(piped);
     let depth = storyhook::event_hooks::depth_from_env();
-    let result = if run_locally(&flags) {
+    let result = if run_locally(&flags, &request.invocation) {
         match storyhook::invoke::open_store(&environment) {
             Ok(store) => StoreInvoker::new(&store, &cwd, environment.clone())
                 .hook_depth(depth)
@@ -126,6 +140,16 @@ fn main() {
     }
 }
 
+/// This process's standard input, read to the end.
+fn read_stdin() -> Result<String, storyhook::error::AppError> {
+    use std::io::Read as _;
+    let mut buffer = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buffer)
+        .map_err(|e| storyhook::error::AppError::Storage(format!("failed to read stdin: {e}")))?;
+    Ok(buffer)
+}
+
 /// Whether this command runs in this process rather than through the daemon.
 ///
 /// `--local`, or `STORYHOOK_INVOKER=local` — the same mode, spelled for a flag
@@ -140,8 +164,38 @@ fn main() {
 /// naming this flag, never a silent switch to it — a silent fallback is how a
 /// dashboard goes stale while every command keeps succeeding, which is the
 /// failure shape this whole rearchitecture exists to remove.
-fn run_locally(flags: &cli::GlobalFlags) -> bool {
-    flags.local || matches!(env::var("STORYHOOK_INVOKER").as_deref(), Ok("local"))
+fn run_locally(flags: &cli::GlobalFlags, invocation: &Invocation) -> bool {
+    flags.local
+        || matches!(env::var("STORYHOOK_INVOKER").as_deref(), Ok("local"))
+        || never_through_the_daemon(invocation)
+}
+
+/// Commands that must run in this process whatever the invoker is set to.
+///
+/// Three families, for three different reasons:
+///
+/// * **The daemon's own lifecycle.** `story daemon stop` asking the daemon to
+///   run `story daemon stop` is circular, and auto-spawn makes it worse: the
+///   command that stops a daemon would start one first. Found by
+///   `make test-daemon`, where it did not fail — it hung.
+/// * **Self-update.** `story update` replaces the binary the daemon is running.
+///   Doing that from inside that daemon is asking it to saw the branch off.
+/// * **Pure functions of compiled-in text.** `--help` and `--version` are
+///   answered from a string constant. Starting a background process to print
+///   one — which is what a first-ever `story --help` would do — is a bad first
+///   impression and buys nothing.
+fn never_through_the_daemon(invocation: &Invocation) -> bool {
+    matches!(
+        invocation,
+        Invocation::Daemon { .. }
+            | Invocation::Web { .. }
+            | Invocation::Update { .. }
+            | Invocation::Help
+            | Invocation::HelpTopic { .. }
+            | Invocation::HelpCompact
+            | Invocation::HelpAll
+            | Invocation::Version
+    )
 }
 
 /// The port a foreground `--serve` was asked to bind, if this invocation is one.

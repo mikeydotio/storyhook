@@ -58,6 +58,13 @@ pub struct WireRequest {
     pub no_hooks: bool,
     /// How deep inside an event hook the *client* is running.
     pub hook_depth: u32,
+    /// The client's standard input, when the command reads it.
+    ///
+    /// `story import` with no file and `story decompose --stdin` read a document
+    /// the user is piping in. The daemon cannot: it has no connection to that
+    /// terminal. So the client reads it and it travels here.
+    #[serde(default)]
+    pub stdin: Option<String>,
     /// What to do.
     pub invocation: Invocation,
 }
@@ -73,8 +80,16 @@ impl WireRequest {
             cwd: cwd.into(),
             no_hooks: false,
             hook_depth: 0,
+            stdin: None,
             invocation,
         }
+    }
+
+    /// Supplies the client's standard input.
+    #[must_use]
+    pub fn stdin(mut self, stdin: Option<String>) -> Self {
+        self.stdin = stdin;
+        self
     }
 
     /// Sets whether the project's event hooks are suppressed.

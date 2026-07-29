@@ -70,7 +70,7 @@ pub mod test_support;
 pub mod types;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 
@@ -142,6 +142,13 @@ pub trait Store: Send + Sync + 'static {
     /// an eventual Postgres implementation would answer with a transaction id or
     /// a notification counter.
     fn change_token(&self) -> Result<u64, StoreError>;
+
+    /// Writes a verified copy of this store into `dir` and returns its path.
+    ///
+    /// Verified means the copy is reopened and `integrity_check`ed before this
+    /// returns: a backup that is only discovered to be corrupt when it is needed
+    /// is worse than no backup, because it was believed in.
+    fn snapshot(&self, dir: &Path) -> Result<PathBuf, StoreError>;
 }
 
 /// Everything that can be read inside a transaction.

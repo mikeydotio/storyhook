@@ -458,6 +458,11 @@ impl Store for SqliteStore {
         self.migrate_with(MIGRATIONS)
     }
 
+    fn snapshot(&self, dir: &Path) -> Result<PathBuf, StoreError> {
+        let conn = self.checkout()?;
+        migrate::snapshot(&conn, dir, "snapshot")
+    }
+
     /// SQLite's `PRAGMA data_version`.
     ///
     /// It is incremented when another *connection* commits, and — the detail
