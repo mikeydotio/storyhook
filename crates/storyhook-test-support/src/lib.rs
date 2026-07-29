@@ -39,6 +39,7 @@ mod project;
 mod scratch;
 mod server;
 mod service;
+mod store;
 
 pub use env::{TestEnv, story_binary};
 pub use project::{Project, ProjectBuilder};
@@ -48,3 +49,4 @@ pub use server::{
     wait_for_server,
 };
 pub use service::{FIXTURE_NOW, ServiceFixture, default_states, default_types};
+pub use store::project_id_at;

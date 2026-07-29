@@ -265,9 +265,32 @@ pub enum StoryEvent {
         at: String,
         text: String,
     },
+    /// Retracts a comment that was added earlier — the inverse of
+    /// [`StoryCommentAdded`](Self::StoryCommentAdded).
+    ///
+    /// Comments are the one part of a story that only ever accumulates, so
+    /// they are the one part an append-only undo cannot express by setting a
+    /// field back. The retraction names the comment it annuls by *both* its
+    /// instant and its text: storyhook's timestamps have second precision, so
+    /// two comments can share an `at`, and an audit log should say what was
+    /// withdrawn rather than merely when.
+    StoryCommentRetracted {
+        at: String,
+        comment_at: String,
+        text: String,
+    },
     StoryAssigned {
         at: String,
         member_id: String,
+    },
+    /// Clears a story's assignee — the inverse of
+    /// [`StoryAssigned`](Self::StoryAssigned) when the story had nobody before.
+    ///
+    /// Sibling of [`StoryAwaitingCleared`](Self::StoryAwaitingCleared), and
+    /// added for the same reason: a field with an event that sets it and none
+    /// that clears it cannot be put back without rewriting history.
+    StoryAssigneeCleared {
+        at: String,
     },
     StoryAwaitingSet {
         at: String,
@@ -332,10 +355,12 @@ pub enum StoryEvent {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 15] = [
+pub const EVENT_KINDS: [&str; 17] = [
     "StoryCreated",
     "StoryCommentAdded",
+    "StoryCommentRetracted",
     "StoryAssigned",
+    "StoryAssigneeCleared",
     "StoryAwaitingSet",
     "StoryAwaitingCleared",
     "StoryStateChanged",
@@ -365,7 +390,9 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
     match event {
         StoryEvent::StoryCreated { .. } => "StoryCreated",
         StoryEvent::StoryCommentAdded { .. } => "StoryCommentAdded",
+        StoryEvent::StoryCommentRetracted { .. } => "StoryCommentRetracted",
         StoryEvent::StoryAssigned { .. } => "StoryAssigned",
+        StoryEvent::StoryAssigneeCleared { .. } => "StoryAssigneeCleared",
         StoryEvent::StoryAwaitingSet { .. } => "StoryAwaitingSet",
         StoryEvent::StoryAwaitingCleared { .. } => "StoryAwaitingCleared",
         StoryEvent::StoryStateChanged { .. } => "StoryStateChanged",
@@ -387,7 +414,9 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
         .map(|event| match event {
             StoryEvent::StoryCreated { .. } => "created",
             StoryEvent::StoryCommentAdded { .. } => "comment",
+            StoryEvent::StoryCommentRetracted { .. } => "comment-retracted",
             StoryEvent::StoryAssigned { .. } => "assigned",
+            StoryEvent::StoryAssigneeCleared { .. } => "assignee-cleared",
             StoryEvent::StoryAwaitingSet { .. } => "awaiting-set",
             StoryEvent::StoryAwaitingCleared { .. } => "awaiting-cleared",
             StoryEvent::StoryStateChanged { .. } => "state-change",
@@ -541,8 +570,29 @@ pub fn fold_story(
                 });
                 updated_at = Some(at.clone());
             }
+            StoryEvent::StoryCommentRetracted {
+                at,
+                comment_at,
+                text,
+            } => {
+                // The most recent match, and a miss is a no-op rather than an
+                // error: an event log is replayed, and a replay that could fail
+                // on its own history would make a story unreadable rather than
+                // merely wrong.
+                if let Some(index) = comments
+                    .iter()
+                    .rposition(|c| &c.at == comment_at && &c.text == text)
+                {
+                    comments.remove(index);
+                }
+                updated_at = Some(at.clone());
+            }
             StoryEvent::StoryAssigned { at, member_id } => {
                 assignee = Some(member_id.clone());
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryAssigneeCleared { at } => {
+                assignee = None;
                 updated_at = Some(at.clone());
             }
             StoryEvent::StoryAwaitingSet {

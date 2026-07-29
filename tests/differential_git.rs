@@ -217,7 +217,14 @@ fn a_window_that_excludes_every_commit_agrees_on_the_empty_report() {
             assignee: None,
         },
     );
-    differential.commit(&format!("feat: {id} lands"));
+    // Dated in the past, not "now": `--since=0d` is resolved against each leg's
+    // own clock, and a commit made in the current second lands on whichever
+    // side of the cutoff the leg happens to run on — the first leg sees a
+    // cutoff equal to the commit's timestamp and includes it, the second runs
+    // after the second ticks over and does not. A fixed old timestamp makes
+    // "outside the window" a property of the fixture rather than of when the
+    // test happened to be scheduled.
+    differential.commit_at(&format!("feat: {id} lands"), Some("2020-01-01T00:00:00Z"));
     differential.step(
         "commit-sync over an empty window",
         Invocation::CommitSync {

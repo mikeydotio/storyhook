@@ -57,8 +57,20 @@ assert_eq "$after" "$before" "a test run must not touch $real_data_home"
 
 # The fixture's own storyhook state must be somewhere isolated, never in the
 # real home -- the same check from the other direction.
-project_state="$repo/.storyhook"
-[ -d "$project_state" ] || fail_test "fixture sanity: $project_state should exist"
+#
+# The state is a database under STORYHOOK_DATA_DIR now rather than a
+# `.storyhook/` directory in the repository, so this asserts the database
+# exists and sits under the isolated data home. That is the stronger form: the
+# directory was per-repo and could not have been in the real home anyway, while
+# the store is global and could.
+[ -n "${STORYHOOK_DATA_DIR:-}" ] \
+  || fail_test "fixture sanity: STORYHOOK_DATA_DIR must be set for the suite"
+[ -f "$STORYHOOK_DATA_DIR/store.db" ] \
+  || fail_test "fixture sanity: $STORYHOOK_DATA_DIR/store.db should exist"
+case "$STORYHOOK_DATA_DIR" in
+/tmp/* | /private/tmp/*) : ;;
+*) fail_test "the fixture store must live under /tmp, got [$STORYHOOK_DATA_DIR]" ;;
+esac
 case "$repo" in
 /tmp/* | /private/tmp/*) : ;;
 *) fail_test "fixtures must live under /tmp, got [$repo]" ;;

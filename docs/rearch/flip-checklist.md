@@ -14,6 +14,28 @@
 > **Counted 2026-07-28 at `1a6eb8b`.** Every count below is reproducible with the command
 > printed beside it; re-run them at the start of W4 rather than trusting these numbers, because
 > W0b–W3 will move some.
+>
+> ## ✅ CLOSED — W4 shipped 2026-07-29
+>
+> Every item below is done. The re-count at the start of the wave found **157
+> `.storyhook` references across 41 files**, not 104 across 26 — but 44 of the extra
+> ones were W3's, in files whose subject *is* the legacy tree (`service_migrate`,
+> `legacy_reader`, `legacy_support`, `migrate_round_trip`, the differential harness's
+> legacy legs), which must not be rewritten and have not been.
+>
+> **Section D, the exit criterion, is met**: both `worktree_truth` tests are un-ignored
+> and green, verified 20/20 over consecutive runs, with their assertions byte-identical
+> to the ones written against the failing behaviour. The workspace has zero ignored
+> tests.
+>
+> **Section G is closed and deleted along with `make test-store`** — the leg's exclusion
+> list went from 16 files to zero before the swap, which is what made the swap a green
+> commit. `web_test` is the exception: it stays, green, on the legacy path, because the
+> dashboard is W5's.
+>
+> The sections below are kept as written, as the record of what the wave was planned
+> against. Where the plan and the outcome differ, `docs/rearch/STATE.md`'s W4 entry says
+> so.
 
 ## Summary
 

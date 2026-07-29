@@ -341,24 +341,36 @@ fn move_if_state_under_real_concurrency_yields_exactly_one_winner() {
     );
     assert_eq!(conflicts, ATTEMPTS - 1);
 
-    // The story's own event log must be consistent with a single winner --
-    // exactly one StoryStateChanged event landed, not zero (lost write) and
-    // not many (double write / corruption).
-    let events_path = dir
-        .path()
-        .join(".storyhook")
-        .join("open")
-        .join("stories")
-        .join(format!("{id}.jsonl"));
-    let events_raw = std::fs::read_to_string(&events_path).unwrap();
-    let state_change_count = events_raw
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .filter(|event| event["kind"] == "StoryStateChanged")
+    // The story's own history must be consistent with a single winner --
+    // exactly one StoryStateChanged event landed, not zero (a lost write) and
+    // not many (a double write). This is the double-write detector, and it has
+    // to survive the storage change: it is asked of the events table now
+    // rather than of a JSONL file, and it is the same question.
+    let history = env
+        .story(dir.path())
+        .args(["--json", "show", &id])
+        .output()
+        .expect("running story show");
+    let view: serde_json::Value =
+        serde_json::from_slice(&history.stdout).expect("show --json must print JSON");
+    assert_eq!(
+        view["story"]["story"]["state"], "in-progress",
+        "the winner's state must be the one it claimed: {view}"
+    );
+
+    use storyhook::store::{ReadOps as _, Store as _};
+    let store = dir.open_store();
+    let id_in_store = dir.project_id(&store);
+    let story_no = dir.story_no(&store, &id);
+    let events = store
+        .read(|tx| tx.events_for(id_in_store, story_no))
+        .expect("reading the story's events");
+    let state_changes = events
+        .iter()
+        .filter(|event| event.kind == "StoryStateChanged")
         .count();
     assert_eq!(
-        state_change_count, 1,
-        "exactly one StoryStateChanged event must be recorded, found the raw log: {events_raw}"
+        state_changes, 1,
+        "exactly one StoryStateChanged event must be recorded, found {events:#?}"
     );
 }
