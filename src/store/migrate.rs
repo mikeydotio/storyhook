@@ -246,15 +246,51 @@ pub(crate) fn snapshot(
 
     let stamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
     let path = backup_dir.join(format!("storyhook-{stamp}-{label}.db"));
+    // Written to a private name and renamed into place, never straight to
+    // `path`. `VACUUM INTO` **refuses an output file that already exists**, and
+    // the name is a millisecond timestamp, so every process upgrading one store
+    // at one moment computes the same one — eight of them racing produce one
+    // backup and seven failed migrations. Worse, SQLite reports the collision
+    // through a stale `sqlite3_errmsg` ("table schema_migrations already
+    // exists"), which names the wrong problem entirely.
+    //
+    // The staging name carries the process id and a per-process counter, so it
+    // is unique across processes *and* threads. The rename is atomic and
+    // last-writer-wins: the losers are byte-equivalent snapshots of the same
+    // database at the same version, so which one survives does not matter.
+    let staging = backup_dir.join(format!(
+        ".storyhook-{stamp}-{label}-{}-{}.tmp",
+        std::process::id(),
+        STAGING_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
 
     // `VACUUM INTO` goes through SQLite, so it sees a consistent snapshot
     // including anything still in the write-ahead log. `fs::copy` does not.
-    conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])
-        .map_err(|e| StoreError::Backup(format!("could not write {}: {e}", path.display())))?;
+    let written = conn
+        .execute("VACUUM INTO ?1", [staging.to_string_lossy().as_ref()])
+        .map_err(|e| StoreError::Backup(format!("could not write {}: {e}", path.display())));
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
 
-    verify(&path)?;
+    if let Err(error) = verify(&staging) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(error);
+    }
+
+    std::fs::rename(&staging, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&staging);
+        StoreError::Backup(format!("could not write {}: {e}", path.display()))
+    })?;
     Ok(path)
 }
+
+/// Distinguishes two backups taken by one process in the same millisecond.
+///
+/// The process id alone is not enough: `make test` runs many tests in threads
+/// inside one binary, and two of them can migrate two stores at once.
+static STAGING_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The pre-migration backup: a snapshot labelled with the version it was taken
 /// from.
@@ -263,6 +299,10 @@ fn back_up(conn: &Connection, backup_dir: &Path, from_version: u32) -> Result<Pa
 }
 
 /// Opens a backup and asserts SQLite considers it sound.
+///
+/// The message names `path` — which, when [`snapshot`] calls it, is the staging
+/// name rather than the final one. That is deliberate: the file the operator
+/// would go and look at is the one that exists.
 fn verify(path: &Path) -> Result<(), StoreError> {
     fire(FaultPoint::BackupVerify)
         .map_err(|e| StoreError::Backup(format!("{} did not verify: {e}", path.display())))?;
