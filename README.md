@@ -2,14 +2,14 @@
 
 `story` is a CLI-first story and issue tracker built for local repositories, scripting, and AI coding agents.
 
-It keeps active work in project-local JSON event logs, archives closed work into SQLite, and favors short commands that are easy to type, pipe, and automate.
+It keeps every project's stories in one local SQLite store as an append-only event log, and favors short commands that are easy to type, pipe, and automate.
 
 ## Why `story`
 
-- Local-first: project data lives in `/.storyhook` so it can travel with the repository.
+- Local-first: everything lives on your machine, in one store you own — no server, no account.
 - Agent-friendly: concise commands, stable `--json` output, and explicit exit codes.
-- Audit-friendly: open stories are append-only JSONL event streams.
-- Safe under concurrent use: all writes use a project-scoped file lock; archived stories live in SQLite with WAL enabled.
+- Audit-friendly: a story *is* its event history; the row you read is a fold of it, and `story doctor` checks that it still is.
+- Safe under concurrent use: writes are SQLite transactions, so two agents, a git hook and the dashboard can share one store.
 
 ## Current capabilities
 
@@ -340,29 +340,41 @@ Notes:
 
 ## Storage model
 
-Project data lives in `/.storyhook`:
+Stories live in one store outside your repositories:
 
 ```text
-.storyhook/
-  project.toml
-  states.toml
-  members.jsonl
-  next-id
-  lock
-  open/
-    stories/
-      SH-1.jsonl
-  archive/
-    archive.db
-    archive.db-wal
+$XDG_DATA_HOME/storyhook/store.db      # ~/.local/share/storyhook/store.db
+$XDG_STATE_HOME/storyhook/             # ~/.local/state/storyhook/
+  daemon.json  daemon.pid  daemon.log
+  backups/
+```
+
+What a repository carries is one committed file:
+
+```toml
+# .storyhook.toml
+schema = 1
+uuid = "291ea25f-3363-4b5d-9051-66636c1066f9"
+prefix = "SH"
+
+[plugin]          # optional, user-authored; storyhook reads it and never writes it
+enabled = true
+tracking = "normal"
 ```
 
 Behavior:
 
-- Open stories are stored as append-only JSONL event streams.
-- Closed stories are archived into SQLite.
-- The story ID counter is project-local and monotonic: `SH-1`, `SH-2`, `SH-3`, ...
-- Every write acquires a project-scoped file lock before mutating state.
+- Every story is an append-only event history; the queryable row is a fold of it.
+- Commands resolve their project from the working directory or any ancestor, by
+  the pointer file first and the recorded path second — so a fresh clone at a
+  path storyhook has never seen still finds its stories.
+- **Every checkout of a repository is the same project.** Linked worktrees
+  included: there is no per-checkout copy to diverge.
+- The story ID counter is per project and monotonic: `SH-1`, `SH-2`, `SH-3`, ...
+- Writes are transactions. A failed write leaves nothing behind, including the
+  story number it would have used.
+- Migrating from the old per-repository layout: `story migrate`. It never writes
+  to the `.storyhook/` directory it reads — that directory is your rollback.
 
 ## Web dashboard
 
@@ -394,9 +406,9 @@ Open the URL printed on start — `http://127.0.0.1:<port>` by default, or your 
 
 It's a single self-contained page with no external dependencies (no CDN, no build step) and no mocked data — every action goes through the same validated, event-sourced write path as the CLI.
 
-The dashboard is a single background daemon shared by every registered repo — not one per project. Registered repos live in `~/.storyhook/registry.toml`; the daemon's PID file, lock file, and log are at `~/.storyhook/web.pid` / `~/.storyhook/web.lock` / `~/.storyhook/web.log`.
+The dashboard is a single background daemon shared by every registered repo — not one per project, and the same daemon the CLI talks to. Registered repos are rows in the store: the catalog *is* the projects table, so there is no separate registry file to fall out of step with it. The daemon's portfile, PID file and log live under `$XDG_STATE_HOME/storyhook/` (`~/.local/state/storyhook/` by default).
 
-> **Upgrading from a per-repo dashboard:** earlier versions ran one daemon per project, started from inside it, with its PID/lock/log under that project's own `.storyhook/`. If you have one of those still running, `story web stop` from this version won't see it (it only knows about the new global daemon) — stop it manually, then `story web register` your project(s) and start the new dashboard.
+> **Upgrading from a per-repo dashboard:** earlier versions ran one daemon per project, started from inside it, with its PID/lock/log under that project's own `.storyhook/`. If you have one of those still running, `story web stop` from this version won't see it — stop it manually, then `story web register` your project(s) and start the new dashboard.
 
 ### Network exposure
 

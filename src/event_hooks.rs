@@ -257,7 +257,7 @@ pub fn build_payload(fields: serde_json::Value) -> String {
 
 pub fn list_hooks(root: &Path) -> String {
     match load_hooks_config(root) {
-        None => "no hooks configured (no .storyhook/hooks.toml)".to_string(),
+        None => "no hooks configured (no `[hooks]` table in .storyhook.toml)".to_string(),
         Some(config) => {
             let mut lines = Vec::new();
             let events: [(&str, &Option<HookDef>); 7] = [
@@ -301,7 +301,9 @@ pub fn test_hook(root: &Path, event_type_str: &str) -> Result<String, crate::err
     })?;
 
     let config = load_hooks_config(root).ok_or_else(|| {
-        crate::error::AppError::NotFound("no .storyhook/hooks.toml found".to_string())
+        crate::error::AppError::NotFound(
+            "no event hooks configured; add a `[hooks]` table to .storyhook.toml".to_string(),
+        )
     })?;
 
     let hook = resolve_hook(&config, event_type).ok_or_else(|| {
