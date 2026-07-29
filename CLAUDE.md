@@ -27,7 +27,7 @@ Versioning settings are in `.semver/config.yaml`. Do not modify this file unless
 
 ## Rearchitecture roadmap
 
-Story data is moving out of per-repo `.storyhook/` directories into one global SQLite store
+Story data has moved out of per-repo `.storyhook/` directories into one global SQLite store
 behind a local daemon. Design of record: [`docs/spec/data-layer-rearchitecture.md`](docs/spec/data-layer-rearchitecture.md).
 Execution state — wave status, step log, discovered defects — lives in
 [`docs/rearch/STATE.md`](docs/rearch/STATE.md); read it before resuming this program.
@@ -42,11 +42,11 @@ Execution state — wave status, step log, discovered defects — lives in
 | W2c | query + integrity services; TUI onto the seam; 38 of 48 arms ported | **complete — merged** |
 | W2d | git/GitHub/transfer services; **all 48 arms ported**; the store test leg | **complete — merged** |
 | W3 | `src/legacy/` reader, `story migrate`, the round-trip rollback gate | **complete — merged** |
-| W4 | **the flip**: the global store is the default; `worktree_truth` green | **complete — PR open**. Revert only while `migrate_round_trip` is 4/4 green — procedure in the flip checklist's section D2 |
-| W5 | daemon promotion + `/api/v1/invoke` transport | **complete — PR open**, except the quarantine deletion, which W6 carried out |
-| W6 | the quarantine deleted (10,849 lines); full commit-body scanning; link idempotency as a DB constraint | **complete — PR open** |
-| W7 | migrate this repo; retire `.storyhook/`; file the defect ledger | next |
-| W8 | crash, concurrency, and corruption hardening | pending |
+| W4 | **the flip**: the global store is the default; `worktree_truth` green | **complete — merged**. Revert only while `migrate_round_trip` is 4/4 green — procedure in the flip checklist's section D2 |
+| W5 | daemon promotion + `/api/v1/invoke` transport | **complete — merged**, except the quarantine deletion, which W6 carried out |
+| W6 | the quarantine deleted (10,849 lines); full commit-body scanning; link idempotency as a DB constraint | **complete — merged** |
+| W7 | this repo's own tracker migrated; `.storyhook/` retired; the defect ledger filed | **complete — PR open** |
+| W8 | crash, concurrency, and corruption hardening — **the last wave** | next |
 
 Standing rules for every wave:
 

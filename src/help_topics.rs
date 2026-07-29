@@ -18,13 +18,23 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
             "init",
             r#"story init [--prefix <PREFIX>]
 
-Initialize a storyhook project in the current directory. Creates the
-.storyhook/ directory with default states (todo, done), an empty members
-file, and a CLAUDE.md with workflow instructions.
+Initialize a storyhook project for the current directory. Creates the
+project in storyhook's store with default states (todo, in-progress,
+done) and default types, writes .storyhook.toml naming it, and generates
+an AGENTS.md if the repository has none.
+
+Commit .storyhook.toml. It is how a fresh clone — or a linked worktree —
+knows which project this checkout belongs to before it has a local
+database row to consult.
 
 When to use:
-  At the start of a new project, or when you enter a repo that doesn't
-  have .storyhook/ yet. Only needs to be run once per project.
+  At the start of a new project, or when you enter a repo that has no
+  .storyhook.toml yet. Idempotent: run again and it re-registers this
+  checkout, leaving the catalog and the prefix alone.
+
+  If the repository still keeps its stories in a .storyhook/ directory,
+  init refuses and points you at 'story migrate' — initializing would
+  mint an empty second project beside data you still have.
 
 Examples:
   story init                  # Default prefix "SH" → stories are SH-1, SH-2, ...
@@ -142,7 +152,7 @@ story state remove <slug> [--move-stories-to <slug>]
 story state reorder <slug,slug,...>
 
 Configure the project's states — the vocabulary every story moves
-through, stored in .storyhook/states.toml. Each state maps to a
+through, stored with the project. Each state maps to a
 superstate (OPEN or CLOSED) that decides whether stories in it count as
 open work; moving a story into a CLOSED state closes and archives it.
 
@@ -387,8 +397,9 @@ Run integrity checks on the storyhook project data. Detects orphaned
 relationships, invalid states, and data inconsistencies.
 
 When to use:
-  When stories seem inconsistent, after manual edits to .storyhook/
-  files, or periodically as a health check. Use --fix to auto-repair.
+  When stories seem inconsistent, or periodically as a health check.
+  Use --fix to auto-repair. Also checks that each story's stored row
+  still equals a fold of its own event history.
 
 Examples:
   story doctor          # Check only, report issues
@@ -469,12 +480,12 @@ Examples:
   story github-sync SH-1            # Sync a single story
   story github-sync --dry-run       # Preview changes without applying
 
-Configuration (in .storyhook/project.toml):
-  [github]
-  sync_mode = "manual"    # off | manual | auto
+Configuration (per project, in the store):
+  sync_mode = "manual"    # off | manual
 
-  When sync_mode = "auto", any story-modifying command triggers a
-  sync for the affected story automatically.
+  Note: "auto" is accepted and currently does nothing — the code that
+  acted on it was removed with the legacy write path and has not been
+  reinstated. Treat it as "manual" until it is.
 
 Related:
   story commit-sync  — Link git commits to stories
@@ -504,7 +515,7 @@ Examples:
   story scaffold cursor-rules     # Generate .cursorrules content
 
 Related:
-  story init         — Initialize project (creates .storyhook/CLAUDE.md)
+  story init         — Initialize project (writes .storyhook.toml)
   story load-context — Project state for session start
 "#,
         );
@@ -529,7 +540,7 @@ Examples:
 
 Related:
   story commit-sync  — Manual git sync (hooks automate this)
-  .storyhook/hooks.toml — Event hook configuration file
+  [hooks] in .storyhook.toml — Event hook configuration
 "#,
         );
 
@@ -1305,13 +1316,15 @@ Security:
   allowlist for writes, it does not change what the server binds.
 
 How it works:
-  Registered repos live in ~/.storyhook/registry.toml — the one piece
-  of storyhook state that isn't scoped to a single project. 'story web
-  start' spawns a single background process (not one per repo) that
+  Registered repos are rows in the store — the catalog is the same
+  projects table the CLI reads, so a repo you have used is a repo the
+  dashboard can show. 'story web start' spawns a single background
+  process (not one per repo) that
   binds 127.0.0.1 and, if available, your Tailscale IP (never
   0.0.0.0, never a plain LAN address — best-effort: a failed tailnet
   bind just falls back to localhost-only, logged as a warning). Its
-  PID file, lock, and log live at ~/.storyhook/web.{pid,lock,log}. It
+  PID file, lock, and log live under $XDG_STATE_HOME/storyhook
+  (~/.local/state/storyhook by default). It
   polls GET /api/repos every 3 seconds for the repo list, and — for
   whichever repo is selected — GET /api/repos/<id>/data for that
   repo's stories, calling POST/PATCH/DELETE /api/repos/<id>/story/...
@@ -1449,7 +1462,7 @@ pub fn compact_reference() -> &'static str {
     r#"storyhook — CLI story tracker for AI-assisted development
 
 LIFECYCLE
-  story init [--prefix P]         Initialize project (.storyhook/ directory)
+  story init [--prefix P]         Initialize project (writes .storyhook.toml)
   story new "<title>"             Create a story, returns assigned ID
   story show <id>                 Full details for a single story
   story move <id> <state>         Transition state (e.g., todo → in-progress → done)
