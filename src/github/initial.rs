@@ -96,25 +96,14 @@ pub fn run_initial_setup(sync: &dyn SyncStorage) -> Result<GithubSyncConfig, App
     };
 
     // 6. Ask sync mode
-    let mode_options = &[
-        "Manual (run `story github-sync` explicitly)",
-        "Auto (sync on every story change)",
-        "Off (disable sync)",
-    ];
-
     let mode_selection = Select::new()
         .with_prompt("Sync mode")
-        .items(mode_options)
+        .items(MODE_OPTIONS)
         .default(0)
         .interact()
         .map_err(|e| AppError::Usage(format!("selection cancelled: {e}")))?;
 
-    let mode = match mode_selection {
-        0 => SyncMode::Manual,
-        1 => SyncMode::Auto,
-        2 => SyncMode::Off,
-        _ => SyncMode::Manual,
-    };
+    let mode = mode_for_selection(mode_selection);
 
     // 7. Save config and return
     let config = GithubSyncConfig {
@@ -133,6 +122,37 @@ pub fn run_initial_setup(sync: &dyn SyncStorage) -> Result<GithubSyncConfig, App
     eprintln!("Sync config saved.");
 
     Ok(config)
+}
+
+/// The sync modes this build can actually honour.
+///
+/// **`auto` is deliberately absent.** It used to be here, and picking it
+/// configured a project for a behaviour that no longer exists: auto-sync fired
+/// from the tail of the pre-rearchitecture `app::run`, was never given an
+/// equivalent on the invoker, and was deleted with the rest of the legacy write
+/// path. Offering a choice that silently does nothing is worse than not
+/// offering it — the same rule that made `story web register --name` silently
+/// dropping its argument a defect rather than a quirk.
+///
+/// Reinstating it is a feature rather than a repair: an honest auto-sync makes a
+/// network call to GitHub on the tail of every story-modifying command, in the
+/// daemon as well as locally, and needs a failure policy, a timeout and a
+/// re-entrancy story before any of that is safe. SH-68 carries that design.
+const MODE_OPTIONS: &[&str] = &[
+    "Manual (run `story github-sync` explicitly)",
+    "Off (disable sync)",
+];
+
+/// The mode a menu selection means.
+///
+/// Out-of-range selections fall back to manual, which is `SyncMode`'s own
+/// default and the least surprising answer to a question that cannot be
+/// answered.
+fn mode_for_selection(selection: usize) -> SyncMode {
+    match selection {
+        1 => SyncMode::Off,
+        _ => SyncMode::Manual,
+    }
 }
 
 /// Import all open GitHub issues: create a mapping entry for each.
@@ -223,4 +243,46 @@ fn handle_match_by_title(
     }
 
     Ok(mappings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The menu must not offer a mode this build does not honour. Picking it
+    /// configured a project for nothing at all, silently — which is the same
+    /// shape as a flag that is accepted and dropped.
+    #[test]
+    fn the_setup_menu_offers_no_mode_that_does_nothing() {
+        assert_eq!(MODE_OPTIONS.len(), 2);
+        for label in MODE_OPTIONS {
+            assert!(
+                !label.to_lowercase().contains("auto"),
+                "the menu must not offer auto while nothing implements it: {label}"
+            );
+        }
+        for selection in 0..MODE_OPTIONS.len() {
+            assert_ne!(
+                mode_for_selection(selection),
+                SyncMode::Auto,
+                "no selection may produce a mode nothing acts on"
+            );
+        }
+    }
+
+    /// Every label must map to the mode it describes, and the mapping is by
+    /// index — so a reordered menu that silently swapped `manual` and `off`
+    /// would turn a user's "off" into live syncing.
+    #[test]
+    fn every_menu_position_means_what_it_says() {
+        assert!(MODE_OPTIONS[0].starts_with("Manual"));
+        assert_eq!(mode_for_selection(0), SyncMode::Manual);
+        assert!(MODE_OPTIONS[1].starts_with("Off"));
+        assert_eq!(mode_for_selection(1), SyncMode::Off);
+        assert_eq!(
+            mode_for_selection(99),
+            SyncMode::Manual,
+            "an impossible selection falls back to SyncMode's own default"
+        );
+    }
 }

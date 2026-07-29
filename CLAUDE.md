@@ -46,25 +46,36 @@ Execution state — wave status, step log, discovered defects — lives in
 | W5 | daemon promotion + `/api/v1/invoke` transport | **complete — merged**, except the quarantine deletion, which W6 carried out |
 | W6 | the quarantine deleted (10,849 lines); full commit-body scanning; link idempotency as a DB constraint | **complete — merged** |
 | W7 | this repo's own tracker migrated; `.storyhook/` retired; the defect ledger filed | **complete — PR open** |
-| W8 | crash, concurrency, and corruption hardening — **the last wave** | next |
+| W8 | crash, concurrency, and corruption hardening — **the last wave** | **complete — PR open**, stacked on W7 |
+
+**The program is complete.** What remains is release-from-`main`, listed in
+HANDOFF.md: reinstall the `story` binary (the installed one predates the flip),
+`story web register` from the main checkout, and `/semver bump major`.
 
 Standing rules for every wave:
 
 - Every commit passes `make test`; history stays bisectable and two-hats clean.
 - **`make test` runs the suite in this process** (`STORYHOOK_INVOKER=local`);
-  **`make test-daemon` runs the identical suite over `/api/v1/invoke`.** They stay separate:
-  two thousand tests each taking a network hop through one daemon would be slower and would
-  couple every test to one process's health, and the in-process-vs-RPC byte-comparison test is
-  what proves the two modes agree. `--test-threads=4` in the daemon leg is a **bound on how
-  many daemons exist at once**, not tuning.
+  **`make test-daemon` runs the identical suite over `/api/v1/invoke`**; **`make gate` runs
+  both** and is what a wave ends with and what a change to the tests should run. They stay
+  separate because `test` is 114s against a 180s ceiling and the leg is another 60s — and
+  because what the leg catches (a fixture that is only correct when nothing holds the store)
+  is introduced when a test is *written*. `--test-threads=4` there is a **bound on how many
+  daemons exist at once**, kept as a measured decision; the arithmetic is on the target.
 - **`make test` must keep its isolated `STORYHOOK_DATA_DIR`** (`scripts/run-tests.sh`).
   ~45 test files still build fixtures with `tempfile::tempdir()` and inherit the process
   environment; without the override a test run writes into the developer's real store.
-- **`app::run`, `storage.rs`'s write half, `lock.rs` and `registry.rs` are quarantined and
-  now genuinely dead** — the dashboard was their last caller and it runs on the services.
-  Deleting them is mechanical; HANDOFF.md carries the measured blast radius. Do not add
-  callers: `invoker_seam.rs::the_legacy_path_is_reachable_only_from_the_web_dashboard` fails
-  on any.
+- **`app::run`, `lock.rs` and `registry.rs` are gone** (W6, 10,849 lines). `storage.rs`
+  survives on purpose as the **rollback path** — `store -> export -> a legacy tree`, which
+  `tests/migrate_round_trip.rs` runs end to end and the W4 revert policy is conditional on.
+  Nothing under `src/` may call it: `invoker_seam.rs::the_legacy_write_path_is_gone` fails if
+  a `src/` file so much as names `crate::storage`.
+- **A test that asks about bytes on disk must not have a daemon** — use
+  `ProjectBuilder::local()`. A daemon holds the store open with its own page cache and log
+  handle, so it answers reads from memory and does not notice the file being replaced.
+- **A test build refuses to resolve a real data home** (`storyhook::env::is_test_build`), which
+  is what makes a bare `cargo test` safe. Consequence: the binary `cargo test` leaves in
+  `target/debug` will not touch a real store; `cargo build` produces one that will.
 - **Nothing in any test may bind port 3456 or outlive its run.** Four places export
   `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` and `STORYHOOK_PARENT_PID`: `scripts/run-tests.sh`,
   `TestEnv`, and *both* `plugin/claude-code/tests/{lib.sh,run-tests.sh}` — the last two

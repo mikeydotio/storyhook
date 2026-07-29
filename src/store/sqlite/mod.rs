@@ -178,8 +178,8 @@ impl SqliteStore {
             write_lock: Mutex::new(()),
             change_conn: Mutex::new(Connection::open_in_memory()?),
         };
-        let conn = store.new_connection()?;
-        migrate::ensure_readable(&conn, current_schema_version())?;
+        let conn = store.explain_corruption(store.new_connection())?;
+        store.explain_corruption(migrate::ensure_readable(&conn, current_schema_version()))?;
         store.change_conn = Mutex::new(conn);
         Ok(store)
     }
@@ -205,8 +205,8 @@ impl SqliteStore {
     /// migration in the tree.
     pub fn migrate_with(&self, migrations: &[Migration]) -> Result<MigrationReport, StoreError> {
         let _guard = self.write_guard();
-        let conn = self.checkout()?;
-        migrate::run(&conn, migrations, &self.config.backup_dir)
+        let conn = self.explain_corruption(self.checkout())?;
+        self.explain_corruption(migrate::run(&conn, migrations, &self.config.backup_dir))
     }
 
     /// The number of connections currently idle in the pool.
@@ -232,6 +232,56 @@ impl SqliteStore {
         self.write_lock
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Rewrites a corruption error into a diagnosis and a way back.
+    ///
+    /// Applied at every public entry point rather than at the connection,
+    /// because damage does not only surface on open: a database restored over a
+    /// hot write-ahead log opens perfectly well and then reports `database disk
+    /// image is malformed` from the first statement that reads a bad page. Two
+    /// facts a user needs are known here and nowhere deeper — *which* file it is,
+    /// and where its verified snapshots live — so this is where the message is
+    /// composed, rather than in [`StoreError::from_sqlite`], which has neither.
+    ///
+    /// **The restore procedure is spelled out in full, sidecars included.** A
+    /// snapshot copied over `store.db` alone leaves the old database's `-wal`
+    /// and `-shm` beside the new database's pages, and SQLite replays one into
+    /// the other; the naive procedure turns a recoverable machine into a
+    /// malformed one. Verified by
+    /// `backup_restore.rs::restoring_over_a_stale_write_ahead_log_does_not_silently_mix_two_databases`.
+    ///
+    /// Everything that is not corruption travels through unchanged: a `Busy`
+    /// here is contention, and telling a user to restore a backup because two
+    /// processes raced would be actively harmful advice.
+    fn explain_corruption<T>(&self, result: Result<T, StoreError>) -> Result<T, StoreError> {
+        result.map_err(|error| match error {
+            StoreError::Corrupt(detail) => {
+                // The sidecars are named relative to their directory rather than
+                // in full: four absolute paths in one sentence is a message
+                // nobody reads to the end of.
+                let name = self.config.db_path.file_name().map_or_else(
+                    || "store.db".to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                let dir = self
+                    .config
+                    .db_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .display();
+                StoreError::Corrupt(format!(
+                    "the storyhook store at {} is damaged: {detail}. Nothing has been \
+                     changed. storyhook keeps verified snapshots in {} — to restore one: \
+                     run `story daemon stop`, delete {name}, {name}-wal and {name}-shm \
+                     from {dir}, copy the newest snapshot there as {name}, then run \
+                     `story doctor`",
+                    self.config.db_path.display(),
+                    self.config.backup_dir.display(),
+                ))
+            }
+            other => other,
+        })
     }
 
     fn new_connection(&self) -> Result<Connection, StoreError> {
@@ -431,10 +481,12 @@ impl Store for SqliteStore {
         &self,
         f: impl FnOnce(&Self::ReadTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
-        let tx = SqliteReadTx::begin(self.checkout()?)?;
-        let value = f(&tx)?;
-        tx.end()?;
-        Ok(value)
+        self.explain_corruption((|| {
+            let tx = SqliteReadTx::begin(self.checkout()?)?;
+            let value = f(&tx)?;
+            tx.end()?;
+            Ok(value)
+        })())
     }
 
     fn write<T>(
@@ -442,16 +494,18 @@ impl Store for SqliteStore {
         f: impl FnOnce(&mut Self::WriteTx<'_>) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
         let _guard = self.write_guard();
-        let mut tx = SqliteWriteTx::begin(self.checkout()?)?;
-        // On the error path `tx` drops here and rolls back — the whole reason
-        // the transaction owns its own teardown rather than relying on a call
-        // to a `rollback` the caller might forget.
-        let value = f(&mut tx)?;
-        tx.commit()?;
-        // Durable but unacknowledged: the point a crash here must not turn
-        // into a false failure that a client retries into a duplicate write.
-        fire(FaultPoint::AfterCommitBeforeAck)?;
-        Ok(value)
+        self.explain_corruption((|| {
+            let mut tx = SqliteWriteTx::begin(self.checkout()?)?;
+            // On the error path `tx` drops here and rolls back — the whole
+            // reason the transaction owns its own teardown rather than relying
+            // on a call to a `rollback` the caller might forget.
+            let value = f(&mut tx)?;
+            tx.commit()?;
+            // Durable but unacknowledged: the point a crash here must not turn
+            // into a false failure that a client retries into a duplicate write.
+            fire(FaultPoint::AfterCommitBeforeAck)?;
+            Ok(value)
+        })())
     }
 
     fn migrate(&self) -> Result<MigrationReport, StoreError> {
@@ -459,8 +513,10 @@ impl Store for SqliteStore {
     }
 
     fn snapshot(&self, dir: &Path) -> Result<PathBuf, StoreError> {
-        let conn = self.checkout()?;
-        migrate::snapshot(&conn, dir, "snapshot")
+        self.explain_corruption((|| {
+            let conn = self.checkout()?;
+            migrate::snapshot(&conn, dir, "snapshot")
+        })())
     }
 
     /// SQLite's `PRAGMA data_version`.

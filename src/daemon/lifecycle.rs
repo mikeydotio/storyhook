@@ -416,6 +416,40 @@ fn wait_until(deadline: Duration, ready: impl Fn() -> bool) -> bool {
     ready()
 }
 
+/// How long a *control* request waits for the whole exchange.
+///
+/// These are the calls that carry no work: an identity check and a shutdown
+/// request. Both are loopback round trips against a process that is either
+/// healthy or has stopped being a daemon, so five seconds is enormous — and the
+/// question a bound answers here is not "is it slow" but "is it ever coming
+/// back".
+const CONTROL_DEADLINE: Duration = Duration::from_secs(5);
+
+/// The client storyhook talks to daemons with.
+///
+/// **Every call to a daemon needs a deadline, and none of them had one.** The
+/// tempting assumption is that loopback either answers or refuses; a process
+/// that accepts a connection and then never writes does neither, and holds its
+/// peer indefinitely. Reachable three ways, all of them real: a daemon wedged on
+/// a long operation, a daemon stuck in a probe — W0 found `tailscale status`
+/// hanging for minutes and leaving servers bound and silent — and, the case
+/// [`hello`] exists for, something that is not storyhook at all holding the
+/// port.
+///
+/// The cost of not having one was a `story daemon stop` that never returned and
+/// never said why, and it was measured: W8's concurrency soak stalled a `make
+/// test` run for twelve minutes inside a `DaemonGuard`'s teardown.
+///
+/// `timeout_global` rather than a connect timeout, because for these two calls
+/// the *answer* is the point and there is no legitimate slow case. The invoker's
+/// own request is bounded differently, and says why there.
+fn control_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(CONTROL_DEADLINE))
+        .build()
+        .into()
+}
+
 /// Asks a daemon who it is.
 ///
 /// Checked before a client trusts a daemon it discovered rather than started: a
@@ -424,7 +458,8 @@ fn wait_until(deadline: Duration, ready: impl Fn() -> bool) -> bool {
 /// and the pid, or the thing on that port is somebody else.
 pub fn hello(info: &DaemonInfo) -> Result<(), AppError> {
     let url = format!("http://127.0.0.1:{}/api/v1/hello", info.port);
-    let response = ureq::get(&url)
+    let response = control_agent()
+        .get(&url)
         .header("X-Storyhook-Token", &info.token)
         .call()
         .map_err(|e| AppError::Storage(format!("the daemon did not answer /api/v1/hello: {e}")))?;
@@ -458,7 +493,8 @@ pub struct Hello {
 /// Asks a daemon to shut down, and waits for it to let go of its pidfile.
 pub fn request_shutdown(info: &DaemonInfo) -> Result<(), AppError> {
     let url = format!("http://127.0.0.1:{}/api/v1/shutdown", info.port);
-    ureq::post(&url)
+    control_agent()
+        .post(&url)
         .header("X-Storyhook-Token", &info.token)
         .send_empty()
         .map_err(|e| AppError::Storage(format!("the daemon refused to shut down: {e}")))?;
