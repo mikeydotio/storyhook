@@ -49,11 +49,23 @@ for marker in \
   "gh pr merge --merge" \
   "story block $id" \
   "story move $id done" \
-  "semver bump" \
-  "$repo_phys"; do
+  "semver bump"; do
   case "$prompt" in
     *"$marker"*) : ;;
     *) fail_test "auto: prompt missing charter obligation [$marker]" ;;
+  esac
+done
+
+# The charter used to require every `story` write to be made from the main
+# checkout, and templated its absolute path in to say where that was. It said
+# so because a worktree carried its own copy of the tracker and a write made
+# against it was silently lost (SH-46). One store ended that: the worktree and
+# the main checkout are the same project. The clause is gone, and these pin it
+# gone — reintroducing it would send an autonomous agent `cd`-ing between
+# directories for no reason at all.
+for absent in "$repo_phys" "cd $repo_phys" "separate copy"; do
+  case "$prompt" in
+    *"$absent"*) fail_test "auto: charter still anchors story writes elsewhere [$absent]" ;;
   esac
 done
 display=$(jqf "$out" .display)

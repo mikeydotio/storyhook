@@ -36,7 +36,8 @@ Present this information clearly so the context is understood before starting wo
 
 ### 3. Read tracking mode
 
-Check `.storyhook/plugin-config.toml` for the `tracking` setting:
+Check the `[plugin]` table in `.storyhook.toml` (the committed pointer file at the repo
+root) for the `tracking` setting:
 - `quiet` -- skip progress comments, only update state
 - `normal` -- add a start comment and update state
 - `verbose` -- add detailed progress comments throughout
@@ -47,7 +48,7 @@ Default to `normal` if the config file does not exist or the key is missing.
 
 Run `story move <id> in-progress` to mark the story as active.
 
-If the project uses custom states (check `.storyhook/states.toml` for a state with `role = "active"`), use that state slug instead of `in-progress`. If there is no active-role state and `in-progress` does not exist, inform the user and ask which state to use.
+If the project uses custom states (run `story state list` and look for the one carrying the `active` role), use that state slug instead of `in-progress`. If there is no active-role state and `in-progress` does not exist, inform the user and ask which state to use.
 
 ### 5. Add start comment
 

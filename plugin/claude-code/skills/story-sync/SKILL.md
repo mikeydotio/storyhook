@@ -18,7 +18,7 @@ Before running any `story` command, confirm the CLI is installed by running `com
 
 ### 1. Run git sync
 
-Run `story sync-git --since <duration>` where duration defaults to `7d`. If the user provided a different duration (e.g., `/story-sync --since 30d`), use that value.
+Run `story commit-sync --since <duration>` where duration defaults to `7d`. If the user provided a different duration (e.g., `/story-sync --since 30d`), use that value.
 
 The sync command:
 - Scans git commit messages for story ID references (e.g., `SH-3`, `API-12`)
