@@ -34,6 +34,7 @@ pub mod git;
 #[cfg(feature = "github-sync")]
 pub mod github;
 pub mod grouping;
+pub mod history;
 pub mod integrity;
 pub mod migrate;
 pub mod project;

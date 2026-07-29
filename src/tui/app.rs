@@ -1134,7 +1134,9 @@ fn dispatch(
                 // An empty history means the story did not exist before the
                 // mutation, and `Restore` reads that as "it should not exist
                 // now" — so undoing a creation and undoing an edit are one
-                // invocation rather than two code paths.
+                // invocation rather than two code paths. Since the flip that
+                // means the story is *deleted* rather than erased: the id stays
+                // spent and `story show` still answers.
                 let result = invoke(
                     invoker,
                     Invocation::History {

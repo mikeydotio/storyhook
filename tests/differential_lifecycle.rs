@@ -1325,27 +1325,6 @@ fn the_story_view_agrees_on_derived_relationships_and_progress() {
 // --- the dispatcher's completeness gate ------------------------------------
 
 #[test]
-fn an_unported_invocation_fails_loudly_rather_than_silently() {
-    let differential = Differential::new();
-    // Every *variant* dispatches now, so the loudness contract is carried by
-    // the one action that is still owed a design: restoring a story's history
-    // means replacing it, which an append-only store cannot do.
-    let error = dispatch(
-        &differential.ctx(),
-        Invocation::History {
-            action: storyhook::cli::HistoryAction::Restore {
-                id: "SH-1".into(),
-                events: Vec::new(),
-            },
-        },
-    )
-    .expect_err("history restore is not ported");
-    let message = error.to_string();
-    assert!(message.contains("not yet ported"), "{message}");
-    assert!(message.contains("flip-checklist"), "{message}");
-}
-
-#[test]
 fn the_ported_arms_are_exactly_the_ones_this_wave_claims() {
     // A roster, so that porting an arm without updating this list — or
     // accidentally un-porting one — is a failing test rather than a surprise

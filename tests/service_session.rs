@@ -7,7 +7,6 @@
 
 use storyhook::cli::{HistoryAction, Invocation};
 use storyhook::domain::StoryEvent;
-use storyhook::error::AppError;
 use storyhook::invoke::dispatch;
 use storyhook::output::Response;
 use storyhook::service::{NewStoryInput, SessionService, StoryService};
@@ -209,22 +208,32 @@ fn reading_the_history_of_a_story_that_does_not_exist_is_empty_not_an_error() {
 }
 
 #[test]
-fn restoring_a_history_refuses_loudly_and_names_where_the_design_is_owed() {
+fn restoring_a_history_goes_through_dispatch_and_answers_with_the_story() {
+    // The action the port owed a design rather than a translation. It has one
+    // now — a compensating write — so the arm dispatches like any other and
+    // answers with the story as it stands afterwards.
     let fixture = ServiceFixture::new();
     let id = create(&fixture, "Cannot be rewound", None);
-    let error = dispatch(
+    let response = dispatch(
         &fixture.ctx(),
         Invocation::History {
             action: HistoryAction::Restore {
-                id,
+                id: id.clone(),
                 events: Vec::new(),
             },
         },
     )
-    .expect_err("an append-only store cannot replace a history");
-    assert!(matches!(error, AppError::Storage(_)), "{error}");
-    assert!(error.to_string().contains("not yet ported"), "{error}");
-    assert!(error.to_string().contains("flip-checklist"), "{error}");
+    .expect("restoring is a supported action");
+    match response {
+        Response::Story(view) => {
+            assert_eq!(view.story.id, id);
+            assert!(
+                view.story.deleted,
+                "restoring to an empty history deletes the story"
+            );
+        }
+        other => panic!("expected the story back, got {other:?}"),
+    }
 }
 
 #[test]
@@ -292,4 +301,231 @@ fn a_pointer_with_no_plugin_table_falls_back_to_the_legacy_file() {
         "the two storage models coexist until the daemon wave; a repository that \
          has not moved its config must keep working"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Undo, as compensating events
+// ---------------------------------------------------------------------------
+
+mod undo {
+    use storyhook::domain::{StoryEvent, StorySnapshot};
+    use storyhook::service::{
+        FieldEdits, NewStoryInput, RelationService, StoryService, history, session,
+    };
+    use storyhook_test_support::ServiceFixture;
+
+    /// A story, and the log it had at that moment — the TUI's undo snapshot.
+    fn snapshot(fixture: &ServiceFixture, title: &str) -> (String, Vec<StoryEvent>) {
+        let ctx = fixture.ctx();
+        let id = StoryService::new(&ctx)
+            .create(&NewStoryInput {
+                title: title.to_string(),
+                ..NewStoryInput::default()
+            })
+            .expect("creating a story")
+            .id;
+        let before = session::history(&ctx, &id).expect("reading the history");
+        (id, before)
+    }
+
+    /// The story as it stands.
+    fn show(fixture: &ServiceFixture, id: &str) -> StorySnapshot {
+        let ctx = fixture.ctx();
+        let events = session::history(&ctx, id).expect("reading the history");
+        let states = {
+            use storyhook::store::{ReadOps as _, Store as _};
+            fixture
+                .store()
+                .read(|tx| tx.state_map(fixture.project()))
+                .expect("reading the catalog")
+        };
+        storyhook::domain::fold_story(id, &events, &states).expect("folding")
+    }
+
+    /// Undoes back to `target`, returning the compensating events it appended.
+    fn undo(fixture: &ServiceFixture, id: &str, target: &[StoryEvent]) -> Vec<StoryEvent> {
+        history::restore(&fixture.ctx(), id, target).expect("restoring")
+    }
+
+    #[test]
+    fn nothing_to_undo_writes_nothing() {
+        let fixture = ServiceFixture::new();
+        let (id, before) = snapshot(&fixture, "Unchanged");
+        assert!(
+            undo(&fixture, &id, &before).is_empty(),
+            "restoring a story to what it already is must append no events"
+        );
+        assert_eq!(session::history(&fixture.ctx(), &id).unwrap(), before);
+    }
+
+    #[test]
+    fn a_move_is_undone_by_moving_back() {
+        let fixture = ServiceFixture::new();
+        let (id, before) = snapshot(&fixture, "Moves around");
+        StoryService::new(&fixture.ctx())
+            .set_state(&id, "in-progress", None, None)
+            .expect("moving");
+
+        let compensation = undo(&fixture, &id, &before);
+        assert!(matches!(
+            compensation.as_slice(),
+            [StoryEvent::StoryStateChanged { state, .. }] if state == "todo"
+        ));
+        assert_eq!(show(&fixture, &id).state, "todo");
+        // Append-only: the move is still in the history, and so is its undo.
+        assert_eq!(session::history(&fixture.ctx(), &id).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_comment_is_undone_by_retracting_it() {
+        // Comments are the one part of a story that only accumulates, so this
+        // is the inverse that needed a new event rather than a field set back.
+        let fixture = ServiceFixture::new();
+        let (id, before) = snapshot(&fixture, "Gets a comment");
+        StoryService::new(&fixture.ctx())
+            .comment(&id, "said in haste")
+            .expect("commenting");
+        assert_eq!(show(&fixture, &id).comments.len(), 1);
+
+        let compensation = undo(&fixture, &id, &before);
+        assert!(
+            matches!(
+                compensation.as_slice(),
+                [StoryEvent::StoryCommentRetracted { text, .. }] if text == "said in haste"
+            ),
+            "{compensation:?}"
+        );
+        assert!(show(&fixture, &id).comments.is_empty());
+        // The retraction names what it withdrew, so the audit trail still says
+        // the comment was made.
+        let history = session::history(&fixture.ctx(), &id).expect("history");
+        assert!(history.iter().any(
+            |e| matches!(e, StoryEvent::StoryCommentAdded { text, .. } if text == "said in haste")
+        ));
+    }
+
+    #[test]
+    fn an_assignment_is_undone_by_clearing_the_assignee() {
+        // The sibling case: a field with an event that sets it and, until now,
+        // none that cleared it.
+        let fixture = ServiceFixture::new();
+        fixture.add_member("ada", "Ada", None);
+        let (id, before) = snapshot(&fixture, "Gets assigned");
+        StoryService::new(&fixture.ctx())
+            .assign(&id, "ada")
+            .expect("assigning");
+        assert_eq!(show(&fixture, &id).assignee.as_deref(), Some("ada"));
+
+        let compensation = undo(&fixture, &id, &before);
+        assert!(
+            matches!(
+                compensation.as_slice(),
+                [StoryEvent::StoryAssigneeCleared { .. }]
+            ),
+            "{compensation:?}"
+        );
+        assert_eq!(show(&fixture, &id).assignee, None);
+    }
+
+    #[test]
+    fn a_reassignment_is_undone_by_assigning_the_previous_member() {
+        let fixture = ServiceFixture::new();
+        fixture.add_member("ada", "Ada", None);
+        fixture.add_member("grace", "Grace", None);
+        let (id, _) = snapshot(&fixture, "Changes hands");
+        StoryService::new(&fixture.ctx())
+            .assign(&id, "ada")
+            .expect("assigning");
+        let before = session::history(&fixture.ctx(), &id).expect("history");
+        StoryService::new(&fixture.ctx())
+            .assign(&id, "grace")
+            .expect("reassigning");
+
+        undo(&fixture, &id, &before);
+        assert_eq!(show(&fixture, &id).assignee.as_deref(), Some("ada"));
+    }
+
+    #[test]
+    fn the_scalar_fields_are_each_set_back() {
+        let fixture = ServiceFixture::new();
+        let (id, before) = snapshot(&fixture, "Edited everywhere");
+        StoryService::new(&fixture.ctx())
+            .set_fields(
+                &id,
+                &FieldEdits {
+                    title: Some("A new title".to_string()),
+                    priority: Some("high".to_string()),
+                    labels: Some("alpha,beta".to_string()),
+                    description: Some("said something".to_string()),
+                    blocked: Some("a decision".to_string()),
+                    ..FieldEdits::default()
+                },
+            )
+            .expect("editing");
+
+        undo(&fixture, &id, &before);
+        let after = show(&fixture, &id);
+        assert_eq!(after.title, "Edited everywhere");
+        assert_eq!(after.priority, storyhook::domain::Priority::None);
+        assert!(after.labels.is_empty(), "{:?}", after.labels);
+        assert_eq!(after.description.as_deref().unwrap_or(""), "");
+        assert_eq!(after.awaiting, None);
+    }
+
+    #[test]
+    fn a_relation_is_undone_on_both_ends() {
+        // The one inverse that has to reach a *second* story. Writing only this
+        // story's half would leave exactly the one-sided edge the schema and
+        // the doctor exist to prevent.
+        let fixture = ServiceFixture::new();
+        let (a, before) = snapshot(&fixture, "One end");
+        let (b, _) = snapshot(&fixture, "The other end");
+        RelationService::new(&fixture.ctx())
+            .relate(&a, "blocks", &b, false)
+            .expect("relating");
+        assert_eq!(show(&fixture, &b).relationships.len(), 1);
+
+        undo(&fixture, &a, &before);
+        assert!(show(&fixture, &a).relationships.is_empty());
+        assert!(
+            show(&fixture, &b).relationships.is_empty(),
+            "the far end must lose the edge too, or the undo fabricates an SH-60 violation"
+        );
+    }
+
+    #[test]
+    fn undoing_a_creation_deletes_the_story_rather_than_erasing_it() {
+        let fixture = ServiceFixture::new();
+        let (id, _) = snapshot(&fixture, "Created in error");
+
+        let compensation = undo(&fixture, &id, &[]);
+        assert!(
+            matches!(compensation.as_slice(), [StoryEvent::StoryDeleted { .. }]),
+            "{compensation:?}"
+        );
+        let after = show(&fixture, &id);
+        assert!(after.deleted);
+        assert!(
+            !session::history(&fixture.ctx(), &id).unwrap().is_empty(),
+            "the id stays spent and the history survives — an id that can vanish is \
+             an id that cannot be quoted anywhere"
+        );
+    }
+
+    #[test]
+    fn an_undo_can_itself_be_undone() {
+        // Redo, from the TUI's point of view: it is the same invocation with
+        // the two logs the other way round.
+        let fixture = ServiceFixture::new();
+        let (id, before) = snapshot(&fixture, "Back and forth");
+        StoryService::new(&fixture.ctx())
+            .set_state(&id, "in-progress", None, None)
+            .expect("moving");
+        let after_move = session::history(&fixture.ctx(), &id).expect("history");
+
+        undo(&fixture, &id, &before);
+        assert_eq!(show(&fixture, &id).state, "todo");
+        undo(&fixture, &id, &after_move);
+        assert_eq!(show(&fixture, &id).state, "in-progress");
+    }
 }

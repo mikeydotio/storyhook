@@ -163,10 +163,6 @@ impl Invoker for LegacyInvoker<'_> {
 /// decides what it does — which is the property the port was building towards
 /// and the reason [`not_yet_ported`] now has only one caller left.
 ///
-/// One *action* is still owed a design rather than a port:
-/// `History::Restore` replaces a story's history, which an append-only store
-/// cannot do; it answers loudly and points at the flip checklist.
-///
 /// `tests/differential_lifecycle.rs` holds the roster and asserts that it
 /// accounts for every variant.
 pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Response, AppError> {
@@ -389,20 +385,18 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 }
             }
         }
-        Invocation::SessionStart => SessionService::new(ctx)
-            .context()
-            .map(Response::RawJson),
+        Invocation::SessionStart => SessionService::new(ctx).context().map(Response::RawJson),
         Invocation::History { action } => match action {
             HistoryAction::Read { id } => session::history(ctx, &id).map(Response::StoryHistory),
-            // Restoring means *replacing* a story's history, which an
-            // append-only store cannot do and which needs a compensating-event
-            // design rather than a port. `docs/rearch/flip-checklist.md`
-            // category C carries the item; until it is answered the TUI's undo
-            // works on the legacy path only.
-            HistoryAction::Restore { .. } => Err(AppError::Storage(
-                "internal: `history restore` is not yet ported to the store-backed                  dispatcher — see docs/rearch/flip-checklist.md, category C"
-                    .to_string(),
-            )),
+            // Restoring does not replace a story's history — an append-only
+            // store cannot, and an audit trail whose entries can be deleted is
+            // not one. `service::history::restore` appends the events that
+            // carry the story back to what the given log folds to. See that
+            // module for what it changes for a user.
+            HistoryAction::Restore { id, events } => {
+                crate::service::history::restore(ctx, &id, &events)?;
+                ctx.story_view(&id)
+            }
         },
         Invocation::GithubSync { id, dry_run } => {
             #[cfg(feature = "github-sync")]
