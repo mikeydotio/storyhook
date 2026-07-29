@@ -20,8 +20,8 @@ that is what `/story do` is for once it's filed.
 **Exactly one `AskUserQuestion` call.** Ask only what you genuinely cannot infer;
 never pad to four questions. Useful dimensions:
 
-- **Type** — `bug` / `story` / `chore` / `task` / `epic` (the slugs in
-  `.storyhook/types.toml`; check it rather than assuming).
+- **Type** — `bug` / `story` / `chore` / `task` / `epic` (the slugs this project
+  defines; run `story type list` rather than assuming).
 - **Scope** — what's in, and explicitly what's out.
 - **Acceptance** — for a bug: expected vs. actual, plus repro steps and the last
   known good state. For a feature: the observable outcome that means "done".

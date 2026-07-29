@@ -20,18 +20,25 @@ Run `command -v story` to see if the CLI is installed.
 
 ### 2. Initialize the project
 
-Check if `.storyhook/` directory exists.
+Check whether `.storyhook.toml` exists at the repo root. That committed pointer file is what
+says which project this checkout belongs to; story data itself lives in storyhook's store,
+outside the repository.
 
-- **If missing**, run `story init` to create it
+- **If missing**, run `story init` to create the project and write the pointer
   - Ask the user if they want a custom prefix (e.g., `story init --prefix API`). The prefix is used for story IDs like `API-1`, `API-2`, etc.
+  - If `story init` reports that this repository still keeps its stories in a `.storyhook/`
+    directory, it has not been migrated. Run `story migrate --dry-run` to show what would be
+    imported, then `story migrate`. It never writes to the directory it reads.
 - **If present**, confirm the project is already initialized and show current config with `story summary`
 
 ### 3. Configure plugin behavior
 
-Create `.storyhook/plugin-config.toml` with these defaults:
+Add a `[plugin]` table to `.storyhook.toml`, alongside the identity keys `story init` wrote.
+storyhook reads this table and never rewrites it, so it is safe to edit by hand:
 
 ```toml
-# Storyhook Claude Code plugin configuration
+[plugin]
+# Set to false to turn the session hooks off entirely.
 enabled = true
 
 # Tracking verbosity: "quiet", "normal", or "verbose"

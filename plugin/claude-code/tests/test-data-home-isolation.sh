@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # The suite must never write into the developer's real storyhook data.
 #
-# This is not a hypothetical. storyhook is moving from per-project
-# `.storyhook/` directories to a single global store under the XDG data home,
-# and the fixtures here create dozens of projects and stories per run. Without
-# isolation, the first `make test` after that flip lands would pour them into
-# the tracker this project uses to track itself -- silently, and with no undo.
+# This is not a hypothetical. storyhook keeps every project's stories in a
+# single global store under the XDG data home, and the fixtures here create
+# dozens of projects and stories per run. Without isolation, every `make test`
+# would pour them into the tracker this project uses to track itself --
+# silently, and with no undo.
 #
 # So: the isolation is asserted, not assumed, and asserted by running a real
 # `story` command and then looking at what the real data home actually

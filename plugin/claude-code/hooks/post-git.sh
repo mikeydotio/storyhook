@@ -70,7 +70,7 @@ if [[ -f ".git/hooks/post-commit" ]] && grep -q "# storyhook managed hook" ".git
 fi
 
 # Run sync
-sync_output=$(story sync-git --since 1h --quiet 2>/dev/null || echo "")
+sync_output=$(story commit-sync --since 1h --quiet 2>/dev/null || echo "")
 
 if [[ -n "$sync_output" ]]; then
   # Build the JSON with python3's json.dumps rather than manual sed escaping,
