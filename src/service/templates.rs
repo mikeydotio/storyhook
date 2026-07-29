@@ -23,60 +23,134 @@ pub fn agents_md(prefix: &str, done_state: &str) -> String {
     format!(
         r#"# AGENTS.md — Project Task Management
 
-This project uses **storyhook** for task tracking. All agents must follow the workflow below.
+This project uses **storyhook** (the `story` CLI) for work tracking. All agents must
+follow the workflow below.
 
-## Workflow
+## Session lifecycle
 
-1. **Start of session**: Load project context
+1. **Start of session** — load project context:
    ```
    story load-context
    ```
-
-2. **Pick next task**: Get the highest-priority ready story
+2. **Pick the next task** — the highest-priority ready story:
    ```
    story next
    ```
-
-3. **Work on the task**: Implement the changes for the assigned story
-
-4. **Complete the task**: Mark the story as done
-   ```
-   story move <id> {done_state}
-   ```
-
-5. **End of session**: Generate a handoff summary
+3. **Claim it**: `story move {prefix}-<n> in-progress`
+4. **Record progress as you go**: `story comment {prefix}-<n> "what changed and why"`
+5. **Finish**: `story move {prefix}-<n> {done_state} "summary of what was delivered"`
+6. **End of session** — generate a handoff summary:
    ```
    story handoff --since 2h
    ```
 
-## Quick Reference
+## Planning
+
+When creating an implementation plan, create a story for each discrete work item,
+phase, or issue:
+
+```
+story new "Phase 1: Set up database schema"
+story new "Phase 2: Implement API endpoints"
+story new "Phase 3: Add authentication middleware"
+```
+
+Set a priority on each one so `story next` surfaces the right work:
+
+```
+story prioritize {prefix}-1 critical
+story prioritize {prefix}-4 high
+story prioritize {prefix}-6 medium
+```
+
+### Decompose a spec
+
+For larger specs, `story decompose` parses a markdown or YAML file into stories
+with relationships, priorities and labels:
+
+```
+story decompose spec.md --dry-run    # preview without creating anything
+story decompose spec.md              # create the stories
+cat spec.md | story decompose --stdin
+```
+
+### Relationship types
+
+Relationships express dependencies and structure. Both directions are always
+recorded, so either end can be asked:
+
+| Relation | Inverse | Purpose |
+|---|---|---|
+| `blocks` | `blocked-by` | Task dependencies — `story next` respects these |
+| `parent-of` | `child-of` | Hierarchy — group subtasks under a parent |
+| `relates-to` | `relates-to` | General link between related stories |
+| `duplicate-of` | `duplicate-of` | Mark a story as a duplicate |
+| `obviates` | `obviated-by` | One story makes another unnecessary |
+
+```
+story relate {prefix}-1 parent-of {prefix}-2
+story relate {prefix}-2 blocks {prefix}-3
+story relate {prefix}-5 relates-to {prefix}-2
+story relate {prefix}-6 obviates {prefix}-7
+```
+
+### Dependency graph
+
+Visualize relationships and find bottlenecks:
+
+```
+story graph                           # full dependency overview
+story graph --blocked-by {prefix}-1   # trace why a story is blocked
+```
+
+## During execution
+
+- Before starting: `story move {prefix}-<n> in-progress`
+- When blocked: `story block {prefix}-<n> "reason"`
+- When unblocked: `story unblock {prefix}-<n>`
+- When done: `story move {prefix}-<n> {done_state} "what was delivered"`
+- What is ready: `story next --count 5`
+- What is blocked: `story list --blocked`
+
+## Quick reference
 
 | Action | Command |
 |---|---|
+| Project overview | `story load-context` |
+| Next ready task | `story next` |
 | List open stories | `story list` |
 | Show a story | `story show {prefix}-<n>` |
 | Create a story | `story new "<title>"` |
-| Move to state | `story move {prefix}-<n> <state>` |
+| Move to a state | `story move {prefix}-<n> <state>` |
 | Add a comment | `story comment {prefix}-<n> "comment text"` |
 | Set priority | `story prioritize {prefix}-<n> high` |
 | Assign a story | `story assign {prefix}-<n> <member>` |
 | Add a label | `story label {prefix}-<n> <label>` |
 | Block a story | `story block {prefix}-<n> "reason"` |
 | Unblock a story | `story unblock {prefix}-<n>` |
-| Add relationship | `story relate {prefix}-1 blocks {prefix}-2` |
-| Set multiple fields | `story set {prefix}-<n> --priority high --state in-progress` |
+| Add a relationship | `story relate {prefix}-1 blocks {prefix}-2` |
+| Set several fields | `story set {prefix}-<n> --priority high --state in-progress` |
+| Decompose a spec | `story decompose spec.md` |
 | Search stories | `story search "<query>"` |
 | Project summary | `story summary` |
-| Context (for LLM) | `story load-context` |
+| Dependency graph | `story graph` |
 | Phase progress | `story phase list` |
+| Interactive TUI | `story tui` |
 | Session handoff | `story handoff --since 2h` |
 
-Run `story help --compact` for the full command reference.
+Run `story help <command>` for detailed usage on any command, or
+`story help --compact` for the full reference.
 
-## Important
+## Where the data lives
 
-The `.storyhook/` directory is version-controlled project data. Do NOT add it to
-`.gitignore`. It must be committed to git so that project state travels with the repository.
+Stories are kept in storyhook's own store, outside this repository — so every
+branch, worktree and clone of this project sees one truth, and no ordinary
+command writes to the working tree.
+
+The one file that does belong to the repository is `.storyhook.toml`: it names
+which project this checkout is, and it is where this repository's own storyhook
+configuration lives. **Commit it.** A clone without it does not know which
+project it is looking at.
 "#,
         done_state = done_state,
         prefix = prefix,
@@ -88,7 +162,7 @@ The `.storyhook/` directory is version-controlled project data. Do NOT add it to
 pub fn claude_md() -> String {
     r#"## Storyhook
 
-This project uses **storyhook** for task tracking. Full usage instructions are in `.storyhook/CLAUDE.md` — read that file before starting work.
+This project uses **storyhook** for task tracking. Full usage instructions are in `AGENTS.md` — read that file before starting work.
 
 Quick start: run `story load-context` at session start, `story next` to pick a task.
 

@@ -8,7 +8,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use crate::cli::{HistoryAction, Invocation, StateAction};
 use crate::domain::{FieldEdit, StoryEvent, StorySnapshot, SuperState};
 use crate::error::AppError;
-use crate::invoke::{InvokeRequest, Invoker, LegacyInvoker};
+use crate::invoke::{InvokeRequest, Invoker, StoreInvoker};
 use crate::output::Response;
 
 use super::action::{Action, UndoEntry, View};
@@ -37,7 +37,8 @@ use super::theme::Theme;
 /// change feed. Everything else — every read and every mutation — goes
 /// through [`Invoker`].
 pub fn run(root: &Path) -> Result<(), AppError> {
-    let invoker = LegacyInvoker::new(root);
+    let store = crate::invoke::open_store()?;
+    let invoker = StoreInvoker::new(&store, root);
     let data = DataStore::load(&invoker)?;
     let mut state = AppState::new(data);
     let theme = Theme::from_env();
@@ -1133,7 +1134,9 @@ fn dispatch(
                 // An empty history means the story did not exist before the
                 // mutation, and `Restore` reads that as "it should not exist
                 // now" — so undoing a creation and undoing an edit are one
-                // invocation rather than two code paths.
+                // invocation rather than two code paths. Since the flip that
+                // means the story is *deleted* rather than erased: the id stays
+                // spent and `story show` still answers.
                 let result = invoke(
                     invoker,
                     Invocation::History {
@@ -1369,16 +1372,45 @@ mod tests {
     /// A project with one member whose canonical id differs from the GitHub
     /// handle it was created from — `Mikey-Ward` slugifies to `mikey-ward` —
     /// so "resolves the handle to the id" stays a real claim.
-    fn init_test_project() -> (tempfile::TempDir, std::path::PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        LegacyInvoker::new(&root)
-            .invoke(InvokeRequest::new(Invocation::Init {
-                prefix: Some("SH".to_string()),
-                no_agents_md: true,
-            }))
-            .unwrap();
-        (dir, root)
+    ///
+    /// Built on the store, because that is what the TUI runs against. The
+    /// store's directory is a fixture of its own rather than
+    /// `paths::store_path()`: these are in-process tests, and an in-process
+    /// test cannot redirect `STORYHOOK_DATA_DIR` for itself — a helper that
+    /// read the environment would open the developer's real database.
+    struct TuiFixture {
+        store: crate::store::SqliteStore,
+        root: std::path::PathBuf,
+        _data: tempfile::TempDir,
+        _repo: tempfile::TempDir,
+    }
+
+    impl TuiFixture {
+        fn new() -> Self {
+            use crate::store::Store as _;
+            let data = tempfile::tempdir().unwrap();
+            let repo = tempfile::tempdir().unwrap();
+            let store = crate::store::SqliteStore::open(data.path().join("store.db")).unwrap();
+            store.migrate().unwrap();
+            let fixture = TuiFixture {
+                store,
+                root: repo.path().to_path_buf(),
+                _data: data,
+                _repo: repo,
+            };
+            fixture
+                .invoker()
+                .invoke(InvokeRequest::new(Invocation::Init {
+                    prefix: Some("SH".to_string()),
+                    no_agents_md: true,
+                }))
+                .unwrap();
+            fixture
+        }
+
+        fn invoker(&self) -> StoreInvoker<'_, crate::store::SqliteStore> {
+            StoreInvoker::new(&self.store, &self.root)
+        }
     }
 
     fn add_test_member(invoker: &dyn Invoker, handle: &str) {
@@ -1397,8 +1429,8 @@ mod tests {
 
     #[test]
     fn create_story_mutation_rejects_unknown_assignee_and_creates_no_story() {
-        let (_dir, root) = init_test_project();
-        let invoker = LegacyInvoker::new(&root);
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
 
         let result =
             create_story_mutation(&invoker, "Bad assignee", None, &[], Some("nobody"), None);
@@ -1414,8 +1446,8 @@ mod tests {
 
     #[test]
     fn create_story_mutation_resolves_github_handle_to_member_id() {
-        let (_dir, root) = init_test_project();
-        let invoker = LegacyInvoker::new(&root);
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
         add_test_member(&invoker, "Mikey-Ward");
 
         let id = create_story_mutation(
@@ -1439,8 +1471,8 @@ mod tests {
 
     #[test]
     fn assign_story_mutation_rejects_unknown_member_and_leaves_story_unassigned() {
-        let (_dir, root) = init_test_project();
-        let invoker = LegacyInvoker::new(&root);
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
         let id = seed_story(&invoker, "Unassigned story");
 
         let result = assign_story_mutation(&invoker, &id, "nobody");
@@ -1452,8 +1484,8 @@ mod tests {
 
     #[test]
     fn assign_story_mutation_resolves_valid_handle_to_member_id() {
-        let (_dir, root) = init_test_project();
-        let invoker = LegacyInvoker::new(&root);
+        let fixture = TuiFixture::new();
+        let invoker = fixture.invoker();
         add_test_member(&invoker, "Mikey-Ward");
         let id = seed_story(&invoker, "Story to assign");
 

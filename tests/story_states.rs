@@ -18,8 +18,24 @@ fn init(dir: &std::path::Path) {
     story(dir).arg("init").assert().success();
 }
 
-fn states_toml(dir: &std::path::Path) -> String {
-    std::fs::read_to_string(dir.join(".storyhook/states.toml")).unwrap()
+/// The catalog as `story state list` renders it.
+///
+/// Asked of the CLI rather than of `.storyhook/states.toml`, because the file
+/// is not where the catalog lives after the flip — and because the rendering is
+/// the part a user can actually observe. Every assertion below was originally
+/// written against the TOML; each one now names the same fact in the form the
+/// command reports it.
+fn state_listing(dir: &std::path::Path) -> String {
+    let out = story(dir)
+        .args(["state", "list"])
+        .output()
+        .expect("running `story state list`");
+    assert!(
+        out.status.success(),
+        "`story state list` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 // ============================================================
@@ -114,7 +130,7 @@ fn state_add_stores_description_and_role() {
         .success()
         .stdout(predicate::str::contains("added state review (OPEN)"));
 
-    assert!(states_toml(dir.path()).contains("Waiting on a reviewer"));
+    assert!(state_listing(dir.path()).contains("Waiting on a reviewer"));
 }
 
 #[test]
@@ -133,7 +149,7 @@ fn state_add_accepts_equals_form_flags() {
         .assert()
         .success();
 
-    assert!(states_toml(dir.path()).contains("Hmm"));
+    assert!(state_listing(dir.path()).contains("Hmm"));
 }
 
 #[test]
@@ -186,13 +202,13 @@ fn state_set_updates_description_then_clears_it() {
         .assert()
         .success()
         .stdout(predicate::str::contains("updated state todo (OPEN)"));
-    assert!(states_toml(dir.path()).contains("Not started yet"));
+    assert!(state_listing(dir.path()).contains("Not started yet"));
 
     story(dir.path())
         .args(["state", "set", "todo", "--no-description"])
         .assert()
         .success();
-    assert!(!states_toml(dir.path()).contains("Not started yet"));
+    assert!(!state_listing(dir.path()).contains("Not started yet"));
 }
 
 #[test]
@@ -204,13 +220,16 @@ fn state_set_moves_and_clears_the_active_role() {
         .args(["state", "set", "in-progress", "--role", "none"])
         .assert()
         .success();
-    assert!(!states_toml(dir.path()).contains("role"));
+    assert!(
+        !state_listing(dir.path()).contains("active"),
+        "clearing the role must leave no status carrying it"
+    );
 
     story(dir.path())
         .args(["state", "set", "todo", "--role", "active"])
         .assert()
         .success();
-    assert!(states_toml(dir.path()).contains("role = \"active\""));
+    assert!(state_listing(dir.path()).contains("todo (OPEN, active)"));
 }
 
 #[test]
@@ -322,7 +341,7 @@ fn state_remove_drops_an_empty_state() {
         .assert()
         .success()
         .stdout(predicate::str::contains("removed state in-progress"));
-    assert!(!states_toml(dir.path()).contains("in-progress"));
+    assert!(!state_listing(dir.path()).contains("in-progress"));
 }
 
 #[test]

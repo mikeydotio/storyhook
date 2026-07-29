@@ -65,6 +65,8 @@ pub mod ids;
 pub mod migrate;
 pub mod rebuild;
 pub mod sqlite;
+#[cfg(feature = "fault-injection")]
+pub mod test_support;
 pub mod types;
 
 use std::collections::BTreeMap;
@@ -256,6 +258,14 @@ pub trait WriteOps: ReadOps {
     /// work recorded against it — which is exactly the mistake the legacy
     /// registry made impossible to make only because it held no data.
     fn forget_project_path(&mut self, project: ProjectId, path: &Path) -> Result<bool, StoreError>;
+
+    /// Sets a project's display name.
+    ///
+    /// The catalog *is* the projects table, so `story web register --name` has
+    /// nowhere else to record what the user called this project. Without it the
+    /// flag is accepted and silently dropped — which is what the legacy
+    /// registry, a file with a `name` field per repo, did not do.
+    fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError>;
 
     /// Allocates the next story number for a project.
     ///

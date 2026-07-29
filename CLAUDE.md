@@ -41,9 +41,9 @@ Execution state — wave status, step log, discovered defects — lives in
 | W2b | project, config, system and grouping services; 27 of 46 arms ported | **complete — merged** |
 | W2c | query + integrity services; TUI onto the seam; 38 of 48 arms ported | **complete — merged** |
 | W2d | git/GitHub/transfer services; **all 48 arms ported**; the store test leg | **complete — merged** |
-| W3 | `src/legacy/` reader, `story migrate`, the round-trip rollback gate | **complete — PR open** |
-| W4 | **the flip**: the global store becomes the default | next; one uninterrupted session. Revert policy is gated on `make test`'s `migrate_round_trip` staying green — procedure in the flip checklist's section D2 |
-| W5 | daemon promotion + `/api/v1/invoke` transport | pending |
+| W3 | `src/legacy/` reader, `story migrate`, the round-trip rollback gate | **complete — merged** |
+| W4 | **the flip**: the global store is the default; `worktree_truth` green | **complete — PR open**. Revert only while `migrate_round_trip` is 4/4 green — procedure in the flip checklist's section D2 |
+| W5 | daemon promotion + `/api/v1/invoke` transport; **deletes the quarantined legacy path** | next |
 | W6 | git features re-pointed; full commit-body scanning | pending (gated on W4) |
 | W7 | migrate this repo; retire `.storyhook/` | pending |
 | W8 | crash, concurrency, and corruption hardening | pending |
@@ -51,11 +51,15 @@ Execution state — wave status, step log, discovered defects — lives in
 Standing rules for every wave:
 
 - Every commit passes `make test`; history stays bisectable and two-hats clean.
-- **From W2d onward, data-layer waves also run `make test-store` after every commit** —
-  the same integration suite under `STORYHOOK_INVOKER=local` — and record both times in
-  STATE.md. It is not part of `make test` (that would double a gate every wave pays on
-  every commit), so it is a discipline until the flip makes it the only leg. Its exclusion
-  list is `docs/rearch/flip-checklist.md` section G and must only ever shrink.
+- **`make test` runs against the store.** The second leg (`make test-store`,
+  `STORYHOOK_INVOKER=local`) retired at the flip: the default suite *is* the store, and a
+  second leg would run the same tests twice against the same stack.
+- **`make test` must keep its isolated `STORYHOOK_DATA_DIR`** (`scripts/run-tests.sh`).
+  ~45 test files still build fixtures with `tempfile::tempdir()` and inherit the process
+  environment; without the override a test run writes into the developer's real store.
+- **`app::run`, `storage.rs`'s write half, `lock.rs` and `registry.rs` are quarantined**
+  for the web dashboard until W5 deletes them. Do not add callers:
+  `invoker_seam.rs::the_legacy_path_is_reachable_only_from_the_web_dashboard` fails on any.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - A wave's implementing session ends at "PR opened" and never merges its own PR. The

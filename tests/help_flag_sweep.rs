@@ -10,21 +10,26 @@
 //! regresses one verb at a time: a new positional-taking verb inherits the
 //! bug unless the fix lives ahead of all of them.
 
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 use assert_cmd::Command;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-fn story(dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("story").unwrap();
-    cmd.current_dir(dir);
-    cmd
+use storyhook::store::{ReadOps, SqliteStore, Store, StoryQuery};
+use storyhook_test_support::{Project, TestEnv, project_id_at};
+
+/// A `story` command in this fixture, carrying the fixture's isolated
+/// environment.
+///
+/// Built from the [`Project`] rather than from a bare path: once story data
+/// lives in a global store, a command that inherits the ambient environment
+/// reads a *different* database from the one the fixture was created in — and,
+/// outside a test harness, the developer's real one.
+fn story(project: &Project<'_>) -> Command {
+    project.story()
 }
 
-fn stdout_of(dir: &Path, args: &[&str]) -> String {
-    let out = story(dir).args(args).output().unwrap();
+fn stdout_of(project: &Project<'_>, args: &[&str]) -> String {
+    let out = story(project).args(args).output().unwrap();
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -90,22 +95,40 @@ const VERBS: &[&[&str]] = &[
 
 /// A project with one story, so an accidental `story new` is visible in
 /// `next-id` as well as in the story files.
-fn project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
-    story(dir.path())
-        .args(["new", "A real story"])
-        .assert()
-        .success();
-    dir
+fn project() -> Project<'static> {
+    TestEnv::shared()
+        .project()
+        .seed_story("A real story")
+        .build()
 }
 
-/// Every file under `.storyhook`, so any mutation at all shows up as a diff.
-/// SQLite's sidecar files are excluded: merely reading the archive rewrites
-/// them, which says nothing about whether a command changed state.
-fn snapshot(dir: &Path) -> BTreeMap<String, String> {
+/// A fingerprint of **every piece of mutable state a command could touch**,
+/// on either storage model.
+///
+/// This is the whole power of `every_verb_answers_a_help_flag_with_help_and_
+/// changes_nothing`: SH-52 was a help request that quietly created a story and
+/// burned an id, and the only way to catch that class rather than the one
+/// reported instance is to compare *all* the state before and after.
+///
+/// Two halves, and both are taken every time:
+///
+/// * **The legacy tree** — every file under `.storyhook`, as before. Empty for
+///   a project that lives in the store, which is why it cannot be the only
+///   half.
+/// * **The store** — the project's row and its stories. `next_story_no` is in
+///   there deliberately: it is the counter SH-52 burned, and a story created
+///   and rolled back would be invisible without it.
+///
+/// **A green result here means nothing unless the fingerprint is watching
+/// something**, so `the_fingerprint_notices_a_real_change` proves it moves when
+/// a story is created. Without that, an empty fingerprint over a directory that
+/// no longer exists would re-open SH-52 with a passing test.
+fn snapshot(project: &Project<'_>) -> BTreeMap<String, String> {
     fn walk(root: &Path, at: &Path, into: &mut BTreeMap<String, String>) {
-        for entry in std::fs::read_dir(at).expect("reading the project tree") {
+        let Ok(entries) = std::fs::read_dir(at) else {
+            return;
+        };
+        for entry in entries {
             let path = entry.expect("reading a directory entry").path();
             if path.is_dir() {
                 walk(root, &path, into);
@@ -131,9 +154,54 @@ fn snapshot(dir: &Path) -> BTreeMap<String, String> {
         }
     }
 
-    let mut files = BTreeMap::new();
-    walk(dir, &dir.join(".storyhook"), &mut files);
-    files
+    let mut state = BTreeMap::new();
+    walk(
+        project.path(),
+        &project.path().join(".storyhook"),
+        &mut state,
+    );
+    state.extend(store_state(project));
+    state
+}
+
+/// The store half of [`snapshot`], scoped to this project's own rows.
+///
+/// Scoped, not global: the store is shared by every fixture in this binary, so
+/// a sibling test creating a story would otherwise read as a change this test's
+/// help sweep made.
+fn store_state(project: &Project<'_>) -> BTreeMap<String, String> {
+    let store: SqliteStore = project.open_store();
+    let Some(id) = project_id_at(&store, project.path()) else {
+        return BTreeMap::new();
+    };
+    store
+        .read(|tx| {
+            let mut state = BTreeMap::new();
+            let record = tx.project(id)?.expect("the project exists");
+            state.insert(
+                "store/next_story_no".to_string(),
+                record.next_story_no.to_string(),
+            );
+            state.insert("store/prefix".to_string(), record.prefix.clone());
+            state.insert("store/states".to_string(), format!("{:?}", tx.states(id)?));
+            state.insert("store/types".to_string(), format!("{:?}", tx.types(id)?));
+            state.insert(
+                "store/members".to_string(),
+                format!("{:?}", tx.members(id)?),
+            );
+            for row in tx.stories(id, &StoryQuery::all())? {
+                state.insert(
+                    format!("store/story/{}", row.story_no.get()),
+                    format!(
+                        "head={} {:?}",
+                        row.head_seq.get(),
+                        serde_json::to_string(&row.snapshot).unwrap_or_default()
+                    ),
+                );
+            }
+            Ok(state)
+        })
+        .expect("reading the store")
 }
 
 /// Fails with the paths that changed, and how, rather than with two whole
@@ -165,8 +233,11 @@ fn assert_unchanged(
 /// general help, or any one of its help topics. Read from the binary itself
 /// rather than restated here, so the verb-to-topic mapping can't drift out of
 /// sync with a copy in this file.
-fn sanctioned_help_texts(dir: &Path) -> Vec<String> {
-    let unknown = story(dir).args(["help", "no-such-topic"]).output().unwrap();
+fn sanctioned_help_texts(project: &Project<'_>) -> Vec<String> {
+    let unknown = story(project)
+        .args(["help", "no-such-topic"])
+        .output()
+        .unwrap();
     let listing = String::from_utf8_lossy(&unknown.stderr).into_owned();
     let topics = listing
         .split_once("Available: ")
@@ -181,22 +252,26 @@ fn sanctioned_help_texts(dir: &Path) -> Vec<String> {
         "expected a real topic list, got {topics:?}"
     );
 
-    let mut texts = vec![stdout_of(dir, &["--help"])];
-    texts.extend(topics.iter().map(|topic| stdout_of(dir, &["help", topic])));
+    let mut texts = vec![stdout_of(project, &["--help"])];
+    texts.extend(
+        topics
+            .iter()
+            .map(|topic| stdout_of(project, &["help", topic])),
+    );
     texts
 }
 
 #[test]
 fn every_verb_answers_a_help_flag_with_help_and_changes_nothing() {
     let dir = project();
-    let before = snapshot(dir.path());
-    let sanctioned = sanctioned_help_texts(dir.path());
+    let before = snapshot(&dir);
+    let sanctioned = sanctioned_help_texts(&dir);
 
     for verb in VERBS {
         for flag in ["--help", "-h"] {
             let mut args = verb.to_vec();
             args.push(flag);
-            let out = story(dir.path()).args(&args).output().unwrap();
+            let out = story(&dir).args(&args).output().unwrap();
             let invocation = format!("story {}", args.join(" "));
 
             assert_eq!(
@@ -221,7 +296,7 @@ fn every_verb_answers_a_help_flag_with_help_and_changes_nothing() {
 
     assert_unchanged(
         &before,
-        &snapshot(dir.path()),
+        &snapshot(&dir),
         "a help request must not touch the project: no story created, no id burned, \
          no file rewritten",
     );
@@ -233,21 +308,21 @@ fn every_verb_answers_a_help_flag_with_help_and_changes_nothing() {
 fn new_help_prints_the_new_topic_instead_of_creating_a_story() {
     let dir = project();
 
-    let listed_before = stdout_of(dir.path(), &["list"]);
-    let help = stdout_of(dir.path(), &["new", "--help"]);
+    let listed_before = stdout_of(&dir, &["list"]);
+    let help = stdout_of(&dir, &["new", "--help"]);
 
     assert_eq!(
         help,
-        stdout_of(dir.path(), &["help", "new"]),
+        stdout_of(&dir, &["help", "new"]),
         "`story new --help` must print the `new` help topic"
     );
     assert_eq!(
-        stdout_of(dir.path(), &["list"]),
+        stdout_of(&dir, &["list"]),
         listed_before,
         "`story new --help` must not create a story"
     );
     assert!(
-        !stdout_of(dir.path(), &["list"]).contains("--help"),
+        !stdout_of(&dir, &["list"]).contains("--help"),
         "no story titled `--help` may exist"
     );
 }
@@ -258,7 +333,7 @@ fn new_help_prints_the_new_topic_instead_of_creating_a_story() {
 #[test]
 fn a_help_flag_after_other_arguments_is_still_a_help_request() {
     let dir = project();
-    let before = snapshot(dir.path());
+    let before = snapshot(&dir);
 
     for args in [
         vec!["new", "Some title", "--help"],
@@ -266,7 +341,7 @@ fn a_help_flag_after_other_arguments_is_still_a_help_request() {
         vec!["move", "SH-1", "done", "--help"],
         vec!["search", "query", "--help"],
     ] {
-        let out = story(dir.path()).args(&args).output().unwrap();
+        let out = story(&dir).args(&args).output().unwrap();
         assert_eq!(
             out.status.code(),
             Some(0),
@@ -278,7 +353,62 @@ fn a_help_flag_after_other_arguments_is_still_a_help_request() {
 
     assert_unchanged(
         &before,
-        &snapshot(dir.path()),
+        &snapshot(&dir),
         "none of those requests may change the project",
+    );
+}
+
+/// The fingerprint is not vacuous.
+///
+/// `every_verb_answers_a_help_flag_with_help_and_changes_nothing` is only worth
+/// anything if [`snapshot`] would *notice*. Before the flip the fingerprint
+/// walked `.storyhook/`; after it, that directory does not exist, and a
+/// fingerprint over a directory that is not there is an empty map that compares
+/// equal to itself forever — a green test that has stopped testing, and SH-52
+/// reopened without a single failing assertion.
+///
+/// So this asserts the thing the sweep depends on: creating a story moves the
+/// fingerprint, and it moves in the two places SH-52 damaged — a new story row
+/// and an advanced id counter.
+#[test]
+fn the_fingerprint_notices_a_real_change() {
+    let dir = project();
+    let before = snapshot(&dir);
+    assert!(
+        !before.is_empty(),
+        "the fingerprint must be watching something: {before:?}"
+    );
+
+    story(&dir)
+        .args(["new", "A story the sweep did not ask for"])
+        .assert()
+        .success();
+    let after = snapshot(&dir);
+
+    assert_ne!(before, after, "creating a story must move the fingerprint");
+
+    // The id counter, wherever this build keeps it: `.storyhook/next-id` under
+    // the legacy tree, `store/next_story_no` in the store. One of the two is
+    // always present, and burning an id is what SH-52 did — a fingerprint that
+    // did not include the counter would miss the defect it exists to catch.
+    let counters = ["store/next_story_no", ".storyhook/next-id"];
+    let counter_moved = counters
+        .iter()
+        .any(|key| before.contains_key(*key) && before.get(*key) != after.get(*key));
+    assert!(
+        counter_moved,
+        "the fingerprint must include the id counter and see it advance; \
+         {counters:?} read {:?} before and {:?} after",
+        counters.map(|key| before.get(key)),
+        counters.map(|key| after.get(key)),
+    );
+
+    let new_keys: Vec<&String> = after
+        .keys()
+        .filter(|key| !before.contains_key(*key))
+        .collect();
+    assert!(
+        !new_keys.is_empty(),
+        "the new story must appear in the fingerprint as state that was not there before"
     );
 }

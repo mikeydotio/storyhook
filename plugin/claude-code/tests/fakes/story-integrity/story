@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Fake `story` CLI for the doctor-finding assertion in
+# test-doctor-capture.sh ONLY. It proxies every invocation to the REAL story
+# binary (STORY_REAL_BIN, set by the test) except `doctor --json`, which it
+# answers with the envelope a real integrity finding produces: an
+# `AppError::Integrity` on stderr and exit 5.
+#
+# Why a fake rather than real corruption. Under `.storyhook/` the test wrote a
+# dangling relation straight into a story's JSONL, because the CLI refuses to
+# create one — which is the whole reason `story doctor` exists. The store
+# refuses it at the schema, so the shape is no longer reachable from a shell at
+# all: fabricating it needs `storyhook::store::test_support`, which is a Rust
+# API. That the CLI really does exit 5 on a real finding is therefore pinned in
+# Rust, by `tests/doctor.rs` and by `tests/error_contract.rs`'s Integrity row;
+# what is pinned *here* is the shell behaviour those cannot see — that
+# story.sh reads a 5 as a finding rather than as a failure of its own probe.
+set -euo pipefail
+
+real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
+
+if [ "${1:-}" = "doctor" ]; then
+  printf 'error: project integrity: %s\n' \
+    "${STORY_FAKE_FINDING:?STORY_FAKE_FINDING must name the finding}" >&2
+  printf '{"result":"error","error":"project integrity: %s","exit_code":5}\n' \
+    "$STORY_FAKE_FINDING"
+  exit 5
+fi
+
+exec "$real" "$@"

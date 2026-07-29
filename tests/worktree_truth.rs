@@ -20,9 +20,15 @@
 //! standing in a worktree.
 //!
 //! Both tests below assert the world the rearchitecture is *for*: one global
-//! store, one id space, one truth per project regardless of checkout. They are
-//! `#[ignore]`d because they are red today and the quality gate must stay
-//! green. **Removing the two `#[ignore]` attributes is W4's exit criterion.**
+//! store, one id space, one truth per project regardless of checkout. They were
+//! `#[ignore]`d from the day they were written — red on purpose, the program's
+//! stated exit criterion — and **the flip is what turned them green**. The
+//! attributes came off in the same wave that moved story data into the store.
+//!
+//! The assertions below are byte-identical to the ones written against the
+//! failing behaviour. Only the fixture changed, and only in the one way it had
+//! to: what a checkout commits, so that a second checkout inherits it, is the
+//! pointer file rather than a copy of the whole tracker.
 //!
 //! Captured red output, `cargo test --workspace --test worktree_truth -- --ignored`
 //! at commit `6320609`:
@@ -52,15 +58,22 @@ use std::process::Command;
 
 use storyhook_test_support::{Project, TestEnv};
 
-/// Builds one repository with two linked worktrees, each holding its own
-/// committed copy of `.storyhook/` — the exact shape a real storyhook repo has
-/// when `story.sh dispatch` opens a second working session.
+/// Builds one repository with two linked worktrees, each carrying the committed
+/// pointer file — the exact shape a real storyhook repo has when
+/// `story.sh dispatch` opens a second working session.
 ///
-/// [`storyhook_test_support::ProjectBuilder`] leaves `.storyhook/` untracked, so
-/// this commits it and fast-forwards both worktrees onto that commit. That step
-/// is what makes the fixture faithful: without it the worktrees resolve *no*
-/// tracker at all (a different failure — exit 3, "not initialized") rather than
-/// a silently divergent one.
+/// [`storyhook_test_support::ProjectBuilder`] leaves `.storyhook.toml`
+/// untracked, so this commits it and fast-forwards both worktrees onto that
+/// commit. That step is what makes the fixture faithful: without it the
+/// worktrees carry no pointer, and while they would still resolve the project
+/// by path, they would be doing it for a reason a fresh clone on another
+/// machine could not rely on.
+///
+/// It is also where the fixture changed at the flip, and the change is the
+/// whole point. What a checkout commits used to be `.storyhook/` — the entire
+/// tracker, counter and all — so each worktree got its *own* database. What it
+/// commits now is one file naming which project this is; the data is in one
+/// place, and the second checkout inherits an identity rather than a copy.
 fn two_checkouts_of_one_repo() -> Project<'static> {
     let env = TestEnv::shared();
     let project = env.project().git().worktree("a").worktree("b").build();
@@ -69,7 +82,7 @@ fn two_checkouts_of_one_repo() -> Project<'static> {
     // divergence is provably drift rather than fixtures that never agreed.
     project.new_story("Created before the checkouts diverged");
 
-    git(env, project.path(), &["add", ".storyhook"]);
+    git(env, project.path(), &["add", ".storyhook.toml"]);
     git(env, project.path(), &["commit", "-qm", "track the tracker"]);
     for name in ["a", "b"] {
         git(
@@ -81,12 +94,9 @@ fn two_checkouts_of_one_repo() -> Project<'static> {
 
     for name in ["a", "b"] {
         assert!(
-            project
-                .worktree_path(name)
-                .join(".storyhook/next-id")
-                .exists(),
-            "fixture: worktree `{name}` must carry its own copy of .storyhook/ — \
-             without it this file tests the wrong failure"
+            project.worktree_path(name).join(".storyhook.toml").exists(),
+            "fixture: worktree `{name}` must carry the committed pointer file — \
+             without it this file tests the wrong thing"
         );
     }
     project
@@ -114,7 +124,6 @@ fn git(env: &TestEnv, cwd: &Path, args: &[&str]) {
 /// assertion states the world we want. Red today: see this file's header for
 /// the captured failure.
 #[test]
-#[ignore = "SH-46: two checkouts are separate databases; goes green at the W4 flip"]
 fn two_worktrees_of_one_repo_mint_colliding_ids() {
     let env = TestEnv::shared();
     let project = two_checkouts_of_one_repo();
@@ -154,7 +163,6 @@ fn two_worktrees_of_one_repo_mint_colliding_ids() {
 /// The companion to the id collision: even without a race, the two checkouts
 /// disagree about what exists.
 #[test]
-#[ignore = "SH-46: two checkouts are separate databases; goes green at the W4 flip"]
 fn a_story_created_in_one_checkout_is_visible_from_the_other() {
     let env = TestEnv::shared();
     let project = two_checkouts_of_one_repo();

@@ -5,6 +5,33 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
 
+/// Writes `body` — one or more `[hooks.*]` tables — into the checkout's
+/// committed pointer file.
+///
+/// This is where event-hook configuration lives after the flip: a table in
+/// `.storyhook.toml` rather than a file inside a directory that is about to
+/// stop existing. It is read from there on both storage models, so a test
+/// written this way proves the same thing before and after.
+fn write_hooks(dir: &std::path::Path, body: &str) {
+    fs::write(
+        dir.join(".storyhook.toml"),
+        format!(
+            "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\n{body}"
+        ),
+    )
+    .unwrap();
+}
+
+/// Writes the *legacy* `.storyhook/hooks.toml`, creating its directory.
+///
+/// Only the two tests whose subject is the legacy fallback use this. The
+/// directory has to be created explicitly because `story init` no longer makes
+/// one once the store is the default.
+fn write_legacy_hooks(dir: &std::path::Path, body: &str) {
+    fs::create_dir_all(dir.join(".storyhook")).unwrap();
+    fs::write(dir.join(".storyhook/hooks.toml"), body).unwrap();
+}
+
 fn init_project(dir: &std::path::Path) {
     Command::cargo_bin("story")
         .unwrap()
@@ -38,11 +65,13 @@ fn hook_fires_on_create() {
     init_project(dir);
 
     let output_file = dir.join("hook_output.json");
-    let hooks_toml = format!(
-        "[on_create]\ncommand = \"cat > {}\"\n",
-        output_file.display()
+    write_hooks(
+        dir,
+        &format!(
+            "[hooks.on_create]\ncommand = \"cat > {}\"\n",
+            output_file.display()
+        ),
     );
-    fs::write(dir.join(".storyhook/hooks.toml"), hooks_toml).unwrap();
 
     Command::cargo_bin("story")
         .unwrap()
@@ -80,8 +109,7 @@ fn hook_failure_does_not_prevent_operation() {
 
     init_project(dir);
 
-    let hooks_toml = "[on_create]\ncommand = \"exit 1\"\n";
-    fs::write(dir.join(".storyhook/hooks.toml"), hooks_toml).unwrap();
+    write_hooks(dir, "[hooks.on_create]\ncommand = \"exit 1\"\n");
 
     // Operation should still succeed even though hook fails
     Command::cargo_bin("story")
@@ -115,11 +143,13 @@ fn no_hooks_flag_suppresses_hooks() {
     init_project(dir);
 
     let output_file = dir.join("hook_output.json");
-    let hooks_toml = format!(
-        "[on_create]\ncommand = \"cat > {}\"\n",
-        output_file.display()
+    write_hooks(
+        dir,
+        &format!(
+            "[hooks.on_create]\ncommand = \"cat > {}\"\n",
+            output_file.display()
+        ),
     );
-    fs::write(dir.join(".storyhook/hooks.toml"), hooks_toml).unwrap();
 
     Command::cargo_bin("story")
         .unwrap()
@@ -146,9 +176,11 @@ fn hooks_list_shows_configured() {
 
     init_project(dir);
 
-    let hooks_toml =
-        "[on_create]\ncommand = \"echo created\"\n[on_close]\ncommand = \"echo closed\"\n";
-    fs::write(dir.join(".storyhook/hooks.toml"), hooks_toml).unwrap();
+    write_hooks(
+        dir,
+        "[hooks.on_create]\ncommand = \"echo created\"\n\
+         [hooks.on_close]\ncommand = \"echo closed\"\n",
+    );
 
     let output = Command::cargo_bin("story")
         .unwrap()
@@ -214,4 +246,110 @@ fn no_hooks_toml_operations_work() {
         .args(["new", "Test story"])
         .assert()
         .success();
+}
+
+/// The `[hooks]` table in the committed pointer file is read in place of
+/// `.storyhook/hooks.toml`.
+///
+/// Where event-hook configuration lives is the other half of the question the
+/// flip answers: it is *user-authored config about this repository*, not story
+/// data, so it stays in the repository — it just stops living inside a
+/// directory that is about to stop existing.
+#[test]
+fn hooks_can_be_configured_in_the_pointer_file() {
+    let dir = TempDir::new().unwrap();
+    let dir = dir.path();
+    init_project(dir);
+
+    let output_file = dir.join("hook_output.json");
+    fs::write(
+        dir.join(".storyhook.toml"),
+        format!(
+            "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\
+             \n[hooks.on_create]\ncommand = \"cat > {}\"\n",
+            output_file.display()
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir)
+        .args(["new", "Configured in the pointer"])
+        .assert()
+        .success();
+
+    assert!(
+        output_file.exists(),
+        "a hook declared in .storyhook.toml's [hooks] table must fire"
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&output_file).unwrap()).unwrap();
+    assert_eq!(payload["story_title"], "Configured in the pointer");
+}
+
+#[test]
+fn the_pointers_hooks_table_wins_over_the_legacy_file() {
+    let dir = TempDir::new().unwrap();
+    let dir = dir.path();
+    init_project(dir);
+
+    let legacy = dir.join("legacy.json");
+    let pointed = dir.join("pointed.json");
+    write_legacy_hooks(
+        dir,
+        &format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
+    );
+    fs::write(
+        dir.join(".storyhook.toml"),
+        format!(
+            "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\
+             \n[hooks.on_create]\ncommand = \"cat > {}\"\n",
+            pointed.display()
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir)
+        .args(["new", "Two homes, one answer"])
+        .assert()
+        .success();
+
+    assert!(pointed.exists(), "the pointer's table must be the one read");
+    assert!(
+        !legacy.exists(),
+        "a repository that has moved its hooks must not fire the old ones as well"
+    );
+}
+
+#[test]
+fn a_pointer_with_no_hooks_table_leaves_the_legacy_file_in_charge() {
+    let dir = TempDir::new().unwrap();
+    let dir = dir.path();
+    init_project(dir);
+
+    let legacy = dir.join("legacy.json");
+    write_legacy_hooks(
+        dir,
+        &format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
+    );
+    fs::write(
+        dir.join(".storyhook.toml"),
+        "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir)
+        .args(["new", "Still on the old config"])
+        .assert()
+        .success();
+
+    assert!(
+        legacy.exists(),
+        "the two storage models coexist until the daemon wave"
+    );
 }

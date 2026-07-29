@@ -2,7 +2,7 @@ use std::env;
 use std::process;
 
 use storyhook::cli::{self, Invocation, WebAction};
-use storyhook::invoke::{InvokeRequest, Invoker, LegacyInvoker, StoreInvoker};
+use storyhook::invoke::{InvokeRequest, Invoker, StoreInvoker};
 use storyhook::output;
 
 /// Reports `error` on the stream its consumer reads, and exits with the
@@ -86,18 +86,17 @@ fn main() {
         }
     };
 
+    refuse_retired_backend(json);
+
     // The work goes through the Invoker seam; `json` and `quiet` never do,
     // because rendering is this process's job no matter where the answer
     // came from.
     let request = InvokeRequest::new(invocation).no_hooks(no_hooks);
-    let result = match selected_backend() {
-        Backend::Legacy => LegacyInvoker::new(&cwd).invoke(request),
-        Backend::Local => match open_store() {
-            Ok(store) => StoreInvoker::new(&store, &cwd)
-                .hook_depth(hook_depth())
-                .invoke(request),
-            Err(error) => Err(error),
-        },
+    let result = match storyhook::invoke::open_store() {
+        Ok(store) => StoreInvoker::new(&store, &cwd)
+            .hook_depth(hook_depth())
+            .invoke(request),
+        Err(error) => Err(error),
     };
 
     match result {
@@ -111,44 +110,28 @@ fn main() {
     }
 }
 
-/// Which stack serves this invocation.
+/// Refuses `STORYHOOK_INVOKER=legacy`, loudly.
 ///
-/// The strangler's switch. Both backends answer the same
-/// `Response`/`AppError` envelope, so selecting between them changes where the
-/// work happens and not what the answer means — which is the property the whole
-/// port is built to preserve, and the property `STORYHOOK_INVOKER=local` exists
-/// to *test*: the integration suite can be run end to end against the store
-/// long before the store is what anybody's data is in.
-enum Backend {
-    /// `.storyhook/` in the repository — today's default.
-    Legacy,
-    /// The global store, in this process. Named `local` because the daemon
-    /// wave adds a third backend that is the same store over a socket, and
-    /// `local` is what distinguishes them.
-    Local,
-}
-
-/// Reads `STORYHOOK_INVOKER`, defaulting to the legacy stack.
+/// The variable was the strangler's switch while two stacks existed. There is
+/// one now, and a variable that silently did nothing would be worse than no
+/// variable at all: anybody who still has `legacy` exported has a shell — or a
+/// script, or a CI job — that believes it is reading `.storyhook/`, and the one
+/// useful thing storyhook can do is say where the data went.
 ///
-/// An unrecognised value is a *failure*, not a fallback: a typo that silently
-/// ran the legacy path would make a green store-leg run mean nothing at all.
-fn selected_backend() -> Backend {
+/// `local` is still accepted, and is now what every invocation does anyway.
+fn refuse_retired_backend(json: bool) {
     match env::var("STORYHOOK_INVOKER").as_deref() {
-        Ok("local") => Backend::Local,
-        Ok("legacy") | Err(_) => Backend::Legacy,
+        Ok("local") | Err(_) => {}
         Ok(other) => {
-            eprintln!("error: STORYHOOK_INVOKER must be `legacy` or `local`, not `{other}`");
-            process::exit(2);
+            let error = storyhook::error::AppError::Usage(format!(
+                "STORYHOOK_INVOKER=`{other}` is not a storyhook backend. Story data lives in \
+                 storyhook's own store now, not in `.storyhook/`; there is no legacy backend to \
+                 select. Unset the variable, and run `story migrate` in any repository whose \
+                 `.storyhook/` directory has not been imported yet."
+            ));
+            fail(&error, json);
         }
     }
-}
-
-/// Opens and migrates the global store.
-fn open_store() -> Result<storyhook::store::SqliteStore, storyhook::error::AppError> {
-    use storyhook::store::Store as _;
-    let store = storyhook::store::SqliteStore::open(storyhook::paths::store_path()?)?;
-    store.migrate()?;
-    Ok(store)
 }
 
 /// How deep inside an event hook this process is running.

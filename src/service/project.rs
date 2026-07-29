@@ -38,18 +38,41 @@ use super::templates;
 /// The story-id prefix a project gets when `init` is not told one.
 pub const DEFAULT_PREFIX: &str = "SH";
 
-/// The repository-side file naming the project a checkout belongs to.
+/// The repository-side file naming the project a checkout belongs to, and
+/// carrying the repository's own storyhook configuration.
 ///
 /// This is the *whole* repo footprint of the new design: one small committed
-/// file holding the project's portable identity and its story-id prefix, so
-/// that a fresh clone on another machine knows which project it is looking at
-/// before it has any local database row to consult.
+/// file. It holds two different kinds of thing, and the distinction is what
+/// keeps the design honest:
+///
+/// * **Identity** — [`schema`](Self::schema), [`uuid`](Self::uuid) and
+///   [`prefix`](Self::prefix), written once by `story init` so that a fresh
+///   clone on another machine knows which project it is looking at before it
+///   has any local database row to consult.
+/// * **Configuration** — the optional [`plugin`](Self::plugin) and
+///   [`hooks`](Self::hooks) tables, which are *user-authored* and which
+///   storyhook reads and never writes. They used to be
+///   `.storyhook/plugin-config.toml` and `.storyhook/hooks.toml`; they belong
+///   in the repository because they are decisions about *this* repository, not
+///   data about its stories, and folding them into the pointer means the
+///   directory can die without taking a shipped feature with it.
 ///
 /// It deliberately does not carry states, types, members or stories. Those
 /// live in the store; a repository that carried its own copy would be a second
 /// source of truth, which is the thing this whole rearchitecture exists to
 /// delete.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// # Why the two config tables are untyped here
+///
+/// They are [`toml::Value`], not typed structs, for two reasons that both
+/// matter. First, **resolution must not depend on configuration**: a typo in a
+/// hook definition would otherwise fail the whole parse and make the repository
+/// unresolvable — storyhook would stop knowing which project it was standing
+/// in because a timeout was misspelled. Second, storyhook round-trips this file
+/// only in the sense of never rewriting it; keeping the tables opaque means a
+/// field a newer storyhook understands cannot be silently dropped by an older
+/// one that reads the pointer for its identity alone.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectPointer {
     /// Format version, so a later shape change is detectable rather than
     /// silently misread.
@@ -59,6 +82,82 @@ pub struct ProjectPointer {
     /// The project's story-id prefix, duplicated here so a clone can render
     /// ids before it can reach the store.
     pub prefix: String,
+    /// The `[plugin]` table, if the repository has one. User-authored;
+    /// storyhook never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<toml::Value>,
+    /// The `[hooks]` table, if the repository has one. User-authored;
+    /// storyhook never writes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<toml::Value>,
+}
+
+impl ProjectPointer {
+    /// A pointer carrying identity and no configuration — what `story init`
+    /// writes.
+    #[must_use]
+    pub fn new(uuid: String, prefix: String) -> Self {
+        Self {
+            schema: POINTER_SCHEMA,
+            uuid,
+            prefix,
+            plugin: None,
+            hooks: None,
+        }
+    }
+}
+
+/// The nearest ancestor of `root` (itself included) holding a legacy
+/// `.storyhook/` project, if there is one.
+///
+/// A *project*, not merely a directory: `<dir>/.storyhook/project.toml` is what
+/// `storage::ensure_project` looked for, and a repository that has only a
+/// `.storyhook/hooks.toml` — configuration in its old home, which is still read
+/// — has not been left behind by anything and must not be reported as
+/// unmigrated.
+#[must_use]
+pub fn legacy_project_at(root: &Path) -> Option<PathBuf> {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    canonical
+        .ancestors()
+        .find(|dir| dir.join(".storyhook/project.toml").is_file())
+        .map(Path::to_path_buf)
+}
+
+/// What to tell someone standing in a repository storyhook has not imported.
+///
+/// Loud and specific, because the alternative is worse in both directions: a
+/// bare "not initialized" invites `story init`, which would mint an *empty*
+/// second project beside data the user still has, and a silent fallback to
+/// reading the directory is the thing this whole rearchitecture exists to
+/// stop.
+#[must_use]
+pub fn unmigrated_error(tree: &Path) -> AppError {
+    AppError::NotFound(format!(
+        "`{}` still keeps its stories in a `.storyhook/` directory, and storyhook now \
+         reads a single store outside your repositories. Run `story migrate` there to \
+         bring them across — it never writes to the directory it reads, so your data \
+         stays where it is until you are satisfied. `story migrate --dry-run` shows what \
+         it would import.",
+        tree.display()
+    ))
+}
+
+/// The repository's `[hooks]` table, if it has a readable one.
+///
+/// Fails **open** at every step, and deliberately: a repository whose pointer
+/// file cannot be parsed still has to be usable, and a hook nobody can read is
+/// a hook that does not fire rather than a command that refuses to run.
+#[must_use]
+pub fn pointer_hooks(root: &Path) -> Option<toml::Value> {
+    read_pointer(root).ok().flatten().and_then(|p| p.hooks)
+}
+
+/// The repository's `[plugin]` table, if it has a readable one. See
+/// [`pointer_hooks`].
+#[must_use]
+pub fn pointer_plugin(root: &Path) -> Option<toml::Value> {
+    read_pointer(root).ok().flatten().and_then(|p| p.plugin)
 }
 
 /// The pointer format this build writes.
@@ -172,11 +271,36 @@ impl<'a, S: Store> ProjectService<'a, S> {
     /// Idempotent. A checkout that already belongs to a project has its
     /// registration refreshed and its `prefix` left alone — the same shape as
     /// the legacy path, which skipped every file it found already present.
+    ///
+    /// "Already belongs" is asked of the committed pointer file *before* the
+    /// path, matching every other resolution in the codebase. It matters on a
+    /// fresh clone: the checkout is at a path the store has never seen, but its
+    /// pointer names a project the store may well know — and answering by path
+    /// alone would mint a second project for a repository that already has one,
+    /// leaving the clone pointing at the old identity and storing into the new.
     pub fn init(&self, options: &InitOptions) -> Result<InitOutcome, AppError> {
         let root = canonical(&self.root);
         let now = self.clock.now();
+        let existing_pointer = read_pointer(&root)?;
+
+        // A repository whose stories are still in `.storyhook/` is not an
+        // uninitialized one, and treating it as such is how a user ends up with
+        // an empty project beside their real data. `story migrate` is the
+        // command for it, and this says so before anything is written.
+        if existing_pointer.is_none()
+            && self.store.read(|tx| tx.project_by_path(&root))?.is_none()
+            && root.join(".storyhook/project.toml").is_file()
+        {
+            return Err(unmigrated_error(&root));
+        }
 
         let (project, created, uuid, prefix) = self.store.write(|tx| {
+            if let Some(pointer) = &existing_pointer
+                && let Some(existing) = tx.project_by_uuid(&pointer.uuid)?
+            {
+                tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                return Ok((existing.id, false, existing.uuid, existing.prefix));
+            }
             if let Some(existing) = tx.project_by_path(&root)? {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
                 return Ok((existing.id, false, existing.uuid, existing.prefix));
@@ -201,16 +325,14 @@ impl<'a, S: Store> ProjectService<'a, S> {
             Ok((project, true, uuid, prefix))
         })?;
 
-        let pointer = options.pointer;
+        // Never overwritten. The file is user-authored the moment it carries a
+        // `[plugin]` or `[hooks]` table, and `story init` is idempotent — so a
+        // second `init` in a repository that already has a pointer must leave
+        // the user's configuration exactly where it is rather than replacing
+        // the file with a freshly generated identity-only copy.
+        let pointer = options.pointer && existing_pointer.is_none();
         if pointer {
-            write_pointer(
-                &root,
-                &ProjectPointer {
-                    schema: POINTER_SCHEMA,
-                    uuid,
-                    prefix: prefix.clone(),
-                },
-            )?;
+            write_pointer(&root, &ProjectPointer::new(uuid, prefix.clone()))?;
         }
 
         let done_state = self.store.read(|tx| Ok(closed_state(tx, project)?))?;

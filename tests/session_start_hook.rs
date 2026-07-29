@@ -145,7 +145,11 @@ fn hook_outputs_empty_json_when_plugin_disabled() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
 
-    // Create plugin config with enabled = false
+    // Create plugin config with enabled = false. The directory is created
+    // explicitly: `story init` stops making one once story data lives in the
+    // store, and this file — user-authored config about the repository — is
+    // still read from its legacy home until that directory is retired.
+    std::fs::create_dir_all(dir.path().join(".storyhook")).unwrap();
     let config_path = dir.path().join(".storyhook/plugin-config.toml");
     std::fs::write(&config_path, "enabled = \"false\"\n").unwrap();
 

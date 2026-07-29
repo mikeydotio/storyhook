@@ -19,6 +19,22 @@ fn story(dir: &std::path::Path) -> Command {
     cmd
 }
 
+/// The plugin-config file's path, with its parent directory created.
+///
+/// `plugin-config.toml` is *user-authored config about this repository*, so it
+/// stays in the repository across the flip — its new home is the `[plugin]`
+/// table of the committed pointer file, and the old one keeps being read until
+/// the legacy directory is retired. These tests deliberately exercise the
+/// **legacy** path, which is the one both storage models still answer; the
+/// pointer-file home is covered by `tests/service_session.rs`.
+///
+/// The directory has to be created here because `story init` stops making one
+/// the moment story data lives in the store.
+fn plugin_config_path(root: &std::path::Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(root.join(".storyhook")).expect("creating the config directory");
+    root.join(".storyhook/plugin-config.toml")
+}
+
 /// Extract the SessionStart `additionalContext` string from a parsed
 /// `story session-start` envelope, or "" if it is absent (e.g. `{}`).
 fn context(parsed: &serde_json::Value) -> &str {
@@ -64,7 +80,7 @@ fn session_start_plugin_disabled_outputs_empty_json() {
     story(dir.path()).arg("init").assert().success();
 
     // Disable the plugin
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "[plugin]\nenabled = false\ntracking = \"normal\"\n",
@@ -90,7 +106,7 @@ fn session_start_plugin_disabled_string_value_outputs_empty_json() {
     story(dir.path()).arg("init").assert().success();
 
     // Disable the plugin with string "false" value
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(&config_path, "enabled = \"false\"\n").unwrap();
 
     let output = story(dir.path())
@@ -646,54 +662,58 @@ fn session_start_next_story_shows_priority() {
 // ============================================================
 
 #[test]
-fn session_start_corrupted_stories_dir_still_returns_json() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+fn session_start_survives_a_project_whose_stories_have_vanished() {
+    // A hook that reports an error writes that error into a model's context, so
+    // `session-start` has to answer with JSON no matter what it finds. The
+    // corruption it has to survive changed shape with the storage: it used to
+    // be a stories *directory* replaced by a file; it is now a project whose
+    // story rows and events are simply gone from under it.
+    let env = storyhook_test_support::TestEnv::shared();
+    let project = env.project().seed_story("About to vanish").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+    storyhook::store::test_support::forget_story(&store, id, project.story_no(&store, "SH-1"))
+        .expect("removing the story out from under the hook");
 
-    // Corrupt the stories directory by replacing it with a file
-    let stories_dir = dir.path().join(".storyhook/open/stories");
-    std::fs::remove_dir_all(&stories_dir).unwrap();
-    std::fs::write(&stories_dir, "this is not a directory").unwrap();
-
-    let output = story(dir.path())
+    let out = project
+        .story()
         .arg("session-start")
         .output()
-        .expect("failed to run story session-start");
-
-    // Should still exit 0 and produce valid JSON (possibly with degraded content)
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let trimmed = stdout.trim();
-
-    // Must be parseable JSON, even in error states
-    let result: Result<serde_json::Value, _> = serde_json::from_str(trimmed);
-    assert!(
-        result.is_ok(),
-        "session-start must produce valid JSON even with corrupted stories dir, got: {trimmed}"
-    );
+        .expect("running story session-start");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    serde_json::from_str::<serde_json::Value>(stdout.trim()).unwrap_or_else(|e| {
+        panic!("session-start must produce valid JSON ({e}), got: {stdout}");
+    });
 }
 
 #[test]
-fn session_start_missing_project_toml_still_returns_json() {
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+fn session_start_survives_a_pointer_naming_a_project_that_is_not_there() {
+    // The other half: a checkout that claims to belong to a project the store
+    // has never held. Under `.storyhook/` this was a missing `project.toml`;
+    // it is a stale pointer file now, and it is the shape a clone of a
+    // repository whose store has not been migrated actually has.
+    let env = storyhook_test_support::TestEnv::shared();
+    let dir = storyhook_test_support::scratch_dir();
+    std::fs::write(
+        dir.path().join(".storyhook.toml"),
+        "schema = 1\nuuid = \"00000000-0000-4000-8000-000000000000\"\nprefix = \"SH\"\n",
+    )
+    .expect("writing a stale pointer");
 
-    // Delete the project.toml but leave .storyhook/ directory intact
-    std::fs::remove_file(dir.path().join(".storyhook/project.toml")).unwrap();
-
-    let output = story(dir.path())
+    let out = env
+        .story(dir.path())
         .arg("session-start")
         .output()
-        .expect("failed to run story session-start");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let trimmed = stdout.trim();
-
-    // Should produce valid JSON (either {} or a SessionStart context envelope)
-    let result: Result<serde_json::Value, _> = serde_json::from_str(trimmed);
-    assert!(
-        result.is_ok(),
-        "session-start must produce valid JSON even with missing project.toml, got: {trimmed}"
+        .expect("running story session-start");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a hook must not fail the session"
     );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    serde_json::from_str::<serde_json::Value>(stdout.trim()).unwrap_or_else(|e| {
+        panic!("session-start must produce valid JSON ({e}), got: {stdout}");
+    });
 }
 
 // ============================================================
@@ -709,7 +729,7 @@ fn session_start_plugin_config_extra_whitespace_bug_documented() {
     story(dir.path()).arg("init").assert().success();
 
     // Write config with extra whitespace around the value
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "[plugin]\nenabled  =   false\ntracking = \"normal\"\n",
@@ -740,7 +760,7 @@ fn session_start_plugin_config_enabled_true_produces_system_message() {
         .success();
 
     // Write config with enabled = true explicitly
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "[plugin]\nenabled = true\ntracking = \"normal\"\n",
@@ -772,7 +792,7 @@ fn session_start_plugin_config_malformed_still_works() {
         .success();
 
     // Write a completely malformed plugin config (not valid TOML)
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(&config_path, "{{{{garbage not toml!!! %%%").unwrap();
 
     let output = story(dir.path())
@@ -802,7 +822,7 @@ fn session_start_plugin_config_no_space_enabled_equals_false() {
     story(dir.path()).arg("init").assert().success();
 
     // Write config with no spaces around `=`
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(&config_path, "enabled=false\n").unwrap();
 
     let output = story(dir.path())
@@ -825,7 +845,7 @@ fn session_start_plugin_config_comments_and_extra_keys() {
     story(dir.path()).arg("init").assert().success();
 
     // Write config with comments and extra keys
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "# Plugin configuration\n\
@@ -856,7 +876,7 @@ fn session_start_plugin_config_nested_table() {
     story(dir.path()).arg("init").assert().success();
 
     // Write config with [plugin] nested table format
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "[plugin]\n\
@@ -889,7 +909,7 @@ fn session_start_no_plugin_config_file_produces_system_message() {
         .success();
 
     // Ensure there's no plugin-config.toml (init shouldn't create one by default)
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     if config_path.exists() {
         std::fs::remove_file(&config_path).unwrap();
     }

@@ -589,19 +589,26 @@ project_root() {
   pwd -P
 }
 
+# story_state_list — `story state list`, or empty if it cannot be asked.
+#
+# The project's states used to be read out of `.storyhook/states.toml`. Story
+# data lives in storyhook's own store now and that file is not written, so the
+# catalog is asked of the CLI — which was always the better source, since the
+# rendering is the contract and the file was an implementation detail.
+#
+# Lines look like: `in-progress (OPEN, active) — 2 open — some description`.
+story_state_list() {
+  (cd "$PROJECT_DIR" 2>/dev/null && story state list 2>/dev/null) || true
+}
+
 # story_active_state — the slug meaning "claimed / being worked": the state
-# carrying `role = "active"` in .storyhook/states.toml, else "in-progress".
-# Mirrors the convention story-work already follows.
+# carrying the `active` role, else "in-progress". Mirrors the convention
+# story-work already follows.
 story_active_state() {
-  local file="$PROJECT_DIR/.storyhook/states.toml" found=""
-  if [ -r "$file" ]; then
-    found=$(awk '
-      function val(s) { if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2); return "" }
-      /^[[:space:]]*\[\[states\]\]/ { slug = ""; role = ""; next }
-      /^[[:space:]]*slug[[:space:]]*=/ { slug = val($0); next }
-      /^[[:space:]]*role[[:space:]]*=/ { role = val($0); if (role == "active" && slug != "") { print slug; exit } next }
-    ' "$file")
-  fi
+  local found=""
+  found=$(story_state_list | awk -F' *\\(' '
+    /\(.*active.*\)/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print $1; exit }
+  ')
   printf '%s' "${found:-in-progress}"
 }
 
@@ -954,24 +961,16 @@ cmd_doctor() {
 # linkage — the worktree directory name is the sole story<->branch tie.
 
 # story_closed_state — the slug `complete` moves a story into: the first
-# CLOSED-superstate entry in .storyhook/states.toml, or $STORY_DONE_STATE.
-# Not hard-coded to "done": states.toml is user-editable (this very repo
-# defines five states, not the three `story init` seeds), and the CLI has no
-# machine-readable "list states" verb to ask instead.
+# CLOSED-superstate state the project defines, or $STORY_DONE_STATE.
+#
+# Not hard-coded to "done": the state set is user-editable (this very repo
+# defines five states, not the three `story init` seeds). Read from
+# `story state list` rather than from a file — see story_state_list.
 story_closed_state() {
   if [ -n "$DONE_STATE" ]; then printf '%s' "$DONE_STATE"; return 0; fi
-  local file="$PROJECT_DIR/.storyhook/states.toml"
-  [ -r "$file" ] || return 0
-  awk '
-    function val(s) { if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2); return "" }
-    /^[[:space:]]*\[\[states\]\]/ {
-      if (slug != "" && sup == "CLOSED") { print slug; found = 1; exit }
-      slug = ""; sup = ""; next
-    }
-    /^[[:space:]]*slug[[:space:]]*=/  { slug = val($0); next }
-    /^[[:space:]]*super[[:space:]]*=/ { sup  = val($0); next }
-    END { if (!found && slug != "" && sup == "CLOSED") print slug }
-  ' "$file"
+  story_state_list | awk -F' *\\(' '
+    /\(CLOSED[,)]/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1); print $1; exit }
+  '
 }
 
 # _story_worktree_status <path> — removable|current|locked|dirty|missing.

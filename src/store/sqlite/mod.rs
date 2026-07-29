@@ -601,6 +601,10 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::forget_project_path(&self.conn, project, path)
     }
 
+    fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError> {
+        write::rename_project(&self.conn, project, name)
+    }
+
     fn reserve_story_no(&mut self, project: ProjectId, highest: StoryNo) -> Result<(), StoreError> {
         write::reserve_story_no(&self.conn, project, highest)
     }

@@ -13,7 +13,6 @@
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use rusqlite::Connection;
 use tempfile::tempdir;
 
 fn story(dir: &std::path::Path) -> Command {
@@ -204,7 +203,7 @@ fn delete_show_json_exposes_superstate_and_deleted_fields() {
 }
 
 #[test]
-fn delete_archives_and_removes_open_jsonl() {
+fn delete_closes_the_story_and_leaves_it_readable() {
     let dir = tempdir().unwrap();
     story(dir.path()).arg("init").assert().success();
     story(dir.path())
@@ -217,21 +216,23 @@ fn delete_archives_and_removes_open_jsonl() {
         .assert()
         .success();
 
-    assert!(
-        !dir.path()
-            .join(".storyhook/open/stories/SH-1.jsonl")
-            .exists()
-    );
-
-    let connection = Connection::open(dir.path().join(".storyhook/archive/archive.db")).unwrap();
-    let state: String = connection
-        .query_row(
-            "SELECT state FROM closed_stories WHERE id = 'SH-1'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("SH-1 should be archived after delete");
-    assert_eq!(state, "todo");
+    // The open/archive *split* is gone: one row with an `archived` flag
+    // replaces two storage media that could, and did, disagree (SH-20). What
+    // the split was a proxy for survives and is asserted directly — a deleted
+    // story stops counting as open, keeps the state it was deleted in, and
+    // stays readable.
+    story(dir.path())
+        .args(["--json", "summary"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"total_open\": 0"));
+    story(dir.path())
+        .args(["--json", "show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"state\": \"todo\""))
+        .stdout(predicate::str::contains("\"superstate\": \"CLOSED\""))
+        .stdout(predicate::str::contains("\"deleted\": true"));
 }
 
 #[test]
@@ -335,72 +336,54 @@ fn reopen_ordinarily_closed_story_needs_no_force() {
 }
 
 #[test]
-fn doctor_fix_heals_stale_archived_snapshot_from_before_the_fix() {
-    // Simulate data written by the pre-#18-fix code: the archived event log
-    // correctly contains `StoryDeleted`, but the *cached* snapshot_json (as
-    // the old `fold_story` would have produced it) still has
-    // `superstate: "OPEN"` and no `deleted`/`deleted_reason` fields.
-    // Archived snapshots are read from this cache rather than re-folded on
-    // every load, so such a story would stay miscounted forever without an
-    // explicit repair pass.
-    let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
-    story(dir.path())
-        .args(["new", "Legacy deleted story"])
-        .assert()
-        .success();
-    story(dir.path())
-        .args(["delete", "SH-1", "created in error"])
-        .assert()
+fn doctor_fix_heals_a_read_model_row_that_disagrees_with_its_events() {
+    // The defect this reproduces was specific to the legacy archive: a deleted
+    // story's *cached* snapshot said `superstate: OPEN` while its event log
+    // said `StoryDeleted`, because archived snapshots were read from the cache
+    // rather than re-folded. The shape survives the flip — a read-model row
+    // that disagrees with its own history — and so does the repair, which is
+    // now a rebuild-and-diff rather than a special case.
+    //
+    // The row is fabricated rather than reached: the store writes the read
+    // model inside the transaction that appends the events it was folded from,
+    // so no public path can produce this. That is exactly why `doctor --fix`
+    // has to be able to heal it — a database written by an older storyhook can
+    // hold it, and a migrated tree can too.
+    let env = storyhook_test_support::TestEnv::shared();
+    let project = env.project().seed_story("Legacy deleted story").build();
+    project
+        .run(&["delete", "SH-1", "created in error"])
         .success();
 
-    // Post-fix delete already archives this correctly — deliberately
-    // corrupt the cached snapshot back to what the old buggy code wrote, to
-    // reproduce the pre-fix-data scenario `doctor --fix` must heal.
-    {
-        let connection =
-            Connection::open(dir.path().join(".storyhook/archive/archive.db")).unwrap();
-        let snapshot_json: String = connection
-            .query_row(
-                "SELECT snapshot_json FROM closed_stories WHERE id = 'SH-1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let mut snapshot: serde_json::Value = serde_json::from_str(&snapshot_json).unwrap();
-        let obj = snapshot.as_object_mut().unwrap();
-        obj.insert("superstate".to_string(), serde_json::json!("OPEN"));
-        obj.remove("deleted");
-        obj.remove("deleted_reason");
-        connection
-            .execute(
-                "UPDATE closed_stories SET snapshot_json = ?1 WHERE id = 'SH-1'",
-                [serde_json::to_string(&snapshot).unwrap()],
-            )
-            .unwrap();
-    }
+    let store = project.open_store();
+    let id = project.project_id(&store);
+    storyhook::store::test_support::corrupt_snapshot(
+        &store,
+        id,
+        project.story_no(&store, "SH-1"),
+        |snapshot| {
+            let object = snapshot.as_object_mut().expect("a snapshot object");
+            object.insert("superstate".to_string(), serde_json::json!("OPEN"));
+            object.remove("deleted");
+            object.remove("deleted_reason");
+        },
+    )
+    .expect("corrupting the read model");
 
-    // Confirm the fixture actually reproduces the pre-fix bug before fixing.
-    story(dir.path())
-        .args(["--json", "summary"])
-        .assert()
+    // Confirm the fixture reproduces the miscount before healing it.
+    project
+        .run(&["--json", "summary"])
         .success()
         .stdout(predicate::str::contains("\"total_open\": 1"));
 
-    story(dir.path())
-        .args(["doctor", "--fix"])
-        .assert()
-        .success();
+    project.run(&["doctor", "--fix"]).success();
 
-    story(dir.path())
-        .args(["--json", "summary"])
-        .assert()
+    project
+        .run(&["--json", "summary"])
         .success()
         .stdout(predicate::str::contains("\"total_open\": 0"));
-
-    story(dir.path())
-        .args(["--json", "show", "SH-1"])
-        .assert()
+    project
+        .run(&["--json", "show", "SH-1"])
         .success()
         .stdout(predicate::str::contains("\"superstate\": \"CLOSED\""))
         .stdout(predicate::str::contains("\"deleted\": true"));

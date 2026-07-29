@@ -1,80 +1,96 @@
-# Handoff — the data-layer rearchitecture, after W3
+# Handoff — the data-layer rearchitecture, after W4 (the flip)
 
 **Read first:** `docs/rearch/STATE.md` (execution ledger — Key facts, then the
-W3 step log), `docs/rearch/flip-checklist.md` (the enumerated W4 work, now with
-sections D2 and G), `docs/spec/data-layer-rearchitecture.md` (the design of
-record).
+W4 step log), `docs/spec/data-layer-rearchitecture.md` (the design of record).
+`docs/rearch/flip-checklist.md` is now closed; its header records what the wave
+actually found against what it was planned against.
 
 **Worktree:** `/Volumes/Code/mikeyward/storyhook/.claude/worktrees/rearch`.
 Linked worktree: no version bumps, no deploys, no force-push, never touch main.
 
 ## Where the program is
 
-W0 through W2d are merged. W3 is on `rearch/w3-importer` with a PR open.
+W0 through W3 are merged. **W4 is on `rearch/w4-flip` with a PR open, and the
+flip has landed on that branch.**
 
-**The port is complete and the door is now two-way.** All 49 `Invocation`
-variants dispatch to the store-backed stack. `story migrate` moves a legacy
-`.storyhook` tree into the store, and `tests/migrate_round_trip.rs` proves the
-journey back: `store → story export → ProjectExport → story import-project →
-legacy tree`, with the two read models compared story by story and field by
-field.
+`story` reads and writes one SQLite database per machine. `.storyhook/` is not
+created, not read by any command, and not deleted — it stays in this repository
+until W7, because it is the only copy of `project.toml`'s `created_at`, its
+`sync`/`doctor` settings, and `next-id`'s burned numbers, none of which an
+export document carries.
 
-One *action* is still owed a design rather than a port: `History::Restore`
-replaces a story's history, which an append-only store cannot do. It refuses
-loudly and names the checklist.
+**The program's exit criterion is met.** Both `worktree_truth` tests are
+un-ignored and green, with assertions byte-identical to the ones written against
+the failing behaviour, verified 20/20 over consecutive runs. The workspace has
+zero ignored tests.
 
-`src/app.rs` has exactly one arm from this wave — `story migrate`, which opens
-the global store from the legacy leg, because otherwise nothing could be
-migrated until after the flip. Nothing else routes production traffic through
-the new stack: `STORYHOOK_INVOKER` still defaults to `legacy`.
-
-## Next: W4, the flip
-
-Everything it needs exists. Its budget, its file:line census and its two
-`#[ignore]`d exit-criterion tests are the flip checklist. Three things to read
-before starting:
-
-1. **Section D2, the rollback procedure.** Paste it into the W4 PR. The revert
-   policy is *conditional* on `cargo test --workspace --test migrate_round_trip`
-   being 4/4 green; if it is red, the flip is a one-way door and must not merge.
-2. **`.storyhook/` stays in the repository until W7**, and the reason is
-   concrete rather than cautious: it is the only copy of `project.toml`'s
-   `created_at` and `sync`/`doctor` settings and of `next-id`'s burned numbers,
-   none of which an export document carries.
-3. **The behaviour-change notes W4 owes its PR** are accumulated in STATE.md's
-   Key facts: the burnt story number on a rejected `--state`, `doctor --fix`'s
-   data loss, `import-project` refusing a non-empty project, the superstate
-   re-fold, and now the SH-60 repairs — which change what this repository's own
-   graph says (SH-40 loses five children it claimed alone; SH-31 gains a
-   parent).
-
-## The two gates — run both
+## The gate
 
 ```sh
-make test           # ~1:33 warm, 1946 tests, 2 ignored (the W4 exit criterion)
-make test-store     # ~6.5s, 40 targets
+make test           # ~50s warm, 2003 Rust tests, 0 ignored, 17/17 bash
 ```
 
-`make test-store` is the same integration suite under `STORYHOOK_INVOKER=local`.
-**Standing rule from W2d onward:** run it after every commit alongside
-`make test`, and record both times in STATE.md. Its exclusion list — file,
-reason, burn-down wave — is flip-checklist section G, and **must only ever
-shrink**.
+`make test-store` is gone: the default suite *is* the store now.
+
+Two things about it that are load-bearing rather than tidy, both in
+`scripts/run-tests.sh`:
+
+1. **It sets an isolated `STORYHOOK_DATA_DIR` and refuses to run without one.**
+   ~45 test files still build fixtures with `tempfile::tempdir()` and inherit
+   the process environment; without the override a test run writes into the
+   developer's real store.
+2. `INSTA_UPDATE=no` keeps the golden corpus a real gate.
+
+## Next: W5, the daemon
+
+W5 is where the quarantine comes down. `app::run`, `storage.rs`'s write half,
+`lock.rs` and `registry.rs` all survive unused, reachable only from
+`src/web.rs`, because the dashboard still reads `.storyhook/` directly.
+`invoker_seam.rs::the_legacy_path_is_reachable_only_from_the_web_dashboard`
+fails if anything else reaches them — so the deletion is mechanical once the
+dashboard is on the store.
+
+Four things W5 inherits, all recorded in STATE.md's Key facts:
+
+1. **Auto-sync has no home.** `app::run` ended with
+   `github::auto::maybe_auto_sync`; `dispatch` has no equivalent tail, so a
+   project in `sync.mode = auto` no longer re-syncs after a story-modifying
+   command. It is a policy about a whole invocation, so it belongs on the
+   invoker rather than in a dispatch arm.
+2. **`registry.toml` is adopted, never retired.**
+   `service::adopt_legacy_registry` runs on every store open, is idempotent, and
+   neither writes nor deletes the file — the dashboard still reads it. The
+   `MIGRATED.txt` marker and the file's retirement are W5's.
+3. **`error_contract`'s LockTimeout row costs ~5s** and is now SQLite's
+   `busy_timeout` rather than `src/lock.rs`'s deadline. If W5 makes it
+   configurable, the row gets cheap.
+4. **`src/tui/event.rs`'s notify watcher** is the TUI's last white-box
+   reference, waiting on the daemon's change feed.
+
+## The rollback, while it is still available
+
+`docs/rearch/flip-checklist.md` §D2 is the procedure, and it is pasted into the
+W4 PR body. **The revert policy is conditional on
+`cargo test --workspace --test migrate_round_trip` being 4/4 green** — it is, at
+this commit. If it ever goes red, the flip is a one-way door.
+
+One narrowing this wave introduced, and it is in the PR body's table: undo now
+writes `StoryCommentRetracted`/`StoryAssigneeCleared`, which an older storyhook
+cannot decode. A project whose undo has been used will fail `import-project` on
+a reverted binary — *loudly*, with serde's unknown-variant error, not silently.
 
 ## Traps that have already cost time
 
-1. **`TestEnv` isolates child processes, not in-process library calls.** If a
+1. **`is_project_less` has sprung three times.** Adding an arm to
+   `dispatch_unscoped` without adding it there makes the verb fail in an empty
+   directory. It is now a test
+   (`the_project_less_verbs_all_answer_outside_a_project`), not a warning.
+2. **`TestEnv` isolates child processes, not in-process library calls.** If a
    service reads a global path from the environment, an in-process test cannot
-   redirect it — so make the path a parameter. Two W2d tests wrote into the
-   developer's real home directory before this was understood.
-2. **`make test` measurements are worthless on a loaded machine.** `web_test`'s
-   readiness deadlines are wall-clock. Check `uptime` and
-   `ps aux | sort -nrk 3` before hunting a regression — and
-   `ls target/debug/deps | wc -l`, which W3 found stalls the machine's whole
-   filesystem-event layer once it reaches six figures.
-3. **A fixture at a fixed path under `/private/tmp/storyhook-tests` is a latent
-   flake**, because this program runs its gate from a worktree while the main
-   checkout may be running one too. W3 fixed the one instance of it.
+   redirect it — make the path a parameter.
+3. **`make test` measurements are worthless on a loaded machine.** `web_test`'s
+   readiness deadlines are wall-clock. Check `uptime`,
+   `ps aux | sort -nrk 3`, and `ls target/debug/deps | wc -l`.
 4. **`git commit --amend` silently fails here.** Use reset --soft plus a fresh
    commit.
 5. **Story IDs go in commit BODIES, never subjects** — the post-commit hook
@@ -85,8 +101,9 @@ shrink**.
 - `rm -rf ~/.local/state/storyhook` — three fixture `.jsonl` files a test run
   wrote there before `StoreSyncStorage::backups_dir()` existed. The permission
   classifier declined the delete; it needs Mikey.
-- The defects this program has found still need stories filed (task #15),
-  including two more from W3: `TransferService::export` silently drops
-  unknown-kind events, and this repository's fifteen live SH-60 violations are
-  now fully characterised. Not from this worktree — minting ids here collides
-  with ids minted in parallel worktrees.
+- The defects this program has found still need stories filed (task #15). W4
+  adds two more to the list, both **fixed in-wave** but both worth a record:
+  `story web register --name` was silently dropping the name (the class is "a
+  flag accepted and discarded"), and `differential_git`'s empty-window row was a
+  latent clock-boundary flake. Not filed from this worktree — minting ids here
+  collides with ids minted in parallel worktrees.

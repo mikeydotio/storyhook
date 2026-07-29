@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn serving_an_occupied_port_fails_loudly_instead_of_trusting_the_squatter() {
         let env = TestEnv::shared();
-        let project = env.project().build();
+        let project = env.project().legacy().build();
         let (_registry_dir, registry_path, _repo_id) = register(project.path());
 
         let squatter = TcpListener::bind("127.0.0.1:0").expect("binding the squatter");
@@ -268,10 +268,10 @@ mod tests {
     #[test]
     fn concurrent_servers_get_distinct_ports_and_serve_only_their_own_registry() {
         let env = TestEnv::shared();
-        let project_a = env.project().build();
+        let project_a = env.project().legacy().build();
         let (_registry_dir_a, registry_a, id_a) = register(project_a.path());
 
-        let project_b = env.project().build();
+        let project_b = env.project().legacy().build();
         let (_registry_dir_b, registry_b, id_b) = register(project_b.path());
 
         assert_ne!(id_a, id_b, "the two fixtures must be distinguishable");
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn a_served_registry_answers_on_the_port_it_reports() {
         let env = TestEnv::shared();
-        let project = env.project().build();
+        let project = env.project().legacy().build();
         let (_registry_dir, registry_path, _id) = register(project.path());
 
         let port = serve(&registry_path);

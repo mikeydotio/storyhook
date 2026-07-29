@@ -771,34 +771,58 @@ fn init_fixture() -> (tempfile::TempDir, tempfile::TempDir, SqliteStore) {
 }
 
 #[test]
-fn init_agrees_on_what_it_reports() {
+fn init_reports_the_new_storage_model_where_legacy_reported_a_directory() {
+    // The one `init` row the flip deliberately breaks. The legacy message told
+    // the user to commit `.storyhook/`; that instruction is now wrong, and the
+    // replacement names the two things that are true — the store holds the
+    // stories, and the pointer file is what belongs to the repository.
     let legacy_root = scratch_dir();
     let (store_root, _db, store) = init_fixture();
 
     let legacy = legacy_init(legacy_root.path(), None, false);
     let new = store_init(store_root.path(), &store, None, false);
-    assert_eq!(
-        canonical(&legacy),
-        canonical(&new),
-        "init's answer diverged\n legacy: {legacy:?}\n  store: {new:?}"
+    let legacy_message = canonical(&legacy)["ok"]["message"]
+        .as_str()
+        .expect("a message")
+        .to_string();
+    let new_message = canonical(&new)["ok"]["message"]
+        .as_str()
+        .expect("a message")
+        .to_string();
+
+    assert_ne!(legacy_message, new_message);
+    assert!(
+        legacy_message.contains(".storyhook/ directory"),
+        "the legacy leg's own text is unchanged: {legacy_message}"
     );
     assert!(
-        canonical(&legacy)["ok"]["message"]
-            .as_str()
-            .expect("a message")
-            .contains("Generated AGENTS.md"),
-        "the row would not have noticed a missing AGENTS.md"
+        new_message.contains("outside this repository"),
+        "the new text must say where the stories are: {new_message}"
     );
+    assert!(
+        new_message.contains(".storyhook.toml"),
+        "the new text must name the one file that IS the repository's: {new_message}"
+    );
+    assert!(
+        !new_message.contains(".storyhook/"),
+        "the new text must not tell the user to commit a directory that is not \
+         created any more: {new_message}"
+    );
+    for message in [&legacy_message, &new_message] {
+        assert!(
+            message.contains("Generated AGENTS.md"),
+            "both legs still scaffold the instructions: {message}"
+        );
+    }
 }
 
 #[test]
-fn init_agrees_when_agents_md_is_suppressed() {
+fn init_agrees_that_no_agents_md_means_no_agents_md() {
     let legacy_root = scratch_dir();
     let (store_root, _db, store) = init_fixture();
 
-    let legacy = legacy_init(legacy_root.path(), None, true);
-    let new = store_init(store_root.path(), &store, None, true);
-    assert_eq!(canonical(&legacy), canonical(&new));
+    legacy_init(legacy_root.path(), None, true).expect("legacy init");
+    store_init(store_root.path(), &store, None, true).expect("store init");
     assert!(!legacy_root.path().join("AGENTS.md").exists());
     assert!(
         !store_root
@@ -874,10 +898,10 @@ fn a_second_init_agrees_that_it_changes_nothing() {
     legacy_init(legacy_root.path(), Some("AB"), true).expect("legacy init");
     store_init(store_root.path(), &store, Some("AB"), true).expect("store init");
 
-    let legacy = legacy_init(legacy_root.path(), Some("ZZ"), true);
-    let new = store_init(store_root.path(), &store, Some("ZZ"), true);
-    assert_eq!(canonical(&legacy), canonical(&new));
+    legacy_init(legacy_root.path(), Some("ZZ"), true).expect("second legacy init");
+    store_init(store_root.path(), &store, Some("ZZ"), true).expect("second store init");
 
+    // Both legs leave the prefix alone, and neither creates a second project.
     assert_eq!(
         storage::load_project_prefix(legacy_root.path()).expect("legacy prefix"),
         "AB"
@@ -892,13 +916,27 @@ fn a_second_init_agrees_that_it_changes_nothing() {
 }
 
 #[test]
-fn init_leaves_no_pointer_file_before_the_flip() {
-    // Two identities for one project is exactly the divergence this
-    // rearchitecture exists to end, so while `.storyhook/` is still the
-    // identity of record the store leg must not write a competing one.
+fn init_writes_the_pointer_file_that_names_the_project() {
+    // The inverse of what this row asserted before the flip. While
+    // `.storyhook/` was the identity of record a second identity could only
+    // disagree with it; the store is the identity of record now, and the
+    // pointer is how a fresh clone finds its way to the right project.
     let (store_root, _db, store) = init_fixture();
     store_init(store_root.path(), &store, None, true).expect("store init");
-    assert!(!pointer_path(&store_root.path().canonicalize().unwrap()).exists());
+
+    let root = store_root.path().canonicalize().unwrap();
+    let pointer = storyhook::service::project::read_pointer(&root)
+        .expect("reading the pointer")
+        .expect("init must write a pointer file");
+    assert!(pointer_path(&root).exists());
+
+    let project = store
+        .read(|tx| tx.project_by_uuid(&pointer.uuid))
+        .expect("resolving the pointer");
+    assert!(
+        project.is_some(),
+        "the pointer must name a project the store actually holds"
+    );
 }
 
 // --- phases and epics ------------------------------------------------------

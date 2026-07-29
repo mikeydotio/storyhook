@@ -109,7 +109,7 @@ fn scaffold_claude_md_is_short_pointer() {
         .args(["scaffold", "claude-md"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(".storyhook/CLAUDE.md"))
+        .stdout(predicate::str::contains("AGENTS.md"))
         .stdout(predicate::str::contains("story load-context"));
 }
 
@@ -132,16 +132,20 @@ fn scaffold_claude_md_no_mcp_references() {
 }
 
 #[test]
-fn init_creates_storyhook_claude_md_with_prefix() {
+fn init_generates_agents_md_carrying_this_projects_prefix() {
+    // The full agent instructions used to be scaffolded into
+    // `.storyhook/CLAUDE.md` beside the story data. They are in `AGENTS.md`
+    // now — one scaffold artifact at the repository root, which is where a
+    // fresh agent looks and which survives the directory being retired.
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["init", "--prefix", "WEB"])
         .assert()
         .success();
-    let claude_md = std::fs::read_to_string(dir.path().join(".storyhook/CLAUDE.md")).unwrap();
-    assert!(claude_md.contains("WEB-<n>"));
-    assert!(claude_md.contains("story load-context"));
-    assert!(claude_md.contains("Planning mode"));
+    let agents_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+    assert!(agents_md.contains("WEB-<n>"));
+    assert!(agents_md.contains("story load-context"));
+    assert!(agents_md.contains("## Planning"));
 }
 
 #[test]

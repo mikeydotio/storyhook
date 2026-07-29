@@ -81,36 +81,46 @@ fn cases() -> Vec<Case> {
         Case {
             variant: "LockTimeout",
             exit_code: 4,
-            // The only row that costs wall-clock time: `with_project_lock`
-            // polls for a hard-coded 5s (src/lock.rs:23) with no env override,
-            // so provoking a real timeout takes just over 5s. Worth it — exit 4
-            // is otherwise unpinned, and W5 moves this lock into a daemon.
-            message: "timed out waiting for the project write lock",
+            // The only row that costs wall-clock time. A writer waits
+            // `busy_timeout` (5s, `store::sqlite::DEFAULT_BUSY_TIMEOUT`) for
+            // another process's write lock before giving up. Worth it — exit 4
+            // is otherwise unpinned, and W5 moves this contention into a
+            // daemon where it should stop being reachable at all.
+            //
+            // The lock moved with the storage: it used to be `src/lock.rs`'s
+            // advisory file lock over a project directory, and it is SQLite's
+            // own write lock over the store now. Same contract, one storage
+            // model down.
+            message: "timed out",
             provoke: |env, json| {
                 let project = env.project().build();
-                let root = project.path().to_path_buf();
 
                 // The lock must be *held* before the child starts, or the child
                 // takes it uncontended and the row proves nothing. The channel
                 // is what makes that ordering real rather than hoped for.
                 let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
                 let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+                let store_path = env.store_path();
                 let holder = std::thread::spawn(move || {
-                    storyhook::lock::with_project_lock(&root, || {
-                        acquired_tx.send(()).expect("signalling lock acquisition");
-                        // Held until the child has given up, so the timeout is
-                        // the child's own 5s deadline and not a race with ours.
-                        let _ = release_rx.recv();
-                        Ok(())
-                    })
-                    .expect("the holder thread must acquire the lock");
+                    let conn = rusqlite::Connection::open(&store_path)
+                        .expect("opening the store directly");
+                    conn.busy_timeout(std::time::Duration::from_secs(30))
+                        .expect("setting a busy timeout");
+                    conn.execute_batch("BEGIN IMMEDIATE")
+                        .expect("taking the store's write lock");
+                    acquired_tx.send(()).expect("signalling lock acquisition");
+                    // Held until the child has given up, so the timeout is the
+                    // child's own deadline and not a race with ours.
+                    let _ = release_rx.recv();
+                    conn.execute_batch("ROLLBACK").expect("releasing the lock");
                 });
                 acquired_rx
                     .recv_timeout(std::time::Duration::from_secs(10))
-                    .expect("the holder thread never acquired the project lock");
+                    .expect("the holder thread never acquired the store's write lock");
 
-                // `new` is a write, so it goes through with_project_lock; a read
-                // like `show` never takes the lock and would never time out.
+                // `new` is a write, so it needs the lock; a read like `show`
+                // runs happily beside a writer under WAL and would never time
+                // out.
                 let out = run(project.path(), env, &["new", "Blocked on the lock"], json);
                 let _ = release_tx.send(());
                 holder.join().expect("the holder thread panicked");
@@ -120,31 +130,50 @@ fn cases() -> Vec<Case> {
         Case {
             variant: "Integrity",
             exit_code: 5,
-            message: "is missing state",
+            // `story doctor` is the integrity surface, and this is the one
+            // integrity fault the schema cannot refuse outright: two stories
+            // whose *histories* disagree about an edge. The row used to be
+            // provoked by emptying an event log, which folded into a story with
+            // no state — a shape a store with a foreign key and a NOT NULL
+            // column simply cannot hold.
+            message: "missing inverse relation",
             provoke: |env, json| {
-                let project = env.project().seed_story("A story").build();
-                // An empty event log parses cleanly and then folds into a story
-                // with no state — the definition of an integrity fault, as
-                // opposed to a storage one.
-                std::fs::write(story_log(project.path(), "SH-1"), "")
-                    .expect("emptying the event log");
-                run(project.path(), env, &["show", "SH-1"], json)
+                let project = env.project().seed_story("A").seed_story("B").build();
+                let store = project.open_store();
+                let id = project.project_id(&store);
+                storyhook::store::test_support::inject_events(
+                    &store,
+                    id,
+                    project.story_no(&store, "SH-1"),
+                    &[storyhook::domain::StoryEvent::StoryRelationshipAdded {
+                        at: "2026-01-01T00:00:00Z".to_string(),
+                        other_id: "SH-2".to_string(),
+                        relation: "blocks".to_string(),
+                    }],
+                )
+                .expect("injecting a one-sided relation");
+                run(project.path(), env, &["doctor"], json)
             },
         },
         Case {
             variant: "Storage",
             exit_code: 5,
             // Serde's own wording, arriving through `From<serde_json::Error>`.
+            // Provoked from an input document rather than from a corrupted
+            // event log: the log is a table now, and its `payload` column is
+            // read defensively by design — an undecodable event is *reported*
+            // rather than fatal (SH-54).
             message: "expected ident",
             provoke: |env, json| {
-                let project = env.project().seed_story("A story").build();
-                // Unparseable bytes, as distinct from Integrity's parseable but
-                // incomplete ones. Same exit code, different variant: the
-                // message is the only thing that tells them apart, which is why
-                // both rows are here.
-                std::fs::write(story_log(project.path(), "SH-1"), "not json\n")
-                    .expect("corrupting the event log");
-                run(project.path(), env, &["show", "SH-1"], json)
+                let project = env.project().build();
+                let document = project.path().join("broken.json");
+                std::fs::write(&document, "not json\n").expect("writing a broken document");
+                run(
+                    project.path(),
+                    env,
+                    &["import", &document.to_string_lossy()],
+                    json,
+                )
             },
         },
         Case {
@@ -173,12 +202,24 @@ fn cases() -> Vec<Case> {
                 let project = env.project().build();
                 // The config must exist first: without it `github-sync` runs
                 // initial setup, which fails on the missing remote (Validation)
-                // or blocks on an interactive prompt.
-                std::fs::write(
-                    project.path().join(".storyhook/github-sync.toml"),
-                    "[github]\nowner = \"acme\"\nrepo = \"widgets\"\n\n[sync]\nmode = \"manual\"\n",
-                )
-                .expect("writing the github-sync config");
+                // or blocks on an interactive prompt. It is a column now, not
+                // `.storyhook/github-sync.toml` — same configuration, one
+                // storage model down.
+                let store = project.open_store();
+                let id = project.project_id(&store);
+                {
+                    use storyhook::store::{ReadOps as _, Store as _, WriteOps as _};
+                    store
+                        .write(|tx| {
+                            let mut settings = tx.settings(id)?;
+                            settings.github_sync = Some(serde_json::json!({
+                                "github": { "owner": "acme", "repo": "widgets" },
+                                "sync": { "mode": "manual" },
+                            }));
+                            tx.put_settings(id, &settings)
+                        })
+                        .expect("writing the github-sync config");
+                }
                 // Reached before any socket is opened, so this is offline.
                 // `env_remove` and not `env("")`: `env::var` returns Ok("") for
                 // an empty value, which would sail past the check.
@@ -458,11 +499,4 @@ fn finish(mut cmd: assert_cmd::Command, args: &[&str], json: bool) -> std::proce
     }
     cmd.output()
         .unwrap_or_else(|e| panic!("running `story {}`: {e}", args.join(" ")))
-}
-
-/// The on-disk event log for `id` — the file a row corrupts to provoke a
-/// storage or integrity fault.
-fn story_log(root: &Path, id: &str) -> std::path::PathBuf {
-    root.join(".storyhook/open/stories")
-        .join(format!("{id}.jsonl"))
 }

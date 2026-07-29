@@ -1,14 +1,19 @@
 //! The seam between *deciding what to do* and *doing it*.
 //!
-//! Everything that can run a storyhook command — the CLI, the web dashboard,
-//! and later the TUI — goes through [`Invoker`]. Today there is exactly one
-//! implementation, [`LegacyInvoker`], which forwards to [`crate::app::run`]
-//! in the same process. The point of introducing the trait before there is
-//! anything to choose between is that adopting it is provably behavior-
-//! preserving *now*, when the only implementation is the existing call, and
-//! therefore cheap to verify; a later implementation that talks to a store or
-//! a daemon becomes a constructor swap rather than a rewrite of every call
-//! site.
+//! Everything that can run a storyhook command — the CLI, the TUI and the web
+//! dashboard — goes through [`Invoker`]. The trait was introduced when there
+//! was only one implementation and nothing to choose between, which is exactly
+//! what made adopting it provably behaviour-preserving; the flip was then a
+//! constructor swap rather than a rewrite of every call site.
+//!
+//! Two implementations now, and they are not peers:
+//!
+//! * [`StoreInvoker`] serves **every** `story` command. It is the stack.
+//! * [`LegacyInvoker`] forwards to [`crate::app::run`], which reads and writes
+//!   `.storyhook/` directly. **It is quarantined**: the web dashboard is the
+//!   only thing that constructs one, because the dashboard still reads those
+//!   directories, and the wave that promotes the daemon deletes both. Nothing
+//!   else in `src/` may reach it — `tests/invoker_seam.rs` asserts that.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -85,6 +90,34 @@ pub trait Invoker {
     fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError>;
 }
 
+/// Opens the machine's store, ready to serve an invocation.
+///
+/// Three steps, in this order, and every entry point takes all three:
+///
+/// 1. Open `$STORYHOOK_DATA_DIR`/`$XDG_DATA_HOME`'s `store.db`, creating it if
+///    this is the first run.
+/// 2. Migrate. Schema changes are applied on open rather than by a separate
+///    command, behind a verified backup, so a binary can never read a database
+///    it does not understand.
+/// 3. Adopt the legacy dashboard registry, if there is one — recording the
+///    checkouts it names against the projects they belong to. Idempotent and
+///    non-destructive: `registry.toml` is neither written nor deleted, because
+///    the legacy dashboard still reads it.
+///
+/// Shared by the CLI and the TUI so that "where is the store, and what does
+/// opening it entail" has one answer rather than one per entry point.
+pub fn open_store() -> Result<crate::store::SqliteStore, AppError> {
+    use crate::store::Store as _;
+    let store = crate::store::SqliteStore::open(crate::paths::store_path()?)?;
+    store.migrate()?;
+    // A failure here is not a reason to refuse the command: the registry
+    // belongs to the dashboard, and every storyhook command works without it.
+    if let Ok(dir) = crate::paths::legacy_global_dir() {
+        let _ = crate::service::adopt_legacy_registry(&store, &dir.join("registry.toml"));
+    }
+    Ok(store)
+}
+
 /// Runs commands in this process against a project directory, by calling
 /// [`crate::app::run`].
 ///
@@ -134,10 +167,6 @@ impl Invoker for LegacyInvoker<'_> {
 /// a catch-all, so a new variant stops this file compiling until somebody
 /// decides what it does — which is the property the port was building towards
 /// and the reason [`not_yet_ported`] now has only one caller left.
-///
-/// One *action* is still owed a design rather than a port:
-/// `History::Restore` replaces a story's history, which an append-only store
-/// cannot do; it answers loudly and points at the flip checklist.
 ///
 /// `tests/differential_lifecycle.rs` holds the roster and asserts that it
 /// accounts for every variant.
@@ -361,23 +390,19 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 }
             }
         }
-        Invocation::SessionStart => SessionService::new(ctx)
-            .context()
-            .map(Response::RawJson),
+        Invocation::SessionStart => SessionService::new(ctx).context().map(Response::RawJson),
         Invocation::History { action } => match action {
             HistoryAction::Read { id } => session::history(ctx, &id).map(Response::StoryHistory),
-            // Restoring means *replacing* a story's history, which an
-            // append-only store cannot do and which needs a compensating-event
-            // design rather than a port. `docs/rearch/flip-checklist.md`
-            // category C carries the item; until it is answered the TUI's undo
-            // works on the legacy path only.
-            HistoryAction::Restore { .. } => Err(AppError::Storage(
-                "internal: `history restore` is not yet ported to the store-backed                  dispatcher — see docs/rearch/flip-checklist.md, category C"
-                    .to_string(),
-            )),
+            // Restoring does not replace a story's history — an append-only
+            // store cannot, and an audit trail whose entries can be deleted is
+            // not one. `service::history::restore` appends the events that
+            // carry the story back to what the given log folds to. See that
+            // module for what it changes for a user.
+            HistoryAction::Restore { id, events } => {
+                crate::service::history::restore(ctx, &id, &events)?;
+                ctx.story_view(&id)
+            }
         },
-        Invocation::Web { action } => dispatch_web(ctx.store(), action),
-        Invocation::Update { check, force } => update(check, force),
         Invocation::GithubSync { id, dry_run } => {
             #[cfg(feature = "github-sync")]
             {
@@ -429,7 +454,9 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             let summary = decompose_summary(&batch);
             Ok(Response::Stories(batch.views, Some(summary)))
         }
-        Invocation::ImportProject { .. }
+        Invocation::Web { .. }
+        | Invocation::Update { .. }
+        | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Init { .. }
         | Invocation::Help
@@ -752,11 +779,12 @@ pub fn dispatch_unscoped<S: Store>(
     now: &str,
     invocation: Invocation,
 ) -> Result<Response, AppError> {
-    // The pointer file is the store's claim on the repository, and while the
-    // legacy tree is still the identity of record a second claim could only
-    // ever disagree with it. `StoreInvoker` — which serves a process for which
-    // the store *is* the identity of record — asks for it explicitly.
-    dispatch_unscoped_with(store, root, now, invocation, false)
+    // The pointer file is the repository's copy of which project it is, and
+    // the store is the identity of record — so `init` writes it. The parameter
+    // survives on [`dispatch_unscoped_with`] for the legacy web daemon, whose
+    // `init` still builds a `.storyhook/` tree and must not also leave a
+    // pointer claiming a project that tree is not in.
+    dispatch_unscoped_with(store, root, now, invocation, true)
 }
 
 /// [`dispatch_unscoped`], told whether `story init` should write the pointer
@@ -801,6 +829,19 @@ pub fn dispatch_unscoped_with<S: Store>(
             "story {}",
             env!("CARGO_PKG_VERSION")
         ))),
+        // Self-update touches no project data at all — it replaces the
+        // binary. The legacy path answered it anywhere, and a `story update`
+        // that demanded a project would be unusable exactly when it is most
+        // wanted: from a shell that is not standing in a repository.
+        Invocation::Update { check, force } => update(check, force),
+        // The whole `web` family. The daemon commands are process management
+        // and name no project at all; the catalog commands span every project
+        // (`list`) or name theirs by path (`register`). The legacy path
+        // answered all of them without resolving a project, and a `story web
+        // status` that failed in a directory storyhook had never heard of
+        // would be a regression in the one command a user reaches for when
+        // nothing is working.
+        Invocation::Web { action } => dispatch_web(store, action),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
         // answered before it ever looked for a project — so this arm does too,
@@ -983,9 +1024,15 @@ fn decompose_summary(batch: &ImportBatch) -> String {
 /// user-visible string in a wave whose entire claim is that it moves none.
 fn init_message(outcome: &InitOutcome) -> String {
     let mut message = "initialized story project\n\n\
-         The .storyhook/ directory contains your project data.\n\
-         Remember to commit it to git — it should travel with the repository."
+         Your stories live in storyhook's own store, outside this repository — \
+         one truth\nfor every branch, worktree and clone."
         .to_string();
+    if outcome.pointer {
+        message.push_str(
+            "\n\nWrote .storyhook.toml, which names this project. Commit it: a clone \
+             without it\ndoes not know which project it is looking at.",
+        );
+    }
     if outcome.agents_md {
         message.push_str("\n\nGenerated AGENTS.md for AI agent discoverability.");
     }
@@ -1069,19 +1116,29 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
 /// Runs one invocation against the store, resolving the project from the
 /// working directory first.
 ///
-/// The counterpart to [`LegacyInvoker`]: same seam, same envelope, the new
-/// stack underneath. It exists before the flip so that the whole integration
-/// suite can be run against the store — `STORYHOOK_INVOKER=local` — which is
-/// how the flip's surprises are found while the legacy path is still the
-/// default and a surprise is cheap.
+/// The invoker every `story` command runs through. [`LegacyInvoker`] is the
+/// one it replaced, and survives only to serve the web dashboard until the
+/// wave that promotes the daemon.
 ///
 /// # Root resolution
 ///
-/// The project is the one registered at the working directory, or the one the
-/// directory's pointer file names. It does **not** walk upwards, because the
-/// legacy path does not: `ensure_project` looks for `<cwd>/.storyhook` and
-/// nowhere else, and a store leg that resolved a parent's project would answer
-/// questions the legacy leg refuses.
+/// The working directory, then each of its ancestors in turn, until one of them
+/// identifies a project: by its committed pointer file first, by its recorded
+/// path second. The nearest directory that answers wins.
+///
+/// **The upward walk is a deliberate behaviour change**, and it is one of the
+/// things the flip is *for*. `storage::ensure_project` looked at `<cwd>` and
+/// nowhere else, so `story list` from `src/` in a storyhook project failed with
+/// "not initialized" — a limitation the plugin worked around by `cd`-ing to the
+/// repository root in a subshell before every call, and one a human standing in
+/// a subdirectory simply lost to. Nothing about a project's identity was ever
+/// per-directory; the tracker's data being per-directory is what made it look
+/// that way.
+///
+/// Within a directory the pointer file outranks the path, because the pointer
+/// is the identity that travels with the repository: a checkout that was moved
+/// on disk, or cloned onto another machine, still resolves to the project it
+/// has always been.
 pub struct StoreInvoker<'a, S: Store> {
     store: &'a S,
     cwd: PathBuf,
@@ -1119,21 +1176,49 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     }
 
     /// The project this working directory belongs to, if any.
+    ///
+    /// Walks the directory and then its ancestors. Reading a pointer file is
+    /// one `stat` plus, at most, one small `read`, so the walk costs a handful
+    /// of syscalls per level even in the failing case where it reaches the
+    /// filesystem root and answers `None`.
     fn resolve(&self) -> Result<Option<ProjectId>, AppError> {
-        let root = self.cwd.canonicalize().unwrap_or_else(|_| self.cwd.clone());
-        let pointer = crate::service::project::read_pointer(&root)?;
-        Ok(self.store.read(|tx| {
-            // The pointer file wins: it is the identity that travels with the
-            // repository, so a checkout that was moved on disk still resolves
-            // to the project it has always been.
-            if let Some(pointer) = &pointer
-                && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
-            {
-                return Ok(Some(project.id));
+        for dir in ancestors(&self.cwd) {
+            if let Some(project) = resolve_at(self.store, &dir)? {
+                return Ok(Some(project));
             }
-            Ok(tx.project_by_path(&root)?.map(|project| project.id))
-        })?)
+        }
+        Ok(None)
     }
+}
+
+/// A directory and every ancestor of it, nearest first.
+///
+/// Canonicalized once at the start rather than per level: an uncanonicalized
+/// path's ancestors include `..` components that would `stat` the wrong
+/// directories, and a directory that cannot be canonicalized (it does not
+/// exist) has no meaningful ancestry to walk beyond what it was given.
+fn ancestors(cwd: &Path) -> Vec<PathBuf> {
+    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    root.ancestors().map(Path::to_path_buf).collect()
+}
+
+/// The project `dir` itself identifies — its pointer file, then its recorded
+/// path.
+///
+/// A pointer naming a uuid the store does not hold is **not** an answer here.
+/// It falls through, so a directory that carries a stale pointer and a valid
+/// path row still resolves; whether an unresolvable pointer should be reported
+/// rather than ignored is the guard's question, not resolution's.
+fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppError> {
+    let pointer = crate::service::project::read_pointer(dir)?;
+    Ok(store.read(|tx| {
+        if let Some(pointer) = &pointer
+            && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
+        {
+            return Ok(Some(project.id));
+        }
+        Ok(tx.project_by_path(dir)?.map(|project| project.id))
+    })?)
 }
 
 impl<S: Store> Invoker for StoreInvoker<'_, S> {
@@ -1170,6 +1255,12 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                     self.pointer,
                 );
             }
+            // A repository that still has its stories in `.storyhook/` gets a
+            // diagnosis rather than an invitation to `story init`, which would
+            // mint an empty second project beside data the user still has.
+            if let Some(tree) = crate::service::project::legacy_project_at(&self.cwd) {
+                return Err(crate::service::project::unmigrated_error(&tree));
+            }
             return Err(AppError::NotFound(
                 "story project not initialized in this directory; run `story init`".to_string(),
             ));
@@ -1199,6 +1290,8 @@ fn is_project_less(invocation: &Invocation) -> bool {
         | Invocation::HelpCompact
         | Invocation::HelpAll
         | Invocation::Version
+        | Invocation::Web { .. }
+        | Invocation::Update { .. }
         | Invocation::Plugin { .. } => true,
         // `hooks test` is the exception in its own family: it fires a real hook
         // against a real project, and the legacy path calls `ensure_project`
