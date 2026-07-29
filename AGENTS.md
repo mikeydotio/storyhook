@@ -50,5 +50,7 @@ This project uses **storyhook** for task tracking. All agents must follow the wo
 
 ## Important
 
-The `.storyhook/` directory is version-controlled project data. Do NOT add it to
-`.gitignore`. It must be committed to git so that project state travels with the repository.
+`.storyhook.toml` at the repo root is version-controlled. Do NOT add it to `.gitignore`.
+It names the project this checkout belongs to, and a clone without it cannot find its
+stories. The stories themselves live in storyhook's store, outside the repository —
+there is nothing else to commit.

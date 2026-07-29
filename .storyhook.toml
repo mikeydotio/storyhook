@@ -1,0 +1,7 @@
+schema = 1
+uuid = "291ea25f-3363-4b5d-9051-66636c1066f9"
+prefix = "SH"
+
+[plugin]
+enabled = true
+tracking = "normal"

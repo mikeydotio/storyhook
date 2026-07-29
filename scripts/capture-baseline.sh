@@ -508,8 +508,16 @@ fi
 
 say "freezing the legacy .storyhook tree"
 
+# This step is HISTORICAL and can no longer run in this repository: the W7
+# cutover migrated storyhook's own tracker into the store and deleted the
+# directory. `docs/rearch/baseline/legacy-tree.tar.gz` — captured while it still
+# existed — is the permanent artifact, and `tests/migrate_round_trip.rs` is what
+# keeps reading it. The step survives so the script still documents how that
+# fixture was made, and so it can be pointed at some other repository's legacy
+# tree with `REPO_ROOT=` if one ever needs freezing.
 [ -d "$REPO_ROOT/.storyhook" ] || {
-  echo "capture-baseline: no .storyhook/ directory to freeze" >&2
+  echo "capture-baseline: no .storyhook/ directory to freeze — this repository" >&2
+  echo "  was migrated in W7; the frozen tree is docs/rearch/baseline/legacy-tree.tar.gz" >&2
   exit 1
 }
 

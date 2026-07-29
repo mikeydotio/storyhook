@@ -84,10 +84,12 @@ refuse() {
 render_template() {  # render_template <template> <id> [<name>] [<dir>]
   # <n>    -> the story id (kept as "n" for parity with the agentics original)
   # <name> -> the resolved window/worktree name; empty when not passed.
-  # <dir>  -> the main checkout's absolute path (SH-62's auto charter uses
-  #           this to anchor `story` writes at the tracker that actually holds
-  #           the story — see story.sh's AUTO_PROMPT_TPL); empty when not
-  #           passed, and no other template references it.
+  # <dir>  -> the main checkout's absolute path; empty when not passed.
+  #           No shipped template uses it any more — the auto charter did,
+  #           to anchor `story` writes at the tracker that actually held the
+  #           story, and one store made that unnecessary. Kept because
+  #           STORY_AUTO_PROMPT and STORY_PROMPT are user overrides and
+  #           someone's may reference it.
   local tpl="$1" n="$2" name="${3:-}" dir="${4:-}"
   tpl="${tpl//<name>/$name}"
   tpl="${tpl//<dir>/$dir}"

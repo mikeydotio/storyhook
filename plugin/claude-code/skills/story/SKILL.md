@@ -114,9 +114,11 @@ stop it cannot resolve). See `bin/story.sh`'s `AUTO_PROMPT_TPL` for the exact ch
 - **`do`, `capture`, and `doctor` require tmux** (the helper hard-fails otherwise, unless
   `STORY_TARGET_SESSION` is set for a non-interactive caller); all verbs need the `story` CLI
   on `PATH`.
-- **Every verb is anchored to the main worktree's tracker.** `.storyhook/` is
-  version-controlled, so a dispatched worktree carries its own copy; the helper always reads
-  and writes the main repo's, so `view`/`list`/`complete` can't disagree with `do`.
+- **Every verb is anchored to the main worktree.** A dispatched worktree and the main
+  checkout are one project — story data lives in a single store, not in the repository — so
+  this is now about the *directory* the helper runs `story` in rather than about which
+  tracker it reads. It keeps `view`/`list`/`complete` working when they are invoked from
+  outside the repository entirely.
 - **GitHub-adjacent conventions from `/issue` don't apply here** — storyhook stories aren't
   GitHub issues. There's no label to apply and no `Closes #N` convention; the claim marker is
   the story's own `state`, and the handoff prompt tells the child session to reference the

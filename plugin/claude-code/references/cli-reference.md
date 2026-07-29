@@ -1,6 +1,6 @@
 # Storyhook CLI Reference
 
-Complete command reference for the `story` CLI. All commands operate on the `.storyhook/` directory in the current working directory (or its nearest ancestor).
+Complete command reference for the `story` CLI. Story data lives in a single store outside your repositories; a checkout says which project it belongs to with a committed `.storyhook.toml` at its root. Commands resolve that project from the working directory or its nearest ancestor, so every checkout of a repository — worktrees included — reads and writes the same stories.
 
 **The grammar is strictly verb-first**: every invocation starts with a command word (`move`, `comment`, `set`, `relate`, ...) followed by its arguments. There is no bare-id form — `story SH-3 is done` and `story SH-3 "some text"` are **not valid syntax** and fail with `unknown command` (exit 2). If you're unsure a command exists, run `story help --all` or `story help <command>` against the live binary rather than guessing.
 
@@ -28,10 +28,11 @@ story new "Fix login redirect" --json
 
 Initialize a new storyhook project in the current directory.
 
-- Creates `.storyhook/` (project data), an `AGENTS.md`, and seeds default states: `todo` (OPEN), `in-progress` (OPEN, `role active`), `done` (CLOSED)
+- Creates the project in the store, writes `.storyhook.toml` (commit it — a clone needs it to know which project it is), generates an `AGENTS.md`, and seeds default states: `todo` (OPEN), `in-progress` (OPEN, `role active`), `done` (CLOSED)
 - Default prefix is **`SH`** — hard-coded, not derived from the directory name. Pass `--prefix` for anything else.
 - **Use when**: starting a new project or adding storyhook to an existing repo
-- **Do not use when**: `.storyhook/` already exists (will error)
+- **Idempotent**: run in a checkout that already belongs to a project, it re-registers the checkout and leaves the catalog and the prefix alone
+- **Do not use when**: the repository still keeps its stories in a `.storyhook/` directory — `init` refuses and points at `story migrate`, because initializing would mint an empty second project beside data you still have
 
 ```bash
 story init                 # stories become SH-1, SH-2, ...
@@ -476,7 +477,7 @@ story github-sync SH-1
 
 ### `story hooks install|uninstall|list|test <event_type>`
 
-`install`/`uninstall`/`list` manage **git** hooks (`post-commit`, `post-merge`, `prepare-commit-msg`) that drive automatic story syncing. `test <event_type>` fires a test **event** hook from `.storyhook/hooks.toml` — valid event types are `create`, `state_change`, `close`, `comment`, `priority_change`, `label_change`, `relationship_change` — and requires that file to already exist; it errors if no event hooks are configured yet.
+`install`/`uninstall`/`list` manage **git** hooks (`post-commit`, `post-merge`, `prepare-commit-msg`) that drive automatic story syncing. `test <event_type>` fires a test **event** hook from the `[hooks]` table of `.storyhook.toml`, falling back to a legacy `.storyhook/hooks.toml` — valid event types are `create`, `state_change`, `close`, `comment`, `priority_change`, `label_change`, `relationship_change` — and requires hooks to be configured already; it errors if none are.
 
 ```bash
 story hooks install

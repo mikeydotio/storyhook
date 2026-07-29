@@ -93,17 +93,19 @@ LAUNCH_TPL="${STORY_LAUNCH_CMD:-claude --permission-mode plan --model opusplan}"
 # `Closes #N` convention — the child instead posts its plan back via `story
 # comment` and references the story id in every PR body.
 PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with \`story show <n> --json\` (its comments carry the discussion history). When your plan is finalized and approved, post it as a comment on <n> via \`story comment <n> \"<plan>\"\` before you start implementing. Ensure every pull request you open references story <n> in its body, and comment a link to each PR on <n> after you push it. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here.}"
-# The autonomous charter `--auto` swaps in for PROMPT_TPL (SH-62) — plan
-# approval stays the ONE human interaction; everything past it (ambiguity,
-# testing, merge, closure, hard stops) is the child's own call. Unlike
-# PROMPT_TPL it anchors every `story` write at <dir> (the MAIN checkout,
-# templated in by cmd_dispatch): .storyhook/ is version-controlled, so the
-# worktree the child is standing in carries its own separate copy — a write
-# made against it is silently lost, and a story created after the worktree's
-# base commit doesn't even exist there. Closure goes through a plain `story
-# move`, never `story complete`: that verb asks a question (fatal to an
+# The autonomous charter `--auto` swaps in for PROMPT_TPL — plan approval stays
+# the ONE human interaction; everything past it (ambiguity, testing, merge,
+# closure, hard stops) is the child's own call. Closure goes through a plain
+# `story move`, never `story complete`: that verb asks a question (fatal to an
 # unattended run) and would try to remove the very worktree the child occupies.
-AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with \`story show <n> --json\` (its comments carry the discussion history). This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. Run every \`story\` command from <dir>, the main checkout -- this worktree carries its own separate copy of \`.storyhook/\` and any story write made here is lost (e.g. \`(cd <dir> && story comment <n> \"...\")\`). When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision without a single obvious answer, convene \`/council-vote\` instead of asking, and record the outcome as a comment on <n>. Run the full local suite with \`make test\` and confirm it passes before pushing; the pre-push hook enforces it. Open a pull request whose body references story <n>, comment the PR link on <n>, then merge it yourself with \`gh pr merge --merge\` -- a merge commit, the only method this org allows -- verify the merge actually landed, and delete the source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once the merge lands, judge from your own record of the work whether <n> is genuinely complete: default to closing it from <dir> with \`story move <n> done\` (or the CLOSED-superstate state this project uses, if not \`done\`), and do not run \`/story complete\`, which asks a question and would try to reclaim the worktree you are standing in. If your own output shows further PRs or testing are still needed, leave <n> open and comment naming exactly what remains. If you hit a hard stop a council vote cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run \`story block <n> \"<reason>\"\` from <dir>, leave the PR open and this worktree intact, and stop. Never merge past a hard stop.}"
+#
+# It used to open by anchoring every `story` write at the main checkout,
+# because a worktree carried its own copy of the tracker and a write made
+# against it was silently lost. That clause is gone with the copy: one store
+# means the worktree and the main checkout are the same project, and telling an
+# autonomous agent to `cd` elsewhere for every write was friction bought with a
+# defect that no longer exists.
+AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with \`story show <n> --json\` (its comments carry the discussion history). This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision without a single obvious answer, convene \`/council-vote\` instead of asking, and record the outcome as a comment on <n>. Run the full local suite with \`make test\` and confirm it passes before pushing; the pre-push hook enforces it. Open a pull request whose body references story <n>, comment the PR link on <n>, then merge it yourself with \`gh pr merge --merge\` -- a merge commit, the only method this org allows -- verify the merge actually landed, and delete the source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once the merge lands, judge from your own record of the work whether <n> is genuinely complete: default to closing it with \`story move <n> done\` (or the CLOSED-superstate state this project uses, if not \`done\`), and do not run \`/story complete\`, which asks a question and would try to reclaim the worktree you are standing in. If your own output shows further PRs or testing are still needed, leave <n> open and comment naming exactly what remains. If you hit a hard stop a council vote cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run \`story block <n> \"<reason>\"\`, leave the PR open and this worktree intact, and stop. Never merge past a hard stop.}"
 # Extra clause a caller appends to the handoff prompt (daemon-caller seam).
 # Appended VERBATIM with a single space separator, AFTER <n>/<name> templating.
 PROMPT_EXTRA="${STORY_PROMPT_EXTRA:-}"
@@ -134,8 +136,8 @@ PASTE_SETTLE_DELAY="${STORY_PASTE_SETTLE_DELAY:-0.2}"
 READY_ACCEPT_PATTERN="${STORY_READY_ACCEPT_PATTERN:-esc to interrupt|Thinking|Crunching|tokens|to interrupt}"
 CAPTURE_LINES="${STORY_CAPTURE_LINES:-200}"
 DRY_RUN="${STORY_DRY_RUN:-}"
-# State `complete` closes a story into. Empty means "resolve it from
-# .storyhook/states.toml" (the first CLOSED-superstate entry) — see
+# State `complete` closes a story into. Empty means "ask the CLI for the
+# project's state catalog and take the first CLOSED-superstate entry" — see
 # story_closed_state.
 DONE_STATE="${STORY_DONE_STATE:-}"
 # `doctor`'s throwaway readiness probe: what it launches, and the scratch
@@ -163,17 +165,18 @@ require_story() {
 
 # story_cli <args...> — run the story CLI anchored at $PROJECT_DIR (SH-46).
 #
-# The CLI has no --repo/-C/--cwd flag and ensure_project() does NOT walk up
-# ancestors: the project root is always exactly env::current_dir(). Calling
-# `story` in the caller's CWD therefore breaks two ways.
+# The half of SH-46 that made this dangerous is gone. Story data lives in one
+# store outside the repository, so a `story` call from a linked worktree can no
+# longer succeed against a *different* tracker — every checkout of a repository
+# resolves to the same project. The CLI also walks up from its working
+# directory now, so a plain subdirectory resolves on its own.
 #
-#   1. From a plain subdirectory it just fails (exit 3, "not initialized").
-#   2. From inside a dispatched worktree it does something worse than fail --
-#      it silently succeeds against the WRONG tracker. `.storyhook/` is
-#      version-controlled, so every worktree carries its own independent copy.
-#      repo_root() already anchors worktree CREATION to the main repo; without
-#      this wrapper the ready-gate and CAS claim would be evaluated against a
-#      different checkout than the one the worktree is made in.
+# The wrapper still earns its place, for the one reason left: the caller may
+# not be inside the repository at all. `/story view` invoked from `$HOME`, or
+# from a sibling checkout, would resolve nothing or — worse — resolve a
+# *neighbouring* project that happens to be an ancestor. Anchoring at
+# $PROJECT_DIR makes which project these verbs act on a property of the
+# dispatch rather than of wherever the user's shell happened to be.
 #
 # Runs in a subshell so the caller's CWD is never mutated (several later steps
 # -- gitignore hygiene, `git worktree add` -- use paths relative to it).
@@ -572,18 +575,17 @@ cmd_dispatch() {
 
 # project_root — the directory every `story` call is anchored to.
 #
-# Prefers repo_root() (the MAIN worktree) so all verbs agree on one tracker:
-# `.storyhook/` is version-controlled, so a dispatched worktree holds its own
-# copy, and it would be actively confusing for `/story view` to read a
-# different tracker than the one `/story do` and `/story complete` act on.
-# Falls back to walking up for the project marker so the read verbs still
-# work in a storyhook project that isn't a git repo at all.
+# Prefers repo_root() (the MAIN worktree), so every verb agrees on one
+# directory and `/story do`'s worktree bookkeeping and `/story view`'s reads
+# are talking about the same checkout. Falls back to walking up for the
+# committed pointer file, so the read verbs still work in a storyhook project
+# that is not a git repository at all.
 project_root() {
   local d
   if d=$(repo_root 2>/dev/null) && [ -n "$d" ]; then printf '%s' "$d"; return 0; fi
   d=$(pwd -P)
   while [ "$d" != "/" ] && [ -n "$d" ]; do
-    if [ -f "$d/.storyhook/project.toml" ]; then printf '%s' "$d"; return 0; fi
+    if [ -f "$d/.storyhook.toml" ]; then printf '%s' "$d"; return 0; fi
     d=$(dirname "$d")
   done
   pwd -P
@@ -1122,7 +1124,7 @@ cmd_complete_execute() {
     skipped+=("close:$id(--no-close)")
   elif [ "$CMP_NEEDS_CLOSE" != true ]; then
     if [ -z "$CMP_DONE_STATE" ]; then
-      close_note=" Could not close: no CLOSED-superstate state is defined in .storyhook/states.toml."
+      close_note=" Could not close: this project defines no state with a CLOSED superstate."
     fi
   elif [ -n "$DRY_RUN" ]; then
     commands+=("story move $id $CMP_DONE_STATE")

@@ -18,7 +18,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh complete plan <id>
 The result reports, for each target, what would happen and why:
 
 - `plan.close` — `null` if the story is already closed, else the state it would
-  move into (resolved from `.storyhook/states.toml`, not hard-coded).
+  move into (resolved from the project's own state catalog, not hard-coded).
 - `plan.worktree.status` — `removable` | `dirty` | `locked` | `current` |
   `missing`.
 - `plan.branch.status` — `deletable` | `unmerged` | `protected` | `missing`.
