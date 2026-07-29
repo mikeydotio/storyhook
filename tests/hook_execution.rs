@@ -13,20 +13,19 @@
 //!
 //! # What makes these tests real
 //!
-//! - `git merge` runs the installed `.git/hooks/post-merge`, which shells out
-//!   to `story`, which resolves through `PATH`. So `PATH` is *prepended* with
-//!   the directory holding the binary under test — without that, a hook in a
-//!   test silently exercises the developer's installed build against their real
-//!   store.
 //! - Every `git` invocation carries [`TestEnv`]'s isolation, so the child
-//!   `story` inherits the fixture's data directory rather than the machine's.
+//!   `story` a hook spawns inherits the fixture's data directory *and* a `PATH`
+//!   that finds the binary under test. Without the second half a hook in a test
+//!   silently exercises the developer's installed build — which is how a
+//!   pre-flip `story` came to leave a `.storyhook/lock` inside a post-flip
+//!   fixture, and why `TestEnv::apply` sets `PATH` for everything now.
 //! - The merges are `--no-ff`, which is what produces an `ORIG_HEAD` and a
 //!   merge commit for the hook to look at.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
+use storyhook_test_support::{TestEnv, scratch_dir};
 use tempfile::TempDir;
 
 /// A git repository with a storyhook project and the managed hooks installed.
@@ -75,7 +74,6 @@ impl HookRepo {
         command.current_dir(cwd);
         self.env.apply(&mut command);
         command.env("GIT_TERMINAL_PROMPT", "0");
-        command.env("PATH", path_with_binary_dir());
         let output = command.args(args).output().expect("running git");
         assert!(
             output.status.success(),
@@ -143,18 +141,6 @@ impl HookRepo {
             branch,
         ]);
     }
-}
-
-/// `PATH` with the directory holding the binary under test in front.
-fn path_with_binary_dir() -> std::ffi::OsString {
-    let dir = story_binary()
-        .parent()
-        .expect("the binary has a parent directory")
-        .to_path_buf();
-    let existing = std::env::var_os("PATH").unwrap_or_default();
-    let mut entries: Vec<PathBuf> = vec![dir];
-    entries.extend(std::env::split_paths(&existing));
-    std::env::join_paths(entries).expect("joining PATH")
 }
 
 // ---------------------------------------------------------------------------
