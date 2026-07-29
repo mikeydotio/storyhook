@@ -33,7 +33,7 @@
 | W2d services (git + GitHub + transfer) + the store test leg | `rearch/w2d-git` / [PR #66](https://github.com/mikeydotio/storyhook/pull/66) | **MERGED** 2026-07-28 |
 | W3 importer | `rearch/w3-importer` / [PR #67](https://github.com/mikeydotio/storyhook/pull/67) | **MERGED** 2026-07-28 |
 | W4 THE FLIP | `rearch/w4-flip` | **PR OPENED** — revert only while `migrate_round_trip` is 4/4 green |
-| W5 daemon | — | pending |
+| W5 daemon | `rearch/w5-daemon` | **PR OPENED** — the quarantine deletion deferred, see the step log |
 | W6 git features | — | pending |
 | W7 repo cutover | — | pending |
 | W8 hardening | — | pending |
@@ -132,7 +132,97 @@
   docs commit. See Step log for the deviations — the commit *order* changed, and
   the reason matters.
 
+## W5 step plan
+
+- **W5 DONE except the quarantine deletion.** Seven commits; `make test` green
+  after each. `5996898` (the injected `Environment`), `a5320d9` (the HTTP
+  plumbing and tailnet identity extracted verbatim), `c4365c3` (the dashboard
+  over the service layer; the change bus; the notify watcher dies), `74bd28e`
+  (daemon lifecycle: portfile, pidfile lock, hello, auto-spawn, launchd, the
+  `web` aliases), `32e641e` (`/api/v1/invoke` and `HttpInvoker`, which becomes
+  the default), `7288e70` (the TUI off `notify`; the dependency dies), `44c5bf7`
+  (`make test-daemon`, daily backups, and the defects the leg found).
+  **Deferred: deleting `app.rs`, `lock.rs`, `registry.rs` and `storage.rs`'s
+  write half.** See the step log for why and for exactly what the next session
+  has to do.
+
 ## Key facts discovered (do not re-derive)
+
+- **W5, the finding that matters most for W8: the daemon leg cannot run at the
+  default test parallelism.** `make test-daemon` gives each test *binary*'s
+  shared environment a daemon and each `TestEnv::isolated()` another, so `cargo
+  test`'s default fan-out starts dozens of SQLite-holding processes at once and
+  the machine spends its time context-switching rather than testing.
+  `move_if_state_under_real_concurrency_yields_exactly_one_winner` passes in
+  **1.2s alone** and stalls past 60s in the wide-open run. `--test-threads=4`
+  is therefore a *bound on live daemons*, not tuning. W8 owns deciding whether
+  the leg's permanent shape is bounded parallelism, one daemon for the whole
+  run, or something else.
+- **W5: the bash plugin suite was spawning real daemons on the production
+  port**, and this is the sharpest instance yet of the class STATE.md has
+  recorded twice before. Two `story daemon --serve --port 3456` processes from
+  this worktree were found alive after a gate run. `lib.sh` had the isolation
+  block and `run-tests.sh` did not — and `run-tests.sh` sets
+  `STORYHOOK_TEST_HOME` itself, which is exactly what makes `lib.sh` skip its
+  block. **Generalize this: a guard written in the file that is skipped when
+  the other file runs is not a guard.** Both now export `STORYHOOK_INVOKER`,
+  `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` and `STORYHOOK_PARENT_PID`, duplicated
+  the same way the XDG variables already were and for the same reason.
+- **W5: `PRAGMA data_version` is per *connection*, not per database.** It counts
+  commits made by other connections since *this one* last looked, so asking a
+  pooled connection answers a different question every call and two pooled
+  connections hold unrelated counters. `SqliteStore` keeps one connection out of
+  the pool for `change_token`. Symptom before the fix: the SSE feed silently
+  never fired for in-process writes.
+- **W5: a `GET` was publishing a change event.** Every successful request under
+  `/api/repos/<id>/…` was marked as having changed that project, reads
+  included — every client refetches because a client fetched, at the rate the
+  browser retries. It surfaced as an SSE test going *quiet*, because the read's
+  event coalesced away the real one behind it. Pinned by
+  `a_read_reports_no_change_however_well_it_went`.
+- **W5: three things cannot cross the wire, and each was a real bug.**
+  (1) A **relative path** is relative to the user's shell, not the daemon's
+  working directory — `story decompose spec.md` read the wrong file. Resolved
+  against the envelope's `cwd`, with the error still naming the path the user
+  typed. (2) **Standard input** cannot be reached from the daemon at all;
+  `story import` read `/dev/null` and said "no stories to import", which is a
+  silent wrong answer. The client reads it and it travels in the envelope.
+  (3) **The daemon's own lifecycle** must never route through the daemon:
+  `story daemon stop` started one in order to stop one, and hung rather than
+  failed.
+- **W5: `story daemon start` reused a daemon from another build**, because it
+  short-circuited on "something is running" before the version check. `start` is
+  `ensure` plus a port override and nothing else now. Sibling: **a port asked
+  for on the command line was lost across the spawn** — the client held the
+  override in its own `Environment` and the child built a fresh one from the
+  process environment. The port travels on the argv.
+- **W5: `DaemonInfo::is_this_binary` asks about the *calling* process**, which is
+  right in production (the caller is `story`) and wrong in a test binary. A test
+  that wants the question asked about the binary under test has to compare
+  against `story_binary()` itself — `daemon_lifecycle.rs::is_the_binary_under_test`.
+- **W5: a hook's `story` must be an absolute path in a test.** A bare `story` in
+  a `hooks.toml` resolves through `PATH`, which in a test run is the developer's
+  *installed* storyhook — a different build, which the daemon then refuses and
+  tries to restart. The reentrancy tests spell the binary out.
+- **W5, deliberate deviations from the wave brief, all four recorded in the
+  code that makes them:**
+  1. **The TUI polls the store's change token rather than subscribing to SSE.**
+     It holds its own store handle — it is a `--local` client by construction —
+     so subscribing would make a TUI that works today stop updating on a machine
+     where the daemon is down, and would learn the same fact one layer further
+     away over a connection that can drop.
+  2. **Backup age is reported by `story daemon status`, not by `story doctor`.**
+     `doctor`'s bytes are pinned by the golden corpus and its exit code means a
+     project's integrity; a backup's age is a fact about the machine.
+  3. **The change-token poller attributes changes per project** rather than
+     publishing a bare `resync`, because `repo-changed` with a slug is the SSE
+     contract the dashboard already had. Only a change it cannot attribute — a
+     state definition edited by a `--local` writer, which appends no story event
+     — becomes a `resync`.
+  4. **`story daemon` gained `install`/`uninstall` in the lifecycle commit**
+     rather than a separate one: the `web` aliases and the launchd agent are
+     both "commands about the daemon", and splitting them would have left an
+     intermediate commit with two lifecycles in it.
 
 - **W4, THE most important structural finding: the brief's commit order could not
   be green, and inverting two slots fixed it.** The plan was swap-then-rewrite-tests
@@ -1728,13 +1818,69 @@
     including its "Ignored: 2 of 1171" line, and regenerating it would destroy the thing
     it exists to be. The current counts are here instead.
 
+- 2026-07-29 W5: branch `rearch/w5-daemon` off merged main `01d8332`. Seven commits,
+  `make test` green after each. Test count 2003 → **2084**, 0 ignored.
+
+  **The daemon is one process.** `src/web.rs` became `src/api/{http,rest,rpc,wire}.rs`
+  and `src/daemon/{backup,bus,commands,lifecycle,serve,tailnet}.rs`; what is left of
+  `web.rs` is the deprecated `story web` aliases and the browser/clipboard seams.
+  The tailnet listener, `TailnetIdentity`, the trusted-host allowlist and the CSRF
+  guard moved **verbatim**, in their own commit, before anything was ported.
+
+  - `5996898` — `Environment`, resolved once in `main` and passed down; `paths.rs`
+    deleted. `StoreSyncStorage::backups_dir` deleted with it: the environment *is*
+    the redirect. `error_contract`'s LockTimeout row asks the child for a
+    one-second busy timeout — 5.5s → 3.4s for that binary.
+  - `a5320d9` — the HTTP plumbing and the tailnet identity extracted verbatim.
+    `web_test` untouched and 140/140, which is what makes it a pure motion.
+  - `c4365c3` — the dashboard over the service layer. The double dispatch dies
+    with the lock; the change bus replaces the filesystem watcher;
+    `~/.storyhook/` is retired with a `MIGRATED.txt`; the runtime files move to
+    the state home. `web_test` rewritten, 26s → 3.8s.
+  - `74bd28e` — the lifecycle: portfile, the pidfile lock that *is* liveness,
+    `/api/v1/hello`, auto-spawn under a lock held through the child's write,
+    launchd, and the `web` aliases.
+  - `32e641e` — `/api/v1/invoke`, `HttpInvoker` as the default, `--local` as a
+    permanent documented mode, and `hook_depth` in the envelope.
+  - `7288e70` — the TUI off `notify`; the dependency leaves `Cargo.lock`.
+  - `44c5bf7` — `make test-daemon`, daily verified backups, and the defects the
+    leg found.
+
+  Gates, two consecutive runs each: `make test` **64.6s / 57.5s**, 2084 tests,
+  0 ignored. `make test-daemon` **58.1s / 51.9s**, the same 2084 over RPC, all
+  green. The daemon leg costs about the same as the in-process one once its
+  parallelism is bounded.
+
+  Verification that the tests bite, not merely pass:
+  - `no_filesystem_watcher_remains` writes the three shapes the old watcher
+    reacted to and asserts exactly one event arrives afterwards — the store
+    write that follows them.
+  - `every_answer_is_byte_identical_through_the_daemon_and_in_process` compares
+    fifteen commands on stdout, stderr and exit code, failures included.
+  - `a_hook_that_runs_story_terminates` uses an `on_create` hook that runs
+    `story new`: two stories, not infinity. Without depth in the envelope it
+    would not fail, it would never finish.
+  - `make test-daemon` found three transport defects that no in-process test
+    could reach, and the orphan check found a fourth in the bash suite.
+
+  **Deferred, and the wave's principal deviation: the quarantine deletion.**
+  `app::run`, `lock.rs`, `registry.rs` and `storage.rs`'s write half are still
+  there. They are genuinely dead — the dashboard was their last caller — and the
+  quarantine test still enforces that nothing new reaches them, so deferring is
+  safe. What blocks the deletion is one piece of real work rather than volume:
+  `ProjectBuilder::legacy` builds `service_migrate`'s fixtures by running
+  `app::run`, and it needs replacing with a direct writer against
+  `src/legacy/`'s layout (~90 lines, `init` and `new_story` only). HANDOFF.md
+  carries the measured blast radius, row by row.
+
 ## Resume protocol (fresh session)
 
 1. `cd` the worktree; `git log --oneline -5`; read this file + HANDOFF.md if present.
 2. `make test` MUST be green before touching anything (if web_test mass-fails: check for
    orphaned `web_test-*` listeners in 19xxx first, then `uptime` and
    `ps aux | sort -nrk 3` — see Key facts).
-3. `make test-store` is **gone** as of W4 — the default suite is the store. Do not
-   reintroduce a second leg; it would run the same tests twice against the same stack.
+3. `make test` runs in-process; `make test-daemon` runs the same suite over RPC. Both
+   must be green. Do not fold the second into the first — see the Key facts on why
+   `--test-threads=4` there is a bound on live daemons rather than tuning.
 4. Continue at the first non-DONE step above via a fresh subagent; orchestrator keeps its own
    context minimal (delegate reads/edits; terse reports only).
