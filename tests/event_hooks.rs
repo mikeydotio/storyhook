@@ -215,3 +215,111 @@ fn no_hooks_toml_operations_work() {
         .assert()
         .success();
 }
+
+/// The `[hooks]` table in the committed pointer file is read in place of
+/// `.storyhook/hooks.toml`.
+///
+/// Where event-hook configuration lives is the other half of the question the
+/// flip answers: it is *user-authored config about this repository*, not story
+/// data, so it stays in the repository — it just stops living inside a
+/// directory that is about to stop existing.
+#[test]
+fn hooks_can_be_configured_in_the_pointer_file() {
+    let dir = TempDir::new().unwrap();
+    let dir = dir.path();
+    init_project(dir);
+
+    let output_file = dir.join("hook_output.json");
+    fs::write(
+        dir.join(".storyhook.toml"),
+        format!(
+            "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\
+             \n[hooks.on_create]\ncommand = \"cat > {}\"\n",
+            output_file.display()
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir)
+        .args(["new", "Configured in the pointer"])
+        .assert()
+        .success();
+
+    assert!(
+        output_file.exists(),
+        "a hook declared in .storyhook.toml's [hooks] table must fire"
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&output_file).unwrap()).unwrap();
+    assert_eq!(payload["story_title"], "Configured in the pointer");
+}
+
+#[test]
+fn the_pointers_hooks_table_wins_over_the_legacy_file() {
+    let dir = TempDir::new().unwrap();
+    let dir = dir.path();
+    init_project(dir);
+
+    let legacy = dir.join("legacy.json");
+    let pointed = dir.join("pointed.json");
+    fs::write(
+        dir.join(".storyhook/hooks.toml"),
+        format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
+    )
+    .unwrap();
+    fs::write(
+        dir.join(".storyhook.toml"),
+        format!(
+            "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\
+             \n[hooks.on_create]\ncommand = \"cat > {}\"\n",
+            pointed.display()
+        ),
+    )
+    .unwrap();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir)
+        .args(["new", "Two homes, one answer"])
+        .assert()
+        .success();
+
+    assert!(pointed.exists(), "the pointer's table must be the one read");
+    assert!(
+        !legacy.exists(),
+        "a repository that has moved its hooks must not fire the old ones as well"
+    );
+}
+
+#[test]
+fn a_pointer_with_no_hooks_table_leaves_the_legacy_file_in_charge() {
+    let dir = TempDir::new().unwrap();
+    let dir = dir.path();
+    init_project(dir);
+
+    let legacy = dir.join("legacy.json");
+    fs::write(
+        dir.join(".storyhook/hooks.toml"),
+        format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
+    )
+    .unwrap();
+    fs::write(
+        dir.join(".storyhook.toml"),
+        "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("story")
+        .unwrap()
+        .current_dir(dir)
+        .args(["new", "Still on the old config"])
+        .assert()
+        .success();
+
+    assert!(
+        legacy.exists(),
+        "the two storage models coexist until the daemon wave"
+    );
+}

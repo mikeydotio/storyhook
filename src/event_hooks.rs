@@ -95,7 +95,26 @@ impl HookEventType {
     }
 }
 
+/// The repository's event-hook configuration, from whichever of its two homes
+/// it lives in.
+///
+/// The committed pointer file's `[hooks]` table is consulted first and the
+/// legacy `.storyhook/hooks.toml` second. Both, rather than one, because the
+/// two storage models coexist until the legacy web daemon is retired: a
+/// repository that has been moved into the store carries its hooks in the
+/// pointer, and one that has not still carries them in the directory. A
+/// repository with both is answered by the pointer, which is the file its
+/// current storyhook writes about and reads.
 pub fn load_hooks_config(root: &Path) -> Option<HooksConfig> {
+    if let Some(table) = crate::service::project::pointer_hooks(root) {
+        return match table.try_into::<HooksConfig>() {
+            Ok(config) => Some(config),
+            Err(e) => {
+                eprintln!("warning: failed to parse the [hooks] table in .storyhook.toml: {e}");
+                None
+            }
+        };
+    }
     let path = root.join(".storyhook/hooks.toml");
     let raw = std::fs::read_to_string(&path).ok()?;
     match toml::from_str(&raw) {

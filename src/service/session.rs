@@ -147,17 +147,35 @@ fn envelope(message: &str) -> String {
 
 /// Whether the repository has switched the plugin off.
 ///
-/// Still `<root>/.storyhook/plugin-config.toml`: this is *user-authored* config
-/// rather than story data, and where it lives after the flip is an open question
-/// the flip checklist records rather than one this port may settle. Reading the
-/// same file from the same place keeps the two legs comparable until it is
-/// answered.
+/// The committed pointer file's `[plugin]` table first, the legacy
+/// `<root>/.storyhook/plugin-config.toml` second. This is *user-authored*
+/// config rather than story data, so it stays in the repository; what the flip
+/// changes is which file in the repository holds it, and both are read while
+/// the two storage models coexist.
 fn plugin_disabled(root: &std::path::Path) -> bool {
+    if let Some(table) = super::project::pointer_plugin(root) {
+        return table
+            .get("enabled")
+            .is_some_and(|value| is_off(value.clone()));
+    }
     let path = root.join(".storyhook/plugin-config.toml");
     let Ok(content) = std::fs::read_to_string(&path) else {
         return false;
     };
     disabled_by(&content)
+}
+
+/// Whether an `enabled` value says the plugin is off.
+///
+/// Tolerates `false` and `"false"`, the two shapes that have ever been written,
+/// and treats anything else — including a number, a table, or a typo — as
+/// "on". Failing open is the rule for every read on this path.
+fn is_off(value: toml::Value) -> bool {
+    match value {
+        toml::Value::Boolean(flag) => !flag,
+        toml::Value::String(text) => text.eq_ignore_ascii_case("false"),
+        _ => false,
+    }
 }
 
 /// Reads `enabled` out of a plugin config, in either of the two shapes that
@@ -177,23 +195,15 @@ fn disabled_by(content: &str) -> bool {
         plugin: Option<PluginTable>,
     }
 
-    fn is_off(value: &toml::Value) -> bool {
-        match value {
-            toml::Value::Boolean(flag) => !flag,
-            toml::Value::String(text) => text.eq_ignore_ascii_case("false"),
-            _ => false,
-        }
-    }
-
     let Ok(config) = toml::from_str::<PluginConfig>(content) else {
         return false;
     };
-    if let Some(table) = &config.plugin
-        && let Some(value) = &table.enabled
+    if let Some(table) = config.plugin
+        && let Some(value) = table.enabled
     {
         return is_off(value);
     }
-    config.enabled.as_ref().is_some_and(is_off)
+    config.enabled.is_some_and(is_off)
 }
 
 /// One story's history, for the seam's undo primitive.
