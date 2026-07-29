@@ -311,7 +311,7 @@ pub fn test_hook(root: &Path, event_type_str: &str) -> Result<String, crate::err
     let payload = serde_json::json!({
         "event_type": event_type.as_str(),
         "story_id": "TEST-1",
-        "timestamp": crate::storage::now(),
+        "timestamp": crate::service::Clock::System.now(),
         "story_title": "Test Story",
         "test": true
     });

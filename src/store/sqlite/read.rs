@@ -498,6 +498,27 @@ fn hydrate(raw: RawStoryRow, labels: Vec<String>) -> Result<StoryRow, StoreError
     })
 }
 
+/// Whether `(project, story, sha)` is already in `story_commit_links`.
+///
+/// An indexed primary-key probe. `EXISTS` rather than a count: the question is
+/// membership, and the answer is available from the index alone.
+pub(super) fn commit_linked(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+    sha: &str,
+) -> Result<bool, StoreError> {
+    let found: i64 = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM story_commit_links \
+             WHERE project_id = ?1 AND story_no = ?2 AND sha = ?3)",
+            params![project.get(), story.get(), sha],
+            |row| row.get(0),
+        )
+        .map_err(|e| StoreError::from_sqlite(e, "reading a commit link"))?;
+    Ok(found != 0)
+}
+
 pub(super) fn story(
     conn: &Connection,
     project: ProjectId,

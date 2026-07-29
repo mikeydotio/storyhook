@@ -3,9 +3,15 @@
 //! Every future migration needs an *old* database to migrate. Once this
 //! version's writing code has moved on, one can no longer be produced — so one
 //! is produced now, committed, and checked on every run against a database
-//! freshly built from the migration list. The check is what keeps the fixture
-//! honest: a migration edited in place rather than added as a new version would
-//! make the two disagree.
+//! freshly built from **migration 1 alone**. The check is what keeps the
+//! fixture honest: a migration edited in place rather than added as a new
+//! version would make the two disagree.
+//!
+//! **It stays at v1 forever.** Version 2 exists now (`commit_links`), and
+//! regenerating the fixture to match it would destroy the only thing it is for.
+//! `the_committed_fixture_migrates_forward` is the test that proves it is still
+//! doing its job: it opens the file with the *whole* list and asserts a real
+//! migration ran.
 //!
 //! Regenerate with `tests/fixtures/schema/regenerate.sh`, which is this same
 //! test with `STORYHOOK_REGENERATE_SCHEMA_FIXTURE=1` set. Regenerating is a
@@ -16,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 use storyhook::domain::{Priority, StateDef, StoryEvent, SuperState, TypeDef, fold_story};
+use storyhook::store::migrate;
 use storyhook::store::{
     EventSeq, ExpectedSeq, NewProject, PathKind, ReadOps, SqliteStore, Store, StoryNo, WriteOps,
 };
@@ -50,7 +57,10 @@ fn schema_objects(path: &Path) -> Vec<(String, String, String)> {
 /// column is populated.
 fn build(path: &Path) {
     let store = SqliteStore::open(path).unwrap();
-    store.migrate().unwrap();
+    // Migration 1 only. This is a *v1* fixture; applying the whole list would
+    // produce a database at the current version, which is the one thing a
+    // fixture that exists to be old must never be.
+    store.migrate_with(&migrate::MIGRATIONS[..1]).unwrap();
 
     let states = vec![
         StateDef {
@@ -224,13 +234,52 @@ fn the_committed_fixture_is_a_schema_v1_database_that_still_matches_the_migratio
     // it into write-ahead logging mode and dirty the working tree.
     let working = scratch.path().join("fixture.db");
     std::fs::copy(&fixture, &working).unwrap();
-    SqliteStore::open(&fresh).unwrap().migrate().unwrap();
+    SqliteStore::open(&fresh)
+        .unwrap()
+        .migrate_with(&migrate::MIGRATIONS[..1])
+        .unwrap();
 
     assert_eq!(
         schema_objects(&working),
         schema_objects(&fresh),
         "the committed schema-v1 fixture no longer matches what the migration list produces; \
          a migration was edited in place instead of a new one being added"
+    );
+}
+
+/// Opening the fixture with the current migration list carries it forward, and
+/// the project inside it survives the trip.
+///
+/// This is what the fixture is *for*. A v1 database that nothing ever migrates
+/// proves nothing; the value is in running today's migrations against a
+/// database today's code did not write.
+#[test]
+fn the_committed_fixture_migrates_forward() {
+    let fixture = fixture_path();
+    let scratch = scratch_dir();
+    let working = scratch.path().join("fixture.db");
+    std::fs::copy(&fixture, &working).unwrap();
+
+    let store = SqliteStore::open(&working).unwrap();
+    let report = store.migrate().unwrap();
+
+    assert_eq!(report.from_version, 1, "the committed fixture is at v1");
+    assert_eq!(report.to_version, migrate::current_schema_version());
+    assert_eq!(
+        report.applied,
+        migrate::MIGRATIONS[1..]
+            .iter()
+            .map(|m| m.name.to_string())
+            .collect::<Vec<_>>(),
+        "every migration after the first must have run"
+    );
+    assert!(
+        report.backup.is_some(),
+        "a database with a schema is backed up before it is migrated"
+    );
+    assert!(
+        store.migrate().unwrap().is_noop(),
+        "and it is at the current version afterwards"
     );
 }
 
@@ -242,7 +291,7 @@ fn the_committed_fixture_reads_back_through_the_store() {
     std::fs::copy(&fixture, &working).unwrap();
 
     let store = SqliteStore::open(&working).unwrap();
-    assert!(store.migrate().unwrap().is_noop(), "the fixture is at v1");
+    store.migrate().unwrap();
 
     let (project, stories, edges, settings) = store
         .read(|tx| {

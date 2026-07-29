@@ -225,6 +225,26 @@ pub trait ReadOps {
     /// The project's newest change-feed position, or [`GlobalSeq::ZERO`].
     fn max_global_seq(&self, project: ProjectId) -> Result<GlobalSeq, StoreError>;
 
+    /// Whether a git commit has already been linked to this story.
+    ///
+    /// The idempotency key `story commit-sync` used to answer by scanning every
+    /// event on the story for a comment beginning `[git] <short-hash>:`. That
+    /// was O(events) per commit per story and a user comment could satisfy it;
+    /// this is an indexed lookup against a primary key.
+    ///
+    /// **`sha` is matched exactly.** Records this binary writes carry the full
+    /// forty characters; rows backfilled by schema migration 2 carry the
+    /// seven-character abbreviation, because that is all the `[git]` comment
+    /// they were recovered from preserved. A caller that must find either asks
+    /// twice — see `GitService::already_linked`, which is the only such caller
+    /// and says why there.
+    fn commit_linked(
+        &self,
+        project: ProjectId,
+        story: StoryNo,
+        sha: &str,
+    ) -> Result<bool, StoreError>;
+
     /// One story's read-model row.
     fn story(&self, project: ProjectId, story: StoryNo) -> Result<Option<StoryRow>, StoreError>;
 

@@ -147,11 +147,36 @@ impl TestEnv {
         ]
     }
 
+    /// `PATH` with the directory holding the binary under test in front.
+    ///
+    /// **The isolation is incomplete without this.** A managed git hook runs
+    /// `story` *by name*, so a `git commit` in a fixture repository resolves it
+    /// through `PATH` — which, left alone, is the developer's own installed
+    /// build. That build is a different version of storyhook pointed at
+    /// whatever store it defaults to, and it will happily write into the
+    /// fixture: a pre-flip binary firing from a post-flip fixture's
+    /// `post-commit` hook leaves a `.storyhook/lock` in the working tree, which
+    /// is how this was found.
+    ///
+    /// Prepended rather than replaced: a hook still needs `git`, `sh` and
+    /// `grep`.
+    pub fn path_with_binary(&self) -> std::ffi::OsString {
+        let dir = story_binary()
+            .parent()
+            .expect("the binary under test has a parent directory")
+            .to_path_buf();
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut entries = vec![dir];
+        entries.extend(std::env::split_paths(&existing));
+        std::env::join_paths(entries).expect("joining PATH")
+    }
+
     /// Points `cmd` at this environment. Every command the harness builds goes
     /// through here, including the `git` invocations behind
     /// [`ProjectBuilder`] — a fixture repo that reads the developer's real
     /// `~/.gitconfig` is not isolated either.
     pub fn apply(&self, cmd: &mut std::process::Command) {
+        cmd.env("PATH", self.path_with_binary());
         for (name, value) in self.vars() {
             cmd.env(name, value);
         }
@@ -166,6 +191,7 @@ impl TestEnv {
     pub fn story(&self, cwd: impl AsRef<Path>) -> assert_cmd::Command {
         let mut cmd = assert_cmd::Command::new(story_binary());
         cmd.current_dir(cwd.as_ref());
+        cmd.env("PATH", self.path_with_binary());
         for (name, value) in self.vars() {
             cmd.env(name, value);
         }

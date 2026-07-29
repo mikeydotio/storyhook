@@ -10,12 +10,12 @@
 //! printed, and says on *stderr* where it moved to — so a script reading stdout
 //! keeps working and a human reading a terminal learns something.
 //!
-//! The catalog commands (`register`/`deregister`/`list`) survive only for the
-//! quarantined legacy path in [`crate::app`]; every live caller reaches
-//! [`crate::service::CatalogService`] instead.
+//! The catalog commands (`register`/`deregister`/`list`) are *not* here. They
+//! had a second implementation over `~/.storyhook/registry.toml` for as long as
+//! the quarantined legacy path existed; that path is gone and
+//! [`crate::service::CatalogService`] is the only one left.
 
 use std::env;
-use std::path::Path;
 use std::process::Command;
 
 use crate::daemon::commands;
@@ -23,7 +23,6 @@ use crate::daemon::lifecycle::{self, DaemonInfo};
 use crate::daemon::tailnet::reachable_host;
 use crate::env::Environment;
 use crate::error::AppError;
-use crate::registry;
 
 /// Tells the user, once, where a `story web` command moved to.
 ///
@@ -288,48 +287,4 @@ fn copy_to_clipboard(text: &str) -> Result<(), AppError> {
         "no clipboard utility found (tried: {}). Set $STORYHOOK_CLIPBOARD_CMD to your clipboard command (e.g. wl-copy).",
         tried.join(", ")
     )))
-}
-
-/// `story web register [PATH] [--name NAME]` — registers `path` with the
-/// default registry (`~/.storyhook/registry.toml`). A relative `path`
-/// resolves against the CLI process's actual working directory (the same
-/// place any other relative CLI path argument resolves), via
-/// `Path::canonicalize` inside `Registry::register`.
-pub fn handle_register(path: &Path, name: Option<&str>) -> Result<String, AppError> {
-    let repo = registry::with_lock(|r| r.register(path, name))?;
-    Ok(format!(
-        "Registered `{}` as `{}`",
-        repo.path.display(),
-        repo.id
-    ))
-}
-
-/// `story web deregister <ID|PATH>`.
-pub fn handle_deregister(target: &str) -> Result<String, AppError> {
-    let repo = registry::with_lock(|r| r.deregister(target))?;
-    Ok(format!(
-        "Deregistered `{}` ({})",
-        repo.id,
-        repo.path.display()
-    ))
-}
-
-/// `story web list` — human-readable summary of every registered repo.
-pub fn handle_list() -> Result<String, AppError> {
-    let registry = registry::Registry::load()?;
-    if registry.repos.is_empty() {
-        return Ok(
-            "No repos registered. Run `story web register` from a project to add one.".to_string(),
-        );
-    }
-    let mut lines = vec![format!("{} registered repo(s):", registry.repos.len())];
-    for repo in &registry.repos {
-        lines.push(format!(
-            "  {} — {} ({})",
-            repo.id,
-            repo.name,
-            repo.path.display()
-        ));
-    }
-    Ok(lines.join("\n"))
 }

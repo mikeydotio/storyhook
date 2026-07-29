@@ -43,9 +43,9 @@ Execution state — wave status, step log, discovered defects — lives in
 | W2d | git/GitHub/transfer services; **all 48 arms ported**; the store test leg | **complete — merged** |
 | W3 | `src/legacy/` reader, `story migrate`, the round-trip rollback gate | **complete — merged** |
 | W4 | **the flip**: the global store is the default; `worktree_truth` green | **complete — PR open**. Revert only while `migrate_round_trip` is 4/4 green — procedure in the flip checklist's section D2 |
-| W5 | daemon promotion + `/api/v1/invoke` transport | **complete — PR open**, except the quarantine deletion, which is deferred with a measured blast radius in HANDOFF.md |
-| W6 | git features re-pointed; full commit-body scanning | next (unblocked by W4) |
-| W7 | migrate this repo; retire `.storyhook/` | pending |
+| W5 | daemon promotion + `/api/v1/invoke` transport | **complete — PR open**, except the quarantine deletion, which W6 carried out |
+| W6 | the quarantine deleted (10,849 lines); full commit-body scanning; link idempotency as a DB constraint | **complete — PR open** |
+| W7 | migrate this repo; retire `.storyhook/`; file the defect ledger | next |
 | W8 | crash, concurrency, and corruption hardening | pending |
 
 Standing rules for every wave:
