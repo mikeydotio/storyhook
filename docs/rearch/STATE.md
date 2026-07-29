@@ -32,11 +32,11 @@
 | W2c services (query + integrity) + TUI on the seam | `rearch/w2c-query` / [PR #65](https://github.com/mikeydotio/storyhook/pull/65) | **MERGED** 2026-07-28 |
 | W2d services (git + GitHub + transfer) + the store test leg | `rearch/w2d-git` / [PR #66](https://github.com/mikeydotio/storyhook/pull/66) | **MERGED** 2026-07-28 |
 | W3 importer | `rearch/w3-importer` / [PR #67](https://github.com/mikeydotio/storyhook/pull/67) | **MERGED** 2026-07-28 |
-| W4 THE FLIP | `rearch/w4-flip` | **PR OPENED** — revert only while `migrate_round_trip` is 4/4 green |
-| W5 daemon | `rearch/w5-daemon` | **PR OPENED** — the quarantine deletion deferred, see the step log |
-| W6 git features | `rearch/w6-git-features` | **PR OPENED** — the quarantine is deleted; body scanning is live |
-| W7 repo cutover | — | pending |
-| W8 hardening | — | pending |
+| W4 THE FLIP | `rearch/w4-flip` / [PR #68](https://github.com/mikeydotio/storyhook/pull/68) | **MERGED** 2026-07-29 — revert only while `migrate_round_trip` is 4/4 green |
+| W5 daemon | `rearch/w5-daemon` / [PR #69](https://github.com/mikeydotio/storyhook/pull/69) | **MERGED** 2026-07-29 — the quarantine deletion deferred, see the step log |
+| W6 git features | `rearch/w6-git-features` / [PR #70](https://github.com/mikeydotio/storyhook/pull/70) | **MERGED** 2026-07-29 — the quarantine is deleted; body scanning is live |
+| W7 repo cutover | `rearch/w7-cutover` | **PR OPENED** — the tracker is in the store, `.storyhook/` is gone, the ledger is filed |
+| W8 hardening | — | pending — **the last wave** |
 
 ## W0 step plan
 
@@ -157,7 +157,66 @@
   (`StoryCommitLinked` + the unique constraint), plus this docs commit.
   See the Step log for the deviations and the four defects found.
 
+## W7 step plan
+
+- **W7 DONE.** Six commits; `make test` green after each. `bdbb60f` (**THE
+  CUTOVER** — the migration, the pointer file, `.storyhook/` deleted),
+  `26480e2` (SH-47, the kill switch), `27de975` (SH-48, the version claim),
+  `832ce94` (the anchoring workarounds), `fd844d1` (the docs sweep), plus this
+  docs commit. Store-side, not commits: ten absorbed stories closed with their
+  acceptance evidence, **24 ledger stories filed** (SH-62 … SH-85, of which 15
+  are closed as records of defects already fixed), and five pre-W0 blocks
+  cleared. See the Step log.
+
 ## Key facts discovered (do not re-derive)
+
+- **W7: the machine's INSTALLED `story` predates the flip, and it writes
+  `.storyhook/lock` into whatever directory it is standing in.** Observed on
+  this wave's own first commit: the managed `prepare-commit-msg` hook runs
+  `story` by *name*, `PATH` finds `~/.local/bin/story` (built 2026-07-25, no
+  `migrate` verb), and it left `?? .storyhook/` in a repository that had just
+  deleted the directory. This is the production instance of W6's `TestEnv`
+  finding — the same defect, outside the test suite, where no harness can fix
+  it. **Nothing in the repository is wrong**; a stale binary is. Two
+  consequences: `.gitignore` now carries `/.storyhook/`, because with
+  `.storyhook/.gitignore` gone one `git add -A` would silently re-commit the
+  directory this wave retired; and **Mikey must reinstall `story` once the
+  rearchitecture ships**, or every commit in every repository leaves residue
+  and the managed hooks quietly stop doing anything.
+- **W7: the real store already held a junk project, from a bare `cargo test`.**
+  `~/.local/share/storyhook/store.db` contained a project named `.tmpKGBY3a` at
+  a `$TMPDIR` path with one story, created 2026-07-28 15:37 local. The shape
+  identifies the cause exactly: a fixture built with `tempfile::tempdir()`
+  driving the real `story` binary with no data-home override — the W4 finding,
+  live. **`make test` is safe** (`scripts/run-tests.sh` exports an isolated
+  `STORYHOOK_DATA_DIR` and refuses to run if it is not under `/private/tmp`);
+  a bare `cargo test` is not, and nothing stops one. Left in place rather than
+  deleted — it is the user's store and the decision is theirs — and filed as
+  part of the ledger. **W8 should close the gap**: the refusal belongs
+  somewhere `cargo test` cannot route around.
+- **W7: `story migrate` records the path it migrated FROM, which is not where
+  the project lives when the source is a copy.** The sanctioned procedure for a
+  linked worktree is to migrate a copy of the tree at a neutral path, so
+  `touch_project_path` registered `/private/tmp/w7-cutover/storyhook` — a
+  directory that was about to be deleted. Fixed with the two commands that
+  exist for it (`story web register .` from the repository, then `story web
+  deregister <scratch>`), which is also proof the catalog verbs do what they
+  say. **Resolution never depended on it**: the pointer file answers by uuid,
+  which is the whole point of the pointer file. The recorded path matters only
+  to the dashboard. **Consequence for whoever merges this PR:** the store's
+  recorded path is this *worktree*, which is ephemeral. One `story web
+  register` from the main checkout after the merge fixes it; nothing breaks
+  until then, because the pointer resolves.
+- **W7: `story plugin install` was writing configuration nothing reads.** It
+  seeded `.storyhook/plugin-config.toml` when that directory existed. After the
+  cutover the directory does not exist, so the write is unreachable; before it,
+  the write would have been to a file the fixed hooks no longer consult. Both
+  halves of a feature have to move together — SH-47 moved the read, and the
+  write had to follow or the switch would have been unsettable through the
+  supported path. It writes nothing now and prints the snippet instead, which
+  respects the invariant that the pointer file is *user-authored*: storyhook
+  reads those tables and never rewrites them.
+
 
 - **W6: `TestEnv` did not isolate `PATH`, and a managed git hook runs `story` by
   *name*.** So a `git commit` in any fixture repository spawned the developer's
@@ -2020,6 +2079,78 @@
     is not a reason to change what a human reads.
   - **Zero golden snapshots moved.** `INSTA_UPDATE=no` throughout, which is the
     rendering-compatibility argument in its strongest form.
+
+- 2026-07-29 W7: branch `rearch/w7-cutover` off merged main `5e209b2`. Six commits,
+  `make test` green after each. Test count 1931 → **1931** Rust, 17 → **18** bash.
+
+  **storyhook's own tracker is in the store, and `.storyhook/` is gone.** 26 tracked
+  files deleted; one committed `.storyhook.toml` replaces them.
+
+  The migration, run against the **real** store with the freshly built binary, from a
+  `cp -R` of this branch's tree at a neutral path (`git diff origin/main -- .storyhook`
+  was empty first — the branch's tree *was* main's):
+
+  ```text
+  imported 61 stories (44 archived, 1 soft-deleted) and 497 events
+    prefix SH, 5 states, 5 types, 0 members, next story SH-62
+    repairs (SH-60): 5 one-sided relations completed,
+                     5 unilateral parent claims retracted
+  ```
+
+  Dry run first, byte-identical to the real run bar the verb. Verified from the repo
+  root, against the real store: `story list` (61), `story show SH-46`, `story summary`
+  (17 open / 44 closed / 11 ready at the time), `story doctor` **exit 0**. 17 `[git]`
+  comments arrived as commit-link records, which is why the first `commit-sync` after
+  the cutover did not re-link the whole log — and the tree was byte-clean after the
+  cutover commit itself, with the managed post-commit hook firing. SH-61's loop has no
+  fuel here now.
+
+  - `bdbb60f` — **the cutover**: `git rm -r .storyhook/`, the pointer file with the
+    `[plugin]` table `plugin-config.toml` held (there was no `hooks.toml`), and
+    `/.storyhook/` added to `.gitignore` — see the Key fact about the installed
+    binary for why that entry is not decoration.
+  - `26480e2` — SH-47. RED first, 12 failures across both hooks. The reader is
+    quote-agnostic *and* table-aware, the two hooks share `hooks/lib.sh`, and the
+    "am I in a storyhook project" test is the pointer file found by walking
+    ancestors rather than a `.storyhook/` directory in `$PWD`.
+  - `27de975` — SH-48.
+  - `832ce94` — the anchoring workarounds, including `story plugin install`'s dead
+    write and the fixture builder committing its pointer, which restores the
+    stronger `test-dispatch-cwd.sh` fixture W0.2 asked W7 to restore.
+  - `fd844d1` — the docs sweep: README, `help_topics.rs`, `AGENTS.md`,
+    `uninstall.sh`, two user-facing `event_hooks.rs` messages, the TUI's states
+    editor, `capture-baseline.sh`, and the CLAUDE.md roadmap.
+
+  **Store-side, and deliberately not commits.** Ten stories the programme absorbed
+  were closed with the acceptance evidence for each (SH-46, SH-51, SH-52, SH-53,
+  SH-54, SH-56, SH-58, SH-59, SH-60, SH-61), and SH-47/SH-48 with their fixes.
+  Twenty-four ledger stories were filed — SH-62 through SH-85 — of which **nine are
+  open work** and **fifteen are closed as records** of defects fixed inside a wave.
+  Filing-then-closing is not bookkeeping theatre: a defect deserves a row whether or
+  not its code still exists, and an agent asking `story next` must never be handed
+  one that was fixed in April. The five pre-W0 blocks (SH-42/43/44/49/50) are
+  cleared, each with a comment describing the daemon/API reality to re-spec against.
+
+  The nine open ones, because W8 will want them: SH-62 positional-flag swallowing,
+  SH-63 `story next`'s nondeterminism, SH-64 the id-ordering split, SH-65 the dead
+  `SyncConflict` variant, SH-66 `context --format json` double-encoding, SH-67
+  `export` dropping unknown kinds, SH-68 `sync.mode = auto` with no implementation,
+  SH-69 the daemon leg's parallelism bound, SH-70 `import-project` not projecting
+  pre-#18 link comments.
+
+  Gates: `make test` green ×2 (18/18 bash), `make test-daemon` green.
+
+  Deviations from the wave brief, all deliberate:
+  - **The ledger's already-fixed items are filed AND closed**, where the brief said
+    only "file". Above.
+  - **`story plugin install` changed**, which the brief did not list. SH-47 moved
+    where the kill switch is read from; leaving the write behind would have left the
+    switch unsettable through the supported path.
+  - **`/.storyhook/` was added to `.gitignore`**, where the brief said only to drop
+    entries that no longer apply. The old entry was a comment saying *not* to ignore
+    the directory; the new one is its opposite, and it exists because the residue is
+    real and observed.
+  - **The scratch path had to be deregistered by hand.** See the Key fact.
 
 ## Resume protocol (fresh session)
 
