@@ -163,15 +163,35 @@ mod armed {
         }
     }
 
-    /// `STORYHOOK_FAULT=<point>` aborts the process at `<point>`.
+    /// `STORYHOOK_FAULT=<point>` **`kill -9`s** the process at `<point>`.
     ///
     /// The out-of-process arming path: a test spawns a child with this set and
     /// then inspects the database the dead child left behind. Read fresh each
     /// time rather than cached, because a test may set it for one child and not
     /// the next.
+    ///
+    /// `SIGKILL` rather than [`std::process::abort`], which is what the
+    /// in-process [`FaultAction::Abort`] uses. For SQLite's durability the two
+    /// are equivalent — neither unwinds, neither flushes, and the database's
+    /// state lives in the write-ahead log and the page cache rather than in this
+    /// process's memory — but only one of them is *unarguably* equivalent.
+    /// `abort` raises a catchable signal and runs whatever handler a linked
+    /// library installed; `SIGKILL` cannot be caught, blocked, or handled by
+    /// anyone, so a crash test that uses it is testing the store's crash
+    /// consistency rather than the runtime's shutdown path. It is also literally
+    /// what the design asked for: `kill -9` at each named point.
     fn process_env_fault(point: FaultPoint) -> Result<(), StoreError> {
         match std::env::var("STORYHOOK_FAULT") {
-            Ok(name) if name == point.as_str() => std::process::abort(),
+            Ok(name) if name == point.as_str() => {
+                // SAFETY: `kill` with this process's own pid and a valid signal
+                // number. It does not return.
+                unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+                // Unreachable in practice; SIGKILL is delivered before the next
+                // instruction retires. Kept so the function still type-checks as
+                // returning, and so a platform that somehow ignored the signal
+                // fails loudly rather than continuing as if nothing happened.
+                std::process::abort()
+            }
             _ => Ok(()),
         }
     }
