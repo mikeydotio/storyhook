@@ -65,6 +65,8 @@ pub mod ids;
 pub mod migrate;
 pub mod rebuild;
 pub mod sqlite;
+#[cfg(feature = "fault-injection")]
+pub mod test_support;
 pub mod types;
 
 use std::collections::BTreeMap;
