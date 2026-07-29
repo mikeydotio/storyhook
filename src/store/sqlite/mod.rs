@@ -234,7 +234,39 @@ impl SqliteStore {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Opens a connection, turning damage into a sentence a user can act on.
+    ///
+    /// Corruption surfaces here and nowhere else: the pragmas below are the
+    /// first statements anything runs against the file, so a database that is
+    /// truncated, overwritten, or was never a database fails on one of them. Two
+    /// facts a user needs are known at this point and nowhere deeper — *which*
+    /// file it is, and where its verified snapshots live — so this is where the
+    /// message is composed rather than in [`StoreError::from_sqlite`], which has
+    /// neither.
     fn new_connection(&self) -> Result<Connection, StoreError> {
+        self.raw_connection()
+            .map_err(|error| self.explain_unopenable(error))
+    }
+
+    /// Rewrites a corruption error into a diagnosis and a way back.
+    ///
+    /// Everything else travels unchanged: a `Busy` here is contention, not
+    /// damage, and telling a user to restore a backup because two processes
+    /// raced would be actively harmful advice.
+    fn explain_unopenable(&self, error: StoreError) -> StoreError {
+        match error {
+            StoreError::Corrupt(detail) => StoreError::Corrupt(format!(
+                "the storyhook store at {} is damaged: {detail}. Nothing has been changed. \
+                 storyhook keeps verified snapshots in {} — copy the newest one over the \
+                 database and run `story doctor`",
+                self.config.db_path.display(),
+                self.config.backup_dir.display(),
+            )),
+            other => other,
+        }
+    }
+
+    fn raw_connection(&self) -> Result<Connection, StoreError> {
         let conn = Connection::open(&self.config.db_path)
             .map_err(|e| StoreError::from_sqlite(e, "opening the store"))?;
         conn.busy_timeout(self.config.busy_timeout)

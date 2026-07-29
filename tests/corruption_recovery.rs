@@ -202,3 +202,73 @@ fn a_directory_where_the_database_belongs_names_the_path() {
         "the message must name the path that is in the way: {message}"
     );
 }
+
+/// A database cut in half: a valid SQLite header over pages that are not there.
+///
+/// This is what a full disk, an interrupted `cp`, or a sync client that copied a
+/// file while it was being written leaves behind. What a user needs is not the
+/// name of the statement that happened to notice — they need to know their
+/// tracker is damaged, and that verified snapshots of it exist.
+#[test]
+fn a_truncated_database_says_it_is_damaged_and_where_the_backups_are() {
+    let source = TestEnv::isolated();
+    source.project().prefix("CO").build().new_story("real data");
+    drop(source.open_store());
+    let whole = std::fs::read(source.store_path()).expect("reading a real store");
+    assert!(whole.len() > 8192, "the fixture must be worth truncating");
+
+    let env = env_with_store_bytes(&whole[..4096]);
+    let cwd = scratch_dir();
+    let out = story_in(&env, cwd.path(), &["init", "--no-agents-md"]);
+    let message = failure_message(&out, "story init");
+
+    assert_actionable_corruption(&env, &message);
+}
+
+/// The same claim for a file that was never a database at all — a text file
+/// restored over the store, or a sync conflict copy renamed into place.
+#[test]
+fn a_file_that_is_not_a_database_says_so_in_the_same_words() {
+    let env = env_with_store_bytes(b"this is not a database, it is a note to self\n");
+    let cwd = scratch_dir();
+    let out = story_in(&env, cwd.path(), &["init", "--no-agents-md"]);
+    let message = failure_message(&out, "story init");
+
+    assert_actionable_corruption(&env, &message);
+}
+
+/// What "actionable" means for a damaged store, stated once.
+///
+/// Three things, and the absence of a fourth: the file, the fact, the way back —
+/// and no leaked implementation detail about which statement noticed. The store
+/// runs half a dozen pragmas on open and which of them tripped over the bad
+/// bytes is an accident of ordering; a user told "setting synchronous mode:
+/// database disk image is malformed" has been given the least useful sentence
+/// available.
+fn assert_actionable_corruption(env: &TestEnv, message: &str) {
+    assert!(
+        message.contains(&env.store_path().display().to_string()),
+        "the message must name the damaged file: {message}"
+    );
+    assert!(
+        message.contains("damaged"),
+        "the message must say what is wrong in a word a user knows: {message}"
+    );
+    assert!(
+        message.contains("backups") || message.contains("snapshot"),
+        "the message must point at the backups, which is the whole reason they \
+         are taken: {message}"
+    );
+    for leaked in [
+        "synchronous",
+        "journal_mode",
+        "busy timeout",
+        "foreign_keys",
+    ] {
+        assert!(
+            !message.contains(leaked),
+            "the message must not name the pragma that happened to notice ({leaked}): \
+             {message}"
+        );
+    }
+}
