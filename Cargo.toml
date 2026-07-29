@@ -40,7 +40,11 @@ categories = ["command-line-utilities", "development-tools"]
 
 [features]
 default = ["github-sync"]
-github-sync = ["dep:ureq"]
+# `ureq` used to be gated here. It is unconditional now — the CLI's default
+# invoker talks to the daemon over HTTP, so a build without an HTTP client
+# could not run a command at all — and this feature gates only the sync code
+# itself.
+github-sync = []
 
 # Named crash points inside the store (`src/store/fault.rs`). NEVER in
 # `default`: with the feature off, every injection point is an inlined
@@ -96,10 +100,11 @@ tui-textarea = "0.7"
 tui-input = "0.11"
 ratatui-macros = "0.6"
 tui-scrollview = "0.6"
-notify = "7"
 
-# GitHub sync (optional)
-ureq = { version = "3", optional = true, features = ["json"] }
+# The RPC client. Not optional: the CLI's default invoker talks to the daemon
+# over HTTP (locked decision 2), so a storyhook built without an HTTP client
+# would have no way to run a command. github-sync uses the same one.
+ureq = { version = "3", features = ["json"] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

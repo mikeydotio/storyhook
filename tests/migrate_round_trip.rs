@@ -46,7 +46,7 @@ fn export(store: &SqliteStore) -> ProjectExport {
         .read(|tx| Ok(tx.projects()?.first().expect("one project").id))
         .expect("reading");
     let cwd = std::env::temp_dir();
-    let ctx = Ctx::new(store, project, &cwd)
+    let ctx = Ctx::new(store, project, &cwd, storyhook::env::Environment::at(&cwd))
         .no_hooks(true)
         .clock(Clock::Fixed("2026-01-01T00:00:00Z".to_string()));
     TransferService::new(&ctx).export().expect("exporting")

@@ -137,6 +137,16 @@ pub struct SqliteStore {
     config: StoreConfig,
     pool: Mutex<Vec<Connection>>,
     write_lock: Mutex<()>,
+    /// A connection that never enters the pool, reserved for
+    /// [`Store::change_token`].
+    ///
+    /// `PRAGMA data_version` is **per connection**: it counts commits made by
+    /// *other* connections since this one last looked. Asking a pooled
+    /// connection therefore answers a different question every time — the pool
+    /// hands out whichever connection is free, and two of them have unrelated
+    /// counters — so the token has to come from one connection that lives as
+    /// long as the store.
+    change_conn: Mutex<Connection>,
 }
 
 impl SqliteStore {
@@ -157,18 +167,20 @@ impl SqliteStore {
         {
             std::fs::create_dir_all(parent)?;
         }
-        let store = Self {
-            config,
-            pool: Mutex::new(Vec::new()),
-            write_lock: Mutex::new(()),
-        };
         // Open one connection eagerly: it applies the persistent pragmas
         // (`journal_mode`) and runs the forward-compatibility gate, so a
         // database written by a newer storyhook is refused here, once, with a
-        // sentence — rather than later, repeatedly, as a serde error.
+        // sentence — rather than later, repeatedly, as a serde error. It then
+        // becomes the change-token connection rather than joining the pool.
+        let mut store = Self {
+            config,
+            pool: Mutex::new(Vec::new()),
+            write_lock: Mutex::new(()),
+            change_conn: Mutex::new(Connection::open_in_memory()?),
+        };
         let conn = store.new_connection()?;
         migrate::ensure_readable(&conn, current_schema_version())?;
-        store.release(conn);
+        store.change_conn = Mutex::new(conn);
         Ok(store)
     }
 
@@ -444,6 +456,28 @@ impl Store for SqliteStore {
 
     fn migrate(&self) -> Result<MigrationReport, StoreError> {
         self.migrate_with(MIGRATIONS)
+    }
+
+    fn snapshot(&self, dir: &Path) -> Result<PathBuf, StoreError> {
+        let conn = self.checkout()?;
+        migrate::snapshot(&conn, dir, "snapshot")
+    }
+
+    /// SQLite's `PRAGMA data_version`.
+    ///
+    /// It is incremented when another *connection* commits, and — the detail
+    /// that makes it usable here — is deliberately **not** incremented by
+    /// commits on the connection that reads it. A pooled connection is
+    /// therefore the wrong place to ask from if you want to see your own
+    /// writes, and exactly the right place if you want to see everybody
+    /// else's, which is what the change feed's safety net is for.
+    fn change_token(&self) -> Result<u64, StoreError> {
+        let conn = self
+            .change_conn
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let version: i64 = conn.query_row("PRAGMA data_version", [], |row| row.get(0))?;
+        Ok(version as u64)
     }
 }
 

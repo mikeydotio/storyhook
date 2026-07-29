@@ -13,13 +13,36 @@
 # Only ever reports processes built from THIS working tree (target/debug/...).
 # The developer's real dashboard daemon -- an installed `story` binary, port
 # 3456 -- is deliberately out of scope: it is production, and nothing here
-# touches it.
+# touches it. This is the fourth layer of the orphan defence, behind the test
+# guards' Drop, the daemon's own process group, and the STORYHOOK_PARENT_PID
+# suicide contract; it exists to name the cause immediately if all three fail.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 phase="${1:-check}"
 
-orphans="$(pgrep -f "${repo_root}/target/debug/(deps/(web_test|storyhook_test_support)-|story web --serve)" || true)"
+# `story daemon --serve` is the daemon; `story web --serve` is its alias, which
+# a test may still be spelling. Both are matched, and so are the two test
+# binaries that run servers in-thread.
+pattern="${repo_root}/target/debug/(deps/(web_test|daemon_lifecycle|daemon_invoke|storyhook_test_support)-|story (daemon|web) --serve)"
+
+# The postlude waits; the preflight does not.
+#
+# A daemon started by a test binary exits when that binary does, but it learns
+# of it by polling, so for a moment after `cargo test` returns there can still
+# be one winding down. Failing on that would be failing on the defence working.
+# A daemon still there after the grace period is a real leak: nothing is going
+# to collect it.
+if [ "$phase" = "postlude" ]; then
+  deadline=$(( SECONDS + 10 ))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    orphans="$(pgrep -f "$pattern" || true)"
+    [ -z "$orphans" ] && exit 0
+    sleep 0.25
+  done
+fi
+
+orphans="$(pgrep -f "$pattern" || true)"
 
 if [ -z "$orphans" ]; then
   exit 0

@@ -148,6 +148,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::Create,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_response(root, story)
@@ -443,6 +444,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::Comment,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_by_id(root, &id)
@@ -561,6 +563,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::StateChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
                 if state_def.super_state == SuperState::Closed {
                     let close_payload = serde_json::json!({
@@ -575,6 +578,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         config,
                         crate::event_hooks::HookEventType::Close,
                         &close_payload.to_string(),
+                        crate::event_hooks::depth_from_env(),
                     );
                 }
             }
@@ -620,6 +624,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::LabelChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_by_id(root, &id)
@@ -655,6 +660,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::PriorityChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_by_id(root, &id)
@@ -953,6 +959,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::StateChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_by_id(root, &id)
@@ -1016,9 +1023,8 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
         // repo cutover is what proves the flip is safe. It takes no project
         // lock: it never writes to `root`.
         Invocation::Migrate { .. } => {
-            use crate::store::Store as _;
-            let store = crate::store::SqliteStore::open(crate::paths::store_path()?)?;
-            store.migrate()?;
+            let environment = crate::env::Environment::from_process()?;
+            let store = crate::invoke::open_store(&environment)?;
             crate::invoke::dispatch_unscoped(&store, root, &storage::now(), options.invocation)
         }
         Invocation::Context { format } => {
@@ -1542,6 +1548,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::RelationshipChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
 
@@ -2142,6 +2149,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 story_view_by_id(root, &id)
             }
         },
+        // The daemon commands never reach this leg: it is the quarantined
+        // legacy path, and the daemon is what replaced the thing that kept it
+        // alive.
+        Invocation::Daemon { .. } => Err(AppError::Usage(
+            "the daemon is not served by the legacy path".to_string(),
+        )),
         Invocation::Web { action } => match action {
             WebAction::Start { port } => {
                 let msg = crate::web::handle_start(port)?;
@@ -3145,6 +3158,7 @@ fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Resp
                     config,
                     crate::event_hooks::HookEventType::LabelChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             Ok(Response::Message(format!("assigned {id} to phase {phase}")))

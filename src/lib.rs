@@ -1,9 +1,12 @@
 #![recursion_limit = "256"]
 
+pub mod api;
 pub mod app;
 pub mod cli;
+pub mod daemon;
 pub mod decompose;
 pub mod domain;
+pub mod env;
 pub mod error;
 pub mod event_hooks;
 #[cfg(feature = "github-sync")]
@@ -14,7 +17,6 @@ pub mod invoke;
 pub mod legacy;
 pub mod lock;
 pub mod output;
-pub mod paths;
 pub mod plugin;
 pub mod registry;
 pub mod service;

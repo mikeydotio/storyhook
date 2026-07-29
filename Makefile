@@ -6,7 +6,7 @@
 # (and pass) before every push; skipping it is how a non-compiling commit
 # reaches `main` undetected (see #23).
 
-.PHONY: test build fmt lint clippy check release-build install check-no-orphan-servers
+.PHONY: test test-daemon build fmt lint clippy check release-build install check-no-orphan-servers
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
@@ -48,6 +48,34 @@ test: check-no-orphan-servers
 	@bash scripts/run-tests.sh
 	cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
+	@bash scripts/check-no-orphan-servers.sh postlude
+
+# The same integration suite, over RPC.
+#
+# `make test` runs every command in its own process; this runs the identical
+# tests with `STORYHOOK_INVOKER=daemon`, so each CLI-driven one goes over
+# `/api/v1/invoke` to a real daemon. The in-process tests (`service_`, `store_`,
+# `differential_`) are unaffected — they call the library directly and never
+# see an invoker at all.
+#
+# Deliberately NOT part of `make test`. Two thousand tests each taking a
+# network hop through one shared daemon would be slower and would couple every
+# test to one process's health, and the property that matters — that the two
+# modes agree — is proved by the byte-comparison test rather than by running
+# everything twice.
+#
+# Isolation is the same as `make test`'s, which is what makes this safe to run:
+# a private data directory, a private state home, port 0, and a parent-pid
+# contract that kills any daemon this run leaves behind.
+# `--test-threads=4` is not tuning, it is a bound on how many daemons exist at
+# once. Each test binary's shared environment gets a daemon, and each isolated
+# one gets another; the default parallelism starts dozens simultaneously, and
+# the machine spends its time context-switching between SQLite processes rather
+# than running tests. Measured: the suite passes binary-by-binary and stalls
+# wide open.
+test-daemon: check-no-orphan-servers
+	cargo build
+	@STORYHOOK_INVOKER=daemon bash scripts/run-tests.sh -- --test-threads=4
 	@bash scripts/check-no-orphan-servers.sh postlude
 
 # Fails if a test-spawned server from this worktree is still running. Never

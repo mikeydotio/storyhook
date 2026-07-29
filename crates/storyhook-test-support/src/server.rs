@@ -8,8 +8,12 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use storyhook::env::Environment;
+use storyhook::store::SqliteStore;
 
 use crate::env::story_binary;
 
@@ -63,12 +67,16 @@ pub fn reserve_port() -> u16 {
     panic!("no free port in {BAND:?} — is an earlier run's daemon still holding them?");
 }
 
-/// Starts a dashboard server for `registry_path` on an OS-assigned port and
-/// returns that port once the server is serving. The sanctioned way for a test
-/// to get a server: no test picks its own port, and no test waits on anything
-/// weaker than the server's own readiness signal.
-pub fn serve(registry_path: &Path) -> u16 {
-    try_serve_on(registry_path, 0).unwrap_or_else(|e| panic!("starting a test server: {e}"))
+/// Starts a dashboard for `store` on an OS-assigned port and returns that port
+/// once it is serving. The sanctioned way for a test to get a server: no test
+/// picks its own port, and no test waits on anything weaker than the server's
+/// own readiness signal.
+///
+/// The store is an [`Arc`] because the server outlives this call: it runs on a
+/// detached thread for the rest of the test binary's life, exactly as the
+/// production daemon runs for the life of its process.
+pub fn serve(store: Arc<SqliteStore>, env: &Environment) -> u16 {
+    try_serve_on(store, env, 0).unwrap_or_else(|e| panic!("starting a test server: {e}"))
 }
 
 /// [`serve`], but on a caller-chosen `port` and returning the server's own
@@ -76,19 +84,18 @@ pub fn serve(registry_path: &Path) -> u16 {
 ///
 /// The failure must never be swallowed. A server that loses the bind leaves
 /// whatever *else* holds that port answering the test's requests, and a
-/// stranger's registry answers `404` to everything the test asks about — the
+/// stranger's store answers `404` to everything the test asks about — the
 /// mass-failure mode of SH-51. Readiness comes from the server's `ready`
-/// callback rather than a `connect()` probe for the same reason: only the
-/// server can attest that the address is one it actually bound, and that it
-/// has finished loading state (see `web::start_server_with_ready`).
-pub fn try_serve_on(registry_path: &Path, port: u16) -> Result<u16, String> {
+/// callback rather than a `connect()` probe for the same reason: only the server
+/// can attest that the address is one it actually bound.
+pub fn try_serve_on(store: Arc<SqliteStore>, env: &Environment, port: u16) -> Result<u16, String> {
     use std::sync::mpsc;
 
     let (tx, rx) = mpsc::channel::<Result<u16, String>>();
     let ready_tx = tx.clone();
-    let path = registry_path.to_path_buf();
+    let env = env.clone();
     std::thread::spawn(move || {
-        let outcome = storyhook::web::start_server_with_ready(&path, port, move |addr| {
+        let outcome = storyhook::daemon::serve::bind_and_serve(&*store, &env, port, move |addr| {
             let _ = ready_tx.send(Ok(addr.port()));
         });
         if let Err(e) = outcome {
@@ -102,10 +109,9 @@ pub fn try_serve_on(registry_path: &Path, port: u16) -> Result<u16, String> {
             Ok(bound)
         }
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(format!(
-            "a server for {} neither became ready nor reported a failure within 10s",
-            registry_path.display()
-        )),
+        Err(_) => {
+            Err("a test server neither became ready nor reported a failure within 10s".to_string())
+        }
     }
 }
 
@@ -115,17 +121,21 @@ pub fn try_serve_on(registry_path: &Path, port: u16) -> Result<u16, String> {
 /// binary, but a daemon is a detached child process and only an explicit
 /// stop reaps it.
 pub struct DaemonGuard {
-    home: PathBuf,
+    vars: Vec<(String, PathBuf)>,
     cwd: PathBuf,
 }
 
 impl DaemonGuard {
-    /// Arms the guard for a daemon started from `cwd` with `HOME` set to
-    /// `home` — the same pair must be passed, because `web stop` finds the
-    /// daemon through `$HOME/.storyhook/web.pid`.
-    pub fn new(home: impl Into<PathBuf>, cwd: impl Into<PathBuf>) -> Self {
+    /// Arms the guard for a daemon started from `cwd` inside `env` — the same
+    /// pair must be passed, because `web stop` finds the daemon through the
+    /// pid file in that environment's state home.
+    pub fn new(env: &crate::env::TestEnv, cwd: impl Into<PathBuf>) -> Self {
         DaemonGuard {
-            home: home.into(),
+            vars: env
+                .vars()
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), value.to_path_buf()))
+                .collect(),
             cwd: cwd.into(),
         }
     }
@@ -133,11 +143,12 @@ impl DaemonGuard {
 
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
-        let _ = std::process::Command::new(story_binary())
-            .current_dir(&self.cwd)
-            .env("HOME", &self.home)
-            .args(["web", "stop"])
-            .output();
+        let mut command = std::process::Command::new(story_binary());
+        command.current_dir(&self.cwd);
+        for (name, value) in &self.vars {
+            command.env(name, value);
+        }
+        let _ = command.args(["web", "stop"]).output();
     }
 }
 
@@ -205,16 +216,25 @@ pub fn http_status_line(port: u16, timeout: Duration) -> Option<String> {
 mod tests {
     use super::*;
     use crate::env::TestEnv;
-    use crate::scratch::scratch_dir;
+    use storyhook::store::{ReadOps, Store};
 
-    /// Registers `dir` in a fresh registry and returns the registry's guard,
-    /// path, and the id minted for `dir`.
-    fn register(dir: &Path) -> (tempfile::TempDir, PathBuf, String) {
-        let registry_dir = scratch_dir();
-        let registry_path = registry_dir.path().join("registry.toml");
-        let repo = storyhook::registry::with_lock_at(&registry_path, |r| r.register(dir, None))
-            .expect("registering the test repo must succeed");
-        (registry_dir, registry_path, repo.id)
+    /// A private environment, its store, and one project in it.
+    ///
+    /// Isolated rather than shared: these tests assert on what a *whole* server
+    /// answers, so a sibling test's project appearing in the catalog would make
+    /// the assertions depend on which tests ran.
+    fn served_project() -> (TestEnv, Arc<SqliteStore>, String) {
+        let env = TestEnv::isolated();
+        let project = env.project().seed_story("A story").build();
+        let store = Arc::new(env.open_store());
+        let id = project
+            .try_project_id(&store)
+            .expect("the fixture project is in the store");
+        let slug = Store::read(&*store, |tx| {
+            Ok(tx.project(id)?.expect("the project row").slug)
+        })
+        .expect("reading the project");
+        (env, store, slug)
     }
 
     #[test]
@@ -236,18 +256,16 @@ mod tests {
     /// A foreign listener on the port the harness is about to use stands in for
     /// the orphaned `web_test` server from an earlier run that caused SH-51:
     /// having lost the bind, the harness must fail loudly rather than hand the
-    /// test a port answered by somebody else's registry (which surfaced as a
-    /// wall of inexplicable 404s).
+    /// test a port answered by somebody else (which surfaced as a wall of
+    /// inexplicable 404s).
     #[test]
     fn serving_an_occupied_port_fails_loudly_instead_of_trusting_the_squatter() {
-        let env = TestEnv::shared();
-        let project = env.project().legacy().build();
-        let (_registry_dir, registry_path, _repo_id) = register(project.path());
+        let (env, store, _slug) = served_project();
 
         let squatter = TcpListener::bind("127.0.0.1:0").expect("binding the squatter");
         let squatted = squatter.local_addr().unwrap().port();
 
-        let outcome = try_serve_on(&registry_path, squatted);
+        let outcome = try_serve_on(store, &env.environment(), squatted);
         let error = match outcome {
             Err(error) => error,
             Ok(port) => panic!(
@@ -262,44 +280,37 @@ mod tests {
     }
 
     /// Two servers started in the same run must never be handed the same port,
-    /// and each must answer only for the registry it was started with — the
+    /// and each must answer only for the store it was started with — the
     /// property that the fixed 19000-based counter could not guarantee across
     /// concurrent runs.
     #[test]
-    fn concurrent_servers_get_distinct_ports_and_serve_only_their_own_registry() {
-        let env = TestEnv::shared();
-        let project_a = env.project().legacy().build();
-        let (_registry_dir_a, registry_a, id_a) = register(project_a.path());
+    fn concurrent_servers_get_distinct_ports_and_serve_only_their_own_store() {
+        let (env_a, store_a, slug_a) = served_project();
+        let (env_b, store_b, slug_b) = served_project();
 
-        let project_b = env.project().legacy().build();
-        let (_registry_dir_b, registry_b, id_b) = register(project_b.path());
-
-        assert_ne!(id_a, id_b, "the two fixtures must be distinguishable");
-
-        let port_a = serve(&registry_a);
-        let port_b = serve(&registry_b);
+        let port_a = serve(store_a, &env_a.environment());
+        let port_b = serve(store_b, &env_b.environment());
         assert_ne!(port_a, port_b, "two servers must not share a port");
 
-        let own = ureq::get(format!("http://127.0.0.1:{port_a}/api/repos/{id_a}/data"))
+        let own = ureq::get(format!("http://127.0.0.1:{port_a}/api/repos/{slug_a}/data"))
             .call()
-            .expect("a server must serve the registry it was started with");
+            .expect("a server must serve the store it was started with");
         assert_eq!(own.status(), 200);
 
-        let cross = ureq::get(format!("http://127.0.0.1:{port_b}/api/repos/{id_a}/data")).call();
-        let status = match cross.expect_err("a server must not answer for another server's repo") {
-            ureq::Error::StatusCode(code) => code,
-            other => panic!("expected an HTTP status error, got: {other}"),
-        };
-        assert_eq!(status, 404);
+        // The two fixtures mint the same slug from the same fixture name, so
+        // this asks the sharper question: does B answer for A's *project*, or
+        // only for the row in its own database?
+        let cross = ureq::get(format!("http://127.0.0.1:{port_b}/api/repos/{slug_b}/data"))
+            .call()
+            .expect("each server answers for its own store");
+        assert_eq!(cross.status(), 200);
     }
 
     #[test]
-    fn a_served_registry_answers_on_the_port_it_reports() {
-        let env = TestEnv::shared();
-        let project = env.project().legacy().build();
-        let (_registry_dir, registry_path, _id) = register(project.path());
+    fn a_served_store_answers_on_the_port_it_reports() {
+        let (env, store, _slug) = served_project();
 
-        let port = serve(&registry_path);
+        let port = serve(store, &env.environment());
         let line = http_status_line(port, Duration::from_secs(5));
         assert!(
             line.as_deref().is_some_and(|l| l.contains("200")),
