@@ -5,6 +5,7 @@
 //! * [`http`] — the plumbing both share: response shaping, the security
 //!   headers, the CSRF and DNS-rebinding guard, body reading, SSE framing.
 //! * [`rest`] — the dashboard's resource API, over the service layer.
+//! * [`rpc`] — the daemon's control surface: loopback only, token-authenticated.
 //!
 //! Keeping the plumbing apart from the routes is not tidiness. The guard code is
 //! the difference between "a page on the internet cannot write to your tracker"
@@ -13,3 +14,4 @@
 
 pub mod http;
 pub mod rest;
+pub mod rpc;

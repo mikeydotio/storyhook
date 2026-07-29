@@ -2141,6 +2141,12 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 story_view_by_id(root, &id)
             }
         },
+        // The daemon commands never reach this leg: it is the quarantined
+        // legacy path, and the daemon is what replaced the thing that kept it
+        // alive.
+        Invocation::Daemon { .. } => Err(AppError::Usage(
+            "the daemon is not served by the legacy path".to_string(),
+        )),
         Invocation::Web { action } => match action {
             WebAction::Start { port } => {
                 let msg = crate::web::handle_start(port)?;

@@ -391,6 +391,11 @@ pub enum Invocation {
     Web {
         action: WebAction,
     },
+    /// The storyhook daemon: the one process that owns the store and serves
+    /// everything that talks to it.
+    Daemon {
+        action: DaemonAction,
+    },
     SessionStart,
     Update {
         check: bool,
@@ -450,6 +455,30 @@ pub enum PluginAction {
 /// Default TCP port for the web dashboard, used by both `story web start`
 /// and the internal `story web --serve` daemon entrypoint.
 pub const DEFAULT_WEB_PORT: u16 = 3456;
+
+/// `story daemon …`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DaemonAction {
+    /// Run the daemon in this process, in the foreground. What the background
+    /// spawner execs, and what a launchd agent runs.
+    Serve {
+        /// Bind this port instead of the environment's preferred one.
+        port: Option<u16>,
+    },
+    /// Start a daemon in the background, if one is not already running.
+    Start {
+        /// Bind this port instead of the environment's preferred one.
+        port: Option<u16>,
+    },
+    /// Ask the running daemon to shut down.
+    Stop,
+    /// Report whether one is running, and where.
+    Status,
+    /// Register a launchd agent so the daemon starts at login.
+    Install,
+    /// Remove that agent.
+    Uninstall,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAction {
@@ -615,6 +644,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "github-sync" => parse_github_sync(args),
         "plugin" => parse_plugin(args),
         "web" => parse_web(args),
+        "daemon" => parse_daemon(args),
         "show" => parse_show(args),
         "comment" => parse_comment(args),
         "assign" => parse_assign(args),
@@ -1642,6 +1672,48 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
         other => Err(AppError::Usage(format!(
             "unknown plugin action: {other}. Usage: story plugin install|uninstall <target>"
         ))),
+    }
+}
+
+/// `story daemon start|stop|status|install|uninstall|--serve`.
+fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story daemon start [--port <PORT>] | stop | status | install | uninstall";
+    if args.len() < 2 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    let action = match args[1].as_str() {
+        "start" => DaemonAction::Start {
+            port: parse_port_flag(&args[2..], usage)?,
+        },
+        // Spelled as a flag rather than a subcommand because it is not one a
+        // user runs: it is what the spawner execs, and what a launchd agent
+        // runs, and both of those are storyhook talking to itself.
+        "--serve" => DaemonAction::Serve {
+            port: parse_port_flag(&args[2..], usage)?,
+        },
+        "stop" => DaemonAction::Stop,
+        "status" => DaemonAction::Status,
+        "install" => DaemonAction::Install,
+        "uninstall" => DaemonAction::Uninstall,
+        _ => return Err(AppError::Usage(usage.to_string())),
+    };
+    Ok(Invocation::Daemon { action })
+}
+
+/// An optional trailing `--port <PORT>`, refusing anything else.
+///
+/// Port 0 is accepted here and nowhere else in the CLI: it means "let the kernel
+/// choose", which is exactly what a test harness wants and what a user never
+/// does deliberately.
+fn parse_port_flag(rest: &[String], usage: &str) -> Result<Option<u16>, AppError> {
+    match rest {
+        [] => Ok(None),
+        [flag, value] if flag == "--port" => value
+            .parse::<u16>()
+            .map(Some)
+            .map_err(|_| AppError::Usage(format!("invalid port: {value}"))),
+        [flag] if flag == "--port" => Err(AppError::Usage("--port requires a value".to_string())),
+        _ => Err(AppError::Usage(usage.to_string())),
     }
 }
 

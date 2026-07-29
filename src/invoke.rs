@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::app;
 use crate::cli::{
-    CliOptions, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, PhaseAction,
-    PluginAction, StateAction, TypeAction, WebAction,
+    CliOptions, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
+    PhaseAction, PluginAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
 use crate::env::Environment;
@@ -464,6 +464,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             Ok(Response::Stories(batch.views, Some(summary)))
         }
         Invocation::Web { .. }
+        | Invocation::Daemon { .. }
         | Invocation::Update { .. }
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
@@ -544,6 +545,38 @@ fn dispatch_web<S: Store>(store: &S, action: WebAction) -> Result<Response, AppE
         // server is a process that never returns, not a command with an answer.
         WebAction::Serve { .. } => Err(AppError::Usage(
             "`story web --serve` is handled before dispatch".to_string(),
+        )),
+    }
+}
+
+/// The `story daemon …` family.
+///
+/// Process management, and project-less by nature: the daemon serves every
+/// project on the machine, so asking it to start from inside one particular
+/// repository is not a question about that repository.
+///
+/// `--serve` never arrives here. `main` intercepts it, because running the
+/// daemon is a process that does not return rather than a command with an
+/// answer.
+fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
+    let env = Environment::from_process()?;
+    match action {
+        DaemonAction::Start { port } => {
+            let info = crate::daemon::commands::start(&env, port)?;
+            Ok(Response::Message(format!(
+                "storyhook daemon {} running at http://{}:{} (PID {})",
+                info.version,
+                crate::daemon::tailnet::reachable_host(),
+                info.port,
+                info.pid
+            )))
+        }
+        DaemonAction::Stop => crate::daemon::commands::stop(&env).map(Response::Message),
+        DaemonAction::Status => crate::daemon::commands::status(&env).map(Response::Message),
+        DaemonAction::Install => crate::daemon::commands::install(&env).map(Response::Message),
+        DaemonAction::Uninstall => crate::daemon::commands::uninstall(&env).map(Response::Message),
+        DaemonAction::Serve { .. } => Err(AppError::Usage(
+            "`story daemon --serve` is handled before dispatch".to_string(),
         )),
     }
 }
@@ -851,6 +884,7 @@ pub fn dispatch_unscoped_with<S: Store>(
         // would be a regression in the one command a user reaches for when
         // nothing is working.
         Invocation::Web { action } => dispatch_web(store, action),
+        Invocation::Daemon { action } => dispatch_daemon(action),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
         // answered before it ever looked for a project — so this arm does too,
@@ -1113,6 +1147,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::HelpAll => "help-all",
         Invocation::Plugin { .. } => "plugin",
         Invocation::Web { .. } => "web",
+        Invocation::Daemon { .. } => "daemon",
         Invocation::SessionStart => "session-start",
         Invocation::Update { .. } => "update",
         Invocation::Version => "version",
@@ -1302,6 +1337,7 @@ fn is_project_less(invocation: &Invocation) -> bool {
         | Invocation::HelpAll
         | Invocation::Version
         | Invocation::Web { .. }
+        | Invocation::Daemon { .. }
         | Invocation::Update { .. }
         | Invocation::Plugin { .. } => true,
         // `hooks test` is the exception in its own family: it fires a real hook

@@ -1,215 +1,87 @@
-//! The `story web …` command group's process management.
+//! `story web …` — the deprecated aliases, and the browser and clipboard seams.
 //!
-//! What is left here is the CLI's side of the dashboard: starting and stopping
-//! the background process, reporting where it is, opening it in a browser, and
-//! copying its address. The server itself moved to [`crate::daemon`] and the
-//! routes to [`crate::api::rest`].
+//! The dashboard is not a separate program any more: it is a surface of the
+//! storyhook daemon, and `story daemon` is what manages that. These aliases
+//! survive because scripts, muscle memory and this project's own plugin all
+//! type `story web start`, and breaking them to make a point would be a poor
+//! trade.
+//!
+//! **Their output is unchanged.** Every one of them prints the bytes it always
+//! printed, and says on *stderr* where it moved to — so a script reading stdout
+//! keeps working and a human reading a terminal learns something.
 //!
 //! The catalog commands (`register`/`deregister`/`list`) survive only for the
 //! quarantined legacy path in [`crate::app`]; every live caller reaches
 //! [`crate::service::CatalogService`] instead.
 
 use std::env;
-use std::fs::{self, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-use fs4::FileExt;
-
+use crate::daemon::commands;
+use crate::daemon::lifecycle::{self, DaemonInfo};
 use crate::daemon::tailnet::reachable_host;
+use crate::env::Environment;
 use crate::error::AppError;
 use crate::registry;
 
-// --- Daemon lifecycle ---
-//
-// The runtime files live in the XDG state home. They used to sit in
-// `~/.storyhook/` beside the registry, which was where storyhook's global
-// state went before locked decision 6; a pid file and a log are the textbook
-// contents of a state home, and leaving them in a directory the store no
-// longer reads would leave that directory looking live.
-
-/// The directory the daemon's runtime files live in.
-fn state_dir() -> Result<PathBuf, AppError> {
-    Ok(crate::env::Environment::from_process()?
-        .state_home()
-        .to_path_buf())
+/// Tells the user, once, where a `story web` command moved to.
+///
+/// On stderr rather than stdout: the aliases exist so that a script reading
+/// stdout keeps working, and a deprecation notice mixed into its output would
+/// defeat that in the same breath as announcing it.
+fn deprecation(alias: &str, replacement: &str) {
+    eprintln!("note: `story {alias}` is now `story {replacement}`; the old spelling still works.");
 }
 
-fn pid_file() -> Result<PathBuf, AppError> {
-    Ok(state_dir()?.join("web.pid"))
+/// The environment these commands act in.
+fn environment() -> Result<Environment, AppError> {
+    Environment::from_process()
 }
 
-fn lock_file() -> Result<PathBuf, AppError> {
-    Ok(state_dir()?.join("web.lock"))
-}
-
-fn log_file() -> Result<PathBuf, AppError> {
-    Ok(state_dir()?.join("web.log"))
-}
-
-/// Read PID and port from the PID file. Format: "{pid}\n{port}"
-fn read_pid_file() -> Option<(u32, u16)> {
-    let content = fs::read_to_string(pid_file().ok()?).ok()?;
-    let mut lines = content.lines();
-    let pid: u32 = lines.next()?.parse().ok()?;
-    let port: u16 = lines.next()?.parse().ok()?;
-    Some((pid, port))
-}
-
-/// Check if a PID is alive and belongs to a `story` process.
-fn is_process_alive(pid: u32) -> bool {
-    // Check /proc/{pid}/cmdline on Linux
-    let cmdline_path = format!("/proc/{pid}/cmdline");
-    if let Ok(cmdline) = fs::read_to_string(&cmdline_path) {
-        cmdline.contains("story")
-    } else {
-        // Fallback: use kill -0 to check process existence
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .output()
-            .is_ok_and(|o| o.status.success())
-    }
-}
-
-/// Check if web-serve is available in PATH
-fn has_web_serve() -> bool {
-    Command::new("which")
-        .arg("web-serve")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
+/// `story web start [--port N]` — an alias for `story daemon start`.
 pub fn handle_start(port: u16) -> Result<String, AppError> {
-    fs::create_dir_all(state_dir()?)?;
-
-    // Acquire exclusive lock to prevent race conditions
-    let lock_path = lock_file()?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|e| AppError::Storage(format!("Failed to open lock file: {e}")))?;
-
-    match lock.try_lock_exclusive() {
-        Ok(()) => {} // Lock acquired — no other instance running
-        Err(_) => {
-            // Lock held by another process — check PID for user message
-            if let Some((pid, existing_port)) = read_pid_file() {
-                return Err(AppError::Usage(format!(
-                    "Web UI already running (PID {pid} on port {existing_port}). Run 'story web stop' first."
-                )));
-            }
-            return Err(AppError::Usage(
-                "Web UI already running. Run 'story web stop' first.".to_string(),
-            ));
-        }
-    }
-
-    // Check for stale PID file (lock acquired but PID file exists from a crashed instance)
-    if let Some((pid, _)) = read_pid_file()
-        && !is_process_alive(pid)
-    {
-        let _ = fs::remove_file(pid_file()?);
-    }
-
-    // Release lock before spawning child (child will acquire its own lock)
-    let _ = lock.unlock();
-
-    // Spawn background server process
-    let exe = env::current_exe()
-        .map_err(|e| AppError::Storage(format!("Failed to find current executable: {e}")))?;
-
-    let log = fs::File::create(log_file()?)
-        .map_err(|e| AppError::Storage(format!("Failed to create web log file: {e}")))?;
-
-    let child = Command::new(exe)
-        .args(["web", "--serve", "--port", &port.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(log)
-        .spawn()
-        .map_err(|e| AppError::Storage(format!("Failed to spawn web server: {e}")))?;
-
-    let pid = child.id();
-
-    // Write PID file
-    fs::write(pid_file()?, format!("{pid}\n{port}"))
-        .map_err(|e| AppError::Storage(format!("Failed to write PID file: {e}")))?;
-
-    // Register with web-serve if available
-    if has_web_serve() {
-        let _ = Command::new("web-serve")
-            .args(["register", &port.to_string()])
-            .output();
-    }
-
-    let host = reachable_host();
+    deprecation("web start", "daemon start");
+    let env = environment()?;
+    let info = commands::start(&env, Some(port))?;
     Ok(format!(
-        "Web UI started at http://{host}:{port} (PID {pid})"
+        "Web UI started at http://{}:{} (PID {})",
+        reachable_host(),
+        info.port,
+        info.pid
     ))
 }
 
+/// `story web stop` — an alias for `story daemon stop`.
 pub fn handle_stop() -> Result<String, AppError> {
-    let pid_path = pid_file()?;
-    if !pid_path.exists() {
-        return Ok("Web UI is not running".to_string());
-    }
-
-    let (pid, _port) =
-        read_pid_file().ok_or_else(|| AppError::Storage("Failed to read PID file".to_string()))?;
-
-    if !is_process_alive(pid) {
-        // Stale PID
-        let _ = fs::remove_file(&pid_path);
-        let _ = fs::remove_file(lock_file()?);
-        return Ok("Cleaned up stale PID file".to_string());
-    }
-
-    // Send SIGTERM to the process
-    #[cfg(unix)]
-    {
-        // SAFETY: libc::kill with a valid PID and SIGTERM is safe
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = Command::new("kill").arg(pid.to_string()).output();
-    }
-
-    let _ = fs::remove_file(&pid_path);
-    let _ = fs::remove_file(lock_file()?);
-
-    // Unregister from web-serve if available
-    if has_web_serve() {
-        let _ = Command::new("web-serve").arg("unregister").output();
-    }
-
-    Ok(format!("Web UI stopped (PID {pid})"))
+    deprecation("web stop", "daemon stop");
+    let env = environment()?;
+    Ok(match lifecycle::stop(&env)? {
+        Some(info) => format!("Web UI stopped (PID {})", info.pid),
+        None => "Web UI is not running".to_string(),
+    })
 }
 
+/// `story web status` — an alias for `story daemon status`.
 pub fn handle_status() -> Result<String, AppError> {
-    let pid_path = pid_file()?;
-    if !pid_path.exists() {
-        return Ok("Web UI is not running".to_string());
-    }
+    deprecation("web status", "daemon status");
+    let env = environment()?;
+    Ok(match running_daemon(&env) {
+        Some(info) => format!(
+            "Web UI running at http://{}:{} (PID {})",
+            reachable_host(),
+            info.port,
+            info.pid
+        ),
+        None => "Web UI is not running".to_string(),
+    })
+}
 
-    let (pid, port) =
-        read_pid_file().ok_or_else(|| AppError::Storage("Failed to read PID file".to_string()))?;
-
-    if !is_process_alive(pid) {
-        let _ = fs::remove_file(&pid_path);
-        let _ = fs::remove_file(lock_file()?);
-        return Ok("Web UI is not running (stale PID file cleaned up)".to_string());
-    }
-
-    let host = reachable_host();
-    Ok(format!(
-        "Web UI running at http://{host}:{port} (PID {pid})"
-    ))
+/// The running daemon, if there is one that published where it is.
+fn running_daemon(env: &Environment) -> Option<DaemonInfo> {
+    lifecycle::is_live(env)
+        .then(|| lifecycle::read_info(env))
+        .flatten()
 }
 
 /// Help-like summary of the `web` command group, shown when a command needs the
@@ -233,31 +105,15 @@ fn web_not_running_error() -> AppError {
     ))
 }
 
-/// Resolve the running dashboard's `(pid, port)`, or a graceful not-running
-/// error. Mirrors [`handle_status`]'s liveness check and stale-PID cleanup, so
-/// a crashed daemon's leftover files never masquerade as a running dashboard.
-fn running_dashboard() -> Result<(u32, u16), AppError> {
-    let pid_path = pid_file()?;
-    if !pid_path.exists() {
-        return Err(web_not_running_error());
-    }
-    let (pid, port) = read_pid_file().ok_or_else(web_not_running_error)?;
-    if !is_process_alive(pid) {
-        let _ = fs::remove_file(&pid_path);
-        let _ = fs::remove_file(lock_file()?);
-        return Err(web_not_running_error());
-    }
-    Ok((pid, port))
-}
-
 /// `story web open` — open the running dashboard in the system-default browser.
 ///
 /// Targets loopback (`http://127.0.0.1:<port>/`), which is always reachable from
 /// a browser on this machine. Fails with a help-like summary when the dashboard
 /// isn't running.
 pub fn handle_open() -> Result<String, AppError> {
-    let (_pid, port) = running_dashboard()?;
-    let url = format!("http://127.0.0.1:{port}/");
+    let env = environment()?;
+    let info = running_daemon(&env).ok_or_else(web_not_running_error)?;
+    let url = format!("http://127.0.0.1:{}/", info.port);
     open_in_browser(&url)?;
     Ok(format!("Opening dashboard at {url}"))
 }
@@ -269,8 +125,9 @@ pub fn handle_open() -> Result<String, AppError> {
 /// is usable from other tailnet devices — matching what `story web status`
 /// prints. Fails with a help-like summary when the dashboard isn't running.
 pub fn handle_address() -> Result<String, AppError> {
-    let (_pid, port) = running_dashboard()?;
-    let url = format!("http://{}:{port}/", reachable_host());
+    let env = environment()?;
+    let info = running_daemon(&env).ok_or_else(web_not_running_error)?;
+    let url = format!("http://{}:{}/", reachable_host(), info.port);
     copy_to_clipboard(&url)?;
     Ok(format!("Copied dashboard URL to clipboard: {url}"))
 }
