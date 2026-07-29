@@ -109,11 +109,34 @@ impl Differential {
     /// is irrelevant and a fixture that writes files would only add ways to
     /// fail.
     pub fn commit(&self, subject: &str) {
+        self.commit_at(subject, None);
+    }
+
+    /// [`commit`](Self::commit), with the commit's author and committer dates
+    /// pinned to `date`.
+    ///
+    /// An explicit timestamp (`2020-01-01T00:00:00Z`), never a relative
+    /// expression: `GIT_AUTHOR_DATE` does not accept `1 hour ago` — only
+    /// `--date` does — and it fails with `fatal: invalid date format` rather
+    /// than falling back to now.
+    ///
+    /// A window test has to say when its commit happened, because both legs
+    /// resolve `--since` against *their own* `now` and they do not run in the
+    /// same second. `--since=0d` over a commit made in the current second is
+    /// therefore a coin flip: the leg that runs first sees a cutoff equal to the
+    /// commit's timestamp and includes it, the leg that runs after the second
+    /// ticks over does not — which is a divergence between the two legs'
+    /// clocks, not between the two implementations.
+    pub fn commit_at(&self, subject: &str, date: Option<&str>) {
         let mut command = std::process::Command::new("git");
         command
             .current_dir(self.legacy.path())
             .env("GIT_TERMINAL_PROMPT", "0")
             .args(["commit", "-q", "--allow-empty", "-m", subject]);
+        if let Some(date) = date {
+            command.env("GIT_AUTHOR_DATE", date);
+            command.env("GIT_COMMITTER_DATE", date);
+        }
         TestEnv::shared().apply(&mut command);
         let output = command.output().expect("running git commit");
         assert!(
