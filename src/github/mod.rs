@@ -138,6 +138,31 @@ enum SyncStoryResult {
     Conflicts(Vec<FieldConflict>),
 }
 
+/// What to tell a user whose project is configured for a mode this build does
+/// not implement.
+///
+/// Only `auto` qualifies, and only because it once did. It fired from the tail
+/// of the pre-rearchitecture `app::run`, was never given an equivalent on the
+/// invoker, and was deleted with the rest of the legacy write path — so a
+/// project migrated from before then can still carry it. The variant stays
+/// deserializable deliberately: refusing to parse the document would make the
+/// project unreadable over a setting that is merely inert, which trades a
+/// cosmetic problem for a real one.
+///
+/// What must not happen is silence. A setting that is accepted and ignored is
+/// the defect class this rearchitecture spent a wave removing.
+fn unimplemented_mode_notice(mode: &SyncMode) -> Option<String> {
+    match mode {
+        SyncMode::Auto => Some(
+            "note: this project is configured with sync mode `auto`, which storyhook no \
+             longer implements — nothing syncs on its own. It is being treated as `manual`. \
+             Re-run `story github-sync` to choose a mode this build honours."
+                .to_string(),
+        ),
+        SyncMode::Manual | SyncMode::Off => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // run_sync -- main entry point
 // ---------------------------------------------------------------------------
@@ -155,9 +180,12 @@ pub fn run_sync_with(
             if cfg.sync.mode == SyncMode::Off {
                 return Err(AppError::Usage(
                     "GitHub sync is disabled for this project (sync mode `off`). Re-run \
-                     `story github-sync` and choose `manual` or `auto`."
+                     `story github-sync` and choose `manual`."
                         .to_string(),
                 ));
+            }
+            if let Some(notice) = unimplemented_mode_notice(&cfg.sync.mode) {
+                eprintln!("{notice}");
             }
             cfg
         }
@@ -1137,5 +1165,30 @@ fn print_field_updates(indent: &str, updates: &FieldUpdates) {
             Some(d) => eprintln!("{indent}description -> \"{d}\""),
             None => eprintln!("{indent}description -> (cleared)"),
         }
+    }
+}
+
+#[cfg(test)]
+mod mode_notice_tests {
+    use super::*;
+
+    /// A project carrying `auto` from before the rearchitecture must be told,
+    /// not quietly demoted. The message has to say three things: what is
+    /// configured, that nothing acts on it, and what to do.
+    #[test]
+    fn auto_is_reported_as_unimplemented_and_treated_as_manual() {
+        let notice = unimplemented_mode_notice(&SyncMode::Auto).expect("auto needs a notice");
+        assert!(notice.contains("auto"), "{notice}");
+        assert!(notice.contains("no longer implements"), "{notice}");
+        assert!(notice.contains("manual"), "{notice}");
+        assert!(notice.contains("story github-sync"), "{notice}");
+    }
+
+    /// And the modes that work say nothing, because a notice on every run is a
+    /// notice nobody reads.
+    #[test]
+    fn the_modes_that_work_are_silent() {
+        assert!(unimplemented_mode_notice(&SyncMode::Manual).is_none());
+        assert!(unimplemented_mode_notice(&SyncMode::Off).is_none());
     }
 }
