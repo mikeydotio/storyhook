@@ -5,3 +5,4 @@
 {"kind":"StoryTypeSet","at":"2026-07-27T23:34:13Z","story_type":"bug"}
 {"kind":"StoryCommentAdded","at":"2026-07-27T23:34:30Z","text":"[git] b60db32: chore(storyhook): file SH-59 and SH-60, two defects found reconciling main"}
 {"kind":"StoryCommentAdded","at":"2026-07-28T00:07:08Z","text":"Narrowing datum (2026-07-27, main @ f8645a0): 'story relate SH-61 blocks SH-58' wrote BOTH sides correctly — SH-58 shows the 'blocked-by SH-61' inverse. So the current 'story relate' write path is not the culprit. The missing inverses on SH-31..SH-40 came from some other origin: most likely 'story decompose' (those IDs are a contiguous block, consistent with bulk creation from a spec), or a since-fixed older version. Start the investigation at decompose's relation-writing code, not at relate."}
+{"kind":"StoryCommentAdded","at":"2026-07-29T01:31:42Z","text":"[git] a5e5f26: docs(rearch): record W3, the SH-60 ruling, and the W4 rollback procedure"}
