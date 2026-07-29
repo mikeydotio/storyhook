@@ -42,6 +42,12 @@ INSTALL_DIR ?= $(STORYHOOK_INSTALL_DIR)
 # the tests that use it and overrides this again with its own directory; this
 # covers the ones that do not. /private/tmp rather than $TMPDIR because the
 # latter is Spotlight-indexed (SH-53).
+#
+# Since W8 the binary refuses to run at all if a test build resolves no
+# `STORYHOOK_DATA_DIR` (`storyhook::env::is_test_build`), so deleting the
+# wrapper's export now fails the suite loudly instead of quietly eating real
+# data. Belt and braces on purpose: the wrapper is what makes the run *correct*,
+# the guard is what makes a run without it *impossible*.
 test: check-no-orphan-servers
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings

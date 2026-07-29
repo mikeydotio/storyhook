@@ -81,7 +81,11 @@ impl Environment {
         let home = env_path("HOME")
             .ok_or_else(|| AppError::Storage("could not determine home directory".to_string()))?;
 
-        let data_home = env_path("STORYHOOK_DATA_DIR")
+        let named_data_home = env_path("STORYHOOK_DATA_DIR");
+        if is_test_build() && named_data_home.is_none() {
+            return Err(AppError::Usage(TEST_BUILD_REFUSAL.to_string()));
+        }
+        let data_home = named_data_home
             .or_else(|| env_path("XDG_DATA_HOME").map(|xdg| xdg.join("storyhook")))
             .unwrap_or_else(|| home.join(".local/share/storyhook"));
 
@@ -244,6 +248,39 @@ impl Environment {
         self.state_home.join("github-sync/backups")
     }
 }
+
+/// Whether this binary was built for testing.
+///
+/// The `fault-injection` feature is the sentinel, and it is an exact one rather
+/// than an approximation. `cargo build` and `cargo build --release` do not
+/// enable it; `cargo test` does, because `storyhook-test-support` — a
+/// dev-dependency of this package — depends on `storyhook` *with* the feature,
+/// and cargo's feature resolver keeps dev-dependency features out of non-test
+/// builds. Every binary a test run can reach therefore answers `true` here, and
+/// no binary a user can install does.
+///
+/// Reusing the store's crash-injection switch for this is deliberate: a second
+/// sentinel would be a second thing to keep true, and the two questions —
+/// "may this build stop the world mid-commit?" and "may this build write to a
+/// real tracker?" — have the same answer for the same reason.
+///
+/// Building a release *with* `--features fault-injection` makes that build
+/// answer `true` and so subject to the same refusal. That is the correct
+/// reading: a binary carrying live crash points is a test binary however it was
+/// produced.
+#[must_use]
+pub const fn is_test_build() -> bool {
+    cfg!(feature = "fault-injection")
+}
+
+/// What a test build says when it is asked to pick a data directory itself.
+///
+/// The whole message is here rather than built at the raise site so the test
+/// that pins it can compare against the constant.
+const TEST_BUILD_REFUSAL: &str = "refusing to guess where the store lives: this is a test build \
+     and $STORYHOOK_DATA_DIR is not set, so storyhook would fall back to the real \
+     ~/.local/share/storyhook. Run the suite with `make test`, which exports an isolated one, or \
+     set STORYHOOK_DATA_DIR yourself.";
 
 /// One environment variable as a path, ignoring an empty value.
 ///
