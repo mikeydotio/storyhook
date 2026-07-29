@@ -567,6 +567,15 @@ macro_rules! impl_read_ops {
                 read::max_global_seq(&self.conn, project)
             }
 
+            fn commit_linked(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+                sha: &str,
+            ) -> Result<bool, StoreError> {
+                read::commit_linked(&self.conn, project, story, sha)
+            }
+
             fn story(
                 &self,
                 project: ProjectId,

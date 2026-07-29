@@ -20,7 +20,9 @@ use std::path::Path;
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, params};
 
-use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
+use crate::domain::{
+    KIND_STORY_COMMIT_LINKED, Member, StateDef, StoryEvent, StorySnapshot, TypeDef,
+};
 use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, PathKind, ProjectId, StoryNo};
@@ -248,7 +250,7 @@ pub(super) fn append_events(
     events: &[StoryEvent],
 ) -> Result<EventSeq, StoreError> {
     let raw = events.iter().map(encode).collect::<Result<Vec<_>, _>>()?;
-    append_raw_events(conn, project, story, expected, &raw)
+    append(conn, project, story, expected, &raw, LinkSource::Live)
 }
 
 /// [`append_events`], for callers holding bytes rather than a decoded event.
@@ -258,6 +260,40 @@ pub(super) fn append_raw_events(
     story: StoryNo,
     expected: ExpectedSeq,
     events: &[RawEvent],
+) -> Result<EventSeq, StoreError> {
+    append(conn, project, story, expected, events, LinkSource::Replayed)
+}
+
+/// Where an append's events came from, which decides how a `[git]` comment in
+/// one is read.
+///
+/// The distinction is not stylistic. A `StoryCommentAdded` reading
+/// `[git] <short>: <subject>` is a *pre*-#18 link record — and it is also
+/// exactly what a user gets if they type that text into `story comment`. Which
+/// of the two it is cannot be told from the bytes; it can be told from who is
+/// speaking.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinkSource {
+    /// This program, now, on behalf of a command. A `[git]`-shaped comment here
+    /// is a *user's comment*, and recording it as a link would let anyone
+    /// suppress a real one by typing it — the exact hole the old string scan
+    /// had, and the reason kind #18 exists.
+    Live,
+    /// A history being replayed from somewhere else: `story migrate` reading an
+    /// unmigrated `.storyhook` tree, or an injector rebuilding one. Every
+    /// `[git]` comment in such a history was written by `commit-sync` before
+    /// kind #18 existed, so projecting them is what stops the first sync after
+    /// a migration re-linking a repository's whole log.
+    Replayed,
+}
+
+fn append(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+    expected: ExpectedSeq,
+    events: &[RawEvent],
+    source: LinkSource,
 ) -> Result<EventSeq, StoreError> {
     let head = read::head_seq(conn, project, story)?;
     if let ExpectedSeq::Exact(required) = expected
@@ -298,6 +334,7 @@ pub(super) fn append_raw_events(
             ]),
             "appending an event",
         )?;
+        project_commit_link(conn, project, story, event, source)?;
     }
     Ok(EventSeq::new(
         head.get() + i64::try_from(events.len()).expect("an append fits in i64"),
@@ -327,6 +364,89 @@ fn encode(event: &StoryEvent) -> Result<RawEvent, StoreError> {
         at: field("at")?,
         payload: serde_json::to_string(&value)?,
     })
+}
+
+/// Records a link record's commit hash in `story_commit_links`.
+///
+/// The projection that makes "one link record per commit per story" a
+/// **database constraint** rather than a caller's discipline: the table's
+/// primary key rejects a second insert, in the same transaction as the event
+/// that would have been the second copy, so the two cannot end up disagreeing.
+///
+/// **Two kinds feed it, and only one of them unconditionally.**
+/// `StoryCommitLinked` (kind #18) carries the full hash in a field and is
+/// always projected. A `StoryCommentAdded` reading `[git] <short>: <subject>`
+/// is the *pre*-#18 shape, and it is projected only when the append is a
+/// [`LinkSource::Replayed`] history — because the same text is what a user gets
+/// by typing it into `story comment`, and projecting that would let anyone
+/// suppress a real link. That hole is precisely what the old string scan had.
+///
+/// The two are not inserted the same way either. A duplicate
+/// `StoryCommitLinked` **fails the append** — that is the invariant. A
+/// duplicate legacy comment does not: a human can write the same `[git]`
+/// comment twice, and refusing to import a story because of it would be a
+/// migration that rejects real data.
+///
+/// # A payload it cannot read is not an error
+///
+/// The store's governing rule is that an event it does not understand must be
+/// *storable* — SH-54, and `store_inject.rs::bytes_that_are_not_a_decodable_
+/// event_can_be_written_verbatim` is the test that says so. A projection that
+/// refused an append because a payload would not parse would break that rule
+/// from the inside, which is exactly what the first draft of this function did.
+/// So every read below is fallible-and-skipped: no readable sha means no row,
+/// never a rejected write. Nothing is lost by it — a record nothing can name
+/// cannot be a duplicate of anything.
+///
+/// Works on [`RawEvent`] rather than a decoded [`StoryEvent`] so that
+/// `append_raw_events` — the path `story import-project` and `story migrate`
+/// take — projects the link too.
+fn project_commit_link(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+    event: &RawEvent,
+    source: LinkSource,
+) -> Result<(), StoreError> {
+    let is_link_record = event.kind == KIND_STORY_COMMIT_LINKED;
+    let legacy_shape = event.kind == "StoryCommentAdded" && source == LinkSource::Replayed;
+    if !is_link_record && !legacy_shape {
+        // Every other kind, and every kind this binary has never heard of —
+        // untouched by construction, because this reads the `kind` column
+        // rather than the payload's meaning.
+        return Ok(());
+    }
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload) else {
+        return Ok(());
+    };
+
+    let sha = if is_link_record {
+        payload
+            .get("sha")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    } else {
+        payload
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .and_then(crate::domain::git_link_sha)
+            .map(str::to_string)
+    };
+    let Some(sha) = sha else {
+        return Ok(());
+    };
+
+    let statement = if is_link_record {
+        "INSERT INTO story_commit_links (project_id, story_no, sha) VALUES (?1, ?2, ?3)"
+    } else {
+        "INSERT INTO story_commit_links (project_id, story_no, sha) VALUES (?1, ?2, ?3) \
+         ON CONFLICT DO NOTHING"
+    };
+    sql(
+        conn.execute(statement, params![project.get(), story.get(), sha]),
+        "recording a commit link",
+    )?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

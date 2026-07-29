@@ -44,9 +44,11 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 
-use crate::domain::{StateDef, StoryEvent, SuperState, extract_story_ids, parse_duration};
+use crate::domain::{
+    StateDef, StoryEvent, SuperState, extract_story_ids, parse_duration, short_sha,
+};
 use crate::error::AppError;
-use crate::store::{ExpectedSeq, ReadOps, Store};
+use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo};
 
 use super::story::state_transition_events;
 use super::{Ctx, append_and_fold, project_prefix, resolve_open_story};
@@ -68,12 +70,15 @@ const FIELD_SEPARATOR: char = '\u{1f}';
 
 /// One commit as `git log` reported it.
 struct Commit {
-    /// The abbreviated hash, as it appears in the comment.
+    /// The full forty-character hash, from `%H` alone. Nothing in the message
+    /// can influence it.
     ///
-    /// Derived from `%H` alone. Nothing in the message can influence it.
-    short_hash: String,
+    /// Full, not abbreviated, because it is what a link record stores: seven
+    /// characters are unique in a repository today and not forever, and the
+    /// record is permanent. Only the abbreviation is rendered.
+    sha: String,
     /// The subject line — the message's first line, and the only part that
-    /// reaches the comment.
+    /// reaches the rendered comment.
     subject: String,
     /// The whole message, subject included. This is what is scanned.
     message: String,
@@ -162,7 +167,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
                         story_id,
                         from,
                         to,
-                        short_hash: commit.short_hash.clone(),
+                        short_hash: short_sha(&commit.sha).to_string(),
                     });
                 }
             }
@@ -208,22 +213,15 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
                 // repository entirely.
                 return Ok(None);
             };
-            let marker = format!("[git] {}:", commit.short_hash);
-            let stored = tx.events_for(project, story_no)?;
-            let already = stored.iter().any(|event| {
-                matches!(
-                    event.known(),
-                    Some(StoryEvent::StoryCommentAdded { text, .. }) if text.starts_with(&marker)
-                )
-            });
-            if already {
+            if already_linked(&*tx, project, story_no, &commit.sha)? {
                 return Ok(None);
             }
 
             let states = tx.state_map(project)?;
-            let mut events = vec![StoryEvent::StoryCommentAdded {
+            let mut events = vec![StoryEvent::StoryCommitLinked {
                 at: now.clone(),
-                text: format!("[git] {}: {}", commit.short_hash, commit.subject),
+                sha: commit.sha.clone(),
+                subject: commit.subject.clone(),
             }];
             // A story moves on the *first* commit that mentions it and only out
             // of the project's default open state — a story someone has already
@@ -253,6 +251,30 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             Ok(Some(moved))
         })?)
     }
+}
+
+/// Whether this commit is already linked to this story.
+///
+/// **Two probes, and the second is not redundant.** A record this binary writes
+/// carries the full forty-character hash, so that is the first question. Rows
+/// backfilled from *pre*-#18 link comments carry the seven-character
+/// abbreviation, because `[git] <short>: <subject>` is all such a comment ever
+/// preserved — and those rows are not merely historical: every unmigrated
+/// `.storyhook` tree is full of them, and `story migrate` projects them the day
+/// it reads one. Asking only about the full hash would re-link every commit a
+/// migrated project already knew about.
+///
+/// Both are indexed primary-key probes, so this replaces a scan of every event
+/// on the story with two lookups — and, unlike that scan, it cannot be
+/// satisfied by a user typing a comment that starts `[git] `.
+fn already_linked(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    story: StoryNo,
+    sha: &str,
+) -> Result<bool, StoreError> {
+    Ok(tx.commit_linked(project, story, sha)?
+        || tx.commit_linked(project, story, short_sha(sha))?)
 }
 
 /// Fails unless `root` is inside a git repository.
@@ -317,7 +339,7 @@ fn parse_log(text: &str) -> Vec<Commit> {
         };
         let message = message.trim_end_matches(['\n', '\r']);
         commits.push(Commit {
-            short_hash: hash[..7.min(hash.len())].to_string(),
+            sha: hash.to_string(),
             // A commit with an empty message has no first line. It is still
             // *scanned* — the count has always included it — but names nothing.
             subject: message.lines().next().unwrap_or("").to_string(),
@@ -371,7 +393,7 @@ mod tests {
             "feat: a thing\n\nCloses SH-1",
         ));
         assert_eq!(commits.len(), 1);
-        assert_eq!(commits[0].short_hash, "0123456");
+        assert_eq!(short_sha(&commits[0].sha), "0123456");
         assert_eq!(commits[0].subject, "feat: a thing");
         assert_eq!(commits[0].message, "feat: a thing\n\nCloses SH-1");
     }
@@ -388,7 +410,7 @@ mod tests {
             "fix: something\n\ndeadbeef SH-1 was the old parse's idea of a commit",
         ));
         assert_eq!(commits.len(), 1, "one commit, not two");
-        assert_eq!(commits[0].short_hash, "0123456");
+        assert_eq!(short_sha(&commits[0].sha), "0123456");
     }
 
     #[test]
@@ -400,8 +422,8 @@ mod tests {
         );
         let commits = parse_log(&text);
         assert_eq!(commits.len(), 2);
-        assert_eq!(commits[0].short_hash, "aaaaaaa");
-        assert_eq!(commits[1].short_hash, "bbbbbbb");
+        assert_eq!(short_sha(&commits[0].sha), "aaaaaaa");
+        assert_eq!(short_sha(&commits[1].sha), "bbbbbbb");
         assert_eq!(commits[1].subject, "two");
     }
 
