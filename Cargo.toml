@@ -50,6 +50,17 @@ github-sync = ["dep:ureq"]
 # instead of behind a flag nothing remembers to pass.
 fault-injection = []
 
+# Keep each object file's debug info inside a single `.dwp`-style package next to
+# the artifact instead of leaving the compiler's per-CGU `.o` files loose in
+# `target/debug/deps/`. On macOS the unpacked default accumulates: this workspace
+# put ~200k loose `.o` files there inside a day, and the resulting directory
+# stalled `FSEventStreamStart` machine-globally (registration is serialized and
+# costs ~5ms per stream once the directory is that large), which mass-failed the
+# wall-clock readiness deadlines in `web_test`. Health metric:
+# `ls target/debug/deps | wc -l` — trouble starts in the tens of thousands.
+[profile.dev]
+split-debuginfo = "packed"
+
 [[bin]]
 name = "story"
 path = "src/main.rs"
