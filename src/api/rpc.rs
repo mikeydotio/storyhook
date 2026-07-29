@@ -128,7 +128,11 @@ fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         StoreInvoker::new(store, &request.cwd, env.clone())
             .hook_depth(request.hook_depth)
-            .invoke(InvokeRequest::new(request.invocation.clone()).no_hooks(request.no_hooks))
+            .invoke(
+                InvokeRequest::new(request.invocation.clone())
+                    .no_hooks(request.no_hooks)
+                    .stdin(request.stdin.clone()),
+            )
     }))
     .unwrap_or_else(|_| {
         Err(AppError::Storage(

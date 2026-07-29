@@ -62,6 +62,13 @@ pub struct InvokeRequest {
     /// Suppress the project's event hooks for this invocation, as
     /// `--no-hooks` does.
     pub no_hooks: bool,
+    /// The standard input this invocation should read.
+    ///
+    /// `None` means "this process's own", which is what a local run wants. A
+    /// request that crossed a wire carries the content instead: the daemon has
+    /// no way to reach the terminal the user is typing into.
+    #[serde(default)]
+    pub stdin: Option<String>,
 }
 
 impl InvokeRequest {
@@ -70,7 +77,15 @@ impl InvokeRequest {
         Self {
             invocation,
             no_hooks: false,
+            stdin: None,
         }
+    }
+
+    /// Supplies the standard input this invocation should read.
+    #[must_use]
+    pub fn stdin(mut self, stdin: Option<String>) -> Self {
+        self.stdin = stdin;
+        self
     }
 
     /// Sets whether event hooks are suppressed.
@@ -438,7 +453,8 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             // string that `story import-project` then refuses.
             .map(Response::RawJson),
         Invocation::Import { file } => {
-            let stories: Vec<ImportStory> = serde_json::from_str(&read_input(file.as_deref())?)?;
+            let stories: Vec<ImportStory> =
+                serde_json::from_str(&read_input(ctx.cwd(), ctx.stdin(), file.as_deref())?)?;
             if stories.is_empty() {
                 return Ok(Response::Message("no stories to import".to_string()));
             }
@@ -451,7 +467,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             stdin,
             dry_run,
         } => {
-            let content = decompose_input(file.as_deref(), stdin)?;
+            let content = decompose_input(ctx.cwd(), ctx.stdin(), file.as_deref(), stdin)?;
             let stories = crate::decompose::decompose(file.as_deref(), &content)?;
             if dry_run {
                 return Ok(Response::Message(serde_json::to_string_pretty(&stories)?));
@@ -473,7 +489,14 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact
         | Invocation::HelpAll
-        | Invocation::Version => dispatch_unscoped(ctx.store(), ctx.cwd(), &ctx.now(), invocation),
+        | Invocation::Version => dispatch_unscoped_with(
+            ctx.store(),
+            ctx.cwd(),
+            &ctx.now(),
+            invocation,
+            true,
+            ctx.stdin(),
+        ),
     }
 }
 
@@ -826,7 +849,7 @@ pub fn dispatch_unscoped<S: Store>(
     // survives on [`dispatch_unscoped_with`] for the legacy web daemon, whose
     // `init` still builds a `.storyhook/` tree and must not also leave a
     // pointer claiming a project that tree is not in.
-    dispatch_unscoped_with(store, root, now, invocation, true)
+    dispatch_unscoped_with(store, root, now, invocation, true, None)
 }
 
 /// [`dispatch_unscoped`], told whether `story init` should write the pointer
@@ -837,6 +860,7 @@ pub fn dispatch_unscoped_with<S: Store>(
     now: &str,
     invocation: Invocation,
     pointer: bool,
+    stdin_input: Option<&str>,
 ) -> Result<Response, AppError> {
     match invocation {
         Invocation::Init {
@@ -895,7 +919,7 @@ pub fn dispatch_unscoped_with<S: Store>(
             stdin,
             dry_run,
         } => {
-            let content = decompose_input(file.as_deref(), stdin)?;
+            let content = decompose_input(root, stdin_input, file.as_deref(), stdin)?;
             let stories = crate::decompose::decompose(file.as_deref(), &content)?;
             if !dry_run {
                 return Err(AppError::Storage(
@@ -981,7 +1005,7 @@ pub fn dispatch_unscoped_with<S: Store>(
         // into an empty directory is how a backup is restored, so the arm has
         // to be able to create the project it is importing into.
         Invocation::ImportProject { file } => {
-            let raw = std::fs::read_to_string(&file)
+            let raw = std::fs::read_to_string(resolve_against(root, &file))
                 .map_err(|e| AppError::Storage(format!("failed to read {file}: {e}")))?;
             let export: ProjectExport = serde_json::from_str(&raw)?;
             let imported =
@@ -1001,18 +1025,68 @@ pub fn dispatch_unscoped_with<S: Store>(
 /// about the wording of the failure: `import` said `failed to read stdin` and
 /// `decompose` said the same, but only one of them said which *file* it could
 /// not read.
-fn read_input(file: Option<&str>) -> Result<String, AppError> {
+///
+/// # Both halves are about *whose* process this is
+///
+/// A relative path is relative to the directory the **user** ran the command in,
+/// which is not the directory the daemon is running in. `cwd` comes from the
+/// invocation's context, so `story decompose spec.md` reads the caller's
+/// `spec.md` whether the command runs here or across a wire. The failure still
+/// names the path the user typed rather than the one this resolved to — an error
+/// that reported an absolute path the user never wrote would be a worse message
+/// *and* a different one in each mode.
+///
+/// Standard input cannot be resolved that way: the daemon does not have the
+/// client's. So it arrives in the envelope, read by the client before it sends
+/// anything, and `stdin` here is that content. `None` means "read this process's
+/// own", which is what a `--local` run does.
+fn read_input(cwd: &Path, stdin: Option<&str>, file: Option<&str>) -> Result<String, AppError> {
     match file {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| AppError::Storage(format!("failed to read {path}: {e}"))),
-        None => {
-            use std::io::Read as _;
-            let mut buffer = String::new();
-            std::io::stdin()
-                .read_to_string(&mut buffer)
-                .map_err(|e| AppError::Storage(format!("failed to read stdin: {e}")))?;
-            Ok(buffer)
+        Some(path) => {
+            let resolved = resolve_against(cwd, path);
+            std::fs::read_to_string(&resolved)
+                .map_err(|e| AppError::Storage(format!("failed to read {path}: {e}")))
         }
+        None => match stdin {
+            Some(content) => Ok(content.to_string()),
+            None => {
+                use std::io::Read as _;
+                let mut buffer = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut buffer)
+                    .map_err(|e| AppError::Storage(format!("failed to read stdin: {e}")))?;
+                Ok(buffer)
+            }
+        },
+    }
+}
+
+/// Resolves a possibly-relative path against the directory the command was run
+/// in.
+///
+/// An absolute path is left alone. Every path a user types on a command line is
+/// relative to their shell, and the daemon's own working directory is an
+/// accident of how it was started.
+fn resolve_against(cwd: &Path, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    }
+}
+
+/// Whether running `invocation` would read this process's standard input.
+///
+/// The client asks before it sends: if the answer is yes, it reads stdin itself
+/// and puts the content in the envelope, because the daemon has no way to reach
+/// the terminal the user is typing into.
+#[must_use]
+pub fn reads_stdin(invocation: &Invocation) -> bool {
+    match invocation {
+        Invocation::Import { file } => file.is_none(),
+        Invocation::Decompose { stdin, .. } => *stdin,
+        _ => false,
     }
 }
 
@@ -1021,12 +1095,17 @@ fn read_input(file: Option<&str>) -> Result<String, AppError> {
 /// One helper for both dispatchers, because a dry run is answered without a
 /// project and a real one is not — and the two must not disagree about which
 /// argument combinations are usable.
-fn decompose_input(file: Option<&str>, stdin: bool) -> Result<String, AppError> {
+fn decompose_input(
+    cwd: &Path,
+    input: Option<&str>,
+    file: Option<&str>,
+    stdin: bool,
+) -> Result<String, AppError> {
     if stdin {
-        return read_input(None);
+        return read_input(cwd, input, None);
     }
     match file {
-        Some(path) => read_input(Some(path)),
+        Some(path) => read_input(cwd, input, Some(path)),
         None => Err(AppError::Usage(
             "usage: story decompose <file> [--dry-run] | story decompose --stdin [--dry-run]"
                 .to_string(),
@@ -1248,7 +1327,8 @@ impl Invoker for HttpInvoker {
     fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
         let wire = crate::api::wire::WireRequest::new(request.invocation, &self.cwd)
             .no_hooks(request.no_hooks)
-            .hook_depth(self.hook_depth);
+            .hook_depth(self.hook_depth)
+            .stdin(request.stdin);
 
         let daemon = crate::daemon::lifecycle::ensure(&self.env)?;
         match Self::send(&daemon, &wire) {
@@ -1402,6 +1482,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                 &now,
                 request.invocation,
                 self.pointer,
+                request.stdin.as_deref(),
             );
         }
 
@@ -1424,6 +1505,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                     &now,
                     request.invocation,
                     self.pointer,
+                    request.stdin.as_deref(),
                 );
             }
             // A repository that still has its stories in `.storyhook/` gets a
@@ -1439,7 +1521,8 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
 
         let ctx = Ctx::new(self.store, project, &self.cwd, self.env.clone())
             .no_hooks(request.no_hooks)
-            .hook_depth(self.hook_depth);
+            .hook_depth(self.hook_depth)
+            .with_stdin(request.stdin);
         dispatch(&ctx, request.invocation)
     }
 }

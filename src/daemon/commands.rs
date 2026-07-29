@@ -4,6 +4,14 @@
 //! manager so it comes back at login. The `story web start|stop|status` family
 //! are aliases for the first three; they kept their wording, because scripts
 //! read it, and gained a line on stderr saying where they moved.
+//!
+//! [`status`] is also where the backups are reported. The plan said `story
+//! doctor`, and this is a deliberate departure: `doctor`'s output is pinned
+//! byte-for-byte by the golden corpus, and its exit code *means* something —
+//! a project's integrity. How old a copy of the database is a fact about the
+//! machine, not about the project, and adding it to `doctor` would either move
+//! bytes the whole rearchitecture is measured against or turn "this machine has
+//! not run a daemon lately" into an integrity failure.
 
 use std::path::PathBuf;
 
@@ -52,8 +60,9 @@ pub fn stop(env: &Environment) -> Result<String, AppError> {
 pub fn status(env: &Environment) -> Result<String, AppError> {
     if !lifecycle::is_live(env) {
         return Ok(format!(
-            "storyhook daemon is not running\n\n{}",
-            lifecycle::describe_paths(env)
+            "storyhook daemon is not running\n\n{}\n{}",
+            lifecycle::describe_paths(env),
+            crate::daemon::backup::describe(env)
         ));
     }
     match lifecycle::read_info(env) {
@@ -71,13 +80,14 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                 )
             };
             Ok(format!(
-                "storyhook daemon {} running at http://{}:{} (PID {}){}\n\n{}",
+                "storyhook daemon {} running at http://{}:{} (PID {}){}\n\n{}\n{}",
                 info.version,
                 reachable_host(),
                 info.port,
                 info.pid,
                 staleness,
-                lifecycle::describe_paths(env)
+                lifecycle::describe_paths(env),
+                crate::daemon::backup::describe(env)
             ))
         }
         // The lock is held by something that published nothing. Say so plainly

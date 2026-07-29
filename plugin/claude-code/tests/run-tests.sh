@@ -21,6 +21,21 @@ export XDG_DATA_HOME="$HOME/.local/share"
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_STATE_HOME="$HOME/.local/state"
 export STORYHOOK_DATA_DIR="$HOME/.local/share/storyhook"
+
+# This suite is about story.sh's shell behaviour, so every `story` it runs goes
+# in-process. Without this it auto-spawned a daemon per test home and left them
+# running -- from this worktree's binary, asking for the port a developer's own
+# dashboard uses. The other two are belt and braces: a daemon started here can
+# never take 3456, and cannot outlive this run.
+#
+# Duplicated from lib.sh on purpose, and for the same reason the XDG exports
+# above are: lib.sh's block is skipped when STORYHOOK_TEST_HOME is already set,
+# which is exactly what this script does. Setting them in one place only meant
+# the whole-suite run had no isolation at all -- which is how the leaked daemons
+# were found.
+export STORYHOOK_INVOKER="${STORYHOOK_INVOKER:-local}"
+export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
+export STORYHOOK_PARENT_PID="$$"
 mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$STORYHOOK_DATA_DIR"
 trap 'rm -rf "$STORYHOOK_TEST_HOME"' EXIT
 

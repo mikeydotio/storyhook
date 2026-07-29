@@ -229,7 +229,14 @@ fn apply(conn: &Connection, migration: &Migration) -> Result<bool, StoreError> {
 
 /// Takes a consistent copy of the database and verifies it opens and passes
 /// `PRAGMA integrity_check`.
-fn back_up(conn: &Connection, backup_dir: &Path, from_version: u32) -> Result<PathBuf, StoreError> {
+///
+/// `label` distinguishes what the copy is *for*, so a directory holding both
+/// pre-migration backups and daily snapshots still says which is which.
+pub(crate) fn snapshot(
+    conn: &Connection,
+    backup_dir: &Path,
+    label: &str,
+) -> Result<PathBuf, StoreError> {
     std::fs::create_dir_all(backup_dir).map_err(|e| {
         StoreError::Backup(format!(
             "could not create the backup directory {}: {e}",
@@ -238,7 +245,7 @@ fn back_up(conn: &Connection, backup_dir: &Path, from_version: u32) -> Result<Pa
     })?;
 
     let stamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
-    let path = backup_dir.join(format!("storyhook-{stamp}-v{from_version}.db"));
+    let path = backup_dir.join(format!("storyhook-{stamp}-{label}.db"));
 
     // `VACUUM INTO` goes through SQLite, so it sees a consistent snapshot
     // including anything still in the write-ahead log. `fs::copy` does not.
@@ -247,6 +254,12 @@ fn back_up(conn: &Connection, backup_dir: &Path, from_version: u32) -> Result<Pa
 
     verify(&path)?;
     Ok(path)
+}
+
+/// The pre-migration backup: a snapshot labelled with the version it was taken
+/// from.
+fn back_up(conn: &Connection, backup_dir: &Path, from_version: u32) -> Result<PathBuf, StoreError> {
+    snapshot(conn, backup_dir, &format!("v{from_version}"))
 }
 
 /// Opens a backup and asserts SQLite considers it sound.
