@@ -1252,13 +1252,33 @@ impl HttpInvoker {
         self
     }
 
+    /// The HTTP client this invoker uses. See [`Self::send`] for why the
+    /// timeout is on the connection rather than on the exchange.
+    fn agent() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .timeout_connect(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .into()
+    }
+
     /// Posts one envelope to a daemon and reconstructs its answer.
     fn send(
         daemon: &crate::daemon::lifecycle::DaemonInfo,
         request: &crate::api::wire::WireRequest,
     ) -> Result<Result<Response, AppError>, Transport> {
         let url = format!("http://127.0.0.1:{}/api/v1/invoke", daemon.port);
-        let response = ureq::post(&url)
+        // A connect timeout, and deliberately *not* a global one. This request
+        // carries the user's actual work — an import of a large document, a
+        // `github-sync` that talks to the network — so a deadline on the whole
+        // exchange would abandon operations that are merely long, and abandoning
+        // a mutation is the expensive direction: the caller is then told it may
+        // or may not have run.
+        //
+        // Connecting is different. The peer is on loopback and either accepts
+        // at once or is not there, so a connect that has not completed in five
+        // seconds is not slow, it is a socket nothing is servicing.
+        let response = Self::agent()
+            .post(&url)
             .header(crate::api::rpc::TOKEN_HEADER, &daemon.token)
             .header("Content-Type", "application/json")
             .send(serde_json::to_string(request).map_err(|e| Transport::Sent(e.to_string()))?)
