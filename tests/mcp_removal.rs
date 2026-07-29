@@ -218,24 +218,24 @@ fn scaffold_claude_md_does_not_mention_mcp() {
 }
 
 // ============================================================
-// Init-generated CLAUDE.md does not reference MCP
+// Init-generated AGENTS.md does not reference MCP
 // ============================================================
 
 #[test]
-fn init_generated_claude_md_does_not_mention_mcp() {
+fn init_generated_agents_md_does_not_mention_mcp() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["init", "--prefix", "TST"])
         .assert()
         .success();
-    let claude_md = std::fs::read_to_string(dir.path().join(".storyhook/CLAUDE.md")).unwrap();
+    let agents_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
     assert!(
-        !claude_md.contains("MCP"),
-        ".storyhook/CLAUDE.md should not reference MCP"
+        !agents_md.contains("MCP"),
+        "AGENTS.md should not reference MCP"
     );
     assert!(
-        !claude_md.contains("mcp-config"),
-        ".storyhook/CLAUDE.md should not reference mcp-config"
+        !agents_md.contains("mcp-config"),
+        "AGENTS.md should not reference mcp-config"
     );
 }
 

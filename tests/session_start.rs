@@ -19,6 +19,22 @@ fn story(dir: &std::path::Path) -> Command {
     cmd
 }
 
+/// The plugin-config file's path, with its parent directory created.
+///
+/// `plugin-config.toml` is *user-authored config about this repository*, so it
+/// stays in the repository across the flip — its new home is the `[plugin]`
+/// table of the committed pointer file, and the old one keeps being read until
+/// the legacy directory is retired. These tests deliberately exercise the
+/// **legacy** path, which is the one both storage models still answer; the
+/// pointer-file home is covered by `tests/service_session.rs`.
+///
+/// The directory has to be created here because `story init` stops making one
+/// the moment story data lives in the store.
+fn plugin_config_path(root: &std::path::Path) -> std::path::PathBuf {
+    std::fs::create_dir_all(root.join(".storyhook")).expect("creating the config directory");
+    root.join(".storyhook/plugin-config.toml")
+}
+
 /// Extract the SessionStart `additionalContext` string from a parsed
 /// `story session-start` envelope, or "" if it is absent (e.g. `{}`).
 fn context(parsed: &serde_json::Value) -> &str {
@@ -64,7 +80,7 @@ fn session_start_plugin_disabled_outputs_empty_json() {
     story(dir.path()).arg("init").assert().success();
 
     // Disable the plugin
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "[plugin]\nenabled = false\ntracking = \"normal\"\n",
@@ -90,7 +106,7 @@ fn session_start_plugin_disabled_string_value_outputs_empty_json() {
     story(dir.path()).arg("init").assert().success();
 
     // Disable the plugin with string "false" value
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(&config_path, "enabled = \"false\"\n").unwrap();
 
     let output = story(dir.path())
@@ -709,7 +725,7 @@ fn session_start_plugin_config_extra_whitespace_bug_documented() {
     story(dir.path()).arg("init").assert().success();
 
     // Write config with extra whitespace around the value
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "[plugin]\nenabled  =   false\ntracking = \"normal\"\n",
@@ -740,7 +756,7 @@ fn session_start_plugin_config_enabled_true_produces_system_message() {
         .success();
 
     // Write config with enabled = true explicitly
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "[plugin]\nenabled = true\ntracking = \"normal\"\n",
@@ -772,7 +788,7 @@ fn session_start_plugin_config_malformed_still_works() {
         .success();
 
     // Write a completely malformed plugin config (not valid TOML)
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(&config_path, "{{{{garbage not toml!!! %%%").unwrap();
 
     let output = story(dir.path())
@@ -802,7 +818,7 @@ fn session_start_plugin_config_no_space_enabled_equals_false() {
     story(dir.path()).arg("init").assert().success();
 
     // Write config with no spaces around `=`
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(&config_path, "enabled=false\n").unwrap();
 
     let output = story(dir.path())
@@ -825,7 +841,7 @@ fn session_start_plugin_config_comments_and_extra_keys() {
     story(dir.path()).arg("init").assert().success();
 
     // Write config with comments and extra keys
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "# Plugin configuration\n\
@@ -856,7 +872,7 @@ fn session_start_plugin_config_nested_table() {
     story(dir.path()).arg("init").assert().success();
 
     // Write config with [plugin] nested table format
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     std::fs::write(
         &config_path,
         "[plugin]\n\
@@ -889,7 +905,7 @@ fn session_start_no_plugin_config_file_produces_system_message() {
         .success();
 
     // Ensure there's no plugin-config.toml (init shouldn't create one by default)
-    let config_path = dir.path().join(".storyhook/plugin-config.toml");
+    let config_path = plugin_config_path(dir.path());
     if config_path.exists() {
         std::fs::remove_file(&config_path).unwrap();
     }

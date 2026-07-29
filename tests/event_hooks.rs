@@ -5,6 +5,33 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
 
+/// Writes `body` — one or more `[hooks.*]` tables — into the checkout's
+/// committed pointer file.
+///
+/// This is where event-hook configuration lives after the flip: a table in
+/// `.storyhook.toml` rather than a file inside a directory that is about to
+/// stop existing. It is read from there on both storage models, so a test
+/// written this way proves the same thing before and after.
+fn write_hooks(dir: &std::path::Path, body: &str) {
+    fs::write(
+        dir.join(".storyhook.toml"),
+        format!(
+            "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\n{body}"
+        ),
+    )
+    .unwrap();
+}
+
+/// Writes the *legacy* `.storyhook/hooks.toml`, creating its directory.
+///
+/// Only the two tests whose subject is the legacy fallback use this. The
+/// directory has to be created explicitly because `story init` no longer makes
+/// one once the store is the default.
+fn write_legacy_hooks(dir: &std::path::Path, body: &str) {
+    fs::create_dir_all(dir.join(".storyhook")).unwrap();
+    fs::write(dir.join(".storyhook/hooks.toml"), body).unwrap();
+}
+
 fn init_project(dir: &std::path::Path) {
     Command::cargo_bin("story")
         .unwrap()
@@ -38,11 +65,13 @@ fn hook_fires_on_create() {
     init_project(dir);
 
     let output_file = dir.join("hook_output.json");
-    let hooks_toml = format!(
-        "[on_create]\ncommand = \"cat > {}\"\n",
-        output_file.display()
+    write_hooks(
+        dir,
+        &format!(
+            "[hooks.on_create]\ncommand = \"cat > {}\"\n",
+            output_file.display()
+        ),
     );
-    fs::write(dir.join(".storyhook/hooks.toml"), hooks_toml).unwrap();
 
     Command::cargo_bin("story")
         .unwrap()
@@ -80,8 +109,7 @@ fn hook_failure_does_not_prevent_operation() {
 
     init_project(dir);
 
-    let hooks_toml = "[on_create]\ncommand = \"exit 1\"\n";
-    fs::write(dir.join(".storyhook/hooks.toml"), hooks_toml).unwrap();
+    write_hooks(dir, "[hooks.on_create]\ncommand = \"exit 1\"\n");
 
     // Operation should still succeed even though hook fails
     Command::cargo_bin("story")
@@ -115,11 +143,13 @@ fn no_hooks_flag_suppresses_hooks() {
     init_project(dir);
 
     let output_file = dir.join("hook_output.json");
-    let hooks_toml = format!(
-        "[on_create]\ncommand = \"cat > {}\"\n",
-        output_file.display()
+    write_hooks(
+        dir,
+        &format!(
+            "[hooks.on_create]\ncommand = \"cat > {}\"\n",
+            output_file.display()
+        ),
     );
-    fs::write(dir.join(".storyhook/hooks.toml"), hooks_toml).unwrap();
 
     Command::cargo_bin("story")
         .unwrap()
@@ -146,9 +176,11 @@ fn hooks_list_shows_configured() {
 
     init_project(dir);
 
-    let hooks_toml =
-        "[on_create]\ncommand = \"echo created\"\n[on_close]\ncommand = \"echo closed\"\n";
-    fs::write(dir.join(".storyhook/hooks.toml"), hooks_toml).unwrap();
+    write_hooks(
+        dir,
+        "[hooks.on_create]\ncommand = \"echo created\"\n\
+         [hooks.on_close]\ncommand = \"echo closed\"\n",
+    );
 
     let output = Command::cargo_bin("story")
         .unwrap()
@@ -264,11 +296,10 @@ fn the_pointers_hooks_table_wins_over_the_legacy_file() {
 
     let legacy = dir.join("legacy.json");
     let pointed = dir.join("pointed.json");
-    fs::write(
-        dir.join(".storyhook/hooks.toml"),
-        format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
-    )
-    .unwrap();
+    write_legacy_hooks(
+        dir,
+        &format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
+    );
     fs::write(
         dir.join(".storyhook.toml"),
         format!(
@@ -300,11 +331,10 @@ fn a_pointer_with_no_hooks_table_leaves_the_legacy_file_in_charge() {
     init_project(dir);
 
     let legacy = dir.join("legacy.json");
-    fs::write(
-        dir.join(".storyhook/hooks.toml"),
-        format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
-    )
-    .unwrap();
+    write_legacy_hooks(
+        dir,
+        &format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
+    );
     fs::write(
         dir.join(".storyhook.toml"),
         "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n",

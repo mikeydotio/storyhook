@@ -86,22 +86,22 @@ fn sh34_help_text_shows_command_as_optional() {
 
 // ============================================================
 // SH-35: Ghost command --tree in scaffold init template
-// The generated CLAUDE.md should not reference `story graph --tree`
+// The generated AGENTS.md should not reference `story graph --tree`
 // because --tree is not a valid flag on the graph command.
 // ============================================================
 
 #[test]
-fn sh35_init_claude_md_does_not_reference_graph_tree() {
+fn sh35_init_agents_md_does_not_reference_graph_tree() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["init", "--prefix", "TST"])
         .assert()
         .success();
 
-    let claude_md = std::fs::read_to_string(dir.path().join(".storyhook/CLAUDE.md")).unwrap();
+    let agents_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
     assert!(
-        !claude_md.contains("--tree"),
-        ".storyhook/CLAUDE.md should not reference nonexistent --tree flag, \
+        !agents_md.contains("--tree"),
+        "AGENTS.md should not reference nonexistent --tree flag, \
          but found it in the generated template"
     );
 }
@@ -122,18 +122,18 @@ fn sh35_scaffold_claude_md_does_not_reference_graph_tree() {
 }
 
 #[test]
-fn sh35_init_claude_md_graph_section_only_has_valid_flags() {
+fn sh35_init_agents_md_graph_section_only_has_valid_flags() {
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["init", "--prefix", "TST"])
         .assert()
         .success();
 
-    let claude_md = std::fs::read_to_string(dir.path().join(".storyhook/CLAUDE.md")).unwrap();
+    let agents_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
 
     // Find lines containing "story graph" and verify they only use known flags
     let known_graph_flags = ["--critical-path", "--blocked-by", "--parallel-groups"];
-    for line in claude_md.lines() {
+    for line in agents_md.lines() {
         if line.contains("story graph") && line.contains("--") {
             let has_known_flag = known_graph_flags.iter().any(|f| line.contains(f));
             assert!(
