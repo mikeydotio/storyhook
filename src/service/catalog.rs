@@ -152,3 +152,89 @@ fn entry(project: ProjectRecord, path: Option<PathBuf>) -> CatalogEntry {
         path,
     }
 }
+
+/// What adopting `~/.storyhook/registry.toml` did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegistryAdoption {
+    /// Checkouts that resolved to a project and are now recorded against it.
+    pub adopted: Vec<PathBuf>,
+    /// Checkouts the store does not know — repositories still tracked by a
+    /// `.storyhook/` directory that nobody has run `story migrate` on.
+    pub unmigrated: Vec<PathBuf>,
+}
+
+/// Adopts the legacy dashboard registry's checkouts into the store's catalog.
+///
+/// The registry is the last piece of storyhook's global state that lives
+/// outside the store: a list of repositories the dashboard should show. In the
+/// store there is no such list — a project *is* a catalog entry — so adopting it
+/// means recording each registered path against the project it belongs to.
+///
+/// Three properties, each of them deliberate:
+///
+/// * **The file is never written and never deleted.** The legacy dashboard
+///   daemon reads it until the wave that promotes the daemon, and a rollback
+///   past this point has to find it exactly as it was.
+/// * **Idempotent**, so it can run on every invocation without a marker file to
+///   forget to write. Recording a checkout is an upsert, and a path already
+///   recorded is left alone.
+/// * **A repository the store has never heard of is reported, not created.**
+///   Minting a project row for an unmigrated `.storyhook/` tree would produce
+///   an empty project that looks like a lost one; the honest answer is that it
+///   is waiting for `story migrate`.
+///
+/// `path` is a parameter rather than [`crate::paths::legacy_global_dir`] read
+/// here, because an in-process test cannot redirect `HOME` for itself.
+pub fn adopt_legacy_registry<S: Store>(
+    store: &S,
+    path: &Path,
+) -> Result<RegistryAdoption, AppError> {
+    /// The two fields of a `[[repo]]` table this needs. Read with its own
+    /// minimal shape rather than through `crate::registry`, which the daemon
+    /// wave deletes — adoption has to outlive the thing it adopts.
+    #[derive(serde::Deserialize)]
+    struct RegistryFile {
+        #[serde(default, rename = "repo")]
+        repos: Vec<RegisteredRepo>,
+    }
+    #[derive(serde::Deserialize)]
+    struct RegisteredRepo {
+        path: PathBuf,
+    }
+
+    let mut adoption = RegistryAdoption::default();
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Ok(adoption);
+    };
+    // A registry this build cannot parse is not a reason to fail every command:
+    // it is a file the dashboard owns, and the store works without it.
+    let Ok(file) = toml::from_str::<RegistryFile>(&raw) else {
+        return Ok(adoption);
+    };
+
+    for repo in file.repos {
+        let canonical = repo
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| repo.path.clone());
+        let pointer = read_pointer(&canonical).unwrap_or(None);
+        let resolved = store.read(|tx| {
+            if let Some(pointer) = &pointer
+                && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
+            {
+                return Ok(Some(project.id));
+            }
+            Ok(tx.project_by_path(&canonical)?.map(|project| project.id))
+        })?;
+        match resolved {
+            Some(project) => {
+                store.write(|tx| {
+                    tx.touch_project_path(project, &canonical, path_kind(&canonical))
+                })?;
+                adoption.adopted.push(canonical);
+            }
+            None => adoption.unmigrated.push(canonical),
+        }
+    }
+    Ok(adoption)
+}

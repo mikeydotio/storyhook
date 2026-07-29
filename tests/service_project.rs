@@ -359,11 +359,12 @@ fn the_pointer_file_names_the_project_it_points_at() {
         .expect("the project exists");
     assert_eq!(
         pointer,
-        ProjectPointer {
-            schema: 1,
-            uuid: record.uuid.clone(),
-            prefix: "PT".to_string(),
-        }
+        ProjectPointer::new(record.uuid.clone(), "PT".to_string())
+    );
+    assert_eq!(pointer.schema, 1);
+    assert!(
+        pointer.plugin.is_none() && pointer.hooks.is_none(),
+        "init writes identity and nothing else; the config tables are the user's"
     );
 
     let by_uuid = fixture
@@ -489,4 +490,108 @@ fn a_project_with_no_closed_state_still_renders_a_template() {
         .read(|tx| Ok(closed_state(tx, outcome.project)?))
         .expect("reading the closed state");
     assert_eq!(done, "done", "the template must still render");
+}
+
+// --- the pointer file as the repository's config home -----------------------
+
+#[test]
+fn a_user_authored_pointer_file_survives_a_second_init() {
+    let fixture = Fixture::new();
+    fixture.init(&InitOptions {
+        pointer: true,
+        ..bare()
+    });
+    let root = fixture.root().canonicalize().expect("canonicalizing");
+
+    // The user adds their hooks by hand, as they always have — storyhook writes
+    // this file exactly once and reads it forever after.
+    let authored = format!(
+        "{}\n[hooks.on_create]\ncommand = \"notify-send $STORY\"\n",
+        std::fs::read_to_string(pointer_path(&root)).expect("reading the pointer")
+    );
+    std::fs::write(pointer_path(&root), &authored).expect("authoring hooks");
+
+    let second = fixture.init(&InitOptions {
+        pointer: true,
+        ..bare()
+    });
+    assert!(
+        !second.pointer,
+        "a second init must report that it wrote no pointer file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(pointer_path(&root)).expect("re-reading the pointer"),
+        authored,
+        "`story init` is idempotent, and this file is user-authored the moment it \
+         carries configuration — overwriting it would delete a user's hooks"
+    );
+}
+
+#[test]
+fn a_broken_config_table_does_not_make_the_repository_unresolvable() {
+    // The identity fields and the config tables are parsed by one serde call,
+    // so the config tables are `toml::Value`: anything well-formed parses, and
+    // only a syntactically broken *file* can fail. A typed `[hooks]` table
+    // would mean a misspelled timeout stopped storyhook knowing which project
+    // it was standing in.
+    let fixture = Fixture::new();
+    let outcome = fixture.init(&InitOptions {
+        pointer: true,
+        ..bare()
+    });
+    let root = fixture.root().canonicalize().expect("canonicalizing");
+    let mut text = std::fs::read_to_string(pointer_path(&root)).expect("reading the pointer");
+    text.push_str("\n[hooks]\ntimeout_seconds = \"not a number\"\nnonsense = [1, 2]\n");
+    std::fs::write(pointer_path(&root), text).expect("breaking the hooks table");
+
+    let pointer = read_pointer(&root)
+        .expect("a pointer with an odd hooks table must still parse")
+        .expect("the pointer exists");
+    let record = fixture
+        .store
+        .read(|tx| tx.project(outcome.project))
+        .expect("reading the project")
+        .expect("the project exists");
+    assert_eq!(pointer.uuid, record.uuid);
+    assert!(pointer.hooks.is_some());
+}
+
+#[test]
+fn a_clone_carrying_a_pointer_is_adopted_rather_than_given_a_second_project() {
+    let fixture = Fixture::new();
+    let first = fixture.init(&InitOptions {
+        pointer: true,
+        ..bare()
+    });
+    let root = fixture.root().canonicalize().expect("canonicalizing");
+    let pointer = std::fs::read_to_string(pointer_path(&root)).expect("reading the pointer");
+
+    // A second checkout of the same repository: a path the store has never
+    // seen, carrying the committed pointer file.
+    let clone = scratch_dir();
+    std::fs::write(pointer_path(clone.path()), pointer).expect("committing the pointer");
+    let second = ProjectService::new(&fixture.store, clone.path())
+        .clock(Clock::Fixed(FIXTURE_NOW.to_string()))
+        .init(&InitOptions {
+            pointer: true,
+            ..bare()
+        })
+        .expect("initializing the clone");
+
+    assert_eq!(
+        second.project, first.project,
+        "resolving by path alone would mint a second project for a repository \
+         that already has one, leaving the clone pointing at the old identity \
+         and storing into the new"
+    );
+    assert!(!second.created);
+    let paths = fixture
+        .store
+        .read(|tx| tx.project_paths(first.project))
+        .expect("listing checkouts");
+    assert_eq!(
+        paths.len(),
+        2,
+        "both checkouts must be known to the project"
+    );
 }

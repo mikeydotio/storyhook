@@ -226,3 +226,70 @@ fn restoring_a_history_refuses_loudly_and_names_where_the_design_is_owed() {
     assert!(error.to_string().contains("not yet ported"), "{error}");
     assert!(error.to_string().contains("flip-checklist"), "{error}");
 }
+
+#[test]
+fn a_disabled_plugin_can_say_so_in_the_pointer_file() {
+    // Where this config lives is what the flip changes: the `[plugin]` table in
+    // the committed pointer file, rather than a file inside a directory that
+    // stops existing. The *decision* is still the repository's, and still
+    // user-authored — storyhook writes the pointer once and reads it after.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Invisible", None);
+    std::fs::write(
+        fixture.cwd().join(".storyhook.toml"),
+        "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\
+         \n[plugin]\nenabled = false\n",
+    )
+    .expect("writing the pointer");
+
+    assert_eq!(
+        SessionService::new(&fixture.ctx())
+            .context()
+            .expect("building"),
+        "{}"
+    );
+}
+
+#[test]
+fn the_pointers_plugin_table_wins_over_the_legacy_file() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Visible", None);
+    let dir = fixture.cwd().join(".storyhook");
+    std::fs::create_dir_all(&dir).expect("creating the config directory");
+    std::fs::write(dir.join("plugin-config.toml"), "enabled = false\n").expect("writing");
+    std::fs::write(
+        fixture.cwd().join(".storyhook.toml"),
+        "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\
+         \n[plugin]\nenabled = true\n",
+    )
+    .expect("writing the pointer");
+
+    assert!(
+        context(&fixture).contains("PROJECT STATE"),
+        "a repository that has moved its config into the pointer must not be \
+         overruled by the file it moved it out of"
+    );
+}
+
+#[test]
+fn a_pointer_with_no_plugin_table_falls_back_to_the_legacy_file() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Invisible", None);
+    let dir = fixture.cwd().join(".storyhook");
+    std::fs::create_dir_all(&dir).expect("creating the config directory");
+    std::fs::write(dir.join("plugin-config.toml"), "enabled = false\n").expect("writing");
+    std::fs::write(
+        fixture.cwd().join(".storyhook.toml"),
+        "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n",
+    )
+    .expect("writing the pointer");
+
+    assert_eq!(
+        SessionService::new(&fixture.ctx())
+            .context()
+            .expect("building"),
+        "{}",
+        "the two storage models coexist until the daemon wave; a repository that \
+         has not moved its config must keep working"
+    );
+}

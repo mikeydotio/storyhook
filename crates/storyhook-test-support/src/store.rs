@@ -165,11 +165,7 @@ mod tests {
             .expect("reading project a");
         storyhook::service::project::write_pointer(
             two.path(),
-            &ProjectPointer {
-                schema: 1,
-                uuid,
-                prefix: "SH".to_string(),
-            },
+            &ProjectPointer::new(uuid, "SH".to_string()),
         )
         .expect("writing a pointer file");
 

@@ -47,6 +47,23 @@ pub fn store_path() -> Result<PathBuf, AppError> {
     Ok(data_dir()?.join("store.db"))
 }
 
+/// `~/.storyhook` — where storyhook's *previous* global state lives.
+///
+/// The dashboard's repo registry, its pid file and its log were all put here,
+/// outside XDG's layout, before locked decision 6 moved storyhook's global
+/// state to the data and state homes. Nothing new is written here; the
+/// directory is read so that what is already in it can be adopted, and it is
+/// **never deleted** — the legacy dashboard daemon still serves from it until
+/// the wave that promotes the daemon.
+///
+/// Deliberately *not* covered by `STORYHOOK_DATA_DIR`: that variable says where
+/// storyhook's data should go, and this function answers where it historically
+/// went. A test that redirects the former still has to be able to prove nothing
+/// touched the latter.
+pub fn legacy_global_dir() -> Result<PathBuf, AppError> {
+    Ok(home()?.join(".storyhook"))
+}
+
 /// One environment variable as a path, ignoring an empty value.
 ///
 /// An empty `XDG_DATA_HOME` is what a shell leaves behind when an export is
@@ -74,6 +91,17 @@ mod tests {
         // Joining onto "" yields a relative path, which would put a user's
         // whole tracker wherever the process happened to start.
         assert_eq!(env_path("STORYHOOK_PATHS_TEST_EMPTY"), None);
+    }
+
+    #[test]
+    fn the_legacy_global_directory_is_not_where_new_state_goes() {
+        // The adoption path reads one and writes the other; if they ever
+        // resolved to the same directory, "never delete the legacy state" and
+        // "this is our data directory" would be claims about one place.
+        let legacy = legacy_global_dir().expect("a legacy directory");
+        let data = data_dir().expect("a data directory");
+        assert_ne!(legacy, data);
+        assert!(legacy.ends_with(".storyhook"));
     }
 
     #[test]

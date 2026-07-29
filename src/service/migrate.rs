@@ -52,8 +52,7 @@ use crate::store::{
 };
 
 use super::project::{
-    POINTER_SCHEMA, ProjectPointer, path_kind, pointer_path, read_pointer, unique_slug,
-    write_pointer,
+    ProjectPointer, path_kind, pointer_path, read_pointer, unique_slug, write_pointer,
 };
 
 /// What a repair did to one story's history.
@@ -447,14 +446,7 @@ impl MigrationPlan {
             Ok(())
         })?;
 
-        write_pointer(
-            &root,
-            &ProjectPointer {
-                schema: POINTER_SCHEMA,
-                uuid,
-                prefix,
-            },
-        )?;
+        write_pointer(&root, &ProjectPointer::new(uuid, prefix))?;
         Ok(self.report(false))
     }
 }

@@ -56,7 +56,7 @@ use crate::store::{
     partition_known,
 };
 
-pub use catalog::{CatalogEntry, CatalogService};
+pub use catalog::{CatalogEntry, CatalogService, RegistryAdoption, adopt_legacy_registry};
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
 #[cfg(feature = "github-sync")]
