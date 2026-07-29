@@ -45,6 +45,49 @@ use crate::store::types::{
 };
 use crate::store::{ReadOps, Store, WriteOps};
 
+/// Puts a database into write-ahead logging mode, and reports the mode it ended
+/// up in.
+///
+/// Two things are going on, and both were learned the hard way.
+///
+/// **It reads before it writes.** Journal mode is persistent per *database*, so
+/// on a store that is already in WAL the write has nothing to do — but
+/// `PRAGMA journal_mode = WAL` still takes an exclusive lock to decide that.
+/// Every process opening the store paid for that lock, and enough of them at
+/// once turned `story init` into a `LockTimeout`.
+///
+/// **It retries.** SQLite's `busy_timeout` does not cover a journal-mode
+/// change, so N processes racing to create the same database — which is what a
+/// parallel test run is — collide on the one write that genuinely has to
+/// happen. The retry re-reads the mode each time, so a process whose write lost
+/// the race sees the winner's result and stops rather than fighting for a
+/// change that has already been made.
+fn ensure_wal(conn: &Connection, deadline: Duration) -> Result<String, StoreError> {
+    let give_up_at = std::time::Instant::now() + deadline;
+    loop {
+        let current: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .map_err(|e| StoreError::from_sqlite(e, "reading the journal mode"))?;
+        if current.eq_ignore_ascii_case("wal") {
+            return Ok(current);
+        }
+        match conn.query_row("PRAGMA journal_mode = WAL", [], |row| {
+            row.get::<_, String>(0)
+        }) {
+            Ok(mode) => return Ok(mode),
+            Err(error) => {
+                let failure = StoreError::from_sqlite(error, "enabling write-ahead logging");
+                if !matches!(failure, StoreError::Busy(_))
+                    || std::time::Instant::now() >= give_up_at
+                {
+                    return Err(failure);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 /// How many idle connections the pool keeps.
 ///
 /// A cap on *idle* connections, not on concurrency: a read that arrives when
@@ -194,11 +237,15 @@ impl SqliteStore {
             .map_err(|e| StoreError::from_sqlite(e, "disabling recursive triggers"))?;
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(|e| StoreError::from_sqlite(e, "setting synchronous mode"))?;
-        // Persistent, per-database; setting it per-connection is a no-op after
-        // the first and costs one statement.
-        let mode: String = conn
-            .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
-            .map_err(|e| StoreError::from_sqlite(e, "enabling write-ahead logging"))?;
+        // Journal mode is persistent per *database*, so this is read before it
+        // is written. `PRAGMA journal_mode = WAL` is not a no-op on a database
+        // that is already in WAL: it takes an exclusive lock to make the
+        // change it is not going to make, and under concurrency that lock is
+        // contended — every process opening the store paid for it, and enough
+        // of them at once turned `story init` into a `LockTimeout`. Reading
+        // first costs one lock-free statement and leaves the write to the one
+        // connection that actually needs it.
+        let mode = ensure_wal(&conn, self.config.busy_timeout)?;
         if !mode.eq_ignore_ascii_case("wal") {
             return Err(StoreError::Corrupt(format!(
                 "{} would not enter write-ahead logging mode (reported `{mode}`)",
@@ -548,6 +595,14 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn allocate_story_no(&mut self, project: ProjectId) -> Result<StoryNo, StoreError> {
         write::allocate_story_no(&self.conn, project)
+    }
+
+    fn forget_project_path(&mut self, project: ProjectId, path: &Path) -> Result<bool, StoreError> {
+        write::forget_project_path(&self.conn, project, path)
+    }
+
+    fn reserve_story_no(&mut self, project: ProjectId, highest: StoryNo) -> Result<(), StoreError> {
+        write::reserve_story_no(&self.conn, project, highest)
     }
 
     fn append_events(

@@ -29,8 +29,8 @@
 | W1 store engine | `rearch/w1-store` / [PR #62](https://github.com/mikeydotio/storyhook/pull/62) | **MERGED** 2026-07-28 |
 | W2a services (lifecycle + relations) | `rearch/w2a-lifecycle` / [PR #63](https://github.com/mikeydotio/storyhook/pull/63) | **MERGED** 2026-07-28 |
 | W2b services (project + config + system + grouping) | `rearch/w2b-config` / [PR #64](https://github.com/mikeydotio/storyhook/pull/64) | **MERGED** 2026-07-28 |
-| W2c services (query + integrity) + TUI on the seam | `rearch/w2c-query` | **PR OPENED** — awaiting merge |
-| W2d services | — | pending |
+| W2c services (query + integrity) + TUI on the seam | `rearch/w2c-query` / [PR #65](https://github.com/mikeydotio/storyhook/pull/65) | **MERGED** 2026-07-28 |
+| W2d services (git + GitHub + transfer) + the store test leg | `rearch/w2d-git` | **PR OPENED** — awaiting merge |
 | W3 importer | — | pending |
 | W4 THE FLIP | — | pending (one uninterrupted session; revert only while W3 round-trip green) |
 | W5 daemon | — | pending |
@@ -93,6 +93,15 @@
   the shared harness extraction), `ddfe113` (GroupingService). See Step log for the
   service API W2c/W2d build on, the ported-arm roster, and the deviations.
 
+## W2d step plan
+
+- **W2d DONE** — the last ten dispatch arms, the store test leg, and five defects
+  the leg found. Six commits: `c2b214c` (transfer: export/import/import-project/
+  decompose), `1be07fe` (GitService), `1babe06` (github-sync's storage edges behind
+  a `SyncStorage` seam), `40ba417` (catalog/session/history/update — roster complete),
+  plus the store-leg commit and the docs commit. See Step log for the API, the
+  roster, the exclusion list and the five defects.
+
 ## W2c step plan
 
 - **W2c DONE** — `src/service/{query,integrity}.rs`, the read surface and `doctor` on
@@ -103,6 +112,81 @@
   defects found, and the deviations.
 
 ## Key facts discovered (do not re-derive)
+
+- **W2d, the biggest trap in the harness: `TestEnv` isolates CHILD PROCESSES,
+  not in-process library calls.** An integration test that calls `storyhook::…`
+  directly — which every `service_*` and `differential_*` file does — sees the
+  *developer's real* `HOME`, `XDG_DATA_HOME` and `XDG_STATE_HOME`. This wave hit
+  it twice, both times writing into Mikey's actual home directory: a
+  github-sync backup landed in `~/.local/state/storyhook/`, and a `web register`
+  differential row wrote a fixture path into `~/.storyhook/registry.toml`. Both
+  are fixed at the source rather than in the test —
+  `StoreSyncStorage::backups_dir()` takes the destination as a parameter, and
+  the `web` differential rows are deleted with the reason written where they
+  were — but **the general hazard is live for every later wave**. The rule:
+  *if a service reads a global path from the environment, an in-process test
+  cannot redirect it, so the path must be a parameter.* `make test-store` deals
+  with it differently and correctly, by exporting `STORYHOOK_DATA_DIR` and
+  `XDG_STATE_HOME` for the whole run before cargo starts.
+- **W2d, FIXED in-wave — `PRAGMA journal_mode = WAL` is not free on a database
+  that is already in WAL.** It takes an exclusive lock to decide it has nothing
+  to do, so every process opening the store paid for one, and enough of them at
+  once (a parallel test run; a hook shelling out to `story`) turned `story init`
+  into `LockTimeout` — exit 4, on a command that did nothing wrong.
+  `SqliteStore::new_connection` now reads the mode first and writes only when it
+  differs. **Generalize this:** a pragma that "is a no-op after the first time"
+  is a no-op in its *effect*, not in its locking.
+- **W2d, FIXED in-wave — `migrate()` was not concurrency-safe.** `run` decides
+  what is pending outside any transaction, so two processes opening a fresh
+  store both saw version 0 and both queued migration 1; the loser's `CREATE
+  TABLE schema_migrations` failed with `error: migration 1 (initial) failed:
+  table schema_migrations already exists`, exit 5. `apply` now re-reads
+  `user_version` **inside** its `BEGIN IMMEDIATE` and returns `false` when it
+  has been overtaken, so `MigrationReport::applied` still reports only what this
+  call changed. Reachable in production the moment two `story` invocations race
+  on a machine whose store has not been created yet — which is every machine,
+  once.
+- **W2d: root resolution has three tiers, and this is the shape W4 inherits.**
+  `StoreInvoker` (1) answers project-*less* invocations before looking for a
+  project at all — `init`, `import-project`, the help family, `version`,
+  `plugin`, `hooks` except `test`, and `decompose --dry-run`; (2) resolves the
+  project by the checkout's pointer file *then* by its path, and never walks
+  upwards, because `storage::ensure_project` looks only at `<cwd>/.storyhook`
+  and a store leg that resolved a parent's project would answer questions the
+  legacy leg refuses; (3) failing that, still answers `session-start` with `{}`
+  and `scaffold` with default values, both of which the legacy path did. Each
+  tier reproduces something real. **Adding a project-less arm to `dispatch`
+  without adding it to `is_project_less` makes that verb fail in an empty
+  directory**, which is the failure the function exists to prevent.
+- **W2d: `story export`'s `prefix` field is `null` for the default prefix**, and
+  that is contract, not a bug. `project.toml` stored the prefix as an *option*
+  that `story init` left unset unless `--prefix` was given, and every reader
+  defaults an absent one to `SH`. `service::transfer::exported_prefix` reproduces
+  it. The one case it cannot reproduce is a project initialized with an explicit
+  `--prefix SH`: legacy says `"SH"`, the store says nothing, and both import to
+  the same project.
+- **W2d: `story import` is deliberately more forgiving than `story new`.** An
+  unparseable priority is a rejection in `StoryService::create` and is silently
+  dropped by `TransferService::import`. That asymmetry is inherited on purpose —
+  a script that has been feeding storyhook `"priority": "urgent"` for a year
+  must keep getting the same stories out — and it is why the batch importer
+  builds its own events instead of calling `create`. The two batches are
+  otherwise identical field for field and in the same order.
+- **W2d: `import-project` refuses a project that already holds stories**, where
+  the legacy importer overwrote it. An append-only store cannot rewrite a
+  story's history, and a restore that half-overwrites a live project is how a
+  tracker loses one. Pinned by
+  `differential_transfer.rs::import_project_diverges_on_a_project_that_already_has_stories`.
+  **W4 should list it in the flip's behaviour-change notes.**
+- **W2d: there is no `web` differential row and there cannot be one.** The
+  harness runs both legs in this process and the legacy `web` catalog reads and
+  writes `$HOME/.storyhook/registry.toml`. See the `TestEnv` trap above. The
+  store leg's catalog behaviour is covered by `tests/service_catalog.rs`, which
+  never touches `$HOME`.
+- **W2d: `commit-sync` still scans commit SUBJECTS only**, reproduced verbatim
+  (`git log --format=%H %s`). A commit whose *body* names a story is invisible.
+  Widening it changes which stories get comments, which is a behaviour change
+  and belongs to the git-features wave, not to a port.
 
 - **W2c: `story doctor --fix` DESTROYS relationships to archived stories.** The legacy
   repair loop asks "does the other end of this edge exist?" of the *open* stories only
@@ -1145,10 +1229,118 @@
     the file always duplicated the dispatch logic — except the duplication is now one
     invocation instead of a lock, a path and a rewrite.
 
+- 2026-07-28 W2d: branch `rearch/w2d-git` off merged main `59ee60c`. Six commits.
+  Test count 1775 → **1882** (+107: 22 `service_transfer`, 12 `differential_transfer`,
+  8 `service_git`, 13 `differential_git`, 14 `service_github`, 12 `service_catalog`,
+  12 `service_session`, 7 `differential_session`, 2 conformance cases, 2 `paths` units,
+  3 `session` units, plus the roster edits). 2 ignored, unchanged. **`src/app.rs` has
+  zero changes** — `git diff 59ee60c..HEAD -- src/app.rs` is empty — and
+  `tests/snapshots/` is byte-unchanged.
+  - `c2b214c` — `TransferService` (export, the batch importer, `import_project`),
+    `WriteOps::reserve_story_no`.
+  - `1be07fe` — `GitService`; `Differential::with_git()`/`commit()`.
+  - `1babe06` — `github::storage::SyncStorage` + `LegacySyncStorage` +
+    `service::github::StoreSyncStorage`; `src/paths.rs`.
+  - `40ba417` — `CatalogService`, `SessionService`, history, update;
+    `WriteOps::forget_project_path`. Roster complete.
+  - the store-leg commit — `StoreInvoker`, `STORYHOOK_INVOKER`, `make test-store`,
+    and the three fixes the leg demanded (WAL locking, concurrent migration,
+    project-less root resolution).
+  - the docs commit — this entry, the flip checklist's section G, HANDOFF.
+
+  **Ported-arm roster: 38 → 48. `unported_probes()` is empty**: every `Invocation`
+  variant dispatches, `dispatch`'s match is exhaustive without a catch-all, and a
+  new variant now stops `invoke.rs` compiling. One *action* is still owed a design
+  rather than a port — `History::Restore` — and it answers loudly, pointing at the
+  flip checklist. `an_unported_invocation_fails_loudly_rather_than_silently` was
+  re-pointed at it.
+
+  **The API W3/W4/W5 build on:**
+
+  ```rust
+  TransferService::new(&ctx)
+      .export() -> ProjectExport
+      .import(&[ImportStory]) -> ImportBatch { views, relationship_lines }
+  service::transfer::import_project(&store, root, &Clock, &ProjectExport) -> usize
+
+  GitService::new(&ctx).commit_sync(since: Option<&str>) -> String
+
+  CatalogService::new(&store)                 // NOT Ctx-based: `list` spans projects
+      .register(path, name) / .deregister(target) -> CatalogEntry
+      .list() -> Vec<CatalogEntry>
+
+  SessionService::new(&ctx).context() -> String     // the RawJson body
+  service::session::{history, SILENT}
+
+  // feature = "github-sync"
+  GithubSyncService::new(&ctx).sync(story_id, dry_run) -> Response
+  StoreSyncStorage::new(&ctx).backups_dir(path)      // #[must_use] builder
+  github::storage::{SyncStorage, LegacySyncStorage}  // the 8-method seam
+  github::run_sync_with(&dyn SyncStorage, story_id, dry_run)
+
+  invoke::StoreInvoker::new(&store, cwd).hook_depth(u32).pointer(bool)
+  invoke::dispatch_unscoped_with(&store, root, now, invocation, pointer: bool)
+  paths::{data_dir, state_dir, store_path}
+  store: WriteOps::{reserve_story_no, forget_project_path}
+  ```
+
+  **The store test leg**, `make test-store`: 38 targets green, **6.4s warm**,
+  `STORYHOOK_INVOKER=local` over the real CLI binary. `scripts/run-store-leg.sh`
+  builds the target list and exports an isolated `STORYHOOK_DATA_DIR` and
+  `XDG_STATE_HOME` for the whole run — see the `TestEnv` trap in Key facts for
+  why that export is load-bearing rather than tidy. **`golden_cli` is IN the leg
+  and green**: all 27 byte-compatibility snapshots are identical on both legs,
+  which is the strongest single piece of evidence this port has produced. The
+  exclusion list, with a reason and a burn-down wave per entry, is
+  `flip-checklist.md` section G.
+
+  **Standing rule for W3, W4 and every later data-layer wave:** run
+  `make test-store` after every commit, alongside `make test`, and record both
+  times here. The leg is not part of `make test` — it would double a gate that
+  every wave pays on every commit — so it is a discipline rather than a
+  mechanism until the flip makes it the only leg.
+
+  Verification that the tests bite, not merely pass:
+  - The store leg found three production defects on its first three runs (WAL
+    locking, concurrent migration, project-less root resolution), each of which
+    was fixed at the origin and none of which any existing test could see.
+  - The export differential row failed on its first run with `prefix: null` vs
+    `"SH"` — a byte the golden corpus would have caught at the flip instead.
+  - `session_start_agrees_when_every_story_is_closed` failed on its first run
+    because `query::story_map` includes archived stories and
+    `load_all_open_snapshots` does not.
+
+  Deviations from the wave brief, all deliberate:
+  - **The roster is `ported == 48, probes == 0`, not 47 + History.** `History::Read`
+    is expressible today and porting it costs four lines; only `Restore` is owed a
+    design, and it refuses loudly with a pointer at the checklist.
+  - **Two store operations were added** (`reserve_story_no`, `forget_project_path`),
+    both minimal and both with conformance or service tests. A restored project's
+    counter and a deregistered checkout are not expressible without them.
+  - **`src/service/system.rs` grew five free functions**, so the hooks and plugin
+    families can be answered without a project — which is what the legacy path did
+    and what the store leg proved was missing.
+  - **`git commit --amend` was never used**; every fix is its own commit.
+
+  Gate: `make test-store` **green ×2 at 6.4s**. `make test` could not be measured
+  honestly at the end of this wave: three Swift test processes from a *different*
+  project (one of them hung since 10:18, 348+ CPU-minutes) saturated the machine,
+  and `cargo test --workspace --test web_test` **alone** measured 59–109s against
+  its 7.2s baseline and failed 1–84 of 140 tests. `web_test` is unchanged code in
+  this wave, every failing test passes in isolation in ~4s, and the failures are
+  all wall-clock readiness deadlines. Earlier in the wave the same tree ran
+  `make test` green three times (1:39, 4:10, 4:31). **Re-run the gate on an idle
+  machine before treating any number here as a trend**, and check
+  `ps aux | sort -nrk 3` first.
+
 ## Resume protocol (fresh session)
 
 1. `cd` the worktree; `git log --oneline -5`; read this file + HANDOFF.md if present.
 2. `make test` MUST be green before touching anything (if web_test mass-fails: check for
-   orphaned `web_test-*` listeners in 19xxx first — see Key facts).
-3. Continue at the first non-DONE step above via a fresh subagent; orchestrator keeps its own
+   orphaned `web_test-*` listeners in 19xxx first, then `uptime` and
+   `ps aux | sort -nrk 3` — see Key facts).
+3. `make test-store` MUST be green too, from W2d onwards, and both times go in the
+   Step log. It is the flip's early-warning system; a red store leg is a thing the
+   flip would break.
+4. Continue at the first non-DONE step above via a fresh subagent; orchestrator keeps its own
    context minimal (delegate reads/edits; terse reports only).

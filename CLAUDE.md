@@ -39,8 +39,8 @@ Execution state — wave status, step log, discovered defects — lives in
 | W1 | `Store` trait, SQLite engine, migrations, rebuild-diff | **complete — merged** |
 | W2a | story lifecycle + relation services, differential harness | **complete — merged** |
 | W2b | project, config, system and grouping services; 27 of 46 arms ported | **complete — merged** |
-| W2c | query + integrity services; TUI onto the seam; 38 of 48 arms ported | **complete — PR open** |
-| W2d | git/GitHub services; dispatch completeness | pending |
+| W2c | query + integrity services; TUI onto the seam; 38 of 48 arms ported | **complete — merged** |
+| W2d | git/GitHub/transfer services; **all 48 arms ported**; the store test leg | **complete — PR open** |
 | W3 | legacy importer (`story migrate`) — also W4's rollback path | pending (parallel with W2) |
 | W4 | **the flip**: the global store becomes the default | pending; one uninterrupted session |
 | W5 | daemon promotion + `/api/v1/invoke` transport | pending |
@@ -51,6 +51,11 @@ Execution state — wave status, step log, discovered defects — lives in
 Standing rules for every wave:
 
 - Every commit passes `make test`; history stays bisectable and two-hats clean.
+- **From W2d onward, data-layer waves also run `make test-store` after every commit** —
+  the same integration suite under `STORYHOOK_INVOKER=local` — and record both times in
+  STATE.md. It is not part of `make test` (that would double a gate every wave pays on
+  every commit), so it is a discipline until the flip makes it the only leg. Its exclusion
+  list is `docs/rearch/flip-checklist.md` section G and must only ever shrink.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - A wave's implementing session ends at "PR opened" and never merges its own PR. The

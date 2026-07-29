@@ -282,3 +282,91 @@ large share of it, because the files it must rewrite anyway are the same ones.
 - **The `#[cfg(test)]` modules inside `src/`** — they deliberately do not use the test-support
   crate (see STATE.md's note on linking two copies of `storyhook`), so nothing here applies to
   them.
+
+---
+
+## G. The store leg's exclusion list
+
+```sh
+make test-store        # STORYHOOK_INVOKER=local over the integration suite
+```
+
+**Added W2d 2026-07-28.** The store leg runs the same integration suite against
+`STORYHOOK_INVOKER=local` — dispatch, the services, and a `SqliteStore` at the
+XDG data home — instead of against `.storyhook/`. It is the strangler's proof
+engine: every failure in it is a thing the flip would break, found while the
+legacy path is still the default.
+
+**Green as of W2d over 38 targets**, including `golden_cli` — all 27
+byte-compatibility snapshots are identical on both legs — and `cli_grammar`,
+`scaffold`, `story_states`, `story_delete`, `error_contract`,
+`session_start_hook`, `move_if_state` and `story_flow`.
+
+The list below must only ever shrink. Every entry names why it is out and the
+wave that puts it back.
+
+### G1. Not CLI-driven — permanently out, and not a burn-down item
+
+`--exclude-prefix store_`, `service_`, `differential_`; `--exclude-file
+invoker_seam`, `wire_envelope`. These call the library in-process, so
+`STORYHOOK_INVOKER` has no effect on them at all; running them in the leg would
+run them twice and prove nothing. They stay out after the flip.
+
+### G2. Files excluded whole
+
+| File | Failing | Reason | Burn-down |
+|---|---|---|---|
+| `web_test` | all | The dashboard's HTTP server reads the legacy registry and `.storyhook/` directly; it is not on the Invoker seam yet. | **W5** |
+| `registry_test` | all | Tests `registry.rs`, which W4 deletes. Its subject goes with it. | **W4** (deletion) |
+| `tui_integration` | most | Fabricates state by writing `.storyhook/states.toml` and deleting story logs (checklist A2/B). | **W4** |
+| `tui_undo` | all | Undo is `History::Restore`, which the store cannot serve — see C. | **W4/W8** |
+| `worktree_truth` | both | The `#[ignore]`d exit criterion. It goes green *at* the flip, not before. | **W4** |
+| `doctor` | 3/4 | Fabricates dangling edges and parent cycles by writing raw JSONL (category B rows 1–3). | **W4** |
+| `event_hooks` | 4/6 | Writes `.storyhook/hooks.toml`, which does not exist without the legacy tree (A2). | **W4** |
+| `init_command` | 5/5 | Asserts the whole legacy directory tree exists (A1) and reads the scaffolded `.storyhook/CLAUDE.md` (A3). | **W4** |
+| `member_add` | 1/1 | Reads `.storyhook/members.jsonl` and asserts the appended event (A2). | **W4** |
+| `session_start` | 10/31 | Nine `plugin-config.toml` sites plus two corruption fixtures (A2, B rows 7–8). | **W4** |
+| `help_flag_sweep` | 2/3 | `snapshot()` fingerprints the `.storyhook` tree; over an empty directory it is a tautology, and **a green tautology there re-opens SH-52** (A7). | **W4** |
+
+### G3. Individual tests skipped, their file otherwise in the leg
+
+This is the granularity that matters: eleven files stay in the leg because one
+or two white-box assertions are skipped rather than the whole file dropped.
+
+| Test | Reason |
+|---|---|
+| `init_creates_storyhook_claude_md_with_prefix` | reads `.storyhook/CLAUDE.md` (A3) |
+| `sh35_init_claude_md_does_not_reference_graph_tree` | same |
+| `sh35_init_claude_md_graph_section_only_has_valid_flags` | same |
+| `init_generated_claude_md_does_not_mention_mcp` | same |
+| `delete_archives_and_removes_open_jsonl` | asserts the open/archive file split (A1) |
+| `doctor_fix_heals_stale_archived_snapshot_from_before_the_fix` | opens `archive.db` with rusqlite (A1) |
+| `closed_state_moves_story_to_archive_db` | asserts `archive/archive.db` exists (A1) |
+| `state_add_stores_description_and_role` + 4 siblings | read `.storyhook/states.toml` through `states_toml()` (A2) |
+| `move_if_state_under_real_concurrency_yields_exactly_one_winner` | reads the event log to count state-change events (A5) |
+| `hook_outputs_empty_json_when_plugin_disabled` | writes `.storyhook/plugin-config.toml` (A2) |
+| `every_error_variant_holds_its_contract` | holds the real project lock via `storyhook::lock` (C) |
+
+### G4. Open questions the leg surfaced, for W4 to settle
+
+- **Auto-sync does not fire under the store leg.** `app::run` ends with
+  `github::auto::maybe_auto_sync`, which re-syncs the affected story after every
+  story-modifying command when `sync.mode = auto`. `dispatch` has no equivalent
+  tail, so under `STORYHOOK_INVOKER=local` a `story comment` on a project in
+  auto mode does not sync. Not covered by any test in the suite, which is why
+  the leg did not catch it and a reading of `app.rs` did. **W4 or W5 owes it a
+  home** — probably the invoker rather than the dispatcher, since it is a
+  policy about a whole invocation rather than about one arm.
+- **Root resolution now has three tiers, and W4 inherits them.** `StoreInvoker`
+  answers project-*less* invocations before it looks for a project (`init`,
+  `import-project`, the help family, `version`, `plugin`, `hooks` except
+  `test`, and `decompose --dry-run`); resolves the project by pointer file then
+  by path; and, failing that, still answers `session-start` with `{}` and
+  `scaffold` with default values. Each tier reproduces something the legacy path
+  did. Adding a project-less arm to `dispatch` without adding it to
+  `is_project_less` makes that verb fail in an empty directory.
+- **`web register` cannot find a deregistered checkout again** while the
+  pointer file is off: the path was the only handle and forgetting it forgets
+  the way back. Turning the pointer on at the flip fixes it, and
+  `service_catalog.rs::a_deregistered_checkout_can_be_registered_again` pins the
+  current behaviour so the change is deliberate.

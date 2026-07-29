@@ -249,6 +249,14 @@ pub trait WriteOps: ReadOps {
         kind: PathKind,
     ) -> Result<(), StoreError>;
 
+    /// Forgets one checkout of a project, reporting whether there was one.
+    ///
+    /// The project row and its stories survive. A checkout that has been
+    /// deleted, moved, or taken off the dashboard is not a reason to lose the
+    /// work recorded against it — which is exactly the mistake the legacy
+    /// registry made impossible to make only because it held no data.
+    fn forget_project_path(&mut self, project: ProjectId, path: &Path) -> Result<bool, StoreError>;
+
     /// Allocates the next story number for a project.
     ///
     /// The counter moves inside this transaction, so a rollback returns the
@@ -256,6 +264,16 @@ pub trait WriteOps: ReadOps {
     /// one. This single operation is what ends the id collisions that twice
     /// corrupted this repository's own tracker.
     fn allocate_story_no(&mut self, project: ProjectId) -> Result<StoryNo, StoreError>;
+
+    /// Raises a project's story-number counter so that nothing at or below
+    /// `highest` will ever be allocated.
+    ///
+    /// The importer is why this exists: a project restored from an export
+    /// document has its story numbers dictated by the document, so nothing
+    /// allocated them, and without this the next `story new` would mint an id
+    /// that already exists. It only ever moves the counter *up* — a caller
+    /// writing an old story into a live project must not walk it backwards.
+    fn reserve_story_no(&mut self, project: ProjectId, highest: StoryNo) -> Result<(), StoreError>;
 
     /// Appends events to a story, failing with [`StoreError::Conflict`] if its
     /// head is not what `expected` requires.
