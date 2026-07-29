@@ -4,20 +4,10 @@ set -euo pipefail
 # Claude Code Stop hook for storyhook.
 # Automatically generates a session handoff when the agent session ends.
 
-read_plugin_config() {
-  local key="$1" default="$2"
-  local config=".storyhook/plugin-config.toml"
-  if [[ ! -f "$config" ]]; then
-    printf '%s' "$default"
-    return
-  fi
-  local val
-  val=$(grep "^${key}" "$config" 2>/dev/null | head -1 | sed 's/.*= *"//' | sed 's/".*//' || true)
-  printf '%s' "${val:-$default}"
-}
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # Check if this is a storyhook project
-if [[ ! -d ".storyhook" ]]; then
+if ! storyhook_pointer >/dev/null; then
   printf '{}'
   exit 0
 fi
@@ -33,8 +23,7 @@ if [[ -d ".forge" ]]; then
 fi
 
 # Check if plugin is enabled
-enabled=$(read_plugin_config "enabled" "true")
-if [[ "$enabled" == "false" ]]; then
+if ! hook_is_enabled; then
   printf '{}'
   exit 0
 fi
