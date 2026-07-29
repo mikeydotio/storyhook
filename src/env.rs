@@ -277,10 +277,17 @@ pub const fn is_test_build() -> bool {
 ///
 /// The whole message is here rather than built at the raise site so the test
 /// that pins it can compare against the constant.
-const TEST_BUILD_REFUSAL: &str = "refusing to guess where the store lives: this is a test build \
-     and $STORYHOOK_DATA_DIR is not set, so storyhook would fall back to the real \
-     ~/.local/share/storyhook. Run the suite with `make test`, which exports an isolated one, or \
-     set STORYHOOK_DATA_DIR yourself.";
+/// Both readings are answered on purpose. Someone running the suite by hand
+/// needs to be told about `make test`; someone who typed
+/// `./target/debug/story list` after a `cargo test` needs to be told that the
+/// binary in front of them is not the one they meant, because the refusal
+/// otherwise reads as storyhook being broken.
+const TEST_BUILD_REFUSAL: &str = "refusing to guess where the store lives: this binary carries \
+     the `fault-injection` feature, which `cargo test` enables and `cargo build` does not, so it \
+     is a test build — and with $STORYHOOK_DATA_DIR unset it would fall back to the real \
+     ~/.local/share/storyhook. Run the suite with `make test`, which exports an isolated \
+     STORYHOOK_DATA_DIR; set STORYHOOK_DATA_DIR yourself; or, if you meant to *use* this binary, \
+     rebuild it with `cargo build`.";
 
 /// One environment variable as a path, ignoring an empty value.
 ///
