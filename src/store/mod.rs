@@ -129,6 +129,19 @@ pub trait Store: Send + Sync + 'static {
     /// Brings the database up to the schema version this binary understands,
     /// taking a verified backup first if anything is pending.
     fn migrate(&self) -> Result<MigrationReport, StoreError>;
+
+    /// A value that changes whenever *another* connection commits.
+    ///
+    /// The daemon polls this to notice writes it did not make itself — a git
+    /// hook running `story --local`, a second machine, a developer with a
+    /// `sqlite3` prompt open. Comparing two tokens answers "has anything
+    /// changed"; the value itself means nothing and must not be persisted or
+    /// compared across process restarts.
+    ///
+    /// Engine-neutral by design: SQLite answers with `PRAGMA data_version`, and
+    /// an eventual Postgres implementation would answer with a transaction id or
+    /// a notification counter.
+    fn change_token(&self) -> Result<u64, StoreError>;
 }
 
 /// Everything that can be read inside a transaction.

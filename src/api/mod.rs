@@ -4,6 +4,7 @@
 //!
 //! * [`http`] — the plumbing both share: response shaping, the security
 //!   headers, the CSRF and DNS-rebinding guard, body reading, SSE framing.
+//! * [`rest`] — the dashboard's resource API, over the service layer.
 //!
 //! Keeping the plumbing apart from the routes is not tidiness. The guard code is
 //! the difference between "a page on the internet cannot write to your tracker"
@@ -11,3 +12,4 @@
 //! eventually disagree about it.
 
 pub mod http;
+pub mod rest;

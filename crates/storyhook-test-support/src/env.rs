@@ -163,6 +163,20 @@ impl TestEnv {
     pub fn project(&self) -> ProjectBuilder<'_> {
         ProjectBuilder::new(self)
     }
+
+    /// This environment as the library sees it, for the in-process callers that
+    /// cannot be isolated by setting a variable.
+    ///
+    /// The bridge between the two halves of the harness: [`Self::vars`] isolates
+    /// a child process, and this isolates a direct library call. They must agree
+    /// — a test that starts a server in-process and then drives it with a `story`
+    /// subprocess is looking at one store or it is testing nothing —
+    /// which is what `the_in_process_environment_matches_what_a_child_resolves`
+    /// pins.
+    #[must_use]
+    pub fn environment(&self) -> storyhook::env::Environment {
+        storyhook::env::Environment::at(&self.home)
+    }
 }
 
 /// The `story` binary under test — always this build's, never a globally
@@ -253,6 +267,23 @@ mod tests {
         assert!(
             out.status.success(),
             "story --version must succeed: {out:?}"
+        );
+    }
+
+    /// The two halves of the harness must name the same directories: one
+    /// isolates a child process by setting variables, the other isolates an
+    /// in-process call by being passed down. A test that used both and got two
+    /// different stores would pass while proving nothing.
+    #[test]
+    fn the_in_process_environment_matches_what_a_child_resolves() {
+        let env = TestEnv::isolated();
+        let environment = env.environment();
+        assert_eq!(environment.data_home(), env.data_dir());
+        assert_eq!(environment.home(), env.home());
+        assert_eq!(
+            environment.state_home(),
+            env.state_home().join("storyhook"),
+            "a child resolves $XDG_STATE_HOME/storyhook"
         );
     }
 
