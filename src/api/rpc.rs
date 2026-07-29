@@ -18,57 +18,168 @@
 
 use tiny_http::{Header, Method};
 
-use crate::api::http::{Reply, header_value, json_reply, text_reply, to_json};
+use crate::api::http::{Reply, error_reply, header_value, json_reply, text_reply, to_json};
+use crate::api::wire::{WireRequest, WireResponse};
 use crate::daemon::lifecycle::{Hello, PROTOCOL};
+use crate::env::Environment;
+use crate::error::AppError;
+use crate::invoke::{InvokeRequest, Invoker, StoreInvoker};
+use crate::store::Store;
 
 /// The header carrying the daemon's bearer token.
 pub const TOKEN_HEADER: &str = "X-Storyhook-Token";
 
 /// What a routed control request asked for.
-pub enum Control {
+pub enum Answer {
     /// Answered; send this.
     Reply(Reply),
     /// Answered, and the daemon should now shut down.
     Shutdown(Reply),
 }
 
+/// Everything the control surface needs to answer a request.
+///
+/// Bundled rather than passed as six parameters: the daemon builds one of these
+/// once and it does not change, so threading the parts through every call would
+/// be noise around the two things that do vary — the request and the interface
+/// it arrived on.
+pub struct Surface<'a, S: Store> {
+    /// The store commands run against.
+    pub store: &'a S,
+    /// The environment they run under.
+    pub env: &'a Environment,
+    /// The bearer token this daemon requires.
+    pub token: &'a str,
+    /// What `/api/v1/hello` answers.
+    pub hello: &'a Hello,
+}
+
 /// Routes a request under `/api/v1/`, or `None` if it is not one.
 ///
 /// `loopback` says whether the request arrived on the loopback listener. On any
 /// other interface this surface does not exist.
-pub fn route(
+pub fn route<S: Store>(
+    surface: &Surface<'_, S>,
     segments: &[&str],
     method: &Method,
     headers: &[Header],
+    body: &str,
     loopback: bool,
-    token: &str,
-    hello: &Hello,
-) -> Option<Control> {
+) -> Option<Answer> {
     let ["api", "v1", rest @ ..] = segments else {
         return None;
     };
     if !loopback {
-        return Some(Control::Reply(text_reply(404, "Not found")));
+        return Some(Answer::Reply(text_reply(404, "Not found")));
     }
-    if !token_ok(headers, token) {
-        return Some(Control::Reply(text_reply(
+    if !token_ok(headers, surface.token) {
+        return Some(Answer::Reply(text_reply(
             401,
             "storyhook daemon: missing or invalid token",
         )));
     }
 
     Some(match (rest, method) {
-        (["hello"], Method::Get) => Control::Reply(match to_json(hello) {
+        (["hello"], Method::Get) => Answer::Reply(match to_json(surface.hello) {
             Ok(body) => json_reply(200, body).no_cache(),
-            Err(e) => crate::api::http::error_reply(&e),
+            Err(e) => error_reply(&e),
         }),
-        (["shutdown"], Method::Post) => Control::Shutdown(json_reply(
+        (["shutdown"], Method::Post) => Answer::Shutdown(json_reply(
             200,
             serde_json::json!({"result": "ok", "protocol": PROTOCOL}).to_string(),
         )),
-        (["hello"] | ["shutdown"], _) => Control::Reply(text_reply(405, "Method not allowed")),
-        _ => Control::Reply(text_reply(404, "Not found")),
+        (["invoke"], Method::Post) => Answer::Reply(invoke(surface.store, surface.env, body)),
+        (["hello"] | ["shutdown"] | ["invoke"], _) => {
+            Answer::Reply(text_reply(405, "Method not allowed"))
+        }
+        _ => Answer::Reply(text_reply(404, "Not found")),
     })
+}
+
+/// `POST /api/v1/invoke` — run one command and answer with its unrendered
+/// result.
+///
+/// **The answer is a `Response`, never text.** Rendering is the client's job,
+/// because the client is the process the user is looking at and the one that
+/// knows whether `--json` was asked for. A daemon that rendered would have to
+/// be told, and then two processes would share a decision that belongs to one.
+///
+/// The whole thing runs inside `catch_unwind`. A panic in a CLI kills one
+/// command; a panic in a daemon kills everything the machine is doing, and
+/// `store.transact` is panic-safe by construction (the transaction rolls back on
+/// drop), so there is nothing to be gained by letting one through.
+fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
+    let request: WireRequest = match serde_json::from_str(body) {
+        Ok(request) => request,
+        Err(e) => {
+            return error_reply(&AppError::Usage(format!(
+                "the daemon could not read the request envelope: {e}"
+            )));
+        }
+    };
+
+    if let Err(mismatch) = compatible(&request) {
+        // Answered inside the envelope rather than as a bare HTTP error: the
+        // client is storyhook, and it should reconstruct this the same way it
+        // reconstructs any other failure.
+        return answer(&request.request_id, Err(mismatch));
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        StoreInvoker::new(store, &request.cwd, env.clone())
+            .hook_depth(request.hook_depth)
+            .invoke(InvokeRequest::new(request.invocation.clone()).no_hooks(request.no_hooks))
+    }))
+    .unwrap_or_else(|_| {
+        Err(AppError::Storage(
+            "the daemon panicked handling this command; the store is unchanged and \
+             the daemon is still running. Please report this."
+                .to_string(),
+        ))
+    });
+
+    answer(&request.request_id, result)
+}
+
+/// Renders a result as the wire envelope.
+///
+/// Always HTTP 200: the *transport* succeeded, and the command's own success or
+/// failure is inside the envelope where a client can reconstruct the variant.
+/// Mapping an `AppError` onto a status code as the REST surface does would make
+/// a client parse two error channels to learn one thing.
+fn answer(request_id: &str, result: Result<crate::output::Response, AppError>) -> Reply {
+    let envelope = WireResponse::new(request_id.to_string(), result);
+    match to_json(&envelope) {
+        Ok(body) => json_reply(200, body).no_cache(),
+        Err(e) => error_reply(&e),
+    }
+}
+
+/// Whether this daemon will serve `request`.
+///
+/// Strict on both counts, and deliberately so. The client is expected to have
+/// checked the version before sending — it reads the portfile, which says what
+/// build the daemon is — so a mismatch here means the daemon was replaced
+/// mid-flight. Refusing keeps `Invocation` and `Response` free of every
+/// compatibility obligation they would otherwise accumulate: there is exactly
+/// one version of them alive at a time.
+fn compatible(request: &WireRequest) -> Result<(), AppError> {
+    if request.protocol != PROTOCOL {
+        return Err(AppError::Usage(format!(
+            "this storyhook daemon speaks protocol {PROTOCOL}; the client sent {}. \
+             Run `story daemon stop` and try again.",
+            request.protocol
+        )));
+    }
+    if request.client_version != env!("CARGO_PKG_VERSION") {
+        return Err(AppError::Usage(format!(
+            "this storyhook daemon is version {}; the client is {}. \
+             Run `story daemon stop` and try again.",
+            env!("CARGO_PKG_VERSION"),
+            request.client_version
+        )));
+    }
+    Ok(())
 }
 
 /// Whether the request carries the daemon's token.
@@ -113,37 +224,59 @@ mod tests {
         Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
     }
 
-    fn status(control: Option<Control>) -> u16 {
-        match control.expect("a control route") {
-            Control::Reply(reply) | Control::Shutdown(reply) => reply.status,
+    /// A store to route against.
+    ///
+    /// These tests are about the guard in front of the surface rather than
+    /// about the commands behind it, so an empty store is enough — every case
+    /// here is answered before anything is read.
+    fn store() -> (tempfile::TempDir, crate::store::SqliteStore) {
+        let dir = tempfile::Builder::new()
+            .prefix("storyhook-rpc-")
+            .tempdir_in("/private/tmp")
+            .expect("a scratch directory");
+        let store =
+            crate::store::SqliteStore::open(dir.path().join("store.db")).expect("opening a store");
+        (dir, store)
+    }
+
+    /// Routes one request, with the token `"t"` expected.
+    fn routed(
+        segments: &[&str],
+        method: &Method,
+        headers: &[Header],
+        loopback: bool,
+    ) -> Option<Answer> {
+        let (dir, store) = store();
+        let env = Environment::at(dir.path());
+        let hello = hello();
+        let surface = Surface {
+            store: &store,
+            env: &env,
+            token: "t",
+            hello: &hello,
+        };
+        route(&surface, segments, method, headers, "", loopback)
+    }
+
+    fn status(answer: Option<Answer>) -> u16 {
+        match answer.expect("a control route") {
+            Answer::Reply(reply) | Answer::Shutdown(reply) => reply.status,
         }
+    }
+
+    fn with_token() -> Vec<Header> {
+        vec![header(TOKEN_HEADER, "t")]
     }
 
     #[test]
     fn a_path_outside_the_control_surface_is_not_routed_here() {
-        assert!(
-            route(
-                &["api", "repos"],
-                &Method::Get,
-                &[header(TOKEN_HEADER, "t")],
-                true,
-                "t",
-                &hello()
-            )
-            .is_none()
-        );
+        assert!(routed(&["api", "repos"], &Method::Get, &with_token(), true).is_none());
+        assert!(routed(&[], &Method::Get, &with_token(), true).is_none());
     }
 
     #[test]
     fn hello_answers_the_daemons_identity() {
-        let control = route(
-            &["api", "v1", "hello"],
-            &Method::Get,
-            &[header(TOKEN_HEADER, "t")],
-            true,
-            "t",
-            &hello(),
-        );
+        let control = routed(&["api", "v1", "hello"], &Method::Get, &with_token(), true);
         assert_eq!(status(control), 200);
     }
 
@@ -155,45 +288,29 @@ mod tests {
         for path in [
             ["api", "v1", "hello"].as_slice(),
             ["api", "v1", "shutdown"].as_slice(),
+            ["api", "v1", "invoke"].as_slice(),
         ] {
-            let control = route(
-                path,
-                &Method::Get,
-                &[header(TOKEN_HEADER, "t")],
-                false,
-                "t",
-                &hello(),
+            assert_eq!(
+                status(routed(path, &Method::Post, &with_token(), false)),
+                404,
+                "{path:?}"
             );
-            assert_eq!(status(control), 404, "{path:?}");
         }
     }
 
     #[test]
     fn a_request_without_the_token_is_refused() {
         assert_eq!(
-            status(route(
-                &["api", "v1", "hello"],
-                &Method::Get,
-                &[],
-                true,
-                "t",
-                &hello()
-            )),
+            status(routed(&["api", "v1", "hello"], &Method::Get, &[], true)),
             401
         );
     }
 
     #[test]
     fn a_request_with_the_wrong_token_is_refused() {
+        let wrong = vec![header(TOKEN_HEADER, "not-the-token")];
         assert_eq!(
-            status(route(
-                &["api", "v1", "hello"],
-                &Method::Get,
-                &[header(TOKEN_HEADER, "not-the-token")],
-                true,
-                "t",
-                &hello()
-            )),
+            status(routed(&["api", "v1", "hello"], &Method::Get, &wrong, true)),
             401
         );
     }
@@ -205,13 +322,11 @@ mod tests {
     #[test]
     fn the_token_is_checked_before_anything_is_served() {
         assert_eq!(
-            status(route(
+            status(routed(
                 &["api", "v1", "definitely-not-a-route"],
                 &Method::Get,
                 &[],
-                true,
-                "t",
-                &hello()
+                true
             )),
             401,
             "an unauthenticated request must not be able to tell a real route \
@@ -222,27 +337,72 @@ mod tests {
     #[test]
     fn shutdown_is_a_post() {
         assert!(matches!(
-            route(
+            routed(
                 &["api", "v1", "shutdown"],
                 &Method::Post,
-                &[header(TOKEN_HEADER, "t")],
-                true,
-                "t",
-                &hello()
+                &with_token(),
+                true
             ),
-            Some(Control::Shutdown(_))
+            Some(Answer::Shutdown(_))
         ));
         assert_eq!(
-            status(route(
+            status(routed(
                 &["api", "v1", "shutdown"],
                 &Method::Get,
-                &[header(TOKEN_HEADER, "t")],
-                true,
-                "t",
-                &hello()
+                &with_token(),
+                true
             )),
             405
         );
+    }
+
+    #[test]
+    fn invoke_is_a_post() {
+        assert_eq!(
+            status(routed(
+                &["api", "v1", "invoke"],
+                &Method::Get,
+                &with_token(),
+                true
+            )),
+            405
+        );
+    }
+
+    /// A malformed envelope is a client bug, and the daemon says so rather than
+    /// answering something a client would then try to reconstruct.
+    #[test]
+    fn an_unreadable_envelope_is_refused_with_a_reason() {
+        let (dir, store) = store();
+        let env = Environment::at(dir.path());
+        let reply = invoke(&store, &env, "{ not json");
+        assert_eq!(reply.status, 400);
+    }
+
+    /// A version mismatch is answered *inside* the envelope: the client is
+    /// storyhook, and it reconstructs this the way it reconstructs any other
+    /// failure.
+    #[test]
+    fn a_client_from_another_build_is_refused_inside_the_envelope() {
+        let (dir, store) = store();
+        let env = Environment::at(dir.path());
+        let mut request =
+            crate::api::wire::WireRequest::new(crate::cli::Invocation::Version, dir.path());
+        request.client_version = "0.0.0-not-this-one".to_string();
+        let reply = invoke(&store, &env, &serde_json::to_string(&request).unwrap());
+        assert_eq!(
+            reply.status, 200,
+            "the transport succeeded; the command did not"
+        );
+    }
+
+    #[test]
+    fn a_protocol_mismatch_is_named_rather_than_interpreted() {
+        let request = crate::api::wire::WireRequest {
+            protocol: PROTOCOL + 1,
+            ..crate::api::wire::WireRequest::new(crate::cli::Invocation::Version, "/tmp")
+        };
+        assert!(compatible(&request).is_err());
     }
 
     #[test]

@@ -271,17 +271,42 @@ fn accept_loop<S: Store>(serving: &Serving<'_, S>, server: Server, loopback: boo
         // The control surface is checked before anything else: it is the one
         // part of this daemon that is not the dashboard, and it must not be
         // reachable through a dashboard route by accident.
-        if let Some(control) = rpc::route(
+        // The body is read before routing because `/api/v1/invoke` carries
+        // one, and reading it after the route has been chosen would mean
+        // reading it twice or not at all.
+        let headers = request.headers().to_vec();
+        let body = if carries_body(&method) {
+            match read_body(&mut request) {
+                Some(b) => b,
+                None => {
+                    finish(
+                        request,
+                        text_reply(400, "request body invalid or too large"),
+                    );
+                    continue;
+                }
+            }
+        } else {
+            String::new()
+        };
+
+        let surface = rpc::Surface {
+            store: serving.store,
+            env: &serving.env,
+            token: &serving.token,
+            hello: &serving.hello,
+        };
+        if let Some(answer) = rpc::route(
+            &surface,
             &crate::api::http::path_segments(&path),
             &method,
-            request.headers(),
+            &headers,
+            &body,
             loopback,
-            &serving.token,
-            &serving.hello,
         ) {
-            match control {
-                rpc::Control::Reply(reply) => finish(request, reply),
-                rpc::Control::Shutdown(reply) => {
+            match answer {
+                rpc::Answer::Reply(reply) => finish(request, reply),
+                rpc::Answer::Shutdown(reply) => {
                     // Tell every connected browser to reconnect *before*
                     // answering, so a client that is about to lose its stream
                     // knows why, then let in-flight work finish.
@@ -303,22 +328,6 @@ fn accept_loop<S: Store>(serving: &Serving<'_, S>, server: Server, loopback: boo
             thread::spawn(move || serve_sse(request, bus));
             continue;
         }
-
-        let headers = request.headers().to_vec();
-        let body = if carries_body(&method) {
-            match read_body(&mut request) {
-                Some(b) => b,
-                None => {
-                    finish(
-                        request,
-                        text_reply(400, "request body invalid or too large"),
-                    );
-                    continue;
-                }
-            }
-        } else {
-            String::new()
-        };
 
         let routed = rest::route(
             serving.store,

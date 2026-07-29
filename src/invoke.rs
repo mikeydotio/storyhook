@@ -1157,6 +1157,131 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
     }
 }
 
+/// Runs one invocation by asking the machine's daemon to run it.
+///
+/// **The default.** Every `story` command goes through here unless `--local`
+/// says otherwise, and the reason is that one process owning the store is what
+/// makes a dashboard live, a change feed possible, and a second opinion about
+/// the data impossible.
+///
+/// # What this does not do
+///
+/// It does not render, and it does not decide anything about the answer. The
+/// daemon returns a [`Response`] or an [`AppError`], the same values
+/// [`StoreInvoker`] returns, and this process renders them exactly as it would
+/// have rendered its own — which is the whole byte-compatibility argument, made
+/// structural.
+///
+/// # Retries
+///
+/// **A refused connection is retried; nothing else is.** A connection the kernel
+/// refused is proof the request was never delivered, so re-sending it — mutation
+/// or not — cannot repeat anything. Any failure *after* the connection is
+/// established is unprovable: the daemon may have committed the write and died
+/// before answering, and a client that retried would be guessing. It fails loud
+/// instead, and says the command may or may not have run, because that is true
+/// and a comforting lie is worse.
+pub struct HttpInvoker {
+    env: Environment,
+    cwd: PathBuf,
+    hook_depth: u32,
+}
+
+impl HttpInvoker {
+    /// An invoker that runs commands from `cwd` through `env`'s daemon.
+    pub fn new(env: Environment, cwd: impl Into<PathBuf>) -> Self {
+        Self {
+            env,
+            cwd: cwd.into(),
+            hook_depth: 0,
+        }
+    }
+
+    /// Sets how deep inside an event hook this invocation is running.
+    #[must_use]
+    pub fn hook_depth(mut self, hook_depth: u32) -> Self {
+        self.hook_depth = hook_depth;
+        self
+    }
+
+    /// Posts one envelope to a daemon and reconstructs its answer.
+    fn send(
+        daemon: &crate::daemon::lifecycle::DaemonInfo,
+        request: &crate::api::wire::WireRequest,
+    ) -> Result<Result<Response, AppError>, Transport> {
+        let url = format!("http://127.0.0.1:{}/api/v1/invoke", daemon.port);
+        let response = ureq::post(&url)
+            .header(crate::api::rpc::TOKEN_HEADER, &daemon.token)
+            .header("Content-Type", "application/json")
+            .send(serde_json::to_string(request).map_err(|e| Transport::Sent(e.to_string()))?)
+            .map_err(Transport::from)?;
+        let envelope: crate::api::wire::WireResponse = response
+            .into_body()
+            .read_json()
+            .map_err(|e| Transport::Sent(format!("the daemon's answer was unreadable: {e}")))?;
+        Ok(envelope.into_result())
+    }
+}
+
+/// How far a failed request got, which is what decides whether it may be
+/// repeated.
+enum Transport {
+    /// The connection was refused, so nothing was delivered.
+    NotDelivered(String),
+    /// The request left this process. Whether it ran is unknown.
+    Sent(String),
+}
+
+impl From<ureq::Error> for Transport {
+    fn from(error: ureq::Error) -> Self {
+        match error {
+            // Nothing is listening. The request cannot have arrived.
+            ureq::Error::ConnectionFailed | ureq::Error::HostNotFound => {
+                Transport::NotDelivered(error.to_string())
+            }
+            other => Transport::Sent(other.to_string()),
+        }
+    }
+}
+
+impl Invoker for HttpInvoker {
+    fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
+        let wire = crate::api::wire::WireRequest::new(request.invocation, &self.cwd)
+            .no_hooks(request.no_hooks)
+            .hook_depth(self.hook_depth);
+
+        let daemon = crate::daemon::lifecycle::ensure(&self.env)?;
+        match Self::send(&daemon, &wire) {
+            Ok(result) => return result,
+            Err(Transport::Sent(detail)) => {
+                return Err(AppError::Storage(format!(
+                    "the storyhook daemon stopped answering: {detail}. This command may or \
+                     may not have run — storyhook will not repeat it, because repeating a \
+                     write it cannot prove failed is worse than reporting this. Check with \
+                     `story show` or `story list`, then try again."
+                )));
+            }
+            // Refused: the daemon went away between the check and the send,
+            // which is exactly what a version-skew restart looks like from
+            // here. Nothing was delivered, so starting one and sending the
+            // original request is a first attempt rather than a retry.
+            Err(Transport::NotDelivered(_)) => {}
+        }
+
+        let daemon = crate::daemon::lifecycle::ensure(&self.env)?;
+        match Self::send(&daemon, &wire) {
+            Ok(result) => result,
+            Err(Transport::NotDelivered(detail) | Transport::Sent(detail)) => {
+                Err(AppError::Storage(format!(
+                    "could not reach the storyhook daemon: {detail}. Run `story daemon \
+                     status` to see what it thinks it is doing, or `story --local \
+                     <command>` to run without it."
+                )))
+            }
+        }
+    }
+}
+
 /// Runs one invocation against the store, resolving the project from the
 /// working directory first.
 ///
