@@ -272,3 +272,61 @@ fn assert_actionable_corruption(env: &TestEnv, message: &str) {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The pointer file
+// ---------------------------------------------------------------------------
+
+/// `.storyhook.toml` is committed to the repository and hand-editable — it
+/// carries the user's `[plugin]` and `[hooks]` tables as well as the project's
+/// identity — so a syntax error in it is an ordinary mistake, not an exotic one.
+///
+/// It must therefore say *which file*. A bare `TOML parse error at line 1,
+/// column 6` in the middle of `story list` gives a user nothing to open.
+#[test]
+fn a_corrupt_pointer_file_names_the_file_that_could_not_be_read() {
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("CO").build();
+    std::fs::write(
+        project.path().join(".storyhook.toml"),
+        "this is not toml {{{\n",
+    )
+    .expect("corrupting the pointer file");
+
+    let out = story_in(&env, project.path(), &["list"]);
+    let message = failure_message(&out, "story list");
+
+    assert!(
+        message.contains(".storyhook.toml"),
+        "the message must name the file: {message}"
+    );
+    assert!(
+        message.contains(&project.path().display().to_string()),
+        "and where it is, because a checkout is not always the working \
+         directory: {message}"
+    );
+}
+
+/// The same, for a pointer that parses but is missing the identity itself.
+/// serde's `missing field `uuid`` is accurate and unattributed.
+#[test]
+fn a_pointer_file_missing_its_identity_names_the_file_too() {
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("CO").build();
+    std::fs::write(
+        project.path().join(".storyhook.toml"),
+        "schema = 1\nprefix = \"CO\"\n",
+    )
+    .expect("removing the identity");
+
+    let out = story_in(&env, project.path(), &["list"]);
+    let message = failure_message(&out, "story list");
+    assert!(
+        message.contains(".storyhook.toml"),
+        "the message must name the file: {message}"
+    );
+    assert!(
+        message.contains("uuid"),
+        "and keep serde's account of what is missing: {message}"
+    );
+}
