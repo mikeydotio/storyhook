@@ -138,15 +138,47 @@ fn resolve_hook(config: &HooksConfig, event_type: HookEventType) -> Option<&Hook
     }
 }
 
-pub fn fire_hook(root: &Path, config: &HooksConfig, event_type: HookEventType, payload_json: &str) {
+/// How deep inside an event hook this process is running.
+///
+/// A hook shells out to `story`, and the child must not fire the hook that
+/// spawned it. Anything unparseable counts as "inside a hook", because the safe
+/// answer to an ambiguous depth is to fire nothing.
+///
+/// Read here for a process that *is* the CLI. A daemon must not use it: the
+/// depth belongs to the invocation, which arrived over a wire, and the daemon's
+/// own process environment says nothing about it.
+#[must_use]
+pub fn depth_from_env() -> u32 {
+    match std::env::var("STORYHOOK_HOOK_DEPTH") {
+        Ok(raw) => raw.trim().parse().unwrap_or(1),
+        Err(_) => 0,
+    }
+}
+
+/// Fires one hook, at recursion depth `depth`.
+///
+/// `depth` is a parameter rather than an environment read, and that is what
+/// makes hooks terminate under a daemon. The CLI's depth comes from its
+/// environment; a daemon's comes from the request envelope, and its own process
+/// environment — which never has the variable set — would say every invocation
+/// was a fresh one. A hook that shells out to `story` would then fire the hook
+/// that spawned it, forever.
+///
+/// The child is told `depth + 1`, so the chain is describable rather than merely
+/// stopped.
+pub fn fire_hook(
+    root: &Path,
+    config: &HooksConfig,
+    event_type: HookEventType,
+    payload_json: &str,
+    depth: u32,
+) {
     if !config.settings.enabled {
         return;
     }
 
-    // Loop prevention
-    if let Ok(depth) = std::env::var("STORYHOOK_HOOK_DEPTH")
-        && depth.parse::<u32>().unwrap_or(0) >= 1
-    {
+    // Loop prevention.
+    if depth >= 1 {
         return;
     }
 
@@ -165,7 +197,7 @@ pub fn fire_hook(root: &Path, config: &HooksConfig, event_type: HookEventType, p
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .current_dir(root)
-        .env("STORYHOOK_HOOK_DEPTH", "1")
+        .env("STORYHOOK_HOOK_DEPTH", (depth + 1).to_string())
         .spawn();
 
     let mut child = match child {
@@ -285,7 +317,7 @@ pub fn test_hook(root: &Path, event_type_str: &str) -> Result<String, crate::err
     });
     let payload_str = serde_json::to_string(&payload).unwrap();
 
-    fire_hook(root, &config, event_type, &payload_str);
+    fire_hook(root, &config, event_type, &payload_str, depth_from_env());
 
     Ok(format!("fired {} hook: {}", event_type_str, hook.command))
 }

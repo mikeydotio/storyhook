@@ -231,7 +231,13 @@ impl<'a, S: Store> Ctx<'a, S> {
         let Some(config) = event_hooks::load_hooks_config(&self.cwd) else {
             return;
         };
-        event_hooks::fire_hook(&self.cwd, &config, event, &payload.to_string());
+        event_hooks::fire_hook(
+            &self.cwd,
+            &config,
+            event,
+            &payload.to_string(),
+            self.hook_depth,
+        );
     }
 
     /// The full [`crate::output::StoryView`] response for one story, read

@@ -502,10 +502,28 @@ pub enum WebAction {
     Address,
 }
 
-pub fn split_global_flags(args: &[String]) -> (bool, bool, bool, Vec<String>) {
-    let mut json = false;
-    let mut quiet = false;
-    let mut no_hooks = false;
+/// The global flags, and everything that is not one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GlobalFlags {
+    /// `--json`: render the machine-readable envelope.
+    pub json: bool,
+    /// `--quiet`: suppress the human rendering.
+    pub quiet: bool,
+    /// `--no-hooks`: do not fire the project's event hooks.
+    pub no_hooks: bool,
+    /// `--local`: run in this process rather than through the daemon.
+    ///
+    /// A first-class, permanent mode rather than an escape hatch. A git hook
+    /// that spawned a daemon inside `prepare-commit-msg` would be hostile, and
+    /// a CI job that started one for a single command would be paying for
+    /// something it never uses again. SQLite's WAL is designed for exactly this
+    /// — several processes on one database — so `--local` is not a lesser path,
+    /// it is the same services with one less hop.
+    pub local: bool,
+}
+
+pub fn split_global_flags(args: &[String]) -> (GlobalFlags, Vec<String>) {
+    let mut flags = GlobalFlags::default();
     let mut filtered = Vec::new();
 
     let mut i = 0;
@@ -523,16 +541,17 @@ pub fn split_global_flags(args: &[String]) -> (bool, bool, bool, Vec<String>) {
                     i += 2;
                     continue;
                 }
-                json = true;
+                flags.json = true;
             }
-            "--quiet" => quiet = true,
-            "--no-hooks" => no_hooks = true,
+            "--quiet" => flags.quiet = true,
+            "--no-hooks" => flags.no_hooks = true,
+            "--local" => flags.local = true,
             _ => filtered.push(args[i].clone()),
         }
         i += 1;
     }
 
-    (json, quiet, no_hooks, filtered)
+    (flags, filtered)
 }
 
 /// Whether `args` — a whole invocation, verb included — asks a verb to

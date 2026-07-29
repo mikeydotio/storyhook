@@ -148,6 +148,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::Create,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_response(root, story)
@@ -443,6 +444,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::Comment,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_by_id(root, &id)
@@ -561,6 +563,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::StateChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
                 if state_def.super_state == SuperState::Closed {
                     let close_payload = serde_json::json!({
@@ -575,6 +578,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                         config,
                         crate::event_hooks::HookEventType::Close,
                         &close_payload.to_string(),
+                        crate::event_hooks::depth_from_env(),
                     );
                 }
             }
@@ -620,6 +624,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::LabelChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_by_id(root, &id)
@@ -655,6 +660,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::PriorityChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_by_id(root, &id)
@@ -953,6 +959,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::StateChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             story_view_by_id(root, &id)
@@ -1541,6 +1548,7 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                     config,
                     crate::event_hooks::HookEventType::RelationshipChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
 
@@ -3150,6 +3158,7 @@ fn handle_phase(root: &Path, action: PhaseAction, no_hooks: bool) -> Result<Resp
                     config,
                     crate::event_hooks::HookEventType::LabelChange,
                     &payload.to_string(),
+                    crate::event_hooks::depth_from_env(),
                 );
             }
             Ok(Response::Message(format!("assigned {id} to phase {phase}")))
