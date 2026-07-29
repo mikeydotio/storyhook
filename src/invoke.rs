@@ -1258,6 +1258,12 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                     self.pointer,
                 );
             }
+            // A repository that still has its stories in `.storyhook/` gets a
+            // diagnosis rather than an invitation to `story init`, which would
+            // mint an empty second project beside data the user still has.
+            if let Some(tree) = crate::service::project::legacy_project_at(&self.cwd) {
+                return Err(crate::service::project::unmigrated_error(&tree));
+            }
             return Err(AppError::NotFound(
                 "story project not initialized in this directory; run `story init`".to_string(),
             ));
