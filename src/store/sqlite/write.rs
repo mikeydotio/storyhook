@@ -103,6 +103,25 @@ pub(super) fn touch_project_path(
     Ok(())
 }
 
+/// Forgets one checkout of a project, reporting whether there was one.
+///
+/// The project itself survives: a checkout that is deleted, moved, or removed
+/// from the dashboard is not a reason to lose its stories.
+pub(super) fn forget_project_path(
+    conn: &Connection,
+    project: ProjectId,
+    path: &Path,
+) -> Result<bool, StoreError> {
+    let removed = sql(
+        conn.execute(
+            "DELETE FROM project_paths WHERE project_id = ?1 AND path = ?2",
+            params![project.get(), path.to_string_lossy()],
+        ),
+        "forgetting a project path",
+    )?;
+    Ok(removed > 0)
+}
+
 // ---------------------------------------------------------------------------
 // Allocation
 // ---------------------------------------------------------------------------
@@ -134,6 +153,32 @@ pub(super) fn allocate_story_no(
     allocated
         .map(StoryNo::new)
         .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))
+}
+
+/// Raises a project's story-number counter so that nothing at or below
+/// `highest` is ever handed out.
+///
+/// `MAX`, never assignment: a caller that has just written story 40 into a
+/// project whose counter already stands at 100 must not walk it backwards, or
+/// the next `story new` mints an id that already exists.
+pub(super) fn reserve_story_no(
+    conn: &Connection,
+    project: ProjectId,
+    highest: StoryNo,
+) -> Result<(), StoreError> {
+    let updated = sql(
+        conn.execute(
+            "UPDATE projects SET next_story_no = MAX(next_story_no, ?2) WHERE id = ?1",
+            params![project.get(), highest.get() + 1],
+        ),
+        "reserving a story number",
+    )?;
+    if updated == 0 {
+        return Err(StoreError::NotFound(format!(
+            "project {project} does not exist"
+        )));
+    }
+    Ok(())
 }
 
 /// Reserves `count` consecutive change-feed positions.

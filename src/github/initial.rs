@@ -1,15 +1,13 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use dialoguer::Select;
 
 use crate::error::AppError;
-use crate::storage;
 
 use super::client::GithubClient;
+use super::storage::SyncStorage;
 use super::sync_state::{
     GithubSyncConfig, StoryIssueMapping, SyncMode, SyncSettings, detect_github_remote,
-    save_sync_config,
 };
 use super::types::GithubIssue;
 
@@ -28,9 +26,9 @@ pub fn get_github_token() -> Result<String, AppError> {
 /// Run the initial sync setup wizard.
 /// Called when `story github-sync` is run for the first time (no github-sync.toml exists).
 /// Returns the initial config with mappings established.
-pub fn run_initial_setup(root: &Path) -> Result<GithubSyncConfig, AppError> {
+pub fn run_initial_setup(sync: &dyn SyncStorage) -> Result<GithubSyncConfig, AppError> {
     // 1. Detect remote
-    let github_repo = detect_github_remote(root)?.ok_or_else(|| {
+    let github_repo = detect_github_remote(sync.root())?.ok_or_else(|| {
         AppError::Validation(
             "No GitHub remote found. Ensure `git remote origin` points to a GitHub repository."
                 .to_string(),
@@ -48,7 +46,7 @@ pub fn run_initial_setup(root: &Path) -> Result<GithubSyncConfig, AppError> {
     eprintln!("Token validated.");
 
     // 3. Scan both sides
-    let local_stories = storage::load_all_open_snapshots(root)?;
+    let local_stories = sync.open_stories()?;
     eprintln!("Fetching issues from GitHub...");
     let github_issues: Vec<GithubIssue> = client.list_issues(None, "open")?;
     // Filter out pull requests (list_issues already does this, but be defensive)
@@ -80,7 +78,7 @@ pub fn run_initial_setup(root: &Path) -> Result<GithubSyncConfig, AppError> {
         .interact()
         .map_err(|e| AppError::Usage(format!("selection cancelled: {e}")))?;
 
-    let now = storage::now();
+    let now = sync.now();
 
     // 5. Handle each choice
     let mappings = match strategy {
@@ -130,9 +128,9 @@ pub fn run_initial_setup(root: &Path) -> Result<GithubSyncConfig, AppError> {
         mappings,
     };
 
-    save_sync_config(root, &config)?;
+    sync.save_config(&config)?;
     eprintln!();
-    eprintln!("Sync config saved to .storyhook/github-sync.toml");
+    eprintln!("Sync config saved.");
 
     Ok(config)
 }

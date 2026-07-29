@@ -28,15 +28,21 @@
 //! `story`, which needs a second connection to the same database, and holding
 //! a write transaction open across that is a deadlock with a five-second fuse.
 
+pub mod catalog;
 pub mod config;
+pub mod git;
+#[cfg(feature = "github-sync")]
+pub mod github;
 pub mod grouping;
 pub mod integrity;
 pub mod project;
 pub mod query;
 pub mod relation;
+pub mod session;
 pub mod story;
 pub mod system;
 pub mod templates;
+pub mod transfer;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -49,14 +55,20 @@ use crate::store::{
     partition_known,
 };
 
+pub use catalog::{CatalogEntry, CatalogService};
 pub use config::{ConfigService, StateEdit, StateListing};
+pub use git::GitService;
+#[cfg(feature = "github-sync")]
+pub use github::{GithubSyncService, StoreSyncStorage};
 pub use grouping::{GroupingService, PhaseCleared};
 pub use integrity::IntegrityService;
 pub use project::{InitOptions, InitOutcome, ProjectPointer, ProjectService};
 pub use query::{ListFilters, QueryService};
 pub use relation::{RelationOutcome, RelationService};
+pub use session::SessionService;
 pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
 pub use system::SystemService;
+pub use transfer::{ImportBatch, TransferService};
 
 /// Where a service reads "now" from.
 ///

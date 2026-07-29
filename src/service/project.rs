@@ -310,7 +310,7 @@ pub fn closed_state(tx: &impl ReadOps, project: ProjectId) -> Result<String, App
 /// nothing here and is what lets a later wave answer "these two directories
 /// are one repository" — the question whose wrong answer minted the colliding
 /// story ids this rearchitecture exists to fix.
-fn path_kind(root: &Path) -> PathKind {
+pub(crate) fn path_kind(root: &Path) -> PathKind {
     if root.join(".git").is_file() {
         PathKind::Worktree
     } else {
@@ -341,7 +341,7 @@ fn display_name(root: &Path) -> String {
 /// Collisions are expected — every `app` directory on a machine slugs to
 /// `app` — and are resolved the way the registry has always resolved them, by
 /// appending the first free numeric suffix.
-fn unique_slug(tx: &impl ReadOps, name: &str) -> Result<String, AppError> {
+pub(crate) fn unique_slug(tx: &impl ReadOps, name: &str) -> Result<String, AppError> {
     let base = slugify(name);
     if tx.project_by_slug(&base)?.is_none() {
         return Ok(base);
