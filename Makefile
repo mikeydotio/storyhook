@@ -62,11 +62,12 @@ test: check-no-orphan-servers
 # Everything, both legs. What a wave ends with and what a push should run.
 #
 # `make test` is the per-commit gate and is what the pre-push hook invokes; this
-# is the wider one. Measured 2026-07-29 on the M1 Max: `test` 114s, `test-daemon`
-# 51-55s, so `gate` lands around 170s. That is why the daemon leg is not simply
-# folded into `test`: the suite budget's hard ceiling is 180s and its target is
-# 120s, and a per-commit gate with six seconds of headroom is one busy machine
-# away from being useless.
+# is the wider one. Measured 2026-07-29 on the M1 Max: `test` 68s warm (114s when
+# it has compiling to do), `test-daemon` 51-60s, so `gate` lands between 120s and
+# 175s depending on how much is already built. That is why the daemon leg is not
+# simply folded into `test`: the suite budget's hard ceiling is 180s and its
+# target is 120s, and a per-commit gate sitting on the target when warm has
+# nothing left for a busy machine.
 #
 # Run it whenever tests are added or changed, and before opening a PR. That is
 # the moment the daemon leg earns its keep — see the comment on `test-daemon`.

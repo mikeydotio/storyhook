@@ -10,8 +10,12 @@
 //! what is wrong, where, and what to do next, and no raw `rusqlite`, `serde` or
 //! `toml` message ever reaches a user.**
 //!
-//! The cases are the seven shapes a store can be broken in, plus the pointer
-//! file that says which project a checkout belongs to:
+//! The cases are the shapes a store can be broken in, plus the pointer file that
+//! says which project a checkout belongs to. Three of them are deliberately
+//! *not* failures, and are tested for exactly that reason: a store that refused
+//! to open on a zero-byte file, or on a write-ahead log it could not make sense
+//! of, would turn a recoverable machine into an unusable one over a file that is
+//! by definition regenerable.
 //!
 //! | case | expected |
 //! |---|---|
