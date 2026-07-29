@@ -1,17 +1,38 @@
 //! `story commit-sync`: linking git commits to the stories they name.
 //!
-//! Reads the repository's log through `git` itself, finds story ids in commit
-//! *subjects*, and records each one as a `[git] <short-hash>: <subject>` comment
-//! on the story — moving it into the project's active state the first time it is
-//! mentioned, if the project has one and has not turned that off.
+//! Reads the repository's log through `git` itself, finds story ids anywhere in
+//! a commit *message*, and records each one as a `[git] <short-hash>: <subject>`
+//! comment on the story — moving it into the project's active state the first
+//! time it is mentioned, if the project has one and has not turned that off.
 //!
-//! # Scanning subjects only is a known limitation, not an oversight
+//! # The whole message, not the subject line (SH-58)
 //!
-//! `--format=%H %s` gives the subject line and nothing else, so a commit whose
-//! body says `Closes SH-12` is invisible here. That is reproduced deliberately:
-//! widening the scan changes which stories get comments, which is a behaviour
-//! change, and it is scheduled as its own wave rather than smuggled in with a
-//! port.
+//! `--format=%H %s` gave the subject and nothing else, so a commit whose body
+//! said `Closes SH-12` was invisible. That is not a corner case: this project
+//! mandates Conventional Commits, whose subject line is reserved for a summary
+//! under 72 characters, so a story reference belongs in the body — and
+//! following the style guide therefore guaranteed the feature did nothing.
+//!
+//! Widening the scan was blocked for two waves for a reason worth recording.
+//! Under `.storyhook/`, a link comment dirtied a version-controlled file, so
+//! recording it took another commit, whose message named the same stories, so
+//! scanning bodies would have linked *that* commit too, ad infinitum (SH-61).
+//! What terminated the loop was the accident that bookkeeping commits kept
+//! their story ids out of the subject. After the flip a story lives in the
+//! store, a link comment writes nothing into the repository, and the loop has
+//! no fuel — which is what
+//! `tests/commit_sync_termination.rs` exists to prove rather than assume.
+//!
+//! # Parsing `%B` needs a record separator (also SH-58)
+//!
+//! `%B` emits multi-line records, and the parser was line-oriented: splitting
+//! each line on its first space turns a body line `Closes SH-12` into
+//! hash=`Closes`, subject=`SH-12`. That is worse than the miss it replaces,
+//! because the short hash is the idempotency key, so a garbage hash breaks
+//! "safe to run repeatedly" as well. [`read_log`] therefore asks for
+//! `%H%x1f%B%x1e` and splits on the ASCII record and unit separators — control
+//! characters git will not emit from a commit message — so **the hash comes
+//! from `%H` and never from message text**.
 //!
 //! # Idempotency
 //!
@@ -33,12 +54,29 @@ use super::{Ctx, append_and_fold, project_prefix, resolve_open_story};
 /// The default scanning window, when `--since` is not given.
 const DEFAULT_WINDOW: &str = "7d";
 
+/// The separator between one `git log` record and the next.
+///
+/// ASCII RS. A commit message cannot contain one — git rejects NUL and this
+/// family of control characters never survives an editor — so it cannot be
+/// forged from message text, which is the whole point of choosing it over a
+/// newline.
+const RECORD_SEPARATOR: char = '\u{1e}';
+
+/// The separator between a record's hash and its message. ASCII US; see
+/// [`RECORD_SEPARATOR`].
+const FIELD_SEPARATOR: char = '\u{1f}';
+
 /// One commit as `git log` reported it.
 struct Commit {
     /// The abbreviated hash, as it appears in the comment.
+    ///
+    /// Derived from `%H` alone. Nothing in the message can influence it.
     short_hash: String,
-    /// The subject line.
+    /// The subject line — the message's first line, and the only part that
+    /// reaches the comment.
     subject: String,
+    /// The whole message, subject included. This is what is scanned.
+    message: String,
 }
 
 /// A transition `commit-sync` performed, for its report.
@@ -100,7 +138,10 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         let mut transitions: Vec<Transition> = Vec::new();
 
         for commit in &commits {
-            for story_id in extract_story_ids(&prefix, &commit.subject) {
+            // The whole message, subject included — the comment still carries
+            // the subject alone, because a multi-paragraph body in `story show`
+            // would be unreadable.
+            for story_id in extract_story_ids(&prefix, &commit.message) {
                 let moved = self.record_commit(
                     &prefix,
                     &story_id,
@@ -231,9 +272,15 @@ fn require_git_repository(root: &std::path::Path) -> Result<(), AppError> {
 }
 
 /// The commits reachable from HEAD that are newer than `cutoff`.
+///
+/// One record per commit, `<full hash>\x1f<whole message>\x1e`, parsed by
+/// separator rather than by line. See this module's header for why the format
+/// is not `%H %B`: a line-oriented parse of a multi-line message reads body
+/// text as a commit hash, and the hash is the idempotency key.
 fn read_log(root: &std::path::Path, cutoff: &str) -> Result<Vec<Commit>, AppError> {
+    let format = format!("--format=%H{FIELD_SEPARATOR}%B{RECORD_SEPARATOR}");
     let output = Command::new("git")
-        .args(["log", "--format=%H %s", &format!("--since={cutoff}")])
+        .args(["log", &format, &format!("--since={cutoff}")])
         .current_dir(root)
         .output()
         .map_err(|error| AppError::Storage(format!("failed to run git: {error}")))?;
@@ -244,22 +291,40 @@ fn read_log(root: &std::path::Path, cutoff: &str) -> Result<Vec<Commit>, AppErro
         )));
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_log(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Splits `git log`'s separator-delimited output into commits.
+///
+/// Separated from [`read_log`] so the parse — the part SH-58 got wrong — can be
+/// tested against fabricated output, including the shapes a real repository
+/// makes it awkward to produce.
+fn parse_log(text: &str) -> Vec<Commit> {
     let mut commits = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
+    for record in text.split(RECORD_SEPARATOR) {
+        // git puts a newline between one record's terminator and the next
+        // record's hash. Leading whitespace is therefore separator noise, and
+        // the trailing newline `%B` always appends is not part of the message.
+        let record = record.trim_start_matches(['\n', '\r']);
+        if record.is_empty() {
             continue;
         }
-        // A commit with an empty subject has no space to split on. It is still
-        // *scanned* — the legacy count included it — but names no stories.
-        let (hash, subject) = line.split_once(' ').unwrap_or((line, ""));
+        // A record with no field separator is not something git can produce.
+        // Skipping it is deliberate: the alternative is inventing a hash, and a
+        // wrong hash is the idempotency bug this parse exists to avoid.
+        let Some((hash, message)) = record.split_once(FIELD_SEPARATOR) else {
+            continue;
+        };
+        let message = message.trim_end_matches(['\n', '\r']);
         commits.push(Commit {
             short_hash: hash[..7.min(hash.len())].to_string(),
-            subject: subject.to_string(),
+            // A commit with an empty message has no first line. It is still
+            // *scanned* — the count has always included it — but names nothing.
+            subject: message.lines().next().unwrap_or("").to_string(),
+            message: message.to_string(),
         });
     }
-    Ok(commits)
+    commits
 }
 
 /// The state a story moves into when a commit first mentions it.
@@ -288,4 +353,78 @@ fn default_open_state(states: &[StateDef]) -> Option<StateDef> {
         .iter()
         .find(|state| state.super_state == SuperState::Open)
         .cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds one `git log` record in the format [`read_log`] asks for.
+    fn record(hash: &str, message: &str) -> String {
+        format!("{hash}{FIELD_SEPARATOR}{message}\n{RECORD_SEPARATOR}")
+    }
+
+    #[test]
+    fn a_record_yields_its_hash_subject_and_whole_message() {
+        let commits = parse_log(&record(
+            "0123456789abcdef0123456789abcdef01234567",
+            "feat: a thing\n\nCloses SH-1",
+        ));
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].short_hash, "0123456");
+        assert_eq!(commits[0].subject, "feat: a thing");
+        assert_eq!(commits[0].message, "feat: a thing\n\nCloses SH-1");
+    }
+
+    /// The SH-58 trap: a body line that looks like the *old* format's output.
+    ///
+    /// Under `--format=%H %s` parsed per line, `deadbeef SH-1` became a commit
+    /// with hash `deadbeef`. The separator format cannot express that, and this
+    /// is what says so.
+    #[test]
+    fn body_text_shaped_like_a_log_line_is_message_not_hash() {
+        let commits = parse_log(&record(
+            "0123456789abcdef0123456789abcdef01234567",
+            "fix: something\n\ndeadbeef SH-1 was the old parse's idea of a commit",
+        ));
+        assert_eq!(commits.len(), 1, "one commit, not two");
+        assert_eq!(commits[0].short_hash, "0123456");
+    }
+
+    #[test]
+    fn records_are_separated_by_the_record_separator_not_by_newlines() {
+        let text = format!(
+            "{}{}",
+            record("aaaaaaaaaaaaaaaa", "one\n\nline two\nline three"),
+            record("bbbbbbbbbbbbbbbb", "two")
+        );
+        let commits = parse_log(&text);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].short_hash, "aaaaaaa");
+        assert_eq!(commits[1].short_hash, "bbbbbbb");
+        assert_eq!(commits[1].subject, "two");
+    }
+
+    #[test]
+    fn an_empty_log_yields_no_commits() {
+        assert!(parse_log("").is_empty());
+        assert!(parse_log("\n").is_empty());
+    }
+
+    /// A commit with an empty message is still counted, and names nothing.
+    #[test]
+    fn an_empty_message_is_a_commit_with_an_empty_subject() {
+        let commits = parse_log(&record("cccccccccccccccc", ""));
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].subject, "");
+        assert_eq!(commits[0].message, "");
+    }
+
+    /// Nothing git produces, so nothing is invented for it: a record with no
+    /// field separator is skipped rather than given a fabricated hash.
+    #[test]
+    fn a_record_without_a_field_separator_is_skipped() {
+        let text = format!("no-separator-here\n{RECORD_SEPARATOR}");
+        assert!(parse_log(&text).is_empty());
+    }
 }

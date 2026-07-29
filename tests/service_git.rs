@@ -38,6 +38,15 @@ fn commit(fixture: &ServiceFixture, subject: &str) {
     run_git(fixture, &["commit", "-q", "--allow-empty", "-m", subject]);
 }
 
+/// [`commit`], with a body after the subject — `git commit -m … -m …`, which
+/// is how Conventional Commits puts a `Closes SH-N` trailer in a message.
+fn commit_with_body(fixture: &ServiceFixture, subject: &str, body: &str) {
+    run_git(
+        fixture,
+        &["commit", "-q", "--allow-empty", "-m", subject, "-m", body],
+    );
+}
+
 /// [`commit`], with the author and committer dates pinned.
 ///
 /// An explicit timestamp, never a relative expression: `GIT_AUTHOR_DATE` does
@@ -485,4 +494,121 @@ fn a_pinned_clock_stamps_every_event_the_run_writes() {
         };
         assert_eq!(at, "2030-06-01T12:00:00Z");
     }
+}
+
+// ---------------------------------------------------------------------------
+// SH-58: the body is part of the commit message
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_story_named_only_in_the_commit_body_is_linked() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Referenced from a trailer");
+    commit_with_body(&fixture, "feat: land the thing", &format!("Closes {id}"));
+    let short = head_short_hash(&fixture);
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.starts_with("scanned 1 commits, added 1 comments to 1 stories"),
+        "{message}"
+    );
+    assert_eq!(
+        comments_of(&fixture, StoryNo::new(1)),
+        vec![format!("[git] {short}: feat: land the thing")],
+        "the comment text stays the SUBJECT — a multi-paragraph body would be \
+         unreadable in `story show`"
+    );
+}
+
+/// The parse trap SH-58 warns about, made into a test.
+///
+/// `%B` emits multi-line records. A line-oriented parser splitting each line on
+/// its first space reads `Closes SH-1` as hash=`Closes`, subject=`SH-1` — and
+/// the short hash is the idempotency key, so a garbage hash also breaks "safe
+/// to run repeatedly". The hash must come from `%H` and from nowhere else.
+#[test]
+fn a_body_line_shaped_like_a_log_line_is_not_read_as_a_commit() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Referenced");
+    commit_with_body(
+        &fixture,
+        "feat: land the thing",
+        &format!("deadbeefcafe {id} looks exactly like a log line\nCloses {id}"),
+    );
+    let short = head_short_hash(&fixture);
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.starts_with("scanned 1 commits,"),
+        "one commit, however many lines its message has: {message}"
+    );
+    let comments = comments_of(&fixture, StoryNo::new(1));
+    assert_eq!(
+        comments,
+        vec![format!("[git] {short}: feat: land the thing")],
+        "a story named twice in one commit is linked once, under the real hash"
+    );
+    assert!(
+        !comments[0].starts_with("[git] deadbee"),
+        "the hash must come from %H, never from body text"
+    );
+}
+
+#[test]
+fn a_body_reference_is_idempotent_across_runs() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Referenced from a trailer");
+    commit_with_body(&fixture, "feat: land the thing", &format!("Closes {id}"));
+
+    sync(&fixture).expect("the first run");
+    let before = events_of(&fixture, StoryNo::new(1));
+    let second = sync(&fixture).expect("the second run");
+
+    assert!(second.contains("added 0 comments to 0 stories"), "{second}");
+    assert_eq!(events_of(&fixture, StoryNo::new(1)), before);
+}
+
+#[test]
+fn one_commit_naming_one_story_in_the_subject_and_another_in_the_body_links_both() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let first = create(&fixture, "In the subject");
+    let second = create(&fixture, "In the body");
+    commit_with_body(
+        &fixture,
+        &format!("feat: work on {first}"),
+        &format!("Also touches {second}.\n\nCo-authored-by: nobody <n@n>"),
+    );
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.starts_with("scanned 1 commits, added 2 comments to 2 stories"),
+        "{message}"
+    );
+    assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(comments_of(&fixture, StoryNo::new(2)).len(), 1);
+}
+
+#[test]
+fn a_multi_paragraph_body_is_scanned_to_its_last_line() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Named at the very end");
+    commit_with_body(
+        &fixture,
+        "refactor: something large",
+        &format!(
+            "A paragraph explaining the change.\n\nA second paragraph, with\n\
+             several lines, none of which\nname anything.\n\nCloses {id}"
+        ),
+    );
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.contains("added 1 comments to 1 stories"),
+        "{message}"
+    );
 }
