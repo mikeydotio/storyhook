@@ -46,9 +46,39 @@ fn cli_shaped_store(env: &TestEnv) -> SqliteStore {
     store
 }
 
+/// Runs `story <args>` in the project and returns the raw output.
+///
+/// Every fixture here is built with [`ProjectBuilder::local`], so this is
+/// already in-process — the wrapper exists to hand back the `Output` rather than
+/// an assertion handle.
+fn story_locally(project: &Project<'_>, args: &[&str]) -> std::process::Output {
+    project.story().args(args).output().expect("running story")
+}
+
+/// Takes a snapshot now, whatever the schedule thinks.
+///
+/// `run_if_due` is the wrong tool for a fixture: it declines when a recent
+/// snapshot exists, and under `make test-daemon` a daemon has already taken one
+/// at startup — which is how the daemon leg caught four tests in this file
+/// assuming an empty backup directory. The schedule has its own tests; these
+/// are about the files.
+fn snapshot_now(store: &SqliteStore, env: &TestEnv) -> std::path::PathBuf {
+    store
+        .snapshot(&backups_dir(env))
+        .expect("taking a snapshot")
+}
+
 /// The titles of every story the CLI can see in `project`.
 fn titles_via_cli(project: &Project<'_>) -> Vec<String> {
-    project.json(&["list"])["stories"]
+    let out = story_locally(project, &["list", "--json"]);
+    assert!(
+        out.status.success(),
+        "`story list --json` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("`story list --json` prints JSON");
+    json["stories"]
         .as_array()
         .expect("`story list --json` returns an array")
         .iter()
@@ -75,14 +105,12 @@ fn remove_store(env: &TestEnv) {
 #[test]
 fn a_snapshot_restores_a_store_that_was_destroyed() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("BK").build();
+    let project = env.project().local().prefix("BK").build();
     project.new_story("before the backup");
     let before = titles_via_cli(&project);
 
     let store = cli_shaped_store(&env);
-    let snapshot = backup::run_if_due(&store, &env.environment())
-        .expect("taking a snapshot")
-        .expect("an empty backup directory is overdue");
+    let snapshot = snapshot_now(&store, &env);
     drop(store);
 
     remove_store(&env);
@@ -100,33 +128,42 @@ fn a_snapshot_restores_a_store_that_was_destroyed() {
         "the restored store must hold what the snapshot held"
     );
     // And it is a live store, not a museum piece.
-    project.run(&["new", "after the restore"]).success();
+    assert!(
+        story_locally(&project, &["new", "after the restore"])
+            .status
+            .success()
+    );
     assert_eq!(titles_via_cli(&project).len(), before.len() + 1);
-    project.run(&["doctor"]).success();
+    assert!(story_locally(&project, &["doctor"]).status.success());
 }
 
 /// The trap: restoring over a database whose write-ahead log is still hot.
 ///
 /// This is what a person actually does. Something crashed — so `store.db-wal`
 /// still holds commits that were never checkpointed into `store.db` — and they
-/// copy the newest snapshot over `store.db` because that is what the diagnostic
-/// told them to do. The old database's log is now sitting beside the new
-/// database's pages, and SQLite will try to replay one into the other.
+/// copy the newest snapshot over `store.db`, because "copy the backup over the
+/// database" is what a restore is. The old log is now beside the new pages, and
+/// SQLite does what it is supposed to do with a log: replays it.
 ///
-/// The log has to be made hot the only way it can be: by killing a process that
+/// **The naive restore is therefore not a restore**, and the outcome is not
+/// even deterministic — with a daemon holding the store it silently produces a
+/// mixture of two databases reported as success, and without one it produces
+/// `database disk image is malformed`. Neither is the snapshot. That is why the
+/// instructions name three files and a `story daemon stop`, and this test exists
+/// to keep them naming them: it asserts the hazard is real and that the
+/// documented procedure clears it.
+///
+/// The hot log has to be made the only way it can be: by killing a process that
 /// had just committed. A `story` that exits normally checkpoints on the way out,
-/// which is why this scenario needs a crash to set up and why it is a *recovery*
-/// hazard rather than an everyday one.
+/// which is why this is a *recovery* hazard rather than an everyday one.
 #[test]
-fn restoring_over_a_stale_write_ahead_log_does_not_silently_mix_two_databases() {
+fn the_documented_restore_is_necessary_as_well_as_sufficient() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("BK").build();
+    let project = env.project().local().prefix("BK").build();
     project.new_story("in the snapshot");
 
     let store = cli_shaped_store(&env);
-    let snapshot = backup::run_if_due(&store, &env.environment())
-        .expect("taking a snapshot")
-        .expect("a snapshot");
+    let snapshot = snapshot_now(&store, &env);
     drop(store);
 
     // A commit that survives its process: durable, in the log, uncheckpointed.
@@ -148,40 +185,49 @@ fn restoring_over_a_stale_write_ahead_log_does_not_silently_mix_two_databases() 
         "and a non-empty write-ahead log to be about anything"
     );
 
-    // The naive restore: the database only.
+    // Necessary: the naive restore does not produce the snapshot.
     std::fs::copy(&snapshot, env.store_path()).expect("restoring over the live database");
+    let out = story_locally(&project, &["list", "--json"]);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        said.contains("after the snapshot") || said.contains("is damaged"),
+        "the naive restore is supposed to be unsafe — either the old log is replayed \
+         into the new pages, or the result is malformed. If it has become safe, this \
+         test and the restore instructions both want revisiting: {said}"
+    );
+    assert_ne!(
+        titles_after_a_successful_list(&out),
+        Some(vec!["in the snapshot".to_string()]),
+        "and it must not quietly look like it worked"
+    );
 
-    let out = project.story().args(["list", "--json"]).output().unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    // Both streams: an error travels in the JSON envelope on stdout under
-    // `--json` and on stderr otherwise, and this test is about the words rather
-    // than about which pipe carries them.
-    let said = format!("{stdout}{}", String::from_utf8_lossy(&out.stderr));
-    if out.status.success() {
-        assert!(
-            !stdout.contains("after the snapshot"),
-            "a restored store must not have replayed the old database's log into the \
-             new one's pages — that is two databases mixed together, reported as \
-             success: {stdout}"
-        );
-    } else {
-        assert!(
-            said.contains("is damaged"),
-            "if the restore cannot be made sense of, it must say so in storyhook's \
-             words: {said}"
-        );
-        assert!(
-            said.contains("-wal") && said.contains("-shm"),
-            "and it must name the sidecar files, because leaving them behind is \
-             exactly how the restore produced this: {said}"
-        );
-    }
-
-    // The documented procedure — sidecars removed too — always works.
+    // Sufficient: the documented procedure produces exactly the snapshot.
     remove_store(&env);
     std::fs::copy(&snapshot, env.store_path()).expect("restoring properly");
-    let titles = titles_via_cli(&project);
-    assert_eq!(titles, vec!["in the snapshot".to_string()]);
+    assert_eq!(
+        titles_via_cli(&project),
+        vec!["in the snapshot".to_string()]
+    );
+    assert!(story_locally(&project, &["doctor"]).status.success());
+}
+
+/// The titles in a `story list --json` output, or `None` if it failed.
+fn titles_after_a_successful_list(out: &std::process::Output) -> Option<Vec<String>> {
+    if !out.status.success() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    Some(
+        json["stories"]
+            .as_array()?
+            .iter()
+            .map(|entry| entry["story"]["title"].as_str().unwrap_or("").to_string())
+            .collect(),
+    )
 }
 
 /// The corruption diagnostic points at the backups; this checks the two ends
@@ -189,20 +235,22 @@ fn restoring_over_a_stale_write_ahead_log_does_not_silently_mix_two_databases() 
 #[test]
 fn the_corruption_diagnostic_names_the_directory_the_snapshots_are_in() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("BK").build();
+    let project = env.project().local().prefix("BK").build();
     project.new_story("real data");
 
     let store = cli_shaped_store(&env);
-    let snapshot = backup::run_if_due(&store, &env.environment())
-        .expect("taking a snapshot")
-        .expect("a snapshot");
+    let snapshot = snapshot_now(&store, &env);
     drop(store);
     remove_store(&env);
     std::fs::write(env.store_path(), b"not a database any more").expect("breaking the store");
 
-    let out = project.story().arg("list").output().unwrap();
+    let out = story_locally(&project, &["list"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success());
+    assert!(
+        !out.status.success(),
+        "a store that is no longer a database must fail: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     let named = backups_dir(&env).display().to_string();
     assert!(
         stderr.contains(&named),
@@ -213,6 +261,11 @@ fn the_corruption_diagnostic_names_the_directory_the_snapshots_are_in() {
         snapshot.starts_with(backups_dir(&env)),
         "and the snapshots must actually be there: {}",
         snapshot.display()
+    );
+    assert!(
+        stderr.contains("story daemon stop"),
+        "and it must say to stop the daemon first — a daemon holding the old \
+         database serves it happily while the files are swapped underneath: {stderr}"
     );
 }
 
@@ -231,10 +284,14 @@ fn the_corruption_diagnostic_names_the_directory_the_snapshots_are_in() {
 #[test]
 fn rotation_keeps_seven_snapshots_and_every_one_of_them_is_a_database() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("BK").build();
+    let project = env.project().local().prefix("BK").build();
     let store = cli_shaped_store(&env);
     let dir = backups_dir(&env);
 
+    // Relative to whatever is already there: under `make test-daemon` a daemon
+    // has taken one at startup, and a fixture that assumes an empty directory
+    // is a fixture that only passes on one of the two legs.
+    let already = backup::snapshots(&dir).len();
     for round in 0..12 {
         project.new_story(&format!("story {round}"));
         // `run_if_due` would decline every one of these: the previous snapshot
@@ -243,7 +300,7 @@ fn rotation_keeps_seven_snapshots_and_every_one_of_them_is_a_database() {
     }
     assert_eq!(
         backup::snapshots(&dir).len(),
-        12,
+        already + 12,
         "the fixture must have overfilled the directory before rotation runs"
     );
 
@@ -349,7 +406,7 @@ fn assert_openable(path: &Path) {
 #[test]
 fn the_backups_age_is_reachable_from_the_command_line() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("BK").build();
+    let project = env.project().local().prefix("BK").build();
 
     let before = String::from_utf8_lossy(
         &project
@@ -362,12 +419,12 @@ fn the_backups_age_is_reachable_from_the_command_line() {
     .into_owned();
     assert!(
         before.contains("backups"),
-        "`story daemon status` must mention the backups even when there are \
-         none: {before}"
+        "`story daemon status` must mention the backups, whether or not there \
+         are any yet: {before}"
     );
 
     let store = cli_shaped_store(&env);
-    backup::run_if_due(&store, &env.environment()).expect("taking a snapshot");
+    snapshot_now(&store, &env);
     drop(store);
 
     let after = String::from_utf8_lossy(
@@ -391,7 +448,7 @@ fn the_backups_age_is_reachable_from_the_command_line() {
 #[test]
 fn taking_a_snapshot_does_not_disturb_the_store() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("BK").build();
+    let project = env.project().local().prefix("BK").build();
     project.new_story("one");
     project.new_story("two");
     let before = titles_via_cli(&project);

@@ -55,7 +55,18 @@ fn failure_message(out: &Output, what: &str) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// A storyhook data directory holding exactly the bytes given.
+/// A project whose every command runs in its own process.
+///
+/// [`ProjectBuilder::local`] rather than the default, because every test in this
+/// file is about the bytes on disk and a live daemon changes what those bytes
+/// mean: it answers reads from memory, and its `-shm` keeps alive a
+/// write-ahead log that would otherwise be discarded. The daemon leg caught two
+/// tests here doing exactly that.
+fn local_project<'a>(env: &'a TestEnv, prefix: &str) -> storyhook_test_support::Project<'a> {
+    env.project().local().prefix(prefix).build()
+}
+
+/// A storyhook data directory holding exactly the bytes given./// A storyhook data directory holding exactly the bytes given.
 ///
 /// Returns the environment and a working directory outside it, so a command can
 /// be run somewhere that is not the store.
@@ -123,8 +134,18 @@ fn a_zero_byte_database_is_treated_as_a_fresh_one() {
 #[test]
 fn a_damaged_write_ahead_log_is_discarded_and_the_committed_data_survives() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CO").build();
-    let id = project.new_story("committed before the damage");
+    let project = local_project(&env, "CO");
+    let created = story_in(
+        &env,
+        project.path(),
+        &["new", "committed before the damage", "--json"],
+    );
+    assert!(created.status.success());
+    let id = serde_json::from_slice::<serde_json::Value>(&created.stdout)
+        .expect("`story new --json` prints JSON")["story"]["story"]["id"]
+        .as_str()
+        .expect("a minted id")
+        .to_string();
 
     // Checkpointed by opening and closing the store, then the log is filled
     // with bytes no frame header could match.
@@ -158,7 +179,7 @@ fn a_damaged_write_ahead_log_is_discarded_and_the_committed_data_survives() {
 #[test]
 fn a_database_from_a_newer_storyhook_names_both_versions_and_the_remedy() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CO").build();
+    let project = local_project(&env, "CO");
     // Written through rusqlite rather than by hand: the pragma is what the gate
     // reads, and a fabricated file would be testing the fabrication.
     rusqlite::Connection::open(env.store_path())
@@ -213,7 +234,12 @@ fn a_directory_where_the_database_belongs_names_the_path() {
 #[test]
 fn a_truncated_database_says_it_is_damaged_and_where_the_backups_are() {
     let source = TestEnv::isolated();
-    source.project().prefix("CO").build().new_story("real data");
+    let seed = local_project(&source, "CO");
+    assert!(
+        story_in(&source, seed.path(), &["new", "real data"])
+            .status
+            .success()
+    );
     drop(source.open_store());
     let whole = std::fs::read(source.store_path()).expect("reading a real store");
     assert!(whole.len() > 8192, "the fixture must be worth truncating");
@@ -287,7 +313,7 @@ fn assert_actionable_corruption(env: &TestEnv, message: &str) {
 #[test]
 fn a_corrupt_pointer_file_names_the_file_that_could_not_be_read() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CO").build();
+    let project = local_project(&env, "CO");
     std::fs::write(
         project.path().join(".storyhook.toml"),
         "this is not toml {{{\n",
@@ -313,7 +339,7 @@ fn a_corrupt_pointer_file_names_the_file_that_could_not_be_read() {
 #[test]
 fn a_pointer_file_missing_its_identity_names_the_file_too() {
     let env = TestEnv::isolated();
-    let project = env.project().prefix("CO").build();
+    let project = local_project(&env, "CO");
     std::fs::write(
         project.path().join(".storyhook.toml"),
         "schema = 1\nprefix = \"CO\"\n",
