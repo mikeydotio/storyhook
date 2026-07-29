@@ -320,6 +320,67 @@ pub enum StoryEvent {
     },
 }
 
+/// Every `kind` tag [`StoryEvent`] answers to.
+///
+/// The legacy importer is why this is a list rather than an implicit property
+/// of the derive: reading a `.storyhook` event log has to tell *this kind is
+/// from a newer storyhook and must be kept verbatim* apart from *this event is
+/// corrupt*, and both look identical to `serde_json::from_str::<StoryEvent>` —
+/// it returns `Err` either way. Retaining a corrupt `StoryCreated` as an
+/// unknown payload would import a story with no title and never say so.
+///
+/// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
+/// reads serde's own `unknown variant, expected one of …` list back out of the
+/// derive and compares it to this array.
+pub const EVENT_KINDS: [&str; 15] = [
+    "StoryCreated",
+    "StoryCommentAdded",
+    "StoryAssigned",
+    "StoryAwaitingSet",
+    "StoryAwaitingCleared",
+    "StoryStateChanged",
+    "StoryRelationshipAdded",
+    "StoryRelationshipRemoved",
+    "StoryPrioritySet",
+    "StoryTypeSet",
+    "StoryLabelsSet",
+    "StoryTitleSet",
+    "StoryDescriptionSet",
+    "StoryClosedAndArchived",
+    "StoryDeleted",
+];
+
+/// Whether `kind` is an event this binary can decode.
+#[must_use]
+pub fn is_known_event_kind(kind: &str) -> bool {
+    EVENT_KINDS.contains(&kind)
+}
+
+/// The serde `kind` tag `event` serializes with.
+///
+/// An exhaustive match, so a new variant cannot reach the store's `kind` column
+/// without a name being chosen for it here.
+#[must_use]
+pub fn event_kind(event: &StoryEvent) -> &'static str {
+    match event {
+        StoryEvent::StoryCreated { .. } => "StoryCreated",
+        StoryEvent::StoryCommentAdded { .. } => "StoryCommentAdded",
+        StoryEvent::StoryAssigned { .. } => "StoryAssigned",
+        StoryEvent::StoryAwaitingSet { .. } => "StoryAwaitingSet",
+        StoryEvent::StoryAwaitingCleared { .. } => "StoryAwaitingCleared",
+        StoryEvent::StoryStateChanged { .. } => "StoryStateChanged",
+        StoryEvent::StoryRelationshipAdded { .. } => "StoryRelationshipAdded",
+        StoryEvent::StoryRelationshipRemoved { .. } => "StoryRelationshipRemoved",
+        StoryEvent::StoryPrioritySet { .. } => "StoryPrioritySet",
+        StoryEvent::StoryTypeSet { .. } => "StoryTypeSet",
+        StoryEvent::StoryLabelsSet { .. } => "StoryLabelsSet",
+        StoryEvent::StoryTitleSet { .. } => "StoryTitleSet",
+        StoryEvent::StoryDescriptionSet { .. } => "StoryDescriptionSet",
+        StoryEvent::StoryClosedAndArchived { .. } => "StoryClosedAndArchived",
+        StoryEvent::StoryDeleted { .. } => "StoryDeleted",
+    }
+}
+
 pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
     events
         .last()
@@ -2301,5 +2362,77 @@ mod tests {
         let progress = compute_progress(stories.get("SH-1").unwrap(), &stories);
         let p = progress.unwrap();
         assert_eq!(p.children_total, 1);
+    }
+}
+
+#[cfg(test)]
+mod event_kind_tests {
+    use super::*;
+
+    /// Reads the variant list back out of serde's own derive and compares it to
+    /// [`EVENT_KINDS`], so adding a `StoryEvent` variant without listing its tag
+    /// here is a red test rather than a legacy log the importer quietly
+    /// misfiles as corrupt.
+    #[test]
+    fn every_known_kind_is_a_variant_and_every_variant_is_known() {
+        let error = serde_json::from_str::<StoryEvent>(r#"{"kind":"NoSuchEventKind"}"#)
+            .expect_err("a made-up kind must not deserialize");
+        let message = error.to_string();
+        let (_, listed) = message
+            .split_once("expected one of ")
+            .unwrap_or_else(|| panic!("serde no longer lists the variants it expected: {message}"));
+        // serde appends ` at line 1 column N` after the list; the last variant
+        // is the text between the final pair of backticks.
+        let last_backtick = listed
+            .rfind('`')
+            .unwrap_or_else(|| panic!("serde's variant list is no longer backticked: {message}"));
+        let from_serde: Vec<String> = listed[..=last_backtick]
+            .split(',')
+            .map(|name| name.trim().trim_matches('`').to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        assert_eq!(
+            from_serde,
+            EVENT_KINDS.to_vec(),
+            "EVENT_KINDS must list exactly the variants `StoryEvent` defines, in order"
+        );
+    }
+
+    /// `event_kind` must agree with the tag serde actually writes, or the
+    /// store's `kind` column describes a payload it does not match.
+    #[test]
+    fn every_variants_tag_is_the_one_serde_writes() {
+        for event in [
+            StoryEvent::StoryCreated {
+                at: "t".into(),
+                title: "t".into(),
+                state: "todo".into(),
+            },
+            StoryEvent::StoryRelationshipRemoved {
+                at: "t".into(),
+                other_id: "SH-2".into(),
+                relation: "child-of".into(),
+            },
+            StoryEvent::StoryDeleted {
+                at: "t".into(),
+                reason: "r".into(),
+            },
+        ] {
+            let encoded: serde_json::Value = serde_json::to_value(&event).unwrap();
+            assert_eq!(
+                encoded["kind"].as_str().unwrap(),
+                event_kind(&event),
+                "event_kind disagrees with serde for {event:?}"
+            );
+            assert!(is_known_event_kind(event_kind(&event)));
+        }
+    }
+
+    #[test]
+    fn a_kind_from_a_newer_storyhook_is_not_known() {
+        assert!(is_known_event_kind("StoryCreated"));
+        assert!(!is_known_event_kind("StoryPinned"));
+        assert!(!is_known_event_kind("storycreated"));
     }
 }

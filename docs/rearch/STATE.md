@@ -30,8 +30,8 @@
 | W2a services (lifecycle + relations) | `rearch/w2a-lifecycle` / [PR #63](https://github.com/mikeydotio/storyhook/pull/63) | **MERGED** 2026-07-28 |
 | W2b services (project + config + system + grouping) | `rearch/w2b-config` / [PR #64](https://github.com/mikeydotio/storyhook/pull/64) | **MERGED** 2026-07-28 |
 | W2c services (query + integrity) + TUI on the seam | `rearch/w2c-query` / [PR #65](https://github.com/mikeydotio/storyhook/pull/65) | **MERGED** 2026-07-28 |
-| W2d services (git + GitHub + transfer) + the store test leg | `rearch/w2d-git` | **PR OPENED** — awaiting merge |
-| W3 importer | — | pending |
+| W2d services (git + GitHub + transfer) + the store test leg | `rearch/w2d-git` / [PR #66](https://github.com/mikeydotio/storyhook/pull/66) | **MERGED** 2026-07-28 |
+| W3 importer | `rearch/w3-importer` | **PR OPENED** — awaiting merge |
 | W4 THE FLIP | — | pending (one uninterrupted session; revert only while W3 round-trip green) |
 | W5 daemon | — | pending |
 | W6 git features | — | pending |
@@ -102,6 +102,16 @@
   plus the store-leg commit and the docs commit. See Step log for the API, the
   roster, the exclusion list and the five defects.
 
+## W3 step plan
+
+- **W3 DONE** — `src/legacy/` (permanent, read-only, zero coupling to
+  `storage.rs`), `story migrate`, and the round-trip guarantee the W4 revert
+  policy rests on. Six commits: `fb9b2f9` (the packed-debuginfo chore),
+  `75dd9c1` (a harness race two concurrent gates hit), `036c768` (the reader),
+  `46e9e13` (a `set -u` bug in the store-leg script), `6f817c3` (`story
+  migrate`), `a5871a6` (the round trip), plus this docs commit. See Step log
+  for the API, the SH-60 ruling, the dry-run evidence and the deviations.
+
 ## W2c step plan
 
 - **W2c DONE** — `src/service/{query,integrity}.rs`, the read surface and `doctor` on
@@ -112,6 +122,99 @@
   defects found, and the deviations.
 
 ## Key facts discovered (do not re-derive)
+
+- **W3, the single most important finding of the wave: this repository's 15
+  live SH-60 violations are 10 one-sided relations AND 5 stories with two
+  parents, and the second set is CAUSED by naively repairing the first.**
+  Ten `StoryRelationshipAdded` claims exist on only one end. Complete all ten
+  and SH-32/33/34/35/36 each end up with two parents (SH-31 and SH-40), which
+  the store's partial unique index refuses — so the import fails mid-write with
+  `a story may have at most one parent`. **Any relation check must therefore run
+  over the CLOSURE of both ends' claims, after repairs, never before.** Checking
+  each story's own `child-of` claims finds zero violations in this tree and is
+  the wrong question: a `parent-of` claimed by the parent alone is mirrored into
+  the child's row by the schema trigger.
+- **W3's ruling on repair-vs-refuse, so a later wave does not relitigate it:
+  agreement beats assertion.** A relation only one end recorded is *completed*
+  (the missing half is a missing event; the repair carries the original claim's
+  instant and is spliced in in timestamp order, so `updated_at` does not move).
+  A *parentage* only one end recorded, where the child has another parent both
+  ends recorded, is *retracted* — the add event is still imported verbatim, a
+  `StoryRelationshipRemoved` sits beside it, and only the read model changes.
+  Where the rule has nothing to weigh (two mutual parents, or several that all
+  disagree) the migration refuses. **The alternative — refusing every
+  multi-parent tree — was rejected after writing the remedy down**: every story
+  in this repository's five conflicts is *archived*, and `story unrelate`
+  resolves open stories only (`resolve_open_story`), so the advice would have
+  been "reopen five closed stories, unrelate, re-close", which rewrites more
+  history than the retraction does and does it through `unarchive_story`, which
+  strips closure markers.
+- **W3: `ProjectExport` is narrower than a legacy tree, and W4's rollback
+  inherits the gap.** The envelope carries schema, prefix, states, types,
+  members and stories. A *tree* also carries `project.toml`'s `created_at` and
+  its `sync`/`doctor` settings, and `next-id`'s burned numbers. `story migrate`
+  carries all three beside the envelope (`put_settings`, the project's real
+  `created_at`, `reserve_story_no` from the counter rather than from a story
+  count) and prints the settings in its report. **A rollback through `export` +
+  `import-project` does not carry them**, which is one of the reasons
+  `.storyhook/` stays in the repository until W7. Tabulated in the flip
+  checklist's new section D2.
+- **W3: `TransferService::export` silently drops unknown-kind events.** It calls
+  `partition_known` and discards the diagnostics, so a store holding an event
+  kind this binary does not understand exports a document without it. Nothing
+  writes such a kind today, so it is latent — but it means the round-trip
+  guarantee is conditional on "no unknown kinds in the store", and the flip
+  checklist's D2 table says so. **Needs a story.** The migration itself is not
+  affected: it writes raw events, and `an_unknown_event_kind_is_imported_
+  verbatim_and_named_in_the_report` pins that.
+- **W3: the legacy archive database cannot be opened read-only the ordinary
+  way.** `archive.db` is in WAL mode (header bytes 18/19 are `2`), and a
+  `SQLITE_OPEN_READONLY` connection to a WAL database needs to create the
+  `-shm` sidecar — which is a write into the tree the reader has promised not
+  to touch, and which fails outright when the directory is read-only
+  (`sqlite3 "file:…?mode=ro"` on the frozen fixture: `unable to open database
+  file (14)`). `src/legacy/` uses `immutable=1`, which takes no locks and
+  creates nothing. **The catch, and it is the whole reason the WAL guard
+  exists:** `immutable=1` reads straight *past* a `-wal` file. So the reader
+  refuses a non-empty `archive.db-wal` by name rather than silently reporting a
+  stale archive. A zero-length one is what SQLite leaves after a checkpoint and
+  is fine.
+- **W3: a corrupt *known* event kind and an *unknown* event kind are
+  indistinguishable to serde**, and only one of them is safe to wave through.
+  `serde_json::from_str::<StoryEvent>` returns `Err` for both a `StoryCreated`
+  with no `title` and a `StoryPinned` from a future storyhook. The store's own
+  `decode` treats every failure as `Unknown`, which is right for a store and
+  wrong for an importer: retaining a corrupt `StoryCreated` as an opaque blob
+  imports a story with no title and never says so. `domain::EVENT_KINDS` is the
+  discriminator, and it cannot drift — its test parses serde's own `unknown
+  variant, expected one of …` list back out of the derive and compares.
+- **W3: `story migrate` is NOT on the store test leg, and must not be.** It is
+  caught by the `service_` prefix, and that is correct twice over: its fixtures
+  build a `.storyhook` tree by running `story init`/`story new`, which under
+  `STORYHOOK_INVOKER=local` write to the store and leave nothing to migrate.
+  `legacy_reader` and `migrate_round_trip` *are* on the leg (38 → 40 targets),
+  because they call the library in-process and pass identically either way.
+- **W3, FIXED in-wave (`46e9e13`) — `scripts/run-store-leg.sh` aborted when run
+  with no arguments.** `set -u` plus bash 3.2 (what macOS ships) treats an empty
+  array as unset, so `"${exact[@]}"` was `unbound variable`. Only `make
+  test-store` worked, because the Makefile always passes a long exclusion list.
+  Three sites, same shape.
+- **W3, FIXED in-wave (`75dd9c1`) — two concurrent `make test` runs raced on one
+  fixture name.** `the_sweep_only_touches_this_harnesss_own_fixtures` created its
+  control directory at a *constant* path under the machine-global
+  `/private/tmp/storyhook-tests`, so a gate run in the worktree and one in the
+  main checkout both created, asserted on and `remove_dir_all`ed the same
+  directory. Seen once as `the sweep must never remove a directory it cannot
+  prove it created`, green on re-run. **Generalize this:** this program runs its
+  gate from a worktree by design, so any fixture at a fixed path under a shared
+  root is a latent flake.
+- **W3, build hygiene: `[profile.dev] split-debuginfo = "packed"`.** macOS's
+  default leaves one `.o` per codegen unit per rebuild loose in
+  `target/debug/deps`; ~200k of them accumulated in 24 hours and stalled
+  `FSEventStreamStart` *machine-globally* (registration is serialized, ~5ms per
+  stream at that size), which mass-failed `web_test`'s wall-clock readiness
+  deadlines while the same tree passed in isolation. Health metric:
+  `ls target/debug/deps | wc -l` — trouble starts in the tens of thousands.
 
 - **W2d, the biggest trap in the harness: `TestEnv` isolates CHILD PROCESSES,
   not in-process library calls.** An integration test that calls `storyhook::…`
@@ -1332,6 +1435,130 @@
   `make test` green three times (1:39, 4:10, 4:31). **Re-run the gate on an idle
   machine before treating any number here as a trend**, and check
   `ps aux | sort -nrk 3` first.
+
+- 2026-07-28 W3: branch `rearch/w3-importer` off merged main `7eccae2`. Seven commits.
+  Test count 1882 → **1946** (+64: 17 `legacy_reader`, 35 `service_migrate`, 4
+  `migrate_round_trip`, and 8 `src/` units — 3 `domain::event_kind_tests`, 5 in
+  `legacy::{events,paths}`. The `wire_envelope` corpus and the ported-arm roster gained rows
+  rather than tests). 2 ignored, unchanged — still the W4 headline REDs.
+  `tests/snapshots/` is byte-unchanged. `src/app.rs` gains **one** additive arm.
+  - `fb9b2f9` — `[profile.dev] split-debuginfo = "packed"` (see Key facts; a ride-along).
+  - `75dd9c1` — the harness fixture race two concurrent gates hit (Key facts).
+  - `036c768` — `src/legacy/`, the read-only reader, plus both fixtures.
+  - `46e9e13` — the store-leg script's `set -u` bug (Key facts).
+  - `6f817c3` — `Invocation::Migrate`, `src/service/migrate.rs`, the CLI surface.
+  - `a5871a6` — `tests/migrate_round_trip.rs`, the W4 revert gate.
+  - this commit — STATE, the flip checklist's section D2, HANDOFF, CLAUDE.md.
+
+  **Ported-arm roster: 48 → 49** (`migrate`). `wire_envelope.rs` pins 49 independently, and
+  `unported_probes()` is still empty.
+
+  **The API W4/W7 build on** (`storyhook::legacy`, `storyhook::service::migrate`):
+
+  ```rust
+  legacy::find_root(&Path) -> Option<PathBuf>          // ancestor walk, migrate only
+  legacy::read_project(&Path) -> Result<LegacyProject, LegacyError>
+  LegacyProject { root, schema, created_at, prefix: Option<String>,
+                  sync_auto_transition, doctor_stale_threshold,
+                  states, types, members, next_id, stories: Vec<LegacyStory> }
+      .effective_prefix() -> &str
+      .unknown_events() -> impl Iterator<Item = (&LegacyStory, &LegacyEvent)>
+  LegacyStory { id, events: Vec<LegacyEvent>, archived, source }
+  LegacyEvent { kind, at, payload: String, decoded: Option<StoryEvent> }
+  LegacyPaths::new(&Path)  // project_file/states_file/…/archive_db/archive_wal/exists
+  LegacyError::{NotAProject, Unreadable, Malformed}   // → AppError NotFound / Storage
+
+  MigrationPlan::build(LegacyProject) -> Result<MigrationPlan, AppError>  // all checks here
+      .report(dry_run: bool) -> MigrationReport
+      .apply(&store, dest: &Path) -> Result<MigrationReport, AppError>    // one transaction
+  migrate::refuse_in_linked_worktree(&Path) -> Result<(), AppError>
+  MigrationReport { source, prefix, dry_run, stories, events, archived, deleted,
+                    states, types, members, next_story_no,
+                    repairs: Vec<Repair>, unknown_events, settings }.render() -> String
+  Repair { story, relation, other, at, kind: RepairKind }
+  RepairKind::{CompletedInverse, RetractedUnilateralParent { child, winner }}
+
+  domain::{EVENT_KINDS, is_known_event_kind, event_kind}
+  ```
+
+  **`MigrationPlan::build` is where every decision happens**, and `apply` is a transcription.
+  That split is what makes `--dry-run` a real read-only mode rather than a flag threaded
+  through a writer, and it is why a refused tree leaves the store completely empty
+  (`a_refused_tree_leaves_the_store_completely_empty`).
+
+  **Dry-run evidence against this repository's own tree** (from a *copy*; this worktree's
+  `.storyhook` is divergent and the real migration is W7's, from the main checkout):
+
+  ```text
+  # 1. from the worktree itself — the guard fires
+  error: `…/.claude/worktrees/rearch` is a linked git worktree; migrate from the main
+  checkout at `/Volumes/Code/mikeyward/storyhook` instead.
+
+  # 2. the plan, from a read-only copy of the same tree
+  would import 61 stories (44 archived, 1 soft-deleted) and 496 events
+    prefix SH, 5 states, 5 types, 0 members, next story SH-62
+    repairs (SH-60): 5 one-sided relations completed, 5 unilateral parent claims retracted
+  ```
+
+  486 + 10 = 496. The ten repairs settle all fifteen violations, and the migrated project's
+  `compute_integrity_issues` is empty.
+
+  Things W4 and W7 should know:
+  - **The rollback procedure is written and is the flip checklist's section D2.** Paste it into
+    the W4 PR. It is gated on `cargo test --test migrate_round_trip` being 4/4 green; if that
+    file is red the flip is a one-way door.
+  - **`.storyhook/` must stay in the repository until W7** for a concrete reason, not caution:
+    it is the only copy of `created_at`, the `sync`/`doctor` settings and the burned story
+    numbers, none of which an export document can carry.
+  - **W7's own migration will print the same ten repairs**, and they are a real change to what
+    the tracker says: SH-40 loses five children it claimed alone, SH-31 gains a parent. Worth
+    eyeballing `story graph` before and after.
+  - **`story migrate` runs on the legacy leg by design** — `src/app.rs`'s new arm opens the
+    global store and forwards to `dispatch_unscoped`. Without it nothing could be migrated
+    until after the flip, which is backwards.
+  - `story migrate --help` has a real topic; `HELP_TEXT` and the plugin's `cli-reference.md`
+    both document the verb. No golden snapshot moved (there is no help snapshot).
+
+  Gate: `make test` green in **1:33** with a rebuild and **43.7s fully warm**, `make
+  test-store` green in **6.4s over 40 targets** (38 + `legacy_reader` +
+  `migrate_round_trip`). The warm number is the first honest steady state this program has
+  measured since W1 — W2b/W2c/W2d all ran on a contended machine and reported 88–90s. The three new binaries contribute **1.4s of
+  runtime** (`service_migrate` 1.15s — six of its tests drive the real CLI — `legacy_reader`
+  0.06s, `migrate_round_trip` 0.13s) plus the ~1.2s-per-binary link cost every wave since W0b
+  has measured. Load average was 2–4 throughout, so unlike W2b/W2c/W2d these are uncontended
+  numbers.
+
+  Verification that the tests bite, not merely pass:
+  - Adding one `fs::write` to `src/legacy/paths.rs` fails `the_reader_contains_no_write_calls`
+    naming the file and the call.
+  - Dropping `members` from `TransferService::export` fails the round trip on the custom-config
+    fixture.
+  - Making `raw_events` skip the retraction repairs fails the migration itself with the store's
+    own `Integrity("adding a relation: a story may have at most one parent")` — which is the
+    store refusing exactly the shape the ruling exists to settle.
+  - The naive repair (complete every one-sided claim) was written first and *did* fail this
+    way on the real tree; that failure is how the 10-plus-5 structure was found at all.
+
+  Deviations from the wave brief, all deliberate:
+  - **No `--rollback` verb.** The brief called the reverse path non-negotiable; it is, and it
+    is delivered as the round-trip test plus the written procedure. A verb would have had to
+    call `storage::import_project`, pinning storage.rs's *write* half alive past the flip —
+    the one thing `src/legacy/` was made independent to avoid. The two halves of the rollback
+    are `story export` and the reverted binary's own `story import-project`, both of which
+    already exist.
+  - **Multi-parent conflicts are repaired, not refused**, under the agreement-beats-assertion
+    rule. See Key facts for the argument and for why refusing was rejected. Genuinely
+    undecidable conflicts *are* refused.
+  - **`test(migrate):` rather than `feat(migrate):` for the round-trip commit.** It adds no
+    production code.
+  - **Two extra commits** beyond the brief's six: the harness race and the store-leg script
+    bug, both defects found in-wave, both fixed at the origin in their own commits.
+  - **`serde_json`'s `raw_value` feature was added.** Recovering an archived event's original
+    JSON text out of the array it is stored in needs it; a `Value` round trip sorts keys, and
+    "verbatim" has to mean verbatim.
+  - **`domain::EVENT_KINDS` + `event_kind` + `is_known_event_kind`** are new, outside
+    `src/legacy/` and `src/service/`. The corrupt-versus-unknown distinction cannot be made
+    without them and it is a property of `StoryEvent`, so it lives next to `StoryEvent`.
 
 ## Resume protocol (fresh session)
 

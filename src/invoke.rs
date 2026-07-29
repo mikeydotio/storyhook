@@ -28,8 +28,8 @@ use crate::service::{
     CatalogService, Clock, ConfigService, Ctx, FieldEdits, GitService, GroupingService,
     ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters, NewStoryInput,
     PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService, ReopenOutcome,
-    SessionService, StateListing, StoryService, SystemService, TransferService, session, system,
-    transfer,
+    SessionService, StateListing, StoryService, SystemService, TransferService, migrate, session,
+    system, transfer,
 };
 use crate::storage::ProjectExport;
 use crate::store::{ProjectId, ReadOps, Store};
@@ -430,6 +430,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             Ok(Response::Stories(batch.views, Some(summary)))
         }
         Invocation::ImportProject { .. }
+        | Invocation::Migrate { .. }
         | Invocation::Init { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
@@ -857,6 +858,41 @@ pub fn dispatch_unscoped_with<S: Store>(
                 "usage: story scaffold agents-md|claude-md|cursor-rules".to_string(),
             )),
         },
+        // Project-less for the same reason `init` is: `story migrate` creates
+        // the project it is importing into, so there is none to resolve first.
+        // It also deliberately does *not* consult the store's idea of which
+        // project this checkout belongs to — the legacy tree is the input, and
+        // `MigrationPlan::apply` refuses inside its own transaction if that
+        // checkout has already been migrated.
+        Invocation::Migrate { path, dry_run } => {
+            let source = match path {
+                Some(path) => {
+                    let path = PathBuf::from(path);
+                    crate::legacy::find_root(&path).ok_or_else(|| {
+                        AppError::NotFound(format!(
+                            "no legacy `.storyhook` project at `{}` or above it",
+                            path.display()
+                        ))
+                    })?
+                }
+                None => crate::legacy::find_root(root).ok_or_else(|| {
+                    AppError::NotFound(format!(
+                        "no legacy `.storyhook` project at `{}` or above it; `story migrate` \
+                         moves an existing tree into the store, and `story init` creates a new \
+                         project",
+                        root.display()
+                    ))
+                })?,
+            };
+            migrate::refuse_in_linked_worktree(&source)?;
+            let plan = migrate::MigrationPlan::build(crate::legacy::read_project(&source)?)?;
+            let report = if dry_run {
+                plan.report(true)
+            } else {
+                plan.apply(store, &source)?
+            };
+            Ok(Response::Message(report.render()))
+        }
         // Project-less for the same reason `init` is: `story import-project`
         // into an empty directory is how a backup is restored, so the arm has
         // to be able to create the project it is importing into.
@@ -1024,6 +1060,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::SessionStart => "session-start",
         Invocation::Update { .. } => "update",
         Invocation::Version => "version",
+        Invocation::Migrate { .. } => "migrate",
         Invocation::ProjectSnapshot => "project-snapshot",
         Invocation::History { .. } => "history",
     }
@@ -1156,6 +1193,7 @@ fn is_project_less(invocation: &Invocation) -> bool {
     match invocation {
         Invocation::Init { .. }
         | Invocation::ImportProject { .. }
+        | Invocation::Migrate { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact

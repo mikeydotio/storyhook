@@ -58,14 +58,18 @@ skipped=()
 for path in tests/*.rs; do
   name="$(basename "$path" .rs)"
   excluded=false
-  for one in "${exact[@]}"; do
+  # `${a[@]+"${a[@]}"}` rather than `"${a[@]}"`: under `set -u`, bash 3.2 —
+  # which is what macOS ships — treats an empty array as unset, so the plain
+  # form aborts the script when no exclusions were passed. Running the leg
+  # with none is the documented usage and has to work.
+  for one in ${exact[@]+"${exact[@]}"}; do
     if [[ "$name" == "$one" ]]; then
       excluded=true
       break
     fi
   done
   if ! $excluded; then
-    for prefix in "${prefixes[@]}"; do
+    for prefix in ${prefixes[@]+"${prefixes[@]}"}; do
       if [[ "$name" == "$prefix"* ]]; then
         excluded=true
         break
@@ -85,7 +89,7 @@ if [[ ${#targets[@]} -eq 0 ]]; then
 fi
 
 echo "store leg: $(( ${#targets[@]} / 2 )) target(s), ${#skipped[@]} file(s) excluded, $(( ${#skips[@]} / 2 )) test(s) skipped"
-echo "  excluded: ${skipped[*]}"
+echo "  excluded: ${skipped[*]-(none)}"
 echo
 
 # A private data directory for the whole run, and this is not optional.
@@ -110,4 +114,4 @@ export XDG_STATE_HOME="$leg_root/state"
 # leg and reporting a meaningless green.
 export STORYHOOK_INVOKER=local
 export INSTA_UPDATE=no
-cargo test --workspace "${targets[@]}" -- "${skips[@]}"
+cargo test --workspace "${targets[@]}" -- ${skips[@]+"${skips[@]}"}

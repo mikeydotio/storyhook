@@ -130,6 +130,7 @@ Usage:
   story decompose <file> [--dry-run]     (markdown or YAML)
   story decompose --stdin [--dry-run]
   story import-project <file>
+  story migrate [<path>] [--dry-run]               (move a .storyhook tree into the store)
   story load-context [--format markdown|json]
   story handoff [--since <duration>]
   story phase list
@@ -316,6 +317,18 @@ pub enum Invocation {
     Export,
     ImportProject {
         file: String,
+    },
+    /// Move a legacy `.storyhook` tree into the store.
+    ///
+    /// Additive and one-way: it reads the tree, never writes to it, and refuses
+    /// to run twice against one checkout. The legacy directory is left exactly
+    /// as it was, because it is the operator's rollback.
+    Migrate {
+        /// The checkout holding `.storyhook`. `None` walks up from the working
+        /// directory, so the command works from anywhere inside the repository.
+        path: Option<String>,
+        /// Report what would be imported and write nothing.
+        dry_run: bool,
     },
     Context {
         format: Option<String>,
@@ -587,6 +600,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "import" => parse_import(args),
         "decompose" => parse_decompose(args),
         "import-project" => parse_import_project(args),
+        "migrate" => parse_migrate(args),
         "export" => Ok(Invocation::Export),
         "load-context" | "context" => parse_context(args),
         "phase" => parse_phase(args),
@@ -1162,6 +1176,32 @@ fn parse_import_project(args: &[String]) -> Result<Invocation, AppError> {
     Ok(Invocation::ImportProject {
         file: args[1].clone(),
     })
+}
+
+/// `story migrate [<path>] [--dry-run]`.
+///
+/// The positional argument is optional because the common case is running it
+/// from inside the repository being migrated; when it is absent the invocation
+/// carries `None` and the dispatcher walks up from the working directory.
+fn parse_migrate(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story migrate [<path>] [--dry-run]";
+    let mut path = None;
+    let mut dry_run = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" => {
+                dry_run = true;
+                index += 1;
+            }
+            value if !value.starts_with('-') && path.is_none() => {
+                path = Some(value.to_string());
+                index += 1;
+            }
+            _ => return Err(AppError::Usage(usage.to_string())),
+        }
+    }
+    Ok(Invocation::Migrate { path, dry_run })
 }
 
 fn parse_context(args: &[String]) -> Result<Invocation, AppError> {

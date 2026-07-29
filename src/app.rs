@@ -996,6 +996,18 @@ pub fn run(root: &Path, options: CliOptions) -> Result<Response, AppError> {
                 export.stories.len()
             )))
         }),
+        // The one arm on this leg that reaches the store, and deliberately so.
+        // `story migrate` moves a legacy tree *into* the store, so it has to
+        // work from a binary whose default backend is still the legacy one —
+        // otherwise nothing could be migrated until after the flip, and the
+        // repo cutover is what proves the flip is safe. It takes no project
+        // lock: it never writes to `root`.
+        Invocation::Migrate { .. } => {
+            use crate::store::Store as _;
+            let store = crate::store::SqliteStore::open(crate::paths::store_path()?)?;
+            store.migrate()?;
+            crate::invoke::dispatch_unscoped(&store, root, &storage::now(), options.invocation)
+        }
         Invocation::Context { format } => {
             storage::ensure_project(root)?;
             let views = build_story_views(root, false)?;
