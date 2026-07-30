@@ -131,6 +131,7 @@ Usage:
   story decompose --stdin [--dry-run]
   story import-project <file>
   story migrate [<path>] [--dry-run]               (move a .storyhook tree into the store)
+  story relink <project> <path>                    (point a project at its moved checkout)
   story load-context [--format markdown|json]
   story handoff [--since <duration>]
   story phase list
@@ -329,6 +330,19 @@ pub enum Invocation {
         path: Option<String>,
         /// Report what would be imported and write nothing.
         dry_run: bool,
+    },
+    /// Point a project at the checkout it now lives in.
+    ///
+    /// The complement of deregistration. A registration is a claim that a
+    /// project can be opened at a path; when the checkout *moves*, the claim is
+    /// wrong rather than stale, and re-registering cannot fix it from inside
+    /// the new location if the store still resolves the old one.
+    Relink {
+        /// The project's slug, as `story web list` prints it.
+        project: String,
+        /// The moved checkout: its `.storyhook.toml`, or the directory holding
+        /// it. Both are things a person reasonably types.
+        pointer: String,
     },
     Context {
         format: Option<String>,
@@ -649,6 +663,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "decompose" => parse_decompose(args),
         "import-project" => parse_import_project(args),
         "migrate" => parse_migrate(args),
+        "relink" => parse_relink(args),
         "export" => Ok(Invocation::Export),
         "load-context" | "context" => parse_context(args),
         "phase" => parse_phase(args),
@@ -1251,6 +1266,24 @@ fn parse_migrate(args: &[String]) -> Result<Invocation, AppError> {
         }
     }
     Ok(Invocation::Migrate { path, dry_run })
+}
+
+fn parse_relink(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story relink <project> <path-to-pointer-file>";
+    let mut positional = Vec::new();
+    for arg in &args[1..] {
+        if arg.starts_with('-') {
+            return Err(AppError::Usage(usage.to_string()));
+        }
+        positional.push(arg.clone());
+    }
+    let [project, pointer] = positional.as_slice() else {
+        return Err(AppError::Usage(usage.to_string()));
+    };
+    Ok(Invocation::Relink {
+        project: project.clone(),
+        pointer: pointer.clone(),
+    })
 }
 
 fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
