@@ -38,6 +38,102 @@ use super::templates;
 /// The story-id prefix a project gets when `init` is not told one.
 pub const DEFAULT_PREFIX: &str = "SH";
 
+/// Set to a non-empty value to permit creating a project under a temporary
+/// directory in a store that is not itself temporary. See
+/// [`refuse_temp_project_in_real_store`].
+pub const ALLOW_TEMP_PROJECT: &str = "STORYHOOK_ALLOW_TEMP_PROJECT";
+
+/// Refuses to create a project at a throwaway path inside a store that is not
+/// throwaway (SH-95).
+///
+/// The invariant is one sentence: **a throwaway project may only be created in
+/// a throwaway store.**
+///
+/// Before the flip, `story init` wrote a `.storyhook/` directory into the
+/// directory it was run in, so a fixture's data lived in the fixture and was
+/// deleted with it. Storage isolated itself, and no test suite driving the CLI
+/// ever had to think about it — so none of them did. One global store ended
+/// that silently: every one of those fixture sites became a permanent write
+/// into the developer's real tracker, with no error and nothing to notice. It
+/// went unnoticed until a single run of one repository's suite put 394 projects
+/// into a real store, 234 of them carrying stories.
+///
+/// **Why both halves are required.** Refusing every temporary path would be
+/// wrong and would break this project's own suite, whose fixtures legitimately
+/// live under `/private/tmp` — with a store that lives there too. A temporary
+/// project in a temporary store is exactly what a test *should* build. The
+/// defect is the mismatch, so the mismatch is what is refused.
+///
+/// **Why it fails here rather than being cleaned up later.** Hiding these
+/// afterwards — in `doctor`, or in the dashboard — treats a symptom while the
+/// writes continue. This is the only point where the mistake is still cheap:
+/// nothing has been written, and the message can name the one environment
+/// variable that fixes the caller for good.
+pub fn refuse_temp_project_in_real_store(root: &Path, data_home: &Path) -> Result<(), AppError> {
+    let allowed = std::env::var(ALLOW_TEMP_PROJECT).is_ok_and(|v| !v.trim().is_empty());
+    refuse_temp_project(root, data_home, allowed)
+}
+
+/// The decision behind [`refuse_temp_project_in_real_store`], with the
+/// environment lifted out into `allowed`.
+///
+/// Separated so it can be tested without mutating process environment, which
+/// two tests running in parallel cannot do safely.
+fn refuse_temp_project(root: &Path, data_home: &Path, allowed: bool) -> Result<(), AppError> {
+    if allowed || !is_under_temp(root) || is_under_temp(data_home) {
+        return Ok(());
+    }
+    Err(AppError::Validation(format!(
+        "refusing to create a project at `{}`: it is under a temporary directory, and the store \
+         at `{}` is not.\n\nNothing has been written. A project created here would outlive the \
+         directory it names by a long way — the directory is deleted at the end of the run, and \
+         the project stays in the store forever, pointing at nothing.\n\nIf this is a test \
+         suite, give it a store of its own by exporting STORYHOOK_DATA_DIR to a directory \
+         inside the fixture; that is what makes its writes disappear with it. If you really do \
+         want a throwaway project in this store, set {ALLOW_TEMP_PROJECT}=1.",
+        root.display(),
+        data_home.display(),
+    )))
+}
+
+/// Whether `path` is inside a directory the operating system may reclaim.
+///
+/// `$TMPDIR` is consulted first because that is where `mktemp` and
+/// `tempfile` land by default, and the literals cover the cases it does not:
+/// `/tmp` and `/private/tmp` (the same directory on macOS, reached by either
+/// name), and `/var/folders`, which is `$TMPDIR`'s real home for a login
+/// session other than this process's.
+///
+/// Every root is compared in both its literal and its canonical spelling, and
+/// so is the path — four comparisons rather than one, for a reason the tests
+/// pin. `canonical` falls back to its input for a path that does not exist,
+/// and the path being judged here usually *does not exist yet*: it is about to
+/// be created. So `/tmp/fixture` stays `/tmp/fixture` while the root `/tmp`
+/// canonicalizes to `/private/tmp`, and comparing only canonical forms lets
+/// exactly the case this guard exists for walk straight through.
+fn is_under_temp(path: &Path) -> bool {
+    let literal = path.to_path_buf();
+    let resolved = canonical(path);
+    let mut roots = vec![std::env::temp_dir()];
+    roots.extend(
+        [
+            "/tmp",
+            "/private/tmp",
+            "/var/folders",
+            "/private/var/folders",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    roots.iter().any(|root| {
+        let root_resolved = canonical(root);
+        literal.starts_with(root)
+            || literal.starts_with(&root_resolved)
+            || resolved.starts_with(root)
+            || resolved.starts_with(&root_resolved)
+    })
+}
+
 /// The repository-side file naming the project a checkout belongs to, and
 /// carrying the repository's own storyhook configuration.
 ///
@@ -536,5 +632,77 @@ fn slugify(value: &str) -> String {
         "project".to_string()
     } else {
         slug
+    }
+}
+
+#[cfg(test)]
+mod temp_project_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// The case that put 394 projects in a real store: a fixture directory
+    /// under `$TMPDIR`, a store in the user's data home.
+    #[test]
+    fn a_temp_project_in_a_real_store_is_refused() {
+        let root = std::env::temp_dir().join("tmp.abc123");
+        let data_home = Path::new("/Users/someone/.local/share/storyhook");
+        let error = refuse_temp_project(&root, data_home, false)
+            .expect_err("a temp project in a real store must be refused");
+        assert_eq!(error.exit_code(), 2, "it is a usage error, not a crash");
+        let message = error.to_string();
+        assert!(
+            message.contains("STORYHOOK_DATA_DIR"),
+            "the message must name the variable that fixes the caller: {message}"
+        );
+        assert!(
+            message.contains(ALLOW_TEMP_PROJECT),
+            "the message must name the override: {message}"
+        );
+    }
+
+    /// What this project's own suite does, and what any correctly isolated
+    /// suite does. Refusing it would be the fix breaking its own users.
+    #[test]
+    fn a_temp_project_in_a_temp_store_is_allowed() {
+        let root = Path::new("/private/tmp/storyhook-tests/fixture-1");
+        let data_home = Path::new("/private/tmp/storyhook-gate.XXXX/data");
+        assert!(
+            refuse_temp_project(root, data_home, false).is_ok(),
+            "a throwaway project in a throwaway store is exactly what a test builds"
+        );
+    }
+
+    /// The ordinary case: a real repository, a real store.
+    #[test]
+    fn a_real_project_in_a_real_store_is_allowed() {
+        let root = Path::new("/Volumes/Code/mikeyward/storyhook");
+        let data_home = Path::new("/Users/someone/.local/share/storyhook");
+        assert!(refuse_temp_project(root, data_home, false).is_ok());
+    }
+
+    /// A deliberate override is honoured, so the refusal can never become a
+    /// wall someone has no way past.
+    #[test]
+    fn the_override_permits_what_would_otherwise_be_refused() {
+        let root = std::env::temp_dir().join("tmp.abc123");
+        let data_home = Path::new("/Users/someone/.local/share/storyhook");
+        assert!(refuse_temp_project(&root, data_home, true).is_ok());
+    }
+
+    /// `/tmp` and `/private/tmp` are the same directory on macOS reached by two
+    /// names. Without canonicalization one of them is not recognised as
+    /// temporary, and half the cases walk straight through the guard.
+    #[test]
+    fn both_spellings_of_the_macos_temp_directory_are_recognised() {
+        for spelling in ["/tmp/fixture", "/private/tmp/fixture"] {
+            assert!(
+                is_under_temp(Path::new(spelling)),
+                "`{spelling}` must be recognised as temporary"
+            );
+        }
+        assert!(
+            !is_under_temp(Path::new("/Volumes/Code/mikeyward/storyhook")),
+            "a real checkout must not be mistaken for a temporary directory"
+        );
     }
 }
