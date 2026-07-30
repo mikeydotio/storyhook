@@ -111,7 +111,7 @@ fn refuse_temp_project(root: &Path, data_home: &Path, allowed: bool) -> Result<(
 /// be created. So `/tmp/fixture` stays `/tmp/fixture` while the root `/tmp`
 /// canonicalizes to `/private/tmp`, and comparing only canonical forms lets
 /// exactly the case this guard exists for walk straight through.
-fn is_under_temp(path: &Path) -> bool {
+pub(crate) fn is_under_temp(path: &Path) -> bool {
     let literal = path.to_path_buf();
     let resolved = canonical(path);
     let mut roots = vec![std::env::temp_dir()];

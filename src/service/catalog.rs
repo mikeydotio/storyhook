@@ -36,6 +36,20 @@ pub struct CatalogEntry {
     pub path: Option<PathBuf>,
 }
 
+/// A registration naming a directory that is not there any more.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrphanedRegistration {
+    /// The project the stale registration belongs to.
+    pub project: ProjectId,
+    /// Its slug, which is what a user deregisters or relinks it by.
+    pub slug: String,
+    /// The path that no longer exists.
+    pub path: PathBuf,
+    /// How many stories the project holds — the difference between a fixture
+    /// worth forgetting and real work whose checkout has merely moved.
+    pub stories: usize,
+}
+
 /// The project catalog, over a whole store.
 ///
 /// Not [`Ctx`](super::Ctx)-shaped: `web list` spans every project, and `web
@@ -48,6 +62,140 @@ impl<'a, S: Store> CatalogService<'a, S> {
     /// A catalog service over `store`.
     pub fn new(store: &'a S) -> Self {
         Self { store }
+    }
+
+    /// Every registered checkout whose directory is no longer on disk.
+    ///
+    /// A registration is a claim that a project can be opened at a path. When
+    /// the path is gone the claim is stale, and a stale claim is not harmless:
+    /// it is a row in `story web list` and a card on the dashboard's home
+    /// screen, indistinguishable from a real repository until it is clicked.
+    ///
+    /// This is what 394 fixture directories looked like after their test run
+    /// ended — every one of them registered, every one pointing at nothing.
+    ///
+    /// Reported rather than repaired on sight. A path can be missing because an
+    /// external disk is not mounted, and silently forgetting a real project's
+    /// only registration because a volume was unplugged would be a worse defect
+    /// than the one being fixed. `story doctor --fix` is where the user says
+    /// yes, and [`relink`](Self::relink) is the answer when the checkout moved
+    /// rather than went away.
+    pub fn orphaned(&self) -> Result<Vec<OrphanedRegistration>, AppError> {
+        Ok(self.store.read(|tx| {
+            let mut orphans = Vec::new();
+            for project in tx.projects()? {
+                let stories = tx
+                    .stories(project.id, &crate::store::StoryQuery::all())?
+                    .len();
+                for record in tx.project_paths(project.id)? {
+                    let path = PathBuf::from(&record.path);
+                    if !path.exists() {
+                        orphans.push(OrphanedRegistration {
+                            project: project.id,
+                            slug: project.slug.clone(),
+                            path,
+                            stories,
+                        });
+                    }
+                }
+            }
+            Ok(orphans)
+        })?)
+    }
+
+    /// Forgets every registration [`orphaned`](Self::orphaned) found, and
+    /// returns them.
+    ///
+    /// Only the path rows go. The project, its stories and its identity all
+    /// survive, so this is reversible by `story web register` or
+    /// [`relink`](Self::relink) — which is what makes it safe to offer from
+    /// `doctor --fix` rather than demanding a hand-written transaction.
+    pub fn deregister_orphaned(&self) -> Result<Vec<OrphanedRegistration>, AppError> {
+        let orphans = self.orphaned()?;
+        self.store.write(|tx| {
+            for orphan in &orphans {
+                tx.forget_project_path(orphan.project, &orphan.path)?;
+            }
+            Ok(())
+        })?;
+        Ok(orphans)
+    }
+
+    /// Points `project` at the checkout whose pointer file is `pointer`.
+    ///
+    /// The complement of deregistration: a checkout that *moved* rather than
+    /// went away. Deregistering and re-registering would do it, but only from
+    /// inside the new location and only if the pointer file resolves — and the
+    /// case that most needs this is the one where the recorded path is wrong,
+    /// which is exactly when resolution by path cannot help.
+    ///
+    /// `pointer` may name the pointer file itself or the directory holding it,
+    /// because both are things a person reasonably types.
+    ///
+    /// The pointer file is *read*, not trusted blindly: the project it names by
+    /// uuid must be the project being relinked. Without that check this would
+    /// be a way to quietly staple one project's identity onto another
+    /// project's checkout, and the resulting store would resolve one repository
+    /// to two projects depending on which door it came in by.
+    pub fn relink(&self, project: &str, pointer: &Path) -> Result<CatalogEntry, AppError> {
+        let dir = if pointer.is_dir() {
+            pointer.to_path_buf()
+        } else {
+            pointer
+                .parent()
+                .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+        };
+        let dir = dir
+            .canonicalize()
+            .map_err(|e| AppError::NotFound(format!("cannot read `{}`: {e}", dir.display())))?;
+
+        let found = read_pointer(&dir)?.ok_or_else(|| {
+            AppError::NotFound(format!(
+                "no `.storyhook.toml` at `{}`.\n\nrelink needs the pointer file of the checkout \
+                 the project should point at — give it the checkout directory, or the file \
+                 itself.",
+                dir.display()
+            ))
+        })?;
+
+        // Read and validate before writing. The uuid check has to raise an
+        // `AppError`, and a store write closure may only fail with a
+        // `StoreError` — but it also reads better: nothing is touched until the
+        // identity is known to match.
+        let record = self
+            .store
+            .read(|tx| tx.project_by_slug(project))?
+            .ok_or_else(|| AppError::NotFound(format!("no project `{project}`")))?;
+
+        if record.uuid != found.uuid {
+            return Err(AppError::Validation(format!(
+                "`{}` belongs to a different project.\n\nIts pointer file names uuid {}, and \
+                 `{}` is uuid {}. Relinking would leave one checkout resolving to two projects \
+                 depending on which door it came in by. If you meant to adopt this checkout, run \
+                 `story web register` in it.",
+                dir.display(),
+                found.uuid,
+                record.slug,
+                record.uuid
+            )));
+        }
+
+        // Replace rather than add. `relink` says "the project is *here* now",
+        // and leaving the old row behind would make `web list` keep showing the
+        // location the user just corrected — which is the whole complaint.
+        //
+        // Every row goes, not only the stale one: a checkout that moved takes
+        // its worktrees with it, and any that are still real re-register
+        // themselves the next time a command runs in them.
+        let id = record.id;
+        let moved = dir.clone();
+        self.store.write(|tx| {
+            for existing in tx.project_paths(id)? {
+                tx.forget_project_path(id, Path::new(&existing.path))?;
+            }
+            tx.touch_project_path(id, &moved, path_kind(&moved))
+        })?;
+        Ok(entry(record, Some(dir)))
     }
 
     /// Records `path` as a checkout of the project it belongs to.

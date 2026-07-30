@@ -374,11 +374,32 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             .map(|view| Response::ProjectSnapshot(Box::new(view))),
         Invocation::Doctor { fix } => {
             let service = IntegrityService::new(ctx);
+            let catalog = crate::service::CatalogService::new(ctx.store());
+            // An orphaned registration in a *throwaway* store is not a finding:
+            // fixtures are supposed to disappear, and reporting them there
+            // would make `doctor` depend on which sibling fixtures happened to
+            // have been dropped yet.
+            let audit_catalog = !crate::service::project::is_under_temp(ctx.env().data_home());
             if fix {
-                service.fix().map(Response::Message)
+                let mut message = service.fix()?;
+                if audit_catalog {
+                    let forgotten = catalog.deregister_orphaned()?;
+                    if !forgotten.is_empty() {
+                        message.push('\n');
+                        message.push_str(&deregistered_message(&forgotten));
+                    }
+                }
+                Ok(Response::Message(message))
             } else {
                 match service.report()? {
-                    issues if issues.is_empty() => Ok(Response::Issues(Vec::new())),
+                    issues if issues.is_empty() => {
+                        let orphans = if audit_catalog {
+                            catalog.orphaned()?
+                        } else {
+                            Vec::new()
+                        };
+                        Ok(Response::Issues(orphan_advice(&orphans)))
+                    }
                     issues => Err(AppError::Integrity(issues.join("\n"))),
                 }
             }
@@ -453,6 +474,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::Update { .. }
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
+        | Invocation::Relink { .. }
         | Invocation::Init { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
@@ -941,6 +963,18 @@ pub fn dispatch_unscoped_with<S: Store>(
         // project this checkout belongs to — the legacy tree is the input, and
         // `MigrationPlan::apply` refuses inside its own transaction if that
         // checkout has already been migrated.
+        Invocation::Relink { project, pointer } => {
+            let entry =
+                crate::service::CatalogService::new(store).relink(&project, Path::new(&pointer))?;
+            Ok(Response::Message(format!(
+                "Relinked `{}` to `{}`",
+                entry.id,
+                entry
+                    .path
+                    .as_ref()
+                    .map_or_else(|| "(none)".to_string(), |p| p.display().to_string())
+            )))
+        }
         Invocation::Migrate { path, dry_run } => {
             let source = match path {
                 Some(path) => {
@@ -1154,6 +1188,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "help",
         Invocation::Init { .. } => "init",
+        Invocation::Relink { .. } => "relink",
         Invocation::New { .. } => "new",
         Invocation::MemberAdd { .. } => "member-add",
         Invocation::State { .. } => "state",
@@ -1599,4 +1634,67 @@ fn is_project_less(invocation: &Invocation) -> bool {
         Invocation::Decompose { dry_run, .. } => *dry_run,
         _ => false,
     }
+}
+
+/// How `story doctor` describes registrations pointing at directories that are
+/// gone.
+///
+/// Advisory, not an integrity failure: a missing directory can mean an external
+/// disk is not mounted, and exiting non-zero — let alone forgetting the
+/// registration — because a volume was unplugged would be worse than the defect
+/// it is reporting. The story count is included because it is the whole
+/// difference between a fixture worth forgetting and real work whose checkout
+/// merely moved.
+fn orphan_advice(orphans: &[crate::service::OrphanedRegistration]) -> Vec<String> {
+    if orphans.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = orphans
+        .iter()
+        .map(|orphan| {
+            format!(
+                "`{}` is registered at `{}`, which no longer exists ({} {})",
+                orphan.slug,
+                orphan.path.display(),
+                orphan.stories,
+                if orphan.stories == 1 {
+                    "story"
+                } else {
+                    "stories"
+                },
+            )
+        })
+        .collect();
+    lines.push(format!(
+        "{} stale {}. Run `story doctor --fix` to deregister them, or `story relink <project> \
+         <path>` if the checkout moved — deregistering forgets only the path, never the stories.",
+        orphans.len(),
+        if orphans.len() == 1 {
+            "registration"
+        } else {
+            "registrations"
+        },
+    ));
+    lines
+}
+
+/// What `story doctor --fix` reports having forgotten.
+fn deregistered_message(forgotten: &[crate::service::OrphanedRegistration]) -> String {
+    let mut out = format!(
+        "deregistered {} stale {}:",
+        forgotten.len(),
+        if forgotten.len() == 1 {
+            "registration"
+        } else {
+            "registrations"
+        }
+    );
+    for orphan in forgotten {
+        out.push_str(&format!("\n  {} ({})", orphan.slug, orphan.path.display()));
+    }
+    out.push_str(
+        "\n\nOnly the paths were forgotten. Every story is still in the store, and \
+                  `story web register` or `story relink` puts a project back.",
+    );
+    out
 }
