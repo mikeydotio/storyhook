@@ -1475,9 +1475,36 @@ fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppE
     })?)
 }
 
+/// The directory a project would be brought into existence at, for the three
+/// invocations that create one — and `None` for every invocation that does not.
+///
+/// Named here, once, rather than guarded arm by arm: `init`, `migrate` and
+/// `import-project` all reach `create_project`, and a fourth creating arm added
+/// later without a guard is exactly how SH-95 happened the first time.
+///
+/// A dry-run migration writes nothing and is deliberately not a creation.
+fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBuf> {
+    match invocation {
+        Invocation::Init { .. } | Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
+        Invocation::Migrate { path, dry_run } if !dry_run => Some(
+            path.as_ref()
+                .map_or_else(|| cwd.to_path_buf(), PathBuf::from),
+        ),
+        _ => None,
+    }
+}
+
 impl<S: Store> Invoker for StoreInvoker<'_, S> {
     fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
         let now = self.env.now();
+        // Before anything is written, and before the arms diverge: a throwaway
+        // project may only be created in a throwaway store (SH-95).
+        if let Some(target) = project_creation_target(&request.invocation, &self.cwd) {
+            crate::service::project::refuse_temp_project_in_real_store(
+                &target,
+                self.env.data_home(),
+            )?;
+        }
         if is_project_less(&request.invocation) {
             return dispatch_unscoped_with(
                 self.store,
