@@ -1458,6 +1458,42 @@ Related:
         );
 
         m.insert(
+            "relink",
+            r#"story relink <project> <path-to-pointer-file>
+
+Point a project at the checkout it now lives in. <project> is the slug
+`story web list` prints; <path> is the moved checkout's .storyhook.toml,
+or the directory holding it.
+
+When to use:
+  A registration is a claim that a project can be opened at a path. When
+  a checkout MOVES, that claim is wrong rather than stale, and
+  `story web register` cannot always fix it: the store may still resolve
+  the old path, and the old path is the one that is wrong.
+
+  When the checkout is simply GONE, deregistering is the answer instead —
+  `story doctor` reports those, and `story doctor --fix` forgets them.
+
+Examples:
+  story relink lillist ~/Code/Lillist
+  story relink lillist ~/Code/Lillist/.storyhook.toml
+
+What it refuses:
+  A pointer file naming a different project. Relinking across identities
+  would leave one checkout resolving to two projects depending on which
+  door it came in by, so the uuid in the pointer file must match the
+  project being relinked. To adopt a checkout into a project it does not
+  already belong to, run `story web register` inside it.
+
+Related:
+  story web register   — Add a checkout the store has not seen
+  story web deregister — Forget a checkout's path (never its stories)
+  story doctor         — Report registrations pointing at nothing
+  story help storage   — Where the store and pointer files live
+"#,
+        );
+
+        m.insert(
             "storage",
             r#"Where storyhook keeps your data
 
