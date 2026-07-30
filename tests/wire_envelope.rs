@@ -927,6 +927,10 @@ fn invocation_corpus() -> Vec<Invocation> {
             path: None,
             dry_run: true,
         },
+        Invocation::Relink {
+            project: "example".to_string(),
+            pointer: "/some/checkout".to_string(),
+        },
         Invocation::Daemon {
             action: DaemonAction::Status,
         },
@@ -939,6 +943,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "Help",
         Invocation::Init { .. } => "Init",
+        Invocation::Relink { .. } => "Relink",
         Invocation::New { .. } => "New",
         Invocation::MemberAdd { .. } => "MemberAdd",
         Invocation::State { .. } => "State",
@@ -1000,7 +1005,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        50,
+        51,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }
