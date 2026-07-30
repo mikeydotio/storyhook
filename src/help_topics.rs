@@ -1457,6 +1457,88 @@ Related:
 "#,
         );
 
+        m.insert(
+            "storage",
+            r#"Where storyhook keeps your data
+
+Story data lives in one SQLite store, outside your repositories. A repository
+carries a single committed file — .storyhook.toml — naming the project it
+belongs to, and no story data at all.
+
+== The store ==
+
+  <data home>/store.db
+
+The data home is the first of these that is set:
+
+  $STORYHOOK_DATA_DIR        names the directory outright
+  $XDG_DATA_HOME/storyhook
+  ~/.local/share/storyhook   the default
+
+The store runs in write-ahead-logging mode, so it is three files in practice:
+store.db, store.db-wal and store.db-shm. All three are part of the database.
+That matters when restoring — see below.
+
+== The pointer file ==
+
+  .storyhook.toml
+
+Written by story init and by story migrate. Commit it. It names the project's
+uuid and prefix, so a fresh clone — or a linked git worktree — resolves the
+same project before it has anything local to consult. Resolution walks up from
+the working directory, so commands work from a subdirectory too.
+
+== Runtime files and snapshots ==
+
+  <state home>/           daemon.json, daemon.pid, daemon.log
+  <state home>/backups/   verified snapshots
+
+The state home is $XDG_STATE_HOME/storyhook, else ~/.local/state/storyhook.
+
+Snapshots are taken with SQLite's VACUUM INTO, opened and integrity-checked
+after they are written, and rotated — seven are kept. Pruning happens when a
+snapshot is taken rather than continuously, so a machine that migrates often
+can hold more than seven for a while. A snapshot taken before a schema
+migration carries the version it was taken from in its name, which is what
+makes it useful after a bad upgrade. story daemon status reports how old the
+newest one is.
+
+== Restoring a snapshot ==
+
+Copying a snapshot over store.db is NOT a restore. The old database's -wal and
+-shm sidecars survive beside the new database's pages, and SQLite replays one
+into the other — turning a recoverable machine into a malformed one.
+
+The whole procedure:
+
+  1. story daemon stop
+  2. delete store.db, store.db-wal and store.db-shm from the data home
+  3. copy the newest snapshot there as store.db
+  4. story doctor
+
+Step 1 is not optional. A running daemon holds the database open with its own
+page cache, and will serve the old data happily while the files are swapped
+underneath it.
+
+== A repository that has not been migrated ==
+
+A repository still carrying a .storyhook/ directory has not been migrated, and
+storyhook will say so rather than guess. story migrate brings it across. It
+never modifies the directory it reads: .storyhook/ stays exactly as it is, and
+is your rollback until you choose to delete it.
+
+== Backing up ==
+
+  story export   a portable JSON document, one project at a time
+  the snapshots  a binary copy of the whole store, every project
+
+Related:
+  story migrate — Move a legacy .storyhook/ project into the store
+  story doctor  — Integrity checks, and the rebuild diff
+  story init    — Create a project and write .storyhook.toml
+"#,
+        );
+
         m
     });
 
