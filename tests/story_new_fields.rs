@@ -18,7 +18,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn new_with_description_sets_description() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["new", "Login crash", "--description", "Users can't log in"])
@@ -35,7 +38,10 @@ fn new_with_description_sets_description() {
 #[test]
 fn new_without_description_omits_description_line() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["new", "No description here"])
@@ -52,7 +58,10 @@ fn new_without_description_omits_description_line() {
 #[test]
 fn new_with_priority_sets_priority() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["new", "Urgent bug", "--priority", "critical"])
@@ -69,7 +78,10 @@ fn new_with_priority_sets_priority() {
 #[test]
 fn new_with_invalid_priority_is_rejected_and_creates_no_story() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["new", "Bad priority", "--priority", "urgent"])
@@ -83,7 +95,10 @@ fn new_with_invalid_priority_is_rejected_and_creates_no_story() {
 #[test]
 fn new_with_repeated_label_flags_accumulates() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["new", "Multi-label", "--label", "bug", "--label", "web"])
@@ -100,7 +115,10 @@ fn new_with_repeated_label_flags_accumulates() {
 #[test]
 fn new_with_labels_csv_splits_and_trims() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["new", "CSV labels", "--labels", "bug, web, cli"])
@@ -117,7 +135,10 @@ fn new_with_labels_csv_splits_and_trims() {
 #[test]
 fn new_with_assignee_sets_assignee() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["member", "add", "mikey <mw@mikey.io>"])
         .assert()
@@ -138,7 +159,10 @@ fn new_with_assignee_sets_assignee() {
 #[test]
 fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["new", "Bad assignee", "--assignee", "nobody"])
@@ -152,7 +176,10 @@ fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
 #[test]
 fn new_with_all_fields_writes_single_enriched_story() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["member", "add", "mikey <mw@mikey.io>"])
         .assert()
@@ -196,7 +223,10 @@ fn new_with_all_fields_writes_single_enriched_story() {
 #[test]
 fn set_description_updates_existing_story() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Needs a description"])
         .assert()
@@ -219,7 +249,10 @@ fn set_description_updates_existing_story() {
 #[test]
 fn set_description_last_write_wins() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Story", "--description", "First draft"])
         .assert()
@@ -245,7 +278,10 @@ fn set_description_last_write_wins() {
 #[test]
 fn import_maps_description_to_description_field_not_comment() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[
         {"title": "Imported story", "description": "Came from import"}

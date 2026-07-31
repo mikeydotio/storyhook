@@ -55,7 +55,7 @@ fn via_local(env: &TestEnv, cwd: &std::path::Path, args: &[&str]) -> std::proces
 /// under test.
 fn project(env: &TestEnv) -> tempfile::TempDir {
     let dir = scratch_dir();
-    let out = via_local(env, dir.path(), &["init", "--no-agents-md"]);
+    let out = via_local(env, dir.path(), &["project", "init", "--no-agents-md"]);
     assert!(out.status.success(), "initializing the fixture project");
     dir
 }

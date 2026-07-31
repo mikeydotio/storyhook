@@ -36,7 +36,7 @@ fn init_project(dir: &std::path::Path) {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir)
-        .args(["init"])
+        .args(["project", "init"])
         .assert()
         .success();
 }

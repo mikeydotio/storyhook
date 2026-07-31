@@ -28,7 +28,10 @@ fn story(dir: &std::path::Path) -> Command {
 /// An initialized project, and the directory holding it.
 fn initialized() -> TempDir {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     dir
 }
 
@@ -67,7 +70,10 @@ fn init_is_idempotent() {
     let dir = initialized();
     story(dir.path()).args(["new", "Before"]).assert().success();
 
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // The second run neither reset the catalog nor rewound the counter.
     story(dir.path())

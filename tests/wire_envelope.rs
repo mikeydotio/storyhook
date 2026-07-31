@@ -614,10 +614,6 @@ fn error_variants_travel_under_a_kind_tag() {
 fn invocation_corpus() -> Vec<Invocation> {
     vec![
         Invocation::Help,
-        Invocation::Init {
-            prefix: Some("API".to_string()),
-            no_agents_md: true,
-        },
         Invocation::Project {
             action: ProjectAction::Init {
                 path: Some("../elsewhere".to_string()),
@@ -989,7 +985,6 @@ fn invocation_corpus() -> Vec<Invocation> {
 fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "Help",
-        Invocation::Init { .. } => "Init",
         Invocation::Project { .. } => "Project",
         Invocation::Relink { .. } => "Relink",
         Invocation::New { .. } => "New",
@@ -1053,7 +1048,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        52,
+        51,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

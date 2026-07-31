@@ -218,10 +218,6 @@ pub enum MemberInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Invocation {
     Help,
-    Init {
-        prefix: Option<String>,
-        no_agents_md: bool,
-    },
     Project {
         action: ProjectAction,
     },
@@ -699,7 +695,15 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "-V" | "--version" => Ok(Invocation::Version),
         "help" => parse_help(args),
         "update" => parse_update(args),
-        "init" => parse_init(args),
+        // Not left to fall through to `unknown command`. Five years of
+        // documents, this repo's own plugin skill, and every agent that has
+        // ever seen storyhook all say `story init`; the least useful thing to
+        // tell any of them is that no such command exists.
+        "init" => Err(AppError::Usage(
+            "`story init` is now `story project init`.\n\nThe project verbs moved into one \
+             group: `story project init`, `story project list`, `story project deinit`."
+                .to_string(),
+        )),
         "project" => parse_project(args),
         "new" => parse_new(args),
         "member" => parse_member(args),
@@ -749,35 +753,6 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
             args[0]
         ))),
     }
-}
-
-fn parse_init(args: &[String]) -> Result<Invocation, AppError> {
-    let mut prefix = None;
-    let mut no_agents_md = false;
-    let mut index = 1;
-    let usage = "usage: story init [--prefix <PREFIX>] [--no-agents-md]";
-    while index < args.len() {
-        match args[index].as_str() {
-            "--prefix" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
-                prefix = Some(value.clone());
-                index += 2;
-            }
-            "--no-agents-md" => {
-                no_agents_md = true;
-                index += 1;
-            }
-            _ => {
-                return Err(AppError::Usage(usage.to_string()));
-            }
-        }
-    }
-    Ok(Invocation::Init {
-        prefix,
-        no_agents_md,
-    })
 }
 
 const PROJECT_USAGE: &str = "usage: story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] \

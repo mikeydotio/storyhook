@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn add_labels() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -30,7 +33,10 @@ fn add_labels() {
 #[test]
 fn remove_label() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -51,7 +57,10 @@ fn remove_label() {
 #[test]
 fn labels_deduplicated() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -66,7 +75,10 @@ fn labels_deduplicated() {
 #[test]
 fn list_filters_by_label() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Bug fix"])
         .assert()
@@ -96,7 +108,10 @@ fn list_filters_by_label() {
 #[test]
 fn labels_in_json_output() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -118,7 +133,10 @@ fn labels_in_json_output() {
 #[test]
 fn labels_show_in_list() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()

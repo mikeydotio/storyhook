@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn handoff_captures_recently_created() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "New task"])
         .assert()
@@ -32,7 +35,10 @@ fn handoff_captures_recently_created() {
 #[test]
 fn handoff_captures_closed_stories() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Done task"])
         .assert()
@@ -53,7 +59,10 @@ fn handoff_captures_closed_stories() {
 #[test]
 fn handoff_with_duration() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Recent task"])
         .assert()
@@ -70,7 +79,10 @@ fn handoff_with_duration() {
 #[test]
 fn handoff_invalid_duration() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["handoff", "--since", "xyz"])
@@ -82,7 +94,10 @@ fn handoff_invalid_duration() {
 #[test]
 fn handoff_empty_period() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // --since 0h means nothing should show
     // Actually 0h means cutoff is exactly now, so recent stories within this second may appear.

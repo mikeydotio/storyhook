@@ -51,7 +51,7 @@ fn init_in(cwd: &Path, data_home: &Path, allow: bool) -> std::process::Output {
         // environment this test did not build.
         .env("STORYHOOK_INVOKER", "local")
         .env("STORYHOOK_DATA_DIR", data_home)
-        .arg("init");
+        .args(["project", "init"]);
     if allow {
         cmd.env("STORYHOOK_ALLOW_TEMP_PROJECT", "1");
     }

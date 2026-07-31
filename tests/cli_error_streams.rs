@@ -30,7 +30,10 @@ fn story(dir: &std::path::Path) -> Command {
 /// post-merge hook hits in practice.
 fn project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "A story"])
         .assert()

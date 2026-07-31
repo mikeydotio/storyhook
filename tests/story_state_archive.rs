@@ -11,7 +11,7 @@ fn closing_a_story_takes_it_out_of_the_open_set_and_keeps_it_readable() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("init")
+        .args(["project", "init"])
         .assert()
         .success();
 
@@ -57,7 +57,7 @@ fn closing_story_clears_awaiting_in_archive_snapshot() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("init")
+        .args(["project", "init"])
         .assert()
         .success();
 

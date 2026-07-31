@@ -105,8 +105,12 @@ impl Served {
             &*self.store,
             dir.path(),
             "2026-01-01T00:00:00Z",
-            parse_invocation(&["init".to_string(), "--no-agents-md".to_string()])
-                .expect("`story init` parses"),
+            parse_invocation(&[
+                "project".to_string(),
+                "init".to_string(),
+                "--no-agents-md".to_string(),
+            ])
+            .expect("`story init` parses"),
         )
         .expect("initializing a second project");
         let project = storyhook_test_support::project_id_at(&self.store, dir.path())
@@ -138,8 +142,12 @@ fn served() -> Served {
         &*store,
         dir.path(),
         "2026-01-01T00:00:00Z",
-        parse_invocation(&["init".to_string(), "--no-agents-md".to_string()])
-            .expect("`story init` parses"),
+        parse_invocation(&[
+            "project".to_string(),
+            "init".to_string(),
+            "--no-agents-md".to_string(),
+        ])
+        .expect("`story init` parses"),
     )
     .expect("initializing the fixture project");
 
@@ -2357,7 +2365,10 @@ fn web_deregister_repo_requires_guard_header() {
 fn web_register_dot_registers_cwd() {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    env.story(dir.path()).arg("init").assert().success();
+    env.story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     env.story(dir.path())
         .args(["web", "register", "."])
@@ -2383,7 +2394,10 @@ fn web_register_explicit_path() {
     let env = TestEnv::isolated();
     let cwd = scratch_dir();
     let target = scratch_dir();
-    env.story(target.path()).arg("init").assert().success();
+    env.story(target.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     env.story(cwd.path())
         .args(["web", "register", &target.path().to_string_lossy()])
@@ -2396,7 +2410,10 @@ fn web_register_explicit_path() {
 fn web_register_with_name() {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    env.story(dir.path()).arg("init").assert().success();
+    env.story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     env.story(dir.path())
         .args(["web", "register", ".", "--name", "My Project"])
@@ -2433,7 +2450,10 @@ fn web_register_non_project_fails() {
 fn web_deregister_by_id_cli() {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    env.story(dir.path()).arg("init").assert().success();
+    env.story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // `story init` puts the checkout in the catalog itself now, so there is no
     // separate registration step to perform first — which is the point of the
@@ -2466,7 +2486,10 @@ fn web_deregister_unknown_target_fails() {
 fn web_list_shows_registered_repos() {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
-    env.story(dir.path()).arg("init").assert().success();
+    env.story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     env.story(dir.path())
         .args(["web", "list"])

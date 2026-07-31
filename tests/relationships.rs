@@ -12,7 +12,7 @@ fn adding_directional_relationship_creates_inverse_edge() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("init")
+        .args(["project", "init"])
         .assert()
         .success();
 
@@ -53,7 +53,7 @@ fn show_renders_derived_ancestor_and_descendent_relationships() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("init")
+        .args(["project", "init"])
         .assert()
         .success();
 
@@ -104,7 +104,7 @@ fn archived_ancestors_still_participate_in_derived_relationships() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("init")
+        .args(["project", "init"])
         .assert()
         .success();
 
@@ -151,7 +151,7 @@ fn parent_cycle_is_rejected() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("init")
+        .args(["project", "init"])
         .assert()
         .success();
 
@@ -192,7 +192,7 @@ fn parent_story_shows_progress_rollup_in_json() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("init")
+        .args(["project", "init"])
         .assert()
         .success();
 
@@ -254,7 +254,7 @@ fn leaf_story_has_no_progress_in_json() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("init")
+        .args(["project", "init"])
         .assert()
         .success();
 

@@ -77,7 +77,10 @@ fn session_start_no_project_outputs_empty_json() {
 #[test]
 fn session_start_plugin_disabled_outputs_empty_json() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Disable the plugin
     let config_path = plugin_config_path(dir.path());
@@ -103,7 +106,10 @@ fn session_start_plugin_disabled_outputs_empty_json() {
 #[test]
 fn session_start_plugin_disabled_string_value_outputs_empty_json() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Disable the plugin with string "false" value
     let config_path = plugin_config_path(dir.path());
@@ -129,7 +135,10 @@ fn session_start_plugin_disabled_string_value_outputs_empty_json() {
 #[test]
 fn session_start_valid_project_outputs_system_message() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Implement user authentication"])
         .assert()
@@ -167,7 +176,10 @@ fn session_start_valid_project_outputs_system_message() {
 #[test]
 fn session_start_uses_additional_context_not_system_message() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Prime the model silently"])
         .assert()
@@ -215,7 +227,10 @@ fn session_start_uses_additional_context_not_system_message() {
 #[test]
 fn session_start_contains_cli_reference() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Add user profile page"])
         .assert()
@@ -261,7 +276,10 @@ fn session_start_contains_cli_reference() {
 #[test]
 fn session_start_contains_project_state() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build login page"])
         .assert()
@@ -304,7 +322,10 @@ fn session_start_contains_project_state() {
 #[test]
 fn session_start_contains_next_story_info() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Deploy monitoring dashboard"])
         .assert()
@@ -334,7 +355,10 @@ fn session_start_contains_next_story_info() {
 #[test]
 fn session_start_empty_project_zero_stories() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let output = story(dir.path())
         .arg("session-start")
@@ -367,7 +391,10 @@ fn session_start_empty_project_zero_stories() {
 #[test]
 fn session_start_special_characters_in_title() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", r#"Fix "double-quote" and backslash\ in titles"#])
         .assert()
@@ -401,7 +428,10 @@ fn session_start_special_characters_in_title() {
 #[test]
 fn session_start_unicode_in_story_title() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Add i18n support for Japanese text"])
         .assert()
@@ -424,7 +454,10 @@ fn session_start_unicode_in_story_title() {
 #[test]
 fn session_start_newline_in_story_title() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     // Create a story with a title containing special JSON chars
     story(dir.path())
         .args(["new", "Fix tab\there and newline\nhere"])
@@ -453,7 +486,10 @@ fn session_start_newline_in_story_title() {
 #[test]
 fn session_start_output_is_valid_json_object() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Validate JSON output integrity"])
         .assert()
@@ -485,7 +521,10 @@ fn session_start_output_is_valid_json_object() {
 #[test]
 fn session_start_system_message_under_4000_chars() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Create several stories to populate project state
     for i in 0..20 {
@@ -525,7 +564,10 @@ fn session_start_system_message_under_4000_chars() {
 #[test]
 fn session_start_completes_within_two_seconds() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Performance-critical task"])
         .assert()
@@ -553,7 +595,10 @@ fn session_start_completes_within_two_seconds() {
 #[test]
 fn session_start_ignores_json_flag() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test JSON flag behavior"])
         .assert()
@@ -622,7 +667,10 @@ fn session_start_no_project_with_json_flag() {
 #[test]
 fn session_start_next_story_shows_priority() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Low priority task"])
         .assert()
@@ -726,7 +774,10 @@ fn session_start_survives_a_pointer_naming_a_project_that_is_not_there() {
 #[test]
 fn session_start_plugin_config_extra_whitespace_bug_documented() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Write config with extra whitespace around the value
     let config_path = plugin_config_path(dir.path());
@@ -753,7 +804,10 @@ fn session_start_plugin_config_extra_whitespace_bug_documented() {
 #[test]
 fn session_start_plugin_config_enabled_true_produces_system_message() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test enabled true config"])
         .assert()
@@ -785,7 +839,10 @@ fn session_start_plugin_config_enabled_true_produces_system_message() {
 #[test]
 fn session_start_plugin_config_malformed_still_works() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test malformed config"])
         .assert()
@@ -819,7 +876,10 @@ fn session_start_plugin_config_malformed_still_works() {
 #[test]
 fn session_start_plugin_config_no_space_enabled_equals_false() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Write config with no spaces around `=`
     let config_path = plugin_config_path(dir.path());
@@ -842,7 +902,10 @@ fn session_start_plugin_config_no_space_enabled_equals_false() {
 #[test]
 fn session_start_plugin_config_comments_and_extra_keys() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Write config with comments and extra keys
     let config_path = plugin_config_path(dir.path());
@@ -873,7 +936,10 @@ fn session_start_plugin_config_comments_and_extra_keys() {
 #[test]
 fn session_start_plugin_config_nested_table() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Write config with [plugin] nested table format
     let config_path = plugin_config_path(dir.path());
@@ -902,7 +968,10 @@ fn session_start_plugin_config_nested_table() {
 #[test]
 fn session_start_no_plugin_config_file_produces_system_message() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test no plugin config"])
         .assert()
@@ -939,7 +1008,10 @@ fn session_start_output_is_one_of_two_valid_shapes() {
     // `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`.
     // No top-level `systemMessage` key should ever be present.
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test output shape contract"])
         .assert()
@@ -978,7 +1050,10 @@ fn session_start_output_is_one_of_two_valid_shapes() {
 #[test]
 fn session_start_stderr_is_empty() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test stderr cleanliness"])
         .assert()
@@ -1004,7 +1079,10 @@ fn session_start_stderr_is_empty() {
 #[test]
 fn session_start_utf8_safe_truncation_with_multibyte_titles() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // The compact CLI reference is ~2800 bytes. We need to push the context
     // past 3900 bytes total. The "Next:" line includes the full title, so a
@@ -1058,7 +1136,10 @@ fn session_start_utf8_safe_truncation_with_multibyte_titles() {
 #[test]
 fn session_start_quiet_flag_still_outputs_json() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test quiet flag bypass"])
         .assert()

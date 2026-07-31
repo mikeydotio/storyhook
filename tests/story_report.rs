@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn report_text_matches_summary() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path())
@@ -34,7 +37,10 @@ fn report_text_matches_summary() {
 #[test]
 fn report_html_basic() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["report", "--html"])
@@ -49,7 +55,10 @@ fn report_html_basic() {
 #[test]
 fn report_html_contains_stories() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Implement login"])
         .assert()
@@ -72,7 +81,10 @@ fn report_html_contains_stories() {
 #[test]
 fn report_html_xss_title() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "<script>alert(1)</script>"])
         .assert()
@@ -102,7 +114,10 @@ fn report_html_xss_title() {
 #[test]
 fn report_html_xss_comment() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Normal title"])
         .assert()
@@ -129,7 +144,10 @@ fn report_html_xss_comment() {
 #[test]
 fn report_html_xss_label() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Label test"])
         .assert()
@@ -162,7 +180,10 @@ fn report_html_xss_label() {
 #[test]
 fn report_html_empty_project() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["report", "--html"])
@@ -176,7 +197,10 @@ fn report_html_empty_project() {
 #[test]
 fn report_html_shows_priority() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Critical bug"])
         .assert()
@@ -207,7 +231,10 @@ fn report_html_shows_priority() {
 #[test]
 fn report_html_shows_type_breakdown() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Create stories: 1 untyped (Default), 1 bug, 1 story
     // "bug" and "story" are default types from init

@@ -497,7 +497,6 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Relink { .. }
-        | Invocation::Init { .. }
         | Invocation::Project { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
@@ -1000,20 +999,6 @@ pub fn dispatch_unscoped_with<S: Store>(
     stdin_input: Option<&str>,
 ) -> Result<Response, AppError> {
     match invocation {
-        Invocation::Init {
-            prefix,
-            no_agents_md,
-        } => {
-            let outcome = ProjectService::new(store, root)
-                .clock(Clock::Fixed(now.to_string()))
-                .init(&InitOptions {
-                    prefix,
-                    name: None,
-                    agents_md: !no_agents_md,
-                    pointer,
-                })?;
-            Ok(Response::Message(init_message(&outcome)))
-        }
         Invocation::Project { action } => dispatch_project(store, root, now, pointer, action),
         // Pure functions of compiled-in text. They need neither a project nor
         // a store, and answering them here is what lets `story --help` work in
@@ -1335,7 +1320,6 @@ fn not_yet_ported(invocation: &Invocation) -> AppError {
 fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "help",
-        Invocation::Init { .. } => "init",
         Invocation::Project { .. } => "project",
         Invocation::Relink { .. } => "relink",
         Invocation::New { .. } => "new",
@@ -1669,7 +1653,7 @@ fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppE
 /// A dry-run migration writes nothing and is deliberately not a creation.
 fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBuf> {
     match invocation {
-        Invocation::Init { .. } | Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
+        Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
         Invocation::Project {
             action: ProjectAction::Init { path, .. },
         } => Some(target_dir(cwd, path.as_deref())),
@@ -1775,8 +1759,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
 /// failure this function exists to prevent.
 fn is_project_less(invocation: &Invocation) -> bool {
     match invocation {
-        Invocation::Init { .. }
-        | Invocation::Project { .. }
+        Invocation::Project { .. }
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Help

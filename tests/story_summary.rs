@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn summary_shows_counts() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path()).args(["new", "Task C"]).assert().success();
@@ -34,7 +37,10 @@ fn summary_shows_counts() {
 #[test]
 fn summary_shows_priority_breakdown() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path())
@@ -57,7 +63,10 @@ fn summary_shows_priority_breakdown() {
 #[test]
 fn summary_shows_ready_stories() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Ready A"])
         .assert()
@@ -83,7 +92,10 @@ fn summary_shows_ready_stories() {
 #[test]
 fn summary_json_output() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
 
     story(dir.path())
@@ -97,7 +109,10 @@ fn summary_json_output() {
 #[test]
 fn summary_empty_project() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .arg("summary")
@@ -109,7 +124,10 @@ fn summary_empty_project() {
 #[test]
 fn summary_shows_type_breakdown() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Create stories: 2 with no type (Default), 1 bug, 2 stories
     // "bug" and "story" are default types from init

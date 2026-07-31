@@ -38,7 +38,10 @@ fn json(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
 #[test]
 fn a_member_added_by_name_and_email_can_be_assigned_work() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["member", "add", "mikey <mw@mikey.io>"])
@@ -61,7 +64,10 @@ fn a_member_added_by_name_and_email_can_be_assigned_work() {
 #[test]
 fn a_member_added_by_github_handle_gets_the_handle_as_its_id() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["member", "add", "-g", "grace-hopper"])
@@ -84,7 +90,10 @@ fn assigning_to_a_member_that_was_never_added_fails() {
     // The negative half: without it the two tests above would pass against an
     // `assign` that accepted any string at all.
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     let id = json(dir.path(), &["new", "Unassignable"])["story"]["story"]["id"]
         .as_str()
         .expect("a minted id")

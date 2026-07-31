@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn context_generates_markdown() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build API"])
         .assert()
@@ -41,7 +44,10 @@ fn context_generates_markdown() {
 #[test]
 fn context_shows_blocked_stories() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Blocked task"])
         .assert()
@@ -62,7 +68,10 @@ fn context_shows_blocked_stories() {
 #[test]
 fn context_json_format() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "A task"]).assert().success();
 
     story(dir.path())
@@ -76,7 +85,10 @@ fn context_json_format() {
 #[test]
 fn context_empty_project() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["context"])
@@ -88,7 +100,10 @@ fn context_empty_project() {
 #[test]
 fn context_shows_type_distribution() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Fix login crash", "--type", "bug"])
         .assert()
@@ -115,7 +130,10 @@ fn context_shows_type_distribution() {
 #[test]
 fn context_json_includes_type_distribution() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Fix login crash", "--type", "bug"])
         .assert()
