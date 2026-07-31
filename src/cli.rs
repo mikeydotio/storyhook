@@ -107,9 +107,6 @@ Usage:
   story web stop                                   (stop web dashboard)
   story web open                                   (open the dashboard in your browser)
   story web address                                (copy the dashboard URL to the clipboard)
-  story web register [<PATH>] [--name <NAME>]      (add a repo to the dashboard)
-  story web deregister <ID|PATH>                   (remove a repo from the dashboard)
-  story web list                                   (list registered repos)
   story member add "<name <email>>"
   story member add -g <github-handle>
   story state list
@@ -339,7 +336,7 @@ pub enum Invocation {
     /// wrong rather than stale, and re-registering cannot fix it from inside
     /// the new location if the store still resolves the old one.
     Relink {
-        /// The project's slug, as `story web list` prints it.
+        /// The project's slug, as `story project list` prints it.
         project: String,
         /// The moved checkout: its `.storyhook.toml`, or the directory holding
         /// it. Both are things a person reasonably types.
@@ -517,7 +514,7 @@ pub enum ProjectAction {
         /// The project's display name.
         ///
         /// The catalog is the projects table, so this is the only place a
-        /// chosen name can go. `story web register --name` was its previous
+        /// chosen name can go. `story web register --name` was its former
         /// and only home.
         name: Option<String>,
         /// Skip generating `AGENTS.md`.
@@ -541,22 +538,10 @@ pub enum ProjectAction {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAction {
-    Start {
-        port: u16,
-    },
+    Start { port: u16 },
     Stop,
     Status,
-    Serve {
-        port: u16,
-    },
-    Register {
-        path: std::path::PathBuf,
-        name: Option<String>,
-    },
-    Deregister {
-        target: String,
-    },
-    List,
+    Serve { port: u16 },
     Open,
     Address,
 }
@@ -1890,8 +1875,7 @@ fn parse_port_flag(rest: &[String], usage: &str) -> Result<Option<u16>, AppError
 }
 
 fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address | \
-                  register [PATH] [--name <NAME>] | deregister <ID|PATH> | list";
+    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -1932,44 +1916,6 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         }),
         "address" => Ok(Invocation::Web {
             action: WebAction::Address,
-        }),
-        "register" => {
-            let mut path = std::path::PathBuf::from(".");
-            let mut name = None;
-            let mut index = 2;
-            if let Some(next) = args.get(2)
-                && !next.starts_with("--")
-            {
-                path = std::path::PathBuf::from(next);
-                index = 3;
-            }
-            while index < args.len() {
-                match args[index].as_str() {
-                    "--name" => {
-                        let value = args.get(index + 1).ok_or_else(|| {
-                            AppError::Usage("--name requires a value".to_string())
-                        })?;
-                        name = Some(value.clone());
-                        index += 2;
-                    }
-                    _ => return Err(AppError::Usage(usage.to_string())),
-                }
-            }
-            Ok(Invocation::Web {
-                action: WebAction::Register { path, name },
-            })
-        }
-        "deregister" => {
-            let target = args
-                .get(2)
-                .ok_or_else(|| AppError::Usage(usage.to_string()))?
-                .clone();
-            Ok(Invocation::Web {
-                action: WebAction::Deregister { target },
-            })
-        }
-        "list" => Ok(Invocation::Web {
-            action: WebAction::List,
         }),
         "--serve" => {
             // Internal: story web --serve --port N

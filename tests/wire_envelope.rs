@@ -908,21 +908,6 @@ fn invocation_corpus() -> Vec<Invocation> {
             action: WebAction::Serve { port: 19000 },
         },
         Invocation::Web {
-            action: WebAction::Register {
-                // A path is the one non-string field in the whole enum.
-                path: std::path::PathBuf::from("/Volumes/Code/some repo/with spaces"),
-                name: Some("some repo".to_string()),
-            },
-        },
-        Invocation::Web {
-            action: WebAction::Deregister {
-                target: "some repo".to_string(),
-            },
-        },
-        Invocation::Web {
-            action: WebAction::List,
-        },
-        Invocation::Web {
             action: WebAction::Open,
         },
         Invocation::Web {

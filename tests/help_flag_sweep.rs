@@ -46,8 +46,6 @@ const VERBS: &[&[&str]] = &[
     &["import"],
     &["decompose"],
     &["web"],
-    &["web", "register"],
-    &["web", "deregister"],
     &["project"],
     &["project", "init"],
     &["project", "list"],

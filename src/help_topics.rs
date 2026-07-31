@@ -1254,12 +1254,9 @@ story web stop
 story web status
 story web open
 story web address
-story web register [<PATH>] [--name <NAME>]
-story web deregister <ID|PATH>
-story web list
 
 Launch a single web dashboard that serves every storyhook project
-you've registered with it: a home screen with a summary card per
+the store knows: a home screen with a summary card per
 repo, a repo-select dropdown for fast switching, and — per repo — a
 kanban board with drag-and-drop, a filterable/sortable list view, and
 a detail drawer for full editing. Everything is live-updating and
@@ -1272,8 +1269,8 @@ Default port is 3456. Data refreshes every 3 seconds via polling.
 
 Commands:
   start        Start the dashboard as a background daemon (does not
-               require running from inside a project — repos are
-               added via 'register', not by cwd).
+               require running from inside a project — it serves every
+               project in the store, not the one you are standing in).
                --port <PORT>  Use a custom port (default: 3456).
   stop         Stop the running dashboard daemon.
   status       Check if the dashboard is running.
@@ -1283,14 +1280,10 @@ Commands:
                the tailnet URL when Tailscale is up (so it works from
                your other devices), else loopback. Both open/address
                fail with this summary if the dashboard isn't running.
-  register     Register a repo with the dashboard. PATH defaults to
-               the current directory ('.'), so 'story web register'
-               run from inside a project registers it.
-               --name <NAME>  Display name (default: directory name).
-  deregister   Remove a repo from the dashboard by its registered id
-               or its filesystem path. Never touches the repo's own
-               files — this only edits the registry.
-  list         List every registered repo and its id.
+
+There is no separate registration step. A project reaches the dashboard
+by existing: 'story project init' puts it in the store, and the store is
+what the dashboard reads. 'story project list' prints the same set.
 
 When to use:
   When you want a browser-based view across some or all of your
@@ -1302,11 +1295,6 @@ When to use:
   multiple projects in parallel.
 
 Examples:
-  story web register                   # Register the current directory
-  story web register ../other-project  # Register another repo by path
-  story web register . --name "API"    # Register with a display name
-  story web list                       # See every registered repo + id
-  story web deregister api             # Remove it (by id or by path)
   story web start                      # Start on default port 3456
   story web start --port 8080          # Start on custom port
   story web stop                       # Stop the dashboard
@@ -1315,7 +1303,7 @@ Examples:
   story web address                    # Copy the dashboard URL to the clipboard
 
 Screens:
-  Home      One summary card per registered repo (open/ready/blocked
+  Home      One summary card per project (open/ready/blocked
             counts). Click a card to open that repo. A repo whose
             data can't currently be loaded (moved, deleted) shows its
             error instead of a summary.
@@ -1329,8 +1317,8 @@ Screens:
             relationships, reopen, and delete.
 
 Security:
-  Mutating requests (register/deregister a repo; create/move/edit/
-  delete a story) require a same-origin request (a custom header a
+  Mutating requests (create/move/edit/delete a story, and anything
+  the Settings screen changes) require a same-origin request (a custom header a
   cross-site request can't replicate) and a Host header resolving to
   127.0.0.1/localhost/::1, the tailnet IP this instance bound
   itself, or — when Tailscale MagicDNS is on — this machine's full
@@ -1348,9 +1336,9 @@ Security:
   allowlist for writes, it does not change what the server binds.
 
 How it works:
-  Registered repos are rows in the store — the catalog is the same
-  projects table the CLI reads, so a repo you have used is a repo the
-  dashboard can show. 'story web start' spawns a single background
+  The repo list is the store's own projects table — the same rows the
+  CLI reads — so a project you have used is a project the dashboard
+  shows, with nothing to keep in step. 'story web start' spawns a single background
   process (not one per repo) that
   binds 127.0.0.1 and, if available, your Tailscale IP (never
   0.0.0.0, never a plain LAN address — best-effort: a failed tailnet
@@ -1361,9 +1349,6 @@ How it works:
   whichever repo is selected — GET /api/repos/<id>/data for that
   repo's stories, calling POST/PATCH/DELETE /api/repos/<id>/story/...
   for mutations.
-
-  If the 'web-serve' tool is in PATH (coderig/agentsmith environments),
-  the port is additionally registered with it on top of the above.
 
 Related:
   story report --html  — Generate a static HTML report (one-time snapshot)
@@ -1490,14 +1475,15 @@ Related:
             r#"story relink <project> <path-to-pointer-file>
 
 Point a project at the checkout it now lives in. <project> is the slug
-`story web list` prints; <path> is the moved checkout's .storyhook.toml,
-or the directory holding it.
+`story project list` prints; <path> is the moved checkout's
+.storyhook.toml, or the directory holding it.
 
 When to use:
   A registration is a claim that a project can be opened at a path. When
   a checkout MOVES, that claim is wrong rather than stale, and
-  `story web register` cannot always fix it: the store may still resolve
-  the old path, and the old path is the one that is wrong.
+  re-running `story project init` there cannot always fix it: the store
+  may still resolve the old path, and the old path is the one that is
+  wrong.
 
   When the checkout is simply GONE, deregistering is the answer instead —
   `story doctor` reports those, and `story doctor --fix` forgets them.
@@ -1511,11 +1497,11 @@ What it refuses:
   would leave one checkout resolving to two projects depending on which
   door it came in by, so the uuid in the pointer file must match the
   project being relinked. To adopt a checkout into a project it does not
-  already belong to, run `story web register` inside it.
+  already belong to, run `story project init` inside it.
 
 Related:
-  story web register   — Add a checkout the store has not seen
-  story web deregister — Forget a checkout's path (never its stories)
+  story project init   — Adopt a checkout the store has not seen
+  story project list   — Every project, and where its checkout is
   story doctor         — Report registrations pointing at nothing
   story help storage   — Where the store and pointer files live
 "#,
