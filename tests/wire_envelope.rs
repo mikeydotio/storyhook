@@ -27,8 +27,8 @@ use storyhook::domain::{
 };
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
-    BlockedChainView, GraphOverview, GraphView, PhaseView, ProjectSnapshotView, Response,
-    StaleInfo, StoryView, SummaryView, render_error, render_response,
+    BlockedChainView, DeinitPlan, GraphOverview, GraphView, PhaseView, ProjectSnapshotView,
+    Response, StaleInfo, StoryView, SummaryView, render_error, render_response,
 };
 
 /// The four ways a `Response` can be rendered. Every case in this file is
@@ -353,6 +353,35 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 },
             ]),
         ),
+        (
+            "confirmation_required",
+            Response::ConfirmationRequired(Box::new(DeinitPlan {
+                slug: "storyhook".to_string(),
+                name: "storyhook — the tracker".to_string(),
+                prefix: "SH".to_string(),
+                stories: 47,
+                events: 312,
+                checkouts: vec!["/Volumes/Code/storyhook".to_string()],
+                files: vec!["/Volumes/Code/storyhook/.storyhook.toml".to_string()],
+                kept: vec![(
+                    "/Volumes/Code/storyhook/AGENTS.md".to_string(),
+                    "edited since it was generated".to_string(),
+                )],
+            })),
+        ),
+        (
+            "confirmation_required_empty_project",
+            Response::ConfirmationRequired(Box::new(DeinitPlan {
+                slug: "empty".to_string(),
+                name: "empty".to_string(),
+                prefix: "EM".to_string(),
+                stories: 0,
+                events: 0,
+                checkouts: Vec::new(),
+                files: Vec::new(),
+                kept: Vec::new(),
+            })),
+        ),
     ]
 }
 
@@ -399,6 +428,7 @@ fn response_variants_travel_as_snake_case_keys() {
         ("issues", "issues"),
         ("phase_list", "phase_list"),
         ("raw_json", "raw_json"),
+        ("confirmation_required", "confirmation_required"),
     ];
     let corpus = response_corpus();
     for (label, key) in expected {
@@ -594,6 +624,12 @@ fn invocation_corpus() -> Vec<Invocation> {
                 prefix: Some("API".to_string()),
                 name: Some("Elsewhere — renamed".to_string()),
                 no_agents_md: true,
+            },
+        },
+        Invocation::Project {
+            action: ProjectAction::Deinit {
+                target: Some("some-slug".to_string()),
+                force: true,
             },
         },
         Invocation::Project {
