@@ -285,6 +285,25 @@ impl<'a, S: Store> CatalogService<'a, S> {
 
     /// Every project with a known checkout, ordered by slug.
     pub fn list(&self) -> Result<Vec<CatalogEntry>, AppError> {
+        Ok(self
+            .all()?
+            .into_iter()
+            .filter(|entry| entry.path.is_some())
+            .collect())
+    }
+
+    /// Every project the store knows, checkout or no checkout, ordered by slug.
+    ///
+    /// The difference from [`list`](Self::list) is a project this machine has
+    /// no copy of: one whose checkout was deleted and then forgotten by
+    /// `story doctor --fix`, or one that arrived by import. Its stories are in
+    /// the store and perfectly readable, so a surface that shows only
+    /// `list`'s answer is a surface from which that work cannot be reached at
+    /// all.
+    ///
+    /// `list` still exists, and still filters, for the callers that genuinely
+    /// need a directory to act in.
+    pub fn all(&self) -> Result<Vec<CatalogEntry>, AppError> {
         Ok(self.store.read(|tx| {
             let mut entries = Vec::new();
             for project in tx.projects()? {
@@ -293,9 +312,7 @@ impl<'a, S: Store> CatalogService<'a, S> {
                     .into_iter()
                     .next()
                     .map(|record| PathBuf::from(record.path));
-                if path.is_some() {
-                    entries.push(entry(project, path));
-                }
+                entries.push(entry(project, path));
             }
             Ok(entries)
         })?)

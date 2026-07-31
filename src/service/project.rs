@@ -311,6 +311,13 @@ pub fn write_pointer(root: &Path, pointer: &ProjectPointer) -> Result<(), AppErr
 pub struct InitOptions {
     /// The story-id prefix, defaulting to [`DEFAULT_PREFIX`].
     pub prefix: Option<String>,
+    /// The project's display name, defaulting to the directory's basename.
+    ///
+    /// Unlike [`prefix`](Self::prefix) this is applied on **every** init, not
+    /// only the one that creates the project: renaming is a reversible display
+    /// change, whereas a prefix is baked into every story id ever minted, so
+    /// re-initializing must leave one alone and may honour the other.
+    pub name: Option<String>,
     /// Generate `AGENTS.md` when the repository does not already have one.
     pub agents_md: bool,
     /// Write the committed [pointer file](ProjectPointer).
@@ -326,6 +333,7 @@ impl Default for InitOptions {
     fn default() -> Self {
         Self {
             prefix: None,
+            name: None,
             agents_md: true,
             pointer: false,
         }
@@ -416,10 +424,16 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 && let Some(existing) = tx.project_by_uuid(&pointer.uuid)?
             {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                if let Some(name) = &options.name {
+                    tx.rename_project(existing.id, name)?;
+                }
                 return Ok((existing.id, false, existing.uuid, existing.prefix));
             }
             if let Some(existing) = tx.project_by_path(&root)? {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                if let Some(name) = &options.name {
+                    tx.rename_project(existing.id, name)?;
+                }
                 return Ok((existing.id, false, existing.uuid, existing.prefix));
             }
 
@@ -446,7 +460,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
                         .unwrap_or_else(|| DEFAULT_PREFIX.to_string()),
                 ),
             };
-            let name = display_name(&root);
+            let name = options.name.clone().unwrap_or_else(|| display_name(&root));
             let project = tx.create_project(&NewProject {
                 uuid: uuid.clone(),
                 slug: unique_slug(&*tx, &name)?,

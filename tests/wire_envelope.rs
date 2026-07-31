@@ -19,7 +19,7 @@
 
 use storyhook::cli::{
     DaemonAction, EpicAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
-    PhaseAction, PluginAction, StateAction, TypeAction, WebAction,
+    PhaseAction, PluginAction, ProjectAction, StateAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
     Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent, StoryRelation,
@@ -588,6 +588,17 @@ fn invocation_corpus() -> Vec<Invocation> {
             prefix: Some("API".to_string()),
             no_agents_md: true,
         },
+        Invocation::Project {
+            action: ProjectAction::Init {
+                path: Some("../elsewhere".to_string()),
+                prefix: Some("API".to_string()),
+                name: Some("Elsewhere — renamed".to_string()),
+                no_agents_md: true,
+            },
+        },
+        Invocation::Project {
+            action: ProjectAction::List,
+        },
         Invocation::New {
             title: "A story — with ünïcödé and \"quotes\"".to_string(),
             state: Some("todo".to_string()),
@@ -943,6 +954,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "Help",
         Invocation::Init { .. } => "Init",
+        Invocation::Project { .. } => "Project",
         Invocation::Relink { .. } => "Relink",
         Invocation::New { .. } => "New",
         Invocation::MemberAdd { .. } => "MemberAdd",
@@ -1005,7 +1017,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        51,
+        52,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

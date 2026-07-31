@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::{
     DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, PhaseAction,
-    PluginAction, StateAction, TypeAction, WebAction,
+    PluginAction, ProjectAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
 use crate::env::Environment;
@@ -476,6 +476,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::Migrate { .. }
         | Invocation::Relink { .. }
         | Invocation::Init { .. }
+        | Invocation::Project { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact
@@ -504,6 +505,67 @@ fn query<S: Store, T>(
     let now = ctx.now();
     ctx.store()
         .read(|tx| Ok(f(&QueryService::new(tx, ctx.project(), &now))))?
+}
+
+/// The `story project …` family — a repository's whole lifecycle.
+///
+/// `root` is the directory the client ran in; an arm that takes a `PATH`
+/// resolves it against that with [`target_dir`] rather than against this
+/// process's own working directory, which over the daemon is not the user's.
+fn dispatch_project<S: Store>(
+    store: &S,
+    root: &Path,
+    now: &str,
+    pointer: bool,
+    action: ProjectAction,
+) -> Result<Response, AppError> {
+    match action {
+        ProjectAction::Init {
+            path,
+            prefix,
+            name,
+            no_agents_md,
+        } => {
+            let target = target_dir(root, path.as_deref());
+            // Named explicitly rather than left to fail later inside
+            // `write_pointer`: `story project init ./typo` is an ordinary
+            // mistake, and the raw io error it used to produce named a file
+            // the user never typed.
+            if !target.is_dir() {
+                return Err(AppError::NotFound(format!(
+                    "cannot initialize `{}`: no such directory",
+                    target.display()
+                )));
+            }
+            let outcome = ProjectService::new(store, target)
+                .clock(Clock::Fixed(now.to_string()))
+                .init(&InitOptions {
+                    prefix,
+                    name,
+                    agents_md: !no_agents_md,
+                    pointer,
+                })?;
+            Ok(Response::Message(init_message(&outcome)))
+        }
+        ProjectAction::List => {
+            let entries = CatalogService::new(store).all()?;
+            if entries.is_empty() {
+                return Ok(Response::Message(
+                    "No projects yet. Run `story project init` in a repository to add one."
+                        .to_string(),
+                ));
+            }
+            let mut lines = vec![format!("{} project(s):", entries.len())];
+            for entry in &entries {
+                let where_ = entry.path.as_ref().map_or_else(
+                    || "no checkout on this machine".to_string(),
+                    |path| path.display().to_string(),
+                );
+                lines.push(format!("  {} — {} ({where_})", entry.id, entry.name));
+            }
+            Ok(Response::Message(lines.join("\n")))
+        }
+    }
 }
 
 /// The `story web …` family.
@@ -862,11 +924,13 @@ pub fn dispatch_unscoped_with<S: Store>(
                 .clock(Clock::Fixed(now.to_string()))
                 .init(&InitOptions {
                     prefix,
+                    name: None,
                     agents_md: !no_agents_md,
                     pointer,
                 })?;
             Ok(Response::Message(init_message(&outcome)))
         }
+        Invocation::Project { action } => dispatch_project(store, root, now, pointer, action),
         // Pure functions of compiled-in text. They need neither a project nor
         // a store, and answering them here is what lets `story --help` work in
         // a directory storyhook has never heard of.
@@ -1188,6 +1252,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "help",
         Invocation::Init { .. } => "init",
+        Invocation::Project { .. } => "project",
         Invocation::Relink { .. } => "relink",
         Invocation::New { .. } => "new",
         Invocation::MemberAdd { .. } => "member-add",
@@ -1521,12 +1586,23 @@ fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppE
 fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBuf> {
     match invocation {
         Invocation::Init { .. } | Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
-        Invocation::Migrate { path, dry_run } if !dry_run => Some(
-            path.as_ref()
-                .map_or_else(|| cwd.to_path_buf(), PathBuf::from),
-        ),
+        Invocation::Project {
+            action: ProjectAction::Init { path, .. },
+        } => Some(target_dir(cwd, path.as_deref())),
+        Invocation::Migrate { path, dry_run } if !dry_run => Some(target_dir(cwd, path.as_deref())),
         _ => None,
     }
+}
+
+/// The directory a command names by an optional `PATH`, defaulting to the one
+/// it ran in.
+///
+/// The `None` half is why this is named rather than written out at each call
+/// site: "no path given" and "the path given is `.`" must reach the store as
+/// the same directory, and over the daemon neither of them is *this* process's
+/// working directory. See [`resolve_against`] for that rule.
+fn target_dir(cwd: &Path, path: Option<&str>) -> PathBuf {
+    path.map_or_else(|| cwd.to_path_buf(), |path| resolve_against(cwd, path))
 }
 
 impl<S: Store> Invoker for StoreInvoker<'_, S> {
@@ -1615,6 +1691,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
 fn is_project_less(invocation: &Invocation) -> bool {
     match invocation {
         Invocation::Init { .. }
+        | Invocation::Project { .. }
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Help
