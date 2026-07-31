@@ -19,7 +19,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
-use crate::store::{ProjectId, ProjectRecord, ReadOps, Store, WriteOps};
+use crate::store::{
+    PathKind, ProjectId, ProjectPathRecord, ProjectRecord, ReadOps, Store, WriteOps,
+};
 
 use super::project::{path_kind, read_pointer};
 
@@ -307,16 +309,29 @@ impl<'a, S: Store> CatalogService<'a, S> {
         Ok(self.store.read(|tx| {
             let mut entries = Vec::new();
             for project in tx.projects()? {
-                let path = tx
-                    .project_paths(project.id)?
-                    .into_iter()
-                    .next()
-                    .map(|record| PathBuf::from(record.path));
+                let path = preferred_checkout(tx.project_paths(project.id)?);
                 entries.push(entry(project, path));
             }
             Ok(entries)
         })?)
     }
+}
+
+/// The checkout a caller should act in, given every checkout a project has.
+///
+/// The main working tree wins; a linked worktree is the fallback; a project
+/// with neither has none. `project_paths` is ordered by *path*, so without this
+/// the answer was whichever directory happened to sort first — and a linked
+/// worktree is a branch somebody is working on, whose hooks and whose
+/// `AGENTS.md` belong to that branch rather than to the project. `PathKind` has
+/// been recorded since schema 1 and, until now, consulted nowhere.
+#[must_use]
+pub fn preferred_checkout(mut paths: Vec<ProjectPathRecord>) -> Option<PathBuf> {
+    paths.sort_by_key(|record| match record.kind {
+        PathKind::Main => 0,
+        PathKind::Worktree => 1,
+    });
+    paths.into_iter().next().map(|r| PathBuf::from(r.path))
 }
 
 /// One catalog row from a project record.
