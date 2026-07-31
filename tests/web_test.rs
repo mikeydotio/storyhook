@@ -2355,167 +2355,6 @@ fn web_deregister_repo_requires_guard_header() {
     assert_eq!(status_of(err), 403);
 }
 
-// --- CLI: story web register|deregister|list ---
-//
-// Each gets a private environment: the catalog spans every project in a store,
-// so a test asserting on an exact listing needs a store of its own, the way it
-// used to need a registry file of its own.
-
-#[test]
-fn web_register_dot_registers_cwd() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-    env.story(dir.path())
-        .args(["project", "init"])
-        .assert()
-        .success();
-
-    env.story(dir.path())
-        .args(["web", "register", "."])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Registered"));
-
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            dir.path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .to_string(),
-        ));
-}
-
-#[test]
-fn web_register_explicit_path() {
-    let env = TestEnv::isolated();
-    let cwd = scratch_dir();
-    let target = scratch_dir();
-    env.story(target.path())
-        .args(["project", "init"])
-        .assert()
-        .success();
-
-    env.story(cwd.path())
-        .args(["web", "register", &target.path().to_string_lossy()])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Registered"));
-}
-
-#[test]
-fn web_register_with_name() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-    env.story(dir.path())
-        .args(["project", "init"])
-        .assert()
-        .success();
-
-    env.story(dir.path())
-        .args(["web", "register", ".", "--name", "My Project"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Registered"));
-
-    // The name is recorded rather than echoed: the catalog is the projects
-    // table now, so `--name` has somewhere to go and `web list` reports it.
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("My Project"));
-}
-
-#[test]
-fn web_register_non_project_fails() {
-    let env = TestEnv::isolated();
-    let not_a_project = scratch_dir();
-
-    // The wording changed with the storage model — the catalog now says which
-    // directory is not a project, and what to do about it — but the shape is
-    // the same: registering something that is not a project fails loudly.
-    env.story(not_a_project.path())
-        .args(["web", "register", "."])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("is not a storyhook project"))
-        .stderr(predicate::str::contains("run `story project init`"));
-}
-
-#[test]
-fn web_deregister_by_id_cli() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-    env.story(dir.path())
-        .args(["project", "init"])
-        .assert()
-        .success();
-
-    // `story init` puts the checkout in the catalog itself now, so there is no
-    // separate registration step to perform first — which is the point of the
-    // catalog *being* the projects table.
-    env.story(dir.path())
-        .args(["web", "deregister", "."])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Deregistered"));
-
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No repos registered"));
-}
-
-#[test]
-fn web_deregister_unknown_target_fails() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-
-    env.story(dir.path())
-        .args(["web", "deregister", "nope"])
-        .assert()
-        .failure();
-}
-
-#[test]
-fn web_list_shows_registered_repos() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-    env.story(dir.path())
-        .args(["project", "init"])
-        .assert()
-        .success();
-
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            dir.path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .to_string(),
-        ));
-}
-
-#[test]
-fn web_list_empty_registry_message() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No repos registered"));
-}
-
 // --- CLI DEFAULT_WEB_PORT constant ---
 
 #[test]
@@ -2700,57 +2539,17 @@ fn web_parse_status() {
     ));
 }
 
+/// The catalog verbs are gone; `story project` owns them. They must be
+/// *refused* rather than quietly parsed into something else.
 #[test]
-fn web_parse_register_defaults_path_to_dot() {
-    let inv =
-        storyhook::cli::parse_invocation(&["web".to_string(), "register".to_string()]).unwrap();
-    match inv {
-        storyhook::cli::Invocation::Web {
-            action: storyhook::cli::WebAction::Register { path, name },
-        } => {
-            assert_eq!(path, std::path::PathBuf::from("."));
-            assert_eq!(name, None);
-        }
-        other => panic!("expected Web::Register, got {:?}", other),
+fn web_parse_rejects_the_retired_catalog_verbs() {
+    for verb in ["register", "deregister", "list"] {
+        let result = storyhook::cli::parse_invocation(&["web".to_string(), verb.to_string()]);
+        assert!(
+            result.is_err(),
+            "`story web {verb}` must not parse: {result:?}"
+        );
     }
-}
-
-#[test]
-fn web_parse_register_with_explicit_path_and_name() {
-    let inv = storyhook::cli::parse_invocation(&[
-        "web".to_string(),
-        "register".to_string(),
-        "/some/path".to_string(),
-        "--name".to_string(),
-        "My Repo".to_string(),
-    ])
-    .unwrap();
-    match inv {
-        storyhook::cli::Invocation::Web {
-            action: storyhook::cli::WebAction::Register { path, name },
-        } => {
-            assert_eq!(path, std::path::PathBuf::from("/some/path"));
-            assert_eq!(name, Some("My Repo".to_string()));
-        }
-        other => panic!("expected Web::Register, got {:?}", other),
-    }
-}
-
-#[test]
-fn web_parse_deregister_requires_target() {
-    let result = storyhook::cli::parse_invocation(&["web".to_string(), "deregister".to_string()]);
-    assert!(result.is_err());
-}
-
-#[test]
-fn web_parse_list() {
-    let inv = storyhook::cli::parse_invocation(&["web".to_string(), "list".to_string()]).unwrap();
-    assert!(matches!(
-        inv,
-        storyhook::cli::Invocation::Web {
-            action: storyhook::cli::WebAction::List
-        }
-    ));
 }
 
 #[test]

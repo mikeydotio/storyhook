@@ -653,48 +653,12 @@ fn deinit_message(outcome: &DeinitOutcome) -> String {
 
 /// The `story web …` family.
 ///
-/// Only the catalog arms are ported. The daemon commands — start, stop, status,
-/// open, address — are process management rather than storage, they are
-/// identical on both sides of the flip, and the wave that promotes the daemon
-/// owns them; they delegate to the same functions the legacy path calls.
-fn dispatch_web<S: Store>(store: &S, action: WebAction) -> Result<Response, AppError> {
-    let service = CatalogService::new(store);
+/// Process management only, now that `story project` owns the catalog. What is
+/// left — start, stop, status, open, address — is about a running daemon rather
+/// than about stored data, and the first three are already deprecated aliases
+/// for `story daemon`.
+fn dispatch_web(action: WebAction) -> Result<Response, AppError> {
     match action {
-        WebAction::Register { path, name } => {
-            let entry = service.register(Path::new(&path), name.as_deref())?;
-            Ok(Response::Message(format!(
-                "Registered `{}` as `{}`",
-                entry.path.unwrap_or_default().display(),
-                entry.id
-            )))
-        }
-        WebAction::Deregister { target } => {
-            let entry = service.deregister(&target)?;
-            Ok(Response::Message(format!(
-                "Deregistered `{}` ({})",
-                entry.id,
-                entry.path.unwrap_or_default().display()
-            )))
-        }
-        WebAction::List => {
-            let entries = service.list()?;
-            if entries.is_empty() {
-                return Ok(Response::Message(
-                    "No repos registered. Run `story web register` from a project to add one."
-                        .to_string(),
-                ));
-            }
-            let mut lines = vec![format!("{} registered repo(s):", entries.len())];
-            for entry in &entries {
-                lines.push(format!(
-                    "  {} — {} ({})",
-                    entry.id,
-                    entry.name,
-                    entry.path.clone().unwrap_or_default().display()
-                ));
-            }
-            Ok(Response::Message(lines.join("\n")))
-        }
         WebAction::Start { port } => crate::web::handle_start(port).map(Response::Message),
         WebAction::Stop => crate::web::handle_stop().map(Response::Message),
         WebAction::Status => crate::web::handle_status().map(Response::Message),
@@ -1031,7 +995,7 @@ pub fn dispatch_unscoped_with<S: Store>(
         // status` that failed in a directory storyhook had never heard of
         // would be a regression in the one command a user reaches for when
         // nothing is working.
-        Invocation::Web { action } => dispatch_web(store, action),
+        Invocation::Web { action } => dispatch_web(action),
         Invocation::Daemon { action } => dispatch_daemon(action),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
@@ -1838,8 +1802,9 @@ fn deregistered_message(forgotten: &[crate::service::OrphanedRegistration]) -> S
         out.push_str(&format!("\n  {} ({})", orphan.slug, orphan.path.display()));
     }
     out.push_str(
-        "\n\nOnly the paths were forgotten. Every story is still in the store, and \
-                  `story web register` or `story relink` puts a project back.",
+        "\n\nOnly the paths were forgotten. Every story is still in the store, they are \
+                  still listed by `story project list` and still on the dashboard, and \
+                  `story relink` puts a project back where its checkout moved to.",
     );
     out
 }
