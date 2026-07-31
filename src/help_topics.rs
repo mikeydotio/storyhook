@@ -15,34 +15,62 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
         let mut m = BTreeMap::new();
 
         m.insert(
-            "init",
-            r#"story init [--prefix <PREFIX>]
+            "project",
+            r#"story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
+story project deinit [PATH|SLUG] [--force]
+story project list
 
-Initialize a storyhook project for the current directory. Creates the
-project in storyhook's store with default states (todo, in-progress,
-done) and default types, writes .storyhook.toml naming it, and generates
-an AGENTS.md if the repository has none.
+A repository's whole lifecycle with storyhook: register one, list them,
+and remove one.
 
-Commit .storyhook.toml. It is how a fresh clone — or a linked worktree —
-knows which project this checkout belongs to before it has a local
-database row to consult.
+init
+  Creates the project in storyhook's store with default states (todo,
+  in-progress, done) and default types, writes .storyhook.toml naming
+  it, and generates an AGENTS.md if the repository has none.
 
-When to use:
-  At the start of a new project, or when you enter a repo that has no
-  .storyhook.toml yet. Idempotent: run again and it re-registers this
-  checkout, leaving the catalog and the prefix alone.
+  Commit .storyhook.toml. It is how a fresh clone — or a linked worktree
+  — knows which project this checkout belongs to before it has a local
+  database row to consult.
+
+  Idempotent: run again and it re-registers this checkout, leaving the
+  catalog and the prefix alone. --name may be given at any time; the
+  prefix is fixed at creation, because it is baked into every story id
+  ever minted.
+
+  PATH defaults to the current directory, and a relative one is resolved
+  against the directory you are standing in.
 
   If the repository still keeps its stories in a .storyhook/ directory,
   init refuses and points you at 'story migrate' — initializing would
   mint an empty second project beside data you still have.
 
+deinit
+  Permanently deletes the project, every story, every event, every
+  checkout registration, and the files init generated. There is no undo.
+
+  It always asks first, and the confirmation is the project's slug typed
+  in full. --force skips the question; with --json, or with no terminal
+  to ask at, --force is required rather than assumed either way.
+
+  An AGENTS.md you have edited is kept, not deleted — deinit reports it.
+  A project whose checkout is gone can be named by SLUG instead.
+
+list
+  Every project the store knows, including any whose checkout is not on
+  this machine. This is the same set the dashboard shows.
+
 Examples:
-  story init                  # Default prefix "SH" → stories are SH-1, SH-2, ...
-  story init --prefix API     # Custom prefix → API-1, API-2, ...
+  story project init                    # Default prefix "SH" → SH-1, SH-2, ...
+  story project init --prefix API       # Custom prefix → API-1, API-2, ...
+  story project init ~/code/thing       # Somewhere other than here
+  story project list
+  story project deinit                  # Asks before destroying anything
+  story project deinit old-thing --force
 
 Related:
+  story migrate     — Bring a .storyhook/ repository into the store
+  story relink      — Point a project at a checkout that moved
   story member add  — Add team members after init
-  story state add   — Add custom states (e.g., in-progress, review)
   story new         — Create your first story
 "#,
         );
@@ -505,7 +533,7 @@ Generate agent instruction files for different AI coding tools. These
 files teach agents how to use storyhook in the project.
 
 When to use:
-  After 'story init' to set up AI agent integration. Run the scaffold
+  After 'story project init' to set up AI agent integration. Run the scaffold
   matching your agent tool.
 
 Variants:
@@ -519,7 +547,7 @@ Examples:
   story scaffold cursor-rules     # Generate .cursorrules content
 
 Related:
-  story init         — Initialize project (writes .storyhook.toml)
+  story project init — Initialize project (writes .storyhook.toml)
   story load-context — Project state for session start
 "#,
         );
@@ -785,7 +813,7 @@ Commands returning issues ("issues" field):
   story doctor                -> "issues": ["issue description", ...]
 
 Commands returning a message ("message" field):
-  story init                  -> "message": "initialized story project..."
+  story project init          -> "message": "initialized story project..."
   story member add            -> "message": "added member alice"
   story state add/remove      -> "message": "added state in-progress (open)"
   story export                -> "message": "<json array of stories>"
@@ -1519,7 +1547,7 @@ That matters when restoring — see below.
 
   .storyhook.toml
 
-Written by story init and by story migrate. Commit it. It names the project's
+Written by story project init and by story migrate. Commit it. It names the project's
 uuid and prefix, so a fresh clone — or a linked git worktree — resolves the
 same project before it has anything local to consult. Resolution walks up from
 the working directory, so commands work from a subdirectory too.
@@ -1571,7 +1599,7 @@ is your rollback until you choose to delete it.
 Related:
   story migrate — Move a legacy .storyhook/ project into the store
   story doctor  — Integrity checks, and the rebuild diff
-  story init    — Create a project and write .storyhook.toml
+  story project init — Create a project and write .storyhook.toml
 "#,
         );
 
@@ -1584,7 +1612,8 @@ pub fn compact_reference() -> &'static str {
     r#"storyhook — CLI story tracker for AI-assisted development
 
 LIFECYCLE
-  story init [--prefix P]         Initialize project (writes .storyhook.toml)
+  story project init [--prefix P] Initialize project (writes .storyhook.toml)
+  story project list|deinit       List projects; delete one (destructive)
   story new "<title>"             Create a story, returns assigned ID
   story show <id>                 Full details for a single story
   story move <id> <state>         Transition state (e.g., todo → in-progress → done)
@@ -1596,7 +1625,7 @@ QUERY & NAVIGATION
   story next [--count N]          Highest-priority ready story/stories
   story search "<query>"          Full-text search across all stories
   story summary                   Counts by state and priority
-  story load-context              Comprehensive session-start context document
+  story load-context              Session-start context document
   story graph [--critical-path]   Dependency graph analysis
 
 STORY METADATA
@@ -1638,8 +1667,7 @@ WORKFLOW TIPS
   Explore backlog:   story list --ready   or   story summary
   Use --json for structured output suitable for piping and automation.
 
-Run 'story help <command>' for detailed usage of any command.
-Run 'story help --all' for the complete reference.
+Run 'story help <command>' for detail, or 'story help --all' for everything.
 "#
 }
 
@@ -1754,7 +1782,7 @@ mod tests {
         // survive any future edits to the compact reference.
         let text = super::compact_reference();
         for cmd in &[
-            "story init",
+            "story project init",
             "story new",
             "story show",
             "story move",
@@ -1813,7 +1841,15 @@ mod tests {
     #[test]
     fn all_topics_text_includes_canonical_topics() {
         let text = super::all_topics_text();
-        for topic in &["init", "new", "list", "next", "show", "move", "decompose"] {
+        for topic in &[
+            "project",
+            "new",
+            "list",
+            "next",
+            "show",
+            "move",
+            "decompose",
+        ] {
             assert!(
                 text.contains(&format!("## {topic}")),
                 "all_topics_text must include canonical topic '{topic}'"

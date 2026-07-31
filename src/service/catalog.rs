@@ -208,7 +208,7 @@ impl<'a, S: Store> CatalogService<'a, S> {
     ///
     /// Idempotent, which is a deliberate divergence: the legacy registry
     /// rejected a second registration of the same path, and in the store the
-    /// path is recorded by `story init` itself, so the same rule would make the
+    /// path is recorded by `story project init` itself, so the same rule would make the
     /// command permanently unusable.
     pub fn register(&self, path: &Path, name: Option<&str>) -> Result<CatalogEntry, AppError> {
         let canonical = path
@@ -223,7 +223,7 @@ impl<'a, S: Store> CatalogService<'a, S> {
             }
             .ok_or_else(|| {
                 AppError::NotFound(format!(
-                    "`{}` is not a storyhook project; run `story init` there first",
+                    "`{}` is not a storyhook project; run `story project init` there first",
                     canonical.display()
                 ))
             })?;

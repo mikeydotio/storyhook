@@ -444,7 +444,7 @@ fn a_checkout_naming_a_project_this_store_does_not_have_says_which_one() {
         "the message must name the project the checkout claims: {message}"
     );
     assert!(
-        message.contains("story init"),
+        message.contains("story project init"),
         "and the command that adopts it here: {message}"
     );
 }

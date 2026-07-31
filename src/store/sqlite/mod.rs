@@ -54,7 +54,7 @@ use crate::store::{ReadOps, Store, WriteOps};
 /// on a store that is already in WAL the write has nothing to do — but
 /// `PRAGMA journal_mode = WAL` still takes an exclusive lock to decide that.
 /// Every process opening the store paid for that lock, and enough of them at
-/// once turned `story init` into a `LockTimeout`.
+/// once turned `story project init` into a `LockTimeout`.
 ///
 /// **It retries.** SQLite's `busy_timeout` does not cover a journal-mode
 /// change, so N processes racing to create the same database — which is what a
@@ -304,7 +304,7 @@ impl SqliteStore {
         // that is already in WAL: it takes an exclusive lock to make the
         // change it is not going to make, and under concurrency that lock is
         // contended — every process opening the store paid for it, and enough
-        // of them at once turned `story init` into a `LockTimeout`. Reading
+        // of them at once turned `story project init` into a `LockTimeout`. Reading
         // first costs one lock-free statement and leaves the write to the one
         // connection that actually needs it.
         let mode = ensure_wal(&conn, self.config.busy_timeout)?;

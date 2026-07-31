@@ -963,7 +963,7 @@ fn format_state_line(listing: &StateListing) -> String {
 
 /// Dispatch for the invocations that run *before* a project is resolved.
 ///
-/// `story init` is the reason this exists. Every other command names a project
+/// `story project init` is the reason this exists. Every other command names a project
 /// and therefore takes a [`Ctx`]; init is the command that creates one, so on
 /// a virgin store there is no [`ProjectId`](crate::store::ProjectId) for a
 /// context to hold. Rather than let a caller invent one, the arms that do not
@@ -989,7 +989,7 @@ pub fn dispatch_unscoped<S: Store>(
     dispatch_unscoped_with(store, root, now, invocation, true, None)
 }
 
-/// [`dispatch_unscoped`], told whether `story init` should write the pointer
+/// [`dispatch_unscoped`], told whether `story project init` should write the pointer
 /// file.
 pub fn dispatch_unscoped_with<S: Store>(
     store: &S,
@@ -1137,8 +1137,8 @@ pub fn dispatch_unscoped_with<S: Store>(
                 None => crate::legacy::find_root(root).ok_or_else(|| {
                     AppError::NotFound(format!(
                         "no legacy `.storyhook` project at `{}` or above it; `story migrate` \
-                         moves an existing tree into the store, and `story init` creates a new \
-                         project",
+                         moves an existing tree into the store, and `story project init` creates a \
+                         new project",
                         root.display()
                     ))
                 })?,
@@ -1287,7 +1287,7 @@ fn decompose_summary(batch: &ImportBatch) -> String {
     summary
 }
 
-/// What `story init` tells the user.
+/// What `story project init` tells the user.
 ///
 /// The text still describes the legacy storage model — a `.storyhook/`
 /// directory to commit — because it is the text users and scripts see today
@@ -1572,7 +1572,7 @@ pub struct StoreInvoker<'a, S: Store> {
 impl<'a, S: Store> StoreInvoker<'a, S> {
     /// An invoker over `store`, running from `cwd` under `env`.
     ///
-    /// Writes the pointer file on `story init`, because for a process served
+    /// Writes the pointer file on `story project init`, because for a process served
     /// this way the store *is* where the project lives, and a checkout with no
     /// pointer is one a fresh clone cannot identify.
     pub fn new(store: &'a S, cwd: impl Into<PathBuf>, env: Environment) -> Self {
@@ -1592,7 +1592,7 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
         self
     }
 
-    /// Sets whether `story init` writes the pointer file.
+    /// Sets whether `story project init` writes the pointer file.
     #[must_use]
     pub fn pointer(mut self, pointer: bool) -> Self {
         self.pointer = pointer;
@@ -1734,7 +1734,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                 );
             }
             // A repository that still has its stories in `.storyhook/` gets a
-            // diagnosis rather than an invitation to `story init`, which would
+            // diagnosis rather than an invitation to `story project init`, which would
             // mint an empty second project beside data the user still has.
             if let Some(tree) = crate::service::project::legacy_project_at(&self.cwd) {
                 return Err(crate::service::project::unmigrated_error(&tree));
@@ -1747,13 +1747,14 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             if let Some(pointer) = self.pointer_at_or_above() {
                 return Err(AppError::NotFound(format!(
                     "this checkout belongs to storyhook project {}, which this machine's \
-                     store does not have. Run `story init` here to adopt it, or `story \
+                     store does not have. Run `story project init` here to adopt it, or `story \
                      import-project` if you have an export of it.",
                     pointer.uuid
                 )));
             }
             return Err(AppError::NotFound(
-                "story project not initialized in this directory; run `story init`".to_string(),
+                "story project not initialized in this directory; run `story project init`"
+                    .to_string(),
             ));
         };
 

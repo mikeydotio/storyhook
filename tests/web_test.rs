@@ -2426,7 +2426,7 @@ fn web_register_non_project_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("is not a storyhook project"))
-        .stderr(predicate::str::contains("run `story init`"));
+        .stderr(predicate::str::contains("run `story project init`"));
 }
 
 #[test]
