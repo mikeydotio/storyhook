@@ -88,6 +88,70 @@ fn the_event_log_cannot_be_rewritten_or_erased() {
     rejects(&store, "DELETE FROM events", "events are append-only");
 }
 
+/// Migration 3 narrows the append-only guard so that `delete_project` can tear
+/// an event log down. These are the cases that stop that narrowing from
+/// becoming a hole: the guard has to keep firing for every caller that is not
+/// mid-teardown, and the one that is has to be recognisable by something no
+/// ordinary write can fake.
+#[test]
+fn the_append_only_guard_only_stands_down_for_a_project_that_is_already_gone() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+
+    // Narrowed, not lifted: the project still exists, so this is still refused.
+    rejects(
+        &store,
+        "DELETE FROM events WHERE project_id = 1",
+        "events are append-only",
+    );
+
+    // And the teardown order is the whole licence. Deleting the project first
+    // is what makes the trigger abstain; nothing else does.
+    raw(&store)
+        .execute_batch(
+            "BEGIN IMMEDIATE; PRAGMA defer_foreign_keys = ON; \
+             DELETE FROM projects WHERE id = 1; \
+             DELETE FROM events WHERE project_id = 1; COMMIT;",
+        )
+        .expect("a project teardown may clear its own event log");
+
+    let left: i64 = raw(&store)
+        .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// The teardown deletes `projects` before `events`, which is only legal because
+/// a write transaction runs under `defer_foreign_keys`. This pins the failure
+/// mode if that ever stops being true: the first statement is refused and
+/// nothing is written — loud, not silent.
+#[test]
+fn tearing_a_project_down_without_the_deferral_fails_before_it_writes_anything() {
+    let (_dir, store) = new_store();
+    let project = seed_project(&store, "alpha", "SH");
+    create_story(&store, project, "First", "2026-01-01T00:00:00Z");
+    let conn = raw(&store);
+
+    let error = conn
+        .execute_batch("BEGIN IMMEDIATE; DELETE FROM projects WHERE id = 1;")
+        .expect_err("events still reference the project");
+    assert!(
+        error.to_string().contains("FOREIGN KEY constraint failed"),
+        "{error}"
+    );
+    let _ = conn.execute_batch("ROLLBACK");
+
+    let projects: i64 = conn
+        .query_row("SELECT count(*) FROM projects", [], |row| row.get(0))
+        .unwrap();
+    let events: i64 = conn
+        .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!((projects, events), (1, 1), "nothing may have been written");
+    let _ = project;
+}
+
 #[test]
 fn a_story_cannot_be_given_a_superstate_outside_the_two_that_exist() {
     let (_dir, store) = new_store();
