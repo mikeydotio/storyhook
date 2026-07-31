@@ -348,3 +348,43 @@ fn deinit_must_not_read_stdin_before_it_prompts() {
         );
     }
 }
+
+/// Deinit clears the repository files of **every** recorded checkout, not only
+/// the one the caller happened to name.
+///
+/// It destroys the project outright, so a `.storyhook.toml` left behind in a
+/// sibling worktree names an identity that no longer exists — and the next
+/// `story project init` there would silently resurrect that identity as an
+/// empty project. Reaching into a directory the caller did not name is safe
+/// only because the plan lists every file first; that listing is the consent.
+#[test]
+fn deinit_clears_every_checkout_it_knows_about() {
+    let env = TestEnv::isolated();
+    let main = project_with(&env, "multi", 1);
+    let second = env.home().join("multi-worktree");
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::copy(main.join(".storyhook.toml"), second.join(".storyhook.toml")).unwrap();
+    // Resolution deliberately does not register new checkouts, so merely
+    // running a command there is not enough — `init` in a checkout carrying a
+    // pointer adopts it into the project the pointer names.
+    env.story(&second)
+        .args(["project", "init"])
+        .assert()
+        .success();
+
+    // The plan must name both before anything is destroyed.
+    let refused = deinit(&env, &main, &[]);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains(&second.display().to_string()),
+        "the second checkout must be named in the warning: {stderr}"
+    );
+
+    deinit(&env, &main, &["--force"]);
+
+    assert!(!main.join(".storyhook.toml").exists());
+    assert!(
+        !second.join(".storyhook.toml").exists(),
+        "a pointer naming a deleted project is a file claiming an identity that is gone"
+    );
+}

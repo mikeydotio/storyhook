@@ -565,13 +565,13 @@ impl<'a, S: Store> ProjectService<'a, S> {
         // else, must not go looking for files in a directory it was not given.
         let mut files = Vec::new();
         let mut kept = Vec::new();
-        if let Some(root) = self.repository_root(target, &checkouts) {
+        let done = self.store.read(|tx| Ok(closed_state(tx, record.id)?))?;
+        for root in self.repository_roots(target, &checkouts) {
             if pointer_path(&root).is_file() {
                 files.push(pointer_path(&root).display().to_string());
             }
             let agents = root.join(AGENTS_MD);
             if agents.is_file() {
-                let done = self.store.read(|tx| Ok(closed_state(tx, record.id)?))?;
                 if agents_md_is_pristine(&root, &record.prefix, &done) {
                     files.push(agents.display().to_string());
                 } else {
@@ -599,9 +599,10 @@ impl<'a, S: Store> ProjectService<'a, S> {
     /// generated for it.
     ///
     /// Graceful about partial states, because they are reachable with `rm`: a
-    /// pointer file already deleted by hand is a step with nothing to do, not a
-    /// failure. What is *not* tolerated is a target that names no project —
-    /// the caller has just told a user what it was about to destroy.
+    /// pointer file already deleted by hand, or a checkout on a volume that is
+    /// not mounted, is a step with nothing to do rather than a failure. What is
+    /// *not* tolerated is a target that names no project — the caller has just
+    /// told a user what it was about to destroy.
     ///
     /// The store transaction commits before any file is removed. That ordering
     /// is the recoverable one: a crash between them leaves a checkout whose
@@ -670,26 +671,28 @@ impl<'a, S: Store> ProjectService<'a, S> {
         }
     }
 
-    /// The checkout whose files a deinit may remove, if there is one.
+    /// Every directory whose repository-side files this deinit will remove.
     ///
-    /// Only a directory the caller actually named: deinitializing by slug from
-    /// an unrelated directory must not reach into a recorded checkout and
-    /// delete files there. Naming a path is the act that authorizes touching
-    /// that path.
-    fn repository_root(&self, target: &DeinitTarget, checkouts: &[String]) -> Option<PathBuf> {
-        match target {
-            DeinitTarget::Path(path) => Some(canonical(path)),
-            DeinitTarget::Slug(_) => {
-                // A slug names no directory. The one exception that is still
-                // unambiguous: the service's own root is one of this project's
-                // recorded checkouts, so the user is standing in it.
-                let root = canonical(&self.root);
-                checkouts
-                    .iter()
-                    .any(|c| Path::new(c) == root)
-                    .then_some(root)
+    /// All of the project's recorded checkouts, plus the one the caller named
+    /// if it is not already among them. Deinit destroys the project outright,
+    /// so a `.storyhook.toml` left behind in a checkout does not name a project
+    /// any more — it is a file claiming an identity that no longer exists, and
+    /// the next `story project init` there would silently resurrect that
+    /// identity as an empty project.
+    ///
+    /// Reaching into directories the caller did not name is only safe because
+    /// [`deinit_plan`](Self::deinit_plan) lists every one of those files before
+    /// anything is destroyed, and nothing is destroyed until the plan has been
+    /// confirmed. The plan is the consent; this is what it is consent for.
+    fn repository_roots(&self, target: &DeinitTarget, checkouts: &[String]) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = checkouts.iter().map(PathBuf::from).collect();
+        if let DeinitTarget::Path(path) = target {
+            let named = canonical(path);
+            if !roots.contains(&named) {
+                roots.push(named);
             }
         }
+        roots
     }
 
     /// Writes `AGENTS.md`, reporting whether it did.

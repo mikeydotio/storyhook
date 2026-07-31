@@ -246,7 +246,7 @@ fn relink_refuses_a_pointer_naming_a_different_project() {
         "the refusal must say why: {stderr}"
     );
     assert!(
-        stderr.contains("story web register"),
+        stderr.contains("story project init"),
         "and name the command that does adopt a checkout: {stderr}"
     );
 }
