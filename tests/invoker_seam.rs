@@ -254,6 +254,12 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
             },
         ),
         (
+            "project list",
+            Invocation::Project {
+                action: storyhook::cli::ProjectAction::List,
+            },
+        ),
+        (
             "update --check",
             Invocation::Update {
                 check: true,

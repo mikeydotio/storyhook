@@ -220,6 +220,9 @@ pub enum Invocation {
         prefix: Option<String>,
         no_agents_md: bool,
     },
+    Project {
+        action: ProjectAction,
+    },
     New {
         title: String,
         state: Option<String>,
@@ -494,6 +497,38 @@ pub enum DaemonAction {
     Uninstall,
 }
 
+/// The `story project …` subcommands — a repository's whole lifecycle.
+///
+/// A verb group rather than loose top-level verbs because all of these are
+/// about the *project* rather than about a story, and because the two that
+/// change something need the same thing: a way to name a checkout other than
+/// "wherever you happen to be standing".
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectAction {
+    /// Create a project for a checkout, or re-register one that already exists.
+    Init {
+        /// The checkout to initialize; `None` means the working directory.
+        ///
+        /// Carried as text and left unresolved on purpose. A relative path has
+        /// to resolve against the *client's* working directory, and only the
+        /// invoker knows what that is — the daemon's own is wherever it was
+        /// spawned.
+        path: Option<String>,
+        /// The story-id prefix for a project being created.
+        prefix: Option<String>,
+        /// The project's display name.
+        ///
+        /// The catalog is the projects table, so this is the only place a
+        /// chosen name can go. `story web register --name` was its previous
+        /// and only home.
+        name: Option<String>,
+        /// Skip generating `AGENTS.md`.
+        no_agents_md: bool,
+    },
+    /// Every project the store knows, checkout or no checkout.
+    List,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAction {
     Start {
@@ -651,6 +686,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "help" => parse_help(args),
         "update" => parse_update(args),
         "init" => parse_init(args),
+        "project" => parse_project(args),
         "new" => parse_new(args),
         "member" => parse_member(args),
         "state" => parse_state(args),
@@ -727,6 +763,73 @@ fn parse_init(args: &[String]) -> Result<Invocation, AppError> {
     Ok(Invocation::Init {
         prefix,
         no_agents_md,
+    })
+}
+
+const PROJECT_USAGE: &str = "usage: story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] \
+                             [--no-agents-md] | list";
+
+fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
+    let action = args
+        .get(1)
+        .ok_or_else(|| AppError::Usage(PROJECT_USAGE.to_string()))?;
+    match action.as_str() {
+        "init" => parse_project_init(args),
+        "list" => Ok(Invocation::Project {
+            action: ProjectAction::List,
+        }),
+        _ => Err(AppError::Usage(PROJECT_USAGE.to_string())),
+    }
+}
+
+fn parse_project_init(args: &[String]) -> Result<Invocation, AppError> {
+    let mut path = None;
+    let mut prefix = None;
+    let mut name = None;
+    let mut no_agents_md = false;
+    let mut index = 2;
+
+    // A leading bare word is the path. Anything beginning with `-` is a flag,
+    // which means a path that starts with a dash needs `./-thing` — the same
+    // bargain every other positional in this CLI makes.
+    if let Some(next) = args.get(2)
+        && !next.starts_with('-')
+    {
+        path = Some(next.clone());
+        index = 3;
+    }
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--prefix" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage("--prefix requires a value".to_string()))?;
+                prefix = Some(value.clone());
+                index += 2;
+            }
+            "--name" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage("--name requires a value".to_string()))?;
+                name = Some(value.clone());
+                index += 2;
+            }
+            "--no-agents-md" => {
+                no_agents_md = true;
+                index += 1;
+            }
+            _ => return Err(AppError::Usage(PROJECT_USAGE.to_string())),
+        }
+    }
+
+    Ok(Invocation::Project {
+        action: ProjectAction::Init {
+            path,
+            prefix,
+            name,
+            no_agents_md,
+        },
     })
 }
 

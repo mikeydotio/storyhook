@@ -290,3 +290,69 @@ fn hooks_still_fire_through_the_daemon() {
         marker.display()
     );
 }
+
+/// A relative `PATH` names a directory relative to the **client's** working
+/// directory, not the daemon's.
+///
+/// This is the one place where "the transport is invisible" needs an argument
+/// rather than an assertion of sameness. The daemon's own working directory is
+/// an accident of how it was spawned; if `story project init ./sub` resolved
+/// there, a project would still be created and the command would still
+/// succeed — just somewhere nobody named. The failure has no symptom at the
+/// call site, which is exactly why it needs a test.
+#[test]
+fn a_relative_path_is_resolved_against_the_clients_directory_over_the_daemon() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let here = scratch_dir();
+    let sub = here.path().join("sub");
+    std::fs::create_dir_all(&sub).expect("creating the target");
+
+    // Start the daemon from somewhere else entirely, so that resolving against
+    // its cwd would land outside `here` and be visible.
+    let elsewhere = scratch_dir();
+    let started = via_daemon(&env, elsewhere.path(), &["project", "list"]);
+    assert!(started.status.success(), "{started:?}");
+
+    let out = via_daemon(&env, here.path(), &["project", "init", "./sub"]);
+    assert!(out.status.success(), "{out:?}");
+
+    assert!(
+        sub.join(".storyhook.toml").exists(),
+        "the project must be created under the directory the client ran in"
+    );
+    assert!(
+        !elsewhere.path().join(".storyhook.toml").exists(),
+        "nothing may be created relative to the daemon's own working directory"
+    );
+}
+
+/// `story project init` produces the same bytes over both transports.
+#[test]
+fn project_init_answers_identically_through_both_invokers() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let local_dir = scratch_dir();
+    let daemon_dir = scratch_dir();
+
+    let local = via_local(
+        &env,
+        local_dir.path(),
+        &["project", "init", "--no-agents-md"],
+    );
+    let daemon = via_daemon(
+        &env,
+        daemon_dir.path(),
+        &["project", "init", "--no-agents-md"],
+    );
+
+    assert_eq!(local.status.code(), daemon.status.code());
+    assert_eq!(
+        String::from_utf8_lossy(&local.stdout),
+        String::from_utf8_lossy(&daemon.stdout)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&local.stderr),
+        String::from_utf8_lossy(&daemon.stderr)
+    );
+}
