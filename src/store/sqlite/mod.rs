@@ -40,8 +40,8 @@ use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, PathKind, ProjectId, StoryNo};
 use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version};
 use crate::store::types::{
-    FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord, ProjectSettings,
-    RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
+    DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord,
+    ProjectSettings, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
 };
 use crate::store::{ReadOps, Store, WriteOps};
 
@@ -568,6 +568,10 @@ macro_rules! impl_read_ops {
                 read::projects(&self.conn)
             }
 
+            fn event_count(&self, project: ProjectId) -> Result<usize, StoreError> {
+                read::event_count(&self.conn, project)
+            }
+
             fn project_paths(
                 &self,
                 project: ProjectId,
@@ -702,6 +706,10 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError> {
         write::rename_project(&self.conn, project, name)
+    }
+
+    fn delete_project(&mut self, project: ProjectId) -> Result<DeletedProject, StoreError> {
+        write::delete_project(&self.conn, project)
     }
 
     fn reserve_story_no(&mut self, project: ProjectId, highest: StoryNo) -> Result<(), StoreError> {

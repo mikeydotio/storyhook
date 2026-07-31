@@ -27,7 +27,7 @@ use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, PathKind, ProjectId, StoryNo};
 use crate::store::sqlite::read;
-use crate::store::types::{NewProject, ProjectSettings, RawEvent, priority_rank};
+use crate::store::types::{DeletedProject, NewProject, ProjectSettings, RawEvent, priority_rank};
 
 fn sql<T>(result: Result<T, rusqlite::Error>, context: &str) -> Result<T, StoreError> {
     result.map_err(|e| StoreError::from_sqlite(e, context))
@@ -126,6 +126,103 @@ pub(super) fn rename_project(
             "renaming a project that does not exist (id {})",
             project.get()
         )));
+    }
+    Ok(())
+}
+
+/// Every table holding rows scoped to a single project, in the order they must
+/// be cleared, paired with the column naming the project.
+///
+/// The order is a dependency order, and two positions in it are load-bearing:
+///
+/// * `story_commit_links` has **no foreign key at all** (0002 explains why: it
+///   is a projection of an event, and events are legitimately written before
+///   the read-model row exists). No cascade will ever clean it, so it has to be
+///   here explicitly or a deleted project leaves its git links behind.
+/// * `projects` comes **before** `events`, which is what makes migration 3's
+///   rewritten `events_reject_delete` abstain. Reversing these two turns a
+///   working teardown into an aborted transaction.
+///
+/// Every other entry would be handled by `ON DELETE CASCADE`. They are listed
+/// anyway, and the cascade demoted to a backstop, so that
+/// [`verify_project_is_gone`] can prove the teardown was complete rather than
+/// trusting that it was.
+const PROJECT_SCOPED_TABLES: &[(&str, &str)] = &[
+    ("github_bases", "project_id"),
+    ("story_commit_links", "project_id"),
+    ("story_relations", "project_id"),
+    ("story_labels", "project_id"),
+    ("stories", "project_id"),
+    ("project_settings", "project_id"),
+    ("project_members", "project_id"),
+    ("project_types", "project_id"),
+    ("project_states", "project_id"),
+    ("project_paths", "project_id"),
+    ("projects", "id"),
+    ("events", "project_id"),
+];
+
+/// Removes a project and everything recorded against it. See
+/// [`WriteOps::delete_project`](crate::store::WriteOps::delete_project) for the
+/// contract and for why the event log may be deleted here and nowhere else.
+pub(super) fn delete_project(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<DeletedProject, StoreError> {
+    if read::project(conn, project)?.is_none() {
+        return Err(StoreError::NotFound(format!(
+            "deleting a project that does not exist (id {})",
+            project.get()
+        )));
+    }
+
+    let mut removed = DeletedProject::default();
+    for (table, column) in PROJECT_SCOPED_TABLES {
+        // The table name is a compile-time constant from the list above, never
+        // caller input, so interpolating it cannot be an injection. The project
+        // id — the only value — is still bound.
+        let count = sql(
+            conn.execute(
+                &format!("DELETE FROM {table} WHERE {column} = ?1"),
+                params![project.get()],
+            ),
+            "deleting a project",
+        )?;
+        match *table {
+            "stories" => removed.stories = count,
+            "project_paths" => removed.paths = count,
+            "events" => removed.events = count,
+            _ => {}
+        }
+    }
+
+    verify_project_is_gone(conn, project)?;
+    Ok(removed)
+}
+
+/// Fails unless every project-scoped table is empty of this project.
+///
+/// The teardown above would be complete without this today. It exists for the
+/// migration that adds the thirteenth table and does not add it to
+/// [`PROJECT_SCOPED_TABLES`]: the alternative to failing here is a store that
+/// quietly accumulates rows belonging to projects that no longer exist, keyed
+/// by an id SQLite will hand to somebody else.
+fn verify_project_is_gone(conn: &Connection, project: ProjectId) -> Result<(), StoreError> {
+    for (table, column) in PROJECT_SCOPED_TABLES {
+        let left: i64 = sql(
+            conn.query_row(
+                &format!("SELECT count(*) FROM {table} WHERE {column} = ?1"),
+                params![project.get()],
+                |row| row.get(0),
+            ),
+            "verifying a project deletion",
+        )?;
+        if left > 0 {
+            return Err(StoreError::Invariant(format!(
+                "deleting project {} left {left} row(s) in `{table}`",
+                project.get()
+            )));
+        }
     }
     Ok(())
 }

@@ -53,6 +53,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "commit_links",
         sql: include_str!("schema/0002_commit_links.sql"),
     },
+    Migration {
+        version: 3,
+        name: "delete_project",
+        sql: include_str!("schema/0003_delete_project.sql"),
+    },
 ];
 
 /// The newest schema version this binary understands.
@@ -342,7 +347,7 @@ mod tests {
     #[test]
     fn the_embedded_migration_list_is_contiguous() {
         validate_sequence(MIGRATIONS);
-        assert_eq!(current_schema_version(), 2);
+        assert_eq!(current_schema_version(), 3);
     }
 
     /// The mirror triggers look inverses up in `relation_inverses`, so that

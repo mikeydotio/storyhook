@@ -62,6 +62,23 @@ pub struct ProjectPathRecord {
     pub last_seen_at: String,
 }
 
+/// What one [`WriteOps::delete_project`](crate::store::WriteOps::delete_project)
+/// destroyed.
+///
+/// Counted inside the deleting transaction rather than by a read taken before
+/// it, so the report is of what actually went. A caller has just told a user
+/// what it was about to destroy; telling them afterwards that it destroyed
+/// something else would be worse than saying nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeletedProject {
+    /// Stories removed, deleted and archived ones included.
+    pub stories: usize,
+    /// Events removed — the whole log, which is the irreversible part.
+    pub events: usize,
+    /// Checkout registrations removed.
+    pub paths: usize,
+}
+
 /// An event as it was stored, with its position and its decoded payload.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredEvent {
