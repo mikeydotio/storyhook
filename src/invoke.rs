@@ -34,11 +34,11 @@ use crate::help_topics;
 use crate::output::{Response, render_html_report};
 use crate::service::transfer::ProjectExport;
 use crate::service::{
-    CatalogService, Clock, ConfigService, Ctx, FieldEdits, GitService, GroupingService,
-    ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters, NewStoryInput,
-    PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService, ReopenOutcome,
-    SessionService, StateListing, StoryService, SystemService, TransferService, migrate, session,
-    system, transfer,
+    CatalogService, Clock, ConfigService, Ctx, DeinitOutcome, DeinitTarget, FieldEdits, GitService,
+    GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
+    NewStoryInput, PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService,
+    ReopenOutcome, SessionService, StateListing, StoryService, SystemService, TransferService,
+    migrate, session, system, transfer,
 };
 use crate::store::{ProjectId, ReadOps, Store};
 
@@ -94,6 +94,28 @@ impl InvokeRequest {
     #[must_use]
     pub fn no_hooks(mut self, no_hooks: bool) -> Self {
         self.no_hooks = no_hooks;
+        self
+    }
+
+    /// The same request, with its confirmation already given.
+    ///
+    /// The second half of the two-step a destructive command runs: the first
+    /// invocation answers [`Response::ConfirmationRequired`] and writes
+    /// nothing, the client asks the user, and this is what it sends back. The
+    /// invocation is otherwise untouched — the *same* target, resolved the
+    /// same way — so the thing that gets destroyed is the thing that was
+    /// described.
+    ///
+    /// A request with nothing to confirm is returned unchanged, which is what
+    /// makes this safe to call unconditionally.
+    #[must_use]
+    pub fn forced(mut self) -> Self {
+        if let Invocation::Project {
+            action: ProjectAction::Deinit { force, .. },
+        } = &mut self.invocation
+        {
+            *force = true;
+        }
         self
     }
 }
@@ -547,6 +569,18 @@ fn dispatch_project<S: Store>(
                 })?;
             Ok(Response::Message(init_message(&outcome)))
         }
+        ProjectAction::Deinit { target, force } => {
+            let service = ProjectService::new(store, root).clock(Clock::Fixed(now.to_string()));
+            let target = deinit_target(store, root, target.as_deref())?;
+            if !force {
+                // Nothing is written. The client decides whether to ask again.
+                return Ok(Response::ConfirmationRequired(Box::new(
+                    service.deinit_plan(&target)?,
+                )));
+            }
+            let outcome = service.deinit(&target)?;
+            Ok(Response::Message(deinit_message(&outcome)))
+        }
         ProjectAction::List => {
             let entries = CatalogService::new(store).all()?;
             if entries.is_empty() {
@@ -566,6 +600,56 @@ fn dispatch_project<S: Store>(
             Ok(Response::Message(lines.join("\n")))
         }
     }
+}
+
+/// What `story project deinit [TARGET]` names.
+///
+/// A bare `deinit` is the working directory. A given target is a path when it
+/// resolves to one on disk and a slug otherwise — decided in that order because
+/// a directory is the thing a user is standing in, and because a slug that
+/// happens to match a directory name would otherwise silently mean the wrong
+/// project. A target that is neither is still handed on as a slug, so the
+/// failure names it rather than guessing.
+fn deinit_target<S: Store>(
+    store: &S,
+    root: &Path,
+    target: Option<&str>,
+) -> Result<DeinitTarget, AppError> {
+    let Some(target) = target else {
+        return Ok(DeinitTarget::Path(root.to_path_buf()));
+    };
+    let as_path = target_dir(root, Some(target));
+    if as_path.is_dir() {
+        return Ok(DeinitTarget::Path(as_path));
+    }
+    // Not a directory. A slug the store knows is the answer; anything else is
+    // reported as a slug so the error says what was actually typed.
+    let _ = store;
+    Ok(DeinitTarget::Slug(target.to_string()))
+}
+
+/// What a completed deinit tells the user.
+fn deinit_message(outcome: &DeinitOutcome) -> String {
+    let plan = &outcome.plan;
+    let mut lines = vec![format!("deinitialized {} — {}", plan.slug, plan.name)];
+    lines.push(format!(
+        "  deleted   {} stor{}, {} event{}",
+        outcome.removed.stories,
+        if outcome.removed.stories == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        outcome.removed.events,
+        if outcome.removed.events == 1 { "" } else { "s" },
+    ));
+    for file in &plan.files {
+        lines.push(format!("  removed   {file}"));
+    }
+    for (file, why) in &plan.kept {
+        lines.push(format!("  kept      {file} ({why})"));
+    }
+    lines.join("\n")
 }
 
 /// The `story web …` family.

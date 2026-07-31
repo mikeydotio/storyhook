@@ -525,6 +525,18 @@ pub enum ProjectAction {
         /// Skip generating `AGENTS.md`.
         no_agents_md: bool,
     },
+    /// Destroy a project and everything recorded against it.
+    Deinit {
+        /// A checkout path or a project slug; `None` means the working
+        /// directory.
+        ///
+        /// A slug is accepted because a project this machine has no checkout
+        /// of cannot be named by path — and that is exactly the project most
+        /// worth deleting.
+        target: Option<String>,
+        /// Authorize the destruction without being asked.
+        force: bool,
+    },
     /// Every project the store knows, checkout or no checkout.
     List,
 }
@@ -767,7 +779,7 @@ fn parse_init(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 const PROJECT_USAGE: &str = "usage: story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] \
-                             [--no-agents-md] | list";
+                             [--no-agents-md] | deinit [PATH|SLUG] [--force] | list";
 
 fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
     let action = args
@@ -775,11 +787,39 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
         .ok_or_else(|| AppError::Usage(PROJECT_USAGE.to_string()))?;
     match action.as_str() {
         "init" => parse_project_init(args),
+        "deinit" => parse_project_deinit(args),
         "list" => Ok(Invocation::Project {
             action: ProjectAction::List,
         }),
         _ => Err(AppError::Usage(PROJECT_USAGE.to_string())),
     }
+}
+
+fn parse_project_deinit(args: &[String]) -> Result<Invocation, AppError> {
+    let mut target = None;
+    let mut force = false;
+    let mut index = 2;
+
+    if let Some(next) = args.get(2)
+        && !next.starts_with('-')
+    {
+        target = Some(next.clone());
+        index = 3;
+    }
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--force" | "-f" => {
+                force = true;
+                index += 1;
+            }
+            _ => return Err(AppError::Usage(PROJECT_USAGE.to_string())),
+        }
+    }
+
+    Ok(Invocation::Project {
+        action: ProjectAction::Deinit { target, force },
+    })
 }
 
 fn parse_project_init(args: &[String]) -> Result<Invocation, AppError> {
