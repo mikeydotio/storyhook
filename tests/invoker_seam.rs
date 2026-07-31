@@ -248,9 +248,9 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
             },
         ),
         (
-            "web list",
-            Invocation::Web {
-                action: WebAction::List,
+            "project list",
+            Invocation::Project {
+                action: storyhook::cli::ProjectAction::List,
             },
         ),
         (
@@ -352,7 +352,7 @@ mod unmigrated {
         // directory, and look like it worked.
         let project = legacy_checkout();
         project
-            .run(&["init"])
+            .run(&["project", "init"])
             .code(3)
             .stderr(predicates::str::contains("story migrate"));
     }
@@ -405,7 +405,7 @@ mod unmigrated {
             .expect("running story list");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("run `story init`"),
+            stderr.contains("run `story project init`"),
             "expected the ordinary not-initialized message, got: {stderr}"
         );
         assert!(!stderr.contains("story migrate"), "{stderr}");

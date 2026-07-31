@@ -1,6 +1,6 @@
 //! Bringing a project into existence.
 //!
-//! `story init` used to be a sequence of independent filesystem writes: make
+//! `story project init` used to be a sequence of independent filesystem writes: make
 //! the directories, write `project.toml`, write `states.toml`, write
 //! `types.toml`, write `members.jsonl`, write the id counter, open the archive
 //! database. Any failure between two of them left a project that existed
@@ -30,7 +30,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{StateDef, SuperState, TypeDef};
 use crate::error::AppError;
-use crate::store::{NewProject, PathKind, ProjectId, ReadOps, Store, WriteOps};
+use crate::output::DeinitPlan;
+use crate::store::{
+    DeletedProject, NewProject, PathKind, ProjectId, ProjectRecord, ReadOps, Store, WriteOps,
+};
 
 use super::Clock;
 use super::templates;
@@ -49,7 +52,7 @@ pub const ALLOW_TEMP_PROJECT: &str = "STORYHOOK_ALLOW_TEMP_PROJECT";
 /// The invariant is one sentence: **a throwaway project may only be created in
 /// a throwaway store.**
 ///
-/// Before the flip, `story init` wrote a `.storyhook/` directory into the
+/// Before the flip, `story project init` wrote a `.storyhook/` directory into the
 /// directory it was run in, so a fixture's data lived in the fixture and was
 /// deleted with it. Storage isolated itself, and no test suite driving the CLI
 /// ever had to think about it — so none of them did. One global store ended
@@ -142,7 +145,7 @@ pub(crate) fn is_under_temp(path: &Path) -> bool {
 /// keeps the design honest:
 ///
 /// * **Identity** — [`schema`](Self::schema), [`uuid`](Self::uuid) and
-///   [`prefix`](Self::prefix), written once by `story init` so that a fresh
+///   [`prefix`](Self::prefix), written once by `story project init` so that a fresh
 ///   clone on another machine knows which project it is looking at before it
 ///   has any local database row to consult.
 /// * **Configuration** — the optional [`plugin`](Self::plugin) and
@@ -189,7 +192,7 @@ pub struct ProjectPointer {
 }
 
 impl ProjectPointer {
-    /// A pointer carrying identity and no configuration — what `story init`
+    /// A pointer carrying identity and no configuration — what `story project init`
     /// writes.
     #[must_use]
     pub fn new(uuid: String, prefix: String) -> Self {
@@ -223,7 +226,7 @@ pub fn legacy_project_at(root: &Path) -> Option<PathBuf> {
 /// What to tell someone standing in a repository storyhook has not imported.
 ///
 /// Loud and specific, because the alternative is worse in both directions: a
-/// bare "not initialized" invites `story init`, which would mint an *empty*
+/// bare "not initialized" invites `story project init`, which would mint an *empty*
 /// second project beside data the user still has, and a silent fallback to
 /// reading the directory is the thing this whole rearchitecture exists to
 /// stop.
@@ -306,11 +309,18 @@ pub fn write_pointer(root: &Path, pointer: &ProjectPointer) -> Result<(), AppErr
     Ok(())
 }
 
-/// What `story init` was asked to do.
+/// What `story project init` was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitOptions {
     /// The story-id prefix, defaulting to [`DEFAULT_PREFIX`].
     pub prefix: Option<String>,
+    /// The project's display name, defaulting to the directory's basename.
+    ///
+    /// Unlike [`prefix`](Self::prefix) this is applied on **every** init, not
+    /// only the one that creates the project: renaming is a reversible display
+    /// change, whereas a prefix is baked into every story id ever minted, so
+    /// re-initializing must leave one alone and may honour the other.
+    pub name: Option<String>,
     /// Generate `AGENTS.md` when the repository does not already have one.
     pub agents_md: bool,
     /// Write the committed [pointer file](ProjectPointer).
@@ -326,20 +336,21 @@ impl Default for InitOptions {
     fn default() -> Self {
         Self {
             prefix: None,
+            name: None,
             agents_md: true,
             pointer: false,
         }
     }
 }
 
-/// What `story init` did.
+/// What `story project init` did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitOutcome {
     /// The project this checkout now belongs to.
     pub project: ProjectId,
     /// Whether the project was created, as opposed to already existing.
     ///
-    /// `story init` is idempotent — running it twice re-registers the checkout
+    /// `story project init` is idempotent — running it twice re-registers the checkout
     /// and reports success — so this distinguishes the two without changing
     /// what the user is told.
     pub created: bool,
@@ -347,6 +358,48 @@ pub struct InitOutcome {
     pub agents_md: bool,
     /// Whether the pointer file was written by this run.
     pub pointer: bool,
+}
+
+/// The name of the agent-instruction file `init` generates.
+pub const AGENTS_MD: &str = "AGENTS.md";
+
+/// What a deinit was asked to destroy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeinitTarget {
+    /// A checkout directory.
+    Path(PathBuf),
+    /// A project slug, for one this machine has no checkout of.
+    Slug(String),
+}
+
+/// What a [`ProjectService::deinit`] destroyed.
+#[derive(Clone, Debug)]
+pub struct DeinitOutcome {
+    /// The plan it carried out, with [`files`](DeinitPlan::files) narrowed to
+    /// the ones that were actually there to remove.
+    pub plan: DeinitPlan,
+    /// What the store deleted, counted inside the deleting transaction.
+    pub removed: DeletedProject,
+}
+
+/// Whether `AGENTS.md` is byte-for-byte what this build would generate.
+///
+/// The deletion predicate, and deliberately the strictest one available.
+/// `init` refuses to overwrite an existing `AGENTS.md` because it may be the
+/// user's; deleting one it *did* generate but the user has since edited would
+/// destroy exactly what that care was protecting.
+///
+/// Being strict has a visible cost and it is the right cost: when the template
+/// changes, every file generated by an older build stops matching and is kept
+/// instead of removed. A leftover file is a tidiness complaint. The failure in
+/// the other direction — a fuzzy match that decides an edited file is "close
+/// enough" — destroys work. Do not loosen this.
+#[must_use]
+pub fn agents_md_is_pristine(root: &Path, prefix: &str, done_state: &str) -> bool {
+    let Ok(found) = std::fs::read_to_string(root.join(AGENTS_MD)) else {
+        return false;
+    };
+    found == templates::agents_md(prefix, done_state)
 }
 
 /// Creating projects and registering the checkouts that belong to them.
@@ -416,10 +469,16 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 && let Some(existing) = tx.project_by_uuid(&pointer.uuid)?
             {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                if let Some(name) = &options.name {
+                    tx.rename_project(existing.id, name)?;
+                }
                 return Ok((existing.id, false, existing.uuid, existing.prefix));
             }
             if let Some(existing) = tx.project_by_path(&root)? {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                if let Some(name) = &options.name {
+                    tx.rename_project(existing.id, name)?;
+                }
                 return Ok((existing.id, false, existing.uuid, existing.prefix));
             }
 
@@ -446,7 +505,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
                         .unwrap_or_else(|| DEFAULT_PREFIX.to_string()),
                 ),
             };
-            let name = display_name(&root);
+            let name = options.name.clone().unwrap_or_else(|| display_name(&root));
             let project = tx.create_project(&NewProject {
                 uuid: uuid.clone(),
                 slug: unique_slug(&*tx, &name)?,
@@ -461,7 +520,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
         })?;
 
         // Never overwritten. The file is user-authored the moment it carries a
-        // `[plugin]` or `[hooks]` table, and `story init` is idempotent — so a
+        // `[plugin]` or `[hooks]` table, and `story project init` is idempotent — so a
         // second `init` in a repository that already has a pointer must leave
         // the user's configuration exactly where it is rather than replacing
         // the file with a freshly generated identity-only copy.
@@ -481,6 +540,161 @@ impl<'a, S: Store> ProjectService<'a, S> {
         })
     }
 
+    /// Everything a [`deinit`](Self::deinit) would destroy. Writes nothing.
+    ///
+    /// Separated from the deletion so that the answer can be shown to somebody
+    /// before it happens, and so that the CLI's prompt and the dashboard's
+    /// modal are looking at the same value rather than each computing their
+    /// own.
+    pub fn deinit_plan(&self, target: &DeinitTarget) -> Result<DeinitPlan, AppError> {
+        let record = self.resolve_deinit_target(target)?;
+        let (stories, events, checkouts) = self.store.read(|tx| {
+            Ok((
+                tx.stories(record.id, &crate::store::StoryQuery::all())?
+                    .len(),
+                tx.event_count(record.id)?,
+                tx.project_paths(record.id)?
+                    .into_iter()
+                    .map(|row| row.path)
+                    .collect::<Vec<_>>(),
+            ))
+        })?;
+
+        // Repository files are only ever considered in a checkout that is
+        // actually there. Deinitializing a project by slug, from somewhere
+        // else, must not go looking for files in a directory it was not given.
+        let mut files = Vec::new();
+        let mut kept = Vec::new();
+        let done = self.store.read(|tx| Ok(closed_state(tx, record.id)?))?;
+        for root in self.repository_roots(target, &checkouts) {
+            if pointer_path(&root).is_file() {
+                files.push(pointer_path(&root).display().to_string());
+            }
+            let agents = root.join(AGENTS_MD);
+            if agents.is_file() {
+                if agents_md_is_pristine(&root, &record.prefix, &done) {
+                    files.push(agents.display().to_string());
+                } else {
+                    kept.push((
+                        agents.display().to_string(),
+                        "edited since it was generated".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(DeinitPlan {
+            slug: record.slug,
+            name: record.name,
+            prefix: record.prefix,
+            stories,
+            events,
+            checkouts,
+            files,
+            kept,
+        })
+    }
+
+    /// Destroys the project `target` names, and the repository files `init`
+    /// generated for it.
+    ///
+    /// Graceful about partial states, because they are reachable with `rm`: a
+    /// pointer file already deleted by hand, or a checkout on a volume that is
+    /// not mounted, is a step with nothing to do rather than a failure. What is
+    /// *not* tolerated is a target that names no project — the caller has just
+    /// told a user what it was about to destroy.
+    ///
+    /// The store transaction commits before any file is removed. That ordering
+    /// is the recoverable one: a crash between them leaves a checkout whose
+    /// pointer names a project that no longer exists, which resolution already
+    /// reports clearly, rather than a repository stripped of its identity while
+    /// its stories are still live.
+    pub fn deinit(&self, target: &DeinitTarget) -> Result<DeinitOutcome, AppError> {
+        let plan = self.deinit_plan(target)?;
+        let record = self.resolve_deinit_target(target)?;
+        let removed = self.store.write(|tx| tx.delete_project(record.id))?;
+
+        let mut removed_files = Vec::new();
+        for file in &plan.files {
+            match std::fs::remove_file(file) {
+                Ok(()) => removed_files.push(file.clone()),
+                // Already gone is the outcome this wanted.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(AppError::Storage(format!(
+                        "the project was deleted, but `{file}` could not be removed: {e}"
+                    )));
+                }
+            }
+        }
+
+        Ok(DeinitOutcome {
+            plan: DeinitPlan {
+                files: removed_files,
+                ..plan
+            },
+            removed,
+        })
+    }
+
+    /// The project a deinit target names, by path or by slug.
+    ///
+    /// Path first, because that is what an unqualified `story project deinit`
+    /// means and what a user standing in a repository expects. A slug is
+    /// accepted because a project whose checkout is gone cannot be named by
+    /// path at all — and that is exactly the project most worth deleting.
+    fn resolve_deinit_target(&self, target: &DeinitTarget) -> Result<ProjectRecord, AppError> {
+        match target {
+            DeinitTarget::Path(path) => {
+                let root = canonical(path);
+                let pointer = read_pointer(&root)?;
+                let found = self.store.read(|tx| {
+                    if let Some(pointer) = &pointer
+                        && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
+                    {
+                        return Ok(Some(project));
+                    }
+                    tx.project_by_path(&root)
+                })?;
+                found.ok_or_else(|| {
+                    AppError::NotFound(format!(
+                        "`{}` is not a storyhook project.\n\nIf you meant a project whose \
+                         checkout is gone, name it by slug — `story project list` prints them.",
+                        root.display()
+                    ))
+                })
+            }
+            DeinitTarget::Slug(slug) => self
+                .store
+                .read(|tx| tx.project_by_slug(slug))?
+                .ok_or_else(|| AppError::NotFound(format!("no project `{slug}`"))),
+        }
+    }
+
+    /// Every directory whose repository-side files this deinit will remove.
+    ///
+    /// All of the project's recorded checkouts, plus the one the caller named
+    /// if it is not already among them. Deinit destroys the project outright,
+    /// so a `.storyhook.toml` left behind in a checkout does not name a project
+    /// any more — it is a file claiming an identity that no longer exists, and
+    /// the next `story project init` there would silently resurrect that
+    /// identity as an empty project.
+    ///
+    /// Reaching into directories the caller did not name is only safe because
+    /// [`deinit_plan`](Self::deinit_plan) lists every one of those files before
+    /// anything is destroyed, and nothing is destroyed until the plan has been
+    /// confirmed. The plan is the consent; this is what it is consent for.
+    fn repository_roots(&self, target: &DeinitTarget, checkouts: &[String]) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = checkouts.iter().map(PathBuf::from).collect();
+        if let DeinitTarget::Path(path) = target {
+            let named = canonical(path);
+            if !roots.contains(&named) {
+                roots.push(named);
+            }
+        }
+        roots
+    }
+
     /// Writes `AGENTS.md`, reporting whether it did.
     ///
     /// An existing file is never overwritten: it is repository content the
@@ -491,7 +705,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
         prefix: &str,
         done_state: &str,
     ) -> Result<bool, AppError> {
-        let path = root.join("AGENTS.md");
+        let path = root.join(AGENTS_MD);
         if path.exists() {
             return Ok(false);
         }

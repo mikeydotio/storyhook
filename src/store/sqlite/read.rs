@@ -138,6 +138,18 @@ pub(super) fn projects(conn: &Connection) -> Result<Vec<ProjectRecord>, StoreErr
     collect(rows, "reading projects")
 }
 
+pub(super) fn event_count(conn: &Connection, project: ProjectId) -> Result<usize, StoreError> {
+    let count: i64 = sql(
+        conn.query_row(
+            "SELECT count(*) FROM events WHERE project_id = ?1",
+            params![project.get()],
+            |row| row.get(0),
+        ),
+        "counting a project's events",
+    )?;
+    Ok(usize::try_from(count).unwrap_or(usize::MAX))
+}
+
 pub(super) fn project_paths(
     conn: &Connection,
     project: ProjectId,

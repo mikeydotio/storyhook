@@ -92,9 +92,7 @@ web commands:
   story web status                  show whether it's running and its URL
   story web open                    open the dashboard in your browser
   story web address                 copy the dashboard URL to the clipboard
-  story web register [<PATH>]       add a repo to the dashboard
-  story web deregister <ID|PATH>    remove a repo from the dashboard
-  story web list                    list registered repos";
+";
 
 /// The error returned when a `web` command requires the dashboard to be running
 /// but it is not. Carries [`WEB_COMMANDS_SUMMARY`] as its help-like body.

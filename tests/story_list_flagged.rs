@@ -11,7 +11,7 @@ fn list_flagged_filters_to_attention_items() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .arg("init")
+        .args(["project", "init"])
         .assert()
         .success();
 

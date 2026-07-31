@@ -64,7 +64,7 @@ fn fixture(label: &str) -> Fixture {
     let workdir = real_dir(&format!("{label}-workdir"));
     let checkout = real_dir(&format!("{label}-checkout"));
     for (dir, prefix) in [(&workdir, "WD"), (&checkout, "PH")] {
-        let out = story(dir, &data_home, &["init", "--prefix", prefix]);
+        let out = story(dir, &data_home, &["project", "init", "--prefix", prefix]);
         assert_eq!(
             out.status.code(),
             Some(0),
@@ -80,9 +80,9 @@ fn fixture(label: &str) -> Fixture {
     }
 }
 
-/// The slug of the project registered at `needle`, read from `web list`.
+/// The slug of the project registered at `needle`, read from `project list`.
 fn slug_for(f: &Fixture, needle: &str) -> String {
-    let listed = stdout(&story(&f.workdir, &f.data_home, &["web", "list"]));
+    let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
     listed
         .lines()
         .find(|line| line.contains(needle))
@@ -139,12 +139,23 @@ fn doctor_fix_deregisters_the_orphan_but_keeps_the_stories() {
         stdout(&fixed)
     );
 
-    // Gone from the catalog...
-    let listed = story(&f.workdir, &f.data_home, &["web", "list"]);
+    // The stale *path* is gone — but the project is not, and that is the
+    // point. `--fix` forgets where a checkout was, never the work recorded
+    // against it, so the project stays listed with nowhere to open it. Under
+    // `web list` this project vanished entirely, which is precisely how a
+    // checkout that was merely unplugged used to become unreachable.
+    let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
     assert!(
-        !stdout(&listed).contains("orphan-fix-checkout"),
-        "the stale registration must be gone: {}",
-        stdout(&listed)
+        !listed.contains(&f.checkout.display().to_string()),
+        "the stale path must be gone: {listed}"
+    );
+    assert!(
+        listed.contains("orphan-fix-checkout"),
+        "the project itself survives and stays reachable: {listed}"
+    );
+    assert!(
+        listed.contains("no checkout on this machine"),
+        "and says why it has no path: {listed}"
     );
 
     // ...and reporting clean now.
@@ -188,7 +199,7 @@ fn relink_points_a_project_at_its_new_checkout() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let listed = stdout(&story(&f.workdir, &f.data_home, &["web", "list"]));
+    let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
     assert!(
         listed.contains(moved.to_str().unwrap()),
         "the catalog must name the new location: {listed}"
@@ -211,7 +222,11 @@ fn relink_points_a_project_at_its_new_checkout() {
 fn relink_refuses_a_pointer_naming_a_different_project() {
     let f = fixture("relink-mismatch");
     let second = real_dir("relink-mismatch-other");
-    story(&second, &f.data_home, &["init", "--prefix", "QQ"]);
+    story(
+        &second,
+        &f.data_home,
+        &["project", "init", "--prefix", "QQ"],
+    );
     let first_slug = slug_for(&f, "relink-mismatch-checkout");
 
     let out = story(
@@ -231,7 +246,7 @@ fn relink_refuses_a_pointer_naming_a_different_project() {
         "the refusal must say why: {stderr}"
     );
     assert!(
-        stderr.contains("story web register"),
+        stderr.contains("story project init"),
         "and name the command that does adopt a checkout: {stderr}"
     );
 }

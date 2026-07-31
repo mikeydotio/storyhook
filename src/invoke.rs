@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::{
     DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, PhaseAction,
-    PluginAction, StateAction, TypeAction, WebAction,
+    PluginAction, ProjectAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
 use crate::env::Environment;
@@ -34,11 +34,11 @@ use crate::help_topics;
 use crate::output::{Response, render_html_report};
 use crate::service::transfer::ProjectExport;
 use crate::service::{
-    CatalogService, Clock, ConfigService, Ctx, FieldEdits, GitService, GroupingService,
-    ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters, NewStoryInput,
-    PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService, ReopenOutcome,
-    SessionService, StateListing, StoryService, SystemService, TransferService, migrate, session,
-    system, transfer,
+    CatalogService, Clock, ConfigService, Ctx, DeinitOutcome, DeinitTarget, FieldEdits, GitService,
+    GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
+    NewStoryInput, PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService,
+    ReopenOutcome, SessionService, StateListing, StoryService, SystemService, TransferService,
+    migrate, session, system, transfer,
 };
 use crate::store::{ProjectId, ReadOps, Store};
 
@@ -94,6 +94,28 @@ impl InvokeRequest {
     #[must_use]
     pub fn no_hooks(mut self, no_hooks: bool) -> Self {
         self.no_hooks = no_hooks;
+        self
+    }
+
+    /// The same request, with its confirmation already given.
+    ///
+    /// The second half of the two-step a destructive command runs: the first
+    /// invocation answers [`Response::ConfirmationRequired`] and writes
+    /// nothing, the client asks the user, and this is what it sends back. The
+    /// invocation is otherwise untouched — the *same* target, resolved the
+    /// same way — so the thing that gets destroyed is the thing that was
+    /// described.
+    ///
+    /// A request with nothing to confirm is returned unchanged, which is what
+    /// makes this safe to call unconditionally.
+    #[must_use]
+    pub fn forced(mut self) -> Self {
+        if let Invocation::Project {
+            action: ProjectAction::Deinit { force, .. },
+        } = &mut self.invocation
+        {
+            *force = true;
+        }
         self
     }
 }
@@ -475,7 +497,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Relink { .. }
-        | Invocation::Init { .. }
+        | Invocation::Project { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact
@@ -506,50 +528,137 @@ fn query<S: Store, T>(
         .read(|tx| Ok(f(&QueryService::new(tx, ctx.project(), &now))))?
 }
 
-/// The `story web …` family.
+/// The `story project …` family — a repository's whole lifecycle.
 ///
-/// Only the catalog arms are ported. The daemon commands — start, stop, status,
-/// open, address — are process management rather than storage, they are
-/// identical on both sides of the flip, and the wave that promotes the daemon
-/// owns them; they delegate to the same functions the legacy path calls.
-fn dispatch_web<S: Store>(store: &S, action: WebAction) -> Result<Response, AppError> {
-    let service = CatalogService::new(store);
+/// `root` is the directory the client ran in; an arm that takes a `PATH`
+/// resolves it against that with [`target_dir`] rather than against this
+/// process's own working directory, which over the daemon is not the user's.
+fn dispatch_project<S: Store>(
+    store: &S,
+    root: &Path,
+    now: &str,
+    pointer: bool,
+    action: ProjectAction,
+) -> Result<Response, AppError> {
     match action {
-        WebAction::Register { path, name } => {
-            let entry = service.register(Path::new(&path), name.as_deref())?;
-            Ok(Response::Message(format!(
-                "Registered `{}` as `{}`",
-                entry.path.unwrap_or_default().display(),
-                entry.id
-            )))
+        ProjectAction::Init {
+            path,
+            prefix,
+            name,
+            no_agents_md,
+        } => {
+            let target = target_dir(root, path.as_deref());
+            // Named explicitly rather than left to fail later inside
+            // `write_pointer`: `story project init ./typo` is an ordinary
+            // mistake, and the raw io error it used to produce named a file
+            // the user never typed.
+            if !target.is_dir() {
+                return Err(AppError::NotFound(format!(
+                    "cannot initialize `{}`: no such directory",
+                    target.display()
+                )));
+            }
+            let outcome = ProjectService::new(store, target)
+                .clock(Clock::Fixed(now.to_string()))
+                .init(&InitOptions {
+                    prefix,
+                    name,
+                    agents_md: !no_agents_md,
+                    pointer,
+                })?;
+            Ok(Response::Message(init_message(&outcome)))
         }
-        WebAction::Deregister { target } => {
-            let entry = service.deregister(&target)?;
-            Ok(Response::Message(format!(
-                "Deregistered `{}` ({})",
-                entry.id,
-                entry.path.unwrap_or_default().display()
-            )))
+        ProjectAction::Deinit { target, force } => {
+            let service = ProjectService::new(store, root).clock(Clock::Fixed(now.to_string()));
+            let target = deinit_target(store, root, target.as_deref())?;
+            if !force {
+                // Nothing is written. The client decides whether to ask again.
+                return Ok(Response::ConfirmationRequired(Box::new(
+                    service.deinit_plan(&target)?,
+                )));
+            }
+            let outcome = service.deinit(&target)?;
+            Ok(Response::Message(deinit_message(&outcome)))
         }
-        WebAction::List => {
-            let entries = service.list()?;
+        ProjectAction::List => {
+            let entries = CatalogService::new(store).all()?;
             if entries.is_empty() {
                 return Ok(Response::Message(
-                    "No repos registered. Run `story web register` from a project to add one."
+                    "No projects yet. Run `story project init` in a repository to add one."
                         .to_string(),
                 ));
             }
-            let mut lines = vec![format!("{} registered repo(s):", entries.len())];
+            let mut lines = vec![format!("{} project(s):", entries.len())];
             for entry in &entries {
-                lines.push(format!(
-                    "  {} — {} ({})",
-                    entry.id,
-                    entry.name,
-                    entry.path.clone().unwrap_or_default().display()
-                ));
+                let where_ = entry.path.as_ref().map_or_else(
+                    || "no checkout on this machine".to_string(),
+                    |path| path.display().to_string(),
+                );
+                lines.push(format!("  {} — {} ({where_})", entry.id, entry.name));
             }
             Ok(Response::Message(lines.join("\n")))
         }
+    }
+}
+
+/// What `story project deinit [TARGET]` names.
+///
+/// A bare `deinit` is the working directory. A given target is a path when it
+/// resolves to one on disk and a slug otherwise — decided in that order because
+/// a directory is the thing a user is standing in, and because a slug that
+/// happens to match a directory name would otherwise silently mean the wrong
+/// project. A target that is neither is still handed on as a slug, so the
+/// failure names it rather than guessing.
+fn deinit_target<S: Store>(
+    store: &S,
+    root: &Path,
+    target: Option<&str>,
+) -> Result<DeinitTarget, AppError> {
+    let Some(target) = target else {
+        return Ok(DeinitTarget::Path(root.to_path_buf()));
+    };
+    let as_path = target_dir(root, Some(target));
+    if as_path.is_dir() {
+        return Ok(DeinitTarget::Path(as_path));
+    }
+    // Not a directory. A slug the store knows is the answer; anything else is
+    // reported as a slug so the error says what was actually typed.
+    let _ = store;
+    Ok(DeinitTarget::Slug(target.to_string()))
+}
+
+/// What a completed deinit tells the user.
+fn deinit_message(outcome: &DeinitOutcome) -> String {
+    let plan = &outcome.plan;
+    let mut lines = vec![format!("deinitialized {} — {}", plan.slug, plan.name)];
+    lines.push(format!(
+        "  deleted   {} stor{}, {} event{}",
+        outcome.removed.stories,
+        if outcome.removed.stories == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        outcome.removed.events,
+        if outcome.removed.events == 1 { "" } else { "s" },
+    ));
+    for file in &plan.files {
+        lines.push(format!("  removed   {file}"));
+    }
+    for (file, why) in &plan.kept {
+        lines.push(format!("  kept      {file} ({why})"));
+    }
+    lines.join("\n")
+}
+
+/// The `story web …` family.
+///
+/// Process management only, now that `story project` owns the catalog. What is
+/// left — start, stop, status, open, address — is about a running daemon rather
+/// than about stored data, and the first three are already deprecated aliases
+/// for `story daemon`.
+fn dispatch_web(action: WebAction) -> Result<Response, AppError> {
+    match action {
         WebAction::Start { port } => crate::web::handle_start(port).map(Response::Message),
         WebAction::Stop => crate::web::handle_stop().map(Response::Message),
         WebAction::Status => crate::web::handle_status().map(Response::Message),
@@ -817,7 +926,7 @@ fn format_state_line(listing: &StateListing) -> String {
 
 /// Dispatch for the invocations that run *before* a project is resolved.
 ///
-/// `story init` is the reason this exists. Every other command names a project
+/// `story project init` is the reason this exists. Every other command names a project
 /// and therefore takes a [`Ctx`]; init is the command that creates one, so on
 /// a virgin store there is no [`ProjectId`](crate::store::ProjectId) for a
 /// context to hold. Rather than let a caller invent one, the arms that do not
@@ -843,7 +952,7 @@ pub fn dispatch_unscoped<S: Store>(
     dispatch_unscoped_with(store, root, now, invocation, true, None)
 }
 
-/// [`dispatch_unscoped`], told whether `story init` should write the pointer
+/// [`dispatch_unscoped`], told whether `story project init` should write the pointer
 /// file.
 pub fn dispatch_unscoped_with<S: Store>(
     store: &S,
@@ -854,19 +963,7 @@ pub fn dispatch_unscoped_with<S: Store>(
     stdin_input: Option<&str>,
 ) -> Result<Response, AppError> {
     match invocation {
-        Invocation::Init {
-            prefix,
-            no_agents_md,
-        } => {
-            let outcome = ProjectService::new(store, root)
-                .clock(Clock::Fixed(now.to_string()))
-                .init(&InitOptions {
-                    prefix,
-                    agents_md: !no_agents_md,
-                    pointer,
-                })?;
-            Ok(Response::Message(init_message(&outcome)))
-        }
+        Invocation::Project { action } => dispatch_project(store, root, now, pointer, action),
         // Pure functions of compiled-in text. They need neither a project nor
         // a store, and answering them here is what lets `story --help` work in
         // a directory storyhook has never heard of.
@@ -898,7 +995,7 @@ pub fn dispatch_unscoped_with<S: Store>(
         // status` that failed in a directory storyhook had never heard of
         // would be a regression in the one command a user reaches for when
         // nothing is working.
-        Invocation::Web { action } => dispatch_web(store, action),
+        Invocation::Web { action } => dispatch_web(action),
         Invocation::Daemon { action } => dispatch_daemon(action),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
@@ -989,8 +1086,8 @@ pub fn dispatch_unscoped_with<S: Store>(
                 None => crate::legacy::find_root(root).ok_or_else(|| {
                     AppError::NotFound(format!(
                         "no legacy `.storyhook` project at `{}` or above it; `story migrate` \
-                         moves an existing tree into the store, and `story init` creates a new \
-                         project",
+                         moves an existing tree into the store, and `story project init` creates a \
+                         new project",
                         root.display()
                     ))
                 })?,
@@ -1139,7 +1236,7 @@ fn decompose_summary(batch: &ImportBatch) -> String {
     summary
 }
 
-/// What `story init` tells the user.
+/// What `story project init` tells the user.
 ///
 /// The text still describes the legacy storage model — a `.storyhook/`
 /// directory to commit — because it is the text users and scripts see today
@@ -1187,7 +1284,7 @@ fn not_yet_ported(invocation: &Invocation) -> AppError {
 fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "help",
-        Invocation::Init { .. } => "init",
+        Invocation::Project { .. } => "project",
         Invocation::Relink { .. } => "relink",
         Invocation::New { .. } => "new",
         Invocation::MemberAdd { .. } => "member-add",
@@ -1423,7 +1520,7 @@ pub struct StoreInvoker<'a, S: Store> {
 impl<'a, S: Store> StoreInvoker<'a, S> {
     /// An invoker over `store`, running from `cwd` under `env`.
     ///
-    /// Writes the pointer file on `story init`, because for a process served
+    /// Writes the pointer file on `story project init`, because for a process served
     /// this way the store *is* where the project lives, and a checkout with no
     /// pointer is one a fresh clone cannot identify.
     pub fn new(store: &'a S, cwd: impl Into<PathBuf>, env: Environment) -> Self {
@@ -1443,7 +1540,7 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
         self
     }
 
-    /// Sets whether `story init` writes the pointer file.
+    /// Sets whether `story project init` writes the pointer file.
     #[must_use]
     pub fn pointer(mut self, pointer: bool) -> Self {
         self.pointer = pointer;
@@ -1520,13 +1617,24 @@ fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppE
 /// A dry-run migration writes nothing and is deliberately not a creation.
 fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBuf> {
     match invocation {
-        Invocation::Init { .. } | Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
-        Invocation::Migrate { path, dry_run } if !dry_run => Some(
-            path.as_ref()
-                .map_or_else(|| cwd.to_path_buf(), PathBuf::from),
-        ),
+        Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
+        Invocation::Project {
+            action: ProjectAction::Init { path, .. },
+        } => Some(target_dir(cwd, path.as_deref())),
+        Invocation::Migrate { path, dry_run } if !dry_run => Some(target_dir(cwd, path.as_deref())),
         _ => None,
     }
+}
+
+/// The directory a command names by an optional `PATH`, defaulting to the one
+/// it ran in.
+///
+/// The `None` half is why this is named rather than written out at each call
+/// site: "no path given" and "the path given is `.`" must reach the store as
+/// the same directory, and over the daemon neither of them is *this* process's
+/// working directory. See [`resolve_against`] for that rule.
+fn target_dir(cwd: &Path, path: Option<&str>) -> PathBuf {
+    path.map_or_else(|| cwd.to_path_buf(), |path| resolve_against(cwd, path))
 }
 
 impl<S: Store> Invoker for StoreInvoker<'_, S> {
@@ -1574,7 +1682,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                 );
             }
             // A repository that still has its stories in `.storyhook/` gets a
-            // diagnosis rather than an invitation to `story init`, which would
+            // diagnosis rather than an invitation to `story project init`, which would
             // mint an empty second project beside data the user still has.
             if let Some(tree) = crate::service::project::legacy_project_at(&self.cwd) {
                 return Err(crate::service::project::unmigrated_error(&tree));
@@ -1587,13 +1695,14 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             if let Some(pointer) = self.pointer_at_or_above() {
                 return Err(AppError::NotFound(format!(
                     "this checkout belongs to storyhook project {}, which this machine's \
-                     store does not have. Run `story init` here to adopt it, or `story \
+                     store does not have. Run `story project init` here to adopt it, or `story \
                      import-project` if you have an export of it.",
                     pointer.uuid
                 )));
             }
             return Err(AppError::NotFound(
-                "story project not initialized in this directory; run `story init`".to_string(),
+                "story project not initialized in this directory; run `story project init`"
+                    .to_string(),
             ));
         };
 
@@ -1614,7 +1723,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
 /// failure this function exists to prevent.
 fn is_project_less(invocation: &Invocation) -> bool {
     match invocation {
-        Invocation::Init { .. }
+        Invocation::Project { .. }
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Help
@@ -1693,8 +1802,9 @@ fn deregistered_message(forgotten: &[crate::service::OrphanedRegistration]) -> S
         out.push_str(&format!("\n  {} ({})", orphan.slug, orphan.path.display()));
     }
     out.push_str(
-        "\n\nOnly the paths were forgotten. Every story is still in the store, and \
-                  `story web register` or `story relink` puts a project back.",
+        "\n\nOnly the paths were forgotten. Every story is still in the store, they are \
+                  still listed by `story project list` and still on the dashboard, and \
+                  `story relink` puts a project back where its checkout moved to.",
     );
     out
 }

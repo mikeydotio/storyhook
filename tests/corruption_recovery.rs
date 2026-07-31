@@ -96,7 +96,7 @@ fn a_missing_database_is_created_rather_than_reported() {
         "the fixture starts with nothing"
     );
 
-    let out = story_in(&env, cwd.path(), &["init", "--no-agents-md"]);
+    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
     assert!(
         out.status.success(),
         "a first run must create the store: {}",
@@ -114,7 +114,7 @@ fn a_zero_byte_database_is_treated_as_a_fresh_one() {
     let env = env_with_store_bytes(b"");
     let cwd = scratch_dir();
 
-    let out = story_in(&env, cwd.path(), &["init", "--no-agents-md"]);
+    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
     assert!(
         out.status.success(),
         "an empty file is an empty database: {}",
@@ -221,7 +221,7 @@ fn a_directory_where_the_database_belongs_names_the_path() {
     let cwd = scratch_dir();
     std::fs::create_dir_all(env.store_path()).expect("putting a directory in the way");
 
-    let out = story_in(&env, cwd.path(), &["init", "--no-agents-md"]);
+    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
     let message = failure_message(&out, "story init");
     assert!(
         message.contains(&env.store_path().display().to_string()),
@@ -250,7 +250,7 @@ fn a_truncated_database_says_it_is_damaged_and_where_the_backups_are() {
 
     let env = env_with_store_bytes(&whole[..4096]);
     let cwd = scratch_dir();
-    let out = story_in(&env, cwd.path(), &["init", "--no-agents-md"]);
+    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
     let message = failure_message(&out, "story init");
 
     assert_actionable_corruption(&env, &message);
@@ -262,7 +262,7 @@ fn a_truncated_database_says_it_is_damaged_and_where_the_backups_are() {
 fn a_file_that_is_not_a_database_says_so_in_the_same_words() {
     let env = env_with_store_bytes(b"this is not a database, it is a note to self\n");
     let cwd = scratch_dir();
-    let out = story_in(&env, cwd.path(), &["init", "--no-agents-md"]);
+    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
     let message = failure_message(&out, "story init");
 
     assert_actionable_corruption(&env, &message);
@@ -382,7 +382,7 @@ fn a_clone_whose_pointer_names_an_unknown_project_adopts_that_identity() {
     std::fs::write(clone.path().join(".storyhook.toml"), committed)
         .expect("writing the committed pointer");
 
-    let out = story_in(&env, clone.path(), &["init", "--no-agents-md"]);
+    let out = story_in(&env, clone.path(), &["project", "init", "--no-agents-md"]);
     assert!(
         out.status.success(),
         "init on a clone must succeed: {}",
@@ -444,7 +444,7 @@ fn a_checkout_naming_a_project_this_store_does_not_have_says_which_one() {
         "the message must name the project the checkout claims: {message}"
     );
     assert!(
-        message.contains("story init"),
+        message.contains("story project init"),
         "and the command that adopts it here: {message}"
     );
 }

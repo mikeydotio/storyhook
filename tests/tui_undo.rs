@@ -23,7 +23,7 @@
 
 use std::time::Instant;
 
-use storyhook::cli::{HistoryAction, Invocation};
+use storyhook::cli::{HistoryAction, Invocation, ProjectAction};
 use storyhook::domain::{Priority, StoryEvent};
 use storyhook::invoke::{InvokeRequest, Invoker, StoreInvoker};
 use storyhook::output::Response;
@@ -69,9 +69,13 @@ fn init_project(prefix: &str) -> (Fixture, std::path::PathBuf) {
     fixture
         .invoker()
         .invoke(
-            InvokeRequest::new(Invocation::Init {
-                prefix: Some(prefix.to_string()),
-                no_agents_md: true,
+            InvokeRequest::new(Invocation::Project {
+                action: ProjectAction::Init {
+                    path: None,
+                    prefix: Some(prefix.to_string()),
+                    name: None,
+                    no_agents_md: true,
+                },
             })
             .no_hooks(true),
         )

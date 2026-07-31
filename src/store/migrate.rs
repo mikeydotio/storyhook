@@ -53,6 +53,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "commit_links",
         sql: include_str!("schema/0002_commit_links.sql"),
     },
+    Migration {
+        version: 3,
+        name: "delete_project",
+        sql: include_str!("schema/0003_delete_project.sql"),
+    },
 ];
 
 /// The newest schema version this binary understands.
@@ -137,7 +142,7 @@ pub fn run(
         fire(FaultPoint::MidMigration)?;
         // A migration another process applied first is not this one's work to
         // report: `applied` is what *this* call changed, and a report claiming
-        // otherwise would make a concurrent `story init` look like it migrated
+        // otherwise would make a concurrent `story project init` look like it migrated
         // a database it merely opened.
         if apply(conn, migration)? {
             applied.push(migration.name.to_string());
@@ -175,7 +180,7 @@ fn validate_sequence(migrations: &[Migration]) {
 /// transaction, so two processes opening a fresh store both see version 0 and
 /// both queue migration 1; without this check the loser's `CREATE TABLE
 /// schema_migrations` fails and the user gets `error: migration 1 (initial)
-/// failed: table schema_migrations already exists` — exit 5, on a `story init`
+/// failed: table schema_migrations already exists` — exit 5, on a `story project init`
 /// that did nothing wrong. `BEGIN IMMEDIATE` serializes the two; re-reading
 /// under it is what lets the second one notice it has already been overtaken.
 ///
@@ -342,7 +347,7 @@ mod tests {
     #[test]
     fn the_embedded_migration_list_is_contiguous() {
         validate_sequence(MIGRATIONS);
-        assert_eq!(current_schema_version(), 2);
+        assert_eq!(current_schema_version(), 3);
     }
 
     /// The mirror triggers look inverses up in `relation_inverses`, so that

@@ -12,7 +12,7 @@ fn story(dir: &std::path::Path) -> Command {
 }
 
 fn init_and_create(dir: &std::path::Path) {
-    story(dir).arg("init").assert().success();
+    story(dir).args(["project", "init"]).assert().success();
     story(dir).args(["new", "Test story"]).assert().success();
 }
 
@@ -477,7 +477,10 @@ fn old_syntax_errors() {
 #[test]
 fn new_with_state() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["new", "My story", "--state", "in-progress"])
@@ -498,7 +501,10 @@ fn new_with_state() {
 #[test]
 fn phase_list_empty() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "A task"]).assert().success();
 
     story(dir.path())
@@ -511,7 +517,10 @@ fn phase_list_empty() {
 #[test]
 fn phase_add_and_list() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path()).args(["new", "Task C"]).assert().success();
@@ -541,7 +550,10 @@ fn phase_add_and_list() {
 #[test]
 fn phase_show() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
 
@@ -566,7 +578,10 @@ fn phase_show() {
 #[test]
 fn phase_create() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["phase", "create", "1", "Foundation"])
@@ -579,7 +594,10 @@ fn phase_create() {
 #[test]
 fn phase_remove() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
 
     story(dir.path())
@@ -604,7 +622,10 @@ fn phase_remove() {
 #[test]
 fn list_with_phase_filter() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
 
@@ -625,7 +646,10 @@ fn list_with_phase_filter() {
 #[test]
 fn next_with_phase_filter() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
 
@@ -645,7 +669,10 @@ fn next_with_phase_filter() {
 #[test]
 fn decompose_sets_phase_labels() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let spec = "### Wave 1\n- [ ] Task A\n- [ ] Task B\n### Wave 2\n- [ ] Task C\n";
     let spec_path = dir.path().join("spec.md");
@@ -680,7 +707,10 @@ fn decompose_sets_phase_labels() {
 #[test]
 fn load_context_shows_phases() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
 
@@ -705,7 +735,10 @@ fn load_context_shows_phases() {
 #[test]
 fn old_context_alias_works() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
 
     // "context" should still work as an alias for "load-context"
@@ -719,7 +752,10 @@ fn old_context_alias_works() {
 #[test]
 fn load_context_basic() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
 
     story(dir.path())

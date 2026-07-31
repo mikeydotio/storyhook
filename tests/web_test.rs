@@ -105,8 +105,12 @@ impl Served {
             &*self.store,
             dir.path(),
             "2026-01-01T00:00:00Z",
-            parse_invocation(&["init".to_string(), "--no-agents-md".to_string()])
-                .expect("`story init` parses"),
+            parse_invocation(&[
+                "project".to_string(),
+                "init".to_string(),
+                "--no-agents-md".to_string(),
+            ])
+            .expect("`story init` parses"),
         )
         .expect("initializing a second project");
         let project = storyhook_test_support::project_id_at(&self.store, dir.path())
@@ -118,11 +122,23 @@ impl Served {
         (dir, slug)
     }
 
-    /// Forgets this project's checkout, emptying the catalog.
+    /// Forgets every checkout of this project, leaving the project itself
+    /// untouched.
+    ///
+    /// The state `story doctor --fix` leaves behind, and the one an imported
+    /// project starts in: real stories in the store, and nowhere on this
+    /// machine to act on them. Written straight to the store because there is
+    /// no longer a command that produces it on purpose — deregistration was
+    /// retired with `story web deregister`.
     fn deregister(&self) {
-        storyhook::service::CatalogService::new(&*self.store)
-            .deregister(&self.repo_id)
-            .expect("deregistering the fixture checkout");
+        use storyhook::store::WriteOps;
+        Store::write(&*self.store, |tx| {
+            for existing in tx.project_paths(self.project)? {
+                tx.forget_project_path(self.project, std::path::Path::new(&existing.path))?;
+            }
+            Ok(())
+        })
+        .expect("forgetting the fixture's checkouts");
     }
 }
 
@@ -138,8 +154,12 @@ fn served() -> Served {
         &*store,
         dir.path(),
         "2026-01-01T00:00:00Z",
-        parse_invocation(&["init".to_string(), "--no-agents-md".to_string()])
-            .expect("`story init` parses"),
+        parse_invocation(&[
+            "project".to_string(),
+            "init".to_string(),
+            "--no-agents-md".to_string(),
+        ])
+        .expect("`story init` parses"),
     )
     .expect("initializing the fixture project");
 
@@ -2279,31 +2299,40 @@ fn web_serve_unknown_repo_id_is_404() {
 }
 
 #[test]
-fn web_register_repo_via_api() {
+fn web_init_creates_a_project_at_a_path() {
     let fixture = served();
     let port = fixture.port;
-    // `story init` records the checkout, so the catalog starts with it. Forget
-    // it, and the POST below is what puts it back — which is the operation
-    // under test.
-    fixture.deregister();
+    let fresh = fixture.dir().join("another");
+    std::fs::create_dir_all(&fresh).unwrap();
 
-    let body = serde_json::json!({"path": fixture.dir().to_string_lossy()}).to_string();
+    let body = serde_json::json!({
+        "path": fresh.to_string_lossy(),
+        "name": "Another",
+        "prefix": "AN",
+    })
+    .to_string();
     let resp = post_json(&format!("http://127.0.0.1:{port}/api/repos"), &body).unwrap();
     assert_eq!(resp.status(), 201);
-    let json: serde_json::Value =
-        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
-    assert!(json["id"].is_string());
 
+    // The same operation the CLI performs: a pointer file in the repository,
+    // and a row the dashboard can see.
+    assert!(fresh.join(".storyhook.toml").exists());
     let list = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
         .call()
         .unwrap();
-    let list_json: serde_json::Value =
+    let repos: serde_json::Value =
         serde_json::from_str(&list.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(list_json.as_array().unwrap().len(), 1);
+    let names: Vec<&str> = repos
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["name"].as_str())
+        .collect();
+    assert!(names.contains(&"Another"), "{names:?}");
 }
 
 #[test]
-fn web_register_repo_requires_guard_header() {
+fn web_init_requires_the_guard_header() {
     let fixture = served();
     let port = fixture.port;
 
@@ -2313,25 +2342,82 @@ fn web_register_repo_requires_guard_header() {
     assert_eq!(status_of(err), 403);
 }
 
+/// An unconfirmed delete answers with the plan and destroys nothing.
+///
+/// The same two-step the terminal runs, and deliberately the same value: the
+/// browser draws its warning from the `DeinitPlan` the CLI prompts from, so the
+/// two front-ends cannot grow two different ideas of what deinit does.
 #[test]
-fn web_deregister_repo_via_api() {
+fn web_deinit_without_confirmation_returns_the_plan_and_deletes_nothing() {
     let fixture = served();
-
+    fixture.seed(&["new", "Precious"]);
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    let resp = delete_json(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}"), "").unwrap();
+    let err = delete_json(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}"), "").unwrap_err();
+    let ureq::Error::StatusCode(code) = err else {
+        panic!("expected a status error");
+    };
+    assert_eq!(code, 409, "confirmation required");
+
+    // Still there, stories and all.
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!(json["summary"]["total_open"], 1);
+    assert!(fixture.dir().join(".storyhook.toml").exists());
+}
+
+#[test]
+fn web_deinit_with_the_slug_typed_back_destroys_the_project() {
+    let fixture = served();
+    fixture.seed(&["new", "Doomed"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.to_string());
+
+    let body = serde_json::json!({ "confirm": repo_id }).to_string();
+    let resp = delete_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}"),
+        &body,
+    )
+    .unwrap();
     assert_eq!(resp.status(), 200);
 
     let list = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
         .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
         .unwrap();
-    let list_json: serde_json::Value =
-        serde_json::from_str(&list.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(list_json.as_array().unwrap().len(), 0);
+    let repos: serde_json::Value = serde_json::from_str(&list).unwrap();
+    assert_eq!(
+        repos.as_array().unwrap().len(),
+        0,
+        "the project is gone, not merely unlisted"
+    );
+    assert!(
+        !fixture.dir().join(".storyhook.toml").exists(),
+        "the repository-side pointer goes with it"
+    );
+}
 
-    // Deregistering must never touch the repo's own files. The committed
-    // pointer is the only one there is now, and it names the project this just
-    // forgot the checkout of — so a `story web register` puts it back.
+#[test]
+fn web_deinit_with_the_wrong_slug_is_refused() {
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let body = serde_json::json!({ "confirm": "not-the-slug" }).to_string();
+    let err = delete_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}"),
+        &body,
+    )
+    .unwrap_err();
+    let ureq::Error::StatusCode(code) = err else {
+        panic!("expected a status error");
+    };
+    assert_eq!(code, 409, "a mistyped confirmation is not a confirmation");
     assert!(fixture.dir().join(".storyhook.toml").exists());
 }
 
@@ -2345,152 +2431,6 @@ fn web_deregister_repo_requires_guard_header() {
         .call()
         .unwrap_err();
     assert_eq!(status_of(err), 403);
-}
-
-// --- CLI: story web register|deregister|list ---
-//
-// Each gets a private environment: the catalog spans every project in a store,
-// so a test asserting on an exact listing needs a store of its own, the way it
-// used to need a registry file of its own.
-
-#[test]
-fn web_register_dot_registers_cwd() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-    env.story(dir.path()).arg("init").assert().success();
-
-    env.story(dir.path())
-        .args(["web", "register", "."])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Registered"));
-
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            dir.path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .to_string(),
-        ));
-}
-
-#[test]
-fn web_register_explicit_path() {
-    let env = TestEnv::isolated();
-    let cwd = scratch_dir();
-    let target = scratch_dir();
-    env.story(target.path()).arg("init").assert().success();
-
-    env.story(cwd.path())
-        .args(["web", "register", &target.path().to_string_lossy()])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Registered"));
-}
-
-#[test]
-fn web_register_with_name() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-    env.story(dir.path()).arg("init").assert().success();
-
-    env.story(dir.path())
-        .args(["web", "register", ".", "--name", "My Project"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Registered"));
-
-    // The name is recorded rather than echoed: the catalog is the projects
-    // table now, so `--name` has somewhere to go and `web list` reports it.
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("My Project"));
-}
-
-#[test]
-fn web_register_non_project_fails() {
-    let env = TestEnv::isolated();
-    let not_a_project = scratch_dir();
-
-    // The wording changed with the storage model — the catalog now says which
-    // directory is not a project, and what to do about it — but the shape is
-    // the same: registering something that is not a project fails loudly.
-    env.story(not_a_project.path())
-        .args(["web", "register", "."])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("is not a storyhook project"))
-        .stderr(predicate::str::contains("run `story init`"));
-}
-
-#[test]
-fn web_deregister_by_id_cli() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-    env.story(dir.path()).arg("init").assert().success();
-
-    // `story init` puts the checkout in the catalog itself now, so there is no
-    // separate registration step to perform first — which is the point of the
-    // catalog *being* the projects table.
-    env.story(dir.path())
-        .args(["web", "deregister", "."])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Deregistered"));
-
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No repos registered"));
-}
-
-#[test]
-fn web_deregister_unknown_target_fails() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-
-    env.story(dir.path())
-        .args(["web", "deregister", "nope"])
-        .assert()
-        .failure();
-}
-
-#[test]
-fn web_list_shows_registered_repos() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-    env.story(dir.path()).arg("init").assert().success();
-
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            dir.path()
-                .canonicalize()
-                .unwrap()
-                .to_string_lossy()
-                .to_string(),
-        ));
-}
-
-#[test]
-fn web_list_empty_registry_message() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-
-    env.story(dir.path())
-        .args(["web", "list"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("No repos registered"));
 }
 
 // --- CLI DEFAULT_WEB_PORT constant ---
@@ -2677,57 +2617,17 @@ fn web_parse_status() {
     ));
 }
 
+/// The catalog verbs are gone; `story project` owns them. They must be
+/// *refused* rather than quietly parsed into something else.
 #[test]
-fn web_parse_register_defaults_path_to_dot() {
-    let inv =
-        storyhook::cli::parse_invocation(&["web".to_string(), "register".to_string()]).unwrap();
-    match inv {
-        storyhook::cli::Invocation::Web {
-            action: storyhook::cli::WebAction::Register { path, name },
-        } => {
-            assert_eq!(path, std::path::PathBuf::from("."));
-            assert_eq!(name, None);
-        }
-        other => panic!("expected Web::Register, got {:?}", other),
+fn web_parse_rejects_the_retired_catalog_verbs() {
+    for verb in ["register", "deregister", "list"] {
+        let result = storyhook::cli::parse_invocation(&["web".to_string(), verb.to_string()]);
+        assert!(
+            result.is_err(),
+            "`story web {verb}` must not parse: {result:?}"
+        );
     }
-}
-
-#[test]
-fn web_parse_register_with_explicit_path_and_name() {
-    let inv = storyhook::cli::parse_invocation(&[
-        "web".to_string(),
-        "register".to_string(),
-        "/some/path".to_string(),
-        "--name".to_string(),
-        "My Repo".to_string(),
-    ])
-    .unwrap();
-    match inv {
-        storyhook::cli::Invocation::Web {
-            action: storyhook::cli::WebAction::Register { path, name },
-        } => {
-            assert_eq!(path, std::path::PathBuf::from("/some/path"));
-            assert_eq!(name, Some("My Repo".to_string()));
-        }
-        other => panic!("expected Web::Register, got {:?}", other),
-    }
-}
-
-#[test]
-fn web_parse_deregister_requires_target() {
-    let result = storyhook::cli::parse_invocation(&["web".to_string(), "deregister".to_string()]);
-    assert!(result.is_err());
-}
-
-#[test]
-fn web_parse_list() {
-    let inv = storyhook::cli::parse_invocation(&["web".to_string(), "list".to_string()]).unwrap();
-    assert!(matches!(
-        inv,
-        storyhook::cli::Invocation::Web {
-            action: storyhook::cli::WebAction::List
-        }
-    ));
 }
 
 #[test]
@@ -3703,4 +3603,146 @@ fn read_sse_until_quiet(
         }
     }
     String::from_utf8_lossy(&acc).into_owned()
+}
+
+// --- Which checkout the dashboard acts in ---
+
+/// A project with a linked worktree must resolve to its **main** working tree,
+/// not to whichever path happens to sort first.
+///
+/// `project_paths` is ordered by path, so a worktree at `/a/...` beside a main
+/// tree at `/z/...` won the toss. That is arbitrary in a way that matters: the
+/// dashboard runs a project's event hooks and its git operations in the
+/// directory it picks, and a linked worktree is a branch somebody is working
+/// on — its hooks and its `AGENTS.md` are that branch's, not the project's.
+#[test]
+fn a_project_with_a_worktree_resolves_to_its_main_checkout() {
+    use storyhook::store::{PathKind, WriteOps};
+
+    let fixture = served();
+    let project = fixture.project;
+
+    // Names chosen so the worktree sorts *before* the main tree.
+    let root = fixture.dir.path().join("zz-main");
+    let worktree = fixture.dir.path().join("aa-worktree");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+
+    Store::write(&*fixture.store, |tx| {
+        for existing in tx.project_paths(project)? {
+            tx.forget_project_path(project, std::path::Path::new(&existing.path))?;
+        }
+        tx.touch_project_path(project, &root, PathKind::Main)?;
+        tx.touch_project_path(project, &worktree, PathKind::Worktree)
+    })
+    .expect("recording two checkouts");
+
+    let port = fixture.port;
+    let body = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
+        .unwrap();
+    let repos: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+    let path = repos[0]["path"].as_str().expect("a path");
+    assert_eq!(
+        path,
+        root.to_string_lossy(),
+        "the main working tree wins over a linked worktree that sorts first"
+    );
+}
+
+// --- A project with no checkout on this machine ---
+//
+// Reachable by deleting a checkout and running `story doctor --fix`, or by
+// importing a project this machine has never had a copy of. Its stories are in
+// the database the daemon already has open, so the honest answer is to serve
+// them — read-only, because every write needs a working directory to fire the
+// project's hooks and run its git operations in.
+
+#[test]
+fn a_project_with_no_checkout_is_listed_rather_than_hidden() {
+    let fixture = served();
+    fixture.seed(&["new", "Still readable"]);
+    fixture.deregister();
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let body = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
+        .unwrap();
+    let repos: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let repos = repos.as_array().unwrap();
+
+    assert_eq!(repos.len(), 1, "the project is still a project: {repos:?}");
+    assert_eq!(repos[0]["id"], repo_id);
+    assert!(repos[0]["path"].is_null(), "there is no path to report");
+    assert_eq!(repos[0]["read_only"], true);
+    assert_eq!(
+        repos[0]["available"], false,
+        "there is nowhere to act, and the dashboard has to say so"
+    );
+    assert!(
+        repos[0]["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "and why: {:?}",
+        repos[0]["reason"]
+    );
+    assert_eq!(
+        repos[0]["summary"]["total_open"], 1,
+        "its stories are still counted — they are in the store"
+    );
+}
+
+#[test]
+fn a_project_with_no_checkout_still_serves_its_board() {
+    let fixture = served();
+    fixture.seed(&["new", "Still readable"]);
+    fixture.deregister();
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "reading needs no working directory — this used to be a 404"
+    );
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["summary"]["total_open"], 1);
+}
+
+#[test]
+fn a_project_with_no_checkout_refuses_writes_and_says_why() {
+    let fixture = served();
+    fixture.deregister();
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let err = ureq::post(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"))
+        .header("X-Storyhook-Dashboard", "1")
+        .send_json(serde_json::json!({ "title": "Nope" }))
+        .expect_err("a write with nowhere to run must be refused");
+
+    let body = match err {
+        ureq::Error::StatusCode(code) => {
+            assert!((400..500).contains(&code), "expected a 4xx, got {code}");
+            String::new()
+        }
+        other => panic!("expected a status error, got {other:?}"),
+    };
+    let _ = body;
+
+    // Nothing was created.
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!(json["summary"]["total_open"], 0);
 }

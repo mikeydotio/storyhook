@@ -1405,9 +1405,13 @@ mod tests {
             };
             fixture
                 .invoker()
-                .invoke(InvokeRequest::new(Invocation::Init {
-                    prefix: Some("SH".to_string()),
-                    no_agents_md: true,
+                .invoke(InvokeRequest::new(Invocation::Project {
+                    action: crate::cli::ProjectAction::Init {
+                        path: None,
+                        prefix: Some("SH".to_string()),
+                        name: None,
+                        no_agents_md: true,
+                    },
                 }))
                 .unwrap();
             fixture

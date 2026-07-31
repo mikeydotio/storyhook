@@ -94,7 +94,7 @@ fn sh34_help_text_shows_command_as_optional() {
 fn sh35_init_agents_md_does_not_reference_graph_tree() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["init", "--prefix", "TST"])
+        .args(["project", "init", "--prefix", "TST"])
         .assert()
         .success();
 
@@ -125,7 +125,7 @@ fn sh35_scaffold_claude_md_does_not_reference_graph_tree() {
 fn sh35_init_agents_md_graph_section_only_has_valid_flags() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["init", "--prefix", "TST"])
+        .args(["project", "init", "--prefix", "TST"])
         .assert()
         .success();
 

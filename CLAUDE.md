@@ -45,12 +45,21 @@ Execution state — wave status, step log, discovered defects — lives in
 | W4 | **the flip**: the global store is the default; `worktree_truth` green | **complete — merged**. Revert only while `migrate_round_trip` is 4/4 green — procedure in the flip checklist's section D2 |
 | W5 | daemon promotion + `/api/v1/invoke` transport | **complete — merged**, except the quarantine deletion, which W6 carried out |
 | W6 | the quarantine deleted (10,849 lines); full commit-body scanning; link idempotency as a DB constraint | **complete — merged** |
-| W7 | this repo's own tracker migrated; `.storyhook/` retired; the defect ledger filed | **complete — PR open** |
-| W8 | crash, concurrency, and corruption hardening — **the last wave** | **complete — PR open**, stacked on W7 |
+| W7 | this repo's own tracker migrated; `.storyhook/` retired; the defect ledger filed | **complete — merged** |
+| W8 | crash, concurrency, and corruption hardening — **the last wave** | **complete — merged** |
 
-**The program is complete.** What remains is release-from-`main`, listed in
-HANDOFF.md: reinstall the `story` binary (the installed one predates the flip),
-`story web register` from the main checkout, and `/semver bump major`.
+**The program is complete and merged.** Follow-on work now lands as ordinary
+branches; the rules below still apply to anything touching the store or the seam.
+
+**In flight:** `feat/project-lifecycle-verbs` — `story project init|deinit|list`
+replaces `story init` and the `story web register|deregister|list` catalog verbs,
+and the dashboard serves every project in the store rather than only those with a
+checkout. Breaking, so it wants `/semver bump major` **from `main` after merge**.
+See HANDOFF.md.
+
+Release-from-`main`, once that lands: reinstall the `story` binary — the
+installed one predates both the flip *and* this rename, so `story init` still
+works there and `story project init` does not — then `/semver bump major`.
 
 Standing rules for every wave:
 

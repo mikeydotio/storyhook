@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn custom_prefix_generates_correct_ids() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["init", "--prefix", "API"])
+        .args(["project", "init", "--prefix", "API"])
         .assert()
         .success();
     story(dir.path())
@@ -34,7 +34,7 @@ fn custom_prefix_generates_correct_ids() {
 fn custom_prefix_stories_are_showable() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["init", "--prefix", "WEB"])
+        .args(["project", "init", "--prefix", "WEB"])
         .assert()
         .success();
     story(dir.path())
@@ -53,7 +53,7 @@ fn custom_prefix_stories_are_showable() {
 fn custom_prefix_stories_support_relationships() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["init", "--prefix", "FE"])
+        .args(["project", "init", "--prefix", "FE"])
         .assert()
         .success();
     story(dir.path())
@@ -80,7 +80,10 @@ fn custom_prefix_stories_support_relationships() {
 #[test]
 fn default_prefix_is_sh() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Default prefix"])
         .assert()

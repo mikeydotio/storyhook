@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn set_and_show_priority() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -36,7 +39,10 @@ fn set_and_show_priority() {
 #[test]
 fn priority_defaults_to_none() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -52,7 +58,10 @@ fn priority_defaults_to_none() {
 #[test]
 fn override_priority() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -72,7 +81,10 @@ fn override_priority() {
 #[test]
 fn invalid_priority_fails() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -88,7 +100,10 @@ fn invalid_priority_fails() {
 #[test]
 fn list_filters_by_priority() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Low task"])
         .assert()
@@ -118,7 +133,10 @@ fn list_filters_by_priority() {
 #[test]
 fn priority_in_json_output() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -138,7 +156,10 @@ fn priority_in_json_output() {
 #[test]
 fn list_shows_priority_in_line() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Important task"])
         .assert()

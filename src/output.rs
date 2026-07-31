@@ -27,6 +27,43 @@ pub struct StoryView {
     pub progress: Option<ProgressRollup>,
 }
 
+/// What `story project deinit` would destroy, counted before anything is.
+///
+/// The payload of the only [`Response`] that is a *question* rather than an
+/// answer. An unforced deinit returns it without writing anything; it travels
+/// to whichever process has a terminal and becomes a prompt there — or, with
+/// `--json` or no terminal, a refusal naming `--force`.
+///
+/// Typed rather than prose because it has two front-ends. The dashboard builds
+/// its own warning and gates its own button from these numbers, and a
+/// pre-rendered English sentence would leave it parsing one. That both of them
+/// render *this* value is what stops the CLI and the browser from growing two
+/// different ideas of what deinit does.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeinitPlan {
+    /// The project's slug — what the user must type to confirm.
+    pub slug: String,
+    /// Its display name.
+    pub name: String,
+    /// Its story-id prefix, so the warning can say `SH-1…SH-40`.
+    pub prefix: String,
+    /// How many stories go, deleted and archived ones included.
+    pub stories: usize,
+    /// How many events go. The irreversible number.
+    pub events: usize,
+    /// Every checkout the store records, whether or not it still exists.
+    pub checkouts: Vec<String>,
+    /// Repository files this deinit will delete.
+    pub files: Vec<String>,
+    /// Files it found and will **not** delete, each with the reason.
+    ///
+    /// An `AGENTS.md` the user edited is what this exists for. A warning that
+    /// listed it under [`files`](Self::files) would be promising destruction it
+    /// is not going to perform; one that omitted it entirely would leave the
+    /// user to discover the leftover themselves.
+    pub kept: Vec<(String, String)>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SummaryView {
     pub total_open: usize,
@@ -152,6 +189,16 @@ pub enum Response {
     /// it is a machine's value. A human wanting a story's history has
     /// `story show`, which renders the *fold* of it.
     StoryHistory(Vec<crate::domain::StoryEvent>),
+    /// A destructive command asking to be confirmed, and saying what it would
+    /// destroy.
+    ///
+    /// The only variant that is not an answer. It is returned *instead of*
+    /// doing the work, so receiving one means nothing has been written; the
+    /// caller decides whether to ask the same command again with `force` set.
+    /// Putting the decision here rather than inside the service is what lets
+    /// the prompt render in the process that has a terminal — over the daemon
+    /// the service runs somewhere with no way to reach the user at all.
+    ConfirmationRequired(Box<DeinitPlan>),
 }
 
 #[derive(Serialize)]
@@ -313,6 +360,12 @@ fn render_json(response: &Response) -> String {
         }
         Response::ProjectSnapshot(view) => serde_json::to_string_pretty(view.as_ref()),
         Response::StoryHistory(events) => serde_json::to_string_pretty(events),
+        // Not `result: "ok"`: nothing happened. A scripted caller that saw
+        // "ok" here would reasonably conclude the project was gone.
+        Response::ConfirmationRequired(plan) => serde_json::to_string_pretty(&serde_json::json!({
+            "result": "confirmation-required",
+            "plan": plan.as_ref(),
+        })),
     }
     .expect("response should serialize");
 
@@ -450,7 +503,35 @@ fn render_human(response: &Response) -> String {
                 serde_json::to_string_pretty(events).unwrap_or_default()
             )
         }
+        Response::ConfirmationRequired(plan) => render_deinit_plan(plan),
     }
+}
+
+/// The warning a deinit prints before it asks.
+///
+/// Ordered by what a person needs in order to answer: what this is, what is
+/// irreversible about it, what will be left behind, and only then the question.
+pub fn render_deinit_plan(plan: &DeinitPlan) -> String {
+    let mut body = String::new();
+    body.push_str(&format!("{} — {}\n", plan.slug, plan.name));
+    body.push_str(&format!(
+        "  {} stor{} and {} event{} will be permanently deleted.\n",
+        plan.stories,
+        if plan.stories == 1 { "y" } else { "ies" },
+        plan.events,
+        if plan.events == 1 { "" } else { "s" },
+    ));
+    for checkout in &plan.checkouts {
+        body.push_str(&format!("  checkout  {checkout}\n"));
+    }
+    for file in &plan.files {
+        body.push_str(&format!("  remove    {file}\n"));
+    }
+    for (file, why) in &plan.kept {
+        body.push_str(&format!("  keep      {file} ({why})\n"));
+    }
+    body.push_str("\nThis cannot be undone.\n");
+    body
 }
 
 fn render_story(view: &StoryView) -> String {

@@ -24,9 +24,9 @@ story new "Fix login redirect" --json
 
 ## Project Setup
 
-### `story init [--prefix <PREFIX>]`
+### `story project init [PATH] [--prefix <PREFIX>] [--name <NAME>]`
 
-Initialize a new storyhook project in the current directory.
+Initialize a new storyhook project. `PATH` defaults to the current directory; a relative one resolves against the directory you are standing in.
 
 - Creates the project in the store, writes `.storyhook.toml` (commit it — a clone needs it to know which project it is), generates an `AGENTS.md`, and seeds default states: `todo` (OPEN), `in-progress` (OPEN, `role active`), `done` (CLOSED)
 - Default prefix is **`SH`** — hard-coded, not derived from the directory name. Pass `--prefix` for anything else.
@@ -35,9 +35,22 @@ Initialize a new storyhook project in the current directory.
 - **Do not use when**: the repository still keeps its stories in a `.storyhook/` directory — `init` refuses and points at `story migrate`, because initializing would mint an empty second project beside data you still have
 
 ```bash
-story init                 # stories become SH-1, SH-2, ...
-story init --prefix HP     # stories become HP-1, HP-2, ...
+story project init                 # stories become SH-1, SH-2, ...
+story project init --prefix HP     # stories become HP-1, HP-2, ...
 ```
+
+### `story project list`
+
+Every project the store knows, including any whose checkout is not on this machine — the same set the dashboard shows.
+
+### `story project deinit [PATH|SLUG] [--force]`
+
+**Permanently deletes** the project, every story, every event, every checkout registration, and the files `init` generated. There is no undo.
+
+- Always asks first; the confirmation is the project's slug typed in full
+- `--force` skips the question, and is **required** under `--json` or with no terminal to ask at
+- An `AGENTS.md` you have edited is kept, not deleted, and reported
+- Name a `SLUG` to reach a project whose checkout is gone
 
 ### `story member add "<name <email>>"` / `story member add -g <github-handle>`
 

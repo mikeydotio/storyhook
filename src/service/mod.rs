@@ -60,6 +60,7 @@ use crate::store::{
 
 pub use catalog::{
     CatalogEntry, CatalogService, OrphanedRegistration, RegistryAdoption, adopt_legacy_registry,
+    preferred_checkout,
 };
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
@@ -68,7 +69,9 @@ pub use github::{GithubSyncService, StoreSyncStorage};
 pub use grouping::{GroupingService, PhaseCleared};
 pub use integrity::IntegrityService;
 pub use migrate::{MigrationPlan, MigrationReport};
-pub use project::{InitOptions, InitOutcome, ProjectPointer, ProjectService};
+pub use project::{
+    DeinitOutcome, DeinitTarget, InitOptions, InitOutcome, ProjectPointer, ProjectService,
+};
 pub use query::{ListFilters, QueryService};
 pub use relation::{RelationOutcome, RelationService};
 pub use session::SessionService;
