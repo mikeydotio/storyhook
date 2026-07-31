@@ -163,6 +163,10 @@ button { cursor: pointer; }
 }
 .repo-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
 .repo-card.unavailable { cursor: default; opacity: 0.65; border-style: dashed; }
+/* Openable, but nothing here can be changed: dashed like `unavailable` to say
+   "not a normal repo", full opacity and a pointer because it is still worth
+   clicking into. */
+.repo-card.read-only { border-style: dashed; }
 .repo-card-name { font-weight: 700; font-size: 0.9375rem; margin-bottom: 0.25rem; }
 .repo-card-path { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); overflow-wrap: anywhere; margin-bottom: 0.625rem; }
 .repo-card-stats { display: flex; gap: 0.75rem; font-size: 0.75rem; color: var(--fg-muted); font-weight: 600; }
@@ -2178,14 +2182,25 @@ tbody tr:hover { background: var(--bg-sunken); }
    * poll when nothing changed) without a field-by-field diff like
    * `diffSnapshots` — a repo card has too little structure to need one. */
   function repoCardFingerprint(r) {
-    return JSON.stringify([r.available, r.name, r.path, r.error, r.summary]);
+    return JSON.stringify([r.available, r.read_only, r.reason, r.name, r.path, r.error, r.summary]);
   }
+
+  /** Whether a repo can be opened at all.
+   *
+   * A read-only repo — one with no checkout on this machine — IS openable:
+   * its stories are in the store and perfectly readable, only writes need a
+   * working directory. A repo that is neither available nor read-only is one
+   * whose data could not be read, and opening that lands on a broken board. */
+  function canOpen(r) { return r.available || r.read_only; }
+
+  /** What to show where a path would go. */
+  function repoWhere(r) { return r.path || r.reason || "no checkout on this machine"; }
 
   function buildRepoCard(r) {
     var card = el("div", { dataset: { id: r.id } }, []);
     card.addEventListener("click", function() {
       var current = state.repos.filter(function(x) { return x.id === r.id; })[0];
-      if (current && current.available) selectRepo(current.id);
+      if (current && canOpen(current)) selectRepo(current.id);
     });
     populateRepoCard(card, r);
     return card;
@@ -2193,17 +2208,19 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   function populateRepoCard(card, r) {
     clear(card);
-    if (!r.available) {
+    if (!canOpen(r)) {
       card.className = "repo-card unavailable";
       card.appendChild(el("div", { class: "repo-card-name" }, [r.name]));
-      card.appendChild(el("div", { class: "repo-card-path" }, [r.path]));
-      card.appendChild(el("div", { class: "repo-card-error" }, [r.error || "Unavailable"]));
+      card.appendChild(el("div", { class: "repo-card-path" }, [repoWhere(r)]));
+      card.appendChild(el("div", { class: "repo-card-error" }, [r.error || r.reason || "Unavailable"]));
       return;
     }
-    card.className = "repo-card";
+    card.className = r.read_only ? "repo-card read-only" : "repo-card";
     var s = r.summary;
-    card.appendChild(el("div", { class: "repo-card-name" }, [r.name]));
-    card.appendChild(el("div", { class: "repo-card-path" }, [r.path]));
+    card.appendChild(el("div", { class: "repo-card-name" }, [
+      r.name + (r.read_only ? " (read-only)" : "")
+    ]));
+    card.appendChild(el("div", { class: "repo-card-path" }, [repoWhere(r)]));
     card.appendChild(el("div", { class: "repo-card-stats" }, [
       el("span", {}, [s.total_open + " open"]),
       el("span", {}, [s.ready_count + " ready"]),
@@ -2243,14 +2260,18 @@ tbody tr:hover { background: var(--bg-sunken); }
     var tbody = el("tbody", {}, []);
     state.repos.forEach(function(r) {
       tbody.appendChild(el("tr", {}, [
-        el("td", {}, [r.name + (r.available ? "" : " (unavailable)")]),
-        el("td", { class: "settings-path" }, [r.path]),
+        el("td", {}, [r.name + (r.read_only ? " (read-only)" : (r.available ? "" : " (unavailable)"))]),
+        el("td", { class: "settings-path" }, [repoWhere(r)]),
         el("td", { class: "col-id" }, [r.id]),
         el("td", {}, [
           el("button", {
             class: "btn",
             disabled: !r.available,
-            title: r.available ? "Configure this project's statuses" : "This repo is unavailable",
+            title: r.available
+              ? "Configure this project's statuses"
+              : (r.read_only
+                  ? "This project has no checkout on this machine, so it cannot be changed here"
+                  : "This repo is unavailable"),
             onClick: function() { goStatuses(r.id); }
           }, ["Statuses"])
         ]),

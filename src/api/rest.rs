@@ -162,17 +162,23 @@ pub fn route<S: Store>(
             // A project with no checkout on this machine is still 404 here.
             // Serving it read-only is the next commit's job; this one only
             // moves where the decision is taken.
-            Ok(Some(Repo {
-                project,
-                checkout: Some(root),
-            })) => {
-                let ctx = Ctx::new(store, project, root, env.clone());
+            // One door for the whole per-project surface. A project with no
+            // checkout on this machine is served read-only: reads need no
+            // working directory, and every write does — that is where the
+            // project's event hooks and its git repository are. Refusing here
+            // rather than in each handler means a route added later cannot
+            // miss it.
+            Ok(Some(Repo { project, checkout })) => {
+                if mutating(method) && checkout.is_none() {
+                    return Routed::quiet(error_reply(&pathless_refusal(id)));
+                }
+                let hookless = checkout.is_none();
+                let root = checkout.unwrap_or_else(|| no_checkout_placeholder(id));
+                let ctx = Ctx::new(store, project, root, env.clone()).no_hooks(hookless);
                 let reply = route_project(&ctx, method, rest, headers, body, trusted_hosts);
                 Routed::changing(method, reply, Changed::Project((*id).to_string()))
             }
-            Ok(Some(Repo { checkout: None, .. })) | Ok(None) => {
-                Routed::quiet(text_reply(404, "Not found"))
-            }
+            Ok(None) => Routed::quiet(text_reply(404, "Not found")),
             Err(e) => Routed::quiet(error_reply(&e)),
         },
         _ => Routed::quiet(text_reply(404, "Not found")),
@@ -294,6 +300,27 @@ struct Repo {
     checkout: Option<PathBuf>,
 }
 
+/// Why a write against a checkout-less project is refused, and what to do.
+fn pathless_refusal(slug: &str) -> AppError {
+    AppError::Validation(format!(
+        "`{slug}` has {NO_CHECKOUT}, so there is nowhere to run this change: a write fires the \
+         project's event hooks and its git operations in its working directory. Its stories stay \
+         readable here.\n\nRun `story project init` in a checkout of it to adopt one, or \
+         `story relink {slug} <path>` if the checkout simply moved."
+    ))
+}
+
+/// A working directory for a project that has none.
+///
+/// [`Ctx`] requires one, and every caller that would *use* it is refused at the
+/// door above — so this exists to satisfy the type rather than to be read. It
+/// is deliberately a path that cannot exist, so that a read path which starts
+/// consulting the working directory fails loudly here instead of quietly
+/// finding whatever the daemon's own directory happens to hold.
+fn no_checkout_placeholder(slug: &str) -> PathBuf {
+    PathBuf::from(format!("/nonexistent/storyhook/{slug}/{NO_CHECKOUT}"))
+}
+
 /// Resolves a catalog id (the project's slug) to the project it names.
 ///
 /// `None` means no such project. A project that exists but has no recorded
@@ -328,16 +355,31 @@ fn reply_with<S: Store>(ctx: &Ctx<'_, S>, status: u16, invocation: Invocation) -
 
 // --- The project catalog: /api/repos ---
 
-/// `GET /api/repos` — one entry per project the store knows a checkout for,
-/// driving the repo-selector dropdown, the home screen's summary cards, and the
-/// settings screen's project list.
+/// What a repo with no checkout on this machine is told, and tells.
+const NO_CHECKOUT: &str = "no checkout on this machine";
+
+/// `GET /api/repos` — one entry per project the store knows, driving the
+/// repo-selector dropdown, the home screen's summary cards, and the settings
+/// screen's project list.
 ///
-/// A project whose data cannot currently be read is reported as
-/// `available: false` with an `error` message rather than failing the whole
-/// request — one broken project must never take down the view of every other
-/// one.
+/// **Every** project, not only those with a checkout. A project whose directory
+/// was deleted and then forgotten by `story doctor --fix`, or one that arrived
+/// by import, still has all of its stories in the database the daemon has open;
+/// hiding it made that work unreachable from every surface storyhook has.
+///
+/// Three fields describe how usable each one is, because two states were being
+/// squeezed into one flag:
+///
+/// * `available` — its data can be read *and* acted on. False for a project
+///   with nowhere to act and false for one that genuinely cannot be read.
+/// * `read_only` — it can be read but not written. This is the pathless case,
+///   and it is what tells the front-end to keep the card clickable.
+/// * `reason` — why, in words, for whichever of those is not the happy one.
+///
+/// A project that cannot be read at all is reported rather than failing the
+/// request: one broken project must never take down the view of every other.
 fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError> {
-    let entries = CatalogService::new(store).list()?;
+    let entries = CatalogService::new(store).all()?;
     let now = env.now();
     let repos: Vec<serde_json::Value> = entries
         .into_iter()
@@ -346,12 +388,15 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                 .read(|tx| Ok(QueryService::new(tx, entry.project, &now).report_data()))
                 .map_err(AppError::from)
                 .and_then(|inner| inner);
+            let read_only = entry.path.is_none();
             match summary {
                 Ok(data) => serde_json::json!({
                     "id": entry.id,
                     "name": entry.name,
                     "path": entry.path,
-                    "available": true,
+                    "available": !read_only,
+                    "read_only": read_only,
+                    "reason": read_only.then_some(NO_CHECKOUT),
                     "summary": data.summary,
                 }),
                 Err(e) => serde_json::json!({
@@ -359,6 +404,8 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                     "name": entry.name,
                     "path": entry.path,
                     "available": false,
+                    "read_only": false,
+                    "reason": e.to_string(),
                     "error": e.to_string(),
                 }),
             }
