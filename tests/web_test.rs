@@ -2335,11 +2335,19 @@ fn web_deregister_repo_via_api() {
         .unwrap();
     let list_json: serde_json::Value =
         serde_json::from_str(&list.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(list_json.as_array().unwrap().len(), 0);
+    let repos = list_json.as_array().unwrap();
 
-    // Deregistering must never touch the repo's own files. The committed
-    // pointer is the only one there is now, and it names the project this just
-    // forgot the checkout of — so a `story web register` puts it back.
+    // The *checkout* was forgotten, not the project. It stays listed, read-only,
+    // with its stories intact — the dashboard now serves every project the
+    // store knows, so forgetting a path can no longer make work unreachable.
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0]["id"], repo_id);
+    assert!(repos[0]["path"].is_null());
+    assert_eq!(repos[0]["read_only"], true);
+
+    // And it must never touch the repo's own files. The committed pointer names
+    // the project this just forgot the checkout of, so `story project init`
+    // puts it back.
     assert!(fixture.dir().join(".storyhook.toml").exists());
 }
 
@@ -3573,4 +3581,110 @@ fn a_project_with_a_worktree_resolves_to_its_main_checkout() {
         root.to_string_lossy(),
         "the main working tree wins over a linked worktree that sorts first"
     );
+}
+
+// --- A project with no checkout on this machine ---
+//
+// Reachable by deleting a checkout and running `story doctor --fix`, or by
+// importing a project this machine has never had a copy of. Its stories are in
+// the database the daemon already has open, so the honest answer is to serve
+// them — read-only, because every write needs a working directory to fire the
+// project's hooks and run its git operations in.
+
+/// Removes every checkout row, leaving the project itself untouched.
+fn forget_every_checkout(fixture: &Served) {
+    use storyhook::store::WriteOps;
+    Store::write(&*fixture.store, |tx| {
+        for existing in tx.project_paths(fixture.project)? {
+            tx.forget_project_path(fixture.project, std::path::Path::new(&existing.path))?;
+        }
+        Ok(())
+    })
+    .expect("forgetting the checkouts");
+}
+
+#[test]
+fn a_project_with_no_checkout_is_listed_rather_than_hidden() {
+    let fixture = served();
+    fixture.seed(&["new", "Still readable"]);
+    forget_every_checkout(&fixture);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let body = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
+        .unwrap();
+    let repos: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let repos = repos.as_array().unwrap();
+
+    assert_eq!(repos.len(), 1, "the project is still a project: {repos:?}");
+    assert_eq!(repos[0]["id"], repo_id);
+    assert!(repos[0]["path"].is_null(), "there is no path to report");
+    assert_eq!(repos[0]["read_only"], true);
+    assert_eq!(
+        repos[0]["available"], false,
+        "there is nowhere to act, and the dashboard has to say so"
+    );
+    assert!(
+        repos[0]["reason"].as_str().is_some_and(|r| !r.is_empty()),
+        "and why: {:?}",
+        repos[0]["reason"]
+    );
+    assert_eq!(
+        repos[0]["summary"]["total_open"], 1,
+        "its stories are still counted — they are in the store"
+    );
+}
+
+#[test]
+fn a_project_with_no_checkout_still_serves_its_board() {
+    let fixture = served();
+    fixture.seed(&["new", "Still readable"]);
+    forget_every_checkout(&fixture);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "reading needs no working directory — this used to be a 404"
+    );
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["summary"]["total_open"], 1);
+}
+
+#[test]
+fn a_project_with_no_checkout_refuses_writes_and_says_why() {
+    let fixture = served();
+    forget_every_checkout(&fixture);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let err = ureq::post(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"))
+        .header("X-Storyhook-Dashboard", "1")
+        .send_json(serde_json::json!({ "title": "Nope" }))
+        .expect_err("a write with nowhere to run must be refused");
+
+    let body = match err {
+        ureq::Error::StatusCode(code) => {
+            assert!((400..500).contains(&code), "expected a 4xx, got {code}");
+            String::new()
+        }
+        other => panic!("expected a status error, got {other:?}"),
+    };
+    let _ = body;
+
+    // Nothing was created.
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!(json["summary"]["total_open"], 0);
 }
