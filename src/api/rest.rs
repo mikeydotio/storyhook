@@ -156,13 +156,21 @@ pub fn route<S: Store>(
             ),
             _ => Routed::quiet(text_reply(405, "Method not allowed")),
         },
-        ["api", "repos", id, rest @ ..] => match resolve_project(store, id) {
-            Ok(Some((project, root))) => {
+        ["api", "repos", id, rest @ ..] => match resolve_repo(store, id) {
+            // A project with no checkout on this machine is still 404 here.
+            // Serving it read-only is the next commit's job; this one only
+            // moves where the decision is taken.
+            Ok(Some(Repo {
+                project,
+                checkout: Some(root),
+            })) => {
                 let ctx = Ctx::new(store, project, root, env.clone());
                 let reply = route_project(&ctx, method, rest, headers, body, trusted_hosts);
                 Routed::changing(method, reply, Changed::Project((*id).to_string()))
             }
-            Ok(None) => Routed::quiet(text_reply(404, "Not found")),
+            Ok(Some(Repo { checkout: None, .. })) | Ok(None) => {
+                Routed::quiet(text_reply(404, "Not found"))
+            }
             Err(e) => Routed::quiet(error_reply(&e)),
         },
         _ => Routed::quiet(text_reply(404, "Not found")),
@@ -273,27 +281,37 @@ fn route_project<S: Store>(
     }
 }
 
-/// Resolves a catalog id (the project's slug) to the project and the checkout
-/// the dashboard should act in.
+/// A project the dashboard was asked for, and the checkout it may act in.
 ///
-/// A project with no recorded checkout is *not found* rather than served: every
-/// operation below runs in a working directory — that is where a project's event
-/// hooks and its git repository are — and inventing one would mean firing a
-/// user's hooks from somewhere they never asked for.
-fn resolve_project<S: Store>(
-    store: &S,
-    slug: &str,
-) -> Result<Option<(ProjectId, PathBuf)>, AppError> {
+/// `checkout: None` is a project the store knows and this machine has no copy
+/// of — its directory was deleted, or it arrived by import. Separating that
+/// from "no such project" is the whole reason this type exists: they are
+/// different answers, and only one of them is a 404.
+struct Repo {
+    project: ProjectId,
+    checkout: Option<PathBuf>,
+}
+
+/// Resolves a catalog id (the project's slug) to the project it names.
+///
+/// `None` means no such project. A project that exists but has no recorded
+/// checkout resolves to a [`Repo`] with `checkout: None`; what the caller may
+/// then do with it is the caller's decision, taken at one place in
+/// [`route`] rather than scattered through twenty handlers.
+fn resolve_repo<S: Store>(store: &S, slug: &str) -> Result<Option<Repo>, AppError> {
     Ok(store.read(|tx| {
         let Some(project) = tx.project_by_slug(slug)? else {
             return Ok(None);
         };
-        let root = tx
+        let checkout = tx
             .project_paths(project.id)?
             .into_iter()
             .next()
             .map(|record| PathBuf::from(record.path));
-        Ok(root.map(|root| (project.id, root)))
+        Ok(Some(Repo {
+            project: project.id,
+            checkout,
+        }))
     })?)
 }
 
