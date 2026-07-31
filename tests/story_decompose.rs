@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn decompose_single_heading() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# Build the API\n";
     let file_path = dir.path().join("spec.md");
@@ -31,7 +34,10 @@ fn decompose_single_heading() {
 #[test]
 fn decompose_nested_headings() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# Parent Epic\n## Child Feature\n";
     let file_path = dir.path().join("spec.md");
@@ -61,7 +67,10 @@ fn decompose_nested_headings() {
 #[test]
 fn decompose_three_levels() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# Epic\n## Feature\n### Task\n";
     let file_path = dir.path().join("spec.md");
@@ -96,7 +105,10 @@ fn decompose_three_levels() {
 #[test]
 fn decompose_checkboxes() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# Epic\n- [ ] First task\n- [ ] Second task\n";
     let file_path = dir.path().join("spec.md");
@@ -123,7 +135,10 @@ fn decompose_checkboxes() {
 #[test]
 fn decompose_checked_items_skipped() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# Epic\n- [x] Done task\n- [ ] Open task\n";
     let file_path = dir.path().join("spec.md");
@@ -145,7 +160,10 @@ fn decompose_checked_items_skipped() {
 #[test]
 fn decompose_empty_file() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let file_path = dir.path().join("empty.md");
     std::fs::write(&file_path, "").unwrap();
@@ -160,7 +178,10 @@ fn decompose_empty_file() {
 #[test]
 fn decompose_no_headings() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "Just some plain text\nAnother line\n";
     let file_path = dir.path().join("plain.md");
@@ -176,7 +197,10 @@ fn decompose_no_headings() {
 #[test]
 fn decompose_dry_run() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# Epic\n## Feature\n";
     let file_path = dir.path().join("spec.md");
@@ -206,7 +230,10 @@ fn decompose_dry_run() {
 #[test]
 fn decompose_roundtrip() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# Parent\n## Child A\n## Child B\n### Grandchild\n";
     let file_path = dir.path().join("spec.md");
@@ -246,7 +273,10 @@ fn decompose_roundtrip() {
 #[test]
 fn decompose_stdin() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# Stdin Epic\n## Stdin Feature\n";
 
@@ -288,7 +318,10 @@ fn decompose_dry_run_works_without_project() {
 #[test]
 fn decompose_yaml_file() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let yaml = r#"stories:
   - title: Auth Service
@@ -332,7 +365,10 @@ fn decompose_yaml_file() {
 #[test]
 fn decompose_yaml_dry_run() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let yaml = r#"stories:
   - title: Epic One
@@ -364,7 +400,10 @@ fn decompose_yaml_dry_run() {
 #[test]
 fn decompose_markdown_with_priority() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# [HIGH] Secure the API\n";
     let file_path = dir.path().join("spec.md");
@@ -386,7 +425,10 @@ fn decompose_markdown_with_priority() {
 #[test]
 fn decompose_markdown_with_labels() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let md = "# Build API #backend #security\n";
     let file_path = dir.path().join("spec.md");

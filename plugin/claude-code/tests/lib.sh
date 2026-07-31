@@ -60,7 +60,7 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
 fi
 
 # mk_story_repo — build a temp git repo with a real storyhook project
-# initialized (`story init`), and a LOCAL bare origin so dispatch's `git
+# initialized (`story project init`), and a LOCAL bare origin so dispatch's `git
 # fetch` resolves fully offline and deterministically (no network, no
 # credential prompt). Echoes the repo path. Not placed under $TMPDIR:
 # macOS Spotlight indexes it and can stall file-intensive tests; /tmp
@@ -84,12 +84,12 @@ mk_story_repo() {
     git commit -qm init
     git push -qu origin main
     git remote set-head origin main >/dev/null 2>&1 || true
-    # `story init` writes `.storyhook.toml` and nothing else into the tree;
+    # `story project init` writes `.storyhook.toml` and nothing else into the tree;
     # the stories themselves go to the (isolated) store. Committing the
     # pointer is what a real project does, and it is what makes a linked
     # worktree of this fixture resolve the SAME project as the main checkout —
     # the property test-dispatch-cwd.sh asserts.
-    story init --prefix TST >/dev/null 2>&1
+    story project init --prefix TST >/dev/null 2>&1
     git add .storyhook.toml
     git commit -qm 'storyhook pointer'
     git push -q origin main

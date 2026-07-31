@@ -171,7 +171,7 @@ fn story_init_still_works_and_agrees_with_project_init() {
     let old = bare_dir(&env, "old");
     let new = bare_dir(&env, "new");
 
-    env.story(&old).arg("init").assert().success();
+    env.story(&old).args(["project", "init"]).assert().success();
     project(&env, &new, &["init"]).success();
 
     for dir in [&old, &new] {
@@ -249,5 +249,40 @@ fn project_list_shows_a_project_whose_checkout_this_machine_does_not_have() {
     assert!(
         stdout.contains("gone"),
         "a project with no checkout is still a project: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The old spelling
+// ---------------------------------------------------------------------------
+
+#[test]
+fn story_init_says_where_the_command_went() {
+    // Not left to fall through to `unknown command`. Every shipped document,
+    // this repo's own plugin skill, and every agent that has ever seen
+    // storyhook say `story init`; telling all of them that no such command
+    // exists is the least useful thing this binary could do.
+    let env = TestEnv::isolated();
+    let dir = bare_dir(&env, "repo");
+
+    let out = env
+        .story(&dir)
+        .arg("init")
+        .output()
+        .expect("running the old spelling");
+
+    assert_eq!(out.status.code(), Some(2), "a usage error");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("story project init"),
+        "the error must name the new spelling: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unknown command"),
+        "and must not pretend the command never existed: {stderr}"
+    );
+    assert!(
+        !dir.join(".storyhook.toml").exists(),
+        "a refused init writes nothing"
     );
 }

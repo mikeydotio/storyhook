@@ -50,7 +50,7 @@ impl HookRepo {
         repo.git(&["add", "f"]);
         repo.git(&["commit", "-qm", "init"]);
 
-        repo.story(repo.path(), &["init"]);
+        repo.story(repo.path(), &["project", "init"]);
         repo.story(repo.path(), &["hooks", "install"]);
         assert!(
             repo.path().join(".git/hooks/post-merge").is_file(),

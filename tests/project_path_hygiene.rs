@@ -64,7 +64,7 @@ fn fixture(label: &str) -> Fixture {
     let workdir = real_dir(&format!("{label}-workdir"));
     let checkout = real_dir(&format!("{label}-checkout"));
     for (dir, prefix) in [(&workdir, "WD"), (&checkout, "PH")] {
-        let out = story(dir, &data_home, &["init", "--prefix", prefix]);
+        let out = story(dir, &data_home, &["project", "init", "--prefix", prefix]);
         assert_eq!(
             out.status.code(),
             Some(0),
@@ -211,7 +211,11 @@ fn relink_points_a_project_at_its_new_checkout() {
 fn relink_refuses_a_pointer_naming_a_different_project() {
     let f = fixture("relink-mismatch");
     let second = real_dir("relink-mismatch-other");
-    story(&second, &f.data_home, &["init", "--prefix", "QQ"]);
+    story(
+        &second,
+        &f.data_home,
+        &["project", "init", "--prefix", "QQ"],
+    );
     let first_slug = slug_for(&f, "relink-mismatch-checkout");
 
     let out = story(

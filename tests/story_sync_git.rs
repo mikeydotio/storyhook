@@ -41,7 +41,10 @@ fn git_commit(dir: &std::path::Path, message: &str) {
 fn sync_git_basic() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Fix login bug"])
         .assert()
@@ -68,7 +71,10 @@ fn sync_git_basic() {
 fn sync_git_multiple_ids() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "First story"])
         .assert()
@@ -91,7 +97,10 @@ fn sync_git_multiple_ids() {
 fn sync_git_no_matches() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Some story"])
         .assert()
@@ -110,7 +119,10 @@ fn sync_git_no_matches() {
 fn sync_git_idempotent() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Idempotent story"])
         .assert()
@@ -137,7 +149,10 @@ fn sync_git_idempotent() {
 fn sync_git_not_a_git_repo() {
     let dir = tempdir().unwrap();
     // No git init -- just story init
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["sync-git"])
@@ -151,7 +166,10 @@ fn sync_git_not_a_git_repo() {
 fn sync_git_closed_story_ignored() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Closable story"])
         .assert()
@@ -177,7 +195,7 @@ fn sync_git_custom_prefix() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["init", "--prefix", "API"])
+        .args(["project", "init", "--prefix", "API"])
         .assert()
         .success();
     story(dir.path())
@@ -205,7 +223,10 @@ fn sync_git_custom_prefix() {
 fn sync_git_since_flag() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Recent work"])
         .assert()
@@ -226,7 +247,10 @@ fn sync_git_since_flag() {
 fn sync_git_summary_message() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Story one"])
         .assert()
@@ -253,7 +277,10 @@ fn sync_git_summary_message() {
 fn sync_git_auto_transition_with_role() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // in-progress (with role=active) is now a default state
 
@@ -298,7 +325,10 @@ fn sync_git_auto_transition_with_role() {
 fn sync_git_no_transition_without_active_state() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Remove the default in-progress state so only todo/done remain (no active state)
     story(dir.path())
@@ -341,7 +371,10 @@ fn sync_git_no_transition_without_active_state() {
 fn sync_git_no_re_transition() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // in-progress (with role=active) is now a default state
 
@@ -376,7 +409,10 @@ fn sync_git_no_re_transition() {
 fn sync_git_heuristic_two_open_states() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Default states include in-progress (with role=active).
     // Remove it and re-add without role to test the heuristic path.

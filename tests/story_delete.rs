@@ -24,7 +24,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn delete_excludes_story_from_open_counts() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Created in error"])
         .assert()
@@ -59,7 +62,10 @@ fn delete_excludes_story_from_report_open_count() {
     // path from `summary` — exercise it directly rather than relying on
     // `summary`'s text happening to match.
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
 
     story(dir.path())
@@ -78,7 +84,10 @@ fn delete_excludes_story_from_report_open_count() {
 #[test]
 fn delete_excludes_story_from_next_and_list_ready() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Only story"])
         .assert()
@@ -106,7 +115,10 @@ fn delete_excludes_story_from_next_and_list_ready() {
 #[test]
 fn delete_marks_deleted_story_in_plain_list() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Duplicate story"])
         .assert()
@@ -131,7 +143,10 @@ fn delete_marks_deleted_story_in_plain_list() {
 #[test]
 fn deleted_blocker_no_longer_blocks_dependent() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Blocker"])
         .assert()
@@ -170,7 +185,10 @@ fn deleted_blocker_no_longer_blocks_dependent() {
 #[test]
 fn delete_show_json_exposes_superstate_and_deleted_fields() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test story"])
         .assert()
@@ -205,7 +223,10 @@ fn delete_show_json_exposes_superstate_and_deleted_fields() {
 #[test]
 fn delete_closes_the_story_and_leaves_it_readable() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test story"])
         .assert()
@@ -238,7 +259,10 @@ fn delete_closes_the_story_and_leaves_it_readable() {
 #[test]
 fn reopen_deleted_story_without_force_fails_and_stays_closed() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test story"])
         .assert()
@@ -269,7 +293,10 @@ fn reopen_deleted_story_without_force_fails_and_stays_closed() {
 #[test]
 fn reopen_deleted_story_with_force_undeletes() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Test story"])
         .assert()
@@ -318,7 +345,10 @@ fn reopen_ordinarily_closed_story_needs_no_force() {
     // Reopening a story closed via the normal state machine (not deleted)
     // must be completely unaffected by the guarded-undelete behavior.
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Finish me"])
         .assert()

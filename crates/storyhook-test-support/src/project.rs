@@ -179,7 +179,7 @@ impl<'a> ProjectBuilder<'a> {
         if self.legacy {
             crate::legacy_tree::init(&root, self.prefix.as_deref());
         } else {
-            let mut init = vec!["init"];
+            let mut init = vec!["project", "init"];
             if let Some(prefix) = &self.prefix {
                 init.push("--prefix");
                 init.push(prefix);

@@ -143,7 +143,10 @@ fn hook_outputs_empty_json_when_no_storyhook_dir() {
 #[test]
 fn hook_outputs_empty_json_when_plugin_disabled() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     // Create plugin config with enabled = false. The directory is created
     // explicitly: `story init` stops making one once story data lives in the
@@ -169,7 +172,10 @@ fn hook_outputs_empty_json_when_plugin_disabled() {
 #[test]
 fn hook_outputs_system_message_for_valid_project() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Implement user authentication"])
         .assert()
@@ -196,7 +202,10 @@ fn hook_outputs_system_message_for_valid_project() {
 #[test]
 fn hook_system_message_contains_story_count() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build login page"])
         .assert()
@@ -222,7 +231,10 @@ fn hook_system_message_contains_story_count() {
 #[test]
 fn hook_system_message_contains_next_story_info() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Deploy monitoring dashboard"])
         .assert()
@@ -252,7 +264,10 @@ fn hook_system_message_contains_next_story_info() {
 #[test]
 fn hook_completes_within_timeout() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Performance-critical task"])
         .assert()
@@ -277,7 +292,10 @@ fn hook_completes_within_timeout() {
 #[test]
 fn hook_handles_empty_project_gracefully() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     // No stories created
 
     let (stdout, code) = run_hook(dir.path());
@@ -305,7 +323,10 @@ fn hook_handles_empty_project_gracefully() {
 #[test]
 fn hook_output_is_strictly_valid_json() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Validate JSON output integrity"])
         .assert()
@@ -338,7 +359,10 @@ fn hook_system_message_contains_cli_reference() {
     // The context should inject a concise CLI reference so the LLM knows how
     // to use storyhook commands.
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Add user profile page"])
         .assert()
@@ -362,7 +386,10 @@ fn hook_system_message_contains_project_state() {
     // The context should include project state info (not just a one-line
     // status, but enough for the LLM to orient).
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Implement authentication"])
         .assert()
@@ -396,7 +423,10 @@ fn hook_system_message_contains_project_state() {
 #[test]
 fn hook_handles_special_characters_in_story_title() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", r#"Fix "double-quote" and backslash\ in titles"#])
         .assert()
@@ -417,7 +447,10 @@ fn hook_handles_special_characters_in_story_title() {
 #[test]
 fn hook_handles_unicode_in_story_title() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Add i18n support for Japanese text"])
         .assert()

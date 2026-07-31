@@ -402,7 +402,7 @@ fn a_daemon_killed_after_commit_tells_the_client_it_cannot_know() {
     // that is about to be broken.
     let mut init = env.raw_story(cwd.path());
     init.env("STORYHOOK_INVOKER", "local")
-        .args(["init", "--prefix", "DM", "--no-agents-md"])
+        .args(["project", "init", "--prefix", "DM", "--no-agents-md"])
         .stdout(std::process::Stdio::null());
     assert!(
         init.status().expect("initializing").success(),

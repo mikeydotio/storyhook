@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn graph_overview() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path())
@@ -33,7 +36,10 @@ fn graph_overview() {
 #[test]
 fn graph_critical_path() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "First"]).assert().success();
     story(dir.path()).args(["new", "Second"]).assert().success();
     story(dir.path()).args(["new", "Third"]).assert().success();
@@ -57,7 +63,10 @@ fn graph_critical_path() {
 #[test]
 fn graph_blocked_by() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Blocker"])
         .assert()
@@ -91,7 +100,10 @@ fn graph_blocked_by() {
 #[test]
 fn graph_parallel_groups() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     // Group 1: SH-1 -> SH-2
     story(dir.path())
         .args(["new", "Group1 A"])
@@ -121,7 +133,10 @@ fn graph_parallel_groups() {
 #[test]
 fn graph_json_output() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task"]).assert().success();
 
     story(dir.path())
@@ -135,7 +150,10 @@ fn graph_json_output() {
 #[test]
 fn graph_no_dependencies() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Solo task"])
         .assert()
@@ -151,7 +169,10 @@ fn graph_no_dependencies() {
 #[test]
 fn graph_blocked_by_nonexistent() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["graph", "--blocked-by", "SH-999"])
