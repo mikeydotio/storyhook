@@ -40,8 +40,8 @@ use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, PathKind, ProjectId, StoryNo};
 use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version};
 use crate::store::types::{
-    FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord, ProjectSettings,
-    RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
+    DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord,
+    ProjectSettings, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
 };
 use crate::store::{ReadOps, Store, WriteOps};
 
@@ -54,7 +54,7 @@ use crate::store::{ReadOps, Store, WriteOps};
 /// on a store that is already in WAL the write has nothing to do — but
 /// `PRAGMA journal_mode = WAL` still takes an exclusive lock to decide that.
 /// Every process opening the store paid for that lock, and enough of them at
-/// once turned `story init` into a `LockTimeout`.
+/// once turned `story project init` into a `LockTimeout`.
 ///
 /// **It retries.** SQLite's `busy_timeout` does not cover a journal-mode
 /// change, so N processes racing to create the same database — which is what a
@@ -304,7 +304,7 @@ impl SqliteStore {
         // that is already in WAL: it takes an exclusive lock to make the
         // change it is not going to make, and under concurrency that lock is
         // contended — every process opening the store paid for it, and enough
-        // of them at once turned `story init` into a `LockTimeout`. Reading
+        // of them at once turned `story project init` into a `LockTimeout`. Reading
         // first costs one lock-free statement and leaves the write to the one
         // connection that actually needs it.
         let mode = ensure_wal(&conn, self.config.busy_timeout)?;
@@ -568,6 +568,10 @@ macro_rules! impl_read_ops {
                 read::projects(&self.conn)
             }
 
+            fn event_count(&self, project: ProjectId) -> Result<usize, StoreError> {
+                read::event_count(&self.conn, project)
+            }
+
             fn project_paths(
                 &self,
                 project: ProjectId,
@@ -702,6 +706,10 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError> {
         write::rename_project(&self.conn, project, name)
+    }
+
+    fn delete_project(&mut self, project: ProjectId) -> Result<DeletedProject, StoreError> {
+        write::delete_project(&self.conn, project)
     }
 
     fn reserve_story_no(&mut self, project: ProjectId, highest: StoryNo) -> Result<(), StoreError> {

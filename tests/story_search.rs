@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn search_by_title() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build authentication"])
         .assert()
@@ -36,7 +39,10 @@ fn search_by_title() {
 #[test]
 fn search_by_comment() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Task one"])
         .assert()
@@ -56,7 +62,10 @@ fn search_by_comment() {
 #[test]
 fn search_by_label() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Some task"])
         .assert()
@@ -76,7 +85,10 @@ fn search_by_label() {
 #[test]
 fn search_includes_archived_stories() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Completed auth work"])
         .assert()
@@ -96,7 +108,10 @@ fn search_includes_archived_stories() {
 #[test]
 fn search_case_insensitive() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build Authentication"])
         .assert()
@@ -112,7 +127,10 @@ fn search_case_insensitive() {
 #[test]
 fn search_no_results() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -128,7 +146,10 @@ fn search_no_results() {
 #[test]
 fn search_json_output() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()

@@ -420,9 +420,13 @@ mod tests {
         };
         let invoker = fixture.invoker();
         invoker
-            .invoke(InvokeRequest::new(Invocation::Init {
-                prefix: Some(prefix.to_string()),
-                no_agents_md: true,
+            .invoke(InvokeRequest::new(Invocation::Project {
+                action: crate::cli::ProjectAction::Init {
+                    path: None,
+                    prefix: Some(prefix.to_string()),
+                    name: None,
+                    no_agents_md: true,
+                },
             }))
             .unwrap();
         for title in titles {

@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn next_returns_oldest_unblocked() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "First task"])
         .assert()
@@ -35,7 +38,10 @@ fn next_returns_oldest_unblocked() {
 #[test]
 fn next_respects_priority_sorting() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Low priority"])
         .assert()
@@ -64,7 +70,10 @@ fn next_respects_priority_sorting() {
 #[test]
 fn next_skips_awaiting_stories() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Blocked task"])
         .assert()
@@ -89,7 +98,10 @@ fn next_skips_awaiting_stories() {
 #[test]
 fn next_skips_dependency_blocked_stories() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "First task"])
         .assert()
@@ -115,7 +127,10 @@ fn next_skips_dependency_blocked_stories() {
 #[test]
 fn next_unblocks_after_dependency_closed() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "First task"])
         .assert()
@@ -146,7 +161,10 @@ fn next_unblocks_after_dependency_closed() {
 #[test]
 fn next_count_returns_multiple() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
     story(dir.path()).args(["new", "Task B"]).assert().success();
     story(dir.path()).args(["new", "Task C"]).assert().success();
@@ -164,7 +182,10 @@ fn next_count_returns_multiple() {
 #[test]
 fn next_json_output() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Build parser"])
         .assert()
@@ -181,7 +202,10 @@ fn next_json_output() {
 #[test]
 fn next_empty_project() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .arg("next")
@@ -193,7 +217,10 @@ fn next_empty_project() {
 #[test]
 fn next_all_blocked_returns_no_ready() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Blocked task"])
         .assert()
@@ -213,7 +240,10 @@ fn next_all_blocked_returns_no_ready() {
 #[test]
 fn next_skips_parent_stories() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Parent epic"])
         .assert()
@@ -239,7 +269,10 @@ fn next_skips_parent_stories() {
 #[test]
 fn next_returns_no_ready_when_only_parents_are_ready() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Parent epic"])
         .assert()

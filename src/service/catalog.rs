@@ -5,25 +5,30 @@
 //! could disagree with the repositories themselves — a registered path whose
 //! `.storyhook/` had since been deleted was a case the dashboard had to survive.
 //!
-//! In the store there is no second file. A project *is* a catalog entry, and its
-//! checkouts are rows beside it, so:
+//! In the store there is no second file, and there is no registration step
+//! either. A project *is* a catalog entry and its checkouts are rows beside it,
+//! so `story project init` puts a project here by creating it and
+//! `story project deinit` removes it by deleting it. What is left in this
+//! module is everything that is *about* the catalog rather than about a
+//! project's existence:
 //!
-//! * **register** records a checkout against the project it belongs to,
-//! * **deregister** forgets a checkout (never the project, and never its
-//!   stories),
-//! * **list** reports the projects that have at least one known checkout.
-//!
-//! The daemon and the HTTP server are not ported here; they keep reading the
-//! legacy registry until the wave that promotes the daemon.
+//! * [`CatalogService::all`] and [`CatalogService::list`] report it — with and
+//!   without the projects this machine has no checkout of,
+//! * [`CatalogService::orphaned`] and [`CatalogService::deregister_orphaned`]
+//!   are `story doctor`'s half: registrations pointing at nothing,
+//! * [`CatalogService::relink`] is the answer when a checkout moved rather than
+//!   went away.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
-use crate::store::{ProjectId, ProjectRecord, ReadOps, Store, WriteOps};
+use crate::store::{
+    PathKind, ProjectId, ProjectPathRecord, ProjectRecord, ReadOps, Store, WriteOps,
+};
 
 use super::project::{path_kind, read_pointer};
 
-/// One row of `story web list`.
+/// One row of `story project list`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatalogEntry {
     /// The project this entry describes, for a caller that goes on to read it.
@@ -52,8 +57,8 @@ pub struct OrphanedRegistration {
 
 /// The project catalog, over a whole store.
 ///
-/// Not [`Ctx`](super::Ctx)-shaped: `web list` spans every project, and `web
-/// register` names the one it is about by path.
+/// Not [`Ctx`](super::Ctx)-shaped: the catalog spans every project, so there is
+/// no single one for a context to name.
 pub struct CatalogService<'a, S: Store> {
     store: &'a S,
 }
@@ -68,7 +73,7 @@ impl<'a, S: Store> CatalogService<'a, S> {
     ///
     /// A registration is a claim that a project can be opened at a path. When
     /// the path is gone the claim is stale, and a stale claim is not harmless:
-    /// it is a row in `story web list` and a card on the dashboard's home
+    /// it is a row in `story project list` and a card on the dashboard's home
     /// screen, indistinguishable from a real repository until it is clicked.
     ///
     /// This is what 394 fixture directories looked like after their test run
@@ -107,8 +112,9 @@ impl<'a, S: Store> CatalogService<'a, S> {
     /// returns them.
     ///
     /// Only the path rows go. The project, its stories and its identity all
-    /// survive, so this is reversible by `story web register` or
-    /// [`relink`](Self::relink) — which is what makes it safe to offer from
+    /// survive — it stays in `story project list` and on the dashboard, and
+    /// [`relink`](Self::relink) or a fresh `story project init` puts a path
+    /// back. That reversibility is what makes it safe to offer from
     /// `doctor --fix` rather than demanding a hand-written transaction.
     pub fn deregister_orphaned(&self) -> Result<Vec<OrphanedRegistration>, AppError> {
         let orphans = self.orphaned()?;
@@ -172,7 +178,7 @@ impl<'a, S: Store> CatalogService<'a, S> {
                 "`{}` belongs to a different project.\n\nIts pointer file names uuid {}, and \
                  `{}` is uuid {}. Relinking would leave one checkout resolving to two projects \
                  depending on which door it came in by. If you meant to adopt this checkout, run \
-                 `story web register` in it.",
+                 `story project init` in it.",
                 dir.display(),
                 found.uuid,
                 record.slug,
@@ -198,108 +204,53 @@ impl<'a, S: Store> CatalogService<'a, S> {
         Ok(entry(record, Some(dir)))
     }
 
-    /// Records `path` as a checkout of the project it belongs to.
-    ///
-    /// The project has to exist already — `register` never creates one, exactly
-    /// as the legacy path required an initialized `.storyhook/` before it would
-    /// add a registry entry. It is resolved by the checkout's pointer file when
-    /// it has one and by the path itself otherwise, so a checkout that was
-    /// deregistered can be registered again.
-    ///
-    /// Idempotent, which is a deliberate divergence: the legacy registry
-    /// rejected a second registration of the same path, and in the store the
-    /// path is recorded by `story init` itself, so the same rule would make the
-    /// command permanently unusable.
-    pub fn register(&self, path: &Path, name: Option<&str>) -> Result<CatalogEntry, AppError> {
-        let canonical = path
-            .canonicalize()
-            .map_err(|e| AppError::Usage(format!("cannot access `{}`: {e}", path.display())))?;
-        let pointer = read_pointer(&canonical)?;
-
-        Ok(self.store.write(|tx| {
-            let project = match &pointer {
-                Some(pointer) => tx.project_by_uuid(&pointer.uuid)?,
-                None => tx.project_by_path(&canonical)?,
-            }
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "`{}` is not a storyhook project; run `story init` there first",
-                    canonical.display()
-                ))
-            })?;
-            tx.touch_project_path(project.id, &canonical, path_kind(&canonical))?;
-            // `--name` is *recorded*, not merely echoed. The legacy registry
-            // held a display name per repo; the catalog is the projects table
-            // now, so this is the only place it can go — and a flag that is
-            // accepted and dropped is worse than one that does not exist.
-            if let Some(name) = name {
-                tx.rename_project(project.id, name)?;
-            }
-            Ok(CatalogEntry {
-                project: project.id,
-                id: project.slug,
-                name: name.map_or(project.name, str::to_string),
-                path: Some(canonical),
-            })
-        })?)
-    }
-
-    /// Forgets the checkout `target` names, by project slug or by path.
-    ///
-    /// A slug forgets every checkout of that project; a path forgets that one.
-    /// Neither deletes the project or its stories — the catalog is a list of
-    /// places storyhook has been used, not the data itself.
-    pub fn deregister(&self, target: &str) -> Result<CatalogEntry, AppError> {
-        let canonical = Path::new(target).canonicalize().ok();
-
-        Ok(self.store.write(|tx| {
-            if let Some(project) = tx.project_by_slug(target)? {
-                let paths: Vec<String> = tx
-                    .project_paths(project.id)?
-                    .into_iter()
-                    .map(|record| record.path)
-                    .collect();
-                let first = paths.first().map(PathBuf::from);
-                for path in &paths {
-                    tx.forget_project_path(project.id, Path::new(path))?;
-                }
-                return Ok(entry(project, first));
-            }
-
-            // A path, either as it exists now or as the catalog recorded it: a
-            // checkout whose directory has since been deleted must still be
-            // removable by the path the catalog itself reports.
-            for candidate in [canonical.clone(), Some(PathBuf::from(target))]
-                .into_iter()
-                .flatten()
-            {
-                if let Some(project) = tx.project_by_path(&candidate)? {
-                    tx.forget_project_path(project.id, &candidate)?;
-                    return Ok(entry(project, Some(candidate)));
-                }
-            }
-
-            Err(AppError::NotFound(format!("no registered repo matches `{target}`")).into())
-        })?)
-    }
-
     /// Every project with a known checkout, ordered by slug.
     pub fn list(&self) -> Result<Vec<CatalogEntry>, AppError> {
+        Ok(self
+            .all()?
+            .into_iter()
+            .filter(|entry| entry.path.is_some())
+            .collect())
+    }
+
+    /// Every project the store knows, checkout or no checkout, ordered by slug.
+    ///
+    /// The difference from [`list`](Self::list) is a project this machine has
+    /// no copy of: one whose checkout was deleted and then forgotten by
+    /// `story doctor --fix`, or one that arrived by import. Its stories are in
+    /// the store and perfectly readable, so a surface that shows only
+    /// `list`'s answer is a surface from which that work cannot be reached at
+    /// all.
+    ///
+    /// `list` still exists, and still filters, for the callers that genuinely
+    /// need a directory to act in.
+    pub fn all(&self) -> Result<Vec<CatalogEntry>, AppError> {
         Ok(self.store.read(|tx| {
             let mut entries = Vec::new();
             for project in tx.projects()? {
-                let path = tx
-                    .project_paths(project.id)?
-                    .into_iter()
-                    .next()
-                    .map(|record| PathBuf::from(record.path));
-                if path.is_some() {
-                    entries.push(entry(project, path));
-                }
+                let path = preferred_checkout(tx.project_paths(project.id)?);
+                entries.push(entry(project, path));
             }
             Ok(entries)
         })?)
     }
+}
+
+/// The checkout a caller should act in, given every checkout a project has.
+///
+/// The main working tree wins; a linked worktree is the fallback; a project
+/// with neither has none. `project_paths` is ordered by *path*, so without this
+/// the answer was whichever directory happened to sort first — and a linked
+/// worktree is a branch somebody is working on, whose hooks and whose
+/// `AGENTS.md` belong to that branch rather than to the project. `PathKind` has
+/// been recorded since schema 1 and, until now, consulted nowhere.
+#[must_use]
+pub fn preferred_checkout(mut paths: Vec<ProjectPathRecord>) -> Option<PathBuf> {
+    paths.sort_by_key(|record| match record.kind {
+        PathKind::Main => 0,
+        PathKind::Worktree => 1,
+    });
+    paths.into_iter().next().map(|r| PathBuf::from(r.path))
 }
 
 /// One catalog row from a project record.

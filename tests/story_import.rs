@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn import_creates_stories_from_json() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[
         {"title": "Build API"},
@@ -43,7 +46,10 @@ fn import_creates_stories_from_json() {
 #[test]
 fn import_with_priority_and_labels() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[
         {"title": "Critical bug", "priority": "critical", "labels": ["bug", "backend"]}
@@ -66,7 +72,10 @@ fn import_with_priority_and_labels() {
 #[test]
 fn import_with_cross_references() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[
         {"title": "Parent task"},
@@ -105,7 +114,10 @@ fn import_with_cross_references() {
 #[test]
 fn import_from_file() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[{"title": "From file"}]"#;
     let file_path = dir.path().join("stories.json");
@@ -121,7 +133,10 @@ fn import_from_file() {
 #[test]
 fn import_empty_array() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["import"])
@@ -134,7 +149,10 @@ fn import_empty_array() {
 #[test]
 fn import_json_output() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[{"title": "Task one"}]"#;
 
@@ -150,7 +168,10 @@ fn import_json_output() {
 #[test]
 fn import_with_story_type() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[
         {"title": "Login crash", "story_type": "bug"},
@@ -188,7 +209,10 @@ fn import_with_story_type() {
 #[test]
 fn import_rejects_invalid_story_type() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[
         {"title": "Valid story", "story_type": "bug"},
@@ -208,7 +232,10 @@ fn import_rejects_invalid_story_type() {
 #[test]
 fn import_atomicity_on_type_error() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[
         {"title": "Good story", "story_type": "bug"},
@@ -233,7 +260,10 @@ fn import_atomicity_on_type_error() {
 #[test]
 fn import_accepts_valid_story_type() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     let json = r#"[
         {"title": "A bug", "story_type": "bug"},

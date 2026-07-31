@@ -3,7 +3,7 @@ use std::process;
 
 use storyhook::cli::{self, DaemonAction, Invocation, WebAction};
 use storyhook::invoke::{HttpInvoker, InvokeRequest, Invoker, StoreInvoker};
-use storyhook::output;
+use storyhook::output::{self, Response};
 
 /// Reports `error` on the stream its consumer reads, and exits with the
 /// error's code.
@@ -116,17 +116,34 @@ fn main() {
         .no_hooks(flags.no_hooks)
         .stdin(piped);
     let depth = storyhook::event_hooks::depth_from_env();
-    let result = if run_locally(&flags, &request.invocation) {
-        match storyhook::invoke::open_store(&environment) {
-            Ok(store) => StoreInvoker::new(&store, &cwd, environment.clone())
+    let run = |request: InvokeRequest| {
+        if run_locally(&flags, &request.invocation) {
+            match storyhook::invoke::open_store(&environment) {
+                Ok(store) => StoreInvoker::new(&store, &cwd, environment.clone())
+                    .hook_depth(depth)
+                    .invoke(request),
+                Err(error) => Err(error),
+            }
+        } else {
+            HttpInvoker::new(environment.clone(), &cwd)
                 .hook_depth(depth)
-                .invoke(request),
-            Err(error) => Err(error),
+                .invoke(request)
         }
-    } else {
-        HttpInvoker::new(environment.clone(), &cwd)
-            .hook_depth(depth)
-            .invoke(request)
+    };
+
+    // A destructive command answers with what it *would* destroy rather than
+    // doing it. Confirming happens here, in the process that has a terminal:
+    // the work may run in a daemon, which has no way to reach the user at all.
+    let result = match run(request.clone()) {
+        Ok(Response::ConfirmationRequired(plan)) => match confirm(&plan, json, flags.quiet) {
+            Confirmed::Yes => run(request.forced()),
+            Confirmed::No => {
+                println!("cancelled; nothing was changed");
+                return;
+            }
+            Confirmed::CannotAsk(error) => Err(error),
+        },
+        other => other,
     };
 
     match result {
@@ -137,6 +154,70 @@ fn main() {
             }
         }
         Err(error) => fail(&error, json),
+    }
+}
+
+/// The answer to a confirmation prompt.
+enum Confirmed {
+    Yes,
+    No,
+    /// There is no terminal to ask, or asking would corrupt the output.
+    CannotAsk(storyhook::error::AppError),
+}
+
+/// Asks the user to confirm a destructive plan by typing the project's slug.
+///
+/// A typed slug rather than `[y/N]`, because the weight of the gate should
+/// match the weight of the act: one keystroke is right for "reopen this deleted
+/// story" and wrong for "erase every event this project has".
+///
+/// Two cases cannot be asked at all, and both are refusals naming `--force`
+/// rather than assumptions either way:
+///
+/// * **`--json`.** The contract is one self-describing document on stdout, and
+///   a prompt written there corrupts it for every scripted caller.
+/// * **No terminal.** A pipeline, a CI job, a hook. Defaulting to "no" would be
+///   safe and silent, which is how a script appears to work for months while
+///   never doing the thing it was written to do.
+///
+/// `--quiet` deliberately does *not* suppress the warning. It suppresses
+/// successful output, and this is a question.
+fn confirm(plan: &storyhook::output::DeinitPlan, json: bool, quiet: bool) -> Confirmed {
+    use std::io::{IsTerminal, Write};
+
+    // The refusal carries the *whole* plan, not just the headline counts. A
+    // caller being told to re-run with --force is being asked to authorize
+    // something sight-unseen otherwise, and the file list is the part they
+    // cannot reconstruct — which checkouts are known, and which AGENTS.md is
+    // being kept rather than removed.
+    let refuse = |why: &str| {
+        Confirmed::CannotAsk(storyhook::error::AppError::Validation(format!(
+            "this would permanently delete `{}`, and {why}.\n\n{}\nRe-run with --force to \
+             confirm.",
+            plan.slug,
+            storyhook::output::render_deinit_plan(plan),
+        )))
+    };
+    if json {
+        return refuse("--json cannot carry a prompt");
+    }
+    if !std::io::stdin().is_terminal() {
+        return refuse("there is no terminal to confirm at");
+    }
+
+    let _ = quiet;
+    eprint!("{}", storyhook::output::render_deinit_plan(plan));
+    eprint!("Type `{}` to confirm: ", plan.slug);
+    let _ = std::io::stderr().flush();
+
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return Confirmed::No;
+    }
+    if answer.trim() == plan.slug {
+        Confirmed::Yes
+    } else {
+        Confirmed::No
     }
 }
 

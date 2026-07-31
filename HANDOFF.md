@@ -1,84 +1,103 @@
-# Handoff — the data-layer rearchitecture is complete
+# Handoff — `story project init|deinit|list`
 
-**Read first:** [`docs/rearch/STATE.md`](docs/rearch/STATE.md) — Key facts, then
-the W8 step log. [`docs/rearch/hardening.md`](docs/rearch/hardening.md) is the
-last wave's record. [`docs/spec/data-layer-rearchitecture.md`](docs/spec/data-layer-rearchitecture.md)
-is the design of record.
+**Branch:** `feat/project-lifecycle-verbs`, ten commits off `main` (v1.0.0).
+**Stories:** SH-97 (umbrella) → SH-98…SH-107, all closed. Closes **SH-92**.
+**Plan of record:** `~/.claude/plans/now-that-storyhook-manages-kind-sunrise.md`.
+The rearchitecture's own record is still
+[`docs/rearch/STATE.md`](docs/rearch/STATE.md); all nine waves are merged.
 
-**Worktree:** `/Volumes/Code/mikeyward/storyhook/.claude/worktrees/rearch`.
-Linked worktree: no version bumps, no deploys, no force-push, never touch main.
+## What changed and why
 
-## Where the program is
+Registration was vestigial. `story web register` existed because the dashboard
+used to read `~/.storyhook/registry.toml`, a second file naming the repos it
+should show. In the store there is no second file, and `init` has recorded the
+checkout itself since the flip — so `web register` re-did what `init` had already
+done, and "registering with the web UI" named a concept with nothing behind it.
 
-**All nine waves are done.** W0 through W6 are merged; W7 and W8 have PRs open,
-and W8 is stacked on W7 — it was branched off `rearch/w7-cutover` because #71 was
-still open when it started, so **it needs retargeting to `main` once #71 merges**.
+Separately, the dashboard **hid** projects: `CatalogService::list` filtered out
+any project with no checkout row and every per-project route 404'd the rest. A
+project whose directory was deleted and then forgotten by `story doctor --fix`
+had all of its stories in the database the daemon had open, and no surface at all
+from which to reach them.
 
-Story data lives in one global SQLite store behind a local daemon. Every
-repository carries a committed `.storyhook.toml` naming the project it belongs
-to; no repository carries a `.storyhook/` directory. storyhook tracks itself that
-way, with 85 stories in the real store.
+- `story project init [PATH] [--prefix P] [--name N] [--no-agents-md]`
+- `story project deinit [PATH|SLUG] [--force]` — **hard delete**, always confirmed
+- `story project list` — every project, checkout or not
+- `story init` and `story web register|deregister|list` are **gone** (breaking)
+- The dashboard serves every project, read-only when this machine has no checkout
+
+## Four things to know before touching it
+
+1. **Schema 3 narrows the append-only guard rather than lifting it.**
+   `events_reject_delete` now abstains only for an event whose project no longer
+   exists — a state nothing but `delete_project`'s own second-to-last statement
+   can produce. `events_reject_update` is untouched. Verified against the bundled
+   SQLite 3.46 rather than assumed: a cascade *does* fire the child's BEFORE
+   DELETE trigger, so `ON DELETE CASCADE` would have tripped the very guard it
+   was meant to route around.
+2. **Deleting `projects` before `events` relies on `defer_foreign_keys`**, already
+   set in `SqliteWriteTx::begin`. If that ever goes, the first statement fails
+   loudly and nothing is written — `store_rebuild.rs` pins both halves.
+3. **Deinit's confirmation renders in the client, not the service.** An unforced
+   deinit returns `Response::ConfirmationRequired(DeinitPlan)` having written
+   nothing; `main.rs` prompts and re-sends with `force`. That is what makes the
+   daemon transport work at all, and the dashboard's modal renders the *same*
+   `DeinitPlan`, so the two front-ends cannot grow two different warnings.
+4. **`AGENTS.md` is removed only on an exact byte match** with what the current
+   template would generate. When the template changes, older files stop matching
+   and are kept — the safe direction, and `templates.rs` says so. Do not loosen
+   it to a fuzzy match.
 
 ## The gates
 
 ```sh
-make test           # 1977 Rust tests, 0 ignored, 18/18 bash — 68s warm
-make test-daemon    # the same suite over /api/v1/invoke — 60s
-make gate           # both. What a wave ends with, and what a change to the tests should run.
+make test           # in-process, plus 18/18 bash
+make test-daemon    # the identical suite over /api/v1/invoke
+make gate           # both
 ```
 
 Both green on the branch tip.
 
-## What remains, and none of it happens from this worktree
+## What remains — from `main`, after merge
 
-Three things, all release-from-`main`:
+1. **Reinstall the `story` binary.** `~/.local/bin/story` predates both the flip
+   and this rename, so `story init` still works there and `story project init`
+   does not. It is also why `plugin/claude-code/tests/run-tests.sh` fails when run
+   standalone but passes under `make test`, which puts `target/debug` on `PATH`.
+2. **`/semver bump major`** — v1.0.0 → v2.0.0. Two verb families removed. Never
+   from a worktree.
 
-1. **Reinstall the `story` binary.** `~/.local/bin/story` was built 2026-07-25
-   and predates the flip: no `migrate` verb, and it still creates
-   `.storyhook/lock` wherever it stands. The managed git hooks run `story` by
-   *name*, so until it is replaced every commit in every repository leaves that
-   residue and the hooks quietly do nothing. It happens on this repository's own
-   commits today — `/.storyhook/` is in `.gitignore` because of it.
-2. **`story web register` from the main checkout.** The store's recorded path for
-   this project is this *worktree*, because W7's migration ran against a copy at
-   a scratch path. Nothing breaks until then: resolution answers by the pointer
-   file's uuid, not by path. Only the dashboard names a directory that is about
-   to be deleted.
-3. **A major version bump.** `feat!:` — story data moved, `.storyhook/` retired,
-   `sync.mode = auto` removed. `/semver bump major` from `main`.
+*(The old item "`story web register` from the main checkout" is obsolete: that
+verb is gone, and the dashboard now shows every project the store knows
+regardless of which path is recorded.)*
 
-## Owed to Mikey
+## Known flakes, filed not fixed
 
-**One deletion the permission classifier declined**, with the backup already
-taken and verified: the junk project `.tmpKGBY3a` — one story, three events, at a
-`$TMPDIR` path — that a bare `cargo test` created in the real store on
-2026-07-28. The exact `sqlite3` transaction is in
-[`hardening.md`](docs/rearch/hardening.md#what-w8-did-not-do), ready to paste.
-The hole it came through is closed: a test build now refuses to resolve a real
-data home.
+- **SH-108** — `concurrency_soak::mixed_local_and_daemon_clients_under_load_lose_nothing`
+  times out on its first command under full-suite load. Ruled out as caused by
+  migration 3: the soak's store is fully migrated before any client thread spawns.
+- **SH-110** — `web_start_status_address_advertise_magic_dns_fqdn_when_available`
+  fails when the daemon's best-effort tailnet bind loses under `--test-threads=4`.
 
-**No daemon is registered on this machine, and the dashboard on the bookmarked
-port is the old one.** Two things happened during W8 and both are worth knowing:
+Both pass in isolation and on an immediate re-run. Neither is caused by this
+branch.
 
-- A daemon was running from *this worktree's release build*
-  (`…/worktrees/rearch/target/release/story`, pid 71673, started 2026-07-29
-  02:40) and had registered itself in the real state home. W8's story
-  bookkeeping ran the worktree's **debug** binary, which noticed the exe/mtime
-  skew and did what W5 designed it to do: restarted the daemon as itself. That
-  one was then stopped deliberately, so `~/.local/state/storyhook/daemon.json`
-  is now absent and the next `story` command anywhere will start a daemon from
-  whatever binary runs it. Which is the correct resting state, and an argument
-  for doing the reinstall above first.
-- **Port 3456 is still held by the pre-flip `story web --serve`** (pid 8743,
-  started 2026-07-26), which reads a registry and per-repository directories
-  that no longer exist. It was never touched — the charter treats it as
-  production — but it is serving nothing useful now, and it is why every
-  post-flip daemon has fallen back to an ephemeral port. Stopping it is Mikey's
-  call.
+## Deviations from the plan, recorded rather than edited away
 
-*(The W5 item about stray `.jsonl` files in `~/.local/state/storyhook` is
-resolved: checked this wave, the directory holds only the daemon's runtime files
-and the backups.)*
+- **`src/storage.rs` still says `story init`.** It is the rollback path
+  `migrate_round_trip` exercises, and `invoker_seam.rs`'s
+  `the_legacy_write_path_is_gone` fails if a `src/` file so much as names
+  `crate::storage`.
+- **`available: false` gained companions.** The plan said pathless projects would
+  report `available: false`; in the dashboard that value already meant
+  *unclickable*, so the response carries `available` + `read_only` + `reason`.
+- **Deinit clears every recorded checkout**, not only the directory the caller
+  named. Found by the web tests: deleting by slug left a `.storyhook.toml` naming
+  a project that no longer existed, which the next `init` would have silently
+  resurrected as an empty project. The plan lists every file first; that listing
+  is the consent.
+- **`story help --compact` went over its 3000-char budget** when the new verbs
+  were added, and was trimmed back to 2991 rather than the cap being raised.
 
 ## The backlog the rearchitecture leaves behind
 
@@ -102,7 +121,7 @@ Two more:
 | Story | What |
 |---|---|
 | SH-68 | `sync.mode = auto` — **now a design question, not a regression.** Removed from the vocabulary; reinstating it means a GitHub call on the tail of every mutating command, in the daemon as well as locally. W8's ruling is a comment on the story |
-| SH-92 | **there is no supported way to delete a project.** The schema refuses it on purpose (`0001_initial.sql` says a `delete_project` must drop the append-only guards inside its own migration and say so), and the accident that creates one by mistake is what W8 closed at the other end |
+| ~~SH-92~~ | ~~there is no supported way to delete a project~~ — **closed by this branch.** Migration 3 drops the guard inside its own migration and says so; `story project deinit` is the sanctioned operation |
 
 W8 also filed **SH-86 … SH-91**, closed, as records of the six defects it found
 and fixed; and closed **SH-69** with the daemon-leg ruling. `story doctor` is

@@ -103,7 +103,10 @@ fn help_all_produces_all_topics() {
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
 
     // Should contain content from multiple distinct topics
-    assert!(stdout.contains("story init"), "should include init topic");
+    assert!(
+        stdout.contains("story project init"),
+        "should include the project topic"
+    );
     assert!(stdout.contains("story new"), "should include new topic");
     assert!(stdout.contains("story list"), "should include list topic");
     assert!(stdout.contains("story next"), "should include next topic");
@@ -165,10 +168,10 @@ fn help_all_does_not_mention_mcp_after_removal() {
 fn help_with_topic_still_works() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["help", "init"])
+        .args(["help", "project"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("story init"));
+        .stdout(predicate::str::contains("story project init"));
 }
 
 #[test]
@@ -243,8 +246,8 @@ fn help_all_with_json_flag_produces_json() {
     // The message field should contain the full help content
     let message = parsed["message"].as_str().unwrap_or("");
     assert!(
-        message.contains("story init"),
-        "JSON --all help message should contain init topic"
+        message.contains("story project init"),
+        "JSON --all help message should contain the project topic"
     );
     assert!(
         message.contains("story decompose"),
@@ -313,11 +316,11 @@ fn help_compact_and_all_are_mutually_exclusive_or_last_wins() {
 
 #[test]
 fn help_compact_with_topic_arg_prefers_topic_or_errors() {
-    // `story help --compact init` — should the topic or --compact win?
+    // `story help --compact project` — should the topic or --compact win?
     // Either behavior is fine; this test just ensures no crash/panic.
     let dir = tempdir().unwrap();
     let result = story(dir.path())
-        .args(["help", "--compact", "init"])
+        .args(["help", "--compact", "project"])
         .output()
         .unwrap();
     assert!(

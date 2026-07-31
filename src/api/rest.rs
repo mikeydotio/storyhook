@@ -33,13 +33,15 @@ use crate::api::http::{
     Reply, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body, html_reply,
     json_reply, parse_json_object, path_segments, require_str, text_reply, to_json,
 };
-use crate::cli::{Invocation, StateAction};
+use crate::cli::{Invocation, ProjectAction, StateAction};
 use crate::domain::Priority;
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::invoke::dispatch;
 use crate::output::{Response, render_response};
-use crate::service::{CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService};
+use crate::service::{
+    CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService, preferred_checkout,
+};
 use crate::store::{ProjectId, ReadOps, Store};
 
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
@@ -116,8 +118,8 @@ fn mutating(method: &Method) -> bool {
 
 /// Decides how to respond to a request against `store`.
 ///
-/// `/` always serves the single-page app; `/api/repos` (list/register) and
-/// `/api/repos/<id>` (deregister) operate on the project catalog; every other
+/// `/` always serves the single-page app; `/api/repos` (list/init) and
+/// `/api/repos/<id>` (deinit) operate on the project catalog; every other
 /// `/api/repos/<id>/...` path resolves `<id>` to that project and delegates to
 /// [`route_project`], the entire per-project API surface.
 pub fn route<S: Store>(
@@ -142,7 +144,7 @@ pub fn route<S: Store>(
             Method::Post => Routed::changing(
                 method,
                 guarded(headers, trusted_hosts, body, |b| {
-                    route_register_repo(store, b)
+                    route_init_repo(store, env, b)
                 }),
                 Changed::Catalog,
             ),
@@ -151,14 +153,30 @@ pub fn route<S: Store>(
         ["api", "repos", id] => match method {
             Method::Delete => Routed::changing(
                 method,
-                guarded_no_body(headers, trusted_hosts, || route_deregister_repo(store, id)),
+                guarded(headers, trusted_hosts, body, |b| {
+                    route_deinit_repo(store, env, id, b)
+                }),
                 Changed::Catalog,
             ),
             _ => Routed::quiet(text_reply(405, "Method not allowed")),
         },
-        ["api", "repos", id, rest @ ..] => match resolve_project(store, id) {
-            Ok(Some((project, root))) => {
-                let ctx = Ctx::new(store, project, root, env.clone());
+        ["api", "repos", id, rest @ ..] => match resolve_repo(store, id) {
+            // A project with no checkout on this machine is still 404 here.
+            // Serving it read-only is the next commit's job; this one only
+            // moves where the decision is taken.
+            // One door for the whole per-project surface. A project with no
+            // checkout on this machine is served read-only: reads need no
+            // working directory, and every write does — that is where the
+            // project's event hooks and its git repository are. Refusing here
+            // rather than in each handler means a route added later cannot
+            // miss it.
+            Ok(Some(Repo { project, checkout })) => {
+                if mutating(method) && checkout.is_none() {
+                    return Routed::quiet(error_reply(&pathless_refusal(id)));
+                }
+                let hookless = checkout.is_none();
+                let root = checkout.unwrap_or_else(|| no_checkout_placeholder(id));
+                let ctx = Ctx::new(store, project, root, env.clone()).no_hooks(hookless);
                 let reply = route_project(&ctx, method, rest, headers, body, trusted_hosts);
                 Routed::changing(method, reply, Changed::Project((*id).to_string()))
             }
@@ -273,27 +291,54 @@ fn route_project<S: Store>(
     }
 }
 
-/// Resolves a catalog id (the project's slug) to the project and the checkout
-/// the dashboard should act in.
+/// A project the dashboard was asked for, and the checkout it may act in.
 ///
-/// A project with no recorded checkout is *not found* rather than served: every
-/// operation below runs in a working directory — that is where a project's event
-/// hooks and its git repository are — and inventing one would mean firing a
-/// user's hooks from somewhere they never asked for.
-fn resolve_project<S: Store>(
-    store: &S,
-    slug: &str,
-) -> Result<Option<(ProjectId, PathBuf)>, AppError> {
+/// `checkout: None` is a project the store knows and this machine has no copy
+/// of — its directory was deleted, or it arrived by import. Separating that
+/// from "no such project" is the whole reason this type exists: they are
+/// different answers, and only one of them is a 404.
+struct Repo {
+    project: ProjectId,
+    checkout: Option<PathBuf>,
+}
+
+/// Why a write against a checkout-less project is refused, and what to do.
+fn pathless_refusal(slug: &str) -> AppError {
+    AppError::Validation(format!(
+        "`{slug}` has {NO_CHECKOUT}, so there is nowhere to run this change: a write fires the \
+         project's event hooks and its git operations in its working directory. Its stories stay \
+         readable here.\n\nRun `story project init` in a checkout of it to adopt one, or \
+         `story relink {slug} <path>` if the checkout simply moved."
+    ))
+}
+
+/// A working directory for a project that has none.
+///
+/// [`Ctx`] requires one, and every caller that would *use* it is refused at the
+/// door above — so this exists to satisfy the type rather than to be read. It
+/// is deliberately a path that cannot exist, so that a read path which starts
+/// consulting the working directory fails loudly here instead of quietly
+/// finding whatever the daemon's own directory happens to hold.
+fn no_checkout_placeholder(slug: &str) -> PathBuf {
+    PathBuf::from(format!("/nonexistent/storyhook/{slug}/{NO_CHECKOUT}"))
+}
+
+/// Resolves a catalog id (the project's slug) to the project it names.
+///
+/// `None` means no such project. A project that exists but has no recorded
+/// checkout resolves to a [`Repo`] with `checkout: None`; what the caller may
+/// then do with it is the caller's decision, taken at one place in
+/// [`route`] rather than scattered through twenty handlers.
+fn resolve_repo<S: Store>(store: &S, slug: &str) -> Result<Option<Repo>, AppError> {
     Ok(store.read(|tx| {
         let Some(project) = tx.project_by_slug(slug)? else {
             return Ok(None);
         };
-        let root = tx
-            .project_paths(project.id)?
-            .into_iter()
-            .next()
-            .map(|record| PathBuf::from(record.path));
-        Ok(root.map(|root| (project.id, root)))
+        let checkout = preferred_checkout(tx.project_paths(project.id)?);
+        Ok(Some(Repo {
+            project: project.id,
+            checkout,
+        }))
     })?)
 }
 
@@ -312,16 +357,31 @@ fn reply_with<S: Store>(ctx: &Ctx<'_, S>, status: u16, invocation: Invocation) -
 
 // --- The project catalog: /api/repos ---
 
-/// `GET /api/repos` — one entry per project the store knows a checkout for,
-/// driving the repo-selector dropdown, the home screen's summary cards, and the
-/// settings screen's project list.
+/// What a repo with no checkout on this machine is told, and tells.
+const NO_CHECKOUT: &str = "no checkout on this machine";
+
+/// `GET /api/repos` — one entry per project the store knows, driving the
+/// repo-selector dropdown, the home screen's summary cards, and the settings
+/// screen's project list.
 ///
-/// A project whose data cannot currently be read is reported as
-/// `available: false` with an `error` message rather than failing the whole
-/// request — one broken project must never take down the view of every other
-/// one.
+/// **Every** project, not only those with a checkout. A project whose directory
+/// was deleted and then forgotten by `story doctor --fix`, or one that arrived
+/// by import, still has all of its stories in the database the daemon has open;
+/// hiding it made that work unreachable from every surface storyhook has.
+///
+/// Three fields describe how usable each one is, because two states were being
+/// squeezed into one flag:
+///
+/// * `available` — its data can be read *and* acted on. False for a project
+///   with nowhere to act and false for one that genuinely cannot be read.
+/// * `read_only` — it can be read but not written. This is the pathless case,
+///   and it is what tells the front-end to keep the card clickable.
+/// * `reason` — why, in words, for whichever of those is not the happy one.
+///
+/// A project that cannot be read at all is reported rather than failing the
+/// request: one broken project must never take down the view of every other.
 fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError> {
-    let entries = CatalogService::new(store).list()?;
+    let entries = CatalogService::new(store).all()?;
     let now = env.now();
     let repos: Vec<serde_json::Value> = entries
         .into_iter()
@@ -330,12 +390,15 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                 .read(|tx| Ok(QueryService::new(tx, entry.project, &now).report_data()))
                 .map_err(AppError::from)
                 .and_then(|inner| inner);
+            let read_only = entry.path.is_none();
             match summary {
                 Ok(data) => serde_json::json!({
                     "id": entry.id,
                     "name": entry.name,
                     "path": entry.path,
-                    "available": true,
+                    "available": !read_only,
+                    "read_only": read_only,
+                    "reason": read_only.then_some(NO_CHECKOUT),
                     "summary": data.summary,
                 }),
                 Err(e) => serde_json::json!({
@@ -343,6 +406,8 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                     "name": entry.name,
                     "path": entry.path,
                     "available": false,
+                    "read_only": false,
+                    "reason": e.to_string(),
                     "error": e.to_string(),
                 }),
             }
@@ -352,39 +417,70 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
     to_json(&repos)
 }
 
-/// `POST /api/repos` — register a checkout. Body: `{"path": "...", "name"?: "..."}`.
-fn route_register_repo<S: Store>(store: &S, body: &str) -> Reply {
+/// `POST /api/repos` — initialize a project at a path on this machine.
+/// Body: `{"path": "...", "name"?: "...", "prefix"?: "..."}`.
+///
+/// The same operation as `story project init`, reached through the same
+/// dispatcher, so the browser cannot create a project the CLI would have
+/// created differently. There is no longer a "register" that is distinct from
+/// this: a project reaches the dashboard by existing.
+fn route_init_repo<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let path = require_str(&obj, "path")?;
-        let name = get_str(&obj, "name");
-        let entry = CatalogService::new(store).register(std::path::Path::new(path), name)?;
-        Ok(json_reply(
-            201,
-            to_json(&serde_json::json!({
-                "id": entry.id,
-                "name": entry.name,
-                "path": entry.path,
-            }))?,
-        ))
+        let invocation = Invocation::Project {
+            action: ProjectAction::Init {
+                // Absolute, because a relative path would resolve against the
+                // daemon's own working directory and the browser has no
+                // meaningful one to offer.
+                path: Some(path.to_string()),
+                prefix: get_str(&obj, "prefix").map(str::to_string),
+                name: get_str(&obj, "name").map(str::to_string),
+                no_agents_md: false,
+            },
+        };
+        let root = std::path::Path::new(path);
+        let response = crate::invoke::dispatch_unscoped(store, root, &env.now(), invocation)?;
+        Ok(json_reply(201, render_response(&response, true, false)))
     })()
     .unwrap_or_else(|e| error_reply(&e))
 }
 
-/// `DELETE /api/repos/{id}` — forget a checkout. Never touches the project's
-/// stories, only the record of where it is checked out.
-fn route_deregister_repo<S: Store>(store: &S, id: &str) -> Reply {
-    match CatalogService::new(store).deregister(id) {
-        Ok(entry) => json_reply(
-            200,
-            serde_json::json!({
-                "result": "ok",
-                "repo": {"id": entry.id, "name": entry.name, "path": entry.path},
-            })
-            .to_string(),
-        ),
-        Err(e) => error_reply(&e),
-    }
+/// `DELETE /api/repos/{id}` — **permanently delete** a project and everything
+/// recorded against it.
+///
+/// Two-step, exactly as the CLI is. Without a body naming the project's slug
+/// this answers `409` carrying the same [`DeinitPlan`](crate::output::DeinitPlan)
+/// the terminal prompt is drawn from, and writes nothing; the browser renders
+/// that as its confirmation modal and sends the slug back. One value, two
+/// front-ends, so the warning cannot say two different things.
+///
+/// Body: `{"confirm": "<slug>"}`.
+fn route_deinit_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let confirmed = parse_json_object(body)
+            .ok()
+            .and_then(|obj| get_str(&obj, "confirm").map(str::to_string))
+            .is_some_and(|typed| typed == id);
+
+        let invocation = Invocation::Project {
+            action: ProjectAction::Deinit {
+                target: Some(id.to_string()),
+                force: confirmed,
+            },
+        };
+        // The daemon has no working directory of the user's; a slug target does
+        // not need one, and `deinit` only touches repository files in a
+        // directory the caller named by path.
+        let root = std::path::Path::new("/");
+        let response = crate::invoke::dispatch_unscoped(store, root, &env.now(), invocation)?;
+        let status = match response {
+            Response::ConfirmationRequired(_) => 409,
+            _ => 200,
+        };
+        Ok(json_reply(status, render_response(&response, true, false)))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
 }
 
 // --- Project data: /api/repos/<id>/data ---

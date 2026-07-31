@@ -163,6 +163,15 @@ button { cursor: pointer; }
 }
 .repo-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
 .repo-card.unavailable { cursor: default; opacity: 0.65; border-style: dashed; }
+/* Openable, but nothing here can be changed: dashed like `unavailable` to say
+   "not a normal repo", full opacity and a pointer because it is still worth
+   clicking into. */
+.repo-card.read-only { border-style: dashed; }
+.deinit-panel { border: 1px solid var(--danger); border-radius: var(--radius); padding: 0.875rem; margin-bottom: 1rem; }
+.deinit-title { font-weight: 700; margin-bottom: 0.5rem; }
+.deinit-line { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); }
+.deinit-warning { color: var(--danger); font-weight: 600; margin-top: 0.5rem; }
+.deinit-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; }
 .repo-card-name { font-weight: 700; font-size: 0.9375rem; margin-bottom: 0.25rem; }
 .repo-card-path { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); overflow-wrap: anywhere; margin-bottom: 0.625rem; }
 .repo-card-stats { display: flex; gap: 0.75rem; font-size: 0.75rem; color: var(--fg-muted); font-weight: 600; }
@@ -770,7 +779,7 @@ tbody tr:hover { background: var(--bg-sunken); }
           resolve(parsed || {});
         } else {
           var message = (parsed && parsed.error) || xhr.statusText || ("HTTP " + xhr.status);
-          reject({ status: xhr.status, message: message });
+          reject({ status: xhr.status, message: message, body: parsed });
         }
       };
       xhr.onerror = function() { reject({ status: 0, message: "network error" }); };
@@ -2178,14 +2187,25 @@ tbody tr:hover { background: var(--bg-sunken); }
    * poll when nothing changed) without a field-by-field diff like
    * `diffSnapshots` — a repo card has too little structure to need one. */
   function repoCardFingerprint(r) {
-    return JSON.stringify([r.available, r.name, r.path, r.error, r.summary]);
+    return JSON.stringify([r.available, r.read_only, r.reason, r.name, r.path, r.error, r.summary]);
   }
+
+  /** Whether a repo can be opened at all.
+   *
+   * A read-only repo — one with no checkout on this machine — IS openable:
+   * its stories are in the store and perfectly readable, only writes need a
+   * working directory. A repo that is neither available nor read-only is one
+   * whose data could not be read, and opening that lands on a broken board. */
+  function canOpen(r) { return r.available || r.read_only; }
+
+  /** What to show where a path would go. */
+  function repoWhere(r) { return r.path || r.reason || "no checkout on this machine"; }
 
   function buildRepoCard(r) {
     var card = el("div", { dataset: { id: r.id } }, []);
     card.addEventListener("click", function() {
       var current = state.repos.filter(function(x) { return x.id === r.id; })[0];
-      if (current && current.available) selectRepo(current.id);
+      if (current && canOpen(current)) selectRepo(current.id);
     });
     populateRepoCard(card, r);
     return card;
@@ -2193,17 +2213,19 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   function populateRepoCard(card, r) {
     clear(card);
-    if (!r.available) {
+    if (!canOpen(r)) {
       card.className = "repo-card unavailable";
       card.appendChild(el("div", { class: "repo-card-name" }, [r.name]));
-      card.appendChild(el("div", { class: "repo-card-path" }, [r.path]));
-      card.appendChild(el("div", { class: "repo-card-error" }, [r.error || "Unavailable"]));
+      card.appendChild(el("div", { class: "repo-card-path" }, [repoWhere(r)]));
+      card.appendChild(el("div", { class: "repo-card-error" }, [r.error || r.reason || "Unavailable"]));
       return;
     }
-    card.className = "repo-card";
+    card.className = r.read_only ? "repo-card read-only" : "repo-card";
     var s = r.summary;
-    card.appendChild(el("div", { class: "repo-card-name" }, [r.name]));
-    card.appendChild(el("div", { class: "repo-card-path" }, [r.path]));
+    card.appendChild(el("div", { class: "repo-card-name" }, [
+      r.name + (r.read_only ? " (read-only)" : "")
+    ]));
+    card.appendChild(el("div", { class: "repo-card-path" }, [repoWhere(r)]));
     card.appendChild(el("div", { class: "repo-card-stats" }, [
       el("span", {}, [s.total_open + " open"]),
       el("span", {}, [s.ready_count + " ready"]),
@@ -2229,7 +2251,11 @@ tbody tr:hover { background: var(--bg-sunken); }
     var container = $("settings-view");
     if (!container.dataset.built) {
       clear(container);
-      container.appendChild(buildRegisterForm());
+      container.appendChild(buildInitForm());
+      // Its own node, outside the table: the table is rebuilt on every repo
+      // refresh, and a confirmation panel that vanished mid-typing because a
+      // poll landed would be worse than no confirmation at all.
+      container.appendChild(el("div", { id: "settings-deinit" }, []));
       container.appendChild(el("div", { id: "settings-table-wrap" }, []));
       container.dataset.built = "1";
     }
@@ -2243,18 +2269,22 @@ tbody tr:hover { background: var(--bg-sunken); }
     var tbody = el("tbody", {}, []);
     state.repos.forEach(function(r) {
       tbody.appendChild(el("tr", {}, [
-        el("td", {}, [r.name + (r.available ? "" : " (unavailable)")]),
-        el("td", { class: "settings-path" }, [r.path]),
+        el("td", {}, [r.name + (r.read_only ? " (read-only)" : (r.available ? "" : " (unavailable)"))]),
+        el("td", { class: "settings-path" }, [repoWhere(r)]),
         el("td", { class: "col-id" }, [r.id]),
         el("td", {}, [
           el("button", {
             class: "btn",
             disabled: !r.available,
-            title: r.available ? "Configure this project's statuses" : "This repo is unavailable",
+            title: r.available
+              ? "Configure this project's statuses"
+              : (r.read_only
+                  ? "This project has no checkout on this machine, so it cannot be changed here"
+                  : "This repo is unavailable"),
             onClick: function() { goStatuses(r.id); }
           }, ["Statuses"])
         ]),
-        el("td", {}, [el("button", { class: "btn btn-danger", onClick: function() { deregisterRepo(r.id); } }, ["Deregister"])])
+        el("td", {}, [el("button", { class: "btn btn-danger", onClick: function() { deinitProject(r.id); } }, ["Delete"])])
       ]));
     });
     wrap.appendChild(el("table", { class: "settings-table" }, [
@@ -2579,38 +2609,106 @@ tbody tr:hover { background: var(--bg-sunken); }
       });
   }
 
-  function buildRegisterForm() {
-    var pathInput = el("input", { type: "text", placeholder: "Path to a storyhook project on this machine" });
+  /** `story project init`, from the browser.
+   *
+   * There is no "register a repo" any more — a project reaches the dashboard
+   * by existing. This creates one at a path on this machine, which is the same
+   * operation the CLI performs, through the same dispatcher. */
+  function buildInitForm() {
+    var pathInput = el("input", { type: "text", placeholder: "Path to a repository on this machine" });
     var nameInput = el("input", { type: "text", placeholder: "Display name (optional)" });
+    var prefixInput = el("input", { type: "text", placeholder: "Story-id prefix (default SH)" });
     var error = el("div", { class: "modal-error" }, []);
     var submit = el("button", { class: "btn btn-primary", onClick: function() {
       var path = pathInput.value.trim();
       if (!path) { error.textContent = "Path is required."; return; }
       var body = { path: path };
       if (nameInput.value.trim()) body.name = nameInput.value.trim();
+      if (prefixInput.value.trim()) body.prefix = prefixInput.value.trim();
       api("POST", "/api/repos", body)
         .then(function() {
-          pathInput.value = ""; nameInput.value = ""; error.textContent = "";
-          toast("Repo registered", "success");
+          pathInput.value = ""; nameInput.value = ""; prefixInput.value = ""; error.textContent = "";
+          toast("Project initialized", "success");
           fetchReposOnce();
         })
         .catch(function(err) { error.textContent = err.message; });
-    } }, ["Register"]);
-    return el("div", { class: "settings-form" }, [pathInput, nameInput, submit, error]);
+    } }, ["Initialize"]);
+    return el("div", { class: "settings-form" }, [pathInput, nameInput, prefixInput, submit, error]);
   }
 
-  function deregisterRepo(id) {
+  /** `story project deinit`, from the browser.
+   *
+   * Two steps, exactly as the terminal is. The first DELETE carries no
+   * confirmation and answers 409 with the plan — what would be destroyed,
+   * counted, having written nothing. The second carries the slug the user
+   * typed. Both render the *same* value the CLI prompt is drawn from, which is
+   * what stops the two front-ends from growing two different warnings. */
+  function deinitProject(id) {
     api("DELETE", "/api/repos/" + encodeURIComponent(id), null)
       .then(function() {
-        toast("Repo deregistered", "success");
-        if (state.repoId === id) {
-          state.repoId = null;
-          goHome();
-        } else {
-          fetchReposOnce();
-        }
+        // A project with nothing in it needs no ceremony, but the server is
+        // the one that decides that — if it ever stops asking, this still works.
+        afterDeinit(id);
       })
-      .catch(toastError);
+      .catch(function(err) {
+        if (err.status === 409 && err.body && err.body.plan) {
+          showDeinitConfirm(err.body.plan);
+        } else {
+          toastError(err);
+        }
+      });
+  }
+
+  function afterDeinit(id) {
+    toast("Project deleted", "success");
+    if (state.repoId === id) {
+      state.repoId = null;
+      goHome();
+    } else {
+      fetchReposOnce();
+    }
+  }
+
+  /** The confirmation: everything that would be destroyed, and a field that
+   * only accepts the project's slug typed in full. A single click is the right
+   * weight for reopening a story and the wrong weight for erasing every event
+   * a project has. */
+  function showDeinitConfirm(plan) {
+    var wrap = $("settings-deinit");
+    if (!wrap) return;
+    clear(wrap);
+
+    var lines = [
+      el("div", { class: "deinit-title" }, ["Delete " + plan.slug + " — " + plan.name]),
+      el("div", { class: "deinit-line" }, [
+        plan.stories + (plan.stories === 1 ? " story" : " stories") + " and " +
+        plan.events + (plan.events === 1 ? " event" : " events") + " will be permanently deleted."
+      ])
+    ];
+    (plan.files || []).forEach(function(f) {
+      lines.push(el("div", { class: "deinit-line" }, ["remove  " + f]));
+    });
+    (plan.kept || []).forEach(function(pair) {
+      lines.push(el("div", { class: "deinit-line" }, ["keep    " + pair[0] + " (" + pair[1] + ")"]));
+    });
+    lines.push(el("div", { class: "deinit-warning" }, ["This cannot be undone."]));
+
+    var error = el("div", { class: "modal-error" }, []);
+    var typed = el("input", { type: "text", placeholder: "Type " + plan.slug + " to confirm" });
+    var confirm = el("button", { class: "btn btn-danger", onClick: function() {
+      if (typed.value.trim() !== plan.slug) {
+        error.textContent = "Type the project's id exactly to confirm.";
+        return;
+      }
+      api("DELETE", "/api/repos/" + encodeURIComponent(plan.slug), { confirm: plan.slug })
+        .then(function() { clear(wrap); afterDeinit(plan.slug); })
+        .catch(function(err) { error.textContent = err.message; });
+    } }, ["Delete permanently"]);
+    var cancel = el("button", { class: "btn", onClick: function() { clear(wrap); } }, ["Cancel"]);
+
+    wrap.appendChild(el("div", { class: "deinit-panel" },
+      lines.concat([el("div", { class: "deinit-actions" }, [typed, confirm, cancel]), error])));
+    typed.focus();
   }
 
   // ============================================================

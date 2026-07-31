@@ -13,7 +13,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn list_blocked_filter() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Ready task"])
         .assert()
@@ -39,7 +42,10 @@ fn list_blocked_filter() {
 #[test]
 fn list_ready_filter() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Ready task"])
         .assert()
@@ -65,7 +71,10 @@ fn list_ready_filter() {
 #[test]
 fn list_dependency_blocked() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "First task"])
         .assert()
@@ -91,7 +100,10 @@ fn list_dependency_blocked() {
 #[test]
 fn list_combined_filters() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "High ready"])
         .assert()
@@ -136,7 +148,10 @@ fn list_combined_filters() {
 fn list_stale_basic() {
     // --stale 0m means threshold = now, so everything with updated_at < now is stale
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Task one"])
         .assert()
@@ -160,7 +175,10 @@ fn list_stale_basic() {
 fn list_stale_no_matches() {
     // --stale 999d means threshold = now - 999 days; nothing is that old
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Fresh task"])
         .assert()
@@ -178,7 +196,10 @@ fn list_stale_no_matches() {
 fn list_stale_combined() {
     // Combine --stale with --priority
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "High prio task"])
         .assert()

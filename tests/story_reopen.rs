@@ -14,7 +14,10 @@ fn story(dir: &std::path::Path) -> Command {
 #[test]
 fn reopen_archived_story() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Fix bug"])
         .assert()
@@ -42,7 +45,10 @@ fn reopen_archived_story() {
 #[test]
 fn reopen_already_open_story_fails() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Open story"])
         .assert()
@@ -58,7 +64,10 @@ fn reopen_already_open_story_fails() {
 #[test]
 fn reopen_nonexistent_story_fails() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
 
     story(dir.path())
         .args(["reopen", "SH-999"])
@@ -70,7 +79,10 @@ fn reopen_nonexistent_story_fails() {
 #[test]
 fn reopen_preserves_comments() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Task with comments"])
         .assert()
@@ -94,7 +106,10 @@ fn reopen_preserves_comments() {
 #[test]
 fn reopen_json_output() {
     let dir = tempdir().unwrap();
-    story(dir.path()).arg("init").assert().success();
+    story(dir.path())
+        .args(["project", "init"])
+        .assert()
+        .success();
     story(dir.path())
         .args(["new", "Reopen me"])
         .assert()

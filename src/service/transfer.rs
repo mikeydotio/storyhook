@@ -240,7 +240,7 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
 /// Materializes the project an export document describes, at `root`.
 ///
 /// Not a [`TransferService`] method, and not [`Ctx`]-shaped, for the same
-/// reason `story init` is not: the target project may not exist yet. `story
+/// reason `story project init` is not: the target project may not exist yet. `story
 /// import-project` into an empty directory is how the round-trip test restores
 /// a backup, so the arm has to be able to create what it is importing into.
 ///
@@ -347,7 +347,7 @@ pub fn import_project<S: Store>(
 ///
 /// `None` for the default prefix, which looks like an omission and is in fact
 /// exactly what the legacy exporter emitted: `project.toml` stored the prefix as
-/// an *option* that `story init` left unset unless `--prefix` was given, and
+/// an *option* that `story project init` left unset unless `--prefix` was given, and
 /// every reader defaults an absent one to [`DEFAULT_PREFIX`]. Emitting `SH`
 /// here would move a byte in a document the golden corpus compares literally.
 ///

@@ -26,7 +26,7 @@ fn scaffold_agents_md_contains_workflow_commands() {
 fn scaffold_agents_md_uses_project_prefix() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["init", "--prefix", "API"])
+        .args(["project", "init", "--prefix", "API"])
         .assert()
         .success();
     story(dir.path())
@@ -139,7 +139,7 @@ fn init_generates_agents_md_carrying_this_projects_prefix() {
     // fresh agent looks and which survives the directory being retired.
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["init", "--prefix", "WEB"])
+        .args(["project", "init", "--prefix", "WEB"])
         .assert()
         .success();
     let agents_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();

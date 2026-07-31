@@ -97,7 +97,9 @@ pub enum EpicAction {
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
-  story init [--prefix <PREFIX>] [--no-agents-md]
+  story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
+  story project deinit [PATH|SLUG] [--force]       (delete a project and its stories)
+  story project list                               (every project storyhook knows)
   story new <title> [--state <slug>] [--type <slug>] [--description <text>]
                     [--priority <level>] [--assignee <member>] [--label <name> ...]
   story tui                                           (interactive terminal UI)
@@ -105,9 +107,6 @@ Usage:
   story web stop                                   (stop web dashboard)
   story web open                                   (open the dashboard in your browser)
   story web address                                (copy the dashboard URL to the clipboard)
-  story web register [<PATH>] [--name <NAME>]      (add a repo to the dashboard)
-  story web deregister <ID|PATH>                   (remove a repo from the dashboard)
-  story web list                                   (list registered repos)
   story member add "<name <email>>"
   story member add -g <github-handle>
   story state list
@@ -216,9 +215,8 @@ pub enum MemberInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Invocation {
     Help,
-    Init {
-        prefix: Option<String>,
-        no_agents_md: bool,
+    Project {
+        action: ProjectAction,
     },
     New {
         title: String,
@@ -338,7 +336,7 @@ pub enum Invocation {
     /// wrong rather than stale, and re-registering cannot fix it from inside
     /// the new location if the store still resolves the old one.
     Relink {
-        /// The project's slug, as `story web list` prints it.
+        /// The project's slug, as `story project list` prints it.
         project: String,
         /// The moved checkout: its `.storyhook.toml`, or the directory holding
         /// it. Both are things a person reasonably types.
@@ -494,24 +492,56 @@ pub enum DaemonAction {
     Uninstall,
 }
 
+/// The `story project …` subcommands — a repository's whole lifecycle.
+///
+/// A verb group rather than loose top-level verbs because all of these are
+/// about the *project* rather than about a story, and because the two that
+/// change something need the same thing: a way to name a checkout other than
+/// "wherever you happen to be standing".
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectAction {
+    /// Create a project for a checkout, or re-register one that already exists.
+    Init {
+        /// The checkout to initialize; `None` means the working directory.
+        ///
+        /// Carried as text and left unresolved on purpose. A relative path has
+        /// to resolve against the *client's* working directory, and only the
+        /// invoker knows what that is — the daemon's own is wherever it was
+        /// spawned.
+        path: Option<String>,
+        /// The story-id prefix for a project being created.
+        prefix: Option<String>,
+        /// The project's display name.
+        ///
+        /// The catalog is the projects table, so this is the only place a
+        /// chosen name can go. `story web register --name` was its former
+        /// and only home.
+        name: Option<String>,
+        /// Skip generating `AGENTS.md`.
+        no_agents_md: bool,
+    },
+    /// Destroy a project and everything recorded against it.
+    Deinit {
+        /// A checkout path or a project slug; `None` means the working
+        /// directory.
+        ///
+        /// A slug is accepted because a project this machine has no checkout
+        /// of cannot be named by path — and that is exactly the project most
+        /// worth deleting.
+        target: Option<String>,
+        /// Authorize the destruction without being asked.
+        force: bool,
+    },
+    /// Every project the store knows, checkout or no checkout.
+    List,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAction {
-    Start {
-        port: u16,
-    },
+    Start { port: u16 },
     Stop,
     Status,
-    Serve {
-        port: u16,
-    },
-    Register {
-        path: std::path::PathBuf,
-        name: Option<String>,
-    },
-    Deregister {
-        target: String,
-    },
-    List,
+    Serve { port: u16 },
     Open,
     Address,
 }
@@ -650,7 +680,16 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "-V" | "--version" => Ok(Invocation::Version),
         "help" => parse_help(args),
         "update" => parse_update(args),
-        "init" => parse_init(args),
+        // Not left to fall through to `unknown command`. Five years of
+        // documents, this repo's own plugin skill, and every agent that has
+        // ever seen storyhook all say `story init`; the least useful thing to
+        // tell any of them is that no such command exists.
+        "init" => Err(AppError::Usage(
+            "`story init` is now `story project init`.\n\nThe project verbs moved into one \
+             group: `story project init`, `story project list`, `story project deinit`."
+                .to_string(),
+        )),
+        "project" => parse_project(args),
         "new" => parse_new(args),
         "member" => parse_member(args),
         "state" => parse_state(args),
@@ -701,32 +740,98 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
     }
 }
 
-fn parse_init(args: &[String]) -> Result<Invocation, AppError> {
+const PROJECT_USAGE: &str = "usage: story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] \
+                             [--no-agents-md] | deinit [PATH|SLUG] [--force] | list";
+
+fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
+    let action = args
+        .get(1)
+        .ok_or_else(|| AppError::Usage(PROJECT_USAGE.to_string()))?;
+    match action.as_str() {
+        "init" => parse_project_init(args),
+        "deinit" => parse_project_deinit(args),
+        "list" => Ok(Invocation::Project {
+            action: ProjectAction::List,
+        }),
+        _ => Err(AppError::Usage(PROJECT_USAGE.to_string())),
+    }
+}
+
+fn parse_project_deinit(args: &[String]) -> Result<Invocation, AppError> {
+    let mut target = None;
+    let mut force = false;
+    let mut index = 2;
+
+    if let Some(next) = args.get(2)
+        && !next.starts_with('-')
+    {
+        target = Some(next.clone());
+        index = 3;
+    }
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--force" | "-f" => {
+                force = true;
+                index += 1;
+            }
+            _ => return Err(AppError::Usage(PROJECT_USAGE.to_string())),
+        }
+    }
+
+    Ok(Invocation::Project {
+        action: ProjectAction::Deinit { target, force },
+    })
+}
+
+fn parse_project_init(args: &[String]) -> Result<Invocation, AppError> {
+    let mut path = None;
     let mut prefix = None;
+    let mut name = None;
     let mut no_agents_md = false;
-    let mut index = 1;
-    let usage = "usage: story init [--prefix <PREFIX>] [--no-agents-md]";
+    let mut index = 2;
+
+    // A leading bare word is the path. Anything beginning with `-` is a flag,
+    // which means a path that starts with a dash needs `./-thing` — the same
+    // bargain every other positional in this CLI makes.
+    if let Some(next) = args.get(2)
+        && !next.starts_with('-')
+    {
+        path = Some(next.clone());
+        index = 3;
+    }
+
     while index < args.len() {
         match args[index].as_str() {
             "--prefix" => {
                 let value = args
                     .get(index + 1)
-                    .ok_or_else(|| AppError::Usage(usage.to_string()))?;
+                    .ok_or_else(|| AppError::Usage("--prefix requires a value".to_string()))?;
                 prefix = Some(value.clone());
+                index += 2;
+            }
+            "--name" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| AppError::Usage("--name requires a value".to_string()))?;
+                name = Some(value.clone());
                 index += 2;
             }
             "--no-agents-md" => {
                 no_agents_md = true;
                 index += 1;
             }
-            _ => {
-                return Err(AppError::Usage(usage.to_string()));
-            }
+            _ => return Err(AppError::Usage(PROJECT_USAGE.to_string())),
         }
     }
-    Ok(Invocation::Init {
-        prefix,
-        no_agents_md,
+
+    Ok(Invocation::Project {
+        action: ProjectAction::Init {
+            path,
+            prefix,
+            name,
+            no_agents_md,
+        },
     })
 }
 
@@ -1770,8 +1875,7 @@ fn parse_port_flag(rest: &[String], usage: &str) -> Result<Option<u16>, AppError
 }
 
 fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address | \
-                  register [PATH] [--name <NAME>] | deregister <ID|PATH> | list";
+    let usage = "usage: story web start [--port <PORT>] | stop | status | open | address";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -1812,44 +1916,6 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
         }),
         "address" => Ok(Invocation::Web {
             action: WebAction::Address,
-        }),
-        "register" => {
-            let mut path = std::path::PathBuf::from(".");
-            let mut name = None;
-            let mut index = 2;
-            if let Some(next) = args.get(2)
-                && !next.starts_with("--")
-            {
-                path = std::path::PathBuf::from(next);
-                index = 3;
-            }
-            while index < args.len() {
-                match args[index].as_str() {
-                    "--name" => {
-                        let value = args.get(index + 1).ok_or_else(|| {
-                            AppError::Usage("--name requires a value".to_string())
-                        })?;
-                        name = Some(value.clone());
-                        index += 2;
-                    }
-                    _ => return Err(AppError::Usage(usage.to_string())),
-                }
-            }
-            Ok(Invocation::Web {
-                action: WebAction::Register { path, name },
-            })
-        }
-        "deregister" => {
-            let target = args
-                .get(2)
-                .ok_or_else(|| AppError::Usage(usage.to_string()))?
-                .clone();
-            Ok(Invocation::Web {
-                action: WebAction::Deregister { target },
-            })
-        }
-        "list" => Ok(Invocation::Web {
-            action: WebAction::List,
         }),
         "--serve" => {
             // Internal: story web --serve --port N

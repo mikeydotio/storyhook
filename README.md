@@ -170,7 +170,7 @@ removes any legacy plugin directory left by older versions.
 Initialize a project inside the repository you want to track:
 
 ```bash
-story init
+story project init
 ```
 
 Create a story:
@@ -229,7 +229,9 @@ story doctor
 ## Command reference
 
 ```text
-story init [--prefix <PREFIX>]
+story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
+story project deinit [PATH|SLUG] [--force]
+story project list
 story new <title>
 story member add "<name <email>>"
 story member add -g <github-handle>
@@ -257,9 +259,6 @@ story doctor [--fix]
 story web start [--port <PORT>]
 story web stop
 story web status
-story web register [<PATH>] [--name <NAME>]
-story web deregister <ID|PATH>
-story web list
 story <id>
 story <id> "<comment>"
 story <id> assign <member-id|handle>
@@ -378,15 +377,11 @@ Behavior:
 
 ## Web dashboard
 
-`story` includes a local web dashboard for browsing and triaging stories visually, alongside the CLI. One dashboard serves every project you register with it — a home screen with a summary card per repo, a repo-select dropdown for fast switching, and, per repo, the same Board/List/drawer views a single-project dashboard has always had.
+`story` includes a local web dashboard for browsing and triaging stories visually, alongside the CLI. One dashboard serves **every project the store knows** — a home screen with a summary card per repo, a repo-select dropdown for fast switching, and, per repo, the same Board/List/drawer views a single-project dashboard has always had.
+
+There is no registration step. A project reaches the dashboard by existing: `story project init` puts it in the store, and the store is what the dashboard reads. `story project list` prints the same set.
 
 ```bash
-story web register                   # register the current directory
-story web register ../other-project  # register another repo by path
-story web register . --name "API"    # register with a display name
-story web list                       # list every registered repo + id
-story web deregister api             # remove one (by id or by path)
-
 story web start [--port <PORT>]      # start the dashboard (default port 3456)
 story web stop                       # stop it
 story web status                     # check whether it's running
@@ -406,9 +401,9 @@ Open the URL printed on start — `http://127.0.0.1:<port>` by default, or your 
 
 It's a single self-contained page with no external dependencies (no CDN, no build step) and no mocked data — every action goes through the same validated, event-sourced write path as the CLI.
 
-The dashboard is a single background daemon shared by every registered repo — not one per project, and the same daemon the CLI talks to. Registered repos are rows in the store: the catalog *is* the projects table, so there is no separate registry file to fall out of step with it. The daemon's portfile, PID file and log live under `$XDG_STATE_HOME/storyhook/` (`~/.local/state/storyhook/` by default).
+The dashboard is a single background daemon shared by every project — not one per project, and the same daemon the CLI talks to. The repo list is the store's own projects table, so there is no separate registry file to fall out of step with it. The daemon's portfile, PID file and log live under `$XDG_STATE_HOME/storyhook/` (`~/.local/state/storyhook/` by default).
 
-> **Upgrading from a per-repo dashboard:** earlier versions ran one daemon per project, started from inside it, with its PID/lock/log under that project's own `.storyhook/`. If you have one of those still running, `story web stop` from this version won't see it — stop it manually, then `story web register` your project(s) and start the new dashboard.
+> **Upgrading from a per-repo dashboard:** earlier versions ran one daemon per project, started from inside it, with its PID/lock/log under that project's own `.storyhook/`. If you have one of those still running, `story web stop` from this version won't see it — stop it manually, then start the new dashboard — it already knows every project in the store.
 
 ### Network exposure
 

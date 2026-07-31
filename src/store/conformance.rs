@@ -425,6 +425,216 @@ macro_rules! store_conformance_suite {
             }
 
             // ===============================================================
+            // Deleting a project
+            //
+            // The one operation permitted to delete events, and therefore the
+            // one that has to prove it deleted nothing else. Every case here
+            // is about a boundary: between the project being torn down and its
+            // neighbour, between a teardown and an ordinary write, and between
+            // a transaction that committed and one that did not.
+            // ===============================================================
+
+            #[test]
+            fn deleting_a_project_removes_its_stories_and_its_events() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                new_story(f.store(), project, "First");
+                new_story(f.store(), project, "Second");
+
+                let removed = f
+                    .store()
+                    .write(|tx| tx.delete_project(project))
+                    .expect("deleting the project");
+
+                assert_eq!(removed.stories, 2);
+                assert_eq!(removed.paths, 0);
+                assert!(removed.events >= 2, "every event goes: {removed:?}");
+                assert!(f.store().read(|tx| tx.project(project)).unwrap().is_none());
+                assert!(f.store().read(|tx| tx.projects()).unwrap().is_empty());
+                assert_eq!(f.store().read(|tx| tx.event_count(project)).unwrap(), 0);
+            }
+
+            #[test]
+            fn deleting_a_project_forgets_its_checkouts() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                // A story, so the teardown has an event log to clear. Without
+                // one this case would pass even with the append-only guard
+                // still unconditional, and prove nothing about the migration.
+                new_story(f.store(), project, "First");
+                f.store()
+                    .write(|tx| {
+                        tx.touch_project_path(project, Path::new("/w/main"), PathKind::Main)?;
+                        tx.touch_project_path(project, Path::new("/w/tree"), PathKind::Worktree)
+                    })
+                    .unwrap();
+
+                let removed = f.store().write(|tx| tx.delete_project(project)).unwrap();
+
+                assert_eq!(removed.paths, 2);
+                // The unique index on `path` alone would refuse a re-register
+                // if a row had survived, so this also proves the directory is
+                // claimable again.
+                let other = seed(f.store(), "beta", "SH");
+                f.store()
+                    .write(|tx| tx.touch_project_path(other, Path::new("/w/main"), PathKind::Main))
+                    .expect("the path is free again");
+            }
+
+            #[test]
+            fn deleting_a_project_leaves_every_other_project_untouched() {
+                let f = <$fixture>::create();
+                let (alpha, beta) = twin_projects(f.store());
+                let before_states = f.store().read(|tx| tx.states(beta)).unwrap();
+                let before_types = f.store().read(|tx| tx.types(beta)).unwrap();
+                let before_events = f.store().read(|tx| tx.event_count(beta)).unwrap();
+                let before_one = snapshot(f.store(), beta, StoryNo::new(1));
+                let before_two = snapshot(f.store(), beta, StoryNo::new(2));
+
+                f.store().write(|tx| tx.delete_project(alpha)).unwrap();
+
+                assert_eq!(f.store().read(|tx| tx.states(beta)).unwrap(), before_states);
+                assert_eq!(f.store().read(|tx| tx.types(beta)).unwrap(), before_types);
+                assert_eq!(
+                    f.store().read(|tx| tx.event_count(beta)).unwrap(),
+                    before_events
+                );
+                assert_eq!(snapshot(f.store(), beta, StoryNo::new(1)), before_one);
+                assert_eq!(snapshot(f.store(), beta, StoryNo::new(2)), before_two);
+                let slugs: Vec<String> = f
+                    .store()
+                    .read(|tx| tx.projects())
+                    .unwrap()
+                    .into_iter()
+                    .map(|p| p.slug)
+                    .collect();
+                assert_eq!(slugs, ["beta"]);
+            }
+
+            #[test]
+            fn deleting_a_project_does_not_licence_an_ordinary_event_deletion() {
+                // Migration 3 narrows the append-only guard; it must not lift
+                // it. The store exposes no way to delete an event, so this
+                // asserts the *other* half — that a project which still exists
+                // keeps every event it had, before and after a sibling's
+                // teardown. `tests/store_rebuild.rs` makes the raw-SQL
+                // assertion that the trigger itself still fires.
+                let f = <$fixture>::create();
+                let (alpha, beta) = twin_projects(f.store());
+                let before = f.store().read(|tx| tx.event_count(beta)).unwrap();
+                assert!(before > 0);
+
+                f.store().write(|tx| tx.delete_project(alpha)).unwrap();
+
+                assert_eq!(f.store().read(|tx| tx.event_count(beta)).unwrap(), before);
+            }
+
+            #[test]
+            fn deleting_a_project_that_does_not_exist_says_so() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                new_story(f.store(), project, "First");
+                f.store().write(|tx| tx.delete_project(project)).unwrap();
+
+                let error = f
+                    .store()
+                    .write(|tx| tx.delete_project(project))
+                    .expect_err("the second deletion has nothing to delete");
+                assert!(
+                    matches!(error, StoreError::NotFound(_)),
+                    "expected NotFound, got {error:?}"
+                );
+            }
+
+            #[test]
+            fn a_deleted_projects_slug_and_uuid_are_free_again() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                new_story(f.store(), project, "First");
+                f.store().write(|tx| tx.delete_project(project)).unwrap();
+
+                let reborn = seed(f.store(), "alpha", "SH");
+                // Same slug, same uuid, and — because `projects.id` has no
+                // AUTOINCREMENT — quite possibly the same id. What must not
+                // come back is the work.
+                assert!(
+                    f.store()
+                        .read(|tx| tx.story(reborn, StoryNo::new(1)))
+                        .unwrap()
+                        .is_none(),
+                    "a reused project id must not resurrect the old project's stories"
+                );
+                assert_eq!(f.store().read(|tx| tx.event_count(reborn)).unwrap(), 0);
+                assert_eq!(
+                    f.store().write(|tx| tx.allocate_story_no(reborn)).unwrap(),
+                    StoryNo::new(1),
+                    "the story counter starts over"
+                );
+            }
+
+            #[test]
+            fn a_deleted_project_stays_deleted_after_a_reopen() {
+                let f = <$fixture>::create();
+                let alpha = seed(f.store(), "alpha", "SH");
+                let beta = seed(f.store(), "beta", "SH");
+                new_story(f.store(), alpha, "Doomed");
+                new_story(f.store(), beta, "Kept");
+                f.store().write(|tx| tx.delete_project(alpha)).unwrap();
+
+                let f = f.reopen();
+
+                assert!(f.store().read(|tx| tx.project(alpha)).unwrap().is_none());
+                assert_eq!(f.store().read(|tx| tx.event_count(alpha)).unwrap(), 0);
+                assert!(f.store().read(|tx| tx.project(beta)).unwrap().is_some());
+                assert!(f.store().read(|tx| tx.event_count(beta)).unwrap() > 0);
+            }
+
+            #[test]
+            fn a_rolled_back_deletion_leaves_the_project_intact() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                new_story(f.store(), project, "First");
+                let before = f.store().read(|tx| tx.event_count(project)).unwrap();
+
+                let outcome: Result<(), StoreError> = f.store().write(|tx| {
+                    tx.delete_project(project)?;
+                    Err(StoreError::Validation("changed my mind".into()))
+                });
+                assert!(outcome.is_err());
+
+                assert!(f.store().read(|tx| tx.project(project)).unwrap().is_some());
+                assert_eq!(f.store().read(|tx| tx.event_count(project)).unwrap(), before);
+                assert!(
+                    f.store()
+                        .read(|tx| tx.story(project, StoryNo::new(1)))
+                        .unwrap()
+                        .is_some()
+                );
+            }
+
+            #[test]
+            fn event_count_is_scoped_to_its_project() {
+                let f = <$fixture>::create();
+                let alpha = seed(f.store(), "alpha", "SH");
+                let beta = seed(f.store(), "beta", "SH");
+                new_story(f.store(), alpha, "One");
+                new_story(f.store(), alpha, "Two");
+                new_story(f.store(), beta, "Only");
+
+                let alpha_events = f.store().read(|tx| tx.event_count(alpha)).unwrap();
+                let beta_events = f.store().read(|tx| tx.event_count(beta)).unwrap();
+                assert!(alpha_events > beta_events, "{alpha_events} vs {beta_events}");
+                assert_eq!(
+                    beta_events,
+                    f.store()
+                        .read(|tx| tx.events_since(beta, GlobalSeq::ZERO, 1000))
+                        .unwrap()
+                        .len(),
+                    "the count and the feed must agree"
+                );
+            }
+
+            // ===============================================================
             // Project paths — one project, many checkouts (SH-46)
             // ===============================================================
 

@@ -85,9 +85,9 @@ pub use rebuild::{
 };
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
-    FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord, ProjectSettings,
-    RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort,
-    UnknownEventDiagnostic, partition_known,
+    DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord,
+    ProjectSettings, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow,
+    StorySort, UnknownEventDiagnostic, partition_known,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -181,6 +181,14 @@ pub trait ReadOps {
 
     /// Every checkout of a project, ordered by path.
     fn project_paths(&self, project: ProjectId) -> Result<Vec<ProjectPathRecord>, StoreError>;
+
+    /// How many events a project holds.
+    ///
+    /// A count rather than `events_since(..).len()`: `story project deinit`
+    /// has to state the size of what it is about to destroy, and paging a
+    /// whole change feed to say "4,812" would make describing the deletion
+    /// cost what performing it costs.
+    fn event_count(&self, project: ProjectId) -> Result<usize, StoreError>;
 
     /// A project's states, in configured order.
     fn states(&self, project: ProjectId) -> Result<Vec<StateDef>, StoreError>;
@@ -306,6 +314,46 @@ pub trait WriteOps: ReadOps {
     /// flag is accepted and silently dropped — which is what the legacy
     /// registry, a file with a `name` field per repo, did not do.
     fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError>;
+
+    /// Removes a project and every row recorded against it, permanently.
+    ///
+    /// The **only** operation permitted to delete events, and the reason
+    /// schema 3 exists. Schema 1 guarded `events` with an unconditional
+    /// `events_reject_delete` trigger and deliberately withheld
+    /// `ON DELETE CASCADE` from `events.project_id`, saying that a future
+    /// `delete_project` "has to drop these guards inside its own migration and
+    /// say so — it cannot happen by accident". Migration 3 does exactly that,
+    /// and narrowly: the trigger now abstains only for an event whose project
+    /// no longer exists, which is a state nothing but this operation's own
+    /// last step can produce. `events_reject_update` is untouched — an event
+    /// is still never rewritten, under any circumstance.
+    ///
+    /// Every project-scoped table is cleared explicitly, in dependency order,
+    /// even where a cascade would have done it. The cascade is demoted to a
+    /// backstop so that a table added by a later migration and forgotten here
+    /// is caught by the verification sweep that ends this transaction, rather
+    /// than silently orphaning its rows.
+    ///
+    /// Ordering is load-bearing in one place: `projects` is deleted *before*
+    /// `events`, which is what makes the rewritten trigger abstain. That works
+    /// only because a write transaction runs under `defer_foreign_keys`, which
+    /// holds `events.project_id`'s check until COMMIT. If that deferral were
+    /// ever removed the first statement fails with a foreign-key violation and
+    /// nothing is written — loudly, never silently.
+    ///
+    /// A project that does not exist is [`StoreError::NotFound`], never a
+    /// silent no-op: the caller has just told a user what it was about to
+    /// destroy, and "nothing, actually" is an answer they need.
+    ///
+    /// # Identity reuse
+    ///
+    /// `projects.id` is a plain `INTEGER PRIMARY KEY` with no `AUTOINCREMENT`,
+    /// so the id this frees is handed to the next project created. A
+    /// [`ProjectId`] held across a deletion therefore names a *different*
+    /// project rather than a missing one. Nothing in storyhook holds one that
+    /// long — every request resolves the project it operates on — but a caller
+    /// that caches ids must not.
+    fn delete_project(&mut self, project: ProjectId) -> Result<DeletedProject, StoreError>;
 
     /// Allocates the next story number for a project.
     ///
