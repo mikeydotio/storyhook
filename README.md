@@ -170,7 +170,7 @@ removes any legacy plugin directory left by older versions.
 Initialize a project inside the repository you want to track:
 
 ```bash
-story init
+story project init
 ```
 
 Create a story:
@@ -229,7 +229,9 @@ story doctor
 ## Command reference
 
 ```text
-story init [--prefix <PREFIX>]
+story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
+story project deinit [PATH|SLUG] [--force]
+story project list
 story new <title>
 story member add "<name <email>>"
 story member add -g <github-handle>

@@ -1,6 +1,6 @@
 //! Bringing a project into existence.
 //!
-//! `story init` used to be a sequence of independent filesystem writes: make
+//! `story project init` used to be a sequence of independent filesystem writes: make
 //! the directories, write `project.toml`, write `states.toml`, write
 //! `types.toml`, write `members.jsonl`, write the id counter, open the archive
 //! database. Any failure between two of them left a project that existed
@@ -52,7 +52,7 @@ pub const ALLOW_TEMP_PROJECT: &str = "STORYHOOK_ALLOW_TEMP_PROJECT";
 /// The invariant is one sentence: **a throwaway project may only be created in
 /// a throwaway store.**
 ///
-/// Before the flip, `story init` wrote a `.storyhook/` directory into the
+/// Before the flip, `story project init` wrote a `.storyhook/` directory into the
 /// directory it was run in, so a fixture's data lived in the fixture and was
 /// deleted with it. Storage isolated itself, and no test suite driving the CLI
 /// ever had to think about it — so none of them did. One global store ended
@@ -145,7 +145,7 @@ pub(crate) fn is_under_temp(path: &Path) -> bool {
 /// keeps the design honest:
 ///
 /// * **Identity** — [`schema`](Self::schema), [`uuid`](Self::uuid) and
-///   [`prefix`](Self::prefix), written once by `story init` so that a fresh
+///   [`prefix`](Self::prefix), written once by `story project init` so that a fresh
 ///   clone on another machine knows which project it is looking at before it
 ///   has any local database row to consult.
 /// * **Configuration** — the optional [`plugin`](Self::plugin) and
@@ -192,7 +192,7 @@ pub struct ProjectPointer {
 }
 
 impl ProjectPointer {
-    /// A pointer carrying identity and no configuration — what `story init`
+    /// A pointer carrying identity and no configuration — what `story project init`
     /// writes.
     #[must_use]
     pub fn new(uuid: String, prefix: String) -> Self {
@@ -226,7 +226,7 @@ pub fn legacy_project_at(root: &Path) -> Option<PathBuf> {
 /// What to tell someone standing in a repository storyhook has not imported.
 ///
 /// Loud and specific, because the alternative is worse in both directions: a
-/// bare "not initialized" invites `story init`, which would mint an *empty*
+/// bare "not initialized" invites `story project init`, which would mint an *empty*
 /// second project beside data the user still has, and a silent fallback to
 /// reading the directory is the thing this whole rearchitecture exists to
 /// stop.
@@ -309,7 +309,7 @@ pub fn write_pointer(root: &Path, pointer: &ProjectPointer) -> Result<(), AppErr
     Ok(())
 }
 
-/// What `story init` was asked to do.
+/// What `story project init` was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitOptions {
     /// The story-id prefix, defaulting to [`DEFAULT_PREFIX`].
@@ -343,14 +343,14 @@ impl Default for InitOptions {
     }
 }
 
-/// What `story init` did.
+/// What `story project init` did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitOutcome {
     /// The project this checkout now belongs to.
     pub project: ProjectId,
     /// Whether the project was created, as opposed to already existing.
     ///
-    /// `story init` is idempotent — running it twice re-registers the checkout
+    /// `story project init` is idempotent — running it twice re-registers the checkout
     /// and reports success — so this distinguishes the two without changing
     /// what the user is told.
     pub created: bool,
@@ -520,7 +520,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
         })?;
 
         // Never overwritten. The file is user-authored the moment it carries a
-        // `[plugin]` or `[hooks]` table, and `story init` is idempotent — so a
+        // `[plugin]` or `[hooks]` table, and `story project init` is idempotent — so a
         // second `init` in a repository that already has a pointer must leave
         // the user's configuration exactly where it is rather than replacing
         // the file with a freshly generated identity-only copy.

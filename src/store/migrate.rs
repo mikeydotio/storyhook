@@ -142,7 +142,7 @@ pub fn run(
         fire(FaultPoint::MidMigration)?;
         // A migration another process applied first is not this one's work to
         // report: `applied` is what *this* call changed, and a report claiming
-        // otherwise would make a concurrent `story init` look like it migrated
+        // otherwise would make a concurrent `story project init` look like it migrated
         // a database it merely opened.
         if apply(conn, migration)? {
             applied.push(migration.name.to_string());
@@ -180,7 +180,7 @@ fn validate_sequence(migrations: &[Migration]) {
 /// transaction, so two processes opening a fresh store both see version 0 and
 /// both queue migration 1; without this check the loser's `CREATE TABLE
 /// schema_migrations` fails and the user gets `error: migration 1 (initial)
-/// failed: table schema_migrations already exists` — exit 5, on a `story init`
+/// failed: table schema_migrations already exists` — exit 5, on a `story project init`
 /// that did nothing wrong. `BEGIN IMMEDIATE` serializes the two; re-reading
 /// under it is what lets the second one notice it has already been overtaken.
 ///

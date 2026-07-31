@@ -411,7 +411,7 @@ mod unmigrated {
             .expect("running story list");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("run `story init`"),
+            stderr.contains("run `story project init`"),
             "expected the ordinary not-initialized message, got: {stderr}"
         );
         assert!(!stderr.contains("story migrate"), "{stderr}");

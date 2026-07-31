@@ -85,7 +85,10 @@ fn registering_a_directory_that_is_not_a_project_says_so() {
         .register(&stranger, None)
         .expect_err("an unknown directory");
     assert!(matches!(error, AppError::NotFound(_)), "{error}");
-    assert!(error.to_string().contains("run `story init`"), "{error}");
+    assert!(
+        error.to_string().contains("run `story project init`"),
+        "{error}"
+    );
 }
 
 #[test]

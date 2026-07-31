@@ -97,7 +97,9 @@ pub enum EpicAction {
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
-  story init [--prefix <PREFIX>] [--no-agents-md]
+  story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
+  story project deinit [PATH|SLUG] [--force]       (delete a project and its stories)
+  story project list                               (every project storyhook knows)
   story new <title> [--state <slug>] [--type <slug>] [--description <text>]
                     [--priority <level>] [--assignee <member>] [--label <name> ...]
   story tui                                           (interactive terminal UI)

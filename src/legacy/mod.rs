@@ -115,7 +115,7 @@ pub struct LegacyProject {
     pub root: PathBuf,
     /// `project.toml`'s `schema`.
     pub schema: u32,
-    /// When `story init` created it.
+    /// When `story project init` created it.
     pub created_at: String,
     /// The configured story-id prefix, absent when the default was left in
     /// place. Kept as an option because `story export` emits it as one.
