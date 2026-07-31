@@ -185,11 +185,17 @@ enum Confirmed {
 fn confirm(plan: &storyhook::output::DeinitPlan, json: bool, quiet: bool) -> Confirmed {
     use std::io::{IsTerminal, Write};
 
+    // The refusal carries the *whole* plan, not just the headline counts. A
+    // caller being told to re-run with --force is being asked to authorize
+    // something sight-unseen otherwise, and the file list is the part they
+    // cannot reconstruct — which checkouts are known, and which AGENTS.md is
+    // being kept rather than removed.
     let refuse = |why: &str| {
         Confirmed::CannotAsk(storyhook::error::AppError::Validation(format!(
-            "this would permanently delete `{}` — {} stories and {} events — and {why}.\n\n\
-             Re-run with --force to confirm.",
-            plan.slug, plan.stories, plan.events
+            "this would permanently delete `{}`, and {why}.\n\n{}\nRe-run with --force to \
+             confirm.",
+            plan.slug,
+            storyhook::output::render_deinit_plan(plan),
         )))
     };
     if json {

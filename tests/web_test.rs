@@ -122,11 +122,23 @@ impl Served {
         (dir, slug)
     }
 
-    /// Forgets this project's checkout, emptying the catalog.
+    /// Forgets every checkout of this project, leaving the project itself
+    /// untouched.
+    ///
+    /// The state `story doctor --fix` leaves behind, and the one an imported
+    /// project starts in: real stories in the store, and nowhere on this
+    /// machine to act on them. Written straight to the store because there is
+    /// no longer a command that produces it on purpose — deregistration was
+    /// retired with `story web deregister`.
     fn deregister(&self) {
-        storyhook::service::CatalogService::new(&*self.store)
-            .deregister(&self.repo_id)
-            .expect("deregistering the fixture checkout");
+        use storyhook::store::WriteOps;
+        Store::write(&*self.store, |tx| {
+            for existing in tx.project_paths(self.project)? {
+                tx.forget_project_path(self.project, std::path::Path::new(&existing.path))?;
+            }
+            Ok(())
+        })
+        .expect("forgetting the fixture's checkouts");
     }
 }
 
@@ -2287,31 +2299,40 @@ fn web_serve_unknown_repo_id_is_404() {
 }
 
 #[test]
-fn web_register_repo_via_api() {
+fn web_init_creates_a_project_at_a_path() {
     let fixture = served();
     let port = fixture.port;
-    // `story init` records the checkout, so the catalog starts with it. Forget
-    // it, and the POST below is what puts it back — which is the operation
-    // under test.
-    fixture.deregister();
+    let fresh = fixture.dir().join("another");
+    std::fs::create_dir_all(&fresh).unwrap();
 
-    let body = serde_json::json!({"path": fixture.dir().to_string_lossy()}).to_string();
+    let body = serde_json::json!({
+        "path": fresh.to_string_lossy(),
+        "name": "Another",
+        "prefix": "AN",
+    })
+    .to_string();
     let resp = post_json(&format!("http://127.0.0.1:{port}/api/repos"), &body).unwrap();
     assert_eq!(resp.status(), 201);
-    let json: serde_json::Value =
-        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
-    assert!(json["id"].is_string());
 
+    // The same operation the CLI performs: a pointer file in the repository,
+    // and a row the dashboard can see.
+    assert!(fresh.join(".storyhook.toml").exists());
     let list = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
         .call()
         .unwrap();
-    let list_json: serde_json::Value =
+    let repos: serde_json::Value =
         serde_json::from_str(&list.into_body().read_to_string().unwrap()).unwrap();
-    assert_eq!(list_json.as_array().unwrap().len(), 1);
+    let names: Vec<&str> = repos
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["name"].as_str())
+        .collect();
+    assert!(names.contains(&"Another"), "{names:?}");
 }
 
 #[test]
-fn web_register_repo_requires_guard_header() {
+fn web_init_requires_the_guard_header() {
     let fixture = served();
     let port = fixture.port;
 
@@ -2321,33 +2342,82 @@ fn web_register_repo_requires_guard_header() {
     assert_eq!(status_of(err), 403);
 }
 
+/// An unconfirmed delete answers with the plan and destroys nothing.
+///
+/// The same two-step the terminal runs, and deliberately the same value: the
+/// browser draws its warning from the `DeinitPlan` the CLI prompts from, so the
+/// two front-ends cannot grow two different ideas of what deinit does.
 #[test]
-fn web_deregister_repo_via_api() {
+fn web_deinit_without_confirmation_returns_the_plan_and_deletes_nothing() {
     let fixture = served();
-
+    fixture.seed(&["new", "Precious"]);
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    let resp = delete_json(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}"), "").unwrap();
+    let err = delete_json(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}"), "").unwrap_err();
+    let ureq::Error::StatusCode(code) = err else {
+        panic!("expected a status error");
+    };
+    assert_eq!(code, 409, "confirmation required");
+
+    // Still there, stories and all.
+    let data = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!(json["summary"]["total_open"], 1);
+    assert!(fixture.dir().join(".storyhook.toml").exists());
+}
+
+#[test]
+fn web_deinit_with_the_slug_typed_back_destroys_the_project() {
+    let fixture = served();
+    fixture.seed(&["new", "Doomed"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.to_string());
+
+    let body = serde_json::json!({ "confirm": repo_id }).to_string();
+    let resp = delete_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}"),
+        &body,
+    )
+    .unwrap();
     assert_eq!(resp.status(), 200);
 
     let list = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
         .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
         .unwrap();
-    let list_json: serde_json::Value =
-        serde_json::from_str(&list.into_body().read_to_string().unwrap()).unwrap();
-    let repos = list_json.as_array().unwrap();
+    let repos: serde_json::Value = serde_json::from_str(&list).unwrap();
+    assert_eq!(
+        repos.as_array().unwrap().len(),
+        0,
+        "the project is gone, not merely unlisted"
+    );
+    assert!(
+        !fixture.dir().join(".storyhook.toml").exists(),
+        "the repository-side pointer goes with it"
+    );
+}
 
-    // The *checkout* was forgotten, not the project. It stays listed, read-only,
-    // with its stories intact — the dashboard now serves every project the
-    // store knows, so forgetting a path can no longer make work unreachable.
-    assert_eq!(repos.len(), 1);
-    assert_eq!(repos[0]["id"], repo_id);
-    assert!(repos[0]["path"].is_null());
-    assert_eq!(repos[0]["read_only"], true);
+#[test]
+fn web_deinit_with_the_wrong_slug_is_refused() {
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    // And it must never touch the repo's own files. The committed pointer names
-    // the project this just forgot the checkout of, so `story project init`
-    // puts it back.
+    let body = serde_json::json!({ "confirm": "not-the-slug" }).to_string();
+    let err = delete_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}"),
+        &body,
+    )
+    .unwrap_err();
+    let ureq::Error::StatusCode(code) = err else {
+        panic!("expected a status error");
+    };
+    assert_eq!(code, 409, "a mistyped confirmation is not a confirmation");
     assert!(fixture.dir().join(".storyhook.toml").exists());
 }
 
@@ -3591,23 +3661,11 @@ fn a_project_with_a_worktree_resolves_to_its_main_checkout() {
 // them — read-only, because every write needs a working directory to fire the
 // project's hooks and run its git operations in.
 
-/// Removes every checkout row, leaving the project itself untouched.
-fn forget_every_checkout(fixture: &Served) {
-    use storyhook::store::WriteOps;
-    Store::write(&*fixture.store, |tx| {
-        for existing in tx.project_paths(fixture.project)? {
-            tx.forget_project_path(fixture.project, std::path::Path::new(&existing.path))?;
-        }
-        Ok(())
-    })
-    .expect("forgetting the checkouts");
-}
-
 #[test]
 fn a_project_with_no_checkout_is_listed_rather_than_hidden() {
     let fixture = served();
     fixture.seed(&["new", "Still readable"]);
-    forget_every_checkout(&fixture);
+    fixture.deregister();
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let body = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
@@ -3642,7 +3700,7 @@ fn a_project_with_no_checkout_is_listed_rather_than_hidden() {
 fn a_project_with_no_checkout_still_serves_its_board() {
     let fixture = served();
     fixture.seed(&["new", "Still readable"]);
-    forget_every_checkout(&fixture);
+    fixture.deregister();
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
@@ -3661,7 +3719,7 @@ fn a_project_with_no_checkout_still_serves_its_board() {
 #[test]
 fn a_project_with_no_checkout_refuses_writes_and_says_why() {
     let fixture = served();
-    forget_every_checkout(&fixture);
+    fixture.deregister();
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
     let err = ureq::post(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"))

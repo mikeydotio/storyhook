@@ -33,7 +33,7 @@ use crate::api::http::{
     Reply, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body, html_reply,
     json_reply, parse_json_object, path_segments, require_str, text_reply, to_json,
 };
-use crate::cli::{Invocation, StateAction};
+use crate::cli::{Invocation, ProjectAction, StateAction};
 use crate::domain::Priority;
 use crate::env::Environment;
 use crate::error::AppError;
@@ -118,8 +118,8 @@ fn mutating(method: &Method) -> bool {
 
 /// Decides how to respond to a request against `store`.
 ///
-/// `/` always serves the single-page app; `/api/repos` (list/register) and
-/// `/api/repos/<id>` (deregister) operate on the project catalog; every other
+/// `/` always serves the single-page app; `/api/repos` (list/init) and
+/// `/api/repos/<id>` (deinit) operate on the project catalog; every other
 /// `/api/repos/<id>/...` path resolves `<id>` to that project and delegates to
 /// [`route_project`], the entire per-project API surface.
 pub fn route<S: Store>(
@@ -144,7 +144,7 @@ pub fn route<S: Store>(
             Method::Post => Routed::changing(
                 method,
                 guarded(headers, trusted_hosts, body, |b| {
-                    route_register_repo(store, b)
+                    route_init_repo(store, env, b)
                 }),
                 Changed::Catalog,
             ),
@@ -153,7 +153,9 @@ pub fn route<S: Store>(
         ["api", "repos", id] => match method {
             Method::Delete => Routed::changing(
                 method,
-                guarded_no_body(headers, trusted_hosts, || route_deregister_repo(store, id)),
+                guarded(headers, trusted_hosts, body, |b| {
+                    route_deinit_repo(store, env, id, b)
+                }),
                 Changed::Catalog,
             ),
             _ => Routed::quiet(text_reply(405, "Method not allowed")),
@@ -415,39 +417,70 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
     to_json(&repos)
 }
 
-/// `POST /api/repos` — register a checkout. Body: `{"path": "...", "name"?: "..."}`.
-fn route_register_repo<S: Store>(store: &S, body: &str) -> Reply {
+/// `POST /api/repos` — initialize a project at a path on this machine.
+/// Body: `{"path": "...", "name"?: "...", "prefix"?: "..."}`.
+///
+/// The same operation as `story project init`, reached through the same
+/// dispatcher, so the browser cannot create a project the CLI would have
+/// created differently. There is no longer a "register" that is distinct from
+/// this: a project reaches the dashboard by existing.
+fn route_init_repo<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let path = require_str(&obj, "path")?;
-        let name = get_str(&obj, "name");
-        let entry = CatalogService::new(store).register(std::path::Path::new(path), name)?;
-        Ok(json_reply(
-            201,
-            to_json(&serde_json::json!({
-                "id": entry.id,
-                "name": entry.name,
-                "path": entry.path,
-            }))?,
-        ))
+        let invocation = Invocation::Project {
+            action: ProjectAction::Init {
+                // Absolute, because a relative path would resolve against the
+                // daemon's own working directory and the browser has no
+                // meaningful one to offer.
+                path: Some(path.to_string()),
+                prefix: get_str(&obj, "prefix").map(str::to_string),
+                name: get_str(&obj, "name").map(str::to_string),
+                no_agents_md: false,
+            },
+        };
+        let root = std::path::Path::new(path);
+        let response = crate::invoke::dispatch_unscoped(store, root, &env.now(), invocation)?;
+        Ok(json_reply(201, render_response(&response, true, false)))
     })()
     .unwrap_or_else(|e| error_reply(&e))
 }
 
-/// `DELETE /api/repos/{id}` — forget a checkout. Never touches the project's
-/// stories, only the record of where it is checked out.
-fn route_deregister_repo<S: Store>(store: &S, id: &str) -> Reply {
-    match CatalogService::new(store).deregister(id) {
-        Ok(entry) => json_reply(
-            200,
-            serde_json::json!({
-                "result": "ok",
-                "repo": {"id": entry.id, "name": entry.name, "path": entry.path},
-            })
-            .to_string(),
-        ),
-        Err(e) => error_reply(&e),
-    }
+/// `DELETE /api/repos/{id}` — **permanently delete** a project and everything
+/// recorded against it.
+///
+/// Two-step, exactly as the CLI is. Without a body naming the project's slug
+/// this answers `409` carrying the same [`DeinitPlan`](crate::output::DeinitPlan)
+/// the terminal prompt is drawn from, and writes nothing; the browser renders
+/// that as its confirmation modal and sends the slug back. One value, two
+/// front-ends, so the warning cannot say two different things.
+///
+/// Body: `{"confirm": "<slug>"}`.
+fn route_deinit_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let confirmed = parse_json_object(body)
+            .ok()
+            .and_then(|obj| get_str(&obj, "confirm").map(str::to_string))
+            .is_some_and(|typed| typed == id);
+
+        let invocation = Invocation::Project {
+            action: ProjectAction::Deinit {
+                target: Some(id.to_string()),
+                force: confirmed,
+            },
+        };
+        // The daemon has no working directory of the user's; a slug target does
+        // not need one, and `deinit` only touches repository files in a
+        // directory the caller named by path.
+        let root = std::path::Path::new("/");
+        let response = crate::invoke::dispatch_unscoped(store, root, &env.now(), invocation)?;
+        let status = match response {
+            Response::ConfirmationRequired(_) => 409,
+            _ => 200,
+        };
+        Ok(json_reply(status, render_response(&response, true, false)))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
 }
 
 // --- Project data: /api/repos/<id>/data ---
