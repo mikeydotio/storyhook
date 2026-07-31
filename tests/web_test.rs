@@ -3526,3 +3526,51 @@ fn read_sse_until_quiet(
     }
     String::from_utf8_lossy(&acc).into_owned()
 }
+
+// --- Which checkout the dashboard acts in ---
+
+/// A project with a linked worktree must resolve to its **main** working tree,
+/// not to whichever path happens to sort first.
+///
+/// `project_paths` is ordered by path, so a worktree at `/a/...` beside a main
+/// tree at `/z/...` won the toss. That is arbitrary in a way that matters: the
+/// dashboard runs a project's event hooks and its git operations in the
+/// directory it picks, and a linked worktree is a branch somebody is working
+/// on — its hooks and its `AGENTS.md` are that branch's, not the project's.
+#[test]
+fn a_project_with_a_worktree_resolves_to_its_main_checkout() {
+    use storyhook::store::{PathKind, WriteOps};
+
+    let fixture = served();
+    let project = fixture.project;
+
+    // Names chosen so the worktree sorts *before* the main tree.
+    let root = fixture.dir.path().join("zz-main");
+    let worktree = fixture.dir.path().join("aa-worktree");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+
+    Store::write(&*fixture.store, |tx| {
+        for existing in tx.project_paths(project)? {
+            tx.forget_project_path(project, std::path::Path::new(&existing.path))?;
+        }
+        tx.touch_project_path(project, &root, PathKind::Main)?;
+        tx.touch_project_path(project, &worktree, PathKind::Worktree)
+    })
+    .expect("recording two checkouts");
+
+    let port = fixture.port;
+    let body = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap()
+        .into_body()
+        .read_to_string()
+        .unwrap();
+    let repos: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
+    let path = repos[0]["path"].as_str().expect("a path");
+    assert_eq!(
+        path,
+        root.to_string_lossy(),
+        "the main working tree wins over a linked worktree that sorts first"
+    );
+}
