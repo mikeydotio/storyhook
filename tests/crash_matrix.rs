@@ -108,7 +108,7 @@ fn integrity_of(path: &Path) -> String {
 /// and a case that quietly stopped checking them would still look like a test.
 fn assert_store_is_sound(env: &TestEnv, project: ProjectId) {
     assert_eq!(
-        integrity_of(&env.store_path()),
+        integrity_of(env.store_path()),
         "ok",
         "the database must survive a kill -9 intact"
     );
@@ -379,7 +379,7 @@ fn a_commit_that_survives_a_crash_is_replayed_from_the_write_ahead_log() {
         listed.contains("in the wal"),
         "the committed story must be recovered from the log: {listed}"
     );
-    assert_eq!(integrity_of(&env.store_path()), "ok");
+    assert_eq!(integrity_of(env.store_path()), "ok");
 }
 
 /// The same window, one process further away: the **daemon** dies between
@@ -567,7 +567,7 @@ fn user_version(path: &Path) -> u32 {
 fn sigkill_mid_migration_leaves_a_version_that_is_true_and_a_backup_that_is_not() {
     let env = env_with_a_v1_store();
     let cwd = scratch_dir();
-    assert_eq!(user_version(&env.store_path()), 1, "the fixture is at v1");
+    assert_eq!(user_version(env.store_path()), 1, "the fixture is at v1");
 
     let mut cmd = env.raw_story(cwd.path());
     cmd.env("STORYHOOK_INVOKER", "local")
@@ -581,11 +581,11 @@ fn sigkill_mid_migration_leaves_a_version_that_is_true_and_a_backup_that_is_not(
     );
 
     assert_eq!(
-        user_version(&env.store_path()),
+        user_version(env.store_path()),
         1,
         "a migration killed before it applied anything must leave the version it started at"
     );
-    assert_eq!(integrity_of(&env.store_path()), "ok");
+    assert_eq!(integrity_of(env.store_path()), "ok");
 
     // The backup is taken *before* the first migration runs, so the killed
     // process must have left one — and it must be a database, not a byte copy.
@@ -627,11 +627,11 @@ fn sigkill_during_backup_verification_migrates_nothing() {
     assert_eq!(status.signal(), Some(libc::SIGKILL));
 
     assert_eq!(
-        user_version(&env.store_path()),
+        user_version(env.store_path()),
         1,
         "a backup that never verified must leave the database at its old version"
     );
-    assert_eq!(integrity_of(&env.store_path()), "ok");
+    assert_eq!(integrity_of(env.store_path()), "ok");
 
     // The snapshot is written under a staging name and renamed only once it has
     // verified, so a crash during verification leaves nothing that `snapshots`
@@ -683,7 +683,7 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
         "the crash this test is about has to actually happen"
     );
     assert_eq!(
-        user_version(&env.store_path()),
+        user_version(env.store_path()),
         1,
         "and it must have died before applying anything"
     );
@@ -708,9 +708,9 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
         );
     }
 
-    assert_eq!(integrity_of(&env.store_path()), "ok");
+    assert_eq!(integrity_of(env.store_path()), "ok");
     assert_eq!(
-        user_version(&env.store_path()),
+        user_version(env.store_path()),
         storyhook::store::current_schema_version(),
         "eight survivors racing one crash must land on the current schema"
     );
@@ -810,7 +810,7 @@ fn every_named_point_survives_a_kill_with_the_database_intact() {
 /// refuse to migrate or read.
 fn assert_survives(env: &TestEnv, context: &str) {
     assert_eq!(
-        integrity_of(&env.store_path()),
+        integrity_of(env.store_path()),
         "ok",
         "the database must be intact after a kill at {context}"
     );

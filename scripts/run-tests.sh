@@ -28,6 +28,12 @@ trap 'rm -rf "$data_root"' EXIT
 
 export STORYHOOK_DATA_DIR="$data_root/data"
 export XDG_STATE_HOME="$data_root/state"
+
+# `STORYHOOK_STORE_PATH` outranks `STORYHOOK_DATA_DIR` (SH-113). A developer who
+# has one exported -- which is exactly what somebody debugging a second store
+# would have -- would otherwise run this whole suite against it, and the guard
+# below would not notice, because it inspects the variable that lost.
+unset STORYHOOK_STORE_PATH
 export INSTA_UPDATE=no
 
 # The default gate runs in-process. `STORYHOOK_INVOKER=daemon` — what

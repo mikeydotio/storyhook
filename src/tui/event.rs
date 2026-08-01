@@ -120,7 +120,7 @@ impl EventSource {
         tx: Sender<Event>,
         stop: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
-        let path = env.store_path();
+        let path = env.store_path().to_path_buf();
         thread::spawn(move || {
             use crate::store::Store as _;
             let Ok(store) = crate::store::SqliteStore::open(path) else {

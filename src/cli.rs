@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -130,6 +132,7 @@ Usage:
   story decompose --stdin [--dry-run]
   story import-project <file>
   story migrate [<path>] [--dry-run]               (move a .storyhook tree into the store)
+  story store new <path>                           (create an empty store beside the default one)
   story relink <project> <path>                    (point a project at its moved checkout)
   story load-context [--format markdown|json]
   story handoff [--since <duration>]
@@ -178,6 +181,10 @@ Global options:
   --json          Emit structured JSON
   --quiet         Suppress success output
   --no-hooks      Suppress event hook execution
+  --store-path <file>
+                  Run against a named store rather than the default one. Also
+                  spelled $STORYHOOK_STORE_PATH. One daemon serves one store, so
+                  a command under this flag can neither read nor write any other.
   -h, --help
   -V, --version   Print the installed story version
 "#;
@@ -408,6 +415,9 @@ pub enum Invocation {
     Daemon {
         action: DaemonAction,
     },
+    Store {
+        action: StoreAction,
+    },
     SessionStart,
     Update {
         check: bool,
@@ -536,6 +546,20 @@ pub enum ProjectAction {
     List,
 }
 
+/// The `story store …` subcommands.
+///
+/// About *stores* rather than about anything inside one, which is what makes
+/// them different from every other verb: `store new` names the store it creates,
+/// so it must not resolve — let alone create — the ambient one on its way.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StoreAction {
+    /// Create an empty store at a path nothing else owns.
+    New {
+        /// Where to put it. Resolved against the client's working directory.
+        path: String,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WebAction {
     Start { port: u16 },
@@ -564,9 +588,27 @@ pub struct GlobalFlags {
     /// — several processes on one database — so `--local` is not a lesser path,
     /// it is the same services with one less hop.
     pub local: bool,
+    /// `--store-path <file>`: run this command against a named store.
+    ///
+    /// Global because it has to be: the store is resolved before a verb is
+    /// dispatched, and a flag that only some commands honoured would be a flag
+    /// that silently stops applying somewhere in the middle of a script.
+    ///
+    /// It names a **file**, not a directory, which is what makes it a different
+    /// lever from `$STORYHOOK_DATA_DIR`. `main` publishes the resolved path into
+    /// `$STORYHOOK_STORE_PATH` so that everything this invocation starts — the
+    /// daemon, a git hook, a `story` a hook itself runs — agrees about which
+    /// store it is in.
+    pub store_path: Option<PathBuf>,
 }
 
-pub fn split_global_flags(args: &[String]) -> (GlobalFlags, Vec<String>) {
+/// Splits the global flags out of `args`, leaving the verb and its own
+/// arguments behind.
+///
+/// Fallible only because `--store-path` takes a value: a flag whose value went
+/// missing must not be dropped on the floor, because the command would then run
+/// against a *different store* than the one the caller named.
+pub fn split_global_flags(args: &[String]) -> Result<(GlobalFlags, Vec<String>), AppError> {
     let mut flags = GlobalFlags::default();
     let mut filtered = Vec::new();
 
@@ -590,12 +632,35 @@ pub fn split_global_flags(args: &[String]) -> (GlobalFlags, Vec<String>) {
             "--quiet" => flags.quiet = true,
             "--no-hooks" => flags.no_hooks = true,
             "--local" => flags.local = true,
+            "--store-path" => {
+                let Some(value) = args.get(i + 1).filter(|value| !value.is_empty()) else {
+                    return Err(AppError::Usage(
+                        "--store-path needs the path of a store file, for example \
+                         `--store-path /tmp/scratch/store.db`."
+                            .to_string(),
+                    ));
+                };
+                flags.store_path = Some(PathBuf::from(value));
+                i += 2;
+                continue;
+            }
+            other if other.starts_with("--store-path=") => {
+                let value = other.trim_start_matches("--store-path=");
+                if value.is_empty() {
+                    return Err(AppError::Usage(
+                        "--store-path= was given no path. It names a store file, for example \
+                         `--store-path=/tmp/scratch/store.db`."
+                            .to_string(),
+                    ));
+                }
+                flags.store_path = Some(PathBuf::from(value));
+            }
             _ => filtered.push(args[i].clone()),
         }
         i += 1;
     }
 
-    (flags, filtered)
+    Ok((flags, filtered))
 }
 
 /// Whether `args` — a whole invocation, verb included — asks a verb to
@@ -718,6 +783,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "plugin" => parse_plugin(args),
         "web" => parse_web(args),
         "daemon" => parse_daemon(args),
+        "store" => parse_store(args),
         "show" => parse_show(args),
         "comment" => parse_comment(args),
         "assign" => parse_assign(args),
@@ -1833,6 +1899,28 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 /// `story daemon start|stop|status|install|uninstall|--serve`.
+fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story store new <path>";
+    let action = match args.get(1).map(String::as_str) {
+        Some("new") => match args.get(2) {
+            Some(path) if !path.is_empty() && !path.starts_with('-') => {
+                StoreAction::New { path: path.clone() }
+            }
+            _ => {
+                return Err(AppError::Usage(format!(
+                    "{usage}\n\n`store new` names the file to create, for example \
+                     `story store new /tmp/scratch/store.db`."
+                )));
+            }
+        },
+        _ => return Err(AppError::Usage(usage.to_string())),
+    };
+    if args.len() > 3 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    Ok(Invocation::Store { action })
+}
+
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
     let usage = "usage: story daemon start [--port <PORT>] | stop | status | install | uninstall";
     if args.len() < 2 {

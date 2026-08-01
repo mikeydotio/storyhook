@@ -81,6 +81,13 @@ rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { workspace = true }
 serde_yml = "0.0.12"
+# The digest behind a store's daemon-state directory name. A store's identity
+# determines its daemon's identity (docs/spec/store-isolation.md), and the
+# directory that identity names must not depend on the path's length or on
+# characters a filesystem may refuse -- so it is a hash of the canonical path
+# rather than an escaping of it. Not a security boundary: the portfile carries
+# the store path in full, so a collision would be detectable rather than silent.
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
 thiserror = "2.0.17"
 toml = "0.8.23"
 # The portable identity of a project, minted by `story init` and carried in the

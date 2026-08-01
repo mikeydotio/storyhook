@@ -34,8 +34,12 @@ fn deprecation(alias: &str, replacement: &str) {
 }
 
 /// The environment these commands act in.
+///
+/// Re-resolved rather than threaded, and `None` for the flag on purpose: `main`
+/// publishes any `--store-path` into `$STORYHOOK_STORE_PATH` before anything
+/// dispatches, so this reads the store the caller named.
 fn environment() -> Result<Environment, AppError> {
-    Environment::from_process()
+    Environment::from_process(None)
 }
 
 /// `story web start [--port N]` — an alias for `story daemon start`.

@@ -45,6 +45,9 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   export XDG_CONFIG_HOME="$HOME/.config"
   export XDG_STATE_HOME="$HOME/.local/state"
   export STORYHOOK_DATA_DIR="$HOME/.local/share/storyhook"
+  # Outranks STORYHOOK_DATA_DIR (SH-113): an exported one in the developer's
+  # shell would point this whole suite at their own store.
+  unset STORYHOOK_STORE_PATH
   mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$STORYHOOK_DATA_DIR"
 
   # This suite is about story.sh's shell behaviour, so every `story` it runs

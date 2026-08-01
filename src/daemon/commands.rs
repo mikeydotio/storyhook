@@ -123,7 +123,7 @@ fn agent_plist(exe: &std::path::Path, env: &Environment) -> String {
     <key>ProgramArguments</key>
     <array>
         <string>{exe}</string>
-        <string>daemon</string>
+{store}        <string>daemon</string>
         <string>--serve</string>
     </array>
     <key>RunAtLoad</key>
@@ -136,6 +136,19 @@ fn agent_plist(exe: &std::path::Path, env: &Environment) -> String {
 </plist>
 "#,
         exe = exe.display(),
+        // A login agent for the default store needs no flag, and leaving it off
+        // keeps the plist identical to the one every existing installation has.
+        // For any other store the flag is required rather than tidy: the log
+        // path below is already this store's, so an agent without it would run
+        // one store's daemon while writing into another's directory.
+        store = if env.store().is_default() {
+            String::new()
+        } else {
+            format!(
+                "        <string>--store-path</string>\n        <string>{}</string>\n",
+                env.store_path().display()
+            )
+        },
         log = env.daemon_log().display(),
     )
 }
@@ -256,6 +269,37 @@ mod tests {
             !plist.contains("KeepAlive"),
             "an agent that restarts the daemon immediately races the client that \
              just asked it to stop for a version upgrade"
+        );
+    }
+
+    /// The agent's log path is already this store's. An agent that ran the
+    /// *default* store's daemon while writing into a named store's directory
+    /// would be describing one process and starting another.
+    #[test]
+    fn the_agent_names_a_store_that_is_not_the_default_one() {
+        let dir = scratch();
+        let named = dir.path().join("named.db");
+        let env = Environment::at(dir.path());
+        let default_plist = agent_plist(std::path::Path::new("/usr/local/bin/story"), &env);
+        assert!(
+            !default_plist.contains("--store-path"),
+            "the default store's agent must stay byte-identical to the one every \
+             existing installation has"
+        );
+
+        let env = env.with_store(
+            crate::env::StoreLocation::resolve(
+                Some(&named),
+                &crate::env::StoreVars::default(),
+                dir.path(),
+            )
+            .expect("resolving a named store"),
+        );
+        let plist = agent_plist(std::path::Path::new("/usr/local/bin/story"), &env);
+        assert!(plist.contains("<string>--store-path</string>"), "{plist}");
+        assert!(
+            plist.contains(&format!("<string>{}</string>", env.store_path().display())),
+            "{plist}"
         );
     }
 

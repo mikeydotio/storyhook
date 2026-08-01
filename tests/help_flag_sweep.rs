@@ -91,6 +91,11 @@ const VERBS: &[&[&str]] = &[
     &["update"],
     &["session-start"],
     &["tui"],
+    // `store new` takes a path in the position `new` takes a title, which is
+    // the shape SH-52 was: a help request read as data. Here it would create a
+    // whole database called `--help`.
+    &["store"],
+    &["store", "new"],
 ];
 
 /// A project with one story, so an accidental `story new` is visible in

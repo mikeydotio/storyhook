@@ -166,6 +166,59 @@ pub fn open_store(env: &Environment) -> Result<crate::store::SqliteStore, AppErr
     Ok(store)
 }
 
+/// `story store new <path>` — creates an empty store where nothing is.
+///
+/// **Deliberately not routed through an [`Environment`].** Every other command
+/// resolves the ambient store before it does anything, and doing that here would
+/// have two consequences, both wrong: creating the real store as a side effect
+/// of asking for a different one, and refusing outright in a test build — which
+/// is the one build that most needs to be able to make a scratch store.
+///
+/// The default store is refused because it is the daemon's to create on first
+/// run. Creating it by hand would put an empty database where the daemon expects
+/// either nothing or its own, and the failure would surface later as a tracker
+/// that had lost everything.
+pub fn create_store(cwd: &Path, requested: &str) -> Result<Response, AppError> {
+    use crate::store::Store as _;
+
+    let requested = crate::env::canonical_ish(&resolve_against(cwd, requested))?;
+    let default = crate::env::default_store_path()?;
+    if requested == default {
+        return Err(AppError::Validation(format!(
+            "refusing to create `{}`: that is the default store, which storyhook's daemon \
+             creates for itself on first run.\n\nNothing has been written. `story store new` is \
+             for a store *beside* the default one — a scratch store for a test suite, or a \
+             second tracker — so give it a path of its own and reach it with `--store-path` or \
+             $STORYHOOK_STORE_PATH.",
+            requested.display()
+        )));
+    }
+    if requested.exists() {
+        return Err(AppError::Validation(format!(
+            "refusing to create `{}`: it already exists.\n\nNothing has been written. Use it \
+             with `--store-path {}`, or delete it first if you meant to start over.",
+            requested.display(),
+            requested.display()
+        )));
+    }
+    if let Some(parent) = requested.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            AppError::Storage(format!(
+                "failed to create `{}` for the new store: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    let store = crate::store::SqliteStore::open(&requested)?;
+    store.migrate()?;
+    Ok(Response::Message(format!(
+        "Created an empty store at {}\nUse it with `story --store-path {} <command>`.",
+        requested.display(),
+        requested.display()
+    )))
+}
+
 /// Runs one invocation against the store, in this process.
 ///
 /// This is the stack's entry point, and what replaced the pre-rearchitecture
@@ -401,7 +454,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             // fixtures are supposed to disappear, and reporting them there
             // would make `doctor` depend on which sibling fixtures happened to
             // have been dropped yet.
-            let audit_catalog = !crate::service::project::is_under_temp(ctx.env().data_home());
+            let audit_catalog = !crate::service::project::is_under_temp(ctx.env().store_path());
             if fix {
                 let mut message = service.fix()?;
                 if audit_catalog {
@@ -493,6 +546,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         }
         Invocation::Web { .. }
         | Invocation::Daemon { .. }
+        | Invocation::Store { .. }
         | Invocation::Update { .. }
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
@@ -682,7 +736,7 @@ fn dispatch_web(action: WebAction) -> Result<Response, AppError> {
 /// daemon is a process that does not return rather than a command with an
 /// answer.
 fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
-    let env = Environment::from_process()?;
+    let env = Environment::from_process(None)?;
     match action {
         DaemonAction::Start { port } => {
             let info = crate::daemon::commands::start(&env, port)?;
@@ -997,6 +1051,13 @@ pub fn dispatch_unscoped_with<S: Store>(
         // nothing is working.
         Invocation::Web { action } => dispatch_web(action),
         Invocation::Daemon { action } => dispatch_daemon(action),
+        // `main` answers this one before a store is ever opened, for the
+        // reasons on [`create_store`]. Reaching here means a caller went round
+        // the front door, and the honest answer is that the store this arm
+        // holds is the wrong one to create anything with.
+        Invocation::Store { .. } => Err(AppError::Storage(
+            "`story store new` is handled before the store is opened".to_string(),
+        )),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
         // answered before it ever looked for a project — so this arm does too,
@@ -1328,6 +1389,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Plugin { .. } => "plugin",
         Invocation::Web { .. } => "web",
         Invocation::Daemon { .. } => "daemon",
+        Invocation::Store { .. } => "store",
         Invocation::SessionStart => "session-start",
         Invocation::Update { .. } => "update",
         Invocation::Version => "version",
@@ -1645,7 +1707,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
         if let Some(target) = project_creation_target(&request.invocation, &self.cwd) {
             crate::service::project::refuse_temp_project_in_real_store(
                 &target,
-                self.env.data_home(),
+                self.env.store_path(),
             )?;
         }
         if is_project_less(&request.invocation) {
@@ -1733,6 +1795,7 @@ fn is_project_less(invocation: &Invocation) -> bool {
         | Invocation::Version
         | Invocation::Web { .. }
         | Invocation::Daemon { .. }
+        | Invocation::Store { .. }
         | Invocation::Update { .. }
         | Invocation::Plugin { .. } => true,
         // `hooks test` is the exception in its own family: it fires a real hook
