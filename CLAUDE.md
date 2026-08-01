@@ -51,15 +51,32 @@ Execution state — wave status, step log, discovered defects — lives in
 **The program is complete and merged.** Follow-on work now lands as ordinary
 branches; the rules below still apply to anything touching the store or the seam.
 
-**In flight:** `feat/project-lifecycle-verbs` — `story project init|deinit|list`
-replaces `story init` and the `story web register|deregister|list` catalog verbs,
-and the dashboard serves every project in the store rather than only those with a
-checkout. Breaking, so it wants `/semver bump major` **from `main` after merge**.
-See HANDOFF.md.
+**In flight:** `feat/store-isolation` — SH-113, the first child of the
+server-owned epic (SH-112), and the origin-fix for SH-123. Daemon runtime state
+is derived from the **canonical store path**, so one store has exactly one
+daemon by construction; `--store-path`/`$STORYHOOK_STORE_PATH` name a store on
+every command, and `story store new` creates one. Design of record:
+[`docs/spec/store-isolation.md`](docs/spec/store-isolation.md), whose "As built"
+section records the six decisions taken during implementation.
 
-Release-from-`main`, once that lands: reinstall the `story` binary — the
-installed one predates both the flip *and* this rename, so `story init` still
-works there and `story project init` does not — then `/semver bump major`.
+Three things to know before touching it:
+
+- **`--store-path` becomes `$STORYHOOK_STORE_PATH`** in `main`, before anything
+  resolves. That is what makes it reach `story daemon status`, the TUI, a git
+  hook, and the daemon this run spawns — none of which are threaded.
+- **Canonicalization must not change when the store file appears.**
+  `Path::join("")` appends a separator; that turned one store into two daemons
+  the moment its file existed, and is pinned by
+  `the_same_path_resolves_the_same_before_and_after_it_exists`.
+- **`$STORYHOOK_STORE_PATH` outranks `$STORYHOOK_DATA_DIR`**, so every harness
+  neutralizes it — `TestEnv`'s `ISOLATED_VARS` plus the three shell harnesses.
+  An exported one in a developer's shell would otherwise run the whole suite
+  against their own store, and the data-dir guard would not notice.
+
+Release-from-`main`, once the project-lifecycle rename lands: reinstall the
+`story` binary — the installed one predates both the flip *and* that rename, so
+`story init` still works there and `story project init` does not — then
+`/semver bump major`.
 
 Standing rules for every wave:
 

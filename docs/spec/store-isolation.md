@@ -192,3 +192,58 @@ exactly as `spawn_locked` does today. Bounded to one upgrade, and gets its own t
 - **Multiplexing several stores in one daemon.** Rejected: it would put the cross-store
   hazard back inside one process, and the daemon's change token, id counter and page
   cache are all per-store.
+
+## As built
+
+Six things the design above did not say, each decided during implementation. The rule,
+the key, the layout, the ports and the migration all landed as written.
+
+**1. The flag is published into the environment, not threaded.** `main` canonicalizes
+`--store-path` and exports it as `$STORYHOOK_STORE_PATH` before anything resolves
+anything. Threading an `Environment` would have reached the dispatch arms and missed
+everything else: `story daemon status` and `story web status` re-resolve, the TUI is
+dispatched before the parser, and a git hook that runs `story` is a different process
+entirely. `--store-path` means *this invocation and everything it starts*, and the only
+way to say that to a child is a variable it inherits. `Environment::from_process` still
+takes the flag, so the *origin* stays accurate where the choice was made.
+
+The spawned daemon gets `--store-path` on its argv as well as inheriting the variable.
+Redundant on purpose: a daemon published in one store's directory while holding another
+file is the exact state this design exists to make unrepresentable, and the argv is what
+makes it independent of what the parent's environment happened to contain.
+
+**2. Backups are keyed too, for a non-default store only.** `run_if_due` prunes to seven
+snapshots, so a scratch store's daemon sharing `state_home/backups` would *delete the
+real store's backup history* — a second store must have its own. The default store keeps
+the unkeyed path its snapshots are already at, because moving them would be a migration
+whose only reward is symmetry. `github_backups_dir` follows the same rule.
+
+**3. The legacy daemon is stood down on "does it still answer", not on the pidfile
+lock.** The daemon being retired is by definition one whose runtime files are not where
+this build looks, so asking it directly is both simpler and the question that matters —
+and it is what makes the upgrade testable without simulating a lock held by a process
+that does not exist.
+
+**4. `story store new` is answered in `main`, before any store is opened.** Every other
+command resolves the ambient store first. Doing that here would create the real store as
+a side effect of asking for a different one, and would refuse outright in a test build —
+which is the one build that most needs to make a scratch store. It joins `daemon --serve`
+as a command `main` handles rather than dispatches.
+
+**5. Canonicalization must be stable across the store file appearing.** Found by the
+suite, not by review: `Path::join("")` appends a separator, so once the file existed the
+"deepest existing ancestor" walk returned `…/store.db/` — a different string, a different
+key, a second daemon, and an `exists()` of `false`. The invariant is now pinned directly
+(`the_same_path_resolves_the_same_before_and_after_it_exists`). It is the same defect
+class the whole design is against, arriving through the mechanism itself.
+
+**6. `$STORYHOOK_STORE_PATH` outranks `$STORYHOOK_DATA_DIR`, so every harness must
+neutralize it.** A developer debugging a second store has one exported; without this,
+their next `make test` runs the whole suite against it and the data-dir guard does not
+notice, because it inspects the variable that lost. `TestEnv` sets it (a sixth
+`ISOLATED_VARS` entry) and the three shell harnesses unset it.
+
+Two consequences worth naming: `scripts/check-no-orphan-servers.sh` matches the daemon's
+argv, and a flag now sits between the binary and the verb — a guard that matches nothing
+passes, so its pattern was widened. And a launchd agent for a non-default store carries
+`--store-path`, because its log path is already that store's.
