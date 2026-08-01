@@ -3,6 +3,45 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v2.0.0] - 2026-08-01
+
+### Breaking
+- one daemon per store, keyed by the canonical store path (a12515e)
+- decommission story web register|deregister|list (2fca227)
+- story init is now story project init (ce6a289)
+
+### Added
+- Settings initializes and deinitializes projects (fc76ad7)
+- serve every project, read-only when there is no checkout (0d4ae95)
+- story project deinit (7d91b2d)
+- the story project verb group — init and list (e3bd256)
+- delete_project, behind schema 3 (393ed0f)
+- report registrations pointing at nothing, and relink ones that moved (caad7e1)
+
+### Fixed
+- prefer a project's main checkout over its linked worktrees (8790868)
+- refuse a throwaway project in a store that is not throwaway (2060412)
+- add the storage topic the migration marker promises (cc9da48)
+
+### Changed
+- Merge pull request #79 from mikeydotio/feat/store-isolation (34c530e)
+- Merge pull request #78 from mikeydotio/feat/project-lifecycle-verbs (e3177c4)
+- resolve a repo to a project and an optional checkout (9dbbb31)
+- Merge pull request #77 from mikeydotio/feat/project-path-hygiene (612e298)
+- Merge pull request #76 from mikeydotio/fix/sh-95-temp-project-refusal (ddf3c09)
+- Merge pull request #75 from mikeydotio/fix/sh-93-storage-help-topic (4063ec9)
+- Merge pull request #74 from mikeydotio/release/v1.0.0 (4a4a746)
+
+### Documentation
+- retire the orchestrator rule the rearchitecture left behind (c0666f2)
+- hand off the store-isolation branch (f4c9c0b)
+- record the six decisions store isolation took as it was built (37a621a)
+- store isolation keyed by the canonical store path (33c4d38)
+- update the roadmap and hand off the project-lifecycle branch (3804216)
+- rename init's help, messages and references to story project init (70f7821)
+
+_[manual]_
+
 ## [v1.0.0] - 2026-07-29
 
 ### Breaking
