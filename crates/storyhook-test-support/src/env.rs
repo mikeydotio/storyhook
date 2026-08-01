@@ -19,12 +19,20 @@ use crate::scratch::scratch_dir_named;
 /// store write into the developer's real `~/.local/share/storyhook`. Isolating
 /// a variable nobody reads costs nothing; discovering afterwards that a test
 /// run ate real data costs everything.
-const ISOLATED_VARS: [&str; 5] = [
+///
+/// `STORYHOOK_STORE_PATH` is the newest and the most dangerous to leave out: it
+/// *outranks* `STORYHOOK_DATA_DIR`, so a developer who has one exported in their
+/// shell would have every fixture command in the suite quietly pointed at that
+/// store no matter what else this harness set. It is given a value rather than
+/// removed, so that what the child sees is asserted the same way as everything
+/// else here.
+const ISOLATED_VARS: [&str; 6] = [
     "HOME",
     "XDG_DATA_HOME",
     "XDG_CONFIG_HOME",
     "XDG_STATE_HOME",
     "STORYHOOK_DATA_DIR",
+    "STORYHOOK_STORE_PATH",
 ];
 
 /// A fully isolated storyhook environment: a private `HOME`, private XDG
@@ -44,6 +52,7 @@ pub struct TestEnv {
     config_home: PathBuf,
     state_home: PathBuf,
     data_dir: PathBuf,
+    store_path: PathBuf,
 }
 
 impl TestEnv {
@@ -75,6 +84,7 @@ impl TestEnv {
             config_home: home.join(".config"),
             state_home: home.join(".local/state"),
             data_dir: home.join(".local/share/storyhook"),
+            store_path: home.join(".local/share/storyhook/store.db"),
             _root: root,
         };
         for dir in [
@@ -116,14 +126,23 @@ impl TestEnv {
         &self.data_dir
     }
 
+    /// The database file every `story` process this environment builds will
+    /// use — the same one `$STORYHOOK_DATA_DIR` names, spelled the way
+    /// `--store-path` and `$STORYHOOK_STORE_PATH` do.
+    #[must_use]
+    pub fn store_path(&self) -> &Path {
+        &self.store_path
+    }
+
     /// The `(name, value)` pairs every command this environment builds carries.
-    pub fn vars(&self) -> [(&'static str, &Path); 5] {
+    pub fn vars(&self) -> [(&'static str, &Path); 6] {
         [
             (ISOLATED_VARS[0], self.home.as_path()),
             (ISOLATED_VARS[1], self.data_home.as_path()),
             (ISOLATED_VARS[2], self.config_home.as_path()),
             (ISOLATED_VARS[3], self.state_home.as_path()),
             (ISOLATED_VARS[4], self.data_dir.as_path()),
+            (ISOLATED_VARS[5], self.store_path.as_path()),
         ]
     }
 
@@ -365,7 +384,15 @@ mod tests {
     fn the_in_process_environment_matches_what_a_child_resolves() {
         let env = TestEnv::isolated();
         let environment = env.environment();
-        assert_eq!(environment.data_home(), env.data_dir());
+        // Canonicalized on both sides: the store's *canonical* path is what
+        // names its daemon's state directory, so two halves of the harness that
+        // agreed only on the literal spelling would still be two daemons.
+        assert_eq!(
+            environment.store_path(),
+            std::fs::canonicalize(env.data_dir())
+                .expect("canonicalizing the fixture data directory")
+                .join("store.db")
+        );
         assert_eq!(environment.home(), env.home());
         assert_eq!(
             environment.state_home(),
