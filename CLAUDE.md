@@ -108,8 +108,8 @@ Standing rules for every wave:
   because `run-tests.sh` sets `STORYHOOK_TEST_HOME`, which makes `lib.sh` skip its block.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
-- A wave's implementing session ends at "PR opened" and never merges its own PR. The
-  **orchestrator** merges the wave PR (merge commit), verifies it landed, and deletes the
-  branch, escalating only what genuinely warrants attention. Work happens in a linked worktree:
-  no version bumps, no deploys, no direct pushes to `main`, no force-pushes.
-- Deviations from the spec get recorded in STATE.md rather than edited into the spec.
+- Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
+  to `main`, no force-pushes, and no version bumps or deploys from a linked worktree.
+- Deviations from the spec get recorded in the spec's own "As built" section — one
+  document to open rather than two. (During the rearchitecture they went to
+  `docs/rearch/STATE.md`, which stays the record for those nine waves.)
