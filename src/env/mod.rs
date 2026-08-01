@@ -17,12 +17,16 @@
 //! scratch directory and gets the same isolation an environment variable gives a
 //! child process.
 
+mod store_location;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::AppError;
 use crate::service::Clock;
+
+pub use store_location::{StoreLocation, StoreOrigin, StoreVars, canonical_ish};
 
 /// The port the daemon prefers, and the one the dashboard bookmark names.
 ///
@@ -48,7 +52,7 @@ pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Environment {
-    data_home: PathBuf,
+    store: StoreLocation,
     state_home: PathBuf,
     home: PathBuf,
     clock: Clock,
@@ -57,37 +61,45 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// Resolves an environment from this process's variables.
+    /// Resolves an environment from this process's variables, and from the
+    /// `--store-path` this invocation carried.
     ///
-    /// * `data_home` — `$STORYHOOK_DATA_DIR`, else `$XDG_DATA_HOME/storyhook`,
-    ///   else `~/.local/share/storyhook`.
+    /// * `store` — see [`StoreLocation::resolve`]: `--store-path`,
+    ///   `$STORYHOOK_STORE_PATH`, `$STORYHOOK_DATA_DIR/store.db`, then
+    ///   `$XDG_DATA_HOME/storyhook/store.db`.
     /// * `state_home` — `$XDG_STATE_HOME/storyhook`, else
     ///   `~/.local/state/storyhook`. Deliberately *not* covered by
     ///   `STORYHOOK_DATA_DIR`, which names where the data is, so that pointing
     ///   storyhook at a synced data directory does not also start syncing its
-    ///   runtime scratch.
-    /// * `daemon_addr` — `$STORYHOOK_DAEMON_ADDR`, else loopback on
-    ///   [`DEFAULT_DAEMON_PORT`]. Port 0 asks the OS for one, which is what the
-    ///   test harness sets: a suite that bound the production port would fight
-    ///   the developer's own dashboard for it.
+    ///   runtime scratch. The per-store directories underneath it are what keep
+    ///   two stores' daemons apart; see [`Self::daemon_state_dir`].
+    /// * `daemon_addr` — `$STORYHOOK_DAEMON_ADDR`, else
+    ///   [`default_daemon_addr`] for this store. Port 0 asks the OS for one,
+    ///   which is what the test harness sets: a suite that bound the production
+    ///   port would fight the developer's own dashboard for it.
     /// * `busy_timeout` — `$STORYHOOK_BUSY_TIMEOUT_MS`, else
     ///   [`DEFAULT_BUSY_TIMEOUT`].
+    ///
+    /// `store_flag` is `None` everywhere except `main`, and that is correct
+    /// rather than an oversight: `main` publishes the flag it was given into
+    /// `$STORYHOOK_STORE_PATH` before anything else resolves, so a caller that
+    /// re-resolves an environment later — `story daemon status`, the TUI, the
+    /// daemon this run spawns — reads the same answer from the variable. The
+    /// parameter survives only so that the *origin* of the choice can be
+    /// reported accurately where the choice was actually made.
     ///
     /// An unparseable `STORYHOOK_DAEMON_ADDR` or `STORYHOOK_BUSY_TIMEOUT_MS` is
     /// an error rather than a silent fallback: both name where a request goes
     /// and how long it waits, and a typo that quietly reverts to the default is
     /// a debugging session.
-    pub fn from_process() -> Result<Self, AppError> {
+    pub fn from_process(store_flag: Option<&Path>) -> Result<Self, AppError> {
         let home = env_path("HOME")
             .ok_or_else(|| AppError::Storage("could not determine home directory".to_string()))?;
 
-        let named_data_home = env_path("STORYHOOK_DATA_DIR");
-        if is_test_build() && named_data_home.is_none() {
+        let store = StoreLocation::resolve(store_flag, &StoreVars::from_process(), &home)?;
+        if is_test_build() && store.origin() == StoreOrigin::XdgDefault {
             return Err(AppError::Usage(TEST_BUILD_REFUSAL.to_string()));
         }
-        let data_home = named_data_home
-            .or_else(|| env_path("XDG_DATA_HOME").map(|xdg| xdg.join("storyhook")))
-            .unwrap_or_else(|| home.join(".local/share/storyhook"));
 
         let state_home = env_path("XDG_STATE_HOME")
             .map(|xdg| xdg.join("storyhook"))
@@ -99,7 +111,7 @@ impl Environment {
                     "STORYHOOK_DAEMON_ADDR=`{raw}` is not an address: {e}"
                 ))
             })?,
-            None => SocketAddr::from(([127, 0, 0, 1], DEFAULT_DAEMON_PORT)),
+            None => default_daemon_addr(store.is_default()),
         };
 
         let busy_timeout = match env_string("STORYHOOK_BUSY_TIMEOUT_MS") {
@@ -112,7 +124,7 @@ impl Environment {
         };
 
         Ok(Environment {
-            data_home,
+            store,
             state_home,
             home,
             clock: Clock::System,
@@ -131,7 +143,7 @@ impl Environment {
     pub fn at(home: impl Into<PathBuf>) -> Self {
         let home = home.into();
         Environment {
-            data_home: home.join(".local/share/storyhook"),
+            store: StoreLocation::for_home(&home),
             state_home: home.join(".local/state/storyhook"),
             home,
             clock: Clock::System,
@@ -161,9 +173,21 @@ impl Environment {
         self
     }
 
-    /// Where the store and everything derived from it lives.
-    pub fn data_home(&self) -> &Path {
-        &self.data_home
+    /// Points this environment at a different store.
+    ///
+    /// Everything derived from the store moves with it — the whole daemon state
+    /// directory — which is what makes this the only honest way to build a
+    /// second-store fixture. Assembling one field at a time is what produced a
+    /// client and a daemon that disagreed in the first place.
+    #[must_use]
+    pub fn with_store(mut self, store: StoreLocation) -> Self {
+        self.store = store;
+        self
+    }
+
+    /// Which store this invocation is about, and how that was decided.
+    pub fn store(&self) -> &StoreLocation {
+        &self.store
     }
 
     /// Where regenerable state that should survive a reboot lives: the daemon's
@@ -193,9 +217,9 @@ impl Environment {
         self.busy_timeout
     }
 
-    /// The store's database file.
-    pub fn store_path(&self) -> PathBuf {
-        self.data_home.join("store.db")
+    /// The store's database file, canonicalized.
+    pub fn store_path(&self) -> &Path {
+        self.store.path()
     }
 
     /// `~/.storyhook` — where storyhook's *previous* global state lives.
@@ -215,37 +239,118 @@ impl Environment {
         self.home.join(".storyhook")
     }
 
+    /// This store's daemon's runtime directory: `daemons/<key>/` under the
+    /// state home.
+    ///
+    /// **This is the whole mechanism.** Because every one of the daemon's files
+    /// hangs off the store's own key, one store has exactly one daemon by
+    /// construction — and a client that named store A cannot find, dial, or
+    /// stand down the daemon holding store B, because it never looks in that
+    /// directory at all.
+    pub fn daemon_state_dir(&self) -> PathBuf {
+        self.state_home.join("daemons").join(self.store.key())
+    }
+
     /// The daemon's portfile: `{pid, port, version, protocol, exe, exe_mtime,
-    /// started_at, token}`, mode 0600.
+    /// started_at, token, store_path}`, mode 0600.
     pub fn daemon_file(&self) -> PathBuf {
-        self.state_home.join("daemon.json")
+        self.daemon_state_dir().join("daemon.json")
     }
 
     /// The file the daemon holds a lock on for its whole life. Holding the lock
     /// *is* the liveness signal, so this is not merely where a pid is written.
     pub fn daemon_pidfile(&self) -> PathBuf {
-        self.state_home.join("daemon.pid")
+        self.daemon_state_dir().join("daemon.pid")
     }
 
     /// The lock a client takes while it decides to spawn a daemon, held through
     /// the spawn and the child's portfile write.
     pub fn daemon_spawn_lock(&self) -> PathBuf {
-        self.state_home.join("daemon.spawn.lock")
+        self.daemon_state_dir().join("daemon.spawn.lock")
     }
 
     /// Where a daemon started in the background writes its diagnostics.
     pub fn daemon_log(&self) -> PathBuf {
-        self.state_home.join("daemon.log")
+        self.daemon_state_dir().join("daemon.log")
+    }
+
+    /// Where a daemon built before the store keyed its own state published its
+    /// portfile.
+    ///
+    /// Read once, on the first run after an upgrade, and never written. See
+    /// [`crate::daemon::lifecycle`] for what is done with it: a daemon still
+    /// serving the default store from here has to be stood down rather than
+    /// run beside, because its pidfile is not the one a new daemon claims.
+    pub fn legacy_daemon_file(&self) -> PathBuf {
+        self.state_home.join("daemon.json")
     }
 
     /// Where the daily `VACUUM INTO` snapshots go.
+    ///
+    /// Keyed for a named store and unkeyed for the default one, and the
+    /// asymmetry is deliberate. `run_if_due` prunes to a week, so a scratch
+    /// store's daemon sharing this directory would delete the real store's
+    /// backup history — a second store must therefore have its own. The default
+    /// store keeps the path its snapshots are already at, because moving them
+    /// would be a migration whose only reward is symmetry.
     pub fn backups_dir(&self) -> PathBuf {
-        self.state_home.join("backups")
+        self.per_store_state().join("backups")
     }
 
-    /// Where github-sync keeps its pre-write backups.
+    /// Where github-sync keeps its pre-write backups. Sited like
+    /// [`Self::backups_dir`], and for the same reason.
     pub fn github_backups_dir(&self) -> PathBuf {
-        self.state_home.join("github-sync/backups")
+        self.per_store_state().join("github-sync/backups")
+    }
+
+    /// Where state that belongs to *this* store, and must survive its daemon,
+    /// lives.
+    fn per_store_state(&self) -> PathBuf {
+        if self.store.is_default() {
+            self.state_home.clone()
+        } else {
+            self.daemon_state_dir()
+        }
+    }
+}
+
+/// The address a daemon prefers when nothing names one.
+///
+/// The **default** store keeps [`DEFAULT_DAEMON_PORT`], so a bookmarked
+/// dashboard URL survives restarts and the launchd agent needs no change. Any
+/// other store binds port 0 and publishes what the kernel gave it, which is what
+/// makes two isolated stores unable to collide on a port — and therefore what
+/// makes a parallel test suite safe without the harness having to choose ports.
+#[must_use]
+pub fn default_daemon_addr(is_default_store: bool) -> SocketAddr {
+    let port = if is_default_store {
+        DEFAULT_DAEMON_PORT
+    } else {
+        0
+    };
+    SocketAddr::from(([127, 0, 0, 1], port))
+}
+
+/// Where the store lives on this machine when nothing names one.
+///
+/// Deliberately *not* routed through [`Environment`]: `story store new` has to
+/// know the default path in order to refuse it, and a test build refuses to
+/// resolve an `Environment` on the default store at all — which is exactly the
+/// build that most needs to be able to create a scratch store somewhere else.
+pub fn default_store_path() -> Result<PathBuf, AppError> {
+    let home = env_path("HOME")
+        .ok_or_else(|| AppError::Storage("could not determine home directory".to_string()))?;
+    store_location::default_store_path_for(env_path("XDG_DATA_HOME").as_deref(), &home)
+}
+
+impl StoreVars {
+    /// The store-naming variables, as this process has them.
+    fn from_process() -> Self {
+        StoreVars {
+            store_path: env_path("STORYHOOK_STORE_PATH"),
+            data_dir: env_path("STORYHOOK_DATA_DIR"),
+            xdg_data_home: env_path("XDG_DATA_HOME"),
+        }
     }
 }
 
@@ -284,10 +389,10 @@ pub const fn is_test_build() -> bool {
 /// otherwise reads as storyhook being broken.
 const TEST_BUILD_REFUSAL: &str = "refusing to guess where the store lives: this binary carries \
      the `fault-injection` feature, which `cargo test` enables and `cargo build` does not, so it \
-     is a test build — and with $STORYHOOK_DATA_DIR unset it would fall back to the real \
+     is a test build — and with nothing naming a store it would fall back to the real \
      ~/.local/share/storyhook. Run the suite with `make test`, which exports an isolated \
-     STORYHOOK_DATA_DIR; set STORYHOOK_DATA_DIR yourself; or, if you meant to *use* this binary, \
-     rebuild it with `cargo build`.";
+     STORYHOOK_DATA_DIR; name a store yourself with --store-path, $STORYHOOK_STORE_PATH or \
+     $STORYHOOK_DATA_DIR; or, if you meant to *use* this binary, rebuild it with `cargo build`.";
 
 /// One environment variable as a path, ignoring an empty value.
 ///
@@ -324,35 +429,107 @@ mod tests {
         // resolved to the same directory, "never delete the legacy state" and
         // "this is our data directory" would be claims about one place.
         let env = Environment::at("/tmp/storyhook-env-test");
-        assert_ne!(env.legacy_global_dir(), env.data_home());
+        assert_ne!(
+            Some(env.legacy_global_dir().as_path()),
+            env.store_path().parent()
+        );
         assert_ne!(env.legacy_global_dir(), env.state_home());
         assert!(env.legacy_global_dir().ends_with(".storyhook"));
     }
 
     #[test]
-    fn the_store_lives_inside_the_data_home() {
+    fn the_store_is_a_file_named_store_db() {
         let env = Environment::at("/tmp/storyhook-env-test");
-        assert_eq!(env.store_path().parent(), Some(env.data_home()));
         assert_eq!(env.store_path().file_name().unwrap(), "store.db");
+        assert!(env.store_path().is_absolute());
     }
 
+    /// The mechanism, as an assertion: every file a daemon touches hangs off
+    /// its store's key, so two stores cannot reach each other's.
     #[test]
-    fn the_daemons_runtime_files_all_live_in_the_state_home() {
+    fn the_daemons_runtime_files_all_live_in_this_stores_own_directory() {
         let env = Environment::at("/tmp/storyhook-env-test");
+        let keyed = env.daemon_state_dir();
         for path in [
             env.daemon_file(),
             env.daemon_pidfile(),
             env.daemon_spawn_lock(),
             env.daemon_log(),
-            env.backups_dir(),
         ] {
             assert_eq!(
                 path.parent(),
-                Some(env.state_home()),
-                "{} must live in the state home, not beside the data",
+                Some(keyed.as_path()),
+                "{} must live in this store's own daemon directory",
                 path.display()
             );
         }
+        assert!(keyed.starts_with(env.state_home()));
+        assert!(keyed.ends_with(env.store().key()));
+    }
+
+    /// Two stores must not be able to name one another's runtime files — which
+    /// is the property that makes "client and daemon disagree about the store"
+    /// unrepresentable rather than detected.
+    #[test]
+    fn two_stores_share_no_daemon_state_at_all() {
+        let one = Environment::at("/tmp/storyhook-env-test-one");
+        let two = Environment::at("/tmp/storyhook-env-test-two");
+        assert_ne!(one.store_path(), two.store_path());
+        for (a, b) in [
+            (one.daemon_state_dir(), two.daemon_state_dir()),
+            (one.daemon_file(), two.daemon_file()),
+            (one.daemon_pidfile(), two.daemon_pidfile()),
+            (one.daemon_spawn_lock(), two.daemon_spawn_lock()),
+            (one.daemon_log(), two.daemon_log()),
+        ] {
+            assert_ne!(a, b, "{} is shared between two stores", a.display());
+        }
+    }
+
+    /// `run_if_due` prunes to a week, so a scratch store's daemon sharing the
+    /// default store's backup directory would delete real backup history.
+    #[test]
+    fn a_named_store_does_not_back_up_into_the_default_stores_directory() {
+        let default = Environment::at("/tmp/storyhook-env-test");
+        assert_eq!(
+            default.backups_dir().parent(),
+            Some(default.state_home()),
+            "the default store keeps the path its snapshots are already at"
+        );
+
+        let named = default.clone().with_store(
+            StoreLocation::resolve(
+                Some(Path::new("/private/tmp/storyhook-env-test/named.db")),
+                &StoreVars::default(),
+                Path::new("/tmp/storyhook-env-test"),
+            )
+            .expect("resolving a named store"),
+        );
+        assert!(!named.store().is_default());
+        assert_ne!(named.backups_dir(), default.backups_dir());
+        assert_ne!(named.github_backups_dir(), default.github_backups_dir());
+        assert!(named.backups_dir().starts_with(named.daemon_state_dir()));
+    }
+
+    /// The default store keeps the port a bookmarked dashboard names; anything
+    /// else takes whatever the kernel gives it, so two isolated stores cannot
+    /// collide.
+    #[test]
+    fn only_the_default_store_prefers_the_production_port() {
+        assert_eq!(default_daemon_addr(true).port(), DEFAULT_DAEMON_PORT);
+        assert_eq!(default_daemon_addr(false).port(), 0);
+        assert!(default_daemon_addr(true).ip().is_loopback());
+        assert!(default_daemon_addr(false).ip().is_loopback());
+    }
+
+    /// The upgrade path reads one and writes the other. If they were ever the
+    /// same file, standing the old daemon down would mean deleting the new
+    /// one's portfile.
+    #[test]
+    fn the_legacy_portfile_is_not_where_this_build_publishes_one() {
+        let env = Environment::at("/tmp/storyhook-env-test");
+        assert_ne!(env.legacy_daemon_file(), env.daemon_file());
+        assert_eq!(env.legacy_daemon_file().parent(), Some(env.state_home()));
     }
 
     /// A fixture that binds the production port would fight the developer's own

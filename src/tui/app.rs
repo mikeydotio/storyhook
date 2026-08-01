@@ -37,7 +37,10 @@ use super::theme::Theme;
 /// from the store's own change token rather than from a watcher over `root` —
 /// see [`EventSource`].
 pub fn run(root: &Path) -> Result<(), AppError> {
-    let environment = crate::env::Environment::from_process()?;
+    // `None` for the store flag: `main` publishes any `--store-path` into
+    // `$STORYHOOK_STORE_PATH` before the TUI is dispatched, so this resolves
+    // the store the caller named.
+    let environment = crate::env::Environment::from_process(None)?;
     let event_environment = environment.clone();
     let store = crate::invoke::open_store(&environment)?;
     let invoker = StoreInvoker::new(&store, root, environment);

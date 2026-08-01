@@ -1,7 +1,7 @@
 use std::env;
 use std::process;
 
-use storyhook::cli::{self, DaemonAction, Invocation, WebAction};
+use storyhook::cli::{self, DaemonAction, Invocation, StoreAction, WebAction};
 use storyhook::invoke::{HttpInvoker, InvokeRequest, Invoker, StoreInvoker};
 use storyhook::output::{self, Response};
 
@@ -32,10 +32,27 @@ fn fail(error: &storyhook::error::AppError, json: bool) -> ! {
 fn main() {
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
 
+    // Global flags come off first, before anything looks at a verb, because
+    // `--store-path` decides which store *every* branch below resolves —
+    // including `tui`, which never reaches the parser.
+    //
+    // `--json` is read by hand once, and only for the window in which parsing
+    // the flags is what failed: a caller who asked for an envelope should get
+    // one even when the thing that went wrong was the flag list itself.
+    let json = raw_args.iter().any(|arg| arg == "--json");
+    let (flags, filtered_args) = match cli::split_global_flags(&raw_args) {
+        Ok(split) => split,
+        Err(error) => fail(&error, json),
+    };
+    let json = flags.json;
+    publish_store_path(flags.store_path.as_deref(), json);
+
     // `tui` is dispatched here, ahead of parsing, so `story tui --help` would
     // launch the interactive UI instead of explaining it; the help request
     // falls through to the parser, which answers it like any other verb's.
-    if raw_args.first().is_some_and(|arg| arg == "tui") && !cli::is_help_request(&raw_args) {
+    if filtered_args.first().is_some_and(|arg| arg == "tui")
+        && !cli::is_help_request(&filtered_args)
+    {
         let cwd = env::current_dir().unwrap_or_else(|e| {
             eprintln!("error: failed to resolve current directory: {e}");
             process::exit(1);
@@ -47,9 +64,6 @@ fn main() {
         return;
     }
 
-    let (flags, filtered_args) = cli::split_global_flags(&raw_args);
-    let json = flags.json;
-
     let invocation = match cli::parse_invocation(&filtered_args) {
         Ok(invocation) => invocation,
         Err(error) => fail(&error, json),
@@ -59,10 +73,11 @@ fn main() {
     // --serve` alias). Runs the daemon in this process — what the background
     // spawner execs and what a launchd agent runs — so it never returns.
     if let Some(port) = foreground_serve_port(&invocation) {
-        let environment = match storyhook::env::Environment::from_process() {
-            Ok(environment) => environment,
-            Err(error) => fail(&error, json),
-        };
+        let environment =
+            match storyhook::env::Environment::from_process(flags.store_path.as_deref()) {
+                Ok(environment) => environment,
+                Err(error) => fail(&error, json),
+            };
         let environment = match port {
             Some(port) => {
                 environment.daemon_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)))
@@ -90,9 +105,27 @@ fn main() {
 
     refuse_unknown_backend(json);
 
+    // `store new` names the store it creates, and is the one command that must
+    // not resolve the ambient one first — see `invoke::create_store`.
+    if let Invocation::Store {
+        action: StoreAction::New { path },
+    } = &invocation
+    {
+        match storyhook::invoke::create_store(&cwd, path) {
+            Ok(response) => {
+                let rendered = output::render_response(&response, json, flags.quiet);
+                if !rendered.is_empty() {
+                    print!("{rendered}");
+                }
+                return;
+            }
+            Err(error) => fail(&error, json),
+        }
+    }
+
     // Everything storyhook reads from outside itself, resolved once and passed
     // down. Nothing below this line calls `env::var` for a path or a clock.
-    let environment = match storyhook::env::Environment::from_process() {
+    let environment = match storyhook::env::Environment::from_process(flags.store_path.as_deref()) {
         Ok(environment) => environment,
         Err(error) => fail(&error, json),
     };
@@ -153,6 +186,31 @@ fn main() {
                 print!("{rendered}");
             }
         }
+        Err(error) => fail(&error, json),
+    }
+}
+
+/// Publishes `--store-path` into `$STORYHOOK_STORE_PATH`, canonicalized.
+///
+/// **A flag only the first `Environment` knew about would be a flag that stops
+/// applying the moment anything re-resolves** — `story daemon status`, the TUI,
+/// the git hook a command fires, the daemon this run spawns. `--store-path`
+/// means "this invocation, and everything it starts, is in that store", and the
+/// only way to say that to a child process is a variable it inherits.
+///
+/// Canonicalized here so that every reader agrees on one spelling and therefore
+/// on one daemon; an unresolvable path fails now, in the process that can
+/// explain it, rather than inside a daemon nobody is watching.
+///
+/// # Safety
+///
+/// `set_var` is unsound only in the presence of concurrent readers. This runs in
+/// `main` before storyhook has started a thread, opened a store or spawned
+/// anything, which is the one place in the program where that is guaranteed.
+fn publish_store_path(flag: Option<&std::path::Path>, json: bool) {
+    let Some(flag) = flag else { return };
+    match storyhook::env::canonical_ish(flag) {
+        Ok(canonical) => unsafe { env::set_var("STORYHOOK_STORE_PATH", &canonical) },
         Err(error) => fail(&error, json),
     }
 }
@@ -261,6 +319,9 @@ fn run_locally(flags: &cli::GlobalFlags, invocation: &Invocation) -> bool {
 ///   `make test-daemon`, where it did not fail — it hung.
 /// * **Self-update.** `story update` replaces the binary the daemon is running.
 ///   Doing that from inside that daemon is asking it to saw the branch off.
+/// * **Store creation.** `story store new` is about a store that does not exist
+///   yet; there is no daemon for it to be dispatched to, and the daemon for
+///   some *other* store has no business creating files on its behalf.
 /// * **Pure functions of compiled-in text.** `--help` and `--version` are
 ///   answered from a string constant. Starting a background process to print
 ///   one — which is what a first-ever `story --help` would do — is a bad first
@@ -270,6 +331,7 @@ fn never_through_the_daemon(invocation: &Invocation) -> bool {
         invocation,
         Invocation::Daemon { .. }
             | Invocation::Web { .. }
+            | Invocation::Store { .. }
             | Invocation::Update { .. }
             | Invocation::Help
             | Invocation::HelpTopic { .. }

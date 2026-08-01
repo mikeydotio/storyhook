@@ -24,7 +24,12 @@ phase="${1:-check}"
 # `story daemon --serve` is the daemon; `story web --serve` is its alias, which
 # a test may still be spelling. Both are matched, and so are the two test
 # binaries that run servers in-thread.
-pattern="${repo_root}/target/debug/(deps/(web_test|daemon_lifecycle|daemon_invoke|storyhook_test_support)-|story (daemon|web) --serve)"
+#
+# `([^ ]+ )*` between the binary and the verb is not decoration: a spawned
+# daemon carries `--store-path <file>` ahead of its verb (SH-113), so a pattern
+# anchored on `story daemon --serve` stopped matching the very processes this
+# guard exists to find -- and a guard that matches nothing passes.
+pattern="${repo_root}/target/debug/(deps/(web_test|daemon_lifecycle|daemon_invoke|storyhook_test_support)-|story ([^ ]+ )*(daemon|web) --serve)"
 
 # The postlude waits; the preflight does not.
 #

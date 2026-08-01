@@ -13,7 +13,7 @@
 //! write, eat real data. Every function here takes its location from the
 //! fixture that owns it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use storyhook::service::project::{ProjectPointer, read_pointer};
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryNo};
@@ -22,13 +22,6 @@ use crate::env::TestEnv;
 use crate::project::Project;
 
 impl TestEnv {
-    /// The database file every `story` process this environment builds will
-    /// use.
-    #[must_use]
-    pub fn store_path(&self) -> PathBuf {
-        self.data_dir().join("store.db")
-    }
-
     /// Opens — and migrates — this environment's store.
     ///
     /// Safe to call while `story` processes are running against it: the store
