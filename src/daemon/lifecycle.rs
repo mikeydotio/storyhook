@@ -24,6 +24,15 @@
 //! child has bound *and* published its portfile. The lock used to be released
 //! before the spawn, which left a window in which two clients both decided to
 //! start a daemon; auto-spawn would have made that window hot.
+//!
+//! # Every path here is a path *this store's* daemon owns
+//!
+//! The portfile, the pidfile, the spawn lock and the log all hang off
+//! [`Environment::daemon_state_dir`], which is named after the store's
+//! canonical path. Nothing in this module needs to check that a daemon serves
+//! the right store, because a client looking for the wrong one would be reading
+//! a different directory entirely. That is the fix for SH-123, and it is a
+//! construction rather than a check — see `docs/spec/store-isolation.md`.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -82,9 +91,31 @@ pub struct DaemonInfo {
     pub started_at: String,
     /// The bearer token every RPC request must carry.
     pub token: String,
+    /// The store this daemon holds open, canonicalized.
+    ///
+    /// **Not the enforcement mechanism** — that is the keyed directory this
+    /// file lives in, which a client serving another store never opens. It is
+    /// here so a portfile is self-describing when a human reads it, and so a
+    /// collision on the key digest would be detectable rather than silent.
+    ///
+    /// Defaulted rather than required, because a portfile written before this
+    /// field existed has to *parse* in order to be stood down; it reads as an
+    /// empty path, which [`Self::serves`] answers `false` for.
+    #[serde(default)]
+    pub store_path: PathBuf,
 }
 
 impl DaemonInfo {
+    /// Whether this daemon holds `store`.
+    ///
+    /// The last line of defence rather than the first: a client only ever
+    /// reads a portfile from its own store's directory, so a `false` here means
+    /// two canonical paths produced one key, and the caller should treat the
+    /// daemon as somebody else's.
+    pub fn serves(&self, store: &Path) -> bool {
+        self.store_path == store
+    }
+
     /// Whether this daemon is running the same build as the current process.
     ///
     /// Three-part: the version, the path of the executable, and that file's
@@ -122,7 +153,12 @@ fn current_binary() -> Result<(PathBuf, i64), AppError> {
 /// error: it was written by some other version, which is precisely the case
 /// where the right move is to start a daemon of our own.
 pub fn read_info(env: &Environment) -> Option<DaemonInfo> {
-    let raw = std::fs::read_to_string(env.daemon_file()).ok()?;
+    read_info_at(&env.daemon_file())
+}
+
+/// Reads a portfile from a named path, or `None` if there is not a readable one.
+pub fn read_info_at(path: &Path) -> Option<DaemonInfo> {
+    let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
@@ -133,7 +169,7 @@ pub fn read_info(env: &Environment) -> Option<DaemonInfo> {
 /// token (not). Mode 0600 because the file carries a bearer token for a
 /// full-privilege API.
 fn write_info(env: &Environment, info: &DaemonInfo) -> Result<(), AppError> {
-    std::fs::create_dir_all(env.state_home())?;
+    std::fs::create_dir_all(env.daemon_state_dir())?;
     let final_path = env.daemon_file();
     let temp_path = final_path.with_extension("json.tmp");
 
@@ -155,7 +191,7 @@ fn write_info(env: &Environment, info: &DaemonInfo) -> Result<(), AppError> {
 
 /// Opens the pidfile for locking, creating it and its directory if needed.
 fn open_pidfile(env: &Environment) -> Result<File, AppError> {
-    std::fs::create_dir_all(env.state_home())?;
+    std::fs::create_dir_all(env.daemon_state_dir())?;
     OpenOptions::new()
         .create(true)
         .read(true)
@@ -207,8 +243,14 @@ fn mint_token() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// Builds the portfile contents for a daemon that has just bound `bound`.
-pub fn info_for(bound: SocketAddr, token: String, now: &str) -> Result<DaemonInfo, AppError> {
+/// Builds the portfile contents for a daemon that has just bound `bound` over
+/// `store`.
+pub fn info_for(
+    bound: SocketAddr,
+    token: String,
+    now: &str,
+    store: &Path,
+) -> Result<DaemonInfo, AppError> {
     let (exe, exe_mtime) = current_binary()?;
     Ok(DaemonInfo {
         pid: std::process::id(),
@@ -219,6 +261,7 @@ pub fn info_for(bound: SocketAddr, token: String, now: &str) -> Result<DaemonInf
         exe_mtime,
         started_at: now.to_string(),
         token,
+        store_path: store.to_path_buf(),
     })
 }
 
@@ -260,11 +303,14 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
     let (listeners, bound, mut trusted_hosts) = bind_preferred(env)?;
     trusted_hosts.extend(crate::api::http::trusted_hosts_from_env());
 
-    let info = info_for(bound, mint_token(), &env.now())?;
+    let info = info_for(bound, mint_token(), &env.now(), env.store_path())?;
     write_info(env, &info)?;
     eprintln!(
-        "storyhook daemon {} on http://127.0.0.1:{} (pid {})",
-        info.version, info.port, info.pid
+        "storyhook daemon {} on http://127.0.0.1:{} (pid {}) holding {}",
+        info.version,
+        info.port,
+        info.pid,
+        info.store_path.display()
     );
 
     // Before serving anything: one global database is one global blast radius,
@@ -298,19 +344,32 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
 /// takes the spawn lock before deciding anything, so two clients racing to start
 /// a daemon produce one daemon.
 pub fn ensure(env: &Environment) -> Result<DaemonInfo, AppError> {
-    if let Some(info) = read_info(env)
-        && info.is_this_binary()
-        && is_live(env)
-    {
+    if let Some(info) = usable(env) {
         return Ok(info);
     }
     spawn_locked(env)
 }
 
+/// The daemon in this store's directory, if it is one this client may use.
+///
+/// Three questions, and all three must answer yes: is a portfile there, was it
+/// written by this build, and is a process still holding the lifetime lock.
+///
+/// The store check is the fourth, and it is redundant *by design*: this portfile
+/// was read out of a directory named after the store's own digest, so a daemon
+/// naming a different store means two canonical paths produced one key. That
+/// cannot be allowed to resolve as "close enough" — it is the exact shape of
+/// SH-123 — so the answer is to treat the daemon as a stranger's and start our
+/// own, which is what every other mismatch here does.
+fn usable(env: &Environment) -> Option<DaemonInfo> {
+    let info = read_info(env)?;
+    (info.is_this_binary() && info.serves(env.store_path()) && is_live(env)).then_some(info)
+}
+
 /// The slow path: hold the spawn lock, re-check, replace what is there, start a
 /// daemon, and keep holding until it answers.
 fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
-    std::fs::create_dir_all(env.state_home())?;
+    std::fs::create_dir_all(env.daemon_state_dir())?;
     let lock = OpenOptions::new()
         .create(true)
         .read(true)
@@ -325,10 +384,7 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
     // one was waiting for the lock, and starting a second would be the whole
     // point of the lock being missed.
     let outcome = (|| -> Result<DaemonInfo, AppError> {
-        if let Some(info) = read_info(env)
-            && info.is_this_binary()
-            && is_live(env)
-        {
+        if let Some(info) = usable(env) {
             return Ok(info);
         }
 
@@ -342,12 +398,52 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
             wait_until(SPAWN_DEADLINE, || !is_live(env));
         }
 
+        stand_down_legacy_daemon(env);
         spawn_child(env)?;
         await_healthy(env)
     })();
 
     let _ = FileExt::unlock(&lock);
     outcome
+}
+
+/// Stands down a daemon left over from a build that published its portfile at
+/// the state home's root.
+///
+/// **The one real transition hazard in keying daemon state by store.** Before
+/// the key existed there was one portfile per state home; after it, a client
+/// looks under `daemons/<key>/`, finds nothing, and would otherwise start a
+/// second daemon on a store the old one still has open. The old daemon holds the
+/// *old* pidfile, so the new one's `claim_pidfile` succeeds and nothing stops
+/// it — two daemons, two page caches, two change tokens, two backup schedules.
+///
+/// Only for the default store: no other store had a daemon before this existed.
+/// Only when this store's own portfile is absent, so the check costs one
+/// `exists` on every subsequent run and nothing else. Called under the spawn
+/// lock, so two clients racing through an upgrade stand the old daemon down
+/// once.
+///
+/// Liveness here is "does it still answer", not the pidfile lock: the daemon
+/// being stood down is by definition one whose runtime files are not where this
+/// build looks, and asking it directly is both simpler and the question that
+/// actually matters. Best-effort throughout — a legacy daemon that cannot be
+/// reached is one that is already gone.
+fn stand_down_legacy_daemon(env: &Environment) {
+    if !env.store().is_default() || env.daemon_file().exists() {
+        return;
+    }
+    let legacy = env.legacy_daemon_file();
+    let Some(info) = read_info_at(&legacy) else {
+        return;
+    };
+    if hello(&info).is_err() {
+        // Nothing is answering there; the portfile outlived its daemon.
+        let _ = std::fs::remove_file(&legacy);
+        return;
+    }
+    let _ = request_shutdown(&info);
+    wait_until(SPAWN_DEADLINE, || hello(&info).is_err());
+    let _ = std::fs::remove_file(&legacy);
 }
 
 /// Starts a detached daemon process.
@@ -358,18 +454,25 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
 /// the daemon polls for its parent rather than trusting anybody to reap it.
 fn spawn_child(env: &Environment) -> Result<(), AppError> {
     let (exe, _) = current_binary()?;
-    std::fs::create_dir_all(env.state_home())?;
+    std::fs::create_dir_all(env.daemon_state_dir())?;
     let log = File::create(env.daemon_log())
         .map_err(|e| AppError::Storage(format!("failed to create the daemon log: {e}")))?;
 
-    // The port travels on the argv rather than in the child's environment.
-    // A client that was asked for a particular port holds that answer in its own
-    // `Environment`, and the child builds a fresh one from the process
-    // environment — so passing it implicitly would silently lose it, which is
-    // exactly what `story web start --port N` did until this line existed.
+    // The port and the store travel on the argv rather than in the child's
+    // environment. A client that was asked for a particular port — or a
+    // particular store — holds that answer in its own `Environment`, and the
+    // child builds a fresh one from the process environment, so passing either
+    // implicitly would silently lose it. That is exactly what `story web start
+    // --port N` did until this line existed, and for the store it would be
+    // worse: a daemon published in *this* store's directory while holding a
+    // different file is the disagreement the whole design exists to make
+    // unrepresentable.
     let port = preferred_port(env).to_string();
+    let store = env.store_path().to_path_buf();
     let mut command = Command::new(exe);
     command
+        .arg("--store-path")
+        .arg(&store)
         .args(["daemon", "--serve", "--port", &port])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -390,6 +493,7 @@ fn await_healthy(env: &Environment) -> Result<DaemonInfo, AppError> {
     while Instant::now() < deadline {
         if let Some(info) = read_info(env)
             && info.is_this_binary()
+            && info.serves(env.store_path())
             && hello(&info).is_ok()
         {
             return Ok(info);
@@ -566,7 +670,8 @@ pub fn pid_is_live(_pid: u32) -> bool {
 /// Where the pidfile and portfile live, for diagnostics.
 pub fn describe_paths(env: &Environment) -> String {
     format!(
-        "portfile {}\npidfile  {}\nlog      {}",
+        "store    {}\nportfile {}\npidfile  {}\nlog      {}",
+        env.store_path().display(),
         env.daemon_file().display(),
         env.daemon_pidfile().display(),
         env.daemon_log().display()
@@ -598,6 +703,7 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 4321)),
             "deadbeef".to_string(),
             "2026-01-01T00:00:00Z",
+            env.store_path(),
         )
         .expect("building the info");
         write_info(&env, &info).expect("writing the portfile");
@@ -616,6 +722,7 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 4321)),
             "deadbeef".to_string(),
             "2026-01-01T00:00:00Z",
+            env.store_path(),
         )
         .expect("building the info");
         write_info(&env, &info).expect("writing the portfile");
@@ -630,7 +737,7 @@ mod tests {
     fn a_portfile_this_build_cannot_parse_reads_as_absent() {
         let dir = scratch();
         let env = Environment::at(dir.path());
-        std::fs::create_dir_all(env.state_home()).unwrap();
+        std::fs::create_dir_all(env.daemon_state_dir()).unwrap();
         std::fs::write(env.daemon_file(), "{\"port\": \"not a number\"}").unwrap();
         assert_eq!(
             read_info(&env),
@@ -671,6 +778,39 @@ mod tests {
         );
     }
 
+    /// The keyed directory is what keeps two stores apart, and this is the
+    /// belt to its braces: a portfile naming a different store means two
+    /// canonical paths collided on one digest, and "close enough" there is
+    /// SH-123 again.
+    #[test]
+    fn a_daemon_naming_another_store_is_not_usable() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let info = info_for(
+            SocketAddr::from(([127, 0, 0, 1], 4321)),
+            "t".to_string(),
+            "2026-01-01T00:00:00Z",
+            &dir.path().join("somebody-elses.db"),
+        )
+        .expect("building the info");
+        write_info(&env, &info).expect("writing the portfile");
+        let _held = claim_pidfile(&env).expect("claiming the pidfile");
+
+        assert!(
+            info.is_this_binary(),
+            "the fixture must isolate one variable"
+        );
+        assert!(is_live(&env), "the fixture must isolate one variable");
+        assert!(
+            !info.serves(env.store_path()),
+            "the fixture must name a different store"
+        );
+        assert!(
+            usable(&env).is_none(),
+            "a daemon holding another store must never be reused"
+        );
+    }
+
     #[test]
     fn a_daemon_from_another_build_is_not_this_binary() {
         let info = DaemonInfo {
@@ -682,6 +822,7 @@ mod tests {
             exe_mtime: 0,
             started_at: "2026-01-01T00:00:00Z".to_string(),
             token: "t".to_string(),
+            store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
         };
         assert!(!info.is_this_binary());
     }
@@ -701,6 +842,7 @@ mod tests {
             exe_mtime: mtime + 1,
             started_at: "2026-01-01T00:00:00Z".to_string(),
             token: "t".to_string(),
+            store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
         };
         assert!(
             !info.is_this_binary(),
@@ -714,6 +856,7 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 1)),
             "t".to_string(),
             "2026-01-01T00:00:00Z",
+            Path::new("/private/tmp/storyhook-lifecycle/store.db"),
         )
         .expect("building the info");
         assert!(info.is_this_binary());
@@ -745,6 +888,7 @@ mod tests {
             SocketAddr::from(([127, 0, 0, 1], 4321)),
             "t".to_string(),
             "2026-01-01T00:00:00Z",
+            env.store_path(),
         )
         .expect("building the info");
         write_info(&env, &info).expect("writing the portfile");

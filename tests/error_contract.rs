@@ -102,7 +102,7 @@ fn cases() -> Vec<Case> {
                 // is what makes that ordering real rather than hoped for.
                 let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
                 let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-                let store_path = env.store_path();
+                let store_path = env.store_path().to_path_buf();
                 let holder = std::thread::spawn(move || {
                     let conn = rusqlite::Connection::open(&store_path)
                         .expect("opening the store directly");

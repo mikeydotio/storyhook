@@ -322,9 +322,10 @@ fn a_portfile_without_a_daemon_does_not_stop_one_starting() {
         exe_mtime: 0,
         started_at: "2026-01-01T00:00:00Z".to_string(),
         token: "stale".to_string(),
+        store_path: env.environment().store_path().to_path_buf(),
     };
     let environment = env.environment();
-    std::fs::create_dir_all(environment.state_home()).unwrap();
+    std::fs::create_dir_all(environment.daemon_state_dir()).unwrap();
     std::fs::write(
         environment.daemon_file(),
         serde_json::to_string_pretty(&orphan).unwrap(),

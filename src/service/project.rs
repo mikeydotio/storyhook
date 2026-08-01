@@ -72,9 +72,9 @@ pub const ALLOW_TEMP_PROJECT: &str = "STORYHOOK_ALLOW_TEMP_PROJECT";
 /// writes continue. This is the only point where the mistake is still cheap:
 /// nothing has been written, and the message can name the one environment
 /// variable that fixes the caller for good.
-pub fn refuse_temp_project_in_real_store(root: &Path, data_home: &Path) -> Result<(), AppError> {
+pub fn refuse_temp_project_in_real_store(root: &Path, store_path: &Path) -> Result<(), AppError> {
     let allowed = std::env::var(ALLOW_TEMP_PROJECT).is_ok_and(|v| !v.trim().is_empty());
-    refuse_temp_project(root, data_home, allowed)
+    refuse_temp_project(root, store_path, allowed)
 }
 
 /// The decision behind [`refuse_temp_project_in_real_store`], with the
@@ -82,8 +82,8 @@ pub fn refuse_temp_project_in_real_store(root: &Path, data_home: &Path) -> Resul
 ///
 /// Separated so it can be tested without mutating process environment, which
 /// two tests running in parallel cannot do safely.
-fn refuse_temp_project(root: &Path, data_home: &Path, allowed: bool) -> Result<(), AppError> {
-    if allowed || !is_under_temp(root) || is_under_temp(data_home) {
+fn refuse_temp_project(root: &Path, store_path: &Path, allowed: bool) -> Result<(), AppError> {
+    if allowed || !is_under_temp(root) || is_under_temp(store_path) {
         return Ok(());
     }
     Err(AppError::Validation(format!(
@@ -95,7 +95,7 @@ fn refuse_temp_project(root: &Path, data_home: &Path, allowed: bool) -> Result<(
          inside the fixture; that is what makes its writes disappear with it. If you really do \
          want a throwaway project in this store, set {ALLOW_TEMP_PROJECT}=1.",
         root.display(),
-        data_home.display(),
+        store_path.display(),
     )))
 }
 
@@ -859,8 +859,8 @@ mod temp_project_tests {
     #[test]
     fn a_temp_project_in_a_real_store_is_refused() {
         let root = std::env::temp_dir().join("tmp.abc123");
-        let data_home = Path::new("/Users/someone/.local/share/storyhook");
-        let error = refuse_temp_project(&root, data_home, false)
+        let store = Path::new("/Users/someone/.local/share/storyhook/store.db");
+        let error = refuse_temp_project(&root, store, false)
             .expect_err("a temp project in a real store must be refused");
         assert_eq!(error.exit_code(), 2, "it is a usage error, not a crash");
         let message = error.to_string();
@@ -879,9 +879,9 @@ mod temp_project_tests {
     #[test]
     fn a_temp_project_in_a_temp_store_is_allowed() {
         let root = Path::new("/private/tmp/storyhook-tests/fixture-1");
-        let data_home = Path::new("/private/tmp/storyhook-gate.XXXX/data");
+        let store = Path::new("/private/tmp/storyhook-gate.XXXX/data/store.db");
         assert!(
-            refuse_temp_project(root, data_home, false).is_ok(),
+            refuse_temp_project(root, store, false).is_ok(),
             "a throwaway project in a throwaway store is exactly what a test builds"
         );
     }
@@ -890,8 +890,8 @@ mod temp_project_tests {
     #[test]
     fn a_real_project_in_a_real_store_is_allowed() {
         let root = Path::new("/Volumes/Code/mikeyward/storyhook");
-        let data_home = Path::new("/Users/someone/.local/share/storyhook");
-        assert!(refuse_temp_project(root, data_home, false).is_ok());
+        let store = Path::new("/Users/someone/.local/share/storyhook/store.db");
+        assert!(refuse_temp_project(root, store, false).is_ok());
     }
 
     /// A deliberate override is honoured, so the refusal can never become a
@@ -899,8 +899,8 @@ mod temp_project_tests {
     #[test]
     fn the_override_permits_what_would_otherwise_be_refused() {
         let root = std::env::temp_dir().join("tmp.abc123");
-        let data_home = Path::new("/Users/someone/.local/share/storyhook");
-        assert!(refuse_temp_project(&root, data_home, true).is_ok());
+        let store = Path::new("/Users/someone/.local/share/storyhook/store.db");
+        assert!(refuse_temp_project(&root, store, true).is_ok());
     }
 
     /// `/tmp` and `/private/tmp` are the same directory on macOS reached by two

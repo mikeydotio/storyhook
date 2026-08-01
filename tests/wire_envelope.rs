@@ -19,7 +19,7 @@
 
 use storyhook::cli::{
     DaemonAction, EpicAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
-    PhaseAction, PluginAction, ProjectAction, StateAction, TypeAction, WebAction,
+    PhaseAction, PluginAction, ProjectAction, StateAction, StoreAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
     Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent, StoryRelation,
@@ -962,6 +962,11 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Daemon {
             action: DaemonAction::Status,
         },
+        Invocation::Store {
+            action: StoreAction::New {
+                path: "/tmp/scratch/store.db".to_string(),
+            },
+        },
     ]
 }
 
@@ -1014,6 +1019,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Plugin { .. } => "Plugin",
         Invocation::Web { .. } => "Web",
         Invocation::Daemon { .. } => "Daemon",
+        Invocation::Store { .. } => "Store",
         Invocation::SessionStart => "SessionStart",
         Invocation::Update { .. } => "Update",
         Invocation::Version => "Version",
@@ -1033,7 +1039,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        51,
+        52,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }
