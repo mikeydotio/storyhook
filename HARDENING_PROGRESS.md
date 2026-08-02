@@ -146,7 +146,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first*
 - [x] **SH-125** — enforce the minimum state set
 - [x] **SH-130** — illegal state combinations + a supported purge · *two PRs: the schema half, then the purge*
-- [ ] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
+- [x] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
 - [ ] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
 - [ ] **SH-115** — C3 Identity: remotes schema + one URL normalizer
 - [ ] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114*
@@ -846,3 +846,112 @@ newer daemon can no longer decode a `ConfirmationRequired`, because the plan
 gained its discriminant. SH-54's version gate is what makes that loud.
 
 **Council:** not re-run. D4 was the input, as instructed.
+
+### SH-132 — done
+
+**Outcome:** 505 fixture projects deleted, 13 real ones intact, `story doctor`
+clean. `story project list` and the dashboard both return exactly the keep-list.
+All five acceptance criteria met.
+
+|  | before | after | deleted |
+|---|---:|---:|---:|
+| projects | 518 | 13 | 505 |
+| stories | 837 | 314 | 523 |
+| events | 4,429 | 2,852 | 1,578 |
+| relations | 980 | 512 | 468 |
+| labels | 478 | 388 | 90 |
+| commit links | 154 | 154 | 0 |
+| states / types | 1,558 / 2,612 | 43 / 60 | 1,515 / 2,552 |
+
+**The story's own recommended predicate would have destroyed real data, and
+measuring first is what caught it.** SH-132 calls "the recorded path no longer
+exists" *the only reliable predicate* for junk, and treats the keep-list as the
+belt to that braces. It is the other way round. **Seven of the thirteen real
+projects have no checkout on this machine** — `blink`, `duckduckgo-apple`,
+`keymux`, `memlayer`, `opengrid-scad`, `ourdio`, `webtail` — so a path predicate
+would have deleted every one of them. The keep-list was not a safety margin; it
+was the only correct rule available.
+
+**And a pattern would have been wrong in the opposite direction.** The junk is
+495 `tmp-*`, **9 `storywork-dispatch-*`** and one `tmpkgby3a` (from a dot-prefixed
+`.tmpKGBY3a`). A `tmp-*` glob misses ten of them; a `tmp*` glob misses nine. The
+story's instruction to drive from the keep-list complement was right for a reason
+better than the one it gave: not that a pattern *might* misfire on a future
+`tmpfs-tool`, but that it already misfired, in both directions, on data present
+when the story was written.
+
+**The loop refused before it deleted.** It re-derives the list from the live
+store rather than trusting a file, aborts unless the derived count matches an
+expected one passed on the command line, re-checks every slug against the
+keep-list immediately before each call, and stops on the first non-zero exit
+rather than continuing to destroy. The count guard was tested by running it with
+a deliberately wrong number first: it refused and deleted nothing. 504/504 then
+returned ok, zero failures, plus one earlier trial deletion.
+
+**Verification is an equality, not a spot check.** The per-project census of all
+13 kept projects — stories, events, relations, labels, commit links, states,
+types, settings, `next_story_no` and `uuid` — is **identical** before and after,
+with exactly one difference: `storyhook` gained one event. That is this run's own
+backup comment, `StoryCommentAdded` at 17:03:11Z, written after the census was
+taken; counting only events before the census timestamp gives 1,246, the
+pre-census number exactly. A difference you can name is worth more than a
+difference you can avoid producing. The dashboard's per-project counts agree too,
+once soft-deleted stories are accounted for (`lillist` 91 live of 94,
+`scad-caliper` 33 of 34, `tmux-status` 39 of 40, the rest exact).
+
+**The backup would have expired, and that is now SH-135.**
+`src/daemon/backup.rs:87` prunes the backups directory to the newest seven files
+matching `storyhook-*.db`, and nothing distinguishes a daily snapshot from a
+safety net someone took by hand before a destructive operation. The directory
+already held exactly seven. So this backup is named
+`store-pre-sh132-cleanup-20260802T165904Z.db` — deliberately *not* matching the
+pattern, which `foreign_files_are_neither_counted_nor_pruned` pins as safe and
+which the pre-existing `store-pre-delete-junk-project-0.17.0.db` already
+established as the convention. **SH-130's recovery artifact is not so lucky**: it
+is named `storyhook-…-pre-sh130-purge.db`, sits sixth-newest in that FIFO, and is
+about five daemon snapshots from silent deletion. Filed as SH-135.
+
+**A process failure of mine: verifying the backup damaged it.** After the
+`VACUUM INTO`, I confirmed the copy opens by running
+`STORYHOOK_STORE_PATH=<backup> story project list`. That works — and it also
+opens the file read-write and sets `journal_mode=WAL`, converting the artifact
+from rollback-journal to WAL permanently. A WAL database with no `-shm` beside it
+cannot be opened read-only by a process that cannot create one, so every
+subsequent `sqlite3 -readonly` against my own backup failed with
+`SQLITE_CANTOPEN`. The data was never at risk; its portability was.
+
+Two things make this worth writing down. First, the diagnosis came from the file
+header rather than from guessing — byte 18/19 read `2 2` on my backup and `1 1`
+on every other file in the directory. Second, that comparison also **cleared the
+product**: all seven storyhook-produced snapshots are `1 1`, so the daemon's own
+"reopen and integrity-check" verification does not do this. It was mine alone,
+caused by reaching for the whole application to answer a question `sqlite3
+-readonly` answers. The artifact was rebuilt to a clean rollback-journal file
+through a sequence that kept at least two verified copies in existence at every
+step, and re-verified in place: header `1 1`, `integrity_check` ok,
+`foreign_key_check` empty, 518 projects / 837 stories / 4,429 events, and a
+keep-list census identical to the pre-purge live store.
+
+**Deviation — the loop was not run autonomously.** The permission classifier
+refused the 504-deletion script twice, backgrounded and foregrounded. I did not
+split it into batches or into 504 separate calls: the block is there so a human
+sees a bulk irreversible operation, and both of those would have defeated it
+while technically complying. I stopped, reported the staged state, and Mikey ran
+the script himself. This is a departure from the run's *never ask the user
+anything* rule, and the right one — that rule governs design decisions, which a
+council can settle, not harness permissions, which it cannot.
+
+**Council:** not convened. SH-132 specified the mechanism, the safeguards and the
+keep-list completely, and the one judgement call the story did not cover — that
+its stated path predicate is unsafe — has a single defensible answer once the
+seven checkout-less real projects are counted. No decision had two defensible
+sides.
+
+**Gate:** `make test` and `make test-daemon` run as two separate supervised
+commands. Both exit 0, 101 green test-result blocks each, plugin harness 18/0,
+clippy clean, no wedge. Second consecutive story with no stall, and the
+difference remains running the legs separately rather than through `make gate`.
+
+**Unblocks SH-119**, which deletes `project_paths` — the evidence this story
+needed. It can now run without destroying the only reliable way to tell what was
+junk.
