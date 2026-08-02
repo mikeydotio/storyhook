@@ -170,13 +170,13 @@ fn served() -> Served {
     })
     .expect("reading the fixture project");
 
-    let port = serve(Arc::clone(&store), &environment);
+    let bound = serve(Arc::clone(&store), &environment);
     Served {
         env,
         store,
         project,
         dir,
-        port,
+        port: bound.port(),
         repo_id,
     }
 }
