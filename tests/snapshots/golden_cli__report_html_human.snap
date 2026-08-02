@@ -92,8 +92,8 @@ tbody tr:hover { background:var(--table-hover); }
 
 <div class="section">
 <div class="section-title">State Distribution</div>
-<div class="bar-chart"><div class="bar-segment" style="width:14.3%;background:#3b82f6" title="done: 2 (14%)"></div><div class="bar-segment" style="width:7.1%;background:#10b981" title="in-progress: 1 (7%)"></div><div class="bar-segment" style="width:7.1%;background:#f59e0b" title="review: 1 (7%)"></div><div class="bar-segment" style="width:71.4%;background:#ef4444" title="todo: 10 (71%)"></div></div>
-<div class="legend"><span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>done 2 (14%)</span><span class="legend-item"><span class="legend-dot" style="background:#10b981"></span>in-progress 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>review 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>todo 10 (71%)</span></div>
+<div class="bar-chart"><div class="bar-segment" style="width:21.4%;background:#3b82f6" title="done: 3 (21%)"></div><div class="bar-segment" style="width:7.1%;background:#10b981" title="in-progress: 1 (7%)"></div><div class="bar-segment" style="width:7.1%;background:#f59e0b" title="review: 1 (7%)"></div><div class="bar-segment" style="width:64.3%;background:#ef4444" title="todo: 9 (64%)"></div></div>
+<div class="legend"><span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>done 3 (21%)</span><span class="legend-item"><span class="legend-dot" style="background:#10b981"></span>in-progress 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>review 1 (7%)</span><span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>todo 9 (64%)</span></div>
 </div>
 
 <div class="section">
@@ -120,10 +120,10 @@ tbody tr:hover { background:var(--table-hover); }
 <tr class="row-ready"><td class="col-id">SH-4</td><td>Write the migration runner</td><td>review</td><td><span class="priority-badge priority-medium">medium</span></td><td><span class="label">backend</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-blocked"><td class="col-id">SH-9</td><td>Add the daemon transport</td><td>todo</td><td><span class="priority-badge priority-medium">medium</span></td><td><span class="label">phase:2</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-ready"><td class="col-id">SH-10</td><td>Ship the CLI shim</td><td>todo</td><td><span class="priority-badge priority-medium">medium</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
+<tr><td class="col-id">SH-13</td><td>Old approach: file-per-story</td><td>done</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr><td class="col-id">SH-8</td><td>Retire the JSONL reader</td><td>done</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-ready"><td class="col-id">SH-11</td><td>Audit error codes</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-blocked"><td class="col-id">SH-6</td><td>Benchmark the rebuild path</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
-<tr><td class="col-id">SH-13</td><td>Old approach: file-per-story</td><td>todo</td><td><span class="priority-badge priority-low">low</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 <tr class="row-ready"><td class="col-id">SH-7</td><td>Document the data layer</td><td>todo</td><td><span class="priority-badge priority-none">none</span></td><td><span class="muted">-</span></td><td><span class="muted">-</span></td><td class="col-date">[date]</td></tr>
 </tbody>
 </table>

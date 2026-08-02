@@ -72,7 +72,7 @@ flagged: no
 
 $ story show SH-13
 SH-13 Old approach: file-per-story
-state: todo (CLOSED, deleted)
+state: done (CLOSED, deleted)
 assignee: -
 priority: low
 type: chore
