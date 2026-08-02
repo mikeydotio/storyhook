@@ -103,7 +103,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-124** — commit-sync transitions every mentioned story · *protects this loop's own queue*
 - [x] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first*
 - [x] **SH-125** — enforce the minimum state set
-- [ ] **SH-130** — illegal state combinations + a supported purge · *hard-deletes SH-20 as its proving case*
+- [~] **SH-130** — illegal state combinations + a supported purge · **schema half merged; the purge and SH-20 remain — see `HANDOFF.md`, story still open**
 - [ ] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
 - [ ] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
 - [ ] **SH-115** — C3 Identity: remotes schema + one URL normalizer
@@ -596,3 +596,105 @@ property derived from `awaiting` and unmet `blocked-by` edges, and
 `domain.rs:988 is_ready` still ignores the state slug — so a story parked in the
 `blocked` state reports READY. No seat disputed it; SH-126 has to decide what
 its column's membership is.
+
+### SH-130 — partially done · the schema half landed, the purge did not
+
+**Outcome:** the illegal pair is gone and cannot come back. `story delete` lands
+a story in a state that genuinely is CLOSED, the schema refuses the contradiction
+outright, and the six live rows carrying it are repaired by migration. **The
+fourth scope item — a supported purge, and removing SH-20 — is not built.** The
+story stays open; `HANDOFF.md` is the next context's brief and carries the
+council's D4 verbatim so the vote is not re-run.
+
+**Why it split.** SH-130 is four features wearing one number: an enumeration, a
+schema constraint with a table rebuild, a fold change, and a new destructive
+verb with its own migration. The first three are one coherent change and are
+merged. The purge is separable — the council itself treated it as a distinct
+decision — and starting it with the context I had left would have risked
+abandoning a half-built destructive verb on the branch. Splitting was the call I
+made; scaling the story down was not mine to make, so it stays open.
+
+**The council was unanimous, 3-0, and both non-authors voted against their own
+proposals.** Third time in this run. In each case a measured fact refuted a
+specific claim they had made rather than an argument wearing them down:
+
+- Seat 1 (data engineer) proposed a trigger pair on `stories` and offered "a
+  second cheap `project_states` trigger at zero rebuild cost" for the parent
+  side. `put_states` deletes and re-inserts a project's **whole catalog on every
+  edit**, so that trigger fires on an ordinary `story state add`. The mitigation
+  does not exist. I had proposed the same thing in my own notes an hour earlier.
+- Seat 3 (QA) rested its case on `corrupt_snapshot`'s raw connection never
+  enabling `PRAGMA foreign_keys`, so a foreign key would silently not fire where
+  the story's preventative clause wants a test to attack. Seat 2 answered that
+  `with_append_guard_down` drops *triggers* from a raw connection just as
+  easily — a test-authoring question, not a property of the mechanism.
+
+**The deciding fact was in neither the story nor my brief: a second reachable
+route.** `state_usage` filters `.deleted(false)` and `resolve_migration` returns
+early when `usage.open == 0`, so flipping a CLOSED state to OPEN while it holds
+only *archived* stories is permitted today and strands every one of them. That
+write lands on `project_states` — the table a `stories` trigger cannot see and a
+foreign key's parent side can. It is why this is a foreign key.
+
+**A process failure of mine, recorded because the audit trail would otherwise
+lie.** Seat 2 returned an idle notification and then a `{"summary": "delivery
+probe — ignore"}` payload. I read that as two malformed responses, recorded an
+abstention, and dispatched a two-proposal ballot. Seat 2 then delivered a
+complete proposal and explained the probe: `SendMessage` rejects a bare JSON
+object, so it had been testing whether a leading newline would carry one. The
+failure was transport, not work — and the proposal it was carrying held the only
+measured refutations in the council, including the one that killed Seat 1's
+mitigation. I withdrew the abstention, voided the ballot, and re-ran the vote
+over the full slate. Both the error and the withdrawal are written into
+`PANEL.md`. Had I not, the council would have decided on a knowingly incomplete
+slate and picked the trigger.
+
+**The suite pinned the defect as correct in seven places** — six tests and nine
+golden snapshots — several in as many words: "keeps the state it was deleted
+in", "the deleted story keeps the slug its history records", "a truthful record
+of what the story was when it was deleted". Every premise is rewritten, not
+relaxed. That is now four consecutive stories in this run where the tests
+documented the defect as intended behaviour; it has stopped being a coincidence
+and is worth treating as the run's most reliable finding.
+
+**Two defects the new CHECK found that nobody had reported.** Adding
+`(superstate = 'CLOSED') = archived` was the council's "free" extra and was not
+free — it immediately caught three fixtures building stories the product cannot
+build (a bare `StoryStateChanged` into a closed state, with no close marker and
+so no timestamp), and one genuine product defect: `StoryClosedAndArchived` set
+`closed_at` unconditionally, so reclassifying a state to OPEN left an *archived*
+story reporting an OPEN superstate. The close marker is now symmetric with
+`StoryStateChanged`, which only retracts a closure for a state the project
+currently calls OPEN. Reclassification now reopens the stories left behind
+instead of stranding them.
+
+**Verified rather than assumed, in both directions.** The silent-data-loss claim
+underpinning the whole migration design — that a rebuild with foreign keys on
+empties `story_labels` and commits successfully — I reproduced myself before
+building on it: 1 row to 0, no error. The remedy was reproduced too. Every one
+of the nine golden snapshot diffs was read line by line: 58 insertions, 58
+deletions, all of them one story's state value and the counts derived from it.
+
+**Gate: both legs green, but not in one invocation, and that is worth knowing.**
+`make test` passed outright — 133 green blocks, 0 failures, plugin harness 18/0.
+`make test-daemon` then wedged inside the same `make gate` run and sat there for
+**eight hours** before I looked again. Run on its own immediately afterwards it
+passed in about two minutes: 100 green blocks, 0 failures, exit 0. So the change
+is green on both legs; what is not reliable is running them back to back on a
+machine this one has been working all night.
+
+That is the stall the Makefile's own `test-daemon` comment predicts as the
+symptom of overshooting parallelism, and it is SH-94/SH-110 territory rather
+than anything this story introduced — `store_isolation` wedged the same way
+twice and passes in 1.74s alone, matching the 1.85s SH-62's log recorded. An
+earlier attempt also exited 2 before running anything, because daemons orphaned
+by a run I had killed were still holding ports; the preflight guard named them
+and refused to start, which is exactly what it is for.
+
+**Two process notes.** `make gate > log; echo "EXIT: $?"` reports the *echo's*
+status — it told me "exit 0" over a run with 16 failures, and SH-62's log warned
+about this exact trap. And I ran the same 10-minute suite twice inside one
+command to get a list and a count, which cost the machine 20 minutes; the second
+invocation was pure waste.
+
+**Council:** yes — unanimous, round 1. `.council/sh130-illegal-state-pair/DECISION.md`.
