@@ -151,7 +151,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-115** — C3 Identity: remotes schema + one URL normalizer
 - [x] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114* · **it was a deadlock; the deadline was right**
 - [x] **SH-110** — tailnet bind flake · *gates SH-114* · **not a flake: the dashboard advertised a probe, not its bind**
-- [~] **SH-114** — C2 Transport: daemon-only · *part 1 landed: the two diagnostic fixes; the removal is part 2, see HANDOFF.md*
+- [x] **SH-114** — C2 Transport: daemon-only · *two PRs: the diagnostics, then the removal*
 - [ ] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal
 - [ ] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink`
 - [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk
@@ -1731,3 +1731,142 @@ letting the next run lie.
 `invoke` functions are additions; no interface a user types changed. The
 behaviour change worth knowing is that a damaged store now reports itself
 instead of reporting a timeout.
+
+### SH-114 — part 2 of 2 · the removal · the story closes
+
+**Outcome:** `--local`, `STORYHOOK_INVOKER`, `make test-daemon` and `make gate`
+are gone. `story` has one route to the store and the gate has one leg. All three
+acceptance criteria are met, and the merged leg lands at **118s against a 120s
+target** — the number every seat said was unmeasured.
+
+Built to the council's D3–D8 **without re-running the vote**, as the handoff
+instructed. Six commits, two hats clean.
+
+**A real defect, found by the conversion rather than reasoned about, and it is
+the most valuable thing in this story.** `process_env_fault` sent itself
+`SIGKILL` and then called `abort()`, under a comment declaring the second line
+unreachable: *"SIGKILL is delivered before the next instruction retires."* True
+of a single-threaded process; false of a multi-threaded one. `kill` **posts** a
+signal, and the daemon has several threads — so the kernel let the calling one
+run on and **six of the crash matrix's thirteen cases died of `SIGABRT`** the
+first time they were run against a daemon. Every armed process storyhook had
+ever had was a single-threaded CLI, so the bug could not exist until this story
+made one.
+
+What makes it worth the space is the *shape* of the failure. A crash test that
+reads `SIGABRT` concludes the fault never fired, and the message it prints sends
+the reader hunting for a binary built without the `fault-injection` feature. A
+mechanism working perfectly reported itself as absent, intermittently, in the
+one place where "the knife did not land" and "the knife landed and the store
+survived" look identical. Fixed at the origin (wait to die, with a bound only so
+a platform that ignored `SIGKILL` fails loudly), pinned by
+`tests/fault_injection.rs`, and the fixture's failure message now tells the two
+diagnoses apart by signal number.
+
+**The crash matrix got more honest, and one case had to be redesigned to stay
+that way.** `concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed`
+races **eight daemons, not eight clients** — and that distinction is the whole
+reason the test still says anything. Eight clients would be funnelled by the
+spawn lock into starting *one* daemon between them, so exactly one process would
+open the store and the cross-process claim — the only claim this test has that
+its in-process sibling does not — would evaporate while the test stayed green.
+Eight daemons genuinely race, because `open_store` runs before `lifecycle::run`
+claims the pidfile. "Exactly one served" is deliberately *not* asserted: whoever
+wins serves forever, so each round asks the incumbent to stand down, and a racer
+still inside `open_store` at that moment claims the vacated pidfile and serves in
+its turn. How many get that far is a fact about scheduling; that the migration
+happened once is not.
+
+**What is lost, named in the commit as the story required:**
+
+- **Coverage of a bare, directly-invoked process holding the write transaction
+  and dying.** That process shape is now **unbuildable**, not merely untested.
+- **The two-transport agreement property.** Replaced by `golden_cli.rs`'s ~130
+  frozen snapshots, taken while both transports existed — a stronger form of the
+  same claim, and its `ERRORS` table gained the two invocations the comparison
+  covered and it did not. `story version` is lost outright and deliberately: the
+  corpus excludes it because its output moves on every release.
+- **`concurrency_soak`'s premise that two supported modes write one store at
+  once.** Half its clients wrote the database directly, so it exercised SQLite's
+  multi-process write path — `busy_timeout`, the `BEGIN IMMEDIATE` retry,
+  `SQLITE_BUSY` reaching a user as exit code 4. That contention has moved inside
+  the daemon's own mutex. The file says so rather than quietly keeping an
+  assertion that now means something narrower. The only remaining second writer
+  on one store is `story tui` (SH-150).
+
+**`STORYHOOK_INVOKER` is deleted rather than refused, and the reasoning is worth
+keeping.** `refuse_unknown_backend` existed on the principle that *a variable
+which silently does nothing is worse than no variable at all* — and by that
+principle a stale `STORYHOOK_INVOKER=local` should now be a loud error. It is
+not, and the difference is what the variable made a reader believe. `legacy`
+named a **different place for the data** (`.storyhook/`), so ignoring it let
+somebody act on a false belief about where their stories were. `local` names a
+process: same store, same answers, same exit codes, and the only consequence of
+ignoring it is a daemon the caller did not ask for. Turning a harmless no-op into
+a hard failure on every command, for a variable storyhook itself is retiring,
+would be the more hostile of the two. **The flag is the opposite case and is
+refused**, because a script passing `--local` believes its command ran in its own
+process — and SH-62's fail-closed gate refuses it with no special case, which is
+the property that rule was adopted for.
+
+**Three test files that clear their environment turned into a hazard, and
+nobody had reported it.** `test_build_guard.rs`, `temp_project_refusal.rs` and
+`project_path_hygiene.rs` call `env_clear()` on purpose, so the variable each is
+*about* cannot arrive from the ambient shell. They named the in-process transport
+and therefore never started a daemon. They do now — and a daemon with a cleared
+environment prefers port **3456**, the developer's own dashboard, and outlives
+the run that made it. Fixed by one exported `daemon_containment()` rather than
+three hand-written copies, which is the opposite direction to SH-136's complaint
+about that list.
+
+**Red→green verified by disarming, in every case where a mechanism could be
+inert:**
+
+| disarmed | fails | stays green |
+|---|---|---|
+| the abort fix in `process_env_fault` | 6 of 13 crash cases, `SIGABRT` | the other 7, by luck of the race |
+| `2>/dev/null` in the post-commit hook | `a_commit_says_nothing_when_the_daemon_cannot_start` | its healthy-daemon control |
+
+That second row is the point of having both hook tests: a working
+`commit-sync --quiet` prints nothing anyway, so only the broken-store case can
+tell whether the *redirect* is doing anything. And the control is not idle
+either — without it the first test would pass on a hook that was never installed
+or one somebody replaced with `exit 0`, so it commits a claiming message and
+then asserts the story actually moved.
+
+**Measured against the real binary rather than asserted**: `story list --local`
+exits 2 naming the token and the twelve flags `list` does declare; `story --local
+list` exits 2 with *unknown command `--local`* (a flag-shaped first token reads
+as a verb); `STORYHOOK_INVOKER=legacy story --version` exits 0, ignored.
+`tests/unknown_flag_sweep.rs` pins all three positions and that the refused
+`story new` wrote nothing.
+
+**Gate, and the number the council could not supply.** `make test` is now the
+whole gate. Measured on the M1 Max, three ways:
+
+| | wall clock |
+|---|---:|
+| `make test`, warm | **118s** — inside the 120s target |
+| `make test`, with compiling to do | 178s — inside the 180s ceiling |
+| the suite alone, `--test-threads=4` | 91s |
+| the suite alone, `--test-threads=8` | 87s |
+
+For comparison, the two-leg `gate` it replaces was 120–175s. The bound stays at
+four: it costs four seconds, which is the same margin W8 measured, and what it
+retires is a *stall* rather than a failure. **No wedge, and no thread change was
+needed** — D6's contingency ("if it overshoots the lever is threads, never
+scope") did not have to fire. Eighth consecutive story with no stall.
+
+**Deviation from the acceptance criteria, one, and it is a widening.** AC-2 says
+*"`make gate` runs one leg; `make test-daemon` no longer exists."* `make gate`
+does not exist either. With one transport it would have been an alias for
+`make test`, and a target that only aliases another is a second name people's
+muscle memory keeps alive. `make test` is the gate; CLAUDE.md says so in one
+place instead of three.
+
+**Council:** not re-run. D3–D8 were the input, as the handoff instructed.
+
+**Unblocks SH-116**, the next link of the critical path, and hands it two of its
+own paragraphs already half-satisfied: the `git commit` half of its silence
+obligation is pinned, and its "Watch out" note about `story new --typo x` was
+spent by SH-62.
