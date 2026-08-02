@@ -103,6 +103,24 @@ pub struct DaemonInfo {
     /// empty path, which [`Self::serves`] answers `false` for.
     #[serde(default)]
     pub store_path: PathBuf,
+    /// The tailnet interface this daemon bound, if it bound one.
+    ///
+    /// `None` means loopback only — the honest answer both for a machine with
+    /// no tailnet and for a probe that missed its deadline. In either case
+    /// there is no tailnet listener, so there is nothing to advertise.
+    ///
+    /// Written from the same [`crate::daemon::serve::BoundAddress`] that
+    /// produced this daemon's trusted-host allowlist, so what it advertises and
+    /// what it trusts cannot disagree. They used to: every client re-derived
+    /// the host by probing the machine, which answers a different question
+    /// (SH-110).
+    ///
+    /// Defaulted for the same reason `store_path` is: an older portfile has to
+    /// *parse* in order to be stood down, and [`read_info_at`] treats one it
+    /// cannot parse as absent — which is the one state `stop` cannot resolve.
+    /// It reads as `None`, i.e. loopback, which is always true.
+    #[serde(default)]
+    pub tailnet: Option<crate::daemon::tailnet::TailnetBind>,
 }
 
 impl DaemonInfo {
@@ -131,6 +149,29 @@ impl DaemonInfo {
     /// The loopback address this daemon answers on.
     pub fn addr(&self) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], self.port))
+    }
+
+    /// Every address this daemon reported binding.
+    pub fn bound(&self) -> crate::daemon::serve::BoundAddress {
+        crate::daemon::serve::BoundAddress {
+            loopback: self.addr(),
+            tailnet: self.tailnet.clone(),
+        }
+    }
+
+    /// The host to show or copy for reaching this daemon: its tailnet's
+    /// advertised name when it bound one, else loopback.
+    ///
+    /// Always a host this daemon is actually listening on. That is the whole
+    /// point — it is read from what the daemon published, never derived by
+    /// probing the machine the reader happens to be running on.
+    pub fn advertised_host(&self) -> String {
+        self.bound().advertise_host()
+    }
+
+    /// The dashboard URL to show or copy.
+    pub fn dashboard_url(&self) -> String {
+        self.bound().dashboard_url()
     }
 }
 
@@ -246,7 +287,7 @@ fn mint_token() -> String {
 /// Builds the portfile contents for a daemon that has just bound `bound` over
 /// `store`.
 pub fn info_for(
-    bound: SocketAddr,
+    bound: &super::serve::BoundAddress,
     token: String,
     now: &str,
     store: &Path,
@@ -262,6 +303,7 @@ pub fn info_for(
         started_at: now.to_string(),
         token,
         store_path: store.to_path_buf(),
+        tailnet: bound.tailnet.clone(),
     })
 }
 
@@ -284,7 +326,7 @@ pub fn preferred_port(env: &Environment) -> u16 {
 /// been available.
 pub fn bind_preferred(
     env: &Environment,
-) -> Result<(Vec<super::serve::Listener>, SocketAddr, Vec<String>), AppError> {
+) -> Result<(Vec<super::serve::Listener>, super::serve::BoundAddress), AppError> {
     let preferred = preferred_port(env);
     match super::serve::bind_listeners(preferred) {
         Ok(bound) => Ok(bound),
@@ -300,10 +342,11 @@ pub fn bind_preferred(
 /// find it), then serve.
 pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), AppError> {
     let _pidfile = claim_pidfile(env)?;
-    let (listeners, bound, mut trusted_hosts) = bind_preferred(env)?;
+    let (listeners, bound) = bind_preferred(env)?;
+    let mut trusted_hosts = bound.trusted_hosts();
     trusted_hosts.extend(crate::api::http::trusted_hosts_from_env());
 
-    let info = info_for(bound, mint_token(), &env.now(), env.store_path())?;
+    let info = info_for(&bound, mint_token(), &env.now(), env.store_path())?;
     write_info(env, &info)?;
     eprintln!(
         "storyhook daemon {} on http://127.0.0.1:{} (pid {}) holding {}",
@@ -757,6 +800,77 @@ mod tests {
             .expect("a scratch directory")
     }
 
+    /// What [`super::super::serve::bind_listeners`] returns on a machine with
+    /// no tailnet: loopback bound, nothing else.
+    fn loopback_only(port: u16) -> super::super::serve::BoundAddress {
+        super::super::serve::BoundAddress {
+            loopback: SocketAddr::from(([127, 0, 0, 1], port)),
+            tailnet: None,
+        }
+    }
+
+    /// A daemon advertises what it bound and nothing else. Pure — no network,
+    /// no `tailscale`, no machine state — so it runs and can fail on every
+    /// machine, which is the floor under the shim tests in
+    /// `tests/tailnet_advertise.rs` and the real-tailnet ones in `web_test.rs`.
+    #[test]
+    fn the_advertised_host_is_the_bound_one_and_loopback_otherwise() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let build = |bound: &super::super::serve::BoundAddress| {
+            info_for(
+                bound,
+                "t".to_string(),
+                "2026-01-01T00:00:00Z",
+                env.store_path(),
+            )
+            .expect("building the info")
+        };
+
+        let loopback = build(&loopback_only(4321));
+        assert_eq!(loopback.advertised_host(), "127.0.0.1");
+        assert_eq!(loopback.dashboard_url(), "http://127.0.0.1:4321");
+
+        let mut with_tailnet = loopback_only(4321);
+        with_tailnet.tailnet = Some(
+            crate::daemon::tailnet::TailnetIdentity {
+                bind_ip: "100.71.206.33".parse().expect("a fixture IPv4"),
+                magic_dns: Some("psamathe.tail983f02.ts.net".to_string()),
+            }
+            .into_bound(),
+        );
+        let advertised = build(&with_tailnet);
+        assert_eq!(advertised.advertised_host(), "psamathe.tail983f02.ts.net");
+        assert_eq!(
+            advertised.dashboard_url(),
+            "http://psamathe.tail983f02.ts.net:4321"
+        );
+    }
+
+    /// A portfile written before the `tailnet` field existed must still parse.
+    ///
+    /// [`read_info_at`] treats a portfile it cannot parse as *absent*, and an
+    /// absent portfile beside a held pidfile is the one state `stop` cannot
+    /// resolve — it can only tell the user to kill the process by hand. So the
+    /// serde default is load-bearing rather than tidy. It reads as loopback,
+    /// which is always true: loopback is bound unconditionally.
+    #[test]
+    fn a_portfile_without_a_tailnet_field_reads_as_loopback_only() {
+        let dir = scratch();
+        let path = dir.path().join("daemon.json");
+        std::fs::write(
+            &path,
+            r#"{"pid":1,"port":4321,"version":"0.0.0","protocol":1,"exe":"/bin/story",
+               "exe_mtime":0,"started_at":"2026-01-01T00:00:00Z","token":"t",
+               "store_path":"/tmp/store.db"}"#,
+        )
+        .expect("writing a portfile from before the field existed");
+
+        let info = read_info_at(&path).expect("an older portfile still parses");
+        assert_eq!(info.tailnet, None);
+        assert_eq!(info.advertised_host(), "127.0.0.1");
+    }
+
     /// Disinheriting must not swallow the report that `exec` failed.
     ///
     /// This is the only assertion that distinguishes [`disinherit_descriptors`]'s
@@ -799,7 +913,7 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 4321)),
+            &loopback_only(4321),
             "deadbeef".to_string(),
             "2026-01-01T00:00:00Z",
             env.store_path(),
@@ -818,7 +932,7 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 4321)),
+            &loopback_only(4321),
             "deadbeef".to_string(),
             "2026-01-01T00:00:00Z",
             env.store_path(),
@@ -886,7 +1000,7 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 4321)),
+            &loopback_only(4321),
             "t".to_string(),
             "2026-01-01T00:00:00Z",
             &dir.path().join("somebody-elses.db"),
@@ -922,6 +1036,7 @@ mod tests {
             started_at: "2026-01-01T00:00:00Z".to_string(),
             token: "t".to_string(),
             store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
+            tailnet: None,
         };
         assert!(!info.is_this_binary());
     }
@@ -942,6 +1057,7 @@ mod tests {
             started_at: "2026-01-01T00:00:00Z".to_string(),
             token: "t".to_string(),
             store_path: PathBuf::from("/private/tmp/storyhook-lifecycle/store.db"),
+            tailnet: None,
         };
         assert!(
             !info.is_this_binary(),
@@ -952,7 +1068,7 @@ mod tests {
     #[test]
     fn this_binary_matches_itself() {
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 1)),
+            &loopback_only(1),
             "t".to_string(),
             "2026-01-01T00:00:00Z",
             Path::new("/private/tmp/storyhook-lifecycle/store.db"),
@@ -984,7 +1100,7 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 4321)),
+            &loopback_only(4321),
             "t".to_string(),
             "2026-01-01T00:00:00Z",
             env.store_path(),

@@ -36,7 +36,7 @@ use crate::api::rest::{self, Changed};
 use crate::api::rpc;
 use crate::daemon::bus::{Change, ChangeBus};
 use crate::daemon::lifecycle::Hello;
-use crate::daemon::tailnet::tailnet_identity;
+use crate::daemon::tailnet::{TailnetBind, tailnet_identity};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::store::{ReadOps, Store};
@@ -157,11 +157,13 @@ where
 
 /// Binds loopback (and the tailnet interface, when there is one) and serves.
 ///
-/// `port` may be 0, in which case the kernel picks; `ready` is told the address
-/// actually bound. Two things only the server itself can report, and which no
-/// probe from outside can establish: *which* address it got, and that the
-/// address is its own — a caller that merely connects to a port cannot tell this
-/// server apart from some other process holding it.
+/// `port` may be 0, in which case the kernel picks; `ready` is told every
+/// address actually bound, loopback and tailnet alike. Three things only the
+/// server itself can report, and which no probe from outside can establish:
+/// *which* address it got, that the address is its own — a caller that merely
+/// connects to a port cannot tell this server apart from some other process
+/// holding it — and whether the best-effort tailnet bind succeeded, which is
+/// what a caller must not guess by probing the machine (SH-110).
 pub fn bind_and_serve<S: Store, F>(
     store: &S,
     env: &Environment,
@@ -169,10 +171,11 @@ pub fn bind_and_serve<S: Store, F>(
     ready: F,
 ) -> Result<(), AppError>
 where
-    F: FnOnce(std::net::SocketAddr),
+    F: FnOnce(BoundAddress),
 {
-    let (listeners, bound, mut trusted_hosts) = bind_listeners(port)?;
+    let (listeners, bound) = bind_listeners(port)?;
     eprintln!("Storyhook dashboard: http://127.0.0.1:{}", bound.port());
+    let mut trusted_hosts = bound.trusted_hosts();
     trusted_hosts.extend(crate::api::http::trusted_hosts_from_env());
     // No portfile and no token: this entry point serves the dashboard for a
     // caller that already has a store open, and an empty token is one no
@@ -186,6 +189,62 @@ where
         String::new(),
         move || ready(bound),
     )
+}
+
+/// Where a server is answering: the loopback address it bound, and the tailnet
+/// interface it bound beside it, if any.
+///
+/// The whole of what may legitimately be advertised, and the reason it is a
+/// struct rather than a loose `SocketAddr`: the tailnet answer used to be
+/// computed inside [`bind_listeners`] and never leave it, so every process that
+/// wanted to name the dashboard re-derived it from a fresh probe of the machine
+/// instead of reading what this server actually bound (SH-110).
+///
+/// One value crosses both boundaries — the in-process `ready` callback and the
+/// daemon's portfile — so one fact has exactly one representation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BoundAddress {
+    /// The loopback address. Always present: loopback is bound unconditionally.
+    pub loopback: std::net::SocketAddr,
+    /// The tailnet interface, when one was bound. `None` is the honest answer
+    /// both for a machine with no tailnet and for a probe that missed its
+    /// deadline — in either case there is no tailnet listener to reach.
+    #[serde(default)]
+    pub tailnet: Option<TailnetBind>,
+}
+
+impl BoundAddress {
+    /// The port both listeners share — the tailnet one is bound to whatever
+    /// port loopback actually got.
+    pub fn port(&self) -> u16 {
+        self.loopback.port()
+    }
+
+    /// The host to show or copy for reaching this server: the tailnet's
+    /// advertised name when this server bound one, else loopback.
+    ///
+    /// Loopback is the correct answer rather than a fallback: it is the only
+    /// address this server is certain to be answering on.
+    pub fn advertise_host(&self) -> String {
+        self.tailnet
+            .as_ref()
+            .map(TailnetBind::advertise_host)
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    }
+
+    /// The dashboard URL to show or copy, built from [`Self::advertise_host`].
+    pub fn dashboard_url(&self) -> String {
+        format!("http://{}:{}", self.advertise_host(), self.port())
+    }
+
+    /// The non-loopback `Host` values this bind earns trust for. Empty unless a
+    /// tailnet interface was actually bound — trust follows bind.
+    pub fn trusted_hosts(&self) -> Vec<String> {
+        self.tailnet
+            .as_ref()
+            .map(TailnetBind::trusted_hosts)
+            .unwrap_or_default()
+    }
 }
 
 /// A bound listener and whether it is the loopback one.
@@ -206,9 +265,7 @@ pub struct Listener {
 ///
 /// A tailnet bind failure is a warning, never fatal: no tailnet is a degraded
 /// dashboard, and a dashboard that refuses to start is a broken one.
-pub fn bind_listeners(
-    port: u16,
-) -> Result<(Vec<Listener>, std::net::SocketAddr, Vec<String>), AppError> {
+pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppError> {
     let loopback = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
             AppError::Usage(format!(
@@ -226,7 +283,7 @@ pub fn bind_listeners(
         listener: loopback,
         loopback: true,
     }];
-    let mut trusted_hosts = Vec::new();
+    let mut tailnet = None;
 
     if let Some(identity) = tailnet_identity() {
         let tailnet_addr = format!("{}:{}", identity.bind_ip, bound.port());
@@ -237,8 +294,10 @@ pub fn bind_listeners(
                 // identity for mutations too — the same standing as loopback —
                 // without requiring STORYHOOK_WEB_TRUSTED_HOSTS. Trust follows
                 // bind, so a name is never trusted unless the interface it
-                // would arrive on is actually being served.
-                trusted_hosts.extend(identity.trusted_hosts());
+                // would arrive on is actually being served. `into_bound` is
+                // where that rule is enforced: it is reachable only from here,
+                // on the success arm.
+                tailnet = Some(identity.into_bound());
                 listeners.push(Listener {
                     listener,
                     loopback: false,
@@ -251,7 +310,13 @@ pub fn bind_listeners(
         }
     }
 
-    Ok((listeners, bound, trusted_hosts))
+    Ok((
+        listeners,
+        BoundAddress {
+            loopback: bound,
+            tailnet,
+        },
+    ))
 }
 
 /// Runs the request-accept loop for one bound server.

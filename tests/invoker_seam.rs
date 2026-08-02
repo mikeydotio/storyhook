@@ -576,3 +576,71 @@ fn no_storyhook_path_literal_survives_in_the_github_module() {
         found.join("\n  ")
     );
 }
+
+/// Nothing outside the bind site may probe the machine for a host to print.
+///
+/// SH-110's defect was a client naming the dashboard from a fresh `tailscale`
+/// probe rather than from what the daemon bound. The type system carries most
+/// of the weight now — `advertise_host` exists only on `TailnetBind` and
+/// `BoundAddress`, and neither can be built without a successful bind — but
+/// `tailnet_identity` is still `pub`, and a future command could call it and
+/// format a URL from the result without touching any of those types. That would
+/// compile, read as reasonable in review, and quietly reintroduce the defect.
+///
+/// So the probe gets exactly one caller, enforced the same crude way
+/// `the_legacy_write_path_is_gone` enforces its rule: by grep, over the tree,
+/// on non-comment lines only. `serve.rs` is the one file allowed to call it,
+/// because that is where the bind happens.
+#[test]
+fn no_client_process_probes_for_the_host_it_prints() {
+    use std::path::Path;
+
+    fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    assert!(
+        files.len() > 20,
+        "expected the whole tree, got {}",
+        files.len()
+    );
+
+    let mut found = Vec::new();
+    for (path, text) in &files {
+        let relative = path
+            .rsplit_once("/src/")
+            .map_or(path.as_str(), |(_, rest)| rest);
+        // Where the probe is defined, and the one place a bind may call it.
+        if relative == "daemon/tailnet.rs" || relative == "daemon/serve.rs" {
+            continue;
+        }
+        for (number, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.contains("tailnet_identity") || code.contains("reachable_host") {
+                found.push(format!("{relative}:{}: {}", number + 1, code.trim()));
+            }
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "a host to advertise must be read from what the daemon bound \
+         (`DaemonInfo::dashboard_url`), never derived from a probe of this machine — \
+         that is SH-110, and `reachable_host` was deleted for it:\n  {}",
+        found.join("\n  ")
+    );
+}
