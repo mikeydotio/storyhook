@@ -64,6 +64,66 @@ pub struct DeinitPlan {
     pub kept: Vec<(String, String)>,
 }
 
+/// What `story purge` would destroy, read before anything is.
+///
+/// The sibling of [`DeinitPlan`], and typed for the same reason: the numbers
+/// are the warning, and a pre-rendered English sentence would leave a second
+/// front-end parsing prose.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PurgePlan {
+    /// The story's id — what the user must type to confirm.
+    pub id: String,
+    /// Its title, so the person confirming can tell it is the right story.
+    pub title: String,
+    /// Why it was soft-deleted. A purge refuses a story that was not, so this
+    /// is the record of the decision the purge is now making permanent.
+    pub deleted_reason: Option<String>,
+    /// How many events go. The irreversible number.
+    pub events: usize,
+    /// The edges surviving stories still claim into this one, as `(story id,
+    /// relation)`. Each is retracted with a real `StoryRelationshipRemoved`
+    /// event before the story goes — otherwise the rebuild oracle reports a
+    /// divergence that `doctor --fix` can never repair, because the story the
+    /// claim names is not there to re-link.
+    pub retracted: Vec<(String, String)>,
+}
+
+/// What a destructive command is about to do, in the shape its own kind of
+/// destruction needs.
+///
+/// The payload of [`Response::ConfirmationRequired`], and the reason there is
+/// one prompt rather than one per verb. Everything the gate does — refuse under
+/// `--json`, refuse with no terminal, ask for a typed token, name `--force` —
+/// is identical whatever is being destroyed; only the warning and the token
+/// differ. Two copies of that logic is two prompts that drift apart, and the
+/// one that drifts is the one used least.
+///
+/// Internally tagged, so the document says which kind it is rather than
+/// leaving a reader to infer it from which fields are present. The tag is
+/// additive: a deinit plan carries every field it always did.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "confirm", rename_all = "kebab-case")]
+pub enum ConfirmationPlan {
+    /// `story project deinit` — a project and everything recorded against it.
+    Deinit(DeinitPlan),
+    /// `story purge` — one story and everything recorded against it.
+    Purge(PurgePlan),
+}
+
+impl ConfirmationPlan {
+    /// What the user must type, exactly, to go through with this.
+    ///
+    /// Also what the refusal names, so a caller reading "this would permanently
+    /// delete `X`" is reading the same `X` they would have had to type.
+    #[must_use]
+    pub fn token(&self) -> &str {
+        match self {
+            Self::Deinit(plan) => &plan.slug,
+            Self::Purge(plan) => &plan.id,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SummaryView {
     pub total_open: usize,
@@ -280,7 +340,7 @@ pub enum Response {
     /// Putting the decision here rather than inside the service is what lets
     /// the prompt render in the process that has a terminal — over the daemon
     /// the service runs somewhere with no way to reach the user at all.
-    ConfirmationRequired(Box<DeinitPlan>),
+    ConfirmationRequired(Box<ConfirmationPlan>),
 }
 
 #[derive(Serialize)]
@@ -608,8 +668,50 @@ fn render_human(response: &Response) -> String {
                 serde_json::to_string_pretty(events).unwrap_or_default()
             )
         }
-        Response::ConfirmationRequired(plan) => render_deinit_plan(plan),
+        Response::ConfirmationRequired(plan) => render_confirmation_plan(plan),
     }
+}
+
+/// The warning a destructive command prints before it asks.
+///
+/// One entry point, so the CLI prompt, the CLI refusal and any other front-end
+/// are reading the same words about the same act.
+#[must_use]
+pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
+    match plan {
+        ConfirmationPlan::Deinit(plan) => render_deinit_plan(plan),
+        ConfirmationPlan::Purge(plan) => render_purge_plan(plan),
+    }
+}
+
+/// The warning a purge prints before it asks.
+///
+/// Ordered the way [`render_deinit_plan`] is, by what a person needs in order
+/// to answer: which story this is, what is irreversible about it, what else
+/// changes, and only then the question. The retracted claims are here rather
+/// than left as a surprise because they are edits to *other* stories' histories
+/// — the one part of a purge that reaches beyond the story being purged.
+#[must_use]
+pub fn render_purge_plan(plan: &PurgePlan) -> String {
+    let mut body = String::new();
+    body.push_str(&format!("{} — {}\n", plan.id, plan.title));
+    if let Some(reason) = &plan.deleted_reason {
+        body.push_str(&format!("  deleted: {reason}\n"));
+    }
+    body.push_str(&format!(
+        "  {} event{} will be permanently deleted.\n",
+        plan.events,
+        if plan.events == 1 { "" } else { "s" },
+    ));
+    for (other, relation) in &plan.retracted {
+        body.push_str(&format!("  retract   {other} {relation} {}\n", plan.id));
+    }
+    body.push_str(&format!(
+        "  {} will never be reused as a story id.\n",
+        plan.id
+    ));
+    body.push_str("\nThis cannot be undone.\n");
+    body
 }
 
 /// `story project settings` in prose.

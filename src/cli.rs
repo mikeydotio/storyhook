@@ -162,6 +162,7 @@ Usage:
   story unlabel <id> <labels-csv>
   story reopen <id> [--force]
   story delete <id> "<reason>"
+  story purge <id> [--force]                       (permanently remove a deleted story)
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
                   [--assignee <member>] [--labels "<csv>"] [--blocked "<reason>"]
                   [--unblocked] [--json "<json>"] [--type <slug>]
@@ -309,6 +310,17 @@ pub enum Invocation {
     Delete {
         id: String,
         reason: String,
+    },
+    /// Remove a soft-deleted story permanently.
+    ///
+    /// The irreversible half of `delete`, and a verb of its own rather than a
+    /// flag on it: a flag that turns a reversible act irreversible sits one
+    /// keystroke away from the reversible one.
+    Purge {
+        id: String,
+        /// Whether the confirmation has already been given. An unforced purge
+        /// answers with `Response::ConfirmationRequired` and writes nothing.
+        force: bool,
     },
     BulkUpdate {
         updates: Vec<(String, String)>,
@@ -896,6 +908,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[bare("force")],
     },
     VerbFlags {
+        verb: "purge",
+        subcommand: None,
+        flags: &[bare("force")],
+    },
+    VerbFlags {
         verb: "report",
         subcommand: None,
         flags: &[bare("html")],
@@ -1237,6 +1254,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "unlabel" => parse_unlabel(args),
         "reopen" => parse_reopen_verb(args),
         "delete" => parse_delete_verb(args),
+        "purge" => parse_purge_verb(args),
         "set" => parse_set(args),
         "relate" | "link" => parse_relate(args),
         "unrelate" | "unlink" => parse_unrelate(args),
@@ -2687,6 +2705,26 @@ fn parse_reopen_verb(args: &[String]) -> Result<Invocation, AppError> {
         }
     }
     Ok(Invocation::Reopen { id, force })
+}
+
+/// `story purge <id> [--force]`.
+///
+/// Shaped like `reopen`'s parser rather than `delete`'s: the trailing words are
+/// not free text, so an unexpected one is a mistake rather than a reason.
+fn parse_purge_verb(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story purge <id> [--force]";
+    if args.len() < 2 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    let id = args[1].clone();
+    let mut force = false;
+    for arg in &args[2..] {
+        match arg.as_str() {
+            "--force" => force = true,
+            _ => return Err(AppError::Usage(usage.to_string())),
+        }
+    }
+    Ok(Invocation::Purge { id, force })
 }
 
 fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {

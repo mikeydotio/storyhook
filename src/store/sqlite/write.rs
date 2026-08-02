@@ -27,7 +27,9 @@ use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, PathKind, ProjectId, StoryNo};
 use crate::store::sqlite::read;
-use crate::store::types::{DeletedProject, NewProject, ProjectSettings, RawEvent, priority_rank};
+use crate::store::types::{
+    DeletedProject, NewProject, ProjectSettings, PurgedStory, RawEvent, priority_rank,
+};
 
 fn sql<T>(result: Result<T, rusqlite::Error>, context: &str) -> Result<T, StoreError> {
     result.map_err(|e| StoreError::from_sqlite(e, context))
@@ -221,6 +223,103 @@ fn verify_project_is_gone(conn: &Connection, project: ProjectId) -> Result<(), S
             return Err(StoreError::Invariant(format!(
                 "deleting project {} left {left} row(s) in `{table}`",
                 project.get()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Every table holding rows scoped to a single story, in the order they must be
+/// cleared, paired with the predicate that selects that story's rows.
+///
+/// The predicate is a fragment rather than a column name because one entry is
+/// not shaped like the others: a story's relations live under **both** ends of
+/// each edge, so `story_relations` has to be cleared by `story_no` *or*
+/// `other_no`. Clearing only one end would leave the mirror row behind, its
+/// foreign key pointing at a story that no longer exists.
+///
+/// Two positions are load-bearing, and they are the same two that matter in
+/// [`PROJECT_SCOPED_TABLES`]:
+///
+/// * `story_commit_links` has no foreign key at all (0002 explains why), so no
+///   cascade will ever clean it and it has to be here explicitly.
+/// * `stories` comes **before** `events`, which is what makes migration 5's
+///   rewritten `events_reject_delete` abstain. Reversing these two turns a
+///   working purge into an aborted transaction.
+///
+/// `github_bases`, `story_labels` and `story_relations` would each be handled
+/// by `ON DELETE CASCADE`. They are listed anyway, and the cascade demoted to a
+/// backstop, so that [`verify_story_is_gone`] can prove the purge was complete
+/// rather than trusting that it was.
+const STORY_SCOPED_TABLES: &[(&str, &str)] = &[
+    ("github_bases", "story_no = ?2"),
+    ("story_commit_links", "story_no = ?2"),
+    ("story_relations", "(story_no = ?2 OR other_no = ?2)"),
+    ("story_labels", "story_no = ?2"),
+    ("stories", "story_no = ?2"),
+    ("events", "story_no = ?2"),
+];
+
+/// Removes one story and everything recorded against it. See
+/// [`WriteOps::purge_story`](crate::store::WriteOps::purge_story) for the
+/// contract, for why the event log may be deleted here, and for what this
+/// deliberately leaves to its caller.
+pub(super) fn purge_story(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<PurgedStory, StoreError> {
+    if read::story(conn, project, story)?.is_none() {
+        return Err(StoreError::NotFound(format!(
+            "purging a story that does not exist ({project}, story {story})"
+        )));
+    }
+
+    let mut removed = PurgedStory::default();
+    for (table, predicate) in STORY_SCOPED_TABLES {
+        // Both interpolated fragments are compile-time constants from the list
+        // above, never caller input, so this cannot be an injection. The two
+        // values — the project id and the story number — are still bound.
+        let count = sql(
+            conn.execute(
+                &format!("DELETE FROM {table} WHERE project_id = ?1 AND {predicate}"),
+                params![project.get(), story.get()],
+            ),
+            "purging a story",
+        )?;
+        if *table == "events" {
+            removed.events = count;
+        }
+    }
+
+    verify_story_is_gone(conn, project, story)?;
+    Ok(removed)
+}
+
+/// Fails unless every story-scoped table is empty of this story.
+///
+/// The purge above would be complete without this today. It exists for the
+/// migration that adds a seventh story-scoped table and does not add it to
+/// [`STORY_SCOPED_TABLES`]: the alternative to failing here is a store that
+/// quietly keeps rows belonging to a story that no longer exists, under a
+/// number nothing will ever hand out again.
+fn verify_story_is_gone(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<(), StoreError> {
+    for (table, predicate) in STORY_SCOPED_TABLES {
+        let left: i64 = sql(
+            conn.query_row(
+                &format!("SELECT count(*) FROM {table} WHERE project_id = ?1 AND {predicate}"),
+                params![project.get(), story.get()],
+                |row| row.get(0),
+            ),
+            "verifying a story purge",
+        )?;
+        if left > 0 {
+            return Err(StoreError::Invariant(format!(
+                "purging story {story} of project {project} left {left} row(s) in `{table}`"
             )));
         }
     }

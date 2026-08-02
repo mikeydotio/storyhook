@@ -612,6 +612,238 @@ macro_rules! store_conformance_suite {
                 );
             }
 
+            // ===============================================================
+            // Purging a story
+            //
+            // The second — and last — operation permitted to delete events.
+            // Every case here is about a boundary, as the deletion cases above
+            // are: between the story going and the one beside it, between a
+            // purge and an ordinary write, and between the number that is
+            // freed and the number that must never be handed out again.
+            // ===============================================================
+
+            #[test]
+            fn purging_a_story_removes_its_row_and_its_events() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let doomed = new_story(f.store(), project, "Created in error");
+                let before = f.store().read(|tx| tx.event_count(project)).unwrap();
+
+                let removed = f
+                    .store()
+                    .write(|tx| tx.purge_story(project, doomed))
+                    .expect("purging the story");
+
+                assert_eq!(removed.events, 1, "the whole log goes: {removed:?}");
+                assert!(
+                    f.store().read(|tx| tx.story(project, doomed)).unwrap().is_none(),
+                    "the read-model row is gone"
+                );
+                assert!(
+                    f.store().read(|tx| tx.events_for(project, doomed)).unwrap().is_empty(),
+                    "the event log is gone"
+                );
+                assert_eq!(
+                    f.store().read(|tx| tx.event_count(project)).unwrap(),
+                    before - 1,
+                    "and it came out of the project's total"
+                );
+            }
+
+            #[test]
+            fn purging_a_story_leaves_every_other_story_untouched() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let doomed = new_story(f.store(), project, "Created in error");
+                let kept = new_story(f.store(), project, "Real work");
+                let before = snapshot(f.store(), project, kept);
+
+                f.store().write(|tx| tx.purge_story(project, doomed)).unwrap();
+
+                assert_eq!(snapshot(f.store(), project, kept), before);
+                assert_eq!(
+                    story_numbers(f.store(), project, &StoryQuery::all()),
+                    [kept.get()]
+                );
+            }
+
+            #[test]
+            fn purging_a_story_removes_the_mirror_row_its_neighbour_held() {
+                // A relation lives under *both* ends. Clearing only the purged
+                // story's own row would leave the neighbour's mirror behind,
+                // its foreign key pointing at a story that no longer exists —
+                // and `story_relations` is the one table whose rows are not
+                // selected by `story_no` alone.
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let doomed = new_story(f.store(), project, "Created in error");
+                let kept = new_story(f.store(), project, "Real work");
+                link(f.store(), project, doomed, "blocks", kept).expect("linking");
+                assert_eq!(
+                    f.store().read(|tx| tx.relations_from(project, kept)).unwrap().len(),
+                    1,
+                    "the fixture is not vacuous: the neighbour holds a mirror"
+                );
+
+                f.store().write(|tx| tx.purge_story(project, doomed)).unwrap();
+
+                assert!(
+                    f.store().read(|tx| tx.relations_from(project, kept)).unwrap().is_empty(),
+                    "the neighbour's mirror row went with it"
+                );
+                assert!(
+                    f.store().read(|tx| tx.relations_to(project, kept)).unwrap().is_empty()
+                );
+            }
+
+            #[test]
+            fn purging_a_story_takes_its_labels_and_its_github_base() {
+                // Both would be handled by `ON DELETE CASCADE`. The purge
+                // clears them explicitly and then verifies, so a seventh
+                // story-scoped table added later and forgotten fails loudly
+                // rather than orphaning its rows under a number nothing will
+                // ever hand out again.
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let doomed = new_story(f.store(), project, "Created in error");
+                apply(
+                    f.store(),
+                    project,
+                    doomed,
+                    ExpectedSeq::Any,
+                    &[StoryEvent::StoryLabelsSet {
+                        at: "2026-01-01T00:10:00Z".into(),
+                        labels: vec!["red".into(), "blue".into()],
+                    }],
+                )
+                .unwrap();
+                let base = snapshot(f.store(), project, doomed);
+                f.store()
+                    .write(|tx| tx.put_github_base(project, doomed, &base))
+                    .unwrap();
+
+                f.store().write(|tx| tx.purge_story(project, doomed)).unwrap();
+
+                assert!(
+                    f.store().read(|tx| tx.github_base(project, doomed)).unwrap().is_none()
+                );
+            }
+
+            #[test]
+            fn a_purged_story_number_is_never_reissued() {
+                // The counter is deliberately not rolled back. Reusing the
+                // number would point every commit message, branch name and
+                // external link naming the old story at a new and unrelated
+                // one — worse than a gap in the sequence.
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let doomed = new_story(f.store(), project, "Created in error");
+
+                f.store().write(|tx| tx.purge_story(project, doomed)).unwrap();
+
+                let next = f.store().write(|tx| tx.allocate_story_no(project)).unwrap();
+                assert_eq!(
+                    next,
+                    StoryNo::new(doomed.get() + 1),
+                    "the counter moves on rather than back"
+                );
+            }
+
+            #[test]
+            fn purging_a_story_does_not_licence_an_ordinary_event_deletion() {
+                // Migration 5 narrows the append-only guard by adding a
+                // conjunct; it must not lift it. The store exposes no way to
+                // delete an event, so this asserts the other half — a story
+                // that still exists keeps every event it had, before and after
+                // a sibling's purge. `tests/story_purge.rs` makes the raw-SQL
+                // assertion that the trigger itself still fires.
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let doomed = new_story(f.store(), project, "Created in error");
+                let kept = new_story(f.store(), project, "Real work");
+                let before = f.store().read(|tx| tx.events_for(project, kept)).unwrap().len();
+                assert!(before > 0);
+
+                f.store().write(|tx| tx.purge_story(project, doomed)).unwrap();
+
+                assert_eq!(
+                    f.store().read(|tx| tx.events_for(project, kept)).unwrap().len(),
+                    before
+                );
+            }
+
+            #[test]
+            fn purging_a_story_that_does_not_exist_says_so() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let doomed = new_story(f.store(), project, "Created in error");
+                f.store().write(|tx| tx.purge_story(project, doomed)).unwrap();
+
+                let error = f
+                    .store()
+                    .write(|tx| tx.purge_story(project, doomed))
+                    .expect_err("the second purge has nothing to purge");
+                assert!(
+                    matches!(error, StoreError::NotFound(_)),
+                    "expected NotFound, got {error:?}"
+                );
+            }
+
+            #[test]
+            fn purging_a_story_is_scoped_to_its_project() {
+                // The twin projects share a prefix and both have stories 1 and
+                // 2, which is the shape that makes an unscoped delete return —
+                // or here, destroy — the wrong project's work.
+                let f = <$fixture>::create();
+                let (alpha, beta) = twin_projects(f.store());
+                let before = snapshot(f.store(), beta, StoryNo::new(1));
+
+                f.store()
+                    .write(|tx| tx.purge_story(alpha, StoryNo::new(1)))
+                    .unwrap();
+
+                assert_eq!(snapshot(f.store(), beta, StoryNo::new(1)), before);
+                assert_eq!(
+                    story_numbers(f.store(), beta, &StoryQuery::all()),
+                    [1, 2],
+                    "the other project keeps both stories"
+                );
+            }
+
+            #[test]
+            fn a_rolled_back_purge_leaves_the_story_intact() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let doomed = new_story(f.store(), project, "Created in error");
+                let before = snapshot(f.store(), project, doomed);
+
+                let outcome: Result<(), StoreError> = f.store().write(|tx| {
+                    tx.purge_story(project, doomed)?;
+                    Err(StoreError::Validation("changed my mind".into()))
+                });
+                assert!(outcome.is_err());
+
+                assert_eq!(snapshot(f.store(), project, doomed), before);
+                assert!(
+                    !f.store().read(|tx| tx.events_for(project, doomed)).unwrap().is_empty()
+                );
+            }
+
+            #[test]
+            fn a_purged_story_stays_purged_after_a_reopen() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let doomed = new_story(f.store(), project, "Created in error");
+                let kept = new_story(f.store(), project, "Real work");
+                f.store().write(|tx| tx.purge_story(project, doomed)).unwrap();
+
+                let f = f.reopen();
+
+                assert!(f.store().read(|tx| tx.story(project, doomed)).unwrap().is_none());
+                assert!(f.store().read(|tx| tx.events_for(project, doomed)).unwrap().is_empty());
+                assert!(f.store().read(|tx| tx.story(project, kept)).unwrap().is_some());
+            }
+
             #[test]
             fn event_count_is_scoped_to_its_project() {
                 let f = <$fixture>::create();
