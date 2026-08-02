@@ -446,12 +446,48 @@ fn stand_down_legacy_daemon(env: &Environment) {
     let _ = std::fs::remove_file(&legacy);
 }
 
+/// Marks every descriptor above stderr close-on-exec, in the child, between
+/// `fork` and `exec`.
+///
+/// **Marking rather than closing is deliberate.** `std` reports a failed `exec`
+/// to the parent over a close-on-exec pipe of its own: the parent reads
+/// end-of-file and concludes the child got as far as running. Closing that
+/// descriptor here would turn "the daemon binary could not be executed" into
+/// "the daemon started, then vanished", which surfaces five seconds later as a
+/// timeout naming nothing. Setting a flag it already has costs nothing and
+/// keeps the report.
+///
+/// Only `fcntl` is called, which is async-signal-safe, as code between `fork`
+/// and `exec` in a multi-threaded process must be.
+///
+/// The upper bound is the process's own descriptor table, clamped: a soft
+/// `RLIMIT_NOFILE` of a million would otherwise make this loop cost more than
+/// the spawn it protects. Measured on the development machine, where
+/// `getdtablesize()` answers 245,760: 32ms, against a daemon spawn already
+/// measured in hundreds.
+#[cfg(unix)]
+fn disinherit_descriptors() {
+    /// Beyond this, a descriptor is not something storyhook opened.
+    const CEILING: libc::c_int = 262_144;
+
+    // SAFETY: `getdtablesize` reads a process property and takes no arguments.
+    let table = unsafe { libc::getdtablesize() }.clamp(3, CEILING);
+    for fd in 3..table {
+        // SAFETY: `fcntl` on a descriptor that is not open returns `EBADF`,
+        // which is the answer for most of this range and is ignored on purpose.
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+}
+
 /// Starts a detached daemon process.
 ///
 /// It inherits this process's environment, which is how a test harness's
 /// isolated data and state homes reach it. `STORYHOOK_PARENT_PID` travels with
 /// it too: a daemon started by a test binary must not outlive that binary, and
 /// the daemon polls for its parent rather than trusting anybody to reap it.
+///
+/// It inherits **nothing else**, and that is enforced rather than assumed — see
+/// [`disinherit_descriptors`] and `tests/daemon_fd_hygiene.rs`.
 fn spawn_child(env: &Environment) -> Result<(), AppError> {
     let (exe, _) = current_binary()?;
     std::fs::create_dir_all(env.daemon_state_dir())?;
@@ -481,6 +517,32 @@ fn spawn_child(env: &Environment) -> Result<(), AppError> {
     // happened to start it — and so a test harness can kill the whole group.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    // The three descriptors above are the *only* ones the daemon may have.
+    //
+    // A daemon outlives the command that started it, so anything else it
+    // inherits it holds forever — and a pipe's reader waits for the last writer
+    // to close. That deadlock was captured in this repository's own gate: a
+    // test binary blocked in `read(2)` for four minutes on a pipe whose write
+    // end a `story … daemon --serve` was holding at fd 7, released in under
+    // three seconds by killing the daemon. It cannot resolve on its own,
+    // because the daemon stops when its parent does and its parent is the
+    // process it has blocked (SH-94).
+    //
+    // Descriptors arrive by accident because `std` has no `pipe2` on macOS: it
+    // creates the pipes behind `Stdio::piped()` inheritable and marks them
+    // close-on-exec a syscall later, so a spawn from another thread inside that
+    // window carries them off. The window is scheduling-wide on a busy machine,
+    // which is why the symptom looked like load sensitivity.
+    //
+    // SAFETY: the closure runs after `fork` and before `exec`, where only
+    // async-signal-safe calls are permitted. It makes one, `fcntl`.
+    #[cfg(unix)]
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+            disinherit_descriptors();
+            Ok(())
+        });
+    }
     command
         .spawn()
         .map_err(|e| AppError::Storage(format!("failed to start the storyhook daemon: {e}")))?;
@@ -693,6 +755,43 @@ mod tests {
             .prefix("storyhook-lifecycle-")
             .tempdir_in("/private/tmp")
             .expect("a scratch directory")
+    }
+
+    /// Disinheriting must not swallow the report that `exec` failed.
+    ///
+    /// This is the only assertion that distinguishes [`disinherit_descriptors`]'s
+    /// two available implementations, and it is the reason for the one it has.
+    /// `std` tells the parent that `exec` failed by writing an errno to a
+    /// close-on-exec pipe; the parent reads end-of-file and concludes the child
+    /// got as far as running. **Marking** that descriptor close-on-exec — which
+    /// it already is — leaves the report intact. **Closing** it makes a failed
+    /// `exec` indistinguishable from a successful one, so `spawn` returns `Ok`,
+    /// `await_healthy` polls a daemon that never existed, and five seconds
+    /// later the user is told it "did not start" with no reason given.
+    ///
+    /// Change the `fcntl` to a `close` and this test fails; nothing else in the
+    /// suite does.
+    #[cfg(unix)]
+    #[test]
+    fn disinheriting_still_reports_an_exec_that_failed() {
+        let mut command = Command::new("/nonexistent/storyhook-is-not-here");
+        // SAFETY: the closure calls only `fcntl` and `getdtablesize`, as
+        // required between `fork` and `exec`.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+                disinherit_descriptors();
+                Ok(())
+            });
+        }
+        let error = command
+            .spawn()
+            .expect_err("spawning a path that does not exist must fail");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "the failure must name the missing executable, not arrive later as \
+             a daemon that never answered: {error}"
+        );
     }
 
     #[test]
