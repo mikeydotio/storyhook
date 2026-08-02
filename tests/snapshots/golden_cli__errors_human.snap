@@ -18,6 +18,20 @@ error: unknown flag `--no-such-flag` for `story list`.
 If `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.
 
 
+$ story new
+exit: 2
+stdout: <empty>
+stderr: 
+error: usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>]
+
+
+$ story move SH-1 not-a-state
+exit: 2
+stdout: <empty>
+stderr: 
+error: state `not-a-state` is not defined
+
+
 $ story list --state
 exit: 2
 stdout: <empty>
