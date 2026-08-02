@@ -36,6 +36,26 @@ pub struct Migration {
     pub name: &'static str,
     /// The SQL to run, as one batch, inside this migration's transaction.
     pub sql: &'static str,
+    /// Whether this migration rebuilds a table other tables reference, and so
+    /// must run with foreign keys **disabled**.
+    ///
+    /// SQLite has no `ALTER TABLE ADD CONSTRAINT`, so adding one means the
+    /// twelve-step rebuild: create a replacement, copy, `DROP TABLE` the
+    /// original, rename. With foreign keys **on**, that `DROP TABLE` fires
+    /// every child's `ON DELETE CASCADE` — and the damage is silent. Measured
+    /// on the bundled SQLite 3.51.0: rebuilding `stories` that way empties
+    /// `story_labels` and reports a successful COMMIT.
+    ///
+    /// `PRAGMA defer_foreign_keys` does not help — it defers *checks*, not the
+    /// cascade — and the pragma cannot be changed inside a transaction, so
+    /// [`apply`] has to set it before `BEGIN` and restore it after. The price of
+    /// switching enforcement off is paid back by `PRAGMA foreign_key_check`,
+    /// which [`apply`] runs **inside** the transaction: a migration that leaves
+    /// one dangling reference rolls back rather than committing.
+    ///
+    /// Default `false`, and it should stay that way for every migration that
+    /// does not rebuild a referenced table.
+    pub foreign_keys_off: bool,
 }
 
 /// Every migration this binary knows how to apply, in order.
@@ -47,16 +67,19 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 1,
         name: "initial",
         sql: include_str!("schema/0001_initial.sql"),
+        foreign_keys_off: false,
     },
     Migration {
         version: 2,
         name: "commit_links",
         sql: include_str!("schema/0002_commit_links.sql"),
+        foreign_keys_off: false,
     },
     Migration {
         version: 3,
         name: "delete_project",
         sql: include_str!("schema/0003_delete_project.sql"),
+        foreign_keys_off: false,
     },
 ];
 
@@ -194,18 +217,36 @@ fn apply(conn: &Connection, migration: &Migration) -> Result<bool, StoreError> {
         detail,
     };
 
-    conn.execute_batch("BEGIN IMMEDIATE")
-        .map_err(|e| fail(e.to_string()))?;
+    // Outside the transaction on purpose: SQLite silently ignores `PRAGMA
+    // foreign_keys` inside one. Restored in every exit path below, because the
+    // caller hands the same connection to the next migration and then to the
+    // store itself — leaving enforcement off would disarm it for the process.
+    if migration.foreign_keys_off {
+        conn.pragma_update(None, "foreign_keys", false)
+            .map_err(|e| fail(format!("disabling foreign keys: {e}")))?;
+    }
+    let restore_foreign_keys = |conn: &Connection| {
+        if migration.foreign_keys_off {
+            let _ = conn.pragma_update(None, "foreign_keys", true);
+        }
+    };
+
+    if let Err(error) = conn.execute_batch("BEGIN IMMEDIATE") {
+        restore_foreign_keys(conn);
+        return Err(fail(error.to_string()));
+    }
 
     match schema_version(conn) {
         Ok(version) if version >= migration.version => {
-            conn.execute_batch("COMMIT")
-                .map_err(|e| fail(e.to_string()))?;
+            let committed = conn.execute_batch("COMMIT");
+            restore_foreign_keys(conn);
+            committed.map_err(|e| fail(e.to_string()))?;
             return Ok(false);
         }
         Ok(_) => {}
         Err(error) => {
             let _ = conn.execute_batch("ROLLBACK");
+            restore_foreign_keys(conn);
             return Err(error);
         }
     }
@@ -226,14 +267,49 @@ fn apply(conn: &Connection, migration: &Migration) -> Result<bool, StoreError> {
         Ok(())
     })();
 
+    // What buys back the enforcement switched off above, and the reason it is
+    // safe to switch off at all. `foreign_key_check` reports every dangling
+    // reference in the database; inside the transaction, so a migration that
+    // creates one rolls back instead of committing silently. Runs only for the
+    // migrations that asked, since it is a full scan of every child table.
+    let result = result.and_then(|()| {
+        if !migration.foreign_keys_off {
+            return Ok(());
+        }
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+        let violations: Vec<String> = stmt
+            .query_map([], |row| {
+                let table: String = row.get(0)?;
+                let parent: String = row.get(2)?;
+                Ok(format!("{table} -> {parent}"))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            // A rusqlite error so it joins the same rollback path as any other
+            // failing statement; the message names what dangles.
+            Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                Some(format!(
+                    "left {} dangling foreign-key reference(s): {}",
+                    violations.len(),
+                    violations.join(", ")
+                )),
+            ))
+        }
+    });
+
     match result {
         Ok(()) => {
-            conn.execute_batch("COMMIT")
-                .map_err(|e| fail(e.to_string()))?;
+            let committed = conn.execute_batch("COMMIT");
+            restore_foreign_keys(conn);
+            committed.map_err(|e| fail(e.to_string()))?;
             Ok(true)
         }
         Err(error) => {
             let _ = conn.execute_batch("ROLLBACK");
+            restore_foreign_keys(conn);
             Err(fail(error.to_string()))
         }
     }
