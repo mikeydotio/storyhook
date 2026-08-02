@@ -3278,7 +3278,14 @@ macro_rules! store_conformance_suite {
             #[test]
             fn isolation_states() {
                 let f = <$fixture>::create();
-                let (alpha, beta) = twin_projects(f.store());
+                // Deliberately *not* `twin_projects`: that seeds two stories per
+                // project, and since SH-130 a story pins the state it occupies —
+                // the composite foreign key refuses a catalog that drops a slug
+                // a story still names. What this test is about is that one
+                // project's catalog is invisible to another's, which needs no
+                // stories at all.
+                let alpha = seed(f.store(), "alpha", "SH");
+                let beta = seed(f.store(), "beta", "SH");
                 let replacement = vec![
                     StateDef {
                         slug: "spike".into(),

@@ -81,6 +81,15 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0003_delete_project.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 4,
+        name: "state_superstate_agree",
+        sql: include_str!("schema/0004_state_superstate_agree.sql"),
+        // Rebuilds `stories`, which three tables reference. See the flag's own
+        // documentation: with enforcement on, the `DROP TABLE` in there empties
+        // every one of them and commits successfully.
+        foreign_keys_off: true,
+    },
 ];
 
 /// The newest schema version this binary understands.
@@ -423,7 +432,14 @@ mod tests {
     #[test]
     fn the_embedded_migration_list_is_contiguous() {
         validate_sequence(MIGRATIONS);
-        assert_eq!(current_schema_version(), 3);
+        // Derived rather than written down: the interesting property is that
+        // the list is contiguous and that the reported version is its last
+        // entry, not what today's number happens to be. A hard-coded literal
+        // here is a test that fails for the one reason that is never a defect.
+        assert_eq!(
+            current_schema_version(),
+            u32::try_from(MIGRATIONS.len()).expect("a short list")
+        );
     }
 
     /// The mirror triggers look inverses up in `relation_inverses`, so that
