@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use storyhook::daemon::serve::BoundAddress;
 use storyhook::env::Environment;
 use storyhook::store::SqliteStore;
 
@@ -67,15 +68,15 @@ pub fn reserve_port() -> u16 {
     panic!("no free port in {BAND:?} — is an earlier run's daemon still holding them?");
 }
 
-/// Starts a dashboard for `store` on an OS-assigned port and returns that port
-/// once it is serving. The sanctioned way for a test to get a server: no test
-/// picks its own port, and no test waits on anything weaker than the server's
-/// own readiness signal.
+/// Starts a dashboard for `store` on an OS-assigned port and returns every
+/// address it bound, once it is serving. The sanctioned way for a test to get a
+/// server: no test picks its own port, and no test waits on anything weaker
+/// than the server's own readiness signal.
 ///
 /// The store is an [`Arc`] because the server outlives this call: it runs on a
 /// detached thread for the rest of the test binary's life, exactly as the
 /// production daemon runs for the life of its process.
-pub fn serve(store: Arc<SqliteStore>, env: &Environment) -> u16 {
+pub fn serve(store: Arc<SqliteStore>, env: &Environment) -> BoundAddress {
     try_serve_on(store, env, 0).unwrap_or_else(|e| panic!("starting a test server: {e}"))
 }
 
@@ -88,15 +89,25 @@ pub fn serve(store: Arc<SqliteStore>, env: &Environment) -> u16 {
 /// mass-failure mode of SH-51. Readiness comes from the server's `ready`
 /// callback rather than a `connect()` probe for the same reason: only the server
 /// can attest that the address is one it actually bound.
-pub fn try_serve_on(store: Arc<SqliteStore>, env: &Environment, port: u16) -> Result<u16, String> {
+///
+/// That reason is why the whole [`BoundAddress`] comes back and not just the
+/// port. A test that wants the tailnet listener must learn whether it exists
+/// from the server that bound it — probing `tailscale` in the test process
+/// answers a different question ("does this machine have a tailnet?") and the
+/// two came apart under load in SH-110.
+pub fn try_serve_on(
+    store: Arc<SqliteStore>,
+    env: &Environment,
+    port: u16,
+) -> Result<BoundAddress, String> {
     use std::sync::mpsc;
 
-    let (tx, rx) = mpsc::channel::<Result<u16, String>>();
+    let (tx, rx) = mpsc::channel::<Result<BoundAddress, String>>();
     let ready_tx = tx.clone();
     let env = env.clone();
     std::thread::spawn(move || {
-        let outcome = storyhook::daemon::serve::bind_and_serve(&*store, &env, port, move |addr| {
-            let _ = ready_tx.send(Ok(addr.port()));
+        let outcome = storyhook::daemon::serve::bind_and_serve(&*store, &env, port, move |bound| {
+            let _ = ready_tx.send(Ok(bound));
         });
         if let Err(e) = outcome {
             let _ = tx.send(Err(e.to_string()));
@@ -105,7 +116,10 @@ pub fn try_serve_on(store: Arc<SqliteStore>, env: &Environment, port: u16) -> Re
 
     match rx.recv_timeout(Duration::from_secs(10)) {
         Ok(Ok(bound)) => {
-            wait_for_server(bound);
+            // `ready` fires before the accept loops are spawned, so "bound" and
+            // "accepting" are genuinely different moments and this wait is not
+            // made redundant by the report.
+            wait_for_server(bound.port());
             Ok(bound)
         }
         Ok(Err(e)) => Err(e),
@@ -268,9 +282,10 @@ mod tests {
         let outcome = try_serve_on(store, &env.environment(), squatted);
         let error = match outcome {
             Err(error) => error,
-            Ok(port) => panic!(
-                "the harness reported a ready server on port {port}, which is held by a foreign \
-                 listener — every request the test makes would go to that stranger (SH-51)"
+            Ok(bound) => panic!(
+                "the harness reported a ready server on port {}, which is held by a foreign \
+                 listener — every request the test makes would go to that stranger (SH-51)",
+                bound.port()
             ),
         };
         assert!(
@@ -288,8 +303,8 @@ mod tests {
         let (env_a, store_a, slug_a) = served_project();
         let (env_b, store_b, slug_b) = served_project();
 
-        let port_a = serve(store_a, &env_a.environment());
-        let port_b = serve(store_b, &env_b.environment());
+        let port_a = serve(store_a, &env_a.environment()).port();
+        let port_b = serve(store_b, &env_b.environment()).port();
         assert_ne!(port_a, port_b, "two servers must not share a port");
 
         let own = ureq::get(format!("http://127.0.0.1:{port_a}/api/repos/{slug_a}/data"))
@@ -310,7 +325,7 @@ mod tests {
     fn a_served_store_answers_on_the_port_it_reports() {
         let (env, store, _slug) = served_project();
 
-        let port = serve(store, &env.environment());
+        let port = serve(store, &env.environment()).port();
         let line = http_status_line(port, Duration::from_secs(5));
         assert!(
             line.as_deref().is_some_and(|l| l.contains("200")),

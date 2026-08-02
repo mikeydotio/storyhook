@@ -246,7 +246,7 @@ fn mint_token() -> String {
 /// Builds the portfile contents for a daemon that has just bound `bound` over
 /// `store`.
 pub fn info_for(
-    bound: SocketAddr,
+    bound: &super::serve::BoundAddress,
     token: String,
     now: &str,
     store: &Path,
@@ -284,7 +284,7 @@ pub fn preferred_port(env: &Environment) -> u16 {
 /// been available.
 pub fn bind_preferred(
     env: &Environment,
-) -> Result<(Vec<super::serve::Listener>, SocketAddr, Vec<String>), AppError> {
+) -> Result<(Vec<super::serve::Listener>, super::serve::BoundAddress), AppError> {
     let preferred = preferred_port(env);
     match super::serve::bind_listeners(preferred) {
         Ok(bound) => Ok(bound),
@@ -300,10 +300,11 @@ pub fn bind_preferred(
 /// find it), then serve.
 pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), AppError> {
     let _pidfile = claim_pidfile(env)?;
-    let (listeners, bound, mut trusted_hosts) = bind_preferred(env)?;
+    let (listeners, bound) = bind_preferred(env)?;
+    let mut trusted_hosts = bound.trusted_hosts();
     trusted_hosts.extend(crate::api::http::trusted_hosts_from_env());
 
-    let info = info_for(bound, mint_token(), &env.now(), env.store_path())?;
+    let info = info_for(&bound, mint_token(), &env.now(), env.store_path())?;
     write_info(env, &info)?;
     eprintln!(
         "storyhook daemon {} on http://127.0.0.1:{} (pid {}) holding {}",
@@ -757,6 +758,15 @@ mod tests {
             .expect("a scratch directory")
     }
 
+    /// What [`super::super::serve::bind_listeners`] returns on a machine with
+    /// no tailnet: loopback bound, nothing else.
+    fn loopback_only(port: u16) -> super::super::serve::BoundAddress {
+        super::super::serve::BoundAddress {
+            loopback: SocketAddr::from(([127, 0, 0, 1], port)),
+            tailnet: None,
+        }
+    }
+
     /// Disinheriting must not swallow the report that `exec` failed.
     ///
     /// This is the only assertion that distinguishes [`disinherit_descriptors`]'s
@@ -799,7 +809,7 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 4321)),
+            &loopback_only(4321),
             "deadbeef".to_string(),
             "2026-01-01T00:00:00Z",
             env.store_path(),
@@ -818,7 +828,7 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 4321)),
+            &loopback_only(4321),
             "deadbeef".to_string(),
             "2026-01-01T00:00:00Z",
             env.store_path(),
@@ -886,7 +896,7 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 4321)),
+            &loopback_only(4321),
             "t".to_string(),
             "2026-01-01T00:00:00Z",
             &dir.path().join("somebody-elses.db"),
@@ -952,7 +962,7 @@ mod tests {
     #[test]
     fn this_binary_matches_itself() {
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 1)),
+            &loopback_only(1),
             "t".to_string(),
             "2026-01-01T00:00:00Z",
             Path::new("/private/tmp/storyhook-lifecycle/store.db"),
@@ -984,7 +994,7 @@ mod tests {
         let dir = scratch();
         let env = Environment::at(dir.path());
         let info = info_for(
-            SocketAddr::from(([127, 0, 0, 1], 4321)),
+            &loopback_only(4321),
             "t".to_string(),
             "2026-01-01T00:00:00Z",
             env.store_path(),
