@@ -29,16 +29,20 @@ fn real_dir(label: &str) -> PathBuf {
 }
 
 fn story(cwd: &Path, data_home: &Path, args: &[&str]) -> std::process::Output {
-    std::process::Command::new(storyhook_test_support::story_binary())
-        .current_dir(cwd)
+    let mut cmd = std::process::Command::new(storyhook_test_support::story_binary());
+    cmd.current_dir(cwd)
         .env_clear()
         .env("HOME", data_home)
         .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("STORYHOOK_INVOKER", "local")
         .env("STORYHOOK_DATA_DIR", data_home)
-        .args(args)
-        .output()
-        .expect("running the binary under test")
+        .args(args);
+    // The cleared environment is the point; these two are put back because a
+    // daemon that inherited a cleared one would prefer the developer's dashboard
+    // port and outlive the run.
+    for (name, value) in storyhook_test_support::daemon_containment() {
+        cmd.env(name, value);
+    }
+    cmd.output().expect("running the binary under test")
 }
 
 fn stdout(out: &std::process::Output) -> String {

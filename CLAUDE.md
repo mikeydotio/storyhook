@@ -66,13 +66,12 @@ breaks one fails the suite; one that keeps the promise by other means does not.
 Standing rules for every wave:
 
 - Every commit passes `make test`; history stays bisectable and two-hats clean.
-- **`make test` runs the suite in this process** (`STORYHOOK_INVOKER=local`);
-  **`make test-daemon` runs the identical suite over `/api/v1/invoke`**; **`make gate` runs
-  both** and is what a wave ends with and what a change to the tests should run. They stay
-  separate because `test` is 114s against a 180s ceiling and the leg is another 60s — and
-  because what the leg catches (a fixture that is only correct when nothing holds the store)
-  is introduced when a test is *written*. `--test-threads=4` there is a **bound on how many
-  daemons exist at once**, kept as a measured decision; the arithmetic is on the target.
+- **`make test` is the gate, and the only one.** It runs the whole suite over
+  `/api/v1/invoke`, because since SH-114 that is the only way a `story` command reaches the
+  store. `make test-daemon` and `make gate` are gone with the second transport; what the
+  daemon leg caught — a fixture that is only correct when nothing else holds the store — the
+  single run catches now. `--test-threads=4` is a **bound on how many daemons exist at
+  once**, kept as a measured decision; the arithmetic is on the target.
 - **`make test` must keep its isolated `STORYHOOK_DATA_DIR`** (`scripts/run-tests.sh`).
   ~45 test files still build fixtures with `tempfile::tempdir()` and inherit the process
   environment; without the override a test run writes into the developer's real store.
@@ -81,9 +80,12 @@ Standing rules for every wave:
   `tests/migrate_round_trip.rs` runs end to end and the W4 revert policy is conditional on.
   Nothing under `src/` may call it: `invoker_seam.rs::the_legacy_write_path_is_gone` fails if
   a `src/` file so much as names `crate::storage`.
-- **A test that asks about bytes on disk must not have a daemon** — use
-  `ProjectBuilder::local()`. A daemon holds the store open with its own page cache and log
-  handle, so it answers reads from memory and does not notice the file being replaced.
+- **A test that asks about bytes on disk must stand the daemon down first** —
+  `TestEnv::stop_daemon()`, immediately before the file is touched rather than once at the
+  top, because the next `story` command starts another one. A daemon holds the store open
+  with its own page cache and log handle, so it answers reads from memory and does not
+  notice the file being replaced. `crates/storyhook-test-support/src/crash.rs` is where the
+  same rule is enforced for a test that kills the writer.
 - **A test build refuses to resolve a real data home** (`storyhook::env::is_test_build`), which
   is what makes a bare `cargo test` safe. Consequence: the binary `cargo test` leaves in
   `target/debug` will not touch a real store; `cargo build` produces one that will.
@@ -92,7 +94,9 @@ Standing rules for every wave:
   `scripts/capture-baseline.sh`, `TestEnv`, and *both*
   `plugin/claude-code/tests/{lib.sh,run-tests.sh}` — the last two because `run-tests.sh`
   sets `STORYHOOK_TEST_HOME`, which makes `lib.sh` skip its block. Nothing derives this
-  list, and it said four until SH-131 counted (SH-136).
+  list, and it said four until SH-131 counted (SH-136). The three Rust files that
+  `env_clear()` on purpose call `storyhook_test_support::daemon_containment()` rather than
+  adding a sixth, seventh and eighth copy.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes

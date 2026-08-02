@@ -627,15 +627,6 @@ pub struct GlobalFlags {
     pub quiet: bool,
     /// `--no-hooks`: do not fire the project's event hooks.
     pub no_hooks: bool,
-    /// `--local`: run in this process rather than through the daemon.
-    ///
-    /// A first-class, permanent mode rather than an escape hatch. A git hook
-    /// that spawned a daemon inside `prepare-commit-msg` would be hostile, and
-    /// a CI job that started one for a single command would be paying for
-    /// something it never uses again. SQLite's WAL is designed for exactly this
-    /// — several processes on one database — so `--local` is not a lesser path,
-    /// it is the same services with one less hop.
-    pub local: bool,
     /// `--store-path <file>`: run this command against a named store.
     ///
     /// Global because it has to be: the store is resolved before a verb is
@@ -689,7 +680,6 @@ pub fn split_global_flags(args: &[String]) -> Result<(GlobalFlags, Vec<String>),
             }
             "--quiet" => flags.quiet = true,
             "--no-hooks" => flags.no_hooks = true,
-            "--local" => flags.local = true,
             "--store-path" => {
                 let Some(value) = args.get(i + 1).filter(|value| !value.is_empty()) else {
                     return Err(AppError::Usage(

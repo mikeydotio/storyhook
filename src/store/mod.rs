@@ -133,9 +133,9 @@ pub trait Store: Send + Sync + 'static {
 
     /// A value that changes whenever *another* connection commits.
     ///
-    /// The daemon polls this to notice writes it did not make itself — a git
-    /// hook running `story --local`, a second machine, a developer with a
-    /// `sqlite3` prompt open. Comparing two tokens answers "has anything
+    /// The daemon polls this to notice writes it did not make itself — a
+    /// `story tui` session, a second machine, a developer with a `sqlite3`
+    /// prompt open. Comparing two tokens answers "has anything
     /// changed"; the value itself means nothing and must not be persisted or
     /// compared across process restarts.
     ///

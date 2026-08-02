@@ -48,17 +48,10 @@ impl Drop for DaemonGuard<'_> {
     }
 }
 
-/// Runs `story` through the daemon.
-///
-/// The override exists only while the in-process transport does: the suite
-/// wrapper still defaults every command to it, and this whole file is about the
-/// daemon. It goes when the variable does.
+/// Runs `story`, which is to say: through the daemon, because there is nowhere
+/// else for it to go.
 fn via_daemon(env: &TestEnv, cwd: &std::path::Path, args: &[&str]) -> std::process::Output {
-    env.story(cwd)
-        .env("STORYHOOK_INVOKER", "daemon")
-        .args(args)
-        .output()
-        .expect("running story")
+    env.story(cwd).args(args).output().expect("running story")
 }
 
 /// A project to run commands in.

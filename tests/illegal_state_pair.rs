@@ -46,7 +46,7 @@ fn a_closed_story_cannot_be_written_into_an_open_state() {
     // The defect exactly, and the shape SH-20 held: superstate CLOSED while the
     // slug is `todo`, which is OPEN. Written straight to the columns.
     let env = TestEnv::shared();
-    let project = env.project().local().seed_story("A story").build();
+    let project = env.project().seed_story("A story").build();
     let store = project.open_store();
     let conn = production_shaped_connection(store.path());
 
@@ -68,7 +68,7 @@ fn an_open_story_cannot_be_written_into_a_closed_state() {
     // The mirror image. `superstate` is not a free-text column that happens to
     // agree by convention; both directions are constrained.
     let env = TestEnv::shared();
-    let project = env.project().local().seed_story("A story").build();
+    let project = env.project().seed_story("A story").build();
     let store = project.open_store();
     let conn = production_shaped_connection(store.path());
 
@@ -86,7 +86,7 @@ fn a_story_cannot_name_a_state_the_project_does_not_define() {
     // Falls out of the same constraint rather than needing its own. Before
     // SH-130 nothing stopped a row naming a slug that was never in the catalog.
     let env = TestEnv::shared();
-    let project = env.project().local().seed_story("A story").build();
+    let project = env.project().seed_story("A story").build();
     let store = project.open_store();
     let conn = production_shaped_connection(store.path());
 
@@ -104,7 +104,7 @@ fn a_closed_story_must_carry_a_close_timestamp() {
     // The second instance of the defect class, closed in the same rebuild:
     // `superstate` and `archived` are the same fact told twice.
     let env = TestEnv::shared();
-    let project = env.project().local().seed_story("A story").build();
+    let project = env.project().seed_story("A story").build();
     let store = project.open_store();
     let conn = production_shaped_connection(store.path());
 
@@ -143,7 +143,7 @@ fn reclassifying_a_closed_state_open_reopens_the_stories_left_in_it() {
     // archived story reported an OPEN superstate — the same defect class,
     // reached through `story state update` instead of `story delete`.
     let env = TestEnv::shared();
-    let project = env.project().local().seed_story("A story").build();
+    let project = env.project().seed_story("A story").build();
     project
         .run(&["state", "add", "shipped", "--super", "CLOSED"])
         .success();
@@ -181,7 +181,7 @@ fn reclassifying_a_closed_state_open_reopens_the_stories_left_in_it() {
 #[test]
 fn a_deleted_story_comes_to_rest_in_a_closed_state() {
     let env = TestEnv::shared();
-    let project = env.project().local().seed_story("A mistake").build();
+    let project = env.project().seed_story("A mistake").build();
 
     project
         .run(&["delete", "SH-1", "created in error"])
@@ -200,7 +200,6 @@ fn listing_an_open_state_never_returns_a_closed_story() {
     let env = TestEnv::shared();
     let project = env
         .project()
-        .local()
         .seed_story("Still open")
         .seed_story("Deleted")
         .build();
@@ -231,7 +230,7 @@ fn reopening_a_deleted_story_puts_it_back_in_an_open_state() {
     // retracts the closure markers, so the slug and the superstate move
     // together — it never had the defect, and this pins that.
     let env = TestEnv::shared();
-    let project = env.project().local().seed_story("A mistake").build();
+    let project = env.project().seed_story("A mistake").build();
     project
         .run(&["delete", "SH-1", "created in error"])
         .success();
@@ -254,7 +253,7 @@ fn an_ordinarily_closed_story_is_untouched_by_the_delete_rule() {
     // stays exactly where the user put it, including in a non-default CLOSED
     // state — the fix must not quietly herd every closed story into `done`.
     let env = TestEnv::shared();
-    let project = env.project().local().seed_story("Shipped it").build();
+    let project = env.project().seed_story("Shipped it").build();
     project
         .run(&["state", "add", "shipped", "--super", "CLOSED"])
         .success();

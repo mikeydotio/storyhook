@@ -58,8 +58,8 @@ fn heartbeat_interval() -> Duration {
 ///
 /// This is the safety net rather than the mechanism: a write the daemon serves
 /// is published the instant it commits, and this catches the ones it did not
-/// serve — a git hook running `story --local`, a second machine, a `sqlite3`
-/// prompt. One pragma per tick, so the interval can be short without mattering.
+/// serve — a `story tui` session, a second machine, a `sqlite3` prompt. One
+/// pragma per tick, so the interval can be short without mattering.
 const CHANGE_TOKEN_POLL: Duration = Duration::from_millis(250);
 
 /// How often a background thread looks up to see whether it should stop.
@@ -471,8 +471,8 @@ fn heartbeat(bus: &ChangeBus, stop: &AtomicBool) {
 /// The token is the cheap trigger — one pragma per tick, whatever the store
 /// holds. Only when it moves does this do any real work, and then it asks the
 /// sharper question: which projects' histories grew? Those get a precise
-/// [`Change::Project`], so a `story --local` write reaches a browser as the same
-/// event a dashboard write does.
+/// [`Change::Project`], so a write this daemon did not serve reaches a browser as
+/// the same event one it did serve does.
 ///
 /// **A change it cannot attribute becomes a [`Change::Resync`].** Editing a
 /// state definition appends no story event, so nothing's sequence moves and the

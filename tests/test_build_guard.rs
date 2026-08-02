@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
+use storyhook_test_support::{TestEnv, daemon_containment, scratch_dir, story_binary};
 
 /// Runs the binary under test with a deliberately incomplete environment.
 ///
@@ -33,11 +33,14 @@ fn story_without(home: &Path, cwd: &Path, keep_data_dir: Option<&Path>) -> std::
         .env_clear()
         .env("HOME", home)
         .env("PATH", std::env::var("PATH").unwrap_or_default())
-        // Never the daemon: this is a test about what one process resolves, and
-        // a client that spawns a daemon would be asking the question of a second
-        // process whose environment this test did not build.
-        .env("STORYHOOK_INVOKER", "local")
         .arg("list");
+    // Put back only what stops a daemon this command starts from reaching
+    // anything real. The cleared environment is the subject of the test; a
+    // daemon that inherited it would prefer the developer's dashboard port and
+    // outlive the run.
+    for (name, value) in daemon_containment() {
+        cmd.env(name, value);
+    }
     if let Some(dir) = keep_data_dir {
         cmd.env("STORYHOOK_DATA_DIR", dir);
     }

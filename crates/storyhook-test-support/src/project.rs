@@ -23,7 +23,6 @@ pub struct ProjectBuilder<'a> {
     git: bool,
     local_origin: bool,
     legacy: bool,
-    local: bool,
     worktrees: Vec<String>,
     stories: Vec<String>,
 }
@@ -38,7 +37,6 @@ impl<'a> ProjectBuilder<'a> {
             git: false,
             local_origin: false,
             legacy: false,
-            local: false,
             worktrees: Vec::new(),
             stories: Vec::new(),
         }
@@ -96,27 +94,6 @@ impl<'a> ProjectBuilder<'a> {
     /// preserved, so the ids are predictable.
     pub fn seed_story(mut self, title: &str) -> Self {
         self.stories.push(title.to_string());
-        self
-    }
-
-    /// Runs every `story` command this fixture makes **in its own process**,
-    /// whatever invoker the run is using.
-    ///
-    /// For a test about *bytes on disk*, a daemon is not a neutral bystander. It
-    /// keeps the database open with its own page cache and its own
-    /// write-ahead-log handle, so it answers reads from memory, holds a log that
-    /// would otherwise be discarded, and does not notice that the file
-    /// underneath it has been replaced. A backup drill, a corruption matrix or a
-    /// crash matrix asked through a daemon is asking a different question — and
-    /// under `make test-daemon` that is exactly what `build()` would otherwise
-    /// arrange, because `story init` runs on the ambient invoker and leaves a
-    /// daemon behind for the rest of the fixture's life.
-    ///
-    /// The second reason is cheaper and just as real: each such fixture is
-    /// another live daemon in a test binary, and the daemon leg is bounded at
-    /// four threads precisely because that number matters.
-    pub fn local(mut self) -> Self {
-        self.local = true;
         self
     }
 
@@ -185,9 +162,6 @@ impl<'a> ProjectBuilder<'a> {
                 init.push(prefix);
             }
             let mut cmd = self.env.story(&root);
-            if self.local {
-                cmd.env("STORYHOOK_INVOKER", "local");
-            }
             cmd.args(&init)
                 .assert()
                 .try_success()
@@ -219,7 +193,6 @@ impl<'a> ProjectBuilder<'a> {
             origin,
             worktrees,
             legacy: self.legacy,
-            local: self.local,
         };
         for title in &self.stories {
             project.new_story(title);
@@ -264,7 +237,6 @@ pub struct Project<'a> {
     origin: Option<(TempDir, PathBuf)>,
     worktrees: BTreeMap<String, PathBuf>,
     legacy: bool,
-    local: bool,
 }
 
 impl<'a> Project<'a> {
@@ -293,15 +265,15 @@ impl<'a> Project<'a> {
 
     /// A `story` command in this project, ready for arguments.
     ///
-    /// Forced into this process when the fixture was built with
-    /// [`ProjectBuilder::local`] — otherwise a command would go to a daemon the
-    /// fixture deliberately does not have.
+    /// It goes to the daemon, because since SH-114 every `story` command does.
+    /// A test that needs the store to *itself* — a backup drill, a corruption
+    /// matrix, anything asking about bytes on disk — calls
+    /// [`TestEnv::stop_daemon`] immediately before it looks, rather than picking
+    /// a transport that no longer exists.
+    ///
+    /// [`TestEnv::stop_daemon`]: crate::TestEnv::stop_daemon
     pub fn story(&self) -> assert_cmd::Command {
-        let mut cmd = self.env.story(self.path());
-        if self.local {
-            cmd.env("STORYHOOK_INVOKER", "local");
-        }
-        cmd
+        self.env.story(self.path())
     }
 
     /// Runs `story <args>` in this project and returns the assertion handle —

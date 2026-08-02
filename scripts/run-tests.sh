@@ -36,14 +36,7 @@ export XDG_STATE_HOME="$data_root/state"
 unset STORYHOOK_STORE_PATH
 export INSTA_UPDATE=no
 
-# The default gate runs in-process. `STORYHOOK_INVOKER=daemon` — what
-# `make test-daemon` sets — runs the identical suite over RPC instead, and the
-# two are kept apart deliberately: 2,000 tests each taking a network hop through
-# one shared daemon would be slower and would couple every test to one process's
-# health. The byte-comparison test is what proves the two modes agree.
-export STORYHOOK_INVOKER="${STORYHOOK_INVOKER:-local}"
-
-# Never the production port, whichever leg this is.
+# Never the production port.
 export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
 
 # A daemon this run starts must not outlive it, however this run ends.
