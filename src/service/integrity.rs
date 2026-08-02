@@ -1,6 +1,17 @@
 //! `story doctor`: what is wrong with this project, and what can be fixed.
 //!
-//! # Doctor now asks two questions, not one
+//! # Doctor asks three questions, where the legacy one asked a third of them
+//!
+//! The third arrived last and is the shortest: **is the catalog whole?** Every
+//! project must define `todo`, `in-progress` and `blocked` as OPEN states and
+//! `done` as a CLOSED one (SH-125), and a project written before that rule
+//! existed is reported here and repaired by `--fix`. It leads the report
+//! because it is a property of the project rather than of any story, and
+//! because a project below the floor cannot have its states edited at all until
+//! it is cleared — so it explains the refusals the other findings do not.
+//!
+//! The other two are about stories, and the second of those is what the store
+//! made possible.
 //!
 //! The legacy doctor asked only about *stories*: dangling relations, missing
 //! inverses, multiple parents, parent/child cycles, unknown types. Those are
@@ -26,12 +37,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::domain::{StoryEvent, StorySnapshot, inverse_relation};
+use crate::domain::{
+    StateDef, StoryEvent, StorySnapshot, inverse_relation, validate_required_states,
+};
 use crate::error::AppError;
 use crate::store::{
     ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, diff_read_model, repair_read_model,
 };
 
+use super::state_set::write_states_repairing;
 use super::{Ctx, append_and_fold, project_prefix, query::story_views};
 
 /// Reports and repairs a project's integrity.
@@ -46,15 +60,23 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     }
 
     /// Every problem `story doctor` reports, in the order it reports them:
-    /// story-level findings first, then read-model drift.
+    /// the catalog first, then story-level findings, then read-model drift.
+    ///
+    /// The catalog leads because it is a property of the *project*, and because
+    /// a project below the required-state floor cannot have its states edited
+    /// at all until this is cleared — so it is the finding that explains the
+    /// others' refusals.
     ///
     /// An empty vector means the project is healthy; the caller turns a
     /// non-empty one into [`AppError::Integrity`].
     pub fn report(&self) -> Result<Vec<String>, AppError> {
-        let mut issues = self
-            .ctx
-            .store()
-            .read(|tx| Ok(story_issues(tx, self.project())))??;
+        // One transaction for both: a report whose catalog half and story half
+        // came from different instants could name a state the other did not see.
+        let mut issues = self.ctx.store().read(|tx| {
+            let mut issues = catalog_issues(&tx.states(self.project())?);
+            issues.extend(story_issues(tx, self.project())?);
+            Ok(issues)
+        })?;
 
         // The oracle the legacy read model never had. On a healthy project it
         // contributes nothing, which is why adding it does not move a single
@@ -95,6 +117,18 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     pub fn fix(&self) -> Result<String, AppError> {
         let now = self.ctx.now();
         let project = self.project();
+
+        // The catalog first, and in a write of its own. Every refusal the
+        // required-state floor produces names this command, so it has to be the
+        // thing that actually clears them — and it must not be entangled with
+        // the story repairs below, which would roll it back on an unrelated
+        // failure.
+        let states_added = self.ctx.store().write(|tx| {
+            let before = tx.states(project)?;
+            let after = write_states_repairing(tx, project, &before)?;
+            Ok(after.len() - before.len())
+        })?;
+
         let touched = self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let states = tx.state_map(project)?;
@@ -175,11 +209,17 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             return Err(AppError::Integrity(remaining.join("\n")));
         }
 
-        let mut message = if touched.is_empty() {
+        let mut message = if touched.is_empty() && states_added == 0 {
             "doctor found nothing to fix".to_string()
         } else {
             "doctor repaired supported integrity issues".to_string()
         };
+        if states_added > 0 {
+            message.push_str(&format!(
+                "\nadded {states_added} required {} this project was missing",
+                if states_added == 1 { "state" } else { "states" }
+            ));
+        }
         if !repair.unrepairable.is_empty() {
             message.push_str(&format!(
                 "\n{} stor{} could not be repaired:\n{}",
@@ -203,6 +243,19 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     fn project(&self) -> ProjectId {
         self.ctx.project()
     }
+}
+
+/// Whether the project's catalog meets the required-state floor (SH-125).
+///
+/// One finding, not one per missing state: the remedy is the same command
+/// however many are missing, and [`validate_required_states`] already names
+/// them all in its own sentence.
+fn catalog_issues(states: &[StateDef]) -> Vec<String> {
+    validate_required_states(states)
+        .err()
+        .map(|error| error.to_string())
+        .into_iter()
+        .collect()
 }
 
 /// The legacy story-level checks, reproduced exactly.

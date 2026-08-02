@@ -36,6 +36,7 @@ use crate::store::{
 };
 
 use super::Clock;
+use super::state_set::write_states;
 use super::templates;
 
 /// The story-id prefix a project gets when `init` is not told one.
@@ -514,7 +515,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 created_at: now.clone(),
             })?;
             tx.touch_project_path(project, &root, path_kind(&root))?;
-            tx.put_states(project, &default_states())?;
+            write_states(tx, project, &default_states())?;
             tx.put_types(project, &default_types())?;
             Ok((project, true, uuid, prefix))
         })?;
@@ -716,9 +717,15 @@ impl<'a, S: Store> ProjectService<'a, S> {
 
 /// The state set a new project starts with.
 ///
-/// The definition, not a copy of one: the legacy path builds the same three
-/// states inline in `storage::init_project`, and the differential harness
-/// compares the two catalogs so they cannot drift apart unnoticed.
+/// Exactly [`crate::domain::REQUIRED_STATES`], in that order, with `active` on
+/// `in-progress` — the floor and the default are the same set, which is what
+/// makes a project conforming the moment it is created.
+///
+/// **No longer the legacy path's twin.** `storage::init_project` still seeds
+/// the original three, deliberately: it writes a `.storyhook/` tree for
+/// rollback, and a rollback that invented a state the tree never had would be
+/// reconstructing something other than what was there. The difference is
+/// recorded in `tests/legacy_reader.rs` rather than left to be discovered.
 #[must_use]
 pub fn default_states() -> Vec<StateDef> {
     vec![
@@ -732,6 +739,12 @@ pub fn default_states() -> Vec<StateDef> {
             slug: "in-progress".to_string(),
             super_state: SuperState::Open,
             role: Some("active".to_string()),
+            description: None,
+        },
+        StateDef {
+            slug: "blocked".to_string(),
+            super_state: SuperState::Open,
+            role: None,
             description: None,
         },
         StateDef {

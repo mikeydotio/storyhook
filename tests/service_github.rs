@@ -292,7 +292,7 @@ fn the_catalog_and_the_open_story_list_come_from_the_store() {
     let ctx = fixture.ctx();
     let storage = StoreSyncStorage::new(&ctx);
     assert_eq!(storage.prefix().expect("prefix"), "SH");
-    assert_eq!(storage.states().expect("states").len(), 3);
+    assert_eq!(storage.states().expect("states").len(), 4);
     assert_eq!(storage.members().expect("members").len(), 1);
     let stories = storage.open_stories().expect("open stories");
     assert_eq!(stories.len(), 1, "archived stories are excluded");
