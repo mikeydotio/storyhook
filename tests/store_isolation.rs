@@ -693,3 +693,66 @@ fn the_store_path_flag_reaches_the_daemon_family_too() {
         "a store with no daemon must not report one; it said:\n{status}"
     );
 }
+
+/// `--store-path` means *this invocation and everything it starts*.
+///
+/// The flag is published into `$STORYHOOK_STORE_PATH` rather than threaded
+/// (`main`'s `publish_store_path`), because the consumers that matter cannot be
+/// reached by threading: `story daemon status` and `story web status`
+/// re-resolve, the TUI is dispatched ahead of the parser, and a child process is
+/// a different program. A variable every one of them inherits is the only thing
+/// that reaches all four.
+///
+/// This test observes the child, which is the consumer nothing else sees. An
+/// event hook runs the binary again with no flag and no variable of its own, and
+/// the story it writes has to land in the store its parent named. Deleting the
+/// publication leaves the hook's `story` with nothing naming a store: in a test
+/// build it refuses outright, and in a real one it writes into the developer's
+/// own store — which is the silent half, and the reason this is pinned by
+/// behaviour rather than by prose.
+///
+/// The command is the binary under test by absolute path. A bare `story`
+/// resolves through `PATH`, which in a test run is whatever the developer has
+/// installed.
+#[test]
+fn a_child_process_of_a_store_path_run_lands_in_the_same_store() {
+    let probe = Probe::new();
+    let store = probe.file("stores/named.db");
+    let repo = probe.dir("repo");
+    let flag = store.to_str().unwrap().to_string();
+
+    ok(probe.local_story(&repo).args([
+        "--store-path",
+        &flag,
+        "project",
+        "init",
+        "--prefix",
+        "CHD",
+    ]));
+
+    let pointer = repo.join(".storyhook.toml");
+    let existing = std::fs::read_to_string(&pointer).expect("the project has a pointer file");
+    std::fs::write(
+        &pointer,
+        format!(
+            "{existing}\n[hooks.on_create]\ncommand = \"{} new 'from the hook'\"\n",
+            story_binary().display()
+        ),
+    )
+    .expect("configuring the hook");
+
+    ok(probe
+        .local_story(&repo)
+        .args(["--store-path", &flag, "new", "the parent"]));
+
+    let listed = ok(probe
+        .local_story(&repo)
+        .args(["--store-path", &flag, "list"]));
+    assert!(
+        listed.contains("from the hook"),
+        "the hook's `story new` carried no flag and no store variable of its own, \
+         so the only way it could have reached this store is the one `main` \
+         published. The store said:\n{listed}"
+    );
+}
+
