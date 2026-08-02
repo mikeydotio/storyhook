@@ -15,6 +15,20 @@ stdout:
 
 stderr: <empty>
 
+$ story new --json
+exit: 2
+stdout: 
+{"error":"usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>]","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
+$ story move SH-1 not-a-state --json
+exit: 2
+stdout: 
+{"error":"state `not-a-state` is not defined","exit_code":2,"result":"error"}
+
+stderr: <empty>
+
 $ story list --state --json
 exit: 2
 stdout: 

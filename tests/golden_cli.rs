@@ -742,9 +742,17 @@ fn epic_json() {
 /// Snapshotted in both forms because the two differ in *stream* as well as in
 /// body — the human error goes to stderr and leaves stdout empty; the `--json`
 /// envelope goes to stdout and leaves stderr empty.
+///
+/// Two of them are here because `tests/daemon_invoke.rs` stopped comparing the
+/// two transports byte for byte when there stopped being two. That comparison
+/// covered a handful of *write*-verb failures this table did not, and a failure
+/// writes nothing, so a read-only corpus can hold them: a rejected state and a
+/// missing title.
 const ERRORS: &[&[&str]] = &[
     &["no-such-verb"],
     &["list", "--no-such-flag"],
+    &["new"],
+    &["move", "SH-1", "not-a-state"],
     &["list", "--state"],
     &["show"],
     &["show", "SH-999"],

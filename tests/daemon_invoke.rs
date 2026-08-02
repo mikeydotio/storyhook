@@ -1,15 +1,30 @@
 //! Running commands through the daemon.
 //!
-//! The transport's job is to be invisible: a command run through
-//! `/api/v1/invoke` must produce what the same command produces in this process,
-//! byte for byte, on both streams and in its exit code. These tests check that
-//! claim and the two places it could break — the recursion depth a hook carries,
-//! and the version the two ends agree on.
+//! The transport's job is to be invisible, and this file used to check that by
+//! running each command twice — once over `/api/v1/invoke`, once in this process
+//! — and comparing the bytes. There is one transport now, so there is nothing to
+//! compare against, and the byte contract is held instead by
+//! `tests/golden_cli.rs`, whose ~130 invocations are frozen against snapshots
+//! taken while the other transport still existed. That is the stronger form of
+//! the same claim: frozen bytes rather than two things agreeing with each other.
+//!
+//! What is left here is what a snapshot cannot hold — the things that are true
+//! of the *hop* rather than of the rendering:
+//!
+//! - a command starts a daemon when none is running, and the write lands in the
+//!   store rather than somewhere the daemon kept to itself;
+//! - a hook that runs `story` terminates, because the recursion depth travels in
+//!   the envelope rather than in a child's environment;
+//! - `--no-hooks` crosses the wire;
+//! - a relative path names a directory relative to the *client's* working
+//!   directory, not the daemon's;
+//! - and the two destructive verbs' confirmation, which happens in the client
+//!   and whose second request has to be recognized on the far side.
 
 use std::time::{Duration, Instant};
 
-use storyhook::daemon::lifecycle;
-use storyhook_test_support::{TestEnv, scratch_dir, story_binary};
+use storyhook::store::{ReadOps, Store, StoryQuery};
+use storyhook_test_support::{TestEnv, project_id_at, scratch_dir, story_binary};
 
 /// A hook command that runs the `story` binary under test.
 ///
@@ -29,11 +44,15 @@ struct DaemonGuard<'a>(&'a TestEnv);
 
 impl Drop for DaemonGuard<'_> {
     fn drop(&mut self) {
-        let _ = lifecycle::stop(&self.0.environment());
+        self.0.stop_daemon();
     }
 }
 
 /// Runs `story` through the daemon.
+///
+/// The override exists only while the in-process transport does: the suite
+/// wrapper still defaults every command to it, and this whole file is about the
+/// daemon. It goes when the variable does.
 fn via_daemon(env: &TestEnv, cwd: &std::path::Path, args: &[&str]) -> std::process::Output {
     env.story(cwd)
         .env("STORYHOOK_INVOKER", "daemon")
@@ -42,20 +61,10 @@ fn via_daemon(env: &TestEnv, cwd: &std::path::Path, args: &[&str]) -> std::proce
         .expect("running story")
 }
 
-/// Runs `story` in its own process.
-fn via_local(env: &TestEnv, cwd: &std::path::Path, args: &[&str]) -> std::process::Output {
-    env.story(cwd)
-        .env("STORYHOOK_INVOKER", "local")
-        .args(args)
-        .output()
-        .expect("running story")
-}
-
-/// A project, initialized locally so the fixture does not depend on the thing
-/// under test.
+/// A project to run commands in.
 fn project(env: &TestEnv) -> tempfile::TempDir {
     let dir = scratch_dir();
-    let out = via_local(env, dir.path(), &["project", "init", "--no-agents-md"]);
+    let out = via_daemon(env, dir.path(), &["project", "init", "--no-agents-md"]);
     assert!(out.status.success(), "initializing the fixture project");
     dir
 }
@@ -74,81 +83,38 @@ fn the_first_command_starts_a_daemon_and_the_answer_is_the_same_one() {
     let _guard = DaemonGuard(&env);
     let dir = project(&env);
 
+    // The fixture's own `project init` started one, so the question is asked
+    // from a known state rather than from an assumption about one.
+    env.stop_daemon();
     assert!(
-        env.daemon().is_none(),
-        "the fixture must not have started one yet"
+        !env.daemon_is_live(),
+        "the fixture must not be holding the store when the next command runs"
     );
 
     let out = via_daemon(&env, dir.path(), &["new", "Through the daemon"]);
     assert!(out.status.success(), "{out:?}");
     assert!(
-        env.daemon().is_some(),
-        "the first command must auto-spawn a daemon"
+        env.daemon_is_live(),
+        "a command with no daemon running must start one"
     );
 
     // And the write really landed in the shared store, not somewhere the daemon
-    // kept to itself.
-    let listed = via_local(&env, dir.path(), &["list"]);
-    assert!(String::from_utf8_lossy(&listed.stdout).contains("Through the daemon"));
-}
-
-/// **The byte-comparison.** The same command, run both ways, must produce
-/// identical stdout, identical stderr, and the same exit code — for successes,
-/// for failures, and in both rendering modes.
-///
-/// This is a check on the argument rather than the argument itself: rendering
-/// never leaves the client, so identical output is structural. A failure here
-/// means something rendered on the wrong side of the wire.
-#[test]
-fn every_answer_is_byte_identical_through_the_daemon_and_in_process() {
-    let env = TestEnv::isolated();
-    let _guard = DaemonGuard(&env);
-    let dir = project(&env);
-    via_local(&env, dir.path(), &["new", "A story to look at"]);
-
-    let cases: &[&[&str]] = &[
-        &["show", "SH-1"],
-        &["show", "SH-1", "--json"],
-        &["list"],
-        &["list", "--json"],
-        &["summary"],
-        &["summary", "--json"],
-        &["graph"],
-        &["context"],
-        &["next"],
-        &["version"],
-        // Failures too: an error's rendering and its exit code cross the same
-        // wire as a success, and a variant that arrived as prose would show up
-        // here as a different message.
-        &["show", "SH-404"],
-        &["show", "SH-404", "--json"],
-        &["move", "SH-1", "not-a-state"],
-        &["move", "SH-1", "not-a-state", "--json"],
-        &["new"],
-    ];
-
-    for args in cases {
-        let daemon = via_daemon(&env, dir.path(), args);
-        let local = via_local(&env, dir.path(), args);
-        assert_eq!(
-            String::from_utf8_lossy(&daemon.stdout),
-            String::from_utf8_lossy(&local.stdout),
-            "stdout differs for `story {}`",
-            args.join(" ")
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&daemon.stderr),
-            String::from_utf8_lossy(&local.stderr),
-            "stderr differs for `story {}`",
-            args.join(" ")
-        );
-        assert_eq!(
-            daemon.status.code(),
-            local.status.code(),
-            "exit code differs for `story {}`",
-            args.join(" ")
-        );
-    }
+    // kept to itself. Read by a process that opens the database directly, with
+    // the daemon stood down — asking the daemon whether it wrote something is a
+    // question its own page cache can answer either way.
+    env.stop_daemon();
+    let store = env.open_store();
+    let id = project_id_at(&store, dir.path()).expect("the project resolves");
+    let titles: Vec<String> = store
+        .read(|tx| {
+            Ok(tx
+                .stories(id, &StoryQuery::all())?
+                .into_iter()
+                .map(|row| row.snapshot.title)
+                .collect())
+        })
+        .expect("reading the store");
+    assert_eq!(titles, vec!["Through the daemon".to_string()]);
 }
 
 /// **Reentrancy terminates.** A hook that runs `story` reaches the daemon, and
@@ -177,7 +143,7 @@ fn a_hook_that_runs_story_terminates() {
 
     // Two stories: the one asked for, and exactly one from its hook. A third
     // would mean the hook's own `story new` fired the hook again.
-    let listed = via_local(&env, dir.path(), &["list", "--json"]);
+    let listed = via_daemon(&env, dir.path(), &["list", "--json"]);
     let json: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("a JSON listing");
     let stories = json["stories"].as_array().expect("a stories array");
     assert_eq!(
@@ -199,65 +165,13 @@ fn no_hooks_crosses_the_wire() {
     let out = via_daemon(&env, dir.path(), &["new", "Quietly", "--no-hooks"]);
     assert!(out.status.success(), "{out:?}");
 
-    let listed = via_local(&env, dir.path(), &["list", "--json"]);
+    let listed = via_daemon(&env, dir.path(), &["list", "--json"]);
     let json: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("a JSON listing");
     assert_eq!(
         json["stories"].as_array().expect("stories").len(),
         1,
         "`--no-hooks` must suppress the hook on the far side of the wire too"
     );
-}
-
-/// `--local` runs without a daemon, and does not start one. Git hooks and CI
-/// depend on that: a daemon spawned inside `prepare-commit-msg` is hostile.
-#[test]
-fn local_runs_without_a_daemon_and_starts_none() {
-    let env = TestEnv::isolated();
-    let _guard = DaemonGuard(&env);
-    let dir = project(&env);
-
-    let out = via_local(&env, dir.path(), &["new", "No daemon needed"]);
-    assert!(out.status.success(), "{out:?}");
-    assert!(
-        env.daemon().is_none(),
-        "`--local` must not leave a daemon behind"
-    );
-    assert!(!lifecycle::is_live(&env.environment()));
-}
-
-/// The flag spelling and the environment spelling are the same mode.
-#[test]
-fn the_local_flag_and_the_local_variable_agree() {
-    let env = TestEnv::isolated();
-    let _guard = DaemonGuard(&env);
-    let dir = project(&env);
-
-    let out = env
-        .story(dir.path())
-        .env("STORYHOOK_INVOKER", "daemon")
-        .args(["--local", "new", "Flagged local"])
-        .output()
-        .expect("running story");
-    assert!(out.status.success(), "{out:?}");
-    assert!(
-        env.daemon().is_none(),
-        "`--local` must win over STORYHOOK_INVOKER=daemon"
-    );
-}
-
-/// A backend nobody implements is refused by name, rather than silently
-/// becoming one that is.
-#[test]
-fn an_unknown_backend_is_refused_loudly() {
-    let env = TestEnv::isolated();
-    let dir = scratch_dir();
-    env.story(dir.path())
-        .env("STORYHOOK_INVOKER", "legacy")
-        .args(["list"])
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("is not a storyhook backend"))
-        .stderr(predicates::str::contains("`local`"));
 }
 
 /// A command through the daemon fires the project's hooks, exactly as one in
@@ -327,85 +241,39 @@ fn a_relative_path_is_resolved_against_the_clients_directory_over_the_daemon() {
     );
 }
 
-/// `story project init` produces the same bytes over both transports.
-#[test]
-fn project_init_answers_identically_through_both_invokers() {
-    let env = TestEnv::isolated();
-    let _guard = DaemonGuard(&env);
-    let local_dir = scratch_dir();
-    let daemon_dir = scratch_dir();
-
-    let local = via_local(
-        &env,
-        local_dir.path(),
-        &["project", "init", "--no-agents-md"],
-    );
-    let daemon = via_daemon(
-        &env,
-        daemon_dir.path(),
-        &["project", "init", "--no-agents-md"],
-    );
-
-    assert_eq!(local.status.code(), daemon.status.code());
-    assert_eq!(
-        String::from_utf8_lossy(&local.stdout),
-        String::from_utf8_lossy(&daemon.stdout)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&local.stderr),
-        String::from_utf8_lossy(&daemon.stderr)
-    );
-}
-
-/// Deinit's two-step — the plan, then the forced deletion — is the same over
-/// both transports.
+/// Deinit's two-step — the plan, then the forced deletion — over the wire.
 ///
 /// This is the case the seam most needs to cover, because the confirmation
-/// happens in the *client* while the deletion happens wherever the invoker
-/// runs. If the daemon leg diverged, the one command that destroys data would
-/// be the one command with untested behaviour.
+/// happens in the *client* while the deletion happens in the daemon. Its
+/// byte-for-byte agreement with an in-process run used to be the assertion;
+/// with one transport there is nothing to agree with, and what is left is the
+/// half a snapshot cannot hold: a refusal that carries the plan, a second
+/// request the far side recognizes as forced, and files removed in a directory
+/// only the client knows about.
 #[test]
-fn deinit_refuses_and_then_deletes_identically_through_both_invokers() {
+fn deinit_refuses_and_then_deletes_over_the_wire() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
+    let dir = project(&env);
 
-    let local_dir = scratch_dir();
-    let daemon_dir = scratch_dir();
-    for (dir, invoker) in [(local_dir.path(), "local"), (daemon_dir.path(), "daemon")] {
-        let out = env
-            .story(dir)
-            .env("STORYHOOK_INVOKER", invoker)
-            .args(["project", "init", "--no-agents-md"])
-            .output()
-            .expect("initializing");
-        assert!(out.status.success(), "{out:?}");
-    }
+    // Unforced: a refusal naming --force, with nothing deleted.
+    let refusal = via_daemon(&env, dir.path(), &["project", "deinit"]);
+    assert_eq!(refusal.status.code(), Some(2), "{refusal:?}");
+    assert!(String::from_utf8_lossy(&refusal.stderr).contains("--force"));
+    assert!(dir.path().join(".storyhook.toml").exists());
 
-    // Unforced: a refusal naming --force, on both legs, with nothing deleted.
-    let local_refusal = via_local(&env, local_dir.path(), &["project", "deinit"]);
-    let daemon_refusal = via_daemon(&env, daemon_dir.path(), &["project", "deinit"]);
-    assert_eq!(local_refusal.status.code(), Some(2));
-    assert_eq!(daemon_refusal.status.code(), Some(2));
-    for out in [&local_refusal, &daemon_refusal] {
-        assert!(String::from_utf8_lossy(&out.stderr).contains("--force"));
-    }
-    assert!(local_dir.path().join(".storyhook.toml").exists());
-    assert!(daemon_dir.path().join(".storyhook.toml").exists());
-
-    // Forced: both delete, and say the same thing about it.
-    let local = via_local(&env, local_dir.path(), &["project", "deinit", "--force"]);
-    let daemon = via_daemon(&env, daemon_dir.path(), &["project", "deinit", "--force"]);
-    assert_eq!(local.status.code(), Some(0), "{local:?}");
-    assert_eq!(daemon.status.code(), Some(0), "{daemon:?}");
-    assert!(!local_dir.path().join(".storyhook.toml").exists());
+    // Forced: the daemon removes the client's repository files too, which is the
+    // part that has no equivalent inside one process.
+    let forced = via_daemon(&env, dir.path(), &["project", "deinit", "--force"]);
+    assert_eq!(forced.status.code(), Some(0), "{forced:?}");
     assert!(
-        !daemon_dir.path().join(".storyhook.toml").exists(),
-        "the daemon must remove the client's repository files too"
+        !dir.path().join(".storyhook.toml").exists(),
+        "the daemon must remove the client's repository files, not its own \
+         working directory's"
     );
 }
 
-/// So is the purge's, and for the same reason — plus one the deinit case
-/// cannot cover.
+/// So is the purge's, and for a reason the deinit case cannot cover.
 ///
 /// `ConfirmationPlan` is an enum since SH-130, so the plan a purge answers with
 /// has to survive the JSON hop that `/api/v1/invoke` gives it *and* be
@@ -414,45 +282,46 @@ fn deinit_refuses_and_then_deletes_identically_through_both_invokers() {
 /// would loop forever here rather than fail: the daemon would keep answering
 /// with the plan and the client would keep asking.
 #[test]
-fn purge_refuses_and_then_deletes_identically_through_both_invokers() {
+fn purge_refuses_and_then_deletes_over_the_wire() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
+    let dir = project(&env);
 
-    let local_dir = project(&env);
-    let daemon_dir = project(&env);
-    for dir in [local_dir.path(), daemon_dir.path()] {
-        let out = via_local(&env, dir, &["new", "Created in error"]);
-        assert!(out.status.success(), "{out:?}");
-        let out = via_local(&env, dir, &["delete", "SH-1", "created in error"]);
-        assert!(out.status.success(), "{out:?}");
-    }
+    assert!(
+        via_daemon(&env, dir.path(), &["new", "Created in error"])
+            .status
+            .success()
+    );
+    assert!(
+        via_daemon(&env, dir.path(), &["delete", "SH-1", "created in error"])
+            .status
+            .success()
+    );
 
-    // Unforced: a refusal naming --force, on both legs, with nothing purged.
-    let local_refusal = via_local(&env, local_dir.path(), &["purge", "SH-1"]);
-    let daemon_refusal = via_daemon(&env, daemon_dir.path(), &["purge", "SH-1"]);
-    assert_eq!(local_refusal.status.code(), Some(2), "{local_refusal:?}");
-    assert_eq!(daemon_refusal.status.code(), Some(2), "{daemon_refusal:?}");
-    for out in [&local_refusal, &daemon_refusal] {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("--force"), "{stderr}");
-        assert!(
-            stderr.contains("Created in error"),
-            "the plan crossed the wire intact: {stderr}"
-        );
-    }
-    for dir in [local_dir.path(), daemon_dir.path()] {
-        assert!(via_local(&env, dir, &["show", "SH-1"]).status.success());
-    }
+    // Unforced: a refusal naming --force, with the plan intact and nothing
+    // purged. The title is what proves the plan crossed as data rather than as
+    // a bare "are you sure".
+    let refusal = via_daemon(&env, dir.path(), &["purge", "SH-1"]);
+    assert_eq!(refusal.status.code(), Some(2), "{refusal:?}");
+    let stderr = String::from_utf8_lossy(&refusal.stderr);
+    assert!(stderr.contains("--force"), "{stderr}");
+    assert!(
+        stderr.contains("Created in error"),
+        "the plan crossed the wire intact: {stderr}"
+    );
+    assert!(
+        via_daemon(&env, dir.path(), &["show", "SH-1"])
+            .status
+            .success()
+    );
 
-    // Forced: both purge, and say the same thing about it.
-    let local = via_local(&env, local_dir.path(), &["purge", "SH-1", "--force"]);
-    let daemon = via_daemon(&env, daemon_dir.path(), &["purge", "SH-1", "--force"]);
-    assert_eq!(local.status.code(), Some(0), "{local:?}");
-    assert_eq!(daemon.status.code(), Some(0), "{daemon:?}");
-    for dir in [local_dir.path(), daemon_dir.path()] {
-        assert!(
-            !via_local(&env, dir, &["show", "SH-1"]).status.success(),
-            "the story is gone on both legs"
-        );
-    }
+    // Forced: the second request is recognized, and the story is gone.
+    let forced = via_daemon(&env, dir.path(), &["purge", "SH-1", "--force"]);
+    assert_eq!(forced.status.code(), Some(0), "{forced:?}");
+    assert!(
+        !via_daemon(&env, dir.path(), &["show", "SH-1"])
+            .status
+            .success(),
+        "the story is gone"
+    );
 }
