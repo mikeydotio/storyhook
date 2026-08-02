@@ -1051,21 +1051,67 @@ pub fn dispatch_unscoped<S: Store>(
     dispatch_unscoped_with(store, root, now, invocation, true, None)
 }
 
-/// [`dispatch_unscoped`], told whether `story project init` should write the pointer
-/// file.
-pub fn dispatch_unscoped_with<S: Store>(
-    store: &S,
-    root: &Path,
-    now: &str,
-    invocation: Invocation,
-    pointer: bool,
-    stdin_input: Option<&str>,
-) -> Result<Response, AppError> {
+/// Whether an invocation can be answered without opening a store at all.
+///
+/// Not a convenience: a command that needs no store **must not open one**,
+/// because opening one can fail. `SqliteStore::open_with` connects eagerly and
+/// runs the schema-compatibility gate, so a `store.db` that is damaged, absent,
+/// a directory, or from a newer build takes down every command routed through
+/// it — including the ones a person reaches for *because* it is damaged.
+///
+/// That was reachable and it made storyhook's own advice impossible to follow.
+/// The corruption diagnostic tells the reader to `run \`story daemon stop\`,
+/// delete store.db …`, and `story daemon stop` exited 5 with that same message;
+/// `story --help` did too, which is what every other error tells them to run
+/// (SH-149).
+///
+/// The set is exactly the set of commands that must not go through the daemon,
+/// and that is not a coincidence — both are "this command is not about the
+/// data". Keeping one predicate for both is what stops them drifting:
+///
+/// * **The daemon's own lifecycle.** `story daemon stop` asking the daemon to
+///   run `story daemon stop` is circular, and auto-spawn makes it worse — the
+///   command that stops a daemon would start one first.
+/// * **Self-update.** `story update` replaces the binary the daemon is running.
+/// * **Store creation.** `story store new` is about a store that does not exist
+///   yet; `main` answers it before anything is opened.
+/// * **Pure functions of compiled-in text.** `--help` and `--version` are
+///   answered from a string constant.
+///
+/// A new [`Invocation`] variant defaults to `false` — needing a store — which
+/// is the safe direction: it costs a variant that could have skipped the open,
+/// where the other default would hand a store-less dispatcher an invocation it
+/// cannot answer.
+pub fn needs_no_store(invocation: &Invocation) -> bool {
+    matches!(
+        invocation,
+        Invocation::Daemon { .. }
+            | Invocation::Web { .. }
+            | Invocation::Store { .. }
+            | Invocation::Update { .. }
+            | Invocation::Help
+            | Invocation::HelpTopic { .. }
+            | Invocation::HelpCompact
+            | Invocation::HelpAll
+            | Invocation::Version
+    )
+}
+
+/// Answers an invocation that [`needs_no_store`] accepts.
+///
+/// Every arm here is reachable with no database on the machine at all. Callers
+/// must gate on [`needs_no_store`] first; an invocation that needs a store
+/// reaches the fallback arm, which is an internal error rather than a guess.
+///
+/// [`dispatch_unscoped_with`] forwards here rather than keeping its own copies,
+/// so the CLI's pre-store path and the daemon's dispatcher cannot answer the
+/// same invocation differently.
+pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppError> {
     match invocation {
-        Invocation::Project { action } => dispatch_project(store, root, now, pointer, action),
         // Pure functions of compiled-in text. They need neither a project nor
         // a store, and answering them here is what lets `story --help` work in
-        // a directory storyhook has never heard of.
+        // a directory storyhook has never heard of — or on a machine whose
+        // store will not open.
         Invocation::Help => Ok(Response::Message(HELP_TEXT.to_string())),
         Invocation::HelpCompact => Ok(Response::Message(
             help_topics::compact_reference().to_string(),
@@ -1083,26 +1129,45 @@ pub fn dispatch_unscoped_with<S: Store>(
             env!("CARGO_PKG_VERSION")
         ))),
         // Self-update touches no project data at all — it replaces the
-        // binary. The legacy path answered it anywhere, and a `story update`
-        // that demanded a project would be unusable exactly when it is most
-        // wanted: from a shell that is not standing in a repository.
+        // binary. A `story update` that demanded a project would be unusable
+        // exactly when it is most wanted: from a shell that is not standing in
+        // a repository, or on a build whose store it is about to fix.
         Invocation::Update { check, force } => update(check, force),
         // The whole `web` family. The daemon commands are process management
-        // and name no project at all; the catalog commands span every project
-        // (`list`) or name theirs by path (`register`). The legacy path
-        // answered all of them without resolving a project, and a `story web
-        // status` that failed in a directory storyhook had never heard of
-        // would be a regression in the one command a user reaches for when
-        // nothing is working.
+        // and name no project at all. A `story web status` that failed in a
+        // directory storyhook had never heard of would be a regression in the
+        // one command a user reaches for when nothing is working.
         Invocation::Web { action } => dispatch_web(action),
         Invocation::Daemon { action } => dispatch_daemon(action),
         // `main` answers this one before a store is ever opened, for the
         // reasons on [`create_store`]. Reaching here means a caller went round
-        // the front door, and the honest answer is that the store this arm
-        // holds is the wrong one to create anything with.
+        // the front door, and the honest answer is that no store this arm could
+        // reach is the right one to create anything with.
         Invocation::Store { .. } => Err(AppError::Storage(
             "`story store new` is handled before the store is opened".to_string(),
         )),
+        other => Err(AppError::Storage(format!(
+            "internal: `{}` needs a store and must not be dispatched without one",
+            invocation_name(&other)
+        ))),
+    }
+}
+
+/// [`dispatch_unscoped`], told whether `story project init` should write the pointer
+/// file.
+pub fn dispatch_unscoped_with<S: Store>(
+    store: &S,
+    root: &Path,
+    now: &str,
+    invocation: Invocation,
+    pointer: bool,
+    stdin_input: Option<&str>,
+) -> Result<Response, AppError> {
+    if needs_no_store(&invocation) {
+        return dispatch_without_store(invocation);
+    }
+    match invocation {
+        Invocation::Project { action } => dispatch_project(store, root, now, pointer, action),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
         // answered before it ever looked for a project — so this arm does too,
@@ -1582,9 +1647,11 @@ impl Invoker for HttpInvoker {
             Ok(result) => result,
             Err(Transport::NotDelivered(detail) | Transport::Sent(detail)) => {
                 Err(AppError::Storage(format!(
-                    "could not reach the storyhook daemon: {detail}. Run `story daemon \
-                     status` to see what it thinks it is doing, or `story --local \
-                     <command>` to run without it."
+                    "could not reach the storyhook daemon: {detail}. It answered when this \
+                     command started and has stopped since. Run `story daemon status` to see \
+                     what it thinks it is doing, and `story daemon stop` before trying again \
+                     if it is still there.\n{}",
+                    crate::daemon::lifecycle::describe_paths(&self.env),
                 )))
             }
         }
@@ -1830,6 +1897,14 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
 /// makes `story <verb>` fail in an empty directory, which is exactly the
 /// failure this function exists to prevent.
 fn is_project_less(invocation: &Invocation) -> bool {
+    // Needing no store implies needing no project, and stating it that way
+    // rather than repeating the nine variants is what stops the two rosters
+    // drifting: a command classified store-less in one place and
+    // project-scoped in the other would try to resolve a project it has no
+    // store to look in.
+    if needs_no_store(invocation) {
+        return true;
+    }
     match invocation {
         // `project settings` is the exception in its own family: `init`,
         // `deinit` and `list` are about projects, while `settings` is about
@@ -1837,15 +1912,6 @@ fn is_project_less(invocation: &Invocation) -> bool {
         Invocation::Project { action } => !matches!(action, ProjectAction::Settings(_)),
         Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
-        | Invocation::Help
-        | Invocation::HelpTopic { .. }
-        | Invocation::HelpCompact
-        | Invocation::HelpAll
-        | Invocation::Version
-        | Invocation::Web { .. }
-        | Invocation::Daemon { .. }
-        | Invocation::Store { .. }
-        | Invocation::Update { .. }
         | Invocation::Plugin { .. } => true,
         // `hooks test` is the exception in its own family: it fires a real hook
         // against a real project, and the legacy path calls `ensure_project`

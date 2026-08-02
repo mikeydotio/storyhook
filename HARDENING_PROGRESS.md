@@ -151,7 +151,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-115** — C3 Identity: remotes schema + one URL normalizer
 - [x] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114* · **it was a deadlock; the deadline was right**
 - [x] **SH-110** — tailnet bind flake · *gates SH-114* · **not a flake: the dashboard advertised a probe, not its bind**
-- [ ] **SH-114** — C2 Transport: daemon-only
+- [~] **SH-114** — C2 Transport: daemon-only · *part 1 landed: the two diagnostic fixes; the removal is part 2, see HANDOFF.md*
 - [ ] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal
 - [ ] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink`
 - [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk
@@ -1593,3 +1593,141 @@ never fired.
 **Unblocks SH-114**, which this story gated. SH-114 makes every command use a
 daemon, so the number of readers of the advertised host goes up — which is why
 publishing it rather than probing for it had to land first.
+
+### SH-114 — part 1 of 2 · the diagnostics landed · the story stays open
+
+**Outcome:** the two fixes the council ruled had to come **first** are merged.
+Removing `--local` removes the escape hatch, so the failure mode it was hiding
+had to stop being useless before the hatch could go. It was worse than useless:
+storyhook computed the right diagnosis, wrote it to a file, threw it away, and
+printed a message recommending the flag this story deletes. **The removal itself
+is part 2**; `HANDOFF.md` is the next context's brief and carries the verdict so
+the vote is not re-run.
+
+**Why it split.** SH-114 is five features under one number — a diagnostic, a
+transport deletion, a test-suite conversion across four files, a gate merge and a
+launchd decision. The first is a prerequisite for the second by the council's own
+reasoning, and it is complete, tested and independently valuable. Starting the
+16-test conversion on the context I had left would have risked abandoning a
+half-converted crash matrix on the branch. Splitting was my call; scaling the
+story down was not, so it stays open.
+
+**The council was unanimous 3-0 in round one, and both non-authors voted against
+their own proposals** — the sixth time in this run, the fourth where both did.
+`.council/sh114-daemon-only-shape/`; the eight clauses D1-D8 are a comment on the
+story.
+
+**The decisive fact was not in my brief, and my brief was wrong.** I asserted as
+measurement (M5) that `main.rs` *needs* `StoreInvoker` because six invocation
+families run in-process "by necessity". The architecture seat read those six,
+found that **none of them touches the store**, and drew the consequence: they are
+routed through `open_store` anyway, so a store that will not open takes them all
+down. I reproduced it against the real binary and found it wider than reported:
+
+| command | exit | output |
+|---|---:|---|
+| `story --version` | 5 | the corruption error |
+| `story --help` | 5 | the corruption error |
+| `story daemon status` | 5 | the corruption error |
+| `story daemon stop` | 5 | the corruption error |
+| `story web stop` | 5 | the corruption error |
+
+**The remedy was self-defeating.** The corruption message says *"to restore one:
+run `story daemon stop`, delete store.db …"*, and `story daemon stop` exited 5
+with that same message. `story --help` was unreachable too — and `--help` is what
+every *other* error in the program tells the reader to run. Filed as SH-149,
+ruled in scope because AC-3 names "the remedy", and closed by the first commit.
+
+I published the withdrawal of M5 **before the vote** rather than after, in
+`CHAIR-CORRECTION.md`, along with a second correction the same seat caught: my
+"exactly 16 failing tests" was a **floor**, because I had excluded
+`tests/daemon_invoke.rs` from the experiment and never said so. Both corrections
+favoured one proposal; the seats were asked to weigh them on the evidence.
+
+**The measurement that reframed the story.** Before designing anything I
+neutralized `ProjectBuilder::local()`, forced every `STORYHOOK_INVOKER=local`
+site to `daemon`, and ran the **whole** suite in the target state: 102 green
+blocks, **exactly 16 failing tests, in three files**. Everything else — including
+all of `store_isolation`, `concurrency_soak`, `illegal_state_pair`,
+`temp_project_refusal`, `test_build_guard` and `project_path_hygiene` — passes
+with no local transport at all, several of them carrying doc comments insisting
+they cannot. That turned "40 sites to rewrite" into "16 tests, all of which ask
+about the store as a *file* or about killing the writer".
+
+**The diagnostic, measured before and after** on a 66-byte `store.db`:
+
+| | before | after |
+|---|---|---|
+| time | **5000ms** | **71ms** |
+| message | "the daemon did not start within 5s. Its log is at …; `story --local <command>` runs without it." | the store named, the damage named, the backups directory, the restore procedure, and the paths the client used |
+
+Two origin fixes, and the disarm proves they are separately load-bearing.
+`spawn_child` **dropped the `Child`** it got from `Command::spawn` — on Unix that
+is not a detached process, it is an unwatched one — so `await_healthy` polled a
+portfile for the full deadline without ever asking whether the process it started
+was alive. And the daemon's diagnosis now crosses as **data**: a `WireError`
+beside the portfile, not a tail of `daemon.log`.
+
+**Not the log, and the reason is the winning seat's, not mine.** It offered two
+arguments for a structured file and then, while voting, **withdrew the stronger-
+sounding one** (`Integrity` and `Storage` share exit code 5 — true, but
+`render_error`'s human branch prints message only, so the lost variant is
+invisible to a user) and supplied a better one nobody had stated: the daemon log
+has other writers inside the daemon process. **I counted them: fifteen** — seven
+in `event_hooks.rs`, because hooks fire inside the daemon, three in
+`lifecycle.rs`, four in `serve.rs`, one in `tailnet.rs`. Scraping it would make a
+human diagnostic stream into an undeclared machine interface.
+
+**Red→green verified by disarming each mechanism, and each owns exactly its own
+tests:**
+
+| disarmed | fails | stays green |
+|---|---|---|
+| the store-less interception in `main` | the 2 SH-149 tests | the other 11 in the file |
+| `try_wait` on the child | `…reports_the_daemon_s_own_reason…`, `…does_not_wait_out_the_deadline…` | everything else |
+| `record_startup_failure` | `…reports_the_daemon_s_own_reason…` only | the fast-fail test, which guards the *timing* and passes either way |
+
+**Four crash-matrix cases changed, and not incidentally.** They ran `story help`
+to trigger a migration, on a premise written into that file: *"Every storyhook
+command migrates on open."* This change falsifies that premise deliberately, so
+`help` would have armed a fault that never fired and four tests would have passed
+while proving nothing. `MIGRATING_COMMAND` replaces it and says why it is
+`project list` rather than `list`: the racer case requires every survivor to
+*succeed*, and `story list` outside a project is an ordinary failure. **Seventh
+consecutive story where the suite encoded the old behaviour as intended** —
+though this one is milder than its predecessors: the tests were not blessing a
+defect, they were leaning on a property that was true and is now deliberately
+false.
+
+**Also filed:** SH-149 (closed by this PR) and **SH-150** — the TUI holds its own
+store handle and is, after the removal, the last second writer on one store. The
+council ruled it may honestly be left alone: it never reads `GlobalFlags` or
+`STORYHOOK_INVOKER`, the isolation invariant is one *daemon* per store rather
+than one process, and multi-process WAL with CAS is the design of record for
+exactly that read-then-write.
+
+**A process failure of mine, recorded because it nearly produced a false
+finding.** Verifying the new diagnostic, I overwrote `store.db` with garbage and
+`story list` **succeeded**. The store was not corrupt: `store.db-wal` was still
+beside it and SQLite rebuilt the database from the log — the exact trap
+`backup_restore.rs`'s own header documents, met from the other direction. The
+diagnosis came from listing the directory rather than from guessing. Deleting the
+`-wal` and `-shm` produced the real result.
+
+**Also caught before pushing:** my first attempt to split the daemon fix into two
+commits produced a commit that referenced a method added in the next one — it
+would not have built. `git reset --soft` and one coherent commit instead. The
+two halves are still separately disarmable, which is where that distinction
+actually earns its keep.
+
+**Gate:** `make test` and `make test-daemon` run as two separate supervised
+commands against the committed tree. Both exit 0, **105 green test-result blocks
+each**, plugin harness 18/0, clippy clean, no wedge. Seventh consecutive story
+with no stall. The gate's preflight did refuse once, correctly: the target-state
+experiment left **22 orphan daemons**, and the guard named them rather than
+letting the next run lie.
+
+**Semver: minor** when someone bumps it. `AppError::with_context` and two
+`invoke` functions are additions; no interface a user types changed. The
+behaviour change worth knowing is that a damaged store now reports itself
+instead of reporting a timeout.

@@ -448,3 +448,234 @@ fn a_checkout_naming_a_project_this_store_does_not_have_says_which_one() {
         "and the command that adopts it here: {message}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The commands that must survive a store they cannot open (SH-149)
+// ---------------------------------------------------------------------------
+
+/// A `story` invocation with nothing forced about the transport.
+///
+/// The rest of this file pins the transport deliberately. These cases must not:
+/// the whole claim is that the answer arrives before any invoker is chosen, so
+/// forcing one would test a narrower thing than the defect.
+fn story_however_it_runs(env: &TestEnv, cwd: &Path, args: &[&str]) -> Output {
+    env.raw_story(cwd)
+        .args(args)
+        .output()
+        .expect("running story")
+}
+
+/// Every command that is not about the data must survive a store that will not
+/// open.
+///
+/// This is the defect that made storyhook's own advice impossible to follow. The
+/// corruption diagnostic three tests above says, in as many words, *"to restore
+/// one: run `story daemon stop`, delete store.db …"* — and `story daemon stop`
+/// exited 5 with that same message, because `main` opened the store before
+/// dispatching anything. So did `story --help`, which is what every other error
+/// in the program tells the reader to run.
+///
+/// Each of the five is checked for two separate things, because they fail
+/// differently: the exit status, and the absence of the corruption text. A
+/// command that started reporting "damaged" while exiting 0 would be a
+/// regression this test would otherwise miss.
+#[test]
+fn a_store_that_will_not_open_does_not_take_down_the_commands_that_never_needed_it() {
+    let env = env_with_store_bytes(b"this is not a database at all\n");
+    let cwd = scratch_dir();
+
+    for args in [
+        vec!["--version"],
+        vec!["--help"],
+        vec!["daemon", "status"],
+        vec!["web", "status"],
+        vec!["help", "web"],
+    ] {
+        let out = story_however_it_runs(&env, cwd.path(), &args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "`story {}` needs no store, so a damaged one must not take it down; \
+             it exited {:?} saying: {stderr}",
+            args.join(" "),
+            out.status.code(),
+        );
+        assert!(
+            !stderr.contains("is damaged"),
+            "`story {}` must not report a store it never opened: {stderr}",
+            args.join(" "),
+        );
+    }
+}
+
+/// The remedy the corruption diagnostic prints, executed against a corrupt
+/// store.
+///
+/// Written as the drill rather than as a list of commands, because the claim is
+/// not "these five verbs work" — it is that a reader who does what the message
+/// says gets somewhere. `story daemon stop` is step one, and it was step one
+/// that failed.
+#[test]
+fn the_remedy_a_damaged_store_prints_can_actually_be_run() {
+    let env = env_with_store_bytes(b"not a database\n");
+    let cwd = scratch_dir();
+
+    let broken = story_in(&env, cwd.path(), &["list"]);
+    let message = failure_message(&broken, "story list");
+    assert!(
+        message.contains("story daemon stop"),
+        "the fixture assumes the diagnostic still names this step: {message}"
+    );
+
+    let step_one = story_however_it_runs(&env, cwd.path(), &["daemon", "stop"]);
+    assert!(
+        step_one.status.success(),
+        "the first step of storyhook's own remedy must run on the store it is a \
+         remedy for; it exited {:?} saying: {}",
+        step_one.status.code(),
+        String::from_utf8_lossy(&step_one.stderr)
+    );
+
+    // And the rest of the remedy then works, which is what makes step one worth
+    // fixing rather than merely worth reporting.
+    std::fs::remove_file(env.store_path()).expect("deleting the damaged store");
+    let after = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    assert!(
+        after.status.success(),
+        "a fresh store must open once the damaged one is gone: {}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What the client says when the daemon cannot start (SH-114)
+// ---------------------------------------------------------------------------
+
+/// A `story` invocation that insists on the daemon.
+///
+/// The opposite of [`story_in`], and here for the opposite reason: these cases
+/// are about the *client's* report of a failure that happens in another
+/// process, so the other process has to exist.
+fn story_through_the_daemon(env: &TestEnv, cwd: &Path, args: &[&str]) -> Output {
+    env.raw_story(cwd)
+        .env("STORYHOOK_INVOKER", "daemon")
+        .args(args)
+        .output()
+        .expect("running story")
+}
+
+/// The diagnosis the daemon computed is the one the user reads.
+///
+/// This is the failure mode for the entire CLI once there is no in-process
+/// fallback, and it was the worst message in the program: the daemon worked out
+/// that the store was damaged, named the file, the damage, the snapshots and the
+/// restore procedure — wrote all of it to a log — and the client replied *"the
+/// storyhook daemon did not start within 5s"* and pointed at the log.
+///
+/// Asserted on the *content* rather than on the two messages being equal,
+/// because the client adds to it: what it tried, how the daemon ended, and where
+/// its files are. Adding is the point; replacing was the defect.
+#[test]
+fn a_client_reports_the_daemon_s_own_reason_for_not_starting() {
+    let env = env_with_store_bytes(b"not a database\n");
+    let cwd = scratch_dir();
+
+    let out = story_through_the_daemon(&env, cwd.path(), &["list"]);
+    let message = failure_message(&out, "story list");
+
+    assert!(
+        message.contains("is damaged: file is not a database"),
+        "the client must report what the daemon found, not that it gave up: {message}"
+    );
+    assert!(
+        message.contains("story doctor"),
+        "including the remedy the daemon computed: {message}"
+    );
+    assert!(
+        message.contains("could not start"),
+        "and its own context, because the command did not run either: {message}"
+    );
+    assert!(
+        !message.contains("--local"),
+        "and it must not offer a flag that no longer exists: {message}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "the daemon's exit code survives the hop, because the variant does"
+    );
+}
+
+/// A daemon that has already exited is not waited for.
+///
+/// The client polled a portfile for the full five-second spawn deadline without
+/// ever asking whether the process it started was still alive, so every startup
+/// failure cost five seconds and then reported a *timeout* — which names the
+/// symptom and nothing else. Measured before the fix: 5.0s. After: under a
+/// tenth of that.
+///
+/// The bound is generous on purpose. What is being asserted is that the deadline
+/// is not being spent, not that the machine is fast; a threshold near the true
+/// figure would be a speed assertion in a suite that runs at core-count
+/// parallelism, which is a known way to build a flaky test (SH-140).
+#[test]
+fn a_client_does_not_wait_out_the_deadline_for_a_daemon_that_already_died() {
+    let env = env_with_store_bytes(b"not a database\n");
+    let cwd = scratch_dir();
+
+    let started = std::time::Instant::now();
+    let out = story_through_the_daemon(&env, cwd.path(), &["list"]);
+    let elapsed = started.elapsed();
+
+    failure_message(&out, "story list");
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "a daemon that exited must be noticed rather than waited out; the whole \
+         command took {elapsed:?} against a 5s spawn deadline"
+    );
+}
+
+/// The failure record belongs to the daemon this client started, never to an
+/// older one.
+///
+/// A file that outlived its cause would be worse than no file: the client would
+/// report a stale reason with complete confidence. The spawner deletes it in the
+/// same place it truncates the log, and this proves that deletion happens by
+/// planting a failure that is a lie and watching a successful start ignore it.
+#[test]
+fn a_stale_failure_record_is_not_blamed_on_a_daemon_that_started_fine() {
+    let env = TestEnv::isolated();
+    let cwd = scratch_dir();
+
+    // A working store, so the daemon this test starts will succeed.
+    let init = story_through_the_daemon(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    assert!(
+        init.status.success(),
+        "the fixture needs a project: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let environment = env.environment();
+    let failure = environment.daemon_failure();
+    std::fs::create_dir_all(failure.parent().expect("a parent directory"))
+        .expect("creating the daemon state directory");
+
+    // Stop the daemon so the next command has to start one, then plant a lie
+    // where its predecessor's failure would have been.
+    story_through_the_daemon(&env, cwd.path(), &["daemon", "stop"]);
+    std::fs::write(
+        &failure,
+        r#"{"kind":"storage","detail":"a failure from some previous life"}"#,
+    )
+    .expect("planting a stale failure record");
+
+    let out = story_through_the_daemon(&env, cwd.path(), &["list"]);
+    assert!(
+        out.status.success(),
+        "a daemon that starts must not be blamed for an older one's failure: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !failure.exists(),
+        "and the stale record must be gone, not merely ignored"
+    );
+}

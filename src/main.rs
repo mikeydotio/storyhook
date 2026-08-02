@@ -87,6 +87,11 @@ fn main() {
         let result = storyhook::invoke::open_store(&environment)
             .and_then(|store| storyhook::daemon::lifecycle::run(&store, &environment));
         if let Err(e) = result {
+            // The client that started this process is waiting on a portfile it
+            // is never going to get, and this is the only process that knows
+            // why. Recorded before the message is printed, because stderr here
+            // is a log file nothing parses — see `Environment::daemon_failure`.
+            storyhook::daemon::lifecycle::record_startup_failure(&environment, &e);
             eprintln!("error: {e}");
             process::exit(e.exit_code());
         }
@@ -112,6 +117,23 @@ fn main() {
     } = &invocation
     {
         match storyhook::invoke::create_store(&cwd, path) {
+            Ok(response) => {
+                let rendered = output::render_response(&response, json, flags.quiet);
+                if !rendered.is_empty() {
+                    print!("{rendered}");
+                }
+                return;
+            }
+            Err(error) => fail(&error, json),
+        }
+    }
+
+    // A command that needs no store must not open one, and this is the line
+    // that guarantees it — see `invoke::needs_no_store`. Below here every path
+    // reaches `open_store`, whose failure took down `story daemon stop`, which
+    // is the first step of the remedy a damaged store prints (SH-149).
+    if storyhook::invoke::needs_no_store(&invocation) {
+        match storyhook::invoke::dispatch_without_store(invocation) {
             Ok(response) => {
                 let rendered = output::render_response(&response, json, flags.quiet);
                 if !rendered.is_empty() {
@@ -150,7 +172,7 @@ fn main() {
         .stdin(piped);
     let depth = storyhook::event_hooks::depth_from_env();
     let run = |request: InvokeRequest| {
-        if run_locally(&flags, &request.invocation) {
+        if run_locally(&flags) {
             match storyhook::invoke::open_store(&environment) {
                 Ok(store) => StoreInvoker::new(&store, &cwd, environment.clone())
                     .hook_depth(depth)
@@ -305,42 +327,12 @@ fn read_stdin() -> Result<String, storyhook::error::AppError> {
 /// naming this flag, never a silent switch to it — a silent fallback is how a
 /// dashboard goes stale while every command keeps succeeding, which is the
 /// failure shape this whole rearchitecture exists to remove.
-fn run_locally(flags: &cli::GlobalFlags, invocation: &Invocation) -> bool {
-    flags.local
-        || matches!(env::var("STORYHOOK_INVOKER").as_deref(), Ok("local"))
-        || never_through_the_daemon(invocation)
-}
-
-/// Commands that must run in this process whatever the invoker is set to.
 ///
-/// Three families, for three different reasons:
-///
-/// * **The daemon's own lifecycle.** `story daemon stop` asking the daemon to
-///   run `story daemon stop` is circular, and auto-spawn makes it worse: the
-///   command that stops a daemon would start one first. Found by
-///   `make test-daemon`, where it did not fail — it hung.
-/// * **Self-update.** `story update` replaces the binary the daemon is running.
-///   Doing that from inside that daemon is asking it to saw the branch off.
-/// * **Store creation.** `story store new` is about a store that does not exist
-///   yet; there is no daemon for it to be dispatched to, and the daemon for
-///   some *other* store has no business creating files on its behalf.
-/// * **Pure functions of compiled-in text.** `--help` and `--version` are
-///   answered from a string constant. Starting a background process to print
-///   one — which is what a first-ever `story --help` would do — is a bad first
-///   impression and buys nothing.
-fn never_through_the_daemon(invocation: &Invocation) -> bool {
-    matches!(
-        invocation,
-        Invocation::Daemon { .. }
-            | Invocation::Web { .. }
-            | Invocation::Store { .. }
-            | Invocation::Update { .. }
-            | Invocation::Help
-            | Invocation::HelpTopic { .. }
-            | Invocation::HelpCompact
-            | Invocation::HelpAll
-            | Invocation::Version
-    )
+/// It no longer answers for the commands that are not about the data at all.
+/// Those are dispatched before any invoker exists, because they must not open
+/// a store — see [`storyhook::invoke::needs_no_store`].
+fn run_locally(flags: &cli::GlobalFlags) -> bool {
+    flags.local || matches!(env::var("STORYHOOK_INVOKER").as_deref(), Ok("local"))
 }
 
 /// The port a foreground `--serve` was asked to bind, if this invocation is one.
