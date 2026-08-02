@@ -158,6 +158,12 @@ CAPTURE_DATA_ROOT="$(mktemp -d /private/tmp/storyhook-baseline.XXXXXX)"
 trap 'rm -rf "$CAPTURE_DATA_ROOT"' EXIT
 export STORYHOOK_DATA_DIR="$CAPTURE_DATA_ROOT/data"
 export XDG_STATE_HOME="$CAPTURE_DATA_ROOT/state"
+# `STORYHOOK_STORE_PATH` outranks `STORYHOOK_DATA_DIR` (SH-113), so the line
+# above isolates nothing while a developer has one exported -- which is exactly
+# what somebody debugging a second store has. A capture would then run against
+# their real store and say nothing about it, because the guard that would
+# complain inspects the variable that lost.
+unset STORYHOOK_STORE_PATH
 export INSTA_UPDATE=no
 export STORYHOOK_INVOKER="${STORYHOOK_INVOKER:-local}"
 export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
