@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::domain::{Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState};
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
-use crate::store::{EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryRow, WriteOps};
+use crate::output::PurgePlan;
+use crate::store::{EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryRow, WriteOps};
 
 use super::{Ctx, append_and_fold, project_prefix, resolve_open_story, resolve_story};
 
@@ -455,6 +456,99 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             Ok(())
         })?;
         Ok(format!("deleted {id}: {reason}"))
+    }
+
+    /// Everything a [`purge`](Self::purge) would destroy. Writes nothing.
+    ///
+    /// The first half of the two-step: this travels to whichever process has a
+    /// terminal and becomes a prompt there, or — with `--json`, or no terminal
+    /// — a refusal naming `--force`.
+    pub fn purge_plan(&self, id: &str) -> Result<PurgePlan, AppError> {
+        let project = self.ctx.project();
+        Ok(self.ctx.store().read(|tx| {
+            let prefix = project_prefix(tx, project)?;
+            let (story_no, row) = resolve_purgeable_story(tx, project, &prefix, id)?;
+            let canonical = story_no.to_id(&prefix);
+            Ok(PurgePlan {
+                title: row.snapshot.title.clone(),
+                deleted_reason: row.snapshot.deleted_reason.clone(),
+                events: tx.events_for(project, story_no)?.len(),
+                retracted: surviving_claims(tx, project, &prefix, story_no, &canonical)?,
+                id: canonical,
+            })
+        })?)
+    }
+
+    /// Removes a story permanently: its events, its row, and every trace of it.
+    ///
+    /// **The only irreversible thing that can be done to a single story**, and
+    /// deliberately a verb of its own rather than a flag on `delete`. A flag
+    /// that turns a reversible act into an irreversible one is the wrong shape
+    /// — `story delete --hard` is one keystroke away from `story delete`, and
+    /// the two do incomparable things. `story project deinit` set the
+    /// precedent.
+    ///
+    /// It **refuses a story that has not been soft-deleted**, which is also the
+    /// answer to what soft delete is for now: the reversible tombstone, and the
+    /// required antechamber to the irreversible act. Everything a purge
+    /// destroys was already marked as unwanted, by someone, with a reason on
+    /// the record.
+    ///
+    /// Two steps, in this order, and the order is the whole of the correctness:
+    ///
+    /// 1. Every surviving story that still claims an edge into this one has
+    ///    that claim retracted with a real `StoryRelationshipRemoved` event.
+    ///    Without it the claimant's own history keeps asserting an edge whose
+    ///    far end no longer exists, `rebuild.rs` reports a `relations`
+    ///    divergence, and `doctor --fix` cannot repair it — re-folding the
+    ///    claimant re-derives the same dead edge, and the foreign key refuses
+    ///    to write it.
+    /// 2. The story itself goes, through [`WriteOps::purge_story`].
+    ///
+    /// The retractions are real events on real stories rather than a silent
+    /// table edit, because that is what makes the claimant's history true: the
+    /// edge genuinely was removed, at this moment, by this act.
+    pub fn purge(&self, id: &str) -> Result<String, AppError> {
+        let now = self.ctx.now();
+        let project = self.ctx.project();
+        let (canonical, title, retracted, removed) = self.ctx.store().write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let (story_no, row) = resolve_purgeable_story(&*tx, project, &prefix, id)?;
+            let canonical = story_no.to_id(&prefix);
+            let retracted = surviving_claims(&*tx, project, &prefix, story_no, &canonical)?;
+            let states = tx.state_map(project)?;
+
+            for (other_id, relation) in &retracted {
+                let (other_no, other_row) = resolve_story(&*tx, project, &prefix, other_id)?;
+                append_and_fold(
+                    tx,
+                    project,
+                    other_no,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(other_row.head_seq),
+                    &[StoryEvent::StoryRelationshipRemoved {
+                        at: now.clone(),
+                        other_id: canonical.clone(),
+                        relation: relation.clone(),
+                    }],
+                )?;
+            }
+
+            let removed = tx.purge_story(project, story_no)?;
+            Ok((canonical, row.snapshot.title.clone(), retracted, removed))
+        })?;
+
+        let mut message = format!(
+            "purged {canonical} — {title}\n{} event{} permanently deleted",
+            removed.events,
+            if removed.events == 1 { "" } else { "s" },
+        );
+        for (other_id, relation) in &retracted {
+            message.push_str(&format!("\nretracted {other_id} {relation} {canonical}"));
+        }
+        message.push_str(&format!("\n{canonical} will never be reused as a story id"));
+        Ok(message)
     }
 
     /// Reopens a closed story into the project's default open state.
@@ -1041,6 +1135,69 @@ fn open_state_slugs(states: &[StateDef]) -> Vec<&str> {
         .filter(|state| state.super_state == SuperState::Open)
         .map(|state| state.slug.as_str())
         .collect()
+}
+
+/// [`resolve_story`], rejecting a story that has not been soft-deleted.
+///
+/// The purge's precondition, in one place, so the plan and the act cannot
+/// disagree about what is purgeable — a plan that described a story the act
+/// then refused would be a prompt for something that could never happen.
+///
+/// The refusal names `story delete` rather than merely saying no. Someone
+/// typing `story purge` has already decided the story should go; what they need
+/// is the step they skipped, not a lecture.
+fn resolve_purgeable_story(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    prefix: &str,
+    id: &str,
+) -> Result<(StoryNo, StoryRow), AppError> {
+    let (story_no, row) = resolve_story(tx, project, prefix, id)?;
+    if !row.deleted {
+        return Err(AppError::Validation(format!(
+            "story `{id}` has not been deleted, so there is nothing to purge. Run \
+             `story delete {id} \"<reason>\"` first — soft delete is reversible, and \
+             purging is not."
+        )));
+    }
+    Ok((story_no, row))
+}
+
+/// Every edge a *surviving* story still claims into `story`, as `(id,
+/// relation)` pairs naming the claimant and the relation as that claimant
+/// spells it.
+///
+/// Read from the claimant's **snapshot** rather than from the relation table
+/// alone, and the difference matters. The table materializes the mirror of
+/// every edge, so a story that never asserted anything still has a row when its
+/// neighbour asserted one; retracting from it would append an event annulling a
+/// claim it never made. The pairs returned here are exactly the claims that
+/// would otherwise outlive the story they name — which is what the rebuild
+/// oracle compares against, since it derives its expected edges from folded
+/// snapshots.
+///
+/// Sorted, because it is rendered to a user and appended as events, and neither
+/// should depend on the order rows came back in.
+fn surviving_claims(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    prefix: &str,
+    story: StoryNo,
+    canonical: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    let mut claims = BTreeSet::new();
+    for edge in tx.relations_to(project, story)? {
+        let Some(row) = tx.story(project, edge.story_no)? else {
+            continue;
+        };
+        let claimant = edge.story_no.to_id(prefix);
+        for relation in &row.snapshot.relationships {
+            if relation.other_id == canonical {
+                claims.insert((claimant.clone(), relation.relation.clone()));
+            }
+        }
+    }
+    Ok(claims.into_iter().collect())
 }
 
 /// Asks whether a soft-deleted story really should be restored.
