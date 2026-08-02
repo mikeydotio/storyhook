@@ -13,8 +13,11 @@
 //! before it happens, what happens to the stories left behind, and that
 //! narrowing the append-only guard did not lower it for anything else.
 //!
-//! **Every fixture here is `local()`.** Two of these tests open the store file
-//! directly, and a daemon holding it answers reads from its own page cache.
+//! Two of these tests open the store file directly, with a connection shaped the
+//! way production shapes its own. That is a *second* connection to a database a
+//! daemon is holding, which SQLite's write-ahead log is built for — but it means
+//! the questions they ask must be ones a second connection can answer: whether a
+//! statement is rejected, not what some cache believes.
 
 use rusqlite::Connection;
 use storyhook::domain::StoryEvent;
@@ -34,7 +37,7 @@ fn deleted_story(project: &Project<'_>, title: &str, reason: &str) -> String {
 }
 
 fn project() -> Project<'static> {
-    TestEnv::shared().project().local().build()
+    TestEnv::shared().project().build()
 }
 
 /// Two stories that claimed each other while both were alive, one of which has

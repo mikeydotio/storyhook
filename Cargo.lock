@@ -1780,6 +1780,7 @@ name = "storyhook-test-support"
 version = "0.0.0"
 dependencies = [
  "assert_cmd",
+ "libc",
  "serde_json",
  "storyhook",
  "tempfile",

@@ -9,9 +9,9 @@
 //!    stale-dashboard bug in a new costume.
 //! 2. **[`poll_data_version`]**, a low-frequency safety net over SQLite's
 //!    `PRAGMA data_version`, which changes whenever *another connection*
-//!    commits. That is how a `story --local` write — a git hook, a CI job, a
-//!    second machine's rsync — reaches a browser that the daemon never heard
-//!    about.
+//!    commits. That is how a write this daemon did not serve — a `story tui`
+//!    session, a second machine's rsync — reaches a browser that the daemon
+//!    never heard about.
 //!
 //! This replaces a filesystem watcher, and it is strictly more reliable than
 //! one. The watcher observed a directory of story files and provably missed

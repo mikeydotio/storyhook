@@ -165,7 +165,6 @@ export XDG_STATE_HOME="$CAPTURE_DATA_ROOT/state"
 # complain inspects the variable that lost.
 unset STORYHOOK_STORE_PATH
 export INSTA_UPDATE=no
-export STORYHOOK_INVOKER="${STORYHOOK_INVOKER:-local}"
 export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
 export STORYHOOK_PARENT_PID="$$"
 

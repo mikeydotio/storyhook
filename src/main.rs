@@ -2,7 +2,7 @@ use std::env;
 use std::process;
 
 use storyhook::cli::{self, DaemonAction, Invocation, StoreAction, WebAction};
-use storyhook::invoke::{HttpInvoker, InvokeRequest, Invoker, StoreInvoker};
+use storyhook::invoke::{HttpInvoker, InvokeRequest, Invoker};
 use storyhook::output::{self, Response};
 
 /// Reports `error` on the stream its consumer reads, and exits with the
@@ -108,8 +108,6 @@ fn main() {
         }
     };
 
-    refuse_unknown_backend(json);
-
     // `store new` names the store it creates, and is the one command that must
     // not resolve the ambient one first — see `invoke::create_store`.
     if let Invocation::Store {
@@ -157,8 +155,7 @@ fn main() {
     // came from.
     // A command that reads standard input has it read *here*, before anything
     // is dispatched. This process is the one with a terminal; a daemon has no
-    // way to reach it, and a `--local` run gets the same content by the same
-    // route rather than by a second code path.
+    // way to reach it.
     let piped = if storyhook::invoke::reads_stdin(&invocation) {
         match read_stdin() {
             Ok(content) => Some(content),
@@ -171,19 +168,15 @@ fn main() {
         .no_hooks(flags.no_hooks)
         .stdin(piped);
     let depth = storyhook::event_hooks::depth_from_env();
+    // **The CLI's only door.** There was a second — `--local`, which built a
+    // `StoreInvoker` here and ran the work in this process — and it is gone
+    // (SH-114). `StoreInvoker` survives as the *executor* both remaining
+    // callers use: `api/rpc.rs`, which is the daemon running the work this
+    // request is about to travel to, and `tui/app.rs`.
     let run = |request: InvokeRequest| {
-        if run_locally(&flags) {
-            match storyhook::invoke::open_store(&environment) {
-                Ok(store) => StoreInvoker::new(&store, &cwd, environment.clone())
-                    .hook_depth(depth)
-                    .invoke(request),
-                Err(error) => Err(error),
-            }
-        } else {
-            HttpInvoker::new(environment.clone(), &cwd)
-                .hook_depth(depth)
-                .invoke(request)
-        }
+        HttpInvoker::new(environment.clone(), &cwd)
+            .hook_depth(depth)
+            .invoke(request)
     };
 
     // A destructive command answers with what it *would* destroy rather than
@@ -313,28 +306,6 @@ fn read_stdin() -> Result<String, storyhook::error::AppError> {
     Ok(buffer)
 }
 
-/// Whether this command runs in this process rather than through the daemon.
-///
-/// `--local`, or `STORYHOOK_INVOKER=local` — the same mode, spelled for a flag
-/// and for an environment that a whole script inherits. It is a **permanent,
-/// documented mode**, not a fallback: git hooks and CI want it, because
-/// spawning a daemon inside `prepare-commit-msg` is hostile and a CI job that
-/// starts one for a single command pays for something it never reuses. SQLite's
-/// WAL is built for several processes on one database, so this is the same
-/// services with one hop fewer.
-///
-/// What it is *not* is automatic. A daemon that cannot be reached is an error
-/// naming this flag, never a silent switch to it — a silent fallback is how a
-/// dashboard goes stale while every command keeps succeeding, which is the
-/// failure shape this whole rearchitecture exists to remove.
-///
-/// It no longer answers for the commands that are not about the data at all.
-/// Those are dispatched before any invoker exists, because they must not open
-/// a store — see [`storyhook::invoke::needs_no_store`].
-fn run_locally(flags: &cli::GlobalFlags) -> bool {
-    flags.local || matches!(env::var("STORYHOOK_INVOKER").as_deref(), Ok("local"))
-}
-
 /// The port a foreground `--serve` was asked to bind, if this invocation is one.
 ///
 /// `Some(None)` means "serve, on whatever port the environment prefers";
@@ -350,28 +321,5 @@ fn foreground_serve_port(invocation: &Invocation) -> Option<Option<u16>> {
             action: WebAction::Serve { port },
         } => Some(Some(*port)),
         _ => None,
-    }
-}
-
-/// Refuses a `STORYHOOK_INVOKER` value that names no backend, loudly.
-///
-/// Two are real: `daemon` (the default, and what an unset variable means) and
-/// `local`. `legacy` was the strangler's switch while two stacks existed, and
-/// anybody who still has it exported has a shell — or a script, or a CI job —
-/// that believes it is reading `.storyhook/`. A variable that silently did
-/// nothing would be worse than no variable at all.
-fn refuse_unknown_backend(json: bool) {
-    match env::var("STORYHOOK_INVOKER").as_deref() {
-        Ok("local") | Ok("daemon") | Err(_) => {}
-        Ok(other) => {
-            let error = storyhook::error::AppError::Usage(format!(
-                "STORYHOOK_INVOKER=`{other}` is not a storyhook backend. The choices are \
-                 `daemon` (the default) and `local`, which runs the command in this process. \
-                 Story data lives in storyhook's own store, not in `.storyhook/`; run \
-                 `story migrate` in any repository whose `.storyhook/` directory has not been \
-                 imported yet."
-            ));
-            fail(&error, json);
-        }
     }
 }

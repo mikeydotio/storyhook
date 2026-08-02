@@ -255,8 +255,33 @@ mod tests {
         assert!(stop(&env).expect("stop").contains("not running"));
     }
 
+    /// **`RunAtLoad` yes, `KeepAlive` no**, and both halves are decisions rather
+    /// than defaults.
+    ///
+    /// It was worth re-taking once the daemon became mandatory (SH-114): an
+    /// optional process that nothing restarts is a choice, and a *required* one
+    /// that nothing restarts sounds like an oversight. It is not, and the
+    /// reasons got stronger rather than weaker.
+    ///
+    /// - **Availability is already self-healing.** Every client calls
+    ///   `lifecycle::ensure`, so a daemon that is not running is started by
+    ///   whoever needs it next. A restarter would be a second mechanism for
+    ///   something that has one.
+    /// - **A restarter is now more dangerous than it was.** `spawn_locked`
+    ///   stands the old daemon down and *then* claims the pidfile, so launchd
+    ///   racing that window turns a deterministic failure into an intermittent
+    ///   one — and since SH-114 that window is on every command's path, not on
+    ///   the subset that chose the daemon.
+    /// - **The version-upgrade race survives verbatim**: an agent that restarts
+    ///   the daemon immediately races the client that just asked it to stop
+    ///   because the binary moved.
+    /// - **`KeepAlive{SuccessfulExit:false}`**, the surgical variant that looks
+    ///   like it avoids all of the above, is the worst of them. It turns "the
+    ///   store is damaged and the daemon cannot open it" — the exact scenario
+    ///   the cannot-start diagnostic exists for — into a respawn loop on
+    ///   launchd's ten-second throttle.
     #[test]
-    fn the_agent_runs_the_daemon_and_never_resurrects_it() {
+    fn the_agent_runs_the_daemon_at_login_and_never_resurrects_it() {
         let dir = scratch();
         let env = Environment::at(dir.path());
         let plist = agent_plist(std::path::Path::new("/usr/local/bin/story"), &env);
@@ -264,9 +289,16 @@ mod tests {
         assert!(plist.contains("<string>--serve</string>"));
         assert!(plist.contains(LAUNCHD_LABEL));
         assert!(
+            plist.contains("<key>RunAtLoad</key>"),
+            "the daemon is started at login, so a machine that has just booted \
+             has a dashboard without anybody typing a command: {plist}"
+        );
+        assert!(
             !plist.contains("KeepAlive"),
-            "an agent that restarts the daemon immediately races the client that \
-             just asked it to stop for a version upgrade"
+            "and it is never restarted. A restarter races `spawn_locked`'s \
+             stand-down window on every command's path, and the surgical \
+             `SuccessfulExit: false` variant turns a damaged store into a \
+             respawn loop on launchd's ten-second throttle: {plist}"
         );
     }
 

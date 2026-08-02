@@ -277,6 +277,8 @@ all Postgres-compatible.
   spawn inside `prepare-commit-msg` is hostile; SQLite WAL multi-process access is its design
   point). Daemon unreachable without `--local` → **fail loud** naming the remedy. Never a silent
   fallback (silent fallback = dashboard silently stale = the SH-54 failure shape).
+  **Reversed — see "As built".** `--local` is deleted (SH-114); there is one route from a CLI
+  command to the store.
 
 ### Wire envelope
 
@@ -527,3 +529,44 @@ HANDOFF.md at every wave boundary (<100 lines): wave + PR state (worktree ⇒ en
 opened", no bump/deploy), exit-criteria evidence, next entry criteria, deviations, scope-creep
 ledger, story closures. Resumption checklist: confirm tip → read HANDOFF → **`make test` green
 before touching anything** → `story list` → `gh pr list` → reconfirm worktree constraints.
+
+## As built
+
+The nine waves are recorded in [`docs/rearch/STATE.md`](../rearch/STATE.md), which stays the
+document of record for them. This section carries what later work *reversed* in the design
+above, so a reader of this file is not left believing a decision that no longer holds.
+
+### `--local` was not a permanent mode (SH-114, 2026-08-02)
+
+"**Execution modes**" above calls `--local` / `STORYHOOK_INVOKER=local` a "documented
+first-class mode", recommended for git hooks and CI. It is deleted. So are the second leg of
+the gate (`make test-daemon`, `make gate`) and every mention of a `--local` writer in the
+change-feed and expected-sequence paragraphs.
+
+**Why the recommendation did not survive its own reasoning.** It rested on two claims, and
+measurement contradicted the first and outgrew the second:
+
+- *"Git hooks and CI want it."* **No git hook ever used it.** `src/main.rs` documented the
+  flag as existing precisely for them, and the managed hooks in `src/hooks.rs` never passed
+  it. Its only live consumers were this project's own test harnesses.
+- *"SQLite WAL multi-process access is its design point."* True, and still true — it is why
+  the TUI may keep its own store handle. But a second *supported* route from a CLI command to
+  the store is a second thing to keep honest, and the daemon-only failure mode ("the daemon
+  will not start") was being papered over by the escape hatch rather than fixed. It is fixed
+  now: a client reports the daemon's own diagnosis, as data, in 71ms rather than after a
+  five-second timeout.
+
+**What was given up, deliberately.** Coverage of a bare, directly-invoked process holding the
+write transaction and dying — that process shape is now **unbuildable**, not merely untested.
+Plus the two-transport agreement property, which the byte-comparison test proved structurally
+and which `tests/golden_cli.rs`'s frozen snapshots now hold instead. Plus
+`tests/concurrency_soak.rs`'s premise that two supported modes write one store at once: the
+only remaining second writer is `story tui`, and moving it onto `/api/v1/invoke` is SH-150.
+
+**What survives.** `StoreInvoker` and the `Invoker` trait, because `StoreInvoker` is the
+*executor* rather than a transport: the daemon runs a client's request through it
+(`src/api/rpc.rs`), and so does the TUI (`src/tui/app.rs`). `HttpInvoker` is the CLI's only
+door.
+
+Design of record for the decision: `.council/sh114-daemon-only-shape/DECISION.md`, clauses
+D1–D8, unanimous.
