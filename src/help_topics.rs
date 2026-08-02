@@ -1363,7 +1363,52 @@ Examples:
 
 Related:
   story reopen <id> [--force]  — Undelete (reopen a deleted story)
+  story purge <id> [--force]   — Remove a deleted story permanently
   story search                 — Find deleted stories
+"#,
+        );
+
+        m.insert(
+            "purge",
+            r#"story purge <id> [--force]
+
+Remove a soft-deleted story permanently: its events, its comments, its
+labels, its git links, and every trace of it in the store. There is no
+undo. This is the only irreversible thing that can be done to a single
+story.
+
+It refuses a story that has not been soft-deleted first. `story delete`
+is the reversible tombstone and the required step before this one, so
+everything a purge destroys was already marked unwanted, by someone,
+with a reason on the record.
+
+At an interactive terminal you'll be asked to type the story's id to
+confirm. In scripts/CI (no TTY) and under --json there is nobody to ask,
+so the command refuses and names --force.
+
+Two consequences worth knowing before you run it:
+
+  * Any surviving story that still claims a relationship with this one
+    has that claim retracted first, as a real event on that story. The
+    confirmation lists them.
+  * The story id is never reused. `story new` carries on from the next
+    number, so a purged id stays a gap forever rather than pointing at
+    something unrelated later.
+
+When to use:
+  For a story created in error that should never have existed — a
+  mis-parsed import, a duplicate minted twice, a test story in a real
+  project. Not for finished work, and not for work that was abandoned:
+  both of those are what `story delete` is for.
+
+Examples:
+  story delete SH-7 "created in error"
+  story purge SH-7
+
+Related:
+  story delete <id> "<reason>"  — Soft-delete (reversible)
+  story reopen <id> [--force]   — Undelete a soft-deleted story
+  story project deinit          — Delete a whole project
 "#,
         );
 
@@ -1725,6 +1770,7 @@ LIFECYCLE
   story move <id> <state>         Transition state (e.g., todo → in-progress → done)
   story reopen <id>               Reopen a closed story
   story delete <id> "<reason>"    Soft-delete with required reason
+  story purge <id> --force        Permanently remove a deleted story (no undo)
 
 QUERY & NAVIGATION
   story list [filters]            List open stories (--ready, --blocked, --state, --priority, etc.)
@@ -1771,7 +1817,6 @@ WORKFLOW TIPS
   Start a session:   story load-context → story next → story move <id> in-progress
   End a session:     story commit-sync → story handoff
   Explore backlog:   story list --ready   or   story summary
-  Use --json for structured output suitable for piping and automation.
 
 Run 'story help <command>' for detail, or 'story help --all' for everything.
 "#

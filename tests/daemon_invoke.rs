@@ -403,3 +403,56 @@ fn deinit_refuses_and_then_deletes_identically_through_both_invokers() {
         "the daemon must remove the client's repository files too"
     );
 }
+
+/// So is the purge's, and for the same reason — plus one the deinit case
+/// cannot cover.
+///
+/// `ConfirmationPlan` is an enum since SH-130, so the plan a purge answers with
+/// has to survive the JSON hop that `/api/v1/invoke` gives it *and* be
+/// recognised by `InvokeRequest::forced()`, which is what turns the client's
+/// answer back into a second request. A `forced()` that only knew about deinit
+/// would loop forever here rather than fail: the daemon would keep answering
+/// with the plan and the client would keep asking.
+#[test]
+fn purge_refuses_and_then_deletes_identically_through_both_invokers() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+
+    let local_dir = project(&env);
+    let daemon_dir = project(&env);
+    for dir in [local_dir.path(), daemon_dir.path()] {
+        let out = via_local(&env, dir, &["new", "Created in error"]);
+        assert!(out.status.success(), "{out:?}");
+        let out = via_local(&env, dir, &["delete", "SH-1", "created in error"]);
+        assert!(out.status.success(), "{out:?}");
+    }
+
+    // Unforced: a refusal naming --force, on both legs, with nothing purged.
+    let local_refusal = via_local(&env, local_dir.path(), &["purge", "SH-1"]);
+    let daemon_refusal = via_daemon(&env, daemon_dir.path(), &["purge", "SH-1"]);
+    assert_eq!(local_refusal.status.code(), Some(2), "{local_refusal:?}");
+    assert_eq!(daemon_refusal.status.code(), Some(2), "{daemon_refusal:?}");
+    for out in [&local_refusal, &daemon_refusal] {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("--force"), "{stderr}");
+        assert!(
+            stderr.contains("Created in error"),
+            "the plan crossed the wire intact: {stderr}"
+        );
+    }
+    for dir in [local_dir.path(), daemon_dir.path()] {
+        assert!(via_local(&env, dir, &["show", "SH-1"]).status.success());
+    }
+
+    // Forced: both purge, and say the same thing about it.
+    let local = via_local(&env, local_dir.path(), &["purge", "SH-1", "--force"]);
+    let daemon = via_daemon(&env, daemon_dir.path(), &["purge", "SH-1", "--force"]);
+    assert_eq!(local.status.code(), Some(0), "{local:?}");
+    assert_eq!(daemon.status.code(), Some(0), "{daemon:?}");
+    for dir in [local_dir.path(), daemon_dir.path()] {
+        assert!(
+            !via_local(&env, dir, &["show", "SH-1"]).status.success(),
+            "the story is gone on both legs"
+        );
+    }
+}

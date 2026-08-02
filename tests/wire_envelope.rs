@@ -28,9 +28,9 @@ use storyhook::domain::{
 };
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
-    BlockedChainView, ConfirmationPlan, DeinitPlan, GraphOverview, GraphView, PhaseView, ProjectSnapshotView,
-    Response, SettingKind, SettingSource, SettingView, StaleInfo, StoryView, SummaryView,
-    render_error, render_response,
+    BlockedChainView, ConfirmationPlan, DeinitPlan, GraphOverview, GraphView, PhaseView,
+    ProjectSnapshotView, PurgePlan, Response, SettingKind, SettingSource, SettingView, StaleInfo,
+    StoryView, SummaryView, render_error, render_response,
 };
 
 /// The four ways a `Response` can be rendered. Every case in this file is
@@ -428,6 +428,29 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 kept: Vec::new(),
             }))),
         ),
+        (
+            "confirmation_required_purge",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Purge(PurgePlan {
+                id: "SH-20".to_string(),
+                title: "A story created in error".to_string(),
+                deleted_reason: Some("created in error".to_string()),
+                events: 14,
+                retracted: vec![
+                    ("SH-5".to_string(), "blocks".to_string()),
+                    ("SH-9".to_string(), "child-of".to_string()),
+                ],
+            }))),
+        ),
+        (
+            "confirmation_required_purge_unclaimed",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Purge(PurgePlan {
+                id: "SH-20".to_string(),
+                title: "A story created in error".to_string(),
+                deleted_reason: None,
+                events: 1,
+                retracted: Vec::new(),
+            }))),
+        ),
     ]
 }
 
@@ -486,7 +509,10 @@ fn a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
     let plan = &document["plan"];
 
     assert_eq!(document["result"], "confirmation-required");
-    assert_eq!(plan["confirm"], "deinit", "the kind is stated, not inferred");
+    assert_eq!(
+        plan["confirm"], "deinit",
+        "the kind is stated, not inferred"
+    );
     assert_eq!(plan["slug"], "storyhook");
     assert_eq!(plan["name"], "storyhook — the tracker");
     assert_eq!(plan["stories"], 47);
@@ -845,6 +871,10 @@ fn invocation_corpus() -> Vec<Invocation> {
             id: "SH-1".to_string(),
             reason: "superseded".to_string(),
         },
+        Invocation::Purge {
+            id: "SH-1".to_string(),
+            force: true,
+        },
         Invocation::BulkUpdate {
             updates: vec![
                 ("SH-1".to_string(), "done".to_string()),
@@ -1098,6 +1128,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::SetLabels { .. } => "SetLabels",
         Invocation::Reopen { .. } => "Reopen",
         Invocation::Delete { .. } => "Delete",
+        Invocation::Purge { .. } => "Purge",
         Invocation::BulkUpdate { .. } => "BulkUpdate",
         Invocation::Import { .. } => "Import",
         Invocation::Decompose { .. } => "Decompose",
@@ -1141,7 +1172,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        52,
+        53,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

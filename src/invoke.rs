@@ -110,11 +110,12 @@ impl InvokeRequest {
     /// makes this safe to call unconditionally.
     #[must_use]
     pub fn forced(mut self) -> Self {
-        if let Invocation::Project {
-            action: ProjectAction::Deinit { force, .. },
-        } = &mut self.invocation
-        {
-            *force = true;
+        match &mut self.invocation {
+            Invocation::Project {
+                action: ProjectAction::Deinit { force, .. },
+            }
+            | Invocation::Purge { force, .. } => *force = true,
+            _ => {}
         }
         self
     }
@@ -334,6 +335,19 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         Invocation::Delete { id, reason } => StoryService::new(ctx)
             .delete(&id, &reason)
             .map(Response::Message),
+        // Two-step, exactly as `project deinit` is: an unforced purge answers
+        // with what it would destroy and writes nothing. The client decides
+        // whether to ask, because the client is the process with a terminal.
+        Invocation::Purge { id, force } => {
+            let service = StoryService::new(ctx);
+            if force {
+                service.purge(&id).map(Response::Message)
+            } else {
+                Ok(Response::ConfirmationRequired(Box::new(
+                    ConfirmationPlan::Purge(service.purge_plan(&id)?),
+                )))
+            }
+        }
         Invocation::Reopen { id, force } => match StoryService::new(ctx).reopen(&id, force)? {
             ReopenOutcome::Reopened(_) => ctx.story_view(&id),
             ReopenOutcome::Aborted(message) => Ok(Response::Message(message)),
@@ -1398,6 +1412,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::SetLabels { .. } => "set-labels",
         Invocation::Reopen { .. } => "reopen",
         Invocation::Delete { .. } => "delete",
+        Invocation::Purge { .. } => "purge",
         Invocation::BulkUpdate { .. } => "bulk-update",
         Invocation::Import { .. } => "import",
         Invocation::Decompose { .. } => "decompose",
