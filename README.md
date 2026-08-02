@@ -285,7 +285,8 @@ story <a> <relationship> <b> [--remove]
 - Slugs are lowercase letters, digits, and single dashes (`in-review`) —
   they're typed as CLI arguments and appear in dashboard URLs.
 - At most one state may carry `--role active`, marking the state a story
-  enters when work starts (used by `story commit-sync`).
+  enters when work starts — where `story commit-sync` moves a story that a
+  commit *claims* (`Closes SH-1`), as opposed to merely names (`Refs SH-1`).
 - There is no rename: a slug is recorded in every state-change event ever
   written. Add the new state, migrate to it, and remove the old one.
 

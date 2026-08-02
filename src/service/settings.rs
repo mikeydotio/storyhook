@@ -109,7 +109,7 @@ static REGISTRY: [SettingSpec; 3] = [
         key: "sync.auto_transition",
         field: SettingField::SyncAutoTransition,
         kind: SettingKind::Boolean,
-        description: "Whether `story commit-sync` moves a story a commit mentions \
+        description: "Whether `story commit-sync` moves a story a commit claims \
                       into the active state.",
         // Not a convention: `GitService::commit_sync` reads the column with
         // `.unwrap_or(true)`, so an unwritten value genuinely is `true`.
