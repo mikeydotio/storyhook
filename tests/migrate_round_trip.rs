@@ -28,6 +28,19 @@
 //! repository until W7: the real rollback is the directory that was never
 //! touched, and this round trip is the guarantee for everything created *after*
 //! the flip.
+//!
+//! **That gap stopped being benign in SH-129, and is now SH-133.** It was
+//! harmless for as long as `story migrate` was the only writer of
+//! `project_settings`: a value in the store had come *from* a legacy tree, so
+//! the tree it would roll back to already held it. `story project settings`
+//! makes those columns live user data with no legacy origin, and a rollback now
+//! silently restores `sync.auto_transition` to its default — resuming automatic
+//! transitions for a user who deliberately turned them off. SH-129 deliberately
+//! did **not** widen the document to close it: the fix belongs in its own
+//! change, and moving bytes in `golden-export.json` alongside a feature would
+//! mix two hats. Closing SH-133 means adding the settings to `ProjectExport`,
+//! to `storage::import_project` (`src/storage.rs`, where they are hard-coded to
+//! `None`), and to the assertion below.
 
 mod legacy_support;
 
