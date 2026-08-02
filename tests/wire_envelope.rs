@@ -28,7 +28,7 @@ use storyhook::domain::{
 };
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
-    BlockedChainView, DeinitPlan, GraphOverview, GraphView, PhaseView, ProjectSnapshotView,
+    BlockedChainView, ConfirmationPlan, DeinitPlan, GraphOverview, GraphView, PhaseView, ProjectSnapshotView,
     Response, SettingKind, SettingSource, SettingView, StaleInfo, StoryView, SummaryView,
     render_error, render_response,
 };
@@ -401,7 +401,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         ),
         (
             "confirmation_required",
-            Response::ConfirmationRequired(Box::new(DeinitPlan {
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
                 slug: "storyhook".to_string(),
                 name: "storyhook — the tracker".to_string(),
                 prefix: "SH".to_string(),
@@ -413,11 +413,11 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     "/Volumes/Code/storyhook/AGENTS.md".to_string(),
                     "edited since it was generated".to_string(),
                 )],
-            })),
+            }))),
         ),
         (
             "confirmation_required_empty_project",
-            Response::ConfirmationRequired(Box::new(DeinitPlan {
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
                 slug: "empty".to_string(),
                 name: "empty".to_string(),
                 prefix: "EM".to_string(),
@@ -426,7 +426,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 checkouts: Vec::new(),
                 files: Vec::new(),
                 kept: Vec::new(),
-            })),
+            }))),
         ),
     ]
 }
@@ -457,6 +457,42 @@ fn a_second_wire_hop_is_a_fixed_point() {
         let twice = serde_json::to_string(&hop(&hop(&response))).expect("serializing");
         assert_eq!(once, twice, "`{label}` was not stable across two wire hops");
     }
+}
+
+/// A deinit plan's fields stay directly under `plan`, alongside the `confirm`
+/// discriminant rather than nested beneath it.
+///
+/// The dashboard reads `err.body.plan.slug`, `.stories`, `.events`, `.files`
+/// and `.kept` out of the 409 it gets from `DELETE /api/repos/{id}` and draws
+/// its own modal from them (`src/web_dashboard.html`). `ConfirmationPlan` is an
+/// enum now, and the *externally* tagged default would have moved every one of
+/// those a level down — a browser-only breakage, invisible to a Rust round-trip
+/// test, which is exactly why this asserts on the JSON rather than on a value.
+#[test]
+fn a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
+    let response = Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
+        slug: "storyhook".to_string(),
+        name: "storyhook — the tracker".to_string(),
+        prefix: "SH".to_string(),
+        stories: 47,
+        events: 312,
+        checkouts: Vec::new(),
+        files: vec!["/repo/.storyhook.toml".to_string()],
+        kept: Vec::new(),
+    })));
+
+    let rendered = render_response(&response, true, false);
+    let document: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+    let plan = &document["plan"];
+
+    assert_eq!(document["result"], "confirmation-required");
+    assert_eq!(plan["confirm"], "deinit", "the kind is stated, not inferred");
+    assert_eq!(plan["slug"], "storyhook");
+    assert_eq!(plan["name"], "storyhook — the tracker");
+    assert_eq!(plan["stories"], 47);
+    assert_eq!(plan["events"], 312);
+    assert_eq!(plan["files"][0], "/repo/.storyhook.toml");
+    assert!(plan["kept"].is_array());
 }
 
 /// `Response`'s wire form is externally tagged, so the variant travels as the

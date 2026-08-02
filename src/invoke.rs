@@ -31,7 +31,7 @@ use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::help_topics;
-use crate::output::{Response, render_html_report};
+use crate::output::{ConfirmationPlan, Response, render_html_report};
 use crate::service::transfer::ProjectExport;
 use crate::service::{
     CatalogService, Clock, ConfigService, Ctx, DeinitOutcome, DeinitTarget, FieldEdits, GitService,
@@ -633,7 +633,7 @@ fn dispatch_project<S: Store>(
             if !force {
                 // Nothing is written. The client decides whether to ask again.
                 return Ok(Response::ConfirmationRequired(Box::new(
-                    service.deinit_plan(&target)?,
+                    ConfirmationPlan::Deinit(service.deinit_plan(&target)?),
                 )));
             }
             let outcome = service.deinit(&target)?;

@@ -64,6 +64,39 @@ pub struct DeinitPlan {
     pub kept: Vec<(String, String)>,
 }
 
+/// What a destructive command is about to do, in the shape its own kind of
+/// destruction needs.
+///
+/// The payload of [`Response::ConfirmationRequired`], and the reason there is
+/// one prompt rather than one per verb. Everything the gate does — refuse under
+/// `--json`, refuse with no terminal, ask for a typed token, name `--force` —
+/// is identical whatever is being destroyed; only the warning and the token
+/// differ. Two copies of that logic is two prompts that drift apart, and the
+/// one that drifts is the one used least.
+///
+/// Internally tagged, so the document says which kind it is rather than
+/// leaving a reader to infer it from which fields are present. The tag is
+/// additive: a deinit plan carries every field it always did.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "confirm", rename_all = "kebab-case")]
+pub enum ConfirmationPlan {
+    /// `story project deinit` — a project and everything recorded against it.
+    Deinit(DeinitPlan),
+}
+
+impl ConfirmationPlan {
+    /// What the user must type, exactly, to go through with this.
+    ///
+    /// Also what the refusal names, so a caller reading "this would permanently
+    /// delete `X`" is reading the same `X` they would have had to type.
+    #[must_use]
+    pub fn token(&self) -> &str {
+        match self {
+            Self::Deinit(plan) => &plan.slug,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SummaryView {
     pub total_open: usize,
@@ -280,7 +313,7 @@ pub enum Response {
     /// Putting the decision here rather than inside the service is what lets
     /// the prompt render in the process that has a terminal — over the daemon
     /// the service runs somewhere with no way to reach the user at all.
-    ConfirmationRequired(Box<DeinitPlan>),
+    ConfirmationRequired(Box<ConfirmationPlan>),
 }
 
 #[derive(Serialize)]
@@ -608,7 +641,18 @@ fn render_human(response: &Response) -> String {
                 serde_json::to_string_pretty(events).unwrap_or_default()
             )
         }
-        Response::ConfirmationRequired(plan) => render_deinit_plan(plan),
+        Response::ConfirmationRequired(plan) => render_confirmation_plan(plan),
+    }
+}
+
+/// The warning a destructive command prints before it asks.
+///
+/// One entry point, so the CLI prompt, the CLI refusal and any other front-end
+/// are reading the same words about the same act.
+#[must_use]
+pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
+    match plan {
+        ConfirmationPlan::Deinit(plan) => render_deinit_plan(plan),
     }
 }
 
