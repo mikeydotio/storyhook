@@ -57,9 +57,32 @@ const ROUNDS: usize = 3;
 /// How long any single `story` invocation may take before it is called a
 /// deadlock.
 ///
-/// Generous by two orders of magnitude — a command under this load takes tens of
-/// milliseconds — because the failure being distinguished is "slow" from
-/// "never", and only the second one is a defect.
+/// Generous by two orders of magnitude, and measured rather than assumed: over a
+/// full-suite run the 116 commands below land at p50 10ms, p90 80ms, p99 370ms,
+/// maximum 370ms — around eighty times inside this bound. The failure being
+/// distinguished is "slow" from "never", and only the second one is a defect.
+///
+/// **This bound has fired, and when it did it was right.** SH-94 filed those
+/// occurrences as load sensitivity, reading them as a deadline calibrated for an
+/// idle machine and unable to survive a parallel suite. Measurement said
+/// otherwise, and the value stays: what was wrong was the diagnosis, not the
+/// number.
+///
+/// Every wait inside a **local** client is bounded by five seconds — `ensure_wal`
+/// and SQLite lock acquisition by `busy_timeout`, one acquisition per write
+/// because the store takes `BEGIN IMMEDIATE`, and the event hooks' own
+/// `wait_timeout` — so nothing a local client does can reach thirty. What can is
+/// the *parent*: this thread, blocked in `read_to_end` on a pipe whose write end
+/// a daemon inherited by accident and holds for its whole life. That is fixed at
+/// its origin; see `tests/daemon_fd_hygiene.rs`.
+///
+/// A **daemon** client has a second way, and it is not fixed. `spawn_locked`
+/// takes `daemon.spawn.lock` with a blocking `flock` that has no timeout, and
+/// holds it across `stand_down_legacy_daemon`, a five-second `wait_until` and
+/// `await_healthy` — so several daemon clients arriving at once queue serially
+/// behind up to fifteen seconds each. This is why every label below names its
+/// invoker: a `local` overrun and a `daemon` overrun have different causes and
+/// send the reader to different places.
 const DEADLINE: Duration = Duration::from_secs(30);
 
 /// Runs a command with a deadline, and fails loudly rather than hanging.
@@ -87,9 +110,22 @@ fn run_bounded(mut cmd: Command, what: &str) -> Output {
     match rx.recv_timeout(DEADLINE) {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => panic!("spawning `{label}`: {e}"),
+        // Naming the two known causes is worth more than naming the symptom, and
+        // the label says which one to look at first. The last time this fired,
+        // the child had already exited and the block was here, in the parent,
+        // because a detached daemon was holding the write end of this pipe.
+        // `lsof -p <pid of this test binary>` names the pipe; searching the
+        // other processes for the same address names whoever holds it. That
+        // took four hours to work out once and takes thirty seconds with this
+        // sentence.
         Err(_) => panic!(
-            "`{label}` did not finish within {DEADLINE:?} — under this load that is a \
-             deadlock, not slowness"
+            "`{label}` did not finish within {DEADLINE:?} — a deadlock rather than \
+             slowness, because every wait inside a `story` command is bounded. \
+             If the label says `local`: somebody is holding the other end of this \
+             thread's pipe. Run `lsof` on this test binary, then on the `story` \
+             daemons, and match the pipe address; see tests/daemon_fd_hygiene.rs. \
+             If it says `daemon`: suspect the spawn lock in \
+             `daemon::lifecycle::spawn_locked`, which blocks without a timeout."
         ),
     }
 }
@@ -123,21 +159,33 @@ fn assert_clean(out: &Output, what: &str) {
     }
 }
 
-/// One client's `story` command, on the invoker its index assigns it.
+/// Which invoker a client index runs on.
 ///
 /// Even clients write the database in their own process; odd clients send the
 /// work to the daemon. Both are supported modes and both are live on a real
 /// machine at the same moment.
+///
+/// This is a function rather than an expression inside [`client_command`]
+/// because every label below names it too, and the two must not be able to
+/// disagree. That matters more than it looks: the failures SH-94 was filed
+/// about reported `relate (2)`, and working out which invoker index 2 meant
+/// took reading this file. The two halves fail for completely different
+/// reasons — a local client can only be blocked by a descriptor somebody stole,
+/// while a daemon client also queues on the unbounded spawn lock at
+/// `daemon::lifecycle::spawn_locked` — so a report that does not say which one
+/// it was sends the next reader to the wrong place.
+fn invoker_for(index: usize) -> &'static str {
+    if index.is_multiple_of(2) {
+        "local"
+    } else {
+        "daemon"
+    }
+}
+
+/// One client's `story` command, on the invoker its index assigns it.
 fn client_command(env: &TestEnv, cwd: &Path, index: usize, args: &[&str]) -> Command {
     let mut cmd = env.raw_story(cwd);
-    cmd.env(
-        "STORYHOOK_INVOKER",
-        if index.is_multiple_of(2) {
-            "local"
-        } else {
-            "daemon"
-        },
-    );
+    cmd.env("STORYHOOK_INVOKER", invoker_for(index));
     cmd.args(args);
     cmd
 }
@@ -214,7 +262,7 @@ fn mixed_local_and_daemon_clients_under_load_lose_nothing() {
                     let title = format!("client {index} round {round}");
                     let out = run_bounded(
                         client_command(env, root, index, &["new", &title, "--json"]),
-                        &format!("new ({index}/{round})"),
+                        &format!("new ({index}/{round}, {})", invoker_for(index)),
                     );
                     assert_clean(&out, &format!("story new ({index}/{round})"));
                     let id = minted_id(&out);
@@ -226,13 +274,13 @@ fn mixed_local_and_daemon_clients_under_load_lose_nothing() {
                             index,
                             &["comment", &id, "seen under load", "--json"],
                         ),
-                        &format!("comment ({index}/{round})"),
+                        &format!("comment ({index}/{round}, {})", invoker_for(index)),
                     );
                     assert_clean(&out, &format!("story comment ({index}/{round})"));
 
                     let out = run_bounded(
                         client_command(env, root, index, &["move", &id, "in-progress", "--json"]),
-                        &format!("move ({index}/{round})"),
+                        &format!("move ({index}/{round}, {})", invoker_for(index)),
                     );
                     assert_clean(&out, &format!("story move ({index}/{round})"));
                 }
@@ -292,7 +340,7 @@ fn concurrent_relation_writes_leave_a_symmetric_graph() {
             scope.spawn(move || {
                 let out = run_bounded(
                     client_command(env, root, index, &["relate", a, "blocks", b, "--json"]),
-                    &format!("relate ({index})"),
+                    &format!("relate ({index}, {})", invoker_for(index)),
                 );
                 assert_clean(&out, &format!("story relate ({index})"));
             });
@@ -429,9 +477,9 @@ fn readers_run_through_a_write_storm_without_seeing_a_partial_story() {
                             index,
                             &["new", &format!("storm {index}/{round}"), "--json"],
                         ),
-                        "storm writer",
+                        &format!("storm writer ({index}, {})", invoker_for(index)),
                     );
-                    assert_clean(&out, "storm writer");
+                    assert_clean(&out, &format!("storm writer ({index})"));
                 }
             });
         }
@@ -442,9 +490,9 @@ fn readers_run_through_a_write_storm_without_seeing_a_partial_story() {
                 for _ in 0..ROUNDS * 2 {
                     let out = run_bounded(
                         client_command(env, reader_cwd, index + 1, &["list", "--json"]),
-                        "storm reader",
+                        &format!("storm reader ({}, {})", index + 1, invoker_for(index + 1)),
                     );
-                    assert_clean(&out, "storm reader");
+                    assert_clean(&out, &format!("storm reader ({})", index + 1));
                     // Every story the reader sees must be whole: a title and a
                     // state, never a row caught mid-write.
                     let json: serde_json::Value =
