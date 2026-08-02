@@ -274,6 +274,21 @@ impl Environment {
         self.daemon_state_dir().join("daemon.log")
     }
 
+    /// Where a daemon that fails to start records *why*, for the client that
+    /// started it.
+    ///
+    /// A separate file from [`Self::daemon_log`] rather than a tail of it, and
+    /// the reason is that the log is a human stream with many writers — the
+    /// dashboard's banner, backup notices, tailnet warnings, and every event
+    /// hook that runs inside the daemon. Reading it back would make a
+    /// diagnostic channel into an undeclared machine interface, which is
+    /// exactly what the wire envelope exists to avoid. This file holds one
+    /// [`crate::error::WireError`] and nothing else, so the client reconstructs
+    /// the daemon's error rather than parsing its prose (SH-114).
+    pub fn daemon_failure(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.failure.json")
+    }
+
     /// Where a daemon built before the store keyed its own state published its
     /// portfile.
     ///

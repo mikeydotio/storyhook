@@ -44,6 +44,22 @@ use storyhook::store::{
 };
 use storyhook_test_support::{Project, TestEnv, project_id_at, scratch_dir};
 
+/// The command the migration cases run: the cheapest one that opens the store,
+/// and therefore migrates it.
+///
+/// It was `help`, on the premise — written into this file — that *every*
+/// storyhook command migrates on open. That premise stopped being true when a
+/// command needing no store stopped opening one (SH-149): `story help` is
+/// answered from a string constant before any database is touched, so a fault
+/// armed inside the migration would never fire and these tests would pass while
+/// proving nothing.
+///
+/// `project list` rather than `list`, and the difference is load-bearing:
+/// the racer case below requires every survivor to *succeed*, and `story list`
+/// in a directory with no project is an ordinary failure. `project list` needs
+/// the store, resolves no project, and answers anywhere.
+const MIGRATING_COMMAND: [&str; 2] = ["project", "list"];
+
 // ---------------------------------------------------------------------------
 // Running a command that is going to die
 // ---------------------------------------------------------------------------
@@ -559,10 +575,14 @@ fn user_version(path: &Path) -> u32 {
         .expect("reading user_version")
 }
 
-/// Every storyhook command migrates on open, so an upgrade happens under
-/// whatever the user happened to type — including, on a busy machine, under a
-/// git hook. Killed mid-migration, the recorded version has to be *true*: the
-/// next process must be able to tell what is left to do.
+/// Every storyhook command that opens the store migrates it, so an upgrade
+/// happens under whatever the user happened to type — including, on a busy
+/// machine, under a git hook. Killed mid-migration, the recorded version has to
+/// be *true*: the next process must be able to tell what is left to do.
+///
+/// The qualifier is new and it is the point of [`MIGRATING_COMMAND`]: since
+/// SH-149 the commands that need no store do not open one, so they no longer
+/// carry a schema forward either.
 #[test]
 fn sigkill_mid_migration_leaves_a_version_that_is_true_and_a_backup_that_is_not() {
     let env = env_with_a_v1_store();
@@ -572,7 +592,7 @@ fn sigkill_mid_migration_leaves_a_version_that_is_true_and_a_backup_that_is_not(
     let mut cmd = env.raw_story(cwd.path());
     cmd.env("STORYHOOK_INVOKER", "local")
         .env("STORYHOOK_FAULT", FaultPoint::MidMigration.as_str())
-        .arg("help");
+        .args(MIGRATING_COMMAND);
     let status = cmd.status().expect("running the doomed migration");
     assert_eq!(
         status.signal(),
@@ -622,7 +642,7 @@ fn sigkill_during_backup_verification_migrates_nothing() {
     let mut cmd = env.raw_story(cwd.path());
     cmd.env("STORYHOOK_INVOKER", "local")
         .env("STORYHOOK_FAULT", FaultPoint::BackupVerify.as_str())
-        .arg("help");
+        .args(MIGRATING_COMMAND);
     let status = cmd.status().expect("running the doomed migration");
     assert_eq!(status.signal(), Some(libc::SIGKILL));
 
@@ -674,7 +694,7 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
     doomed
         .env("STORYHOOK_INVOKER", "local")
         .env("STORYHOOK_FAULT", FaultPoint::MidMigration.as_str())
-        .arg("help")
+        .args(MIGRATING_COMMAND)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     assert_eq!(
@@ -693,7 +713,7 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
     for _ in 0..8 {
         let mut cmd = env.raw_story(cwd.path());
         cmd.env("STORYHOOK_INVOKER", "local")
-            .arg("help")
+            .args(MIGRATING_COMMAND)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped());
         children.push(cmd.spawn().expect("spawning a racer"));
@@ -741,7 +761,7 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
 /// there is no single command that reaches all five, and pretending otherwise
 /// is how a sweep ends up asserting nothing about half of them.
 enum Driver {
-    /// A store at v1, crashed while `story help` carries it forward.
+    /// A store at v1, crashed while [`MIGRATING_COMMAND`] carries it forward.
     Upgrading,
     /// A migrated store with a project, crashed during a write.
     Writing,
@@ -780,7 +800,7 @@ fn every_named_point_survives_a_kill_with_the_database_intact() {
                 let mut cmd = env.raw_story(cwd.path());
                 cmd.env("STORYHOOK_INVOKER", "local")
                     .env("STORYHOOK_FAULT", context)
-                    .arg("help")
+                    .args(MIGRATING_COMMAND)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null());
                 let status = cmd.status().expect("running the doomed command");
