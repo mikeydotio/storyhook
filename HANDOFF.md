@@ -1,97 +1,100 @@
-# Handoff — store isolation (SH-113)
+# Handoff — SH-130, second half: the supported purge
 
-**Branch:** `feat/store-isolation`, three commits off `main` (v1.0.0).
-**Stories:** SH-113 (this one) — first child of epic **SH-112**. Closes **SH-123**.
-**Design of record:** [`docs/spec/store-isolation.md`](docs/spec/store-isolation.md);
-its "As built" section records the six decisions taken during implementation.
+*(Supersedes the SH-113 store-isolation handoff, which merged as #79 and shipped
+as v2.0.0.)*
 
-*(The previous handoff, for `feat/project-lifecycle-verbs`, is superseded — that
-branch merged as #78. Its one outstanding item, the major version bump, is folded
-into "What remains" below.)*
+SH-130's first three scope items are done; its fourth is not. The story stays
+open and this file is what the next context needs.
 
-## What changed and why
+## What landed
 
-Daemon runtime state was keyed on the state home while the store was keyed on the
-data home. The two move independently and nothing reconciled them, so a client
-pointed at one store was served — for reads *and* writes — by a daemon holding
-another, with no diagnostic and exit 0. `STORYHOOK_DATA_DIR` was not an isolation
-mechanism; it worked only when hand-paired with `XDG_STATE_HOME`, which four shell
-harnesses did and nothing in the binary required.
+Three commits on `fix/sh-130-illegal-state-pair`:
 
-**A store's identity now determines its daemon's identity.** The portfile, pidfile,
-spawn lock and log all hang off `$XDG_STATE_HOME/storyhook/daemons/<key>/`, where the
-key is the first 16 hex of the SHA-256 of the store's canonical path. One store has
-exactly one daemon by construction; "client and daemon disagree about the store" is
-unrepresentable rather than detected.
+1. `feat(store): let a migration declare it needs foreign keys off` — a
+   `foreign_keys_off` flag on `Migration`, plus `PRAGMA foreign_key_check`
+   inside the transaction for the migrations that set it. Needed because a
+   twelve-step rebuild with foreign keys **on** fires every child's
+   `ON DELETE CASCADE` from the `DROP TABLE` and empties `story_labels`
+   silently, then commits successfully. Measured on SQLite 3.51.0, and pinned by
+   a test so the justification cannot be quietly deleted.
+2. `fix(domain): a deleted story comes to rest in a closed state` — the fold
+   completes its derivation instead of forcing half of it.
+3. `feat(store): the illegal state pair becomes unrepresentable` — migration 4:
+   the composite foreign key, the `UNIQUE` parent index, the
+   `(superstate = 'CLOSED') = archived` CHECK, and the repair of existing rows.
 
-- `--store-path <file>` on every command, plus `$STORYHOOK_STORE_PATH`
-- `story store new <path>` — refuses the default store and an existing path
-- `DaemonInfo.store_path`, so a portfile is self-describing
-- the default store keeps port 3456; any other store binds port 0
+Acceptance criteria met: the tuples are enumerated (in migration 4's header, so
+the reader who meets the constraint meets the enumeration), a direct write of
+the illegal pair is refused **by the schema**, `story list --state todo` no
+longer returns a closed story, `story reopen` was checked and does **not** have
+the mirror defect, and the migration repairs existing rows.
 
-## Five things to know before touching it
+**Outstanding, and the whole of what remains: a supported purge exists, and
+SH-20 is gone from the store.**
 
-1. **`--store-path` becomes `$STORYHOOK_STORE_PATH` in `main`**, canonicalized,
-   before anything resolves. That is what makes it reach `story daemon status`, the
-   TUI (dispatched before the parser), a git hook, and the daemon this run spawns —
-   none of which are threaded. The spawned daemon *also* gets it on its argv, which
-   is redundant on purpose.
-2. **Canonicalization must not change when the store file appears.**
-   `Path::join("")` appends a separator, so the "deepest existing ancestor" walk
-   returned `…/store.db/` once the file existed — a different key, a second daemon,
-   and an `exists()` of `false`. Pinned by
-   `the_same_path_resolves_the_same_before_and_after_it_exists`. Do not loosen it.
-3. **`$STORYHOOK_STORE_PATH` outranks `$STORYHOOK_DATA_DIR`.** Every harness
-   neutralizes it: `TestEnv`'s `ISOLATED_VARS` (now six) plus `scripts/run-tests.sh`
-   and both plugin harnesses. An exported one in a developer's shell would otherwise
-   run the whole suite against their own store, and the data-dir guard would not
-   notice — it inspects the variable that lost.
-4. **Backups are keyed for a named store, unkeyed for the default one.**
-   `run_if_due` prunes to seven, so a scratch store's daemon sharing
-   `state_home/backups` would delete the real store's backup history. The default
-   store keeps the path its snapshots are already at rather than pay a migration.
-5. **`check-no-orphan-servers.sh` matches the daemon's argv**, and a flag now sits
-   between the binary and the verb. Its pattern was widened — a guard that matches
-   nothing passes silently.
+## What to build
 
-## The gates
+The council's D4, already decided — **do not re-run the vote.** It is a comment
+on SH-130; the audit trail is `.council/sh130-illegal-state-pair/DECISION.md`.
 
-```sh
-make test           # in-process, plus 18/18 bash
-make test-daemon    # the identical suite over /api/v1/invoke
-make gate           # both
-```
+- **Verb:** `story purge <ID>`, a distinct verb rather than a flag on `delete`.
+  A flag that turns a reversible act irreversible is the wrong shape, and
+  `project deinit` set the precedent.
+- **Precondition:** it **refuses a story that is not already soft-deleted**.
+  That is also the answer to what soft delete is now for — the reversible
+  tombstone, and the required antechamber to the irreversible act.
+- **Guard:** the ID must be typed to confirm, shaped like `main.rs`'s `confirm`
+  for `project deinit` — refuse under `--json`, refuse with no TTY, both naming
+  `--force`.
+- **Migration 5:** narrow `events_reject_delete` by **AND-ing** onto migration
+  3's clause rather than replacing it:
+  ```sql
+  WHEN EXISTS (SELECT 1 FROM projects WHERE id = OLD.project_id)
+   AND EXISTS (SELECT 1 FROM stories
+               WHERE project_id = OLD.project_id AND story_no = OLD.story_no)
+  ```
+  Project teardown fails the first conjunct; a purge fails the second;
+  everything else still aborts. Delete the `stories` row **before** the events —
+  the order `PROJECT_SCOPED_TABLES` already uses.
+- **Two failure modes the council named that no other proposal raised:**
+  1. Append `StoryRelationshipRemoved` to every surviving claimant **before**
+     deleting, or `rebuild.rs::relation_closure` reports a `relations`
+     divergence that `doctor --repair` can never fix.
+  2. Do **not** roll `next_story_no` back, so a purged number is never reissued.
 
-Both green on the branch tip. `tests/store_isolation.rs` is the new file: 13 tests,
-every one of which failed before the change.
+## Tests it owes
 
-## What remains
+- The narrowed guard still refuses an ordinary attempt: a raw
+  `DELETE FROM events` for a live, non-purged story must still `ABORT`. Without
+  this, a migration could widen the guard while looking like it narrowed it.
+- Purging a story that is not soft-deleted is refused.
+- A purged story leaves no divergence — assert `story doctor` is clean
+  afterwards, not merely that the row is gone.
+- `story_no` is not reissued after a purge.
+- `tests/wire_envelope.rs` needs a corpus entry for any new `Response` variant.
+- `src/store/test_support.rs::forget_story` already does the raw equivalent and
+  is the reference for statement order.
 
-1. **The merge decision is yours.** CLAUDE.md's standing rule says an implementing
-   session opens the PR and never merges its own, for anything touching the store or
-   the seam. This touches both, and there is no orchestrator session any more — so
-   the PR is open and waiting on a word.
-2. **This is breaking**, so it wants `/semver bump major` **from `main` after
-   merge** — together with the still-pending bump for the `story project init`
-   rename. One v2.0.0 covers both.
-3. **Reinstall the `story` binary** from `main`. The installed one predates the
-   flip, the `project init` rename *and* this change, so it still publishes its
-   portfile at the old unkeyed path. The upgrade handles that — a live legacy daemon
-   is stood down under the spawn lock, and it has its own test — but it is worth
-   watching the first time.
+## Then, and only then
 
-## Observed, not a defect, not filed
+`story purge SH-20` against the **real** store — SH-130's proving case. Back up
+`~/.local/share/storyhook/store.db` first.
 
-Running `story --store-path B project init --prefix SCR` in a checkout already
-initialized in store A reuses the identity in that checkout's `.storyhook.toml`, so
-the new project keeps store A's prefix and `--prefix` is ignored. That is the
-portable-project-identity contract working as designed — the two stores each get
-their own `AMB-1`, so it is not cross-talk — but it surprises. If the epic's later
-children want `--prefix` to win there, it is a separate story.
+The installed binary is still v2.0.0 and has no migration 4, so the live store
+is untouched until it is rebuilt and reinstalled. `make install` is a deliberate
+step, not a side effect, and the daemon on :3456 keeps serving old code until
+restarted (SH-54).
 
-## Next in the epic
+## Gotchas found the hard way
 
-SH-113 unblocks **SH-114**, **SH-115** and **SH-122**. **SH-95** stays open on
-purpose: `refuse_temp_project_in_real_store` is still the only thing standing there
-until the epic's later children remove path-based project creation. Its second
-argument is now the store *file* rather than the data home.
+- **`make x > log; echo $?` reports the echo's status, not make's.** It reported
+  "exit 0" over a run with 16 failures. Read the log. (SH-62's log warned about
+  this exact trap; it still caught me.)
+- Killing a test run leaves daemons behind, and `make gate`'s preflight refuses
+  to start until they are gone. `scripts/check-no-orphan-servers.sh` names the
+  PIDs and prints the `kill` line.
+- `project.json()` appends `--json` itself, and `show`'s payload is doubly
+  nested (`["story"]["story"]`) while `list`'s is not.
+- `story state set`, not `story state update`; `--super OPEN|CLOSED` uppercase.
+- A story's `deleted` field is omitted from JSON when false, so assert it is not
+  `true` rather than that it equals `false`.
