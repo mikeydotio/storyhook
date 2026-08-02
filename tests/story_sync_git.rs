@@ -290,8 +290,10 @@ fn sync_git_auto_transition_with_role() {
         .assert()
         .success();
 
-    // Make a git commit referencing the story
-    git_commit(dir.path(), "Work on SH-1 feature");
+    // Make a git commit *claiming* the story. This test is about which state
+    // the transition targets, so the commit has to be one that transitions —
+    // a bare mention only links (SH-124).
+    git_commit(dir.path(), "Implements SH-1 feature");
 
     // Run sync-git
     let assert = story(dir.path())
@@ -430,7 +432,9 @@ fn sync_git_heuristic_two_open_states() {
         .assert()
         .success();
 
-    git_commit(dir.path(), "Work on SH-1");
+    // Claims, so the heuristic's chosen state is what is under test rather
+    // than the claim grammar (SH-124).
+    git_commit(dir.path(), "Implements SH-1");
 
     let assert = story(dir.path())
         .args(["sync-git", "--since", "1h"])

@@ -109,9 +109,12 @@ other two:
 
 Settings:
   sync.auto_transition    true|false, default true
-    Whether 'story commit-sync' moves a story a commit mentions into
-    the active state. Turn it off in a repository where naming a story
-    in a commit message should record a link and nothing more.
+    Whether 'story commit-sync' moves a story a commit CLAIMS into the
+    active state. A commit claims a story with a word like closes,
+    fixes or starts immediately before the id; a bare mention such as
+    'Refs SH-1' only ever records a link. See 'story help commit-sync'
+    for the whole rule. Turn this off in a repository where even a
+    claim should record a link and nothing more.
 
   doctor.stale_threshold  a duration such as 14d, 2w, 36h, 90m
     How long a story may sit untouched before it counts as stale.
@@ -544,8 +547,33 @@ Related:
             r#"story commit-sync [--since <duration>]
 
 Scan recent git commits for story ID references and add comments to
-those stories. Also auto-transitions stories based on commit patterns
-(e.g., "closes SH-1").
+those stories. A commit that CLAIMS a story also moves it into the
+active state.
+
+Mentioning a story links it. Claiming it moves it:
+
+  Closes SH-1                  claims — a claim word, then the id
+  Closes: SH-1                 claims — a 'Key: value' git trailer,
+                               whose value is the whole rest of the line
+  Closes SH-1, SH-2 and SH-3   claims all three
+  fix: SH-1 broken parser      links only — here the colon is a
+                               Conventional Commits type, not a
+                               trailer key
+  Refs SH-1 / see SH-1 / SH-1  links only
+
+Claim words, in any tense and any case: close, fix, resolve, implement,
+complete, start, wip. The word must sit immediately before the id on
+the same line.
+
+Two things cancel a claim: the words not, no, never, without, unless,
+or an n't word, immediately before the claim word; and a Revert "..."
+subject, which claims nothing on its first line.
+
+Every run reports the stories it linked without claiming, so a project
+whose commits use no claim word can tell 'off' from 'broken'. To stop
+even a claim from moving a story:
+
+  story project settings set sync.auto_transition false
 
 When to use:
   After git operations (commit, merge, pull) to link code changes to
