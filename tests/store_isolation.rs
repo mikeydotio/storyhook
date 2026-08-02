@@ -693,3 +693,155 @@ fn the_store_path_flag_reaches_the_daemon_family_too() {
         "a store with no daemon must not report one; it said:\n{status}"
     );
 }
+
+/// `--store-path` means *this invocation and everything it starts*.
+///
+/// The flag is published into `$STORYHOOK_STORE_PATH` rather than threaded
+/// (`main`'s `publish_store_path`), because the consumers that matter cannot be
+/// reached by threading: `story daemon status` and `story web status`
+/// re-resolve, the TUI is dispatched ahead of the parser, and a child process is
+/// a different program. A variable every one of them inherits is the only thing
+/// that reaches all four.
+///
+/// This test observes the child, which is the consumer nothing else sees. An
+/// event hook runs the binary again with no flag and no variable of its own, and
+/// the story it writes has to land in the store its parent named. Deleting the
+/// publication leaves the hook's `story` with nothing naming a store: in a test
+/// build it refuses outright, and in a real one it writes into the developer's
+/// own store — which is the silent half, and the reason this is pinned by
+/// behaviour rather than by prose.
+///
+/// The command is the binary under test by absolute path. A bare `story`
+/// resolves through `PATH`, which in a test run is whatever the developer has
+/// installed.
+#[test]
+fn a_child_process_of_a_store_path_run_lands_in_the_same_store() {
+    let probe = Probe::new();
+    let store = probe.file("stores/named.db");
+    let repo = probe.dir("repo");
+    let flag = store.to_str().unwrap().to_string();
+
+    ok(probe.local_story(&repo).args([
+        "--store-path",
+        &flag,
+        "project",
+        "init",
+        "--prefix",
+        "CHD",
+    ]));
+
+    let pointer = repo.join(".storyhook.toml");
+    let existing = std::fs::read_to_string(&pointer).expect("the project has a pointer file");
+    std::fs::write(
+        &pointer,
+        format!(
+            "{existing}\n[hooks.on_create]\ncommand = \"{} new 'from the hook'\"\n",
+            story_binary().display()
+        ),
+    )
+    .expect("configuring the hook");
+
+    ok(probe
+        .local_story(&repo)
+        .args(["--store-path", &flag, "new", "the parent"]));
+
+    let listed = ok(probe
+        .local_story(&repo)
+        .args(["--store-path", &flag, "list"]));
+    assert!(
+        listed.contains("from the hook"),
+        "the hook's `story new` carried no flag and no store variable of its own, \
+         so the only way it could have reached this store is the one `main` \
+         published. The store said:\n{listed}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The harnesses that isolate a test run
+// ---------------------------------------------------------------------------
+
+/// Whether `line` exports `name`.
+fn exports(line: &str, name: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("export ")
+        .is_some_and(|rest| rest.trim_start().starts_with(&format!("{name}=")))
+}
+
+/// Whether `line` stops `$STORYHOOK_STORE_PATH` arriving from the caller.
+///
+/// Two spellings, because the two kinds of harness answer it differently:
+/// a shell wrapper `unset`s the developer's, and `TestEnv` gives the child one
+/// of its own so that what the child sees is asserted rather than assumed.
+fn neutralizes_the_store_path(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("unset STORYHOOK_STORE_PATH") || exports(trimmed, "STORYHOOK_STORE_PATH")
+}
+
+/// A harness that isolates `$STORYHOOK_DATA_DIR` and stops there has not
+/// isolated anything.
+///
+/// `$STORYHOOK_STORE_PATH` outranks `$STORYHOOK_DATA_DIR`, so an exported one in
+/// a developer's shell — which is exactly what somebody debugging a second store
+/// has — sends the whole run into their own store. Nothing notices: the data-dir
+/// guard inspects the variable that lost, and the run passes. Measured while
+/// SH-131 was being written: one 9-test file left 9 projects and 7 stories in the
+/// leaked store and never created the isolated one.
+///
+/// Derived rather than enumerated, because the enumeration is what failed. The
+/// three `unset` lines went in together with store isolation itself and
+/// `scripts/capture-baseline.sh` was missed — a fourth harness, exporting the
+/// same variables, whose own comment claims it provides "the same contract
+/// `scripts/run-tests.sh` provides". A list in a document could not see that; a
+/// derived rule cannot miss it, and a fifth harness inherits the check by
+/// existing.
+#[test]
+fn every_harness_that_isolates_the_data_dir_neutralizes_the_store_path() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let listed = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["ls-files", "-z", "--", "*.sh"])
+        .output()
+        .expect("listing this repository's tracked shell scripts");
+    assert!(
+        listed.status.success(),
+        "`git ls-files` failed, so this test proved nothing: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+
+    let mut harnesses = Vec::new();
+    let mut gaps = Vec::new();
+    for path in listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let relative = std::str::from_utf8(path).expect("a UTF-8 path");
+        let text = std::fs::read_to_string(root.join(relative))
+            .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
+        if !text.lines().any(|line| exports(line, "STORYHOOK_DATA_DIR")) {
+            continue;
+        }
+        harnesses.push(relative.to_string());
+        if !text.lines().any(neutralizes_the_store_path) {
+            gaps.push(relative.to_string());
+        }
+    }
+
+    // A scan that matches nothing passes every assertion below it, which would
+    // make a broken pattern indistinguishable from a clean tree.
+    assert!(
+        harnesses.len() >= 3,
+        "this scan is supposed to find every shell harness that isolates the \
+         data directory, and it found {}: {harnesses:?}. The pattern is broken, \
+         not the harnesses.",
+        harnesses.len()
+    );
+    assert!(
+        gaps.is_empty(),
+        "{gaps:?} export STORYHOOK_DATA_DIR without neutralizing \
+         STORYHOOK_STORE_PATH, which outranks it. A developer with one exported \
+         runs whatever these scripts start against their own store, and nothing \
+         says so. Add `unset STORYHOOK_STORE_PATH` beside the data-directory \
+         export."
+    );
+}
