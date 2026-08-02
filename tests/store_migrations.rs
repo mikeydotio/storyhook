@@ -198,13 +198,13 @@ fn migrating_a_database_from_a_newer_storyhook_is_also_refused() {
     // Bumped behind the store's back, as a newer binary sharing the file would.
     Connection::open(&path)
         .unwrap()
-        .execute_batch("PRAGMA user_version = 5")
+        .execute_batch("PRAGMA user_version = 99")
         .unwrap();
 
     let error = store.migrate().unwrap_err();
 
     assert!(
-        matches!(error, StoreError::SchemaTooNew { found: 5, .. }),
+        matches!(error, StoreError::SchemaTooNew { found: 99, .. }),
         "expected SchemaTooNew, got: {error}"
     );
 }
@@ -656,7 +656,19 @@ fn the_sql_backfill_and_the_rust_parser_agree() {
 /// `stories` is the parent of `story_labels`, `story_relations` and friends, so
 /// this is the exact shape SH-130's constraint needs and the exact shape that
 /// destroys data when foreign keys are left on.
+///
+/// It opens by dropping `events_reject_delete` and closes by putting it back,
+/// and that bracket is **not optional** — it is steps 3 and 8 of SQLite's own
+/// procedure, applied to the one trigger that is not attached to `stories` and
+/// still has to be reconstructed. `ALTER TABLE … RENAME TO` re-parses every
+/// trigger in the schema so it can rewrite references to the table being
+/// renamed; since SH-130's second half, `events_reject_delete` references
+/// `stories`, and between the `DROP TABLE` and the rename there is no such
+/// table to resolve. `a_stories_rebuild_that_leaves_the_append_guard_up_fails`
+/// is the measurement that keeps this paragraph true.
 const REBUILD_STORIES: &str = "
+    DROP TRIGGER events_reject_delete;
+
     CREATE TABLE stories_new (
         project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         story_no      INTEGER NOT NULL,
@@ -685,6 +697,15 @@ const REBUILD_STORIES: &str = "
     FROM stories;
     DROP TABLE stories;
     ALTER TABLE stories_new RENAME TO stories;
+
+    CREATE TRIGGER events_reject_delete
+    BEFORE DELETE ON events
+    WHEN EXISTS (SELECT 1 FROM projects WHERE id = OLD.project_id)
+     AND EXISTS (SELECT 1 FROM stories
+                 WHERE project_id = OLD.project_id AND story_no = OLD.story_no)
+    BEGIN
+        SELECT RAISE(ABORT, 'events are append-only: DELETE is not permitted');
+    END;
 ";
 
 /// Seeds one project holding one story that carries one label.
@@ -809,6 +830,7 @@ fn a_rebuild_that_leaves_a_dangling_reference_is_refused() {
     // framework runs `PRAGMA foreign_key_check` inside the transaction. This
     // rebuild drops a story its label still names.
     const REBUILD_LOSING_A_ROW: &str = "
+        DROP TRIGGER events_reject_delete;
         CREATE TABLE stories_new (
             project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
             story_no   INTEGER NOT NULL,
@@ -827,6 +849,14 @@ fn a_rebuild_that_leaves_a_dangling_reference_is_refused() {
         );
         DROP TABLE stories;
         ALTER TABLE stories_new RENAME TO stories;
+        CREATE TRIGGER events_reject_delete
+        BEFORE DELETE ON events
+        WHEN EXISTS (SELECT 1 FROM projects WHERE id = OLD.project_id)
+         AND EXISTS (SELECT 1 FROM stories
+                     WHERE project_id = OLD.project_id AND story_no = OLD.story_no)
+        BEGIN
+            SELECT RAISE(ABORT, 'events are append-only: DELETE is not permitted');
+        END;
     ";
 
     let dir = scratch_dir();
@@ -851,5 +881,80 @@ fn a_rebuild_that_leaves_a_dangling_reference_is_refused() {
         user_version(store.path()),
         migrate::current_schema_version(),
         "the failed migration must have rolled back"
+    );
+}
+
+#[test]
+fn a_stories_rebuild_that_leaves_the_append_guard_up_fails() {
+    // Measured, not assumed, and kept as a test because the cost it records is
+    // the price SH-130's purge pays for its guard.
+    //
+    // `events_reject_delete` names `stories` in its `WHEN` clause, which is
+    // what lets a purge delete a story's events and nothing else's. The
+    // consequence is that `stories` can no longer be rebuilt the way migration
+    // 4 rebuilt it: `ALTER TABLE … RENAME TO` re-parses every trigger in the
+    // schema to rewrite references to the renamed table, and between the
+    // `DROP TABLE` and the rename there is no `stories` to resolve.
+    //
+    // The failure is loud, immediate, and rolls back — which is why the cost is
+    // acceptable. `REBUILD_STORIES` shows the remedy: drop the guard at the top
+    // of the migration and recreate it at the bottom, exactly as SQLite's own
+    // twelve-step procedure says to do for every trigger associated with the
+    // table being rebuilt.
+    const REBUILD_WITHOUT_LOWERING_THE_GUARD: &str = "
+        CREATE TABLE stories_new (
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            story_no   INTEGER NOT NULL,
+            head_seq   INTEGER NOT NULL,
+            title      TEXT NOT NULL,
+            state      TEXT NOT NULL,
+            superstate TEXT NOT NULL,
+            priority   TEXT NOT NULL,
+            priority_rank INTEGER NOT NULL,
+            story_type TEXT, assignee TEXT, awaiting TEXT,
+            deleted    INTEGER NOT NULL DEFAULT 0,
+            archived   INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
+            description TEXT, snapshot TEXT NOT NULL,
+            PRIMARY KEY (project_id, story_no)
+        );
+        INSERT INTO stories_new SELECT
+            project_id, story_no, head_seq, title, state, superstate, priority,
+            priority_rank, story_type, assignee, awaiting, deleted, archived,
+            created_at, updated_at, closed_at, description, snapshot
+        FROM stories;
+        DROP TABLE stories;
+        ALTER TABLE stories_new RENAME TO stories;
+    ";
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate().unwrap();
+    seed_a_labelled_story(store.path());
+
+    let conn = Connection::open(store.path()).unwrap();
+    let error = migrate::run(
+        &conn,
+        &with_extra_migration_flagged(REBUILD_WITHOUT_LOWERING_THE_GUARD, true),
+        &dir.path().join("backups"),
+    )
+    .expect_err("SQLite cannot re-parse a trigger naming a table that is not there");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("events_reject_delete") && message.contains("stories"),
+        "the failure must name the trigger and the table it could not resolve, \
+         got: {message} (SQLite {})",
+        rusqlite::version()
+    );
+    assert_eq!(
+        user_version(store.path()),
+        migrate::current_schema_version(),
+        "the failed migration must have rolled back"
+    );
+    assert_eq!(
+        label_count(store.path()),
+        1,
+        "and it must have rolled back before touching anything"
     );
 }
