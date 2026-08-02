@@ -20,6 +20,7 @@ use std::path::Path;
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, params};
 
+use crate::domain::remote::RemoteUrl;
 use crate::domain::{
     KIND_STORY_COMMIT_LINKED, Member, StateDef, StoryEvent, StorySnapshot, TypeDef,
 };
@@ -160,6 +161,7 @@ const PROJECT_SCOPED_TABLES: &[(&str, &str)] = &[
     ("project_types", "project_id"),
     ("project_states", "project_id"),
     ("project_paths", "project_id"),
+    ("project_remotes", "project_id"),
     ("projects", "id"),
     ("events", "project_id"),
 ];
@@ -193,6 +195,7 @@ pub(super) fn delete_project(
         match *table {
             "stories" => removed.stories = count,
             "project_paths" => removed.paths = count,
+            "project_remotes" => removed.remotes = count,
             "events" => removed.events = count,
             _ => {}
         }
@@ -324,6 +327,60 @@ fn verify_story_is_gone(
         }
     }
     Ok(())
+}
+
+/// Registers a git origin as belonging to a project.
+///
+/// The holder is read *before* the insert rather than after a constraint
+/// failure. That ordering is what lets the refusal name the project that
+/// already holds the origin — SQLite reports the column a `UNIQUE` index covers
+/// and has no way to report a project — and it is safe from a race because a
+/// write transaction is `BEGIN IMMEDIATE`, exclusive among writers. The index
+/// stays as the backstop for anything that reaches this table without coming
+/// through here.
+pub(super) fn link_remote(
+    conn: &Connection,
+    project: ProjectId,
+    remote: &RemoteUrl,
+    registered_at: &str,
+) -> Result<(), StoreError> {
+    if let Some(holder) = read::project_by_remote(conn, remote)?
+        && holder.id != project
+    {
+        return Err(StoreError::Invariant(format!(
+            "the origin `{}` is already registered to project `{}`",
+            remote.key(),
+            holder.slug
+        )));
+    }
+
+    sql(
+        conn.execute(
+            "INSERT INTO project_remotes (project_id, normalized, raw, registered_at) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT (project_id, normalized) DO UPDATE SET \
+                 raw = excluded.raw, registered_at = excluded.registered_at",
+            params![project.get(), remote.key(), remote.raw(), registered_at],
+        ),
+        "registering a project origin",
+    )?;
+    Ok(())
+}
+
+/// Forgets one git origin of a project, reporting whether there was one.
+pub(super) fn unlink_remote(
+    conn: &Connection,
+    project: ProjectId,
+    remote: &RemoteUrl,
+) -> Result<bool, StoreError> {
+    let removed = sql(
+        conn.execute(
+            "DELETE FROM project_remotes WHERE project_id = ?1 AND normalized = ?2",
+            params![project.get(), remote.key()],
+        ),
+        "forgetting a project origin",
+    )?;
+    Ok(removed > 0)
 }
 
 pub(super) fn forget_project_path(
