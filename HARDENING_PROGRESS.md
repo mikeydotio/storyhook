@@ -149,7 +149,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
 - [x] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
 - [x] **SH-115** — C3 Identity: remotes schema + one URL normalizer
-- [ ] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114*
+- [x] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114* · **it was a deadlock; the deadline was right**
 - [ ] **SH-110** — tailnet bind flake · *gates SH-114*
 - [ ] **SH-114** — C2 Transport: daemon-only
 - [ ] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal
@@ -1259,3 +1259,195 @@ plainly.
 `normalize_for_lookup`; SH-117 gets `link_remote`/`unlink_remote` and the three
 `NormalizeError` variants to render. Neither has to decide any of the questions
 settled above.
+
+### SH-94 — done
+
+**Outcome:** the deadline was never the defect. A detached `story … daemon
+--serve` inherits file descriptors nobody gave it and holds them for its whole
+life, so whoever is reading the other end of a stolen pipe never sees
+end-of-file. Fixed at its origin, pinned by a deterministic test, and the class
+it belongs to is now pinned too. The 30-second bound stays exactly where it was.
+
+**The story asked to decide saturation versus deadlock rather than assume, and
+the answer is neither branch as it was written.** It is a deadlock — but the
+contention bug is not in the store, which is where SH-94's deadlock branch
+expected it.
+
+**Captured live, in the gate, on the first full run of the session.**
+`store_isolation`'s `a_write_under_one_store_path_is_invisible_under_another`
+stopped producing output. `sample(1)` put the thread in
+`Command::output` → `read_output` → `FileDesc::read_to_end` → `read`, and no
+`story` **client** was alive — only 13 daemons. `lsof`:
+
+```
+store_iso 21517  fd 5  PIPE 0x12fc4884a252432e ->0x69f22e6e502cbcad
+story     21548  fd 5  PIPE 0x12fc4884a252432e ->0x69f22e6e502cbcad
+story     21548  fd 7  PIPE 0x69f22e6e502cbcad ->0x12fc4884a252432e
+```
+
+21548 is a daemon whose own stdio was correct — `0` and `1` on `/dev/null`, `2`
+on its log — so fds 5 and 7 are accidents. **The toggle:** `kill 21548`, and the
+read returned in under three seconds and the test passed. One variable, a
+predicted outcome, observed.
+
+**It is total rather than slow, and that is a property of the design.** A daemon
+stops when its parent does (`STORYHOOK_PARENT_PID`), it has no idle timeout, and
+its parent is the process it has blocked. Neither can move until the other does.
+Four minutes of it was me not looking; it would have been the length of the run.
+
+**Why a descriptor arrives by accident.** `std` creates the pipes behind
+`Stdio::piped()` with `pipe2(O_CLOEXEC)` where that exists. macOS has no `pipe2`,
+so it calls `pipe(2)` and marks close-on-exec a syscall later. A `fork` in
+another thread inside that window carries both ends off. Two instructions wide
+on an idle machine, a scheduling quantum wide on a busy one — **which is exactly
+why the symptom looked like load sensitivity.** The story's hypothesis was
+reasonable and pointed at the wrong layer.
+
+**Red→green without racing for the window.** `tests/daemon_fd_hygiene.rs` builds
+the same descriptors in the same state on purpose with `libc::pipe`, starts a
+daemon the ordinary way, drops its own copy of the write end and requires
+end-of-file. FAILED at 11.48s before; ok at 1.63s after. The assertion is on the
+*consequence* rather than on the daemon's fd table, so it pins the promise and
+not one implementation of it.
+
+**The council was unanimous after one deliberation round, and both non-authors
+voted against their own proposal** — the fourth time in this run, the second
+where both did. Audit trail in `.council/sh94-daemon-fd-inheritance/`; the
+verdict is a comment on SH-94.
+
+Placement went 2–1 for the spawn site in round one and 3–0 after deliberation.
+The seat that had argued for a second enforcement point inside `daemon --serve`
+withdrew it on an asymmetry it worked out in its own domain: B *is* individually
+pinnable, because a direct `daemon --serve` route never touches `spawn_child` —
+but **A stops being pinnable once B exists**, since every route through
+`spawn_child` then ends in a daemon that also runs B, so deleting the `pre_exec`
+leaves every consequence assertion green. "BOTH does not buy defence in depth; it
+buys one enforcement point the suite can keep honest and one it cannot." It also
+withdrew its own precedent: `run-tests.sh` and `is_test_build` fail *differently
+and visibly*, so each is independently observable, while A and B fail identically
+and silently.
+
+Two more arguments composed with it. B calls `close(2)` on a live process and —
+verified — must sit above `open_store` in `main.rs`, so its correctness rests on
+an unenforced ordering invariant whose breach silently aliases the daemon's own
+database handle; A marks a flag microseconds before `exec` and fails loudly if it
+is wrong. And at `--serve` startup an accidentally-inherited descriptor and a
+deliberately-passed one are byte-identical, so only the spawner can tell them
+apart.
+
+**The council caught me publishing a false premise, and it was load-bearing.** My
+brief claimed the suite contains no assertion that anything is fast — "the
+measured count of that shape is zero". Two seats found four independently and I
+verified all four: `tests/tui_integration.rs:995` (< 500ms),
+`:1009` (< 50ms), `tests/session_start.rs:585` (< 2s),
+`tests/session_start_hook.rs:282` (< 5s). My inventory grep was `elapsed\(\) <`,
+which matches none of them — two compare `elapsed.as_millis()` and two compare a
+`let elapsed` binding. **SH-94's hypothesised class is not empty; it has five
+members** counting `src/tui/event.rs:206`, and the two `tui_integration` ones are
+pure in-process CPU budgets at core-count parallelism, the most load-sensitive
+numbers in the suite. Filed as **SH-140**, and filing it was made a condition of
+closing rather than a follow-up.
+
+**A second unbounded wait, which re-attributes part of this story's own
+evidence.** `src/daemon/lifecycle.rs:380` takes the spawn lock with a blocking
+`flock` that has no timeout, held across up to ~15s of work, reachable only
+through `HttpInvoker`. My enumeration — every wait inside a *local* client is
+bounded by five seconds — is sound, and I over-claimed it to the whole file.
+`concurrency_soak`'s `storm writer` and `storm reader` use odd indices too, so
+those two labels can blow 30s with no descriptor stolen. The three even-index
+`relate` failures are local clients and remain fully explained. Filed as
+**SH-143**; mitigated here by making every `run_bounded` label name its invoker,
+which is the difference between one investigation and two.
+
+**The class, and why the obvious preventative would have been the wrong one.**
+Stated by the skeptic seat, replacing its own round-1 answer: *any process
+storyhook causes to exist can outlive the command that caused it, and holds every
+descriptor it inherited for its whole life, so the defect is a lifetime mismatch
+between a descriptor's HOLDER and its OWNER, not a property of how the child was
+spawned.* A grep for detached spawns misses `event_hooks`, which is a **waited**
+spawn whose grandchild is the leaker; a grep for `Command::new` catches twelve
+sites of which ten are fine, and a check with that false-positive rate is allowed
+away within two commits. So `tests/spawn_inventory.rs` pins the **set** of the
+twelve sites, each classified `Waited` / `Reads` / `Detached` by whether the
+caller reads a pipe — by name, never by count, in
+`storyhook_test_support::env`'s existing idiom. It states no rule about spawning;
+it forces the classification step that was skipped when the daemon spawn was
+written.
+
+**Three of four false-green holes in my own test were found by the seats and
+closed.** `env.daemon().is_some()` reads a portfile and asks nothing about
+liveness, so a daemon that died would have greened the test *with the fix
+reverted* — it now has to answer `hello` **after** the read. Nothing would have
+failed an off-by-one `for fd in 0..table`, which blinds the daemon while leaving
+the EOF assertion green — its log must now be non-empty. And `inheritable_pipe`
+checks its own premise. The fourth cannot be closed: if Rust adopts
+`POSIX_SPAWN_CLOEXEC_DEFAULT` on macOS the descriptor is dropped one hop earlier
+and the test greens forever without exercising the fix. That is written into the
+header with the instruction to disarm and re-check.
+
+**Marking rather than closing is a decision, and it now has the only test that
+can tell.** `std` reports a failed `exec` over a close-on-exec pipe of its own;
+closing it would make a missing daemon binary indistinguishable from a successful
+spawn, surfacing five seconds later as a timeout naming nothing.
+`disinheriting_still_reports_an_exec_that_failed` fails — and nothing else does —
+when the `fcntl` becomes a `close`. Verified by doing it.
+
+**Red→green verified by disarming two mechanisms, each owning exactly its own
+tests:**
+
+| disarmed | fails | stays green |
+|---|---|---|
+| `pre_exec` / `disinherit_descriptors` | `a_daemon_inherits_nothing_but_the_stdio_it_was_given` | everything else |
+| `fcntl` → `close` | `disinheriting_still_reports_an_exec_that_failed` (1 of 14) | the fd-hygiene test, which passes either way — closing also disinherits |
+| a spawn site added to `src/` | `every_way_storyhook_starts_a_process_is_classified`, naming it | `only_the_daemon_outlives_the_command_that_starts_it` |
+
+The second row is the interesting one: it is what says the two halves of the fix
+are separately load-bearing rather than one being decoration.
+
+**Split 2–1, recorded rather than absorbed.** The `event_hooks` sibling
+(`:194` pipes stderr with no process group; `:243` does an unbounded single
+`read`; reachable inside the daemon, where its blocked reader is
+`HttpInvoker::send` with no bound at all). The architecture seat revised to
+*fix it here* under the sweep rule; the other two held *file it*, on
+reproduce-before-you-fix — there is no captured instance and the fixture has
+never been built — on two hats, and on the fix being a design choice rather than
+a one-liner. Filed as **SH-141** at high priority, "as ready, not as an idea".
+
+**Also filed:** SH-142 (the web-server harness reaps its server with an unbounded
+`.output()` inside a `Drop` — the captured shape, during unwind, which is the
+worst place for it because it masks the real failure), SH-144
+(`HttpInvoker::send`, whose exposure SH-114 changes rather than whose mechanism
+it does). All five filings were completion conditions of the verdict.
+
+**Deferred with reasons rather than silently:** promoting the pipe assertion into
+a harness helper — it has one consumer today and this repository bans
+speculative generality, so it is named as SH-141's first step; and the
+architecture seat's amendment that the daemon *report* unexpected descriptors
+rather than close them, which is a good idea its author did not make its vote
+conditional on, recorded on SH-143.
+
+**Honest limit on the evidence, and the seats made me state it.** The mechanism
+is **proved** for `store_isolation` and **inferred** for this story's own
+`concurrency_soak` failures: no `concurrency_soak` wedge was ever captured in an
+fd table, and 12 consecutive isolated runs with a 20s probe deadline produced
+zero overruns. One green post-fix suite is close to worthless as evidence — at a
+1-in-3 rate the Bayes factor is about 1.5 — and is claimed here only for what it
+does show, that the fix regresses nothing and does not blow the budget.
+
+**A supervision finding, from the gate itself.** The daemon leg's log stopped
+growing for 160 seconds before exiting 0. Nothing was wrong: `make`'s output
+through a pipe is block-buffered, so the final chunk arrives at exit. My chosen
+stall timeout was 120s, so **the watchdog would have killed a healthy run** — and
+then reported a wedge that never happened. Log growth is a valid heartbeat during
+a run and has a blind spot at the end of one; the fix is to treat "no growth" as
+a stall only while the process is still producing work, or to make the command
+unbuffered. Worth carrying into the rule.
+
+**Gate:** `make test` and `make test-daemon` run as two separate supervised
+commands against the committed tree. Both exit 0, 104 green test-result blocks
+each, plugin harness 18/0, clippy clean, no orphan daemons, no wedge. Fifth
+consecutive story with no stall.
+
+**Unblocks SH-114**, and hands it two of its own dependencies as stories: SH-143
+(the spawn lock, which SH-114 puts on every command's path) and SH-144
+(`HttpInvoker::send`, likewise).
