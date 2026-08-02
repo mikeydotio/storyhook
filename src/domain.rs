@@ -620,6 +620,159 @@ pub fn validate_state_defs_for_write(states: &[StateDef]) -> Result<(), AppError
     Ok(())
 }
 
+/// A state every project must have, and the superstate it must have it in.
+///
+/// The pair is the unit. A `done` that is OPEN is not what anything downstream
+/// means by "done", so an invariant over the slug alone would permit exactly
+/// the thing it exists to prevent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequiredState {
+    pub slug: &'static str,
+    pub super_state: SuperState,
+}
+
+/// The state set every project must contain (SH-125).
+///
+/// A project may define as many further states as it likes, in any order —
+/// this is a floor, not the catalog. Deliberately silent about
+/// [`STATE_ROLE_ACTIVE`]: the one-active rule in
+/// [`validate_state_defs_for_write`] already governs roles, and a project is
+/// free to put `active` on a state of its own.
+pub static REQUIRED_STATES: [RequiredState; 4] = [
+    RequiredState {
+        slug: "todo",
+        super_state: SuperState::Open,
+    },
+    RequiredState {
+        slug: "in-progress",
+        super_state: SuperState::Open,
+    },
+    RequiredState {
+        slug: "blocked",
+        super_state: SuperState::Open,
+    },
+    RequiredState {
+        slug: "done",
+        super_state: SuperState::Closed,
+    },
+];
+
+/// Whether `states` satisfies the [`REQUIRED_STATES`] floor.
+///
+/// Not part of [`validate_state_defs_for_write`], and that separation is
+/// load-bearing rather than stylistic: that function runs on the legacy read
+/// path (`storage::save_states`) and inside `MigrationPlan::build`, so a floor
+/// enforced there would refuse to migrate every legacy tree written before the
+/// floor existed — including the baseline corpus that
+/// `tests/migrate_round_trip.rs` guards. Writers that must accept old data call
+/// [`with_required_states`] instead; only a *user edit* is refused.
+pub fn validate_required_states(states: &[StateDef]) -> Result<(), AppError> {
+    let mut missing = Vec::new();
+    for required in &REQUIRED_STATES {
+        match states.iter().find(|state| state.slug == required.slug) {
+            None => missing.push(required.slug),
+            Some(found) if found.super_state != required.super_state => {
+                return Err(AppError::Validation(format!(
+                    "state `{}` must be {}, but this project defines it as {}; every project \
+                     needs {} (SH-125)",
+                    required.slug,
+                    required.super_state.as_str(),
+                    found.super_state.as_str(),
+                    required_state_list()
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+    // Worded for two readers: a user whose edit was refused, and `story doctor`
+    // reporting a project that was already this way. "would leave it without"
+    // is true of the first and false of the second, so neither is said.
+    Err(AppError::Validation(format!(
+        "every project needs {}; {} {} missing. Run `story doctor --fix` to add {}",
+        required_state_list(),
+        missing
+            .iter()
+            .map(|slug| format!("`{slug}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        if missing.len() == 1 { "is" } else { "are" },
+        if missing.len() == 1 { "it" } else { "them" }
+    )))
+}
+
+/// `states` with any missing [`REQUIRED_STATES`] added.
+///
+/// The repair may only **add**. A required slug already present under the wrong
+/// superstate is an error rather than something to correct, because the two
+/// candidate corrections are both destructive: a second row cannot carry the
+/// slug (it is a primary key), and flipping the superstate silently reclassifies
+/// every story sitting in that state — the reclassification
+/// `ConfigService::update_state` refuses to perform without being told where to
+/// migrate the occupants.
+///
+/// A missing OPEN state is inserted after the last OPEN state, never at the
+/// front: position 0 is where new stories are created
+/// (`ConfigService`'s callers read the *first* OPEN state), so a repair that
+/// landed there would silently change what `story new` does. A missing CLOSED
+/// state is appended.
+///
+/// Idempotent: repairing an already-conforming set returns it unchanged, which
+/// is what makes it safe on a path that runs on every import.
+pub fn with_required_states(states: &[StateDef]) -> Result<Vec<StateDef>, AppError> {
+    let mut repaired = states.to_vec();
+    for required in &REQUIRED_STATES {
+        if let Some(found) = repaired.iter().find(|state| state.slug == required.slug) {
+            if found.super_state != required.super_state {
+                return Err(AppError::Validation(format!(
+                    "state `{}` must be {}, but this project defines it as {}; storyhook will \
+                     add a missing state but will not reclassify the stories in an existing one",
+                    required.slug,
+                    required.super_state.as_str(),
+                    found.super_state.as_str()
+                )));
+            }
+            continue;
+        }
+
+        let addition = StateDef {
+            slug: required.slug.to_string(),
+            super_state: required.super_state.clone(),
+            // No role. `active` decides where `commit-sync` moves a claimed
+            // story, so awarding one here would change a project's behaviour to
+            // satisfy an invariant that says nothing about roles.
+            role: None,
+            description: None,
+        };
+        match required.super_state {
+            SuperState::Open => {
+                let after_last_open = repaired
+                    .iter()
+                    .rposition(|state| state.super_state == SuperState::Open)
+                    .map_or(0, |index| index + 1);
+                repaired.insert(after_last_open, addition);
+            }
+            SuperState::Closed => repaired.push(addition),
+        }
+    }
+    Ok(repaired)
+}
+
+/// `` `todo`, `in-progress`, `blocked` and `done` `` — for error messages.
+fn required_state_list() -> String {
+    let slugs: Vec<String> = REQUIRED_STATES
+        .iter()
+        .map(|required| format!("`{}`", required.slug))
+        .collect();
+    match slugs.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => slugs.join(""),
+    }
+}
+
 pub fn fold_story(
     id: &str,
     events: &[StoryEvent],
@@ -1900,10 +2053,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        FieldEdit, Priority, StateChanges, StateDef, StateUsage, StoryEvent, StoryRelation,
-        StorySnapshot, SuperState, compute_progress, derive_family_relationships, fold_story,
-        has_children, is_ready, last_activity_type, validate_state_defs,
-        validate_state_defs_for_write, validate_state_slug, would_create_parent_cycle,
+        FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges, StateDef,
+        StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, compute_progress,
+        derive_family_relationships, fold_story, has_children, is_ready, last_activity_type,
+        validate_required_states, validate_state_defs, validate_state_defs_for_write,
+        validate_state_slug, with_required_states, would_create_parent_cycle,
     };
 
     #[test]
@@ -2001,6 +2155,189 @@ mod tests {
         ];
         validate_state_defs(&states).unwrap();
         assert!(validate_state_defs_for_write(&states).is_err());
+    }
+
+    // --- the required-state floor (SH-125) ---
+
+    /// Slugs in board order, with `*` marking the `active` role — the shape
+    /// every repair assertion below is written against.
+    fn board(states: &[StateDef]) -> String {
+        states
+            .iter()
+            .map(|state| {
+                format!(
+                    "{}{}",
+                    state.slug,
+                    if state.role.as_deref() == Some(STATE_ROLE_ACTIVE) {
+                        "*"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    #[test]
+    fn the_required_floor_is_todo_in_progress_blocked_and_done() {
+        let slugs: Vec<&str> = REQUIRED_STATES.iter().map(|r| r.slug).collect();
+        assert_eq!(slugs, ["todo", "in-progress", "blocked", "done"]);
+        // Every one of them is a slug the CLI and the web router can address.
+        for required in &REQUIRED_STATES {
+            validate_state_slug(required.slug).expect("a required slug must be addressable");
+        }
+    }
+
+    #[test]
+    fn a_conforming_set_satisfies_the_floor() {
+        let states = vec![
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, Some("active")),
+            state("blocked", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ];
+        validate_required_states(&states).unwrap();
+    }
+
+    #[test]
+    fn a_missing_required_state_is_named_alongside_the_repair() {
+        let states = vec![
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, Some("active")),
+            state("done", SuperState::Closed, None),
+        ];
+        let error = validate_required_states(&states).unwrap_err().to_string();
+        assert!(error.contains("blocked"), "{error}");
+        assert!(
+            error.contains("story doctor --fix"),
+            "the refusal must name the way out: {error}"
+        );
+    }
+
+    /// A project cannot escape the floor by keeping the slug and changing what
+    /// it means.
+    #[test]
+    fn a_required_state_under_the_wrong_superstate_is_refused() {
+        let states = vec![
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, None),
+            state("blocked", SuperState::Open, None),
+            state("done", SuperState::Open, None),
+            state("shipped", SuperState::Closed, None),
+        ];
+        let error = validate_required_states(&states).unwrap_err().to_string();
+        assert!(error.contains("`done` must be CLOSED"), "{error}");
+    }
+
+    #[test]
+    fn repairing_adds_only_what_is_missing_and_keeps_the_rest_in_place() {
+        let states = vec![
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, None),
+            state("review", SuperState::Open, Some("active")),
+            state("done", SuperState::Closed, None),
+            state("wont-fix", SuperState::Closed, None),
+        ];
+        let repaired = with_required_states(&states).unwrap();
+        assert_eq!(
+            board(&repaired),
+            "todo|in-progress|review*|blocked|done|wont-fix"
+        );
+        validate_required_states(&repaired).unwrap();
+    }
+
+    /// The `agentics` case from the live store: two states, so the repair adds
+    /// two — and they arrive in the floor's own order rather than reversed.
+    #[test]
+    fn repairing_a_two_state_project_adds_both_missing_states_in_order() {
+        let states = vec![
+            state("todo", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ];
+        let repaired = with_required_states(&states).unwrap();
+        assert_eq!(board(&repaired), "todo|in-progress|blocked|done");
+        validate_required_states(&repaired).unwrap();
+    }
+
+    /// The repair must never take position 0. That slot decides where
+    /// `story new` puts a story, so a repair that landed there would change a
+    /// project's behaviour while claiming only to add a state.
+    #[test]
+    fn repairing_never_displaces_the_state_new_stories_open_in() {
+        for states in [
+            vec![
+                state("backlog", SuperState::Open, None),
+                state("done", SuperState::Closed, None),
+            ],
+            // A catalog whose first state is CLOSED — legal, since
+            // `reorder_states` accepts any permutation.
+            vec![
+                state("done", SuperState::Closed, None),
+                state("backlog", SuperState::Open, None),
+            ],
+        ] {
+            let first_open = states
+                .iter()
+                .find(|state| state.super_state == SuperState::Open)
+                .expect("a fixture with an OPEN state")
+                .slug
+                .clone();
+            let repaired = with_required_states(&states).unwrap();
+            assert_eq!(
+                repaired
+                    .iter()
+                    .find(|state| state.super_state == SuperState::Open)
+                    .expect("still has an OPEN state")
+                    .slug,
+                first_open,
+                "the first OPEN state moved: {}",
+                board(&repaired)
+            );
+        }
+    }
+
+    /// Idempotency is what makes the repair safe on a path that runs on every
+    /// import, not merely tidy.
+    #[test]
+    fn repairing_twice_changes_nothing_the_second_time() {
+        let states = vec![
+            state("todo", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ];
+        let once = with_required_states(&states).unwrap();
+        let twice = with_required_states(&once).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    /// Repair may add; it may not reinterpret. Flipping `done` to CLOSED here
+    /// would reclassify every story sitting in it — the reclassification
+    /// `update_state` refuses to perform without a migration destination.
+    #[test]
+    fn repairing_refuses_a_required_slug_under_the_wrong_superstate() {
+        let states = vec![
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, None),
+            state("blocked", SuperState::Open, None),
+            state("done", SuperState::Open, None),
+            state("shipped", SuperState::Closed, None),
+        ];
+        let error = with_required_states(&states).unwrap_err().to_string();
+        assert!(error.contains("will not reclassify"), "{error}");
+    }
+
+    /// The repaired set has to survive the *other* validator, or a repair would
+    /// simply move the refusal one layer along.
+    #[test]
+    fn a_repaired_set_still_passes_the_write_path_validator() {
+        let states = vec![
+            state("todo", SuperState::Open, None),
+            state("review", SuperState::Open, Some("active")),
+            state("done", SuperState::Closed, None),
+        ];
+        let repaired = with_required_states(&states).unwrap();
+        validate_state_defs_for_write(&repaired).unwrap();
+        validate_state_defs(&repaired).unwrap();
     }
 
     // --- FieldEdit ---

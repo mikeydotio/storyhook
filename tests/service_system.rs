@@ -50,15 +50,26 @@ fn the_agents_template_is_rendered_for_this_project() {
 }
 
 #[test]
-fn the_agents_template_follows_a_renamed_closed_state() {
+fn the_agents_template_follows_the_projects_own_closed_state() {
+    // The template names the project's *first* CLOSED state, not the literal
+    // `done`. This used to be proven by deleting `done`, which the required
+    // floor now refuses (SH-125) — so the same property is proven by putting
+    // another CLOSED state ahead of it, which is the other way a project
+    // decides what "closed" means to it.
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     ConfigService::new(&ctx)
         .add_state("shipped", storyhook::domain::SuperState::Closed, None, None)
         .expect("adding a closed state");
     ConfigService::new(&ctx)
-        .remove_state("done", None)
-        .expect("removing the original");
+        .reorder_states(&[
+            "todo".to_string(),
+            "in-progress".to_string(),
+            "blocked".to_string(),
+            "shipped".to_string(),
+            "done".to_string(),
+        ])
+        .expect("putting `shipped` ahead of `done`");
 
     let rendered = SystemService::new(&ctx)
         .scaffold("agents-md")

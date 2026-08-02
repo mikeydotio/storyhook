@@ -79,6 +79,26 @@ fn load(fixture: &Fixture) -> Result<DataStore, AppError> {
     DataStore::load(&fixture.invoker())
 }
 
+/// Helper: a state beyond the required floor, for the tests whose subject is
+/// what removing a state does to its occupants.
+///
+/// The four states every project must have cannot be removed at any occupancy
+/// (SH-125), so those tests need a fifth.
+fn add_state(fixture: &Fixture, slug: &str) {
+    run(
+        fixture,
+        Invocation::State {
+            action: StateAction::Add {
+                slug: slug.to_string(),
+                superstate: "OPEN".to_string(),
+                role: None,
+                description: None,
+            },
+        },
+    )
+    .unwrap();
+}
+
 /// Helper: a store and a checkout with a project in it.
 fn init_project(prefix: &str) -> Fixture {
     let data = tempfile::tempdir().unwrap();
@@ -1008,7 +1028,7 @@ fn reordering_statuses_reorders_the_board_columns() {
         .iter()
         .map(|s| s.slug.clone())
         .collect();
-    assert_eq!(before, vec!["todo", "in-progress", "done"]);
+    assert_eq!(before, vec!["todo", "in-progress", "blocked", "done"]);
 
     run(
         &fixture,
@@ -1017,6 +1037,7 @@ fn reordering_statuses_reorders_the_board_columns() {
                 order: vec![
                     "in-progress".to_string(),
                     "todo".to_string(),
+                    "blocked".to_string(),
                     "done".to_string(),
                 ],
             },
@@ -1032,7 +1053,7 @@ fn reordering_statuses_reorders_the_board_columns() {
         .collect();
     assert_eq!(
         columns,
-        vec!["in-progress", "todo"],
+        vec!["in-progress", "todo", "blocked"],
         "OPEN states, in order"
     );
 }
@@ -1073,13 +1094,24 @@ fn adding_a_status_makes_it_available_to_the_board() {
 #[test]
 fn removing_an_occupied_status_migrates_its_stories() {
     let fixture = init_project("TP");
+    add_state(&fixture, "in-review");
     let id = create_story(&fixture, "Needs a home");
+    run(
+        &fixture,
+        Invocation::SetState {
+            id: id.clone(),
+            state: "in-review".to_string(),
+            comment: None,
+            if_state: None,
+        },
+    )
+    .unwrap();
 
     run(
         &fixture,
         Invocation::State {
             action: StateAction::Remove {
-                slug: "todo".to_string(),
+                slug: "in-review".to_string(),
                 move_stories_to: Some("in-progress".to_string()),
             },
         },
@@ -1087,7 +1119,7 @@ fn removing_an_occupied_status_migrates_its_stories() {
     .unwrap();
 
     let store = load(&fixture).unwrap();
-    assert!(!store.states.iter().any(|s| s.slug == "todo"));
+    assert!(!store.states.iter().any(|s| s.slug == "in-review"));
     assert_eq!(store.find_story(&id).unwrap().state, "in-progress");
 }
 
@@ -1096,13 +1128,24 @@ fn removing_an_occupied_status_migrates_its_stories() {
 #[test]
 fn removing_an_occupied_status_without_a_destination_is_refused() {
     let fixture = init_project("TP");
-    create_story(&fixture, "Still here");
+    add_state(&fixture, "in-review");
+    let id = create_story(&fixture, "Still here");
+    run(
+        &fixture,
+        Invocation::SetState {
+            id,
+            state: "in-review".to_string(),
+            comment: None,
+            if_state: None,
+        },
+    )
+    .unwrap();
 
     let error = run(
         &fixture,
         Invocation::State {
             action: StateAction::Remove {
-                slug: "todo".to_string(),
+                slug: "in-review".to_string(),
                 move_stories_to: None,
             },
         },
@@ -1111,7 +1154,7 @@ fn removing_an_occupied_status_without_a_destination_is_refused() {
     assert!(error.to_string().contains("1 open story"));
 
     let store = load(&fixture).unwrap();
-    assert!(store.states.iter().any(|s| s.slug == "todo"));
+    assert!(store.states.iter().any(|s| s.slug == "in-review"));
 }
 
 // ─── Helper struct for TOML serialization of states ─────────────────

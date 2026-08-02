@@ -720,14 +720,38 @@ fn the_custom_config_tree_brings_its_whole_configuration_surface() {
         })
         .expect("reading");
 
+    // `blocked` is not in the legacy tree. It is added by the migration, which
+    // repairs a catalog below the required floor rather than refusing it
+    // (SH-125) — a tree written before the floor existed must still be
+    // movable. It lands at the end of the OPEN run, so `todo` keeps position 0
+    // and the state new stories open in does not change.
     assert_eq!(
         states.iter().map(|s| s.slug.as_str()).collect::<Vec<_>>(),
-        ["todo", "in-progress", "review", "done", "wont-fix"],
+        [
+            "todo",
+            "in-progress",
+            "review",
+            "blocked",
+            "done",
+            "wont-fix"
+        ],
         "configured order is user-visible — it drives the board columns"
     );
-    assert_eq!(states[2].role.as_deref(), Some("active"));
+    let state = |slug: &str| {
+        states
+            .iter()
+            .find(|state| state.slug == slug)
+            .unwrap_or_else(|| panic!("state `{slug}` survived the migration"))
+            .clone()
+    };
     assert_eq!(
-        states[4].description.as_deref(),
+        state("review").role.as_deref(),
+        Some("active"),
+        "the repair must not move the `active` role onto the state it added"
+    );
+    assert_eq!(state("blocked").role, None);
+    assert_eq!(
+        state("wont-fix").description.as_deref(),
         Some("Closed without doing it"),
         "a state's description is the field SH-49 destroyed; it must survive a migration"
     );

@@ -83,10 +83,13 @@ fn init_creates_a_project_with_its_catalog_and_counters() {
         .read(|tx| tx.states(outcome.project))
         .expect("reading states");
     let slugs: Vec<&str> = states.iter().map(|state| state.slug.as_str()).collect();
-    assert_eq!(slugs, ["todo", "in-progress", "done"]);
+    // The floor and the default are the same set (SH-125), so a project is
+    // conforming the instant it exists.
+    assert_eq!(slugs, ["todo", "in-progress", "blocked", "done"]);
     assert_eq!(states[0].super_state, SuperState::Open);
     assert_eq!(states[1].role.as_deref(), Some("active"));
-    assert_eq!(states[2].super_state, SuperState::Closed);
+    assert_eq!(states[2].super_state, SuperState::Open);
+    assert_eq!(states[3].super_state, SuperState::Closed);
 
     let types = fixture
         .store
@@ -183,7 +186,7 @@ fn an_init_that_fails_can_simply_be_retried() {
         .store
         .read(|tx| tx.states(outcome.project))
         .expect("reading states");
-    assert_eq!(states.len(), 3, "the retry produced a complete catalog");
+    assert_eq!(states.len(), 4, "the retry produced a complete catalog");
 }
 
 // --- idempotence -----------------------------------------------------------
@@ -397,7 +400,11 @@ fn agents_md_names_the_projects_own_closed_state() {
         .store
         .write(|tx| {
             let mut states = tx.states(outcome.project)?;
-            states[2].slug = "shipped".to_string();
+            let closed = states
+                .iter()
+                .position(|state| state.super_state == SuperState::Closed)
+                .expect("a CLOSED state");
+            states[closed].slug = "shipped".to_string();
             tx.put_states(outcome.project, &states)
         })
         .expect("renaming the closed state");

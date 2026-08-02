@@ -5,7 +5,7 @@ source: tests/golden_cli.rs
   {
     "argv": "story state list --json",
     "stdout": {
-      "message": "todo (OPEN) — 9 open\nin-progress (OPEN, active) — 1 open\ndone (CLOSED) — 2 archived\nreview (OPEN) — 1 open — Awaiting code review",
+      "message": "todo (OPEN) — 9 open\nin-progress (OPEN, active) — 1 open\nblocked (OPEN)\ndone (CLOSED) — 2 archived\nreview (OPEN) — 1 open — Awaiting code review",
       "result": "ok"
     }
   },

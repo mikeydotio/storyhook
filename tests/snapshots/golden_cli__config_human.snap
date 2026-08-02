@@ -4,6 +4,7 @@ source: tests/golden_cli.rs
 $ story state list
 todo (OPEN) — 9 open
 in-progress (OPEN, active) — 1 open
+blocked (OPEN)
 done (CLOSED) — 2 archived
 review (OPEN) — 1 open — Awaiting code review
 
