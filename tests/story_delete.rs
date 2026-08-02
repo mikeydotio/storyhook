@@ -208,15 +208,18 @@ fn delete_show_json_exposes_superstate_and_deleted_fields() {
         .stdout(predicate::str::contains(
             "\"deleted_reason\": \"created in error\"",
         ))
-        // The state slug itself is preserved as a truthful record of what
-        // the story was when it was deleted.
-        .stdout(predicate::str::contains("\"state\": \"todo\""));
+        // SH-130: the slug and the superstate must agree. Preserving `todo`
+        // here was the defect — a CLOSED story reported as sitting in an OPEN
+        // state, which `story list --state todo` then returned. What the story
+        // was when it was deleted is recorded in its event log, which is the
+        // thing that cannot lie; the read model reports where it is *now*.
+        .stdout(predicate::str::contains("\"state\": \"done\""));
 
     story(dir.path())
         .args(["show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("state: todo (CLOSED, deleted)"))
+        .stdout(predicate::str::contains("state: done (CLOSED, deleted)"))
         .stdout(predicate::str::contains("deleted_reason: created in error"));
 }
 
@@ -240,8 +243,13 @@ fn delete_closes_the_story_and_leaves_it_readable() {
     // The open/archive *split* is gone: one row with an `archived` flag
     // replaces two storage media that could, and did, disagree (SH-20). What
     // the split was a proxy for survives and is asserted directly — a deleted
-    // story stops counting as open, keeps the state it was deleted in, and
-    // stays readable.
+    // story stops counting as open, comes to rest in a state that is genuinely
+    // CLOSED, and stays readable.
+    //
+    // This test used to assert it "keeps the state it was deleted in", pairing
+    // `state: todo` with `superstate: CLOSED`. That pair is the SH-130 defect,
+    // and SH-20 — the very story whose name is in the comment above — was the
+    // live example of it.
     story(dir.path())
         .args(["--json", "summary"])
         .assert()
@@ -251,7 +259,7 @@ fn delete_closes_the_story_and_leaves_it_readable() {
         .args(["--json", "show", "SH-1"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"state\": \"todo\""))
+        .stdout(predicate::str::contains("\"state\": \"done\""))
         .stdout(predicate::str::contains("\"superstate\": \"CLOSED\""))
         .stdout(predicate::str::contains("\"deleted\": true"));
 }
@@ -396,6 +404,17 @@ fn doctor_fix_heals_a_read_model_row_that_disagrees_with_its_events() {
             object.insert("superstate".to_string(), serde_json::json!("OPEN"));
             object.remove("deleted");
             object.remove("deleted_reason");
+            // The fabricated row has to be *internally* consistent, or the
+            // schema refuses it before `doctor` ever sees it — SH-130 ties the
+            // superstate to the slug's superstate and to `archived`, which is
+            // in turn tied to `closed_at`. So the pretend-open row is pretend
+            // open all the way through: an OPEN slug and no close timestamp.
+            //
+            // What it still disagrees with is its own *event log*, which says
+            // `StoryDeleted`. That is the divergence under test, and the one
+            // `doctor --fix` exists to heal.
+            object.insert("state".to_string(), serde_json::json!("todo"));
+            object.remove("closed_at");
         },
     )
     .expect("corrupting the read model");

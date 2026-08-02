@@ -230,7 +230,9 @@ fn delete_soft_deletes() {
     // Soft delete: archived (JSONL removed from open/stories/), not erased —
     // still readable, but as a CLOSED, marked-deleted story. See
     // tests/story_delete.rs for full coverage of #18 (deletion must flip
-    // superstate to CLOSED so it stops counting as open/ready/a blocker).
+    // superstate to CLOSED so it stops counting as open/ready/a blocker) and of
+    // SH-130 (it must come to rest in a state that *is* CLOSED, rather than
+    // keeping an OPEN slug and contradicting itself).
     assert!(
         !dir.path()
             .join(".storyhook/open/stories/SH-1.jsonl")
@@ -241,7 +243,7 @@ fn delete_soft_deletes() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Test story"))
-        .stdout(predicate::str::contains("state: todo (CLOSED, deleted)"))
+        .stdout(predicate::str::contains("state: done (CLOSED, deleted)"))
         .stdout(predicate::str::contains("deleted_reason: created in error"));
 }
 

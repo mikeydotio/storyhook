@@ -668,10 +668,22 @@ fn a_deleted_story_does_not_hold_a_state_open() {
         .remove_state(SPARE, None)
         .expect("a deleted occupant neither blocks nor migrates");
     assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
+    // SH-130 makes this stronger than it was. It used to assert the deleted
+    // story kept `SPARE` — "the slug its history records" — which meant the
+    // removal above left a story naming a state the catalog no longer defined.
+    // Deletion now lands the story in `done`, so removing `SPARE` is safe for a
+    // better reason than "nobody was looking": nothing is in it.
+    //
+    // Worth stating plainly, because the old fold comment claimed the
+    // superstate override protected against exactly this. It did not: it kept
+    // the *superstate* right while leaving the slug dangling, and `state_usage`
+    // counts only undeleted stories, so `remove_state` never saw the occupant
+    // at all.
     assert_eq!(
         snapshot(&fixture, &id).state,
-        SPARE,
-        "the deleted story keeps the slug its history records"
+        "done",
+        "a deleted story rests in the required CLOSED state, not in a slug that \
+         can be removed out from under it"
     );
 }
 

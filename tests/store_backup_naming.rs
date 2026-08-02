@@ -47,6 +47,7 @@ fn with_extra_migration() -> Vec<Migration> {
         version: u32::try_from(list.len()).expect("a short list") + 1,
         name: "test-only",
         sql: "CREATE TABLE later (x INTEGER);",
+        foreign_keys_off: false,
     });
     list
 }

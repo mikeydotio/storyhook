@@ -18,11 +18,21 @@ use storyhook_test_support::scratch_dir;
 /// migrations are the ones a store really applies; this appends one *past* them
 /// so a test can choose what the next step does.
 fn with_extra_migration(sql: &'static str) -> Vec<Migration> {
+    with_extra_migration_flagged(sql, false)
+}
+
+/// [`with_extra_migration`], choosing whether the appended step declares that it
+/// needs foreign keys disabled.
+///
+/// Split out rather than folded into the caller so every existing test keeps
+/// reading as "a migration", and only the rebuild tests mention the flag.
+fn with_extra_migration_flagged(sql: &'static str, foreign_keys_off: bool) -> Vec<Migration> {
     let mut list = migrate::MIGRATIONS.to_vec();
     list.push(Migration {
         version: NEXT_VERSION,
         name: "test-only",
         sql,
+        foreign_keys_off,
     });
     list
 }
@@ -634,5 +644,212 @@ fn the_sql_backfill_and_the_rust_parser_agree() {
         distinct.len(),
         "the SQL backfill must not have written a row the parser rejects — and \
          two comments naming one commit are still one link"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rebuilding a referenced table — SH-130
+// ---------------------------------------------------------------------------
+
+/// The twelve-step rebuild, as a migration would write it.
+///
+/// `stories` is the parent of `story_labels`, `story_relations` and friends, so
+/// this is the exact shape SH-130's constraint needs and the exact shape that
+/// destroys data when foreign keys are left on.
+const REBUILD_STORIES: &str = "
+    CREATE TABLE stories_new (
+        project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        story_no      INTEGER NOT NULL,
+        head_seq      INTEGER NOT NULL,
+        title         TEXT NOT NULL,
+        state         TEXT NOT NULL,
+        superstate    TEXT NOT NULL CHECK (superstate IN ('OPEN', 'CLOSED')),
+        priority      TEXT NOT NULL,
+        priority_rank INTEGER NOT NULL,
+        story_type    TEXT,
+        assignee      TEXT,
+        awaiting      TEXT,
+        deleted       INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+        archived      INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        closed_at     TEXT,
+        description   TEXT,
+        snapshot      TEXT NOT NULL,
+        PRIMARY KEY (project_id, story_no)
+    );
+    INSERT INTO stories_new SELECT
+        project_id, story_no, head_seq, title, state, superstate, priority,
+        priority_rank, story_type, assignee, awaiting, deleted, archived,
+        created_at, updated_at, closed_at, description, snapshot
+    FROM stories;
+    DROP TABLE stories;
+    ALTER TABLE stories_new RENAME TO stories;
+";
+
+/// Seeds one project holding one story that carries one label.
+///
+/// Written straight to the tables rather than through the services: this file
+/// tests the migration framework, and a fixture that had to stay valid under
+/// every future service rule would be testing something else.
+fn seed_a_labelled_story(path: &Path) {
+    let conn = Connection::open(path).unwrap();
+    // The state catalog is not optional scenery: since SH-130 `stories` carries
+    // a composite foreign key into `project_states`, so a story naming a state
+    // the project does not define is refused — correctly.
+    conn.execute_batch(
+        "INSERT INTO projects (id, uuid, slug, name, prefix, created_at)
+             VALUES (1, 'u-1', 'proj', 'Proj', 'SH', '2026-01-01T00:00:00Z');
+         INSERT INTO project_states (project_id, position, slug, superstate)
+             VALUES (1, 0, 'todo', 'OPEN'), (1, 1, 'done', 'CLOSED');
+         INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate,
+                              priority, priority_rank, created_at, updated_at, snapshot)
+             VALUES (1, 1, 1, 'A story', 'todo', 'OPEN', 'none', 4,
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');
+         INSERT INTO story_labels (project_id, story_no, label) VALUES (1, 1, 'bug');",
+    )
+    .unwrap();
+}
+
+fn label_count(path: &Path) -> i64 {
+    Connection::open(path)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM story_labels", [], |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_table_rebuild_with_foreign_keys_left_on_silently_destroys_child_rows() {
+    // Not a wish — a measurement, kept as a test so the reason
+    // `foreign_keys_off` exists cannot be forgotten and quietly deleted.
+    //
+    // `DROP TABLE` fires every child's ON DELETE CASCADE while foreign keys are
+    // enforced. Nothing errors, the transaction COMMITs, and the migration
+    // reports success. On the bundled SQLite this empties `story_labels`,
+    // `story_relations` and `github_bases` for every project in the store.
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate().unwrap();
+    seed_a_labelled_story(store.path());
+    assert_eq!(label_count(store.path()), 1);
+
+    let conn = Connection::open(store.path()).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    migrate::run(
+        &conn,
+        &with_extra_migration_flagged(REBUILD_STORIES, false),
+        &dir.path().join("backups"),
+    )
+    .expect("the migration reports success — that is the hazard");
+
+    assert_eq!(
+        label_count(store.path()),
+        0,
+        "this is the damage `foreign_keys_off` exists to prevent; if this now \
+         reads 1, SQLite changed its cascade behaviour and the flag's \
+         justification must be re-measured rather than assumed"
+    );
+}
+
+#[test]
+fn a_rebuild_migration_that_declares_foreign_keys_off_keeps_its_child_rows() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate().unwrap();
+    seed_a_labelled_story(store.path());
+
+    let conn = Connection::open(store.path()).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    migrate::run(
+        &conn,
+        &with_extra_migration_flagged(REBUILD_STORIES, true),
+        &dir.path().join("backups"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        label_count(store.path()),
+        1,
+        "the label must survive a rebuild of the table it references"
+    );
+    assert_eq!(user_version(store.path()), NEXT_VERSION);
+}
+
+#[test]
+fn the_foreign_key_pragma_is_restored_after_a_rebuild_migration() {
+    // The connection outlives the migration and is handed straight to the
+    // store. A migration that left enforcement off would disarm every foreign
+    // key in the process that ran it, which is worse than the damage it avoided.
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate().unwrap();
+
+    let conn = Connection::open(store.path()).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    migrate::run(
+        &conn,
+        &with_extra_migration_flagged(REBUILD_STORIES, true),
+        &dir.path().join("backups"),
+    )
+    .unwrap();
+
+    let enforced: bool = conn
+        .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+        .unwrap();
+    assert!(
+        enforced,
+        "foreign key enforcement must be switched back on when the migration ends"
+    );
+}
+
+#[test]
+fn a_rebuild_that_leaves_a_dangling_reference_is_refused() {
+    // The price of switching enforcement off is paid here. With foreign keys
+    // disabled a rebuild can orphan a child row and COMMIT happily, so the
+    // framework runs `PRAGMA foreign_key_check` inside the transaction. This
+    // rebuild drops a story its label still names.
+    const REBUILD_LOSING_A_ROW: &str = "
+        CREATE TABLE stories_new (
+            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            story_no   INTEGER NOT NULL,
+            head_seq   INTEGER NOT NULL,
+            title      TEXT NOT NULL,
+            state      TEXT NOT NULL,
+            superstate TEXT NOT NULL,
+            priority   TEXT NOT NULL,
+            priority_rank INTEGER NOT NULL,
+            story_type TEXT, assignee TEXT, awaiting TEXT,
+            deleted    INTEGER NOT NULL DEFAULT 0,
+            archived   INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT,
+            description TEXT, snapshot TEXT NOT NULL,
+            PRIMARY KEY (project_id, story_no)
+        );
+        DROP TABLE stories;
+        ALTER TABLE stories_new RENAME TO stories;
+    ";
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate().unwrap();
+    seed_a_labelled_story(store.path());
+
+    let conn = Connection::open(store.path()).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    let error = migrate::run(
+        &conn,
+        &with_extra_migration_flagged(REBUILD_LOSING_A_ROW, true),
+        &dir.path().join("backups"),
+    )
+    .expect_err("a rebuild that orphans a child row must not commit");
+
+    assert!(
+        error.to_string().contains("dangling foreign-key reference"),
+        "the failure must name what dangles, got: {error}"
+    );
+    assert_eq!(
+        user_version(store.path()),
+        migrate::current_schema_version(),
+        "the failed migration must have rolled back"
     );
 }

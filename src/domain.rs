@@ -657,6 +657,42 @@ pub static REQUIRED_STATES: [RequiredState; 4] = [
     },
 ];
 
+/// The state a deleted story comes to rest in.
+///
+/// Deletion has to land the story somewhere CLOSED rather than merely stamp its
+/// superstate CLOSED, because the two are stored independently and a slug whose
+/// superstate contradicts the story's is the SH-130 defect exactly. Completing
+/// the derivation here — rather than overriding half of it — is what lets
+/// `stories.superstate` become a pure function of the slug and the catalog, and
+/// so what lets a composite foreign key express the rule.
+///
+/// `done` is preferred and is what every conforming project gets:
+/// [`REQUIRED_STATES`] makes it CLOSED and unremovable, so the answer needs no
+/// ordering information — which matters, because the fold is handed a
+/// slug-keyed [`BTreeMap`] that iterates alphabetically and cannot tell which
+/// CLOSED state a project configured first.
+///
+/// The two fallbacks are defensive rather than expected. A catalog reaching the
+/// store through `service::state_set` always carries `done`; one that somehow
+/// does not still gets a deterministic CLOSED slug, and a catalog with no CLOSED
+/// state at all leaves the story where it is, so the fold stays total and the
+/// schema — not a panic here — is what refuses the write.
+fn resting_state_for_deleted(states: &BTreeMap<String, StateDef>) -> Option<&StateDef> {
+    let required_closed = REQUIRED_STATES
+        .iter()
+        .find(|required| required.super_state == SuperState::Closed)
+        .map(|required| required.slug);
+
+    required_closed
+        .and_then(|slug| states.get(slug))
+        .filter(|def| def.super_state == SuperState::Closed)
+        .or_else(|| {
+            states
+                .values()
+                .find(|def| def.super_state == SuperState::Closed)
+        })
+}
+
 /// Whether `states` satisfies the [`REQUIRED_STATES`] floor.
 ///
 /// Not part of [`validate_state_defs_for_write`], and that separation is
@@ -948,9 +984,28 @@ pub fn fold_story(
                 at,
                 state: story_state,
             } => {
-                closed_at = Some(at.clone());
                 state = Some(story_state.clone());
                 updated_at = Some(at.clone());
+                // Symmetric with `StoryStateChanged` above, and SH-130 is why.
+                //
+                // A close marker names the state it closed *into*. If that
+                // state is later reclassified OPEN, the story is no longer
+                // closed, and stamping `closed_at` anyway produced an archived
+                // story reporting an OPEN superstate — the same
+                // two-columns-disagreeing defect this story is about, reached
+                // through `story state update` rather than through `delete`.
+                //
+                // Only a state the project *currently* calls OPEN retracts the
+                // closure. An unrecognised slug still closes, exactly as
+                // before: the fold cannot tell what an undefined state meant,
+                // and refusing to close would make a story that folds today
+                // stop folding tomorrow.
+                if !states
+                    .get(story_state)
+                    .is_some_and(|def| def.super_state == SuperState::Open)
+                {
+                    closed_at = Some(at.clone());
+                }
             }
             StoryEvent::StoryDeleted { at, reason } => {
                 deleted = true;
@@ -968,21 +1023,40 @@ pub fn fold_story(
     let created_at = created_at
         .ok_or_else(|| AppError::Integrity(format!("story {id} is missing created_at")))?;
     let updated_at = updated_at.unwrap_or_else(|| created_at.clone());
-    // A deleted story is always CLOSED regardless of its last `state` slug —
-    // deletion is a terminal act independent of the normal state machine, and
-    // forcing this here (rather than trusting the state map) also keeps a
-    // deleted story's superstate correct even if its state slug is later
-    // removed from the project's configured state set.
-    let superstate = if deleted {
-        SuperState::Closed
+    // A deleted story comes to rest in a CLOSED state rather than keeping the
+    // slug it happened to be in — SH-130.
+    //
+    // This arm used to force `superstate = CLOSED` and leave `state` alone,
+    // which made the two disagree: SH-20 sat in `todo` while reading CLOSED, so
+    // `story list --state todo` returned a closed, deleted story. Half a
+    // derivation is what produced the illegal pair; completing it is the fix,
+    // and it applies to *historical* logs too — a `StoryDeleted` written years
+    // ago folds to the resting state now, which is what keeps the rebuild
+    // oracle, `story doctor` and `import` of an old export document all
+    // agreeing with the schema.
+    //
+    // The old comment claimed the override kept a deleted story correct even if
+    // its slug were later removed from the catalog. That was true and is now
+    // delivered properly rather than asserted: `state_usage` counts only
+    // undeleted stories, so `remove_state` never saw them and the slug really
+    // was removable — whereas `done` is unremovable under the SH-125 floor.
+    let (state, superstate) = if deleted {
+        match resting_state_for_deleted(states) {
+            Some(resting) => (resting.slug.clone(), SuperState::Closed),
+            // No CLOSED state exists to come to rest in. Keep the slug and stay
+            // foldable; the schema refuses the write, which is a loud failure
+            // rather than a silently illegal row.
+            None => (state, SuperState::Closed),
+        }
     } else {
-        states
+        let superstate = states
             .get(&state)
             .ok_or_else(|| {
                 AppError::Validation(format!("story {id} references undefined state `{state}`"))
             })?
             .super_state
-            .clone()
+            .clone();
+        (state, superstate)
     };
 
     Ok(StorySnapshot {
@@ -2464,9 +2538,22 @@ mod tests {
     }
 
     #[test]
-    fn fold_story_deleted_forces_closed_superstate() {
-        // Regression test for #18: deleting a story left `state`/`superstate`
-        // unchanged, so a story deleted while `todo` (OPEN) stayed OPEN.
+    fn fold_story_deleted_comes_to_rest_in_a_closed_state() {
+        // Regression test for #18 and then for SH-130.
+        //
+        // #18 fixed half of this: deleting a story used to leave `state` *and*
+        // `superstate` alone, so a story deleted while `todo` stayed OPEN. The
+        // fix forced `superstate` to CLOSED and deliberately preserved the
+        // slug, which this test then pinned as correct — "a truthful record of
+        // what the story was when it was deleted".
+        //
+        // That is the SH-130 defect. The two columns are stored independently,
+        // so preserving one while forcing the other is precisely how a CLOSED
+        // story comes to sit in an OPEN state: SH-20 read `todo (CLOSED,
+        // deleted)` and `story list --state todo` returned it. The premise is
+        // rewritten rather than relaxed — the story now comes to rest in a
+        // state whose superstate genuinely is CLOSED, and the record of where
+        // it was lives in its event log, which is the thing that cannot lie.
         let story = fold_story(
             "SH-1",
             &[
@@ -2491,10 +2578,144 @@ mod tests {
         assert_eq!(story.superstate, SuperState::Closed);
         assert!(story.deleted);
         assert_eq!(story.deleted_reason.as_deref(), Some("created in error"));
-        // The state slug itself is preserved as a truthful record of what the
-        // story was when it was deleted — only superstate is forced CLOSED.
-        assert_eq!(story.state, "todo");
+        // The slug and the superstate agree, which is the whole invariant.
+        assert_eq!(story.state, "done");
         assert_eq!(story.closed_at.as_deref(), Some("2026-03-13T00:01:00Z"));
+    }
+
+    #[test]
+    fn fold_story_deleted_rests_in_the_required_closed_state_not_merely_a_closed_one() {
+        // `done` is chosen by name, not by position, and not by "the first
+        // CLOSED state we find". The fold is handed a slug-keyed BTreeMap that
+        // iterates alphabetically, so a rule of "first CLOSED state" would pick
+        // `abandoned` here — and would pick differently again for a project
+        // whose catalog merely differs in spelling. SH-125 guarantees `done`
+        // exists and is CLOSED in every project, so naming it needs no ordering
+        // information the fold does not have.
+        let states: BTreeMap<String, StateDef> = vec![
+            StateDef {
+                slug: "todo".to_string(),
+                super_state: SuperState::Open,
+                role: None,
+                description: None,
+            },
+            StateDef {
+                slug: "abandoned".to_string(),
+                super_state: SuperState::Closed,
+                role: None,
+                description: None,
+            },
+            StateDef {
+                slug: "done".to_string(),
+                super_state: SuperState::Closed,
+                role: None,
+                description: None,
+            },
+        ]
+        .into_iter()
+        .map(|state| (state.slug.clone(), state))
+        .collect();
+
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Deleted while open".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryDeleted {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    reason: "created in error".to_string(),
+                },
+            ],
+            &states,
+        )
+        .unwrap();
+
+        assert_eq!(story.state, "done");
+    }
+
+    #[test]
+    fn fold_story_deleted_in_a_catalog_without_done_still_rests_somewhere_closed() {
+        // Defensive, not expected: `service::state_set` gives every catalog
+        // reaching the store a `done`. A catalog that somehow lacks one still
+        // has to fold to a legal pair, or the schema refuses the write and the
+        // story becomes unreadable.
+        let states: BTreeMap<String, StateDef> = vec![
+            StateDef {
+                slug: "todo".to_string(),
+                super_state: SuperState::Open,
+                role: None,
+                description: None,
+            },
+            StateDef {
+                slug: "shipped".to_string(),
+                super_state: SuperState::Closed,
+                role: None,
+                description: None,
+            },
+        ]
+        .into_iter()
+        .map(|state| (state.slug.clone(), state))
+        .collect();
+
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Deleted while open".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryDeleted {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    reason: "created in error".to_string(),
+                },
+            ],
+            &states,
+        )
+        .unwrap();
+
+        assert_eq!(story.state, "shipped");
+        assert_eq!(story.superstate, SuperState::Closed);
+    }
+
+    #[test]
+    fn fold_story_deleted_with_no_closed_state_at_all_stays_foldable() {
+        // The last fallback. There is nowhere legal to come to rest, so the
+        // slug is left alone and the fold still succeeds — a story that cannot
+        // be folded is a story that cannot be read, repaired or exported, which
+        // is strictly worse than one the schema will refuse to write.
+        let states: BTreeMap<String, StateDef> = vec![StateDef {
+            slug: "todo".to_string(),
+            super_state: SuperState::Open,
+            role: None,
+            description: None,
+        }]
+        .into_iter()
+        .map(|state| (state.slug.clone(), state))
+        .collect();
+
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Deleted while open".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryDeleted {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    reason: "created in error".to_string(),
+                },
+            ],
+            &states,
+        )
+        .expect("a story with nowhere to rest must still fold");
+
+        assert_eq!(story.state, "todo");
+        assert_eq!(story.superstate, SuperState::Closed);
     }
 
     #[test]

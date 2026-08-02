@@ -471,23 +471,30 @@ fn a_story_whose_events_do_not_fold_is_reported_not_propagated() {
         project,
         broken,
         ExpectedSeq::Any,
-        &[StoryEvent::StoryStateChanged {
-            at: "2026-01-01T00:01:00Z".into(),
-            state: "done".into(),
-        }],
+        // Both events, because that is what a CLOSED transition really is:
+        // `state_transition_events` never emits the move without the close
+        // marker. Since SH-130 the schema says so too — `(superstate =
+        // 'CLOSED') = archived` refuses a story that is in a closed state
+        // without a close timestamp.
+        &[
+            StoryEvent::StoryStateChanged {
+                at: "2026-01-01T00:01:00Z".into(),
+                state: "done".into(),
+            },
+            StoryEvent::StoryClosedAndArchived {
+                at: "2026-01-01T00:01:00Z".into(),
+                state: "done".into(),
+            },
+        ],
     )
     .unwrap();
     // Retire the state out from under the story. Its events still name it, so
     // the fold can no longer resolve a superstate.
-    store
-        .write(|tx| {
-            let kept: Vec<_> = store_support::default_states()
-                .into_iter()
-                .filter(|state| state.slug != "done")
-                .collect();
-            tx.put_states(project, &kept)
-        })
-        .unwrap();
+    // Through the corruption back door, because SH-130's composite foreign key
+    // refuses this through every ordinary path: `put_states` would fail at
+    // COMMIT with a story still naming `done`. A database written by an older
+    // storyhook can hold the shape, so the oracle must still report it.
+    storyhook::store::test_support::forget_state(&store, project, "done").unwrap();
 
     let diff = diff_read_model(&store, project).unwrap();
 
@@ -644,21 +651,28 @@ fn repair_refuses_to_guess_at_a_story_it_cannot_fold() {
         project,
         broken,
         ExpectedSeq::Any,
-        &[StoryEvent::StoryStateChanged {
-            at: "2026-01-01T00:01:00Z".into(),
-            state: "done".into(),
-        }],
+        // Both events, because that is what a CLOSED transition really is:
+        // `state_transition_events` never emits the move without the close
+        // marker. Since SH-130 the schema says so too — `(superstate =
+        // 'CLOSED') = archived` refuses a story that is in a closed state
+        // without a close timestamp.
+        &[
+            StoryEvent::StoryStateChanged {
+                at: "2026-01-01T00:01:00Z".into(),
+                state: "done".into(),
+            },
+            StoryEvent::StoryClosedAndArchived {
+                at: "2026-01-01T00:01:00Z".into(),
+                state: "done".into(),
+            },
+        ],
     )
     .unwrap();
-    store
-        .write(|tx| {
-            let kept: Vec<_> = store_support::default_states()
-                .into_iter()
-                .filter(|state| state.slug != "done")
-                .collect();
-            tx.put_states(project, &kept)
-        })
-        .unwrap();
+    // Through the corruption back door, because SH-130's composite foreign key
+    // refuses this through every ordinary path: `put_states` would fail at
+    // COMMIT with a story still naming `done`. A database written by an older
+    // storyhook can hold the shape, so the oracle must still report it.
+    storyhook::store::test_support::forget_state(&store, project, "done").unwrap();
 
     let report = repair_read_model(&store, project).unwrap();
 
