@@ -212,6 +212,13 @@ Redundant on purpose: a daemon published in one store's directory while holding 
 file is the exact state this design exists to make unrepresentable, and the argv is what
 makes it independent of what the parent's environment happened to contain.
 
+Pinned by `a_child_process_of_a_store_path_run_lands_in_the_same_store` (SH-131), which
+fires an event hook that runs `story` again with no flag and no variable of its own. It
+observes a *child* rather than the assignment, because the promise is "this invocation
+and everything it starts" and a test of the promise survives a redesign that keeps it by
+other means. It also observes the one consumer whose breakage is silent: `daemon status`
+was already covered, and the TUI and `story web` at least run in front of somebody.
+
 **2. Backups are keyed too, for a non-default store only.** `run_if_due` prunes to seven
 snapshots, so a scratch store's daemon sharing `state_home/backups` would *delete the
 real store's backup history* — a second store must have its own. The default store keeps
@@ -241,7 +248,17 @@ class the whole design is against, arriving through the mechanism itself.
 neutralize it.** A developer debugging a second store has one exported; without this,
 their next `make test` runs the whole suite against it and the data-dir guard does not
 notice, because it inspects the variable that lost. `TestEnv` sets it (a sixth
-`ISOLATED_VARS` entry) and the three shell harnesses unset it.
+`ISOLATED_VARS` entry) and the four shell harnesses unset it.
+
+Pinned by `every_harness_that_isolates_the_data_dir_neutralizes_the_store_path` (SH-131),
+which is derived rather than enumerated: it takes the tracked shell scripts that export
+`STORYHOOK_DATA_DIR` and requires the neutralization beside it. The enumeration is what
+failed. Those `unset` lines landed together in this design's own commit and
+`scripts/capture-baseline.sh` was missed — a fourth harness, exporting the same
+variables, whose comment claimed it provided "the same contract `scripts/run-tests.sh`
+provides". It stayed missed until SH-131 measured what a leaked variable costs: one
+9-test file passes 9/9, never creates the isolated store, and puts 9 projects and 7
+stories into the developer's own.
 
 Two consequences worth naming: `scripts/check-no-orphan-servers.sh` matches the daemon's
 argv, and a flag now sits between the binary and the verb — a guard that matches nothing
