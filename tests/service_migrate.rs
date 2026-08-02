@@ -991,13 +991,20 @@ fn an_explicit_path_argument_migrates_a_project_you_are_not_standing_in() {
 
 #[test]
 fn an_unknown_flag_is_a_usage_error_rather_than_a_path() {
+    // The premise is unchanged and was right before SH-62 existed: a mistyped
+    // flag must never be read as the path to migrate. What changed is who
+    // answers. `parse_migrate`'s own `!value.starts_with('-')` guard used to
+    // produce a bare usage line; the flag gate now answers first and names the
+    // token, which is strictly more useful for a typo this close to the real
+    // flag. Same exit code, same class of error.
     let env = storyhook_test_support::TestEnv::shared();
     let project = env.project().legacy().build();
     env.story(project.path())
         .args(["migrate", "--dry-runn"])
         .assert()
         .code(2)
-        .stderr(predicates::str::contains("usage: story migrate"));
+        .stderr(predicates::str::contains("unknown flag `--dry-runn`"))
+        .stderr(predicates::str::contains("--dry-run"));
 }
 
 /// A migrated project's `[git]` comments become link records, so the first

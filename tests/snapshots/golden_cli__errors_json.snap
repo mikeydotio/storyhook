@@ -11,7 +11,7 @@ stderr: <empty>
 $ story list --no-such-flag --json
 exit: 2
 stdout: 
-{"error":"usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]","exit_code":2,"result":"error"}
+{"error":"unknown flag `--no-such-flag` for `story list`.\n\n`story list` takes: --state --assignee --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready\nIf `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
 
 stderr: <empty>
 
@@ -74,14 +74,14 @@ stderr: <empty>
 $ story graph --no-such-mode --json
 exit: 2
 stdout: 
-{"error":"usage: story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]","exit_code":2,"result":"error"}
+{"error":"unknown flag `--no-such-mode` for `story graph`.\n\n`story graph` takes: --critical-path --parallel-groups --blocked-by\nIf `--no-such-mode` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
 
 stderr: <empty>
 
 $ story report --no-such-flag --json
 exit: 2
 stdout: 
-{"error":"usage: story report [--html]","exit_code":2,"result":"error"}
+{"error":"unknown flag `--no-such-flag` for `story report`.\n\n`story report` takes: --html\nIf `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
 
 stderr: <empty>
 
@@ -116,7 +116,7 @@ stderr: <empty>
 $ story doctor --no-such-flag --json
 exit: 2
 stdout: 
-{"error":"usage: story doctor [--fix]","exit_code":2,"result":"error"}
+{"error":"unknown flag `--no-such-flag` for `story doctor`.\n\n`story doctor` takes: --fix\nIf `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
 
 stderr: <empty>
 

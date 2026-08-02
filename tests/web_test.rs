@@ -2667,12 +2667,16 @@ fn web_parse_serve_unknown_flag_errors() {
 
 #[test]
 fn web_start_extra_unknown_flag_errors() {
+    // Since SH-62 the flag gate answers before `parse_web`, so the rejection
+    // names the token rather than printing a bare `usage:` line. Still a
+    // failure, still about the flag — and `--verbose` is now reported as the
+    // undeclared flag it is.
     let dir = scratch_dir();
     story(dir.path())
         .args(["web", "start", "--verbose"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("usage:"));
+        .stderr(predicate::str::contains("unknown flag `--verbose`"));
 }
 
 // --- Port boundary tests ---
