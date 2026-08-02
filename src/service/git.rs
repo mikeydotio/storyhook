@@ -3,7 +3,30 @@
 //! Reads the repository's log through `git` itself, finds story ids anywhere in
 //! a commit *message*, and records each one as a `[git] <short-hash>: <subject>`
 //! comment on the story — moving it into the project's active state the first
-//! time it is mentioned, if the project has one and has not turned that off.
+//! time a commit **claims** it, if the project has one and has not turned that
+//! off.
+//!
+//! # A mention is not a claim (SH-124)
+//!
+//! Every id used to move its story. A trailer meaning "this change relates to
+//! that story" — `Refs CAL-21, CAL-28, CAL-29` — was read as "I am working on
+//! those three now", and because `story next` and `story list --ready` both
+//! exclude the active state, each wrongly-moved story was silently removed from
+//! the set a contributor picks work from. The failure is quiet and it
+//! accumulates: five stories in one sibling project, one of them moved three
+//! times from prose alone.
+//!
+//! [`scan_story_refs`] now answers with an intent per id, and only a
+//! [`Claim`](crate::domain::ReferenceIntent::Claim) may move a story. Linking is
+//! unchanged and still universal — the comment trail is the half that was always
+//! wanted. The grammar lives on `scan_story_refs`; what matters here is that the
+//! run **reports what it declined to move**, because a project whose commits use
+//! no claim word would otherwise see auto-transition simply stop, with nothing
+//! to tell "off" from "broken".
+//!
+//! This was never a new promise. `story help commit-sync` has always said it
+//! "auto-transitions stories based on commit patterns (e.g. `closes SH-1`)";
+//! the keyword half had just never been implemented.
 //!
 //! # The whole message, not the subject line (SH-58)
 //!
@@ -44,9 +67,7 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 
-use crate::domain::{
-    StateDef, StoryEvent, SuperState, extract_story_ids, parse_duration, short_sha,
-};
+use crate::domain::{StateDef, StoryEvent, SuperState, parse_duration, scan_story_refs, short_sha};
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo};
 
@@ -141,17 +162,23 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         let mut comments_added = 0usize;
         let mut stories_touched: BTreeSet<String> = BTreeSet::new();
         let mut transitions: Vec<Transition> = Vec::new();
+        let mut linked_only: BTreeSet<String> = BTreeSet::new();
 
         for commit in &commits {
             // The whole message, subject included — the comment still carries
             // the subject alone, because a multi-paragraph body in `story show`
             // would be unreadable.
-            for story_id in extract_story_ids(&prefix, &commit.message) {
+            for reference in scan_story_refs(&prefix, &commit.message) {
+                let claims = reference.claims();
+                let story_id = reference.id;
                 let moved = self.record_commit(
                     &prefix,
                     &story_id,
                     commit,
-                    auto_transition
+                    // A mention links and nothing more (SH-124). Only a claim
+                    // is eligible to move a story, and only the first one in
+                    // this run.
+                    (auto_transition && claims)
                         .then_some(active.as_ref())
                         .flatten()
                         .filter(|_| !transitions.iter().any(|t| t.story_id == story_id)),
@@ -162,15 +189,24 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
                 };
                 comments_added += 1;
                 stories_touched.insert(story_id.clone());
-                if let Some((from, to)) = moved {
-                    transitions.push(Transition {
+                match moved {
+                    Some((from, to)) => transitions.push(Transition {
                         story_id,
                         from,
                         to,
                         short_hash: short_sha(&commit.sha).to_string(),
-                    });
+                    }),
+                    None => {
+                        linked_only.insert(story_id);
+                    }
                 }
             }
+        }
+
+        // A story that a later commit claimed is not "linked only", however
+        // many earlier commits merely mentioned it.
+        for transition in &transitions {
+            linked_only.remove(&transition.story_id);
         }
 
         let mut message = format!(
@@ -183,6 +219,16 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             message.push_str(&format!(
                 "\n{}: {} \u{2192} {} (referenced in {})",
                 transition.story_id, transition.from, transition.to, transition.short_hash
+            ));
+        }
+        // Naming what was declined is what keeps this fix from having the same
+        // shape as the defect it removes. Without it, a project whose commits
+        // never use a claim word sees auto-transition simply stop, with nothing
+        // to distinguish "off" from "broken".
+        if !linked_only.is_empty() {
+            message.push_str(&format!(
+                "\nlinked without claiming: {} (no claim word, so state unchanged)",
+                linked_only.iter().cloned().collect::<Vec<_>>().join(", ")
             ));
         }
         Ok(message)

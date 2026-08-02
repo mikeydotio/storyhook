@@ -219,14 +219,14 @@ fn a_bare_mention_in_the_body_does_not_close_anything() {
         &format!("refactor: something\n\nThis is groundwork for {id}, which stays open."),
     );
 
-    // `in-progress`, not `todo`: the *post-commit* hook links any mention and
-    // moves the story out of the default open state. What must not have
-    // happened is the close.
+    // `todo`, and since SH-124 that is true of the *transition* as well as the
+    // close: the post-commit hook links any mention, but prose naming a story
+    // claims nothing, so nothing moves it either.
     assert_eq!(
         repo.state_of(&id),
-        "in-progress",
-        "only closes/fixes/resolves close a story; a body full of prose must \
-         link it and leave it open"
+        "todo",
+        "only closes/fixes/resolves close a story, and only a claim moves one; \
+         a body full of prose must link it and leave it exactly as it was"
     );
 }
 
@@ -278,6 +278,36 @@ fn the_post_commit_hook_links_a_story_named_in_the_body() {
         "feat: the work",
         "-m",
         &format!("Part of {id}"),
+    ]);
+
+    let shown = repo.story(repo.path(), &["show", &id]);
+    assert!(
+        shown.contains("[git] "),
+        "the post-commit hook must have linked the commit: {shown}"
+    );
+    assert_eq!(
+        repo.state_of(&id),
+        "todo",
+        "`Part of` names a story without claiming it, so the link is all that \
+         happens (SH-124)"
+    );
+}
+
+/// The claiming half of the same path, so the hook's transition is still
+/// covered end to end and not merely assumed.
+#[test]
+fn the_post_commit_hook_moves_a_story_the_body_claims() {
+    let repo = HookRepo::new();
+    let id = repo.new_story("Claimed by the hook");
+
+    repo.git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "feat: the work",
+        "-m",
+        &format!("Closes {id}"),
     ]);
 
     let shown = repo.story(repo.path(), &["show", &id]);
