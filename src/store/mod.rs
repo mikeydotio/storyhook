@@ -86,8 +86,8 @@ pub use rebuild::{
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
     DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord,
-    ProjectSettings, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow,
-    StorySort, UnknownEventDiagnostic, partition_known,
+    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
+    StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -354,6 +354,39 @@ pub trait WriteOps: ReadOps {
     /// long — every request resolves the project it operates on — but a caller
     /// that caches ids must not.
     fn delete_project(&mut self, project: ProjectId) -> Result<DeletedProject, StoreError>;
+
+    /// Removes one story and every row recorded against it, permanently.
+    ///
+    /// The second — and last — operation permitted to delete events, and the
+    /// reason schema 5 exists. Its migration narrows `events_reject_delete` by
+    /// **adding** a conjunct to the one schema 3 installed rather than
+    /// replacing it, so a project teardown fails the project clause, a purge
+    /// fails the story clause, and every other DELETE against `events` still
+    /// aborts. Neither operation can satisfy the other's escape.
+    ///
+    /// Ordering is load-bearing in the same place it is for
+    /// [`delete_project`](Self::delete_project): the `stories` row is deleted
+    /// *before* the events, which is what makes the trigger abstain.
+    ///
+    /// A story that does not exist is [`StoreError::NotFound`].
+    ///
+    /// # What this deliberately does not do
+    ///
+    /// **It does not roll `next_story_no` back.** A purged number is never
+    /// reissued. Reusing it would point every commit message, branch name,
+    /// review comment and external link that names the old story at a new and
+    /// unrelated one, which is a worse failure than a gap in the sequence.
+    ///
+    /// **It does not touch any other story's history**, and cannot: a surviving
+    /// story whose own events claim an edge into this one still claims it, and
+    /// the rebuild oracle will report the divergence. Retracting those claims
+    /// with real `StoryRelationshipRemoved` events, before this is called, is
+    /// the caller's job — `StoryService::purge` is the only caller and does it.
+    fn purge_story(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+    ) -> Result<PurgedStory, StoreError>;
 
     /// Allocates the next story number for a project.
     ///

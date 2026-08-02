@@ -372,6 +372,17 @@ Soft-delete with a required reason — archived, never truly lost; excluded from
 story delete SH-3 "duplicate of SH-1"
 ```
 
+### `story purge <id> [--force]`
+
+**Irreversible.** Removes a soft-deleted story and every trace of it — events, comments, labels, git links. Refuses a story that has not been soft-deleted first, so `story delete` is always the step before it.
+
+Without a terminal (scripts, CI, agents) it refuses and names `--force`, because the confirmation is the story's id typed back. Any surviving story that still claims a relationship with the purged one has that claim retracted first, and the purged id is never reused.
+
+```bash
+story delete SH-3 "created in error"
+story purge SH-3 --force
+```
+
 ---
 
 ## Updating Stories — Multi-Field: `set`

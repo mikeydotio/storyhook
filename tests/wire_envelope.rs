@@ -28,9 +28,9 @@ use storyhook::domain::{
 };
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
-    BlockedChainView, DeinitPlan, GraphOverview, GraphView, PhaseView, ProjectSnapshotView,
-    Response, SettingKind, SettingSource, SettingView, StaleInfo, StoryView, SummaryView,
-    render_error, render_response,
+    BlockedChainView, ConfirmationPlan, DeinitPlan, GraphOverview, GraphView, PhaseView,
+    ProjectSnapshotView, PurgePlan, Response, SettingKind, SettingSource, SettingView, StaleInfo,
+    StoryView, SummaryView, render_error, render_response,
 };
 
 /// The four ways a `Response` can be rendered. Every case in this file is
@@ -401,7 +401,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         ),
         (
             "confirmation_required",
-            Response::ConfirmationRequired(Box::new(DeinitPlan {
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
                 slug: "storyhook".to_string(),
                 name: "storyhook — the tracker".to_string(),
                 prefix: "SH".to_string(),
@@ -413,11 +413,11 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     "/Volumes/Code/storyhook/AGENTS.md".to_string(),
                     "edited since it was generated".to_string(),
                 )],
-            })),
+            }))),
         ),
         (
             "confirmation_required_empty_project",
-            Response::ConfirmationRequired(Box::new(DeinitPlan {
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
                 slug: "empty".to_string(),
                 name: "empty".to_string(),
                 prefix: "EM".to_string(),
@@ -426,7 +426,30 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 checkouts: Vec::new(),
                 files: Vec::new(),
                 kept: Vec::new(),
-            })),
+            }))),
+        ),
+        (
+            "confirmation_required_purge",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Purge(PurgePlan {
+                id: "SH-20".to_string(),
+                title: "A story created in error".to_string(),
+                deleted_reason: Some("created in error".to_string()),
+                events: 14,
+                retracted: vec![
+                    ("SH-5".to_string(), "blocks".to_string()),
+                    ("SH-9".to_string(), "child-of".to_string()),
+                ],
+            }))),
+        ),
+        (
+            "confirmation_required_purge_unclaimed",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Purge(PurgePlan {
+                id: "SH-20".to_string(),
+                title: "A story created in error".to_string(),
+                deleted_reason: None,
+                events: 1,
+                retracted: Vec::new(),
+            }))),
         ),
     ]
 }
@@ -457,6 +480,45 @@ fn a_second_wire_hop_is_a_fixed_point() {
         let twice = serde_json::to_string(&hop(&hop(&response))).expect("serializing");
         assert_eq!(once, twice, "`{label}` was not stable across two wire hops");
     }
+}
+
+/// A deinit plan's fields stay directly under `plan`, alongside the `confirm`
+/// discriminant rather than nested beneath it.
+///
+/// The dashboard reads `err.body.plan.slug`, `.stories`, `.events`, `.files`
+/// and `.kept` out of the 409 it gets from `DELETE /api/repos/{id}` and draws
+/// its own modal from them (`src/web_dashboard.html`). `ConfirmationPlan` is an
+/// enum now, and the *externally* tagged default would have moved every one of
+/// those a level down — a browser-only breakage, invisible to a Rust round-trip
+/// test, which is exactly why this asserts on the JSON rather than on a value.
+#[test]
+fn a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
+    let response = Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
+        slug: "storyhook".to_string(),
+        name: "storyhook — the tracker".to_string(),
+        prefix: "SH".to_string(),
+        stories: 47,
+        events: 312,
+        checkouts: Vec::new(),
+        files: vec!["/repo/.storyhook.toml".to_string()],
+        kept: Vec::new(),
+    })));
+
+    let rendered = render_response(&response, true, false);
+    let document: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+    let plan = &document["plan"];
+
+    assert_eq!(document["result"], "confirmation-required");
+    assert_eq!(
+        plan["confirm"], "deinit",
+        "the kind is stated, not inferred"
+    );
+    assert_eq!(plan["slug"], "storyhook");
+    assert_eq!(plan["name"], "storyhook — the tracker");
+    assert_eq!(plan["stories"], 47);
+    assert_eq!(plan["events"], 312);
+    assert_eq!(plan["files"][0], "/repo/.storyhook.toml");
+    assert!(plan["kept"].is_array());
 }
 
 /// `Response`'s wire form is externally tagged, so the variant travels as the
@@ -809,6 +871,10 @@ fn invocation_corpus() -> Vec<Invocation> {
             id: "SH-1".to_string(),
             reason: "superseded".to_string(),
         },
+        Invocation::Purge {
+            id: "SH-1".to_string(),
+            force: true,
+        },
         Invocation::BulkUpdate {
             updates: vec![
                 ("SH-1".to_string(), "done".to_string()),
@@ -1062,6 +1128,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::SetLabels { .. } => "SetLabels",
         Invocation::Reopen { .. } => "Reopen",
         Invocation::Delete { .. } => "Delete",
+        Invocation::Purge { .. } => "Purge",
         Invocation::BulkUpdate { .. } => "BulkUpdate",
         Invocation::Import { .. } => "Import",
         Invocation::Decompose { .. } => "Decompose",
@@ -1105,7 +1172,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        52,
+        53,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

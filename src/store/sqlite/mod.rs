@@ -41,7 +41,7 @@ use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, PathKind, ProjectId, S
 use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version};
 use crate::store::types::{
     DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord,
-    ProjectSettings, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
+    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
 };
 use crate::store::{ReadOps, Store, WriteOps};
 
@@ -710,6 +710,14 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn delete_project(&mut self, project: ProjectId) -> Result<DeletedProject, StoreError> {
         write::delete_project(&self.conn, project)
+    }
+
+    fn purge_story(
+        &mut self,
+        project: ProjectId,
+        story: StoryNo,
+    ) -> Result<PurgedStory, StoreError> {
+        write::purge_story(&self.conn, project, story)
     }
 
     fn reserve_story_no(&mut self, project: ProjectId, highest: StoryNo) -> Result<(), StoreError> {
