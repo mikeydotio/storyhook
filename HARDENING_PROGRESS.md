@@ -102,7 +102,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-129** — project settings CLI · *gates SH-124 and SH-68; nothing can go first* · **design settled, see its council comment**
 - [x] **SH-124** — commit-sync transitions every mentioned story · *protects this loop's own queue*
 - [x] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first*
-- [ ] **SH-125** — enforce the minimum state set
+- [x] **SH-125** — enforce the minimum state set
 - [ ] **SH-130** — illegal state combinations + a supported purge · *hard-deletes SH-20 as its proving case*
 - [ ] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
 - [ ] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
@@ -484,3 +484,115 @@ untrue:
   It was orphaned daemons left by my own earlier interrupted runs; the file
   passes in 1.85s clean. `scripts/check-no-orphan-servers.sh` exists for exactly
   this and is cheaper than the wrong conclusion.
+
+### SH-125 — done
+
+**Outcome:** every project holds `todo`, `in-progress` and `blocked` as OPEN
+states and `done` as a CLOSED one. New projects start conforming, foreign data
+is repaired on the way in, and a user edit that would drop below the floor is
+refused with the command that fixes it.
+
+**The council answered a question with five parts, and the vote was unanimous.**
+Three seats, one round, all three for the same proposal — with **both
+non-authors voting against their own**, in each case because the chair's
+measured evidence refuted a specific claim they had made rather than because
+they were argued down. Audit trail in `.council/sh125-minimum-state-set/`; the
+verdict is a comment on SH-125.
+
+- Seat 1 had put half its guard inside `Store::put_states`. That method is the
+  seam the store's own tests write damage through — `tests/service_project.rs`
+  writes a catalog with *no CLOSED state at all* — so the guard would not merely
+  break them, it would delete what they exist to prove.
+- Seat 3 argued enforcement was actively unsafe, because backfilling `blocked`
+  would make `git.rs:404 active_state`'s two-OPEN heuristic elect `blocked` as
+  commit-sync's target for `agentics`. The census refuted the mechanism:
+  `agentics` has **one** OPEN state, so `active_state` already returns `None`,
+  and after a repair it would have three and still return `None`. The election
+  needs exactly two *after* the repair, which adding todo + in-progress +
+  blocked cannot produce. **0 projects** in the live store are in the affected
+  shape.
+- On its way to voting against itself, Seat 3 supplied the finding that killed
+  the *other* half of Seat 1's proposal: a floor inside
+  `validate_state_defs_for_write` fires at `migrate.rs:292` and
+  `storage.rs:387`, so it would take down `tests/migrate_round_trip.rs` — the
+  gate the W4 revert policy is conditional on.
+
+**So the floor lives between the two layers that could not hold it.**
+`domain::REQUIRED_STATES` states the rule; `service::state_set` is the one
+module any `src/` code may write a state set through. `write_states` **refuses**
+(a user editing their own catalog can simply not make the edit);
+`write_states_repairing` **repairs** (an export document or a legacy tree
+predates the floor, and refusing it would make old data unimportable rather than
+conforming). All seven `src/` call sites route through it, and
+`tests/state_set_funnel.rs` fails if an eighth does not — verified by
+reintroducing the bypass, which the test caught by file and line.
+
+**Measured before designing, which is what made the council's evidence real.**
+A read-only census of the live store: 518 projects, 513 on `todo|in-progress|
+done` (505 of them SH-132's fixtures), 3 on `todo|done`, 2 already conforming.
+Of the five real projects, two conform, two lack `blocked`, and `agentics` lacks
+two. Enforcement was never hypothetical.
+
+**Repair may add; it may never reinterpret.** Not a case the verdict covered,
+and the conservative reading was taken: a required slug present under the *wrong
+superstate* is refused rather than corrected, because both available corrections
+destroy meaning — a second row cannot carry the slug, and flipping the
+superstate silently reclassifies every story sitting in it, which is the
+migration `update_state` refuses to perform without being told where the
+occupants go. A missing OPEN state joins the **end of the OPEN run**, never
+position 0: that slot decides where `story new` puts a story, and a repair that
+took it would change behaviour while claiming only to add a state.
+
+**No role is awarded by a repair.** The invariant binds slug and superstate
+only. Granting `active` to a backfilled `in-progress` would change where
+commit-sync moves a claimed story — a behaviour change to satisfy a rule that
+says nothing about roles.
+
+**Two rules the floor now subsumes**, recorded rather than deleted: a conforming
+project cannot be walked down to zero OPEN states, nor stripped of its last
+CLOSED one, because `todo`/`in-progress`/`blocked` and `done` are all
+unremovable and unreclassifiable. `domain`'s `requires_open_and_closed_states`
+still covers the older rule directly; the service and CLI tests that used to
+reach it now assert the refusal that arrives first. The floor is asked *before*
+`validate_state_defs_for_write` deliberately — it is the more specific rule, and
+only its message names the state and the way out.
+
+**One live behaviour consequence, and it is worth knowing.** `active_state`'s
+inherited two-OPEN heuristic is now **unreachable for a conforming project**,
+which always has at least three OPEN states. A project with no `active` role
+gets no auto-transition — where before, one with exactly two OPEN states got a
+guess. Zero live projects are affected (verified above), and the heuristic
+survives for unrepaired data reaching the code through a read. Its CLI test
+could no longer construct its own input, so its coverage moved to four unit
+tests on `active_state` itself, where the catalog can still be built directly —
+including the case that documents the new reality.
+
+**`story doctor` starts failing on a project below the floor**, until
+`--fix` is run. That is the intended way an existing project learns, and every
+refusal names it.
+
+**One council constraint turned out not to bind.** `golden-export.json` is
+compared literally and was expected to move; it did not. The baseline tree is
+this repository's own tracker, whose catalog already carried `blocked`
+(`todo|in-progress|verifying|blocked|done`). `tests/migrate_round_trip.rs` never
+went red.
+
+**Red→green verified in both directions rather than assumed.** Disarming the
+refusal fails exactly six tests — the doctor report, the catalog-edit refusal,
+and two each at the service and CLI levels. Disarming the repair fails exactly
+six others — five in `tests/required_states.rs` plus the legacy-migration
+catalog assertion. Neither disarm touched the other's tests, which is what says
+the two halves are separately load-bearing.
+
+**26 new tests** (11 domain, 4 on `active_state`, 9 in `tests/required_states.rs`,
+2 in `tests/state_set_funnel.rs`), plus the adaptation of every suite that
+assumed a three-state default. Three golden snapshots moved, all additively —
+`blocked` in board order, no other byte.
+
+**Council:** yes — unanimous, round 1. `.council/sh125-minimum-state-set/DECISION.md`.
+
+**Handed to SH-126:** `blocked` now names both a place a story sits and a
+property derived from `awaiting` and unmet `blocked-by` edges, and
+`domain.rs:988 is_ready` still ignores the state slug — so a story parked in the
+`blocked` state reports READY. No seat disputed it; SH-126 has to decide what
+its column's membership is.
