@@ -12,18 +12,27 @@
 //! storyhook chose to put its commit, and the only way to find out is to kill a
 //! real process holding a real file and open it again.
 //!
-//! So every case here spawns `story`, arms one point through `STORYHOOK_FAULT`,
-//! and inspects what the corpse left behind. `STORYHOOK_FAULT` delivers
-//! `SIGKILL` to the process itself — uncatchable, unblockable, no handler, no
-//! flush — which is `kill -9` timed to the instruction rather than to a
-//! stopwatch.
+//! # Which process
+//!
+//! **The daemon**, because the daemon is the process that owns the write
+//! transaction. This file used to kill the CLI, which was the same process while
+//! `--local` existed; it is not any more. A client killed today is a process that
+//! has already handed its work over a socket and holds nothing, so killing it
+//! would prove something about the socket and nothing about the store.
+//!
+//! [`crash_the_daemon`] is where that is arranged — one fixture rather than ten
+//! copies, and the place the two hazards of this shape are guarded against (a
+//! daemon already running when the armed one starts, and a daemon running again
+//! when the corpse is inspected). `STORYHOOK_FAULT` delivers `SIGKILL` to the
+//! process itself — uncatchable, unblockable, no handler, no flush — which is
+//! `kill -9` timed to the instruction rather than to a stopwatch.
 //!
 //! # The four questions asked of every crash
 //!
-//! 1. **Did the process actually die where it was told to?** A case whose child
+//! 1. **Did the process actually die where it was told to?** A case whose daemon
 //!    exits normally is a case that proved nothing, and the most likely reason
-//!    is a binary built without the `fault-injection` feature. Asserted, never
-//!    assumed.
+//!    is a binary built without the `fault-injection` feature. Asserted by the
+//!    fixture, never assumed.
 //! 2. **Is the database sound?** `PRAGMA integrity_check` on reopen.
 //! 3. **Is the operation all-or-nothing?** Present and complete, or absent
 //!    entirely — never a story with no labels, an edge with one end, or a
@@ -36,69 +45,24 @@
 
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::ExitStatus;
 
 use rusqlite::Connection;
 use storyhook::store::{
     FaultPoint, ProjectId, ReadOps, SqliteStore, Store, StoryQuery, diff_read_model,
 };
-use storyhook_test_support::{Project, TestEnv, project_id_at, scratch_dir};
-
-/// The command the migration cases run: the cheapest one that opens the store,
-/// and therefore migrates it.
-///
-/// It was `help`, on the premise — written into this file — that *every*
-/// storyhook command migrates on open. That premise stopped being true when a
-/// command needing no store stopped opening one (SH-149): `story help` is
-/// answered from a string constant before any database is touched, so a fault
-/// armed inside the migration would never fire and these tests would pass while
-/// proving nothing.
-///
-/// `project list` rather than `list`, and the difference is load-bearing:
-/// the racer case below requires every survivor to *succeed*, and `story list`
-/// in a directory with no project is an ordinary failure. `project list` needs
-/// the store, resolves no project, and answers anywhere.
-const MIGRATING_COMMAND: [&str; 2] = ["project", "list"];
+use storyhook_test_support::{
+    Crash, Project, TestEnv, assert_no_daemon, crash_a_starting_daemon, crash_the_daemon,
+    project_id_at, scratch_dir, spawn_daemon,
+};
 
 // ---------------------------------------------------------------------------
-// Running a command that is going to die
+// Running a command whose daemon is going to die
 // ---------------------------------------------------------------------------
 
-/// Runs `story <args>` in `project` with `point` armed, and returns how it died.
-///
-/// `STORYHOOK_INVOKER=local` is not optional. The default invoker hands the work
-/// to a daemon, and a daemon that crashed would be a different experiment with
-/// a different subject: this file is about the process that owns the write
-/// transaction, so the process that owns the write transaction has to be the one
-/// holding the knife. (The daemon-side crash has its own case below, which sets
-/// its experiment up explicitly.)
-///
-/// The fixtures are built with [`ProjectBuilder::local`] for the same reason
-/// one step further out: the *questions* asked after the crash are about the
-/// file, and a daemon holding the store answers them from its own page cache.
-///
-/// [`ProjectBuilder::local`]: storyhook_test_support::ProjectBuilder::local
-fn crash(project: &Project<'_>, point: FaultPoint, args: &[&str]) -> ExitStatus {
-    let mut cmd = project.env().raw_story(project.path());
-    cmd.env("STORYHOOK_INVOKER", "local")
-        .env("STORYHOOK_FAULT", point.as_str())
-        .args(args);
-    let output = cmd.output().expect("running the command that is to crash");
-
-    assert_eq!(
-        output.status.signal(),
-        Some(libc::SIGKILL),
-        "`story {}` was supposed to be killed at {}; it finished with {:?} instead. \
-         The usual cause is a binary built without the `fault-injection` feature — \
-         which is every binary `cargo build` produces, and none that `cargo test` does.\n\
-         stdout: {}\nstderr: {}",
-        args.join(" "),
-        point.as_str(),
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    output.status
+/// Runs `story <args>` in `project` against a daemon armed at `point`, and hands
+/// back the corpse and what the client was told.
+fn crash(project: &Project<'_>, point: FaultPoint, args: &[&str]) -> Crash {
+    crash_the_daemon(project.env(), project.path(), point, args)
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +86,13 @@ fn integrity_of(path: &Path) -> String {
 /// Factored out because the interesting part of each case is the one thing it
 /// asserts about *its* operation; these four are the floor beneath all of them,
 /// and a case that quietly stopped checking them would still look like a test.
+///
+/// The daemon is stood down first. Several cases run a `story` command between
+/// the crash and this call — to prove the store still works — and each of those
+/// starts a daemon, which would then be holding the database these four
+/// questions are about.
 fn assert_store_is_sound(env: &TestEnv, project: ProjectId) {
+    env.stop_daemon();
     assert_eq!(
         integrity_of(env.store_path()),
         "ok",
@@ -183,7 +153,7 @@ fn relations_of(project: &Project<'_>, id: &str) -> String {
 #[test]
 fn sigkill_before_commit_creates_nothing_and_burns_no_story_number() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("CR").build();
+    let project = env.project().prefix("CR").build();
     let first = project.new_story("survives");
 
     crash(&project, FaultPoint::BeforeCommit, &["new", "vanishes"]);
@@ -211,7 +181,7 @@ fn sigkill_before_commit_creates_nothing_and_burns_no_story_number() {
 #[test]
 fn sigkill_before_commit_leaves_a_compare_and_swap_unapplied() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("CR").build();
+    let project = env.project().prefix("CR").build();
     let id = project.new_story("to be moved");
     let before = state_of(&project, &id);
 
@@ -246,7 +216,7 @@ fn sigkill_before_commit_leaves_a_compare_and_swap_unapplied() {
 #[test]
 fn sigkill_before_commit_leaves_neither_end_of_a_relation() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("CR").build();
+    let project = env.project().prefix("CR").build();
     let a = project.new_story("blocker");
     let b = project.new_story("blocked");
 
@@ -274,36 +244,42 @@ fn sigkill_before_commit_leaves_neither_end_of_a_relation() {
 /// A crash between `COMMIT` returning and the caller being told is the one
 /// window where "the write failed" and "the write happened" are both true from
 /// somebody's point of view. What must never happen is a *false* report in
-/// either direction: the process must not exit claiming success it cannot
-/// guarantee, and it must not exit claiming failure a subsequent read
-/// contradicts without any way for the caller to find out.
+/// either direction: nothing may exit claiming success it cannot guarantee, and
+/// nothing may exit claiming failure a subsequent read contradicts without any
+/// way for the caller to find out.
 ///
-/// storyhook's answer is that there is no report at all — the process dies, and
-/// a dead process has said nothing. That is the honest outcome and it is what
-/// this pins: **the exit status carries no success claim, and the write is
-/// there.** The client-side contract that follows is written down in
-/// `docs/rearch/hardening.md`: a caller that sees `story` die by signal knows
-/// nothing about whether the write landed and must *read* before it retries.
-/// Retrying blind is what turns this window into a duplicate.
+/// This case owns the store's half of that: **the write is there, and the number
+/// it took is not reissued.** The client's half — that it says it cannot know
+/// rather than guessing — is the case further down, and the two are kept apart
+/// because they can fail independently.
+///
+/// The dead daemon says nothing at all, which is the honest thing for a dead
+/// process to say and is pinned here as the absence of an exit code.
 #[test]
 fn sigkill_after_commit_before_ack_does_not_report_false_success() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("CR").build();
+    let project = env.project().prefix("CR").build();
 
-    let status = crash(
+    let crashed = crash(
         &project,
         FaultPoint::AfterCommitBeforeAck,
         &["new", "durable"],
     );
 
-    // No success claim: killed by a signal, so there is no exit code at all,
-    // let alone a zero one.
+    // No success claim from either process: the daemon was killed by a signal,
+    // so it has no exit code at all, let alone a zero one — and the client did
+    // not invent one on its behalf.
     assert_eq!(
-        status.code(),
+        crashed.daemon().code(),
         None,
         "a process killed by a signal must not also be reporting an exit code"
     );
-    assert!(!status.success());
+    assert!(!crashed.daemon().success());
+    assert!(
+        !crashed.client().status.success(),
+        "the client must not report success for an answer it never received: {}",
+        String::from_utf8_lossy(&crashed.client().stdout)
+    );
 
     // And the write is durable, which is the half that makes a blind retry a
     // duplicate rather than a repair.
@@ -315,12 +291,12 @@ fn sigkill_after_commit_before_ack_does_not_report_false_success() {
         "a write killed *after* COMMIT is durable — that is what COMMIT means"
     );
     drop(store);
-    assert_store_is_sound(&env, pid);
 
     // The exit status and a subsequent read must agree in the sense that
     // matters: the next allocation does not reuse the number the committed
     // write took.
     assert_eq!(project.new_story("the next one"), "CR-2");
+    assert_store_is_sound(&env, pid);
 }
 
 /// The same window, for the two other shapes of write — so that "durable after
@@ -328,7 +304,7 @@ fn sigkill_after_commit_before_ack_does_not_report_false_success() {
 #[test]
 fn sigkill_after_commit_before_ack_keeps_a_move_and_a_relation() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("CR").build();
+    let project = env.project().prefix("CR").build();
     let a = project.new_story("blocker");
     let b = project.new_story("blocked");
     let before = state_of(&project, &a);
@@ -367,12 +343,15 @@ fn sigkill_after_commit_before_ack_keeps_a_move_and_a_relation() {
 /// main database file — so reading it back is a WAL replay, performed by a
 /// process that has never seen this database before.
 ///
-/// Asserted in that order deliberately: the `-wal` file is checked *before*
-/// anything opens the store, because opening it is what checkpoints it away.
+/// Asserted in that order deliberately, and the order is now load-bearing twice
+/// over: the `-wal` file is checked *before* anything opens the store, because
+/// opening it is what checkpoints it away — and every `story` command starts a
+/// daemon, which opens it. [`crash_the_daemon`] guarantees none is running when
+/// this line is reached.
 #[test]
 fn a_commit_that_survives_a_crash_is_replayed_from_the_write_ahead_log() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("CR").build();
+    let project = env.project().prefix("CR").build();
 
     crash(
         &project,
@@ -389,67 +368,41 @@ fn a_commit_that_survives_a_crash_is_replayed_from_the_write_ahead_log() {
         wal.display()
     );
 
-    // A brand-new process, which has to recover the log to see the row at all.
+    // A brand-new daemon, which has to recover the log to see the row at all.
     let listed = project.json(&["list"]).to_string();
     assert!(
         listed.contains("in the wal"),
         "the committed story must be recovered from the log: {listed}"
     );
+    env.stop_daemon();
     assert_eq!(integrity_of(env.store_path()), "ok");
 }
 
-/// The same window, one process further away: the **daemon** dies between
-/// `COMMIT` and the reply, and the client is left holding a socket that closed
-/// mid-answer.
+/// The client's half of the same window: it is left holding a socket that closed
+/// mid-answer, and has to say so.
 ///
-/// This is the case the client-side contract exists for, and it is the only one
-/// where storyhook has to *say* something rather than merely die. A dropped
-/// connection after the request was sent is indistinguishable from a dropped
-/// connection before the write — from the client's side — so the honest answer
-/// is the one `HttpInvoker` gives: this may or may not have run, it will not be
-/// repeated, go and look. Repeating it is what would turn a survived commit into
-/// two stories.
+/// This is the only case where storyhook has to *say* something rather than
+/// merely die. A dropped connection after the request was sent is
+/// indistinguishable from a dropped connection before the write — from the
+/// client's side — so the honest answer is the one `HttpInvoker` gives: this may
+/// or may not have run, it will not be repeated, go and look. Repeating it is
+/// what would turn a survived commit into two stories.
 #[test]
 fn a_daemon_killed_after_commit_tells_the_client_it_cannot_know() {
     let env = TestEnv::isolated();
-    let cwd = scratch_dir();
+    let project = env.project().prefix("DM").build();
 
-    // Initialized `--local`, so the fixture does not depend on the transport
-    // that is about to be broken.
-    let mut init = env.raw_story(cwd.path());
-    init.env("STORYHOOK_INVOKER", "local")
-        .args(["project", "init", "--prefix", "DM", "--no-agents-md"])
-        .stdout(std::process::Stdio::null());
-    assert!(
-        init.status().expect("initializing").success(),
-        "the fixture project must exist before the daemon starts"
+    let crashed = crash(
+        &project,
+        FaultPoint::AfterCommitBeforeAck,
+        &["new", "written once"],
     );
 
-    // A daemon of our own rather than an auto-spawned one: arming a fault means
-    // choosing the child's environment, which only the process that spawns it
-    // can do.
-    let port = storyhook_test_support::reserve_port();
-    let mut serve = env.raw_story(cwd.path());
-    serve
-        .env("STORYHOOK_FAULT", FaultPoint::AfterCommitBeforeAck.as_str())
-        .args(["daemon", "--serve", "--port", &port.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let daemon = storyhook_test_support::ChildGuard::new(serve.spawn().expect("spawning a daemon"));
-    storyhook_test_support::wait_for_server(port);
-
-    let out = env
-        .story(cwd.path())
-        .env("STORYHOOK_INVOKER", "daemon")
-        .args(["new", "written once"])
-        .output()
-        .expect("running the command whose daemon is about to die");
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stderr = crashed.client_stderr();
     assert!(
-        !out.status.success(),
+        !crashed.client().status.success(),
         "the client must not report success for an answer it never received: {}",
-        String::from_utf8_lossy(&out.stdout)
+        String::from_utf8_lossy(&crashed.client().stdout)
     );
     assert!(
         stderr.contains("may or may not have run"),
@@ -461,12 +414,10 @@ fn a_daemon_killed_after_commit_tells_the_client_it_cannot_know() {
          becomes a duplicate story: {stderr}"
     );
 
-    drop(daemon);
-
     // And the write did land, which is what makes the refusal to retry correct
     // rather than merely cautious.
     let store = env.open_store();
-    let pid = project_id_at(&store, cwd.path()).expect("the project resolves");
+    let pid = project_id_at(&store, project.path()).expect("the project resolves");
     assert_eq!(
         story_ids(&store, pid),
         vec!["DM-1".to_string()],
@@ -487,7 +438,7 @@ fn a_daemon_killed_after_commit_tells_the_client_it_cannot_know() {
 #[test]
 fn sigkill_mid_read_model_update_leaves_no_half_written_story() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("CR").build();
+    let project = env.project().prefix("CR").build();
 
     crash(
         &project,
@@ -522,7 +473,7 @@ fn sigkill_mid_read_model_update_leaves_no_half_written_story() {
 #[test]
 fn sigkill_mid_read_model_update_leaves_no_one_sided_edge() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("CR").build();
+    let project = env.project().prefix("CR").build();
     let a = project.new_story("blocker");
     let b = project.new_story("blocked");
 
@@ -575,30 +526,20 @@ fn user_version(path: &Path) -> u32 {
         .expect("reading user_version")
 }
 
-/// Every storyhook command that opens the store migrates it, so an upgrade
-/// happens under whatever the user happened to type — including, on a busy
-/// machine, under a git hook. Killed mid-migration, the recorded version has to
+/// A daemon carries the store forward the moment it opens it, which is before it
+/// claims a pidfile or binds a port. Killed there, the recorded version has to
 /// be *true*: the next process must be able to tell what is left to do.
 ///
-/// The qualifier is new and it is the point of [`MIGRATING_COMMAND`]: since
-/// SH-149 the commands that need no store do not open one, so they no longer
-/// carry a schema forward either.
+/// No client is involved and none is needed — which is the shape the two
+/// migration points take now, and simpler than what they took when a CLI command
+/// migrated on its own behalf.
 #[test]
 fn sigkill_mid_migration_leaves_a_version_that_is_true_and_a_backup_that_is_not() {
     let env = env_with_a_v1_store();
     let cwd = scratch_dir();
     assert_eq!(user_version(env.store_path()), 1, "the fixture is at v1");
 
-    let mut cmd = env.raw_story(cwd.path());
-    cmd.env("STORYHOOK_INVOKER", "local")
-        .env("STORYHOOK_FAULT", FaultPoint::MidMigration.as_str())
-        .args(MIGRATING_COMMAND);
-    let status = cmd.status().expect("running the doomed migration");
-    assert_eq!(
-        status.signal(),
-        Some(libc::SIGKILL),
-        "the migration must have been killed, not completed"
-    );
+    crash_a_starting_daemon(&env, cwd.path(), FaultPoint::MidMigration);
 
     assert_eq!(
         user_version(env.store_path()),
@@ -639,12 +580,7 @@ fn sigkill_during_backup_verification_migrates_nothing() {
     let env = env_with_a_v1_store();
     let cwd = scratch_dir();
 
-    let mut cmd = env.raw_story(cwd.path());
-    cmd.env("STORYHOOK_INVOKER", "local")
-        .env("STORYHOOK_FAULT", FaultPoint::BackupVerify.as_str())
-        .args(MIGRATING_COMMAND);
-    let status = cmd.status().expect("running the doomed migration");
-    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    crash_a_starting_daemon(&env, cwd.path(), FaultPoint::BackupVerify);
 
     assert_eq!(
         user_version(env.store_path()),
@@ -665,11 +601,19 @@ fn sigkill_during_backup_verification_migrates_nothing() {
 
 /// The concurrency case, with a crash in the middle of it.
 ///
-/// A machine looks like this the first time a new storyhook runs on it: a shell,
-/// a git hook and a daemon all reaching for one un-migrated store at once. This
-/// adds the participant threads cannot model — one that **dies holding its
-/// turn** — and then asks whether the seven that arrive afterwards finish the
-/// job exactly once between them.
+/// A machine looks like this the first time a new storyhook runs on it: a
+/// dashboard, a launchd agent and a hand-started daemon all reaching for one
+/// un-migrated store at once. This adds the participant threads cannot model —
+/// one that **dies holding its turn** — and then asks whether the eight that
+/// arrive afterwards finish the job exactly once between them.
+///
+/// **Eight daemons rather than eight clients, and that is the whole reason this
+/// test still says anything.** Eight *clients* would be funnelled by the spawn
+/// lock into starting one daemon between them, so exactly one process would open
+/// the store and the cross-process claim would evaporate while the test stayed
+/// green. Eight daemons genuinely race, because `open_store` — and therefore the
+/// migration — runs before `lifecycle::run` claims the pidfile. Seven then lose
+/// that claim and exit, which is asserted rather than tolerated.
 ///
 /// The two phases are deliberately ordered rather than raced. An armed process
 /// only fires `mid_migration` if it finds a migration still pending, so throwing
@@ -690,43 +634,60 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
 
     // Phase one: a process dies inside the migration loop, alone, so that it
     // certainly finds work pending.
-    let mut doomed = env.raw_story(cwd.path());
-    doomed
-        .env("STORYHOOK_INVOKER", "local")
-        .env("STORYHOOK_FAULT", FaultPoint::MidMigration.as_str())
-        .args(MIGRATING_COMMAND)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    assert_eq!(
-        doomed.status().expect("running the doomed racer").signal(),
-        Some(libc::SIGKILL),
-        "the crash this test is about has to actually happen"
-    );
+    crash_a_starting_daemon(&env, cwd.path(), FaultPoint::MidMigration);
     assert_eq!(
         user_version(env.store_path()),
         1,
         "and it must have died before applying anything"
     );
 
-    // Phase two: eight processes arrive at the store the corpse left.
-    let mut children: Vec<std::process::Child> = Vec::new();
-    for _ in 0..8 {
-        let mut cmd = env.raw_story(cwd.path());
-        cmd.env("STORYHOOK_INVOKER", "local")
-            .args(MIGRATING_COMMAND)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
-        children.push(cmd.spawn().expect("spawning a racer"));
-    }
-    for child in children {
-        let out = child.wait_with_output().expect("waiting for a racer");
+    // Phase two: eight daemons arrive at the store the corpse left.
+    let mut racers: Vec<_> = (0..8)
+        .map(|_| spawn_daemon(&env, cwd.path(), None))
+        .collect();
+
+    // Whichever wins the pidfile serves forever, so every round asks the
+    // incumbent to stand down. Repeatedly, and not once at the end: a racer
+    // still inside `open_store` when the first winner is stopped goes on to
+    // claim the vacated pidfile and serve in its turn.
+    //
+    // Which is also why "exactly one served" is not the assertion. How many
+    // racers get as far as serving is a fact about scheduling; what this test is
+    // about is that however many did, the migration happened once. That at
+    // *least* one served is asserted, because a run where none did never reached
+    // the race at all.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut served = 0;
+    let mut done = vec![false; racers.len()];
+    while done.iter().any(|finished| !finished) {
+        for (racer, finished) in racers.iter_mut().zip(done.iter_mut()) {
+            if *finished {
+                continue;
+            }
+            let Some(status) = racer.try_wait() else {
+                continue;
+            };
+            *finished = true;
+            assert_eq!(
+                status.signal(),
+                None,
+                "a racer that merely lost the pidfile must exit, not die: {status:?}"
+            );
+            if status.code() == Some(0) {
+                served += 1;
+            }
+        }
         assert!(
-            out.status.success(),
-            "every racer after the crash must succeed: {:?}\n{}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr)
+            std::time::Instant::now() < deadline,
+            "a racer never exited; {} of 8 still running",
+            done.iter().filter(|finished| !**finished).count()
         );
+        env.stop_daemon();
     }
+    assert!(
+        served >= 1,
+        "no racer ever got as far as serving, so none of them finished opening the store"
+    );
 
     assert_eq!(integrity_of(env.store_path()), "ok");
     assert_eq!(
@@ -761,7 +722,7 @@ fn concurrent_daemon_starts_migrate_exactly_once_even_when_one_is_killed() {
 /// there is no single command that reaches all five, and pretending otherwise
 /// is how a sweep ends up asserting nothing about half of them.
 enum Driver {
-    /// A store at v1, crashed while [`MIGRATING_COMMAND`] carries it forward.
+    /// A store at v1, crashed while a starting daemon carries it forward.
     Upgrading,
     /// A migrated store with a project, crashed during a write.
     Writing,
@@ -797,23 +758,12 @@ fn every_named_point_survives_a_kill_with_the_database_intact() {
             Driver::Upgrading => {
                 let env = env_with_a_v1_store();
                 let cwd = scratch_dir();
-                let mut cmd = env.raw_story(cwd.path());
-                cmd.env("STORYHOOK_INVOKER", "local")
-                    .env("STORYHOOK_FAULT", context)
-                    .args(MIGRATING_COMMAND)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
-                let status = cmd.status().expect("running the doomed command");
-                assert_eq!(
-                    status.signal(),
-                    Some(libc::SIGKILL),
-                    "{context} must be reachable while a store is being migrated"
-                );
+                crash_a_starting_daemon(&env, cwd.path(), point);
                 assert_survives(&env, context);
             }
             Driver::Writing => {
                 let env = TestEnv::isolated();
-                let project = env.project().local().prefix("SW").build();
+                let project = env.project().prefix("SW").build();
                 crash(
                     &project,
                     point,
@@ -829,6 +779,7 @@ fn every_named_point_survives_a_kill_with_the_database_intact() {
 /// alone does not say the second — a file can be structurally sound and still
 /// refuse to migrate or read.
 fn assert_survives(env: &TestEnv, context: &str) {
+    assert_no_daemon(env, "before the bytes are inspected");
     assert_eq!(
         integrity_of(env.store_path()),
         "ok",
