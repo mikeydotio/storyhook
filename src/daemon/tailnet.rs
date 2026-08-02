@@ -218,26 +218,6 @@ fn tailscale_status_json(timeout: Duration) -> Option<String> {
     }
 }
 
-/// The best host to show or copy for reaching this machine, used by `story
-/// daemon status`/`story web address` output: this machine's MagicDNS FQDN when
-/// [`tailnet_identity`] reports one, else its bare tailnet IPv4, else loopback
-/// if no tailnet identity is available at all.
-///
-/// **This is SH-110's defect and it is deleted in the next commit.** It answers
-/// from a probe of *this machine* rather than from what the daemon *bound*, so
-/// it advertises a tailnet URL for a daemon serving loopback only, and loopback
-/// for a daemon serving the tailnet fine. Kept here, unchanged in behaviour, so
-/// that the type work lands as a refactor with no behaviour change of its own.
-pub fn reachable_host() -> String {
-    tailnet_identity()
-        .map(|identity| {
-            identity
-                .magic_dns
-                .unwrap_or_else(|| identity.bind_ip.to_string())
-        })
-        .unwrap_or_else(|| "127.0.0.1".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

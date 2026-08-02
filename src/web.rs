@@ -20,7 +20,6 @@ use std::process::Command;
 
 use crate::daemon::commands;
 use crate::daemon::lifecycle::{self, DaemonInfo};
-use crate::daemon::tailnet::reachable_host;
 use crate::env::Environment;
 use crate::error::AppError;
 
@@ -48,9 +47,8 @@ pub fn handle_start(port: u16) -> Result<String, AppError> {
     let env = environment()?;
     let info = commands::start(&env, Some(port))?;
     Ok(format!(
-        "Web UI started at http://{}:{} (PID {})",
-        reachable_host(),
-        info.port,
+        "Web UI started at {} (PID {})",
+        info.dashboard_url(),
         info.pid
     ))
 }
@@ -71,9 +69,8 @@ pub fn handle_status() -> Result<String, AppError> {
     let env = environment()?;
     Ok(match running_daemon(&env) {
         Some(info) => format!(
-            "Web UI running at http://{}:{} (PID {})",
-            reachable_host(),
-            info.port,
+            "Web UI running at {} (PID {})",
+            info.dashboard_url(),
             info.pid
         ),
         None => "Web UI is not running".to_string(),
@@ -121,14 +118,16 @@ pub fn handle_open() -> Result<String, AppError> {
 
 /// `story web address` — copy the running dashboard's URL to the system clipboard.
 ///
-/// Targets [`reachable_host`] (this machine's MagicDNS FQDN when Tailscale
-/// reports one, else its bare tailnet IPv4, else loopback), so a copied URL
-/// is usable from other tailnet devices — matching what `story web status`
-/// prints. Fails with a help-like summary when the dashboard isn't running.
+/// Targets [`DaemonInfo::dashboard_url`] — the daemon's MagicDNS FQDN when it
+/// *bound* its tailnet interface, else loopback — so a copied URL is usable
+/// from other tailnet devices whenever there is a tailnet listener to reach,
+/// and is never a URL that refuses connections. Matches what `story web status`
+/// prints, because both read the same published fact. Fails with a help-like
+/// summary when the dashboard isn't running.
 pub fn handle_address() -> Result<String, AppError> {
     let env = environment()?;
     let info = running_daemon(&env).ok_or_else(web_not_running_error)?;
-    let url = format!("http://{}:{}/", reachable_host(), info.port);
+    let url = format!("{}/", info.dashboard_url());
     copy_to_clipboard(&url)?;
     Ok(format!("Copied dashboard URL to clipboard: {url}"))
 }
