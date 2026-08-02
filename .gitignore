@@ -18,3 +18,7 @@
 # the gate never writes these, but a bare `cargo test` still does, and a
 # committed .snap.new is an un-reviewed contract change waiting to be accepted.
 *.snap.new
+
+# Plugin state — ephemeral, per-machine, never committed
+.freshen/
+.council/
