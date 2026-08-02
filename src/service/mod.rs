@@ -41,6 +41,7 @@ pub mod project;
 pub mod query;
 pub mod relation;
 pub mod session;
+pub mod settings;
 pub mod story;
 pub mod system;
 pub mod templates;
@@ -75,6 +76,7 @@ pub use project::{
 pub use query::{ListFilters, QueryService};
 pub use relation::{RelationOutcome, RelationService};
 pub use session::SessionService;
+pub use settings::{SettingSpec, SettingsService, registry as settings_registry};
 pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
 pub use system::SystemService;
 pub use transfer::{ImportBatch, TransferService};

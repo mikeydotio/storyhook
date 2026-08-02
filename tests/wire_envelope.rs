@@ -19,7 +19,8 @@
 
 use storyhook::cli::{
     DaemonAction, EpicAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
-    PhaseAction, PluginAction, ProjectAction, StateAction, StoreAction, TypeAction, WebAction,
+    PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction, TypeAction,
+    WebAction,
 };
 use storyhook::domain::{
     Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent, StoryRelation,
@@ -28,7 +29,8 @@ use storyhook::domain::{
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
     BlockedChainView, DeinitPlan, GraphOverview, GraphView, PhaseView, ProjectSnapshotView,
-    Response, StaleInfo, StoryView, SummaryView, render_error, render_response,
+    Response, SettingKind, SettingSource, SettingView, StaleInfo, StoryView, SummaryView,
+    render_error, render_response,
 };
 
 /// The four ways a `Response` can be rendered. Every case in this file is
@@ -298,6 +300,50 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             ]),
         ),
         (
+            "project_settings_empty",
+            Response::ProjectSettings(Vec::new()),
+        ),
+        // One of each `SettingSource`, and both sides of `settable` — the four
+        // combinations the renderer branches on.
+        (
+            "project_settings",
+            Response::ProjectSettings(vec![
+                SettingView {
+                    key: "sync.auto_transition".to_string(),
+                    kind: SettingKind::Boolean,
+                    value: Some("true".to_string()),
+                    source: SettingSource::Default,
+                    default: Some("true".to_string()),
+                    settable: true,
+                    managed_by: None,
+                    description: "Whether commit-sync moves a mentioned story.".to_string(),
+                    note: None,
+                },
+                SettingView {
+                    key: "doctor.stale_threshold".to_string(),
+                    kind: SettingKind::Duration,
+                    value: None,
+                    source: SettingSource::Unset,
+                    default: None,
+                    settable: true,
+                    managed_by: None,
+                    description: "How long before a story counts as stale.".to_string(),
+                    note: Some("no command reads this yet".to_string()),
+                },
+                SettingView {
+                    key: "github.sync".to_string(),
+                    kind: SettingKind::Document,
+                    value: Some("configured".to_string()),
+                    source: SettingSource::Set,
+                    default: None,
+                    settable: false,
+                    managed_by: Some("story github-sync".to_string()),
+                    description: "The github-sync document — ünïcödé and \"quotes\".".to_string(),
+                    note: None,
+                },
+            ]),
+        ),
+        (
             "raw_json",
             Response::RawJson("{\n  \"schema\": 1,\n  \"stories\": []\n}".to_string()),
         ),
@@ -427,6 +473,7 @@ fn response_variants_travel_as_snake_case_keys() {
         ("graph_overview", "graph"),
         ("issues", "issues"),
         ("phase_list", "phase_list"),
+        ("project_settings", "project_settings"),
         ("raw_json", "raw_json"),
         ("confirmation_required", "confirmation_required"),
     ];
@@ -630,6 +677,25 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Project {
             action: ProjectAction::List,
+        },
+        Invocation::Project {
+            action: ProjectAction::Settings(SettingsAction::List),
+        },
+        Invocation::Project {
+            action: ProjectAction::Settings(SettingsAction::Get {
+                key: "sync.auto_transition".to_string(),
+            }),
+        },
+        Invocation::Project {
+            action: ProjectAction::Settings(SettingsAction::Set {
+                key: "doctor.stale_threshold".to_string(),
+                value: "14d".to_string(),
+            }),
+        },
+        Invocation::Project {
+            action: ProjectAction::Settings(SettingsAction::Unset {
+                key: "doctor.stale_threshold".to_string(),
+            }),
         },
         Invocation::New {
             title: "A story — with ünïcödé and \"quotes\"".to_string(),
