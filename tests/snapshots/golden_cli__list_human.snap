@@ -14,7 +14,7 @@ SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [task] Ship the CLI shim
 SH-11 [todo] (low) [task] Audit error codes
 SH-12 [todo] (high) [story] Harden concurrent writes
-SH-13 [todo] (low) [chore] Old approach: file-per-story [deleted]
+SH-13 [done] (low) [chore] Old approach: file-per-story [deleted]
 SH-14 [done] (medium) [spike] Prototype the archive format
 
 $ story list --state todo
@@ -27,13 +27,13 @@ SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [task] Ship the CLI shim
 SH-11 [todo] (low) [task] Audit error codes
 SH-12 [todo] (high) [story] Harden concurrent writes
-SH-13 [todo] (low) [chore] Old approach: file-per-story [deleted]
 
 $ story list --state review
 SH-4 [review] (medium) [task] Write the migration runner [backend]
 
 $ story list --state done
 SH-8 [done] (low) [chore] Retire the JSONL reader
+SH-13 [done] (low) [chore] Old approach: file-per-story [deleted]
 SH-14 [done] (medium) [spike] Prototype the archive format
 
 $ story list --type bug
@@ -112,7 +112,7 @@ SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [task] Ship the CLI shim
 SH-11 [todo] (low) [task] Audit error codes
 SH-12 [todo] (high) [story] Harden concurrent writes
-SH-13 [todo] (low) [chore] Old approach: file-per-story [deleted]
+SH-13 [done] (low) [chore] Old approach: file-per-story [deleted]
 SH-14 [done] (medium) [spike] Prototype the archive format
 
 $ story list --created-after 2999-01-01
@@ -131,7 +131,7 @@ SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
 SH-10 [todo] (medium) [task] Ship the CLI shim
 SH-11 [todo] (low) [task] Audit error codes
 SH-12 [todo] (high) [story] Harden concurrent writes
-SH-13 [todo] (low) [chore] Old approach: file-per-story [deleted]
+SH-13 [done] (low) [chore] Old approach: file-per-story [deleted]
 SH-14 [done] (medium) [spike] Prototype the archive format
 
 $ story list --state todo --priority critical

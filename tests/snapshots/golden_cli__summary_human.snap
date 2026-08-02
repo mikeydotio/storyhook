@@ -4,10 +4,10 @@ source: tests/golden_cli.rs
 $ story summary
 stories: 14 (11 open, 3 closed)
 by state:
-  done: 2
+  done: 3
   in-progress: 1
   review: 1
-  todo: 10
+  todo: 9
 by priority:
   critical: 2
   high: 3
@@ -33,10 +33,10 @@ ready stories:
 $ story report
 stories: 14 (11 open, 3 closed)
 by state:
-  done: 2
+  done: 3
   in-progress: 1
   review: 1
-  todo: 10
+  todo: 9
 by priority:
   critical: 2
   high: 3

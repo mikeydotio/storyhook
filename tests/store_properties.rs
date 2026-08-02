@@ -289,7 +289,23 @@ fn run_script(store: &SqliteStore, project: ProjectId, ops: &[(usize, Op)]) -> V
                 reason: "generated".into(),
             },
         };
-        append_and_fold(store, project, story, ExpectedSeq::Any, &[event]).expect("applying an op");
+        // A move into a CLOSED state is two events, never one. The service's
+        // `state_transition_events` always pairs the transition with its close
+        // marker, and since SH-130 the schema says so too: `(superstate =
+        // 'CLOSED') = archived` refuses a story sitting in a closed state with
+        // no close timestamp. A generator that emitted the bare move would be
+        // producing histories the product cannot produce, and would fail the
+        // rebuild property for a reason that says nothing about the store.
+        let mut events = vec![event];
+        if let Op::Move(state) = op
+            && *state == "done"
+        {
+            events.push(StoryEvent::StoryClosedAndArchived {
+                at: at(),
+                state: (*state).to_string(),
+            });
+        }
+        append_and_fold(store, project, story, ExpectedSeq::Any, &events).expect("applying an op");
     }
     stories
 }
