@@ -35,15 +35,26 @@ use std::process::Output;
 use storyhook::store::{ReadOps, Store};
 use storyhook_test_support::{TestEnv, scratch_dir};
 
-/// Runs `story <args>` in `cwd` against `env`'s store, in this process's
-/// invoker.
+/// Runs `story <args>` in `cwd` against `env`'s store, through the daemon.
 ///
-/// `--local` throughout. A damaged store is a fact about a file, and routing
-/// the question through a daemon would ask it of a *second* process that opened
-/// the same file at a different moment — sometimes before it was broken.
+/// This used to be `--local` throughout, on the reasoning that a damaged store
+/// is a fact about a file and routing the question through a daemon would ask it
+/// of a *second* process that opened the same file at a different moment. The
+/// reasoning was sound and its remedy is now the wrong one: there is one
+/// transport, so what a user meets when their store is damaged is exactly this
+/// second process, and a test that stepped around it would be testing a path
+/// nobody can take.
+///
+/// What the reasoning was actually about survives as a rule the cases keep:
+/// **whoever asks about the bytes must first make sure nobody is holding them**
+/// — `env.stop_daemon()` before the file is read or written, never a different
+/// transport.
+///
+/// The override exists only while the in-process transport does: the suite
+/// wrapper still defaults every command to it. It goes when the variable does.
 fn story_in(env: &TestEnv, cwd: &Path, args: &[&str]) -> Output {
     env.raw_story(cwd)
-        .env("STORYHOOK_INVOKER", "local")
+        .env("STORYHOOK_INVOKER", "daemon")
         .args(args)
         .output()
         .expect("running story")
@@ -59,18 +70,19 @@ fn failure_message(out: &Output, what: &str) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// A project whose every command runs in its own process.
+/// A project to ask the damaged-store questions from.
 ///
-/// [`ProjectBuilder::local`] rather than the default, because every test in this
-/// file is about the bytes on disk and a live daemon changes what those bytes
-/// mean: it answers reads from memory, and its `-shm` keeps alive a
-/// write-ahead log that would otherwise be discarded. The daemon leg caught two
-/// tests here doing exactly that.
-fn local_project<'a>(env: &'a TestEnv, prefix: &str) -> storyhook_test_support::Project<'a> {
-    env.project().local().prefix(prefix).build()
+/// Building it starts a daemon, because building it runs `story project init`.
+/// Every test here that then goes on to read or write the store's *bytes* has to
+/// stand that daemon down first: a live one answers reads from memory, and its
+/// `-shm` keeps alive a write-ahead log that would otherwise be discarded. The
+/// daemon leg caught two tests in this file doing exactly that, back when the
+/// fixture avoided the problem by never starting one.
+fn project_in<'a>(env: &'a TestEnv, prefix: &str) -> storyhook_test_support::Project<'a> {
+    env.project().prefix(prefix).build()
 }
 
-/// A storyhook data directory holding exactly the bytes given./// A storyhook data directory holding exactly the bytes given.
+/// A storyhook data directory holding exactly the bytes given.
 ///
 /// Returns the environment and a working directory outside it, so a command can
 /// be run somewhere that is not the store.
@@ -138,7 +150,7 @@ fn a_zero_byte_database_is_treated_as_a_fresh_one() {
 #[test]
 fn a_damaged_write_ahead_log_is_discarded_and_the_committed_data_survives() {
     let env = TestEnv::isolated();
-    let project = local_project(&env, "CO");
+    let project = project_in(&env, "CO");
     let created = story_in(
         &env,
         project.path(),
@@ -151,8 +163,11 @@ fn a_damaged_write_ahead_log_is_discarded_and_the_committed_data_survives() {
         .expect("a minted id")
         .to_string();
 
-    // Checkpointed by opening and closing the store, then the log is filled
-    // with bytes no frame header could match.
+    // The daemon holds its own write-ahead-log handle, so a log damaged while it
+    // is running is a log it goes on reading out of memory. Stood down first, and
+    // then checkpointed by opening and closing the store, before the log is
+    // filled with bytes no frame header could match.
+    env.stop_daemon();
     drop(env.open_store());
     let wal = env.store_path().with_extension("db-wal");
     std::fs::write(&wal, b"garbage garbage garbage garbage garbage").expect("damaging the log");
@@ -183,7 +198,10 @@ fn a_damaged_write_ahead_log_is_discarded_and_the_committed_data_survives() {
 #[test]
 fn a_database_from_a_newer_storyhook_names_both_versions_and_the_remedy() {
     let env = TestEnv::isolated();
-    let project = local_project(&env, "CO");
+    let project = project_in(&env, "CO");
+    // The daemon the fixture started has already opened this store and passed
+    // the gate, so it would go on serving happily whatever the pragma says.
+    env.stop_daemon();
     // Written through rusqlite rather than by hand: the pragma is what the gate
     // reads, and a fabricated file would be testing the fabrication.
     rusqlite::Connection::open(env.store_path())
@@ -238,12 +256,15 @@ fn a_directory_where_the_database_belongs_names_the_path() {
 #[test]
 fn a_truncated_database_says_it_is_damaged_and_where_the_backups_are() {
     let source = TestEnv::isolated();
-    let seed = local_project(&source, "CO");
+    let seed = project_in(&source, "CO");
     assert!(
         story_in(&source, seed.path(), &["new", "real data"])
             .status
             .success()
     );
+    // Nothing may be holding the file this test is about to read: a daemon's
+    // uncheckpointed log would leave the copy missing the story just written.
+    source.stop_daemon();
     drop(source.open_store());
     let whole = std::fs::read(source.store_path()).expect("reading a real store");
     assert!(whole.len() > 8192, "the fixture must be worth truncating");
@@ -317,7 +338,7 @@ fn assert_actionable_corruption(env: &TestEnv, message: &str) {
 #[test]
 fn a_corrupt_pointer_file_names_the_file_that_could_not_be_read() {
     let env = TestEnv::isolated();
-    let project = local_project(&env, "CO");
+    let project = project_in(&env, "CO");
     std::fs::write(
         project.path().join(".storyhook.toml"),
         "this is not toml {{{\n",
@@ -343,7 +364,7 @@ fn a_corrupt_pointer_file_names_the_file_that_could_not_be_read() {
 #[test]
 fn a_pointer_file_missing_its_identity_names_the_file_too() {
     let env = TestEnv::isolated();
-    let project = local_project(&env, "CO");
+    let project = project_in(&env, "CO");
     std::fs::write(
         project.path().join(".storyhook.toml"),
         "schema = 1\nprefix = \"CO\"\n",
@@ -453,11 +474,13 @@ fn a_checkout_naming_a_project_this_store_does_not_have_says_which_one() {
 // The commands that must survive a store they cannot open (SH-149)
 // ---------------------------------------------------------------------------
 
-/// A `story` invocation with nothing forced about the transport.
+/// A `story` invocation with nothing said about the transport at all.
 ///
-/// The rest of this file pins the transport deliberately. These cases must not:
-/// the whole claim is that the answer arrives before any invoker is chosen, so
-/// forcing one would test a narrower thing than the defect.
+/// [`story_in`] still names one while the variable that names it exists. These
+/// cases must not: the whole claim is that the answer arrives *before* any
+/// invoker is chosen, so a test that chose one would be testing a narrower thing
+/// than the defect. When the variable goes, the difference between the two
+/// helpers goes with it — and this is the one whose meaning does not change.
 fn story_however_it_runs(env: &TestEnv, cwd: &Path, args: &[&str]) -> Output {
     env.raw_story(cwd)
         .args(args)
@@ -551,19 +574,6 @@ fn the_remedy_a_damaged_store_prints_can_actually_be_run() {
 // What the client says when the daemon cannot start (SH-114)
 // ---------------------------------------------------------------------------
 
-/// A `story` invocation that insists on the daemon.
-///
-/// The opposite of [`story_in`], and here for the opposite reason: these cases
-/// are about the *client's* report of a failure that happens in another
-/// process, so the other process has to exist.
-fn story_through_the_daemon(env: &TestEnv, cwd: &Path, args: &[&str]) -> Output {
-    env.raw_story(cwd)
-        .env("STORYHOOK_INVOKER", "daemon")
-        .args(args)
-        .output()
-        .expect("running story")
-}
-
 /// The diagnosis the daemon computed is the one the user reads.
 ///
 /// This is the failure mode for the entire CLI once there is no in-process
@@ -580,7 +590,7 @@ fn a_client_reports_the_daemon_s_own_reason_for_not_starting() {
     let env = env_with_store_bytes(b"not a database\n");
     let cwd = scratch_dir();
 
-    let out = story_through_the_daemon(&env, cwd.path(), &["list"]);
+    let out = story_in(&env, cwd.path(), &["list"]);
     let message = failure_message(&out, "story list");
 
     assert!(
@@ -624,7 +634,7 @@ fn a_client_does_not_wait_out_the_deadline_for_a_daemon_that_already_died() {
     let cwd = scratch_dir();
 
     let started = std::time::Instant::now();
-    let out = story_through_the_daemon(&env, cwd.path(), &["list"]);
+    let out = story_in(&env, cwd.path(), &["list"]);
     let elapsed = started.elapsed();
 
     failure_message(&out, "story list");
@@ -648,7 +658,7 @@ fn a_stale_failure_record_is_not_blamed_on_a_daemon_that_started_fine() {
     let cwd = scratch_dir();
 
     // A working store, so the daemon this test starts will succeed.
-    let init = story_through_the_daemon(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    let init = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
     assert!(
         init.status.success(),
         "the fixture needs a project: {}",
@@ -661,14 +671,14 @@ fn a_stale_failure_record_is_not_blamed_on_a_daemon_that_started_fine() {
 
     // Stop the daemon so the next command has to start one, then plant a lie
     // where its predecessor's failure would have been.
-    story_through_the_daemon(&env, cwd.path(), &["daemon", "stop"]);
+    story_in(&env, cwd.path(), &["daemon", "stop"]);
     std::fs::write(
         &failure,
         r#"{"kind":"storage","detail":"a failure from some previous life"}"#,
     )
     .expect("planting a stale failure record");
 
-    let out = story_through_the_daemon(&env, cwd.path(), &["list"]);
+    let out = story_in(&env, cwd.path(), &["list"]);
     assert!(
         out.status.success(),
         "a daemon that starts must not be blamed for an older one's failure: {}",
