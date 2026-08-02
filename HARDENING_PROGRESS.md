@@ -150,7 +150,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
 - [x] **SH-115** — C3 Identity: remotes schema + one URL normalizer
 - [x] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114* · **it was a deadlock; the deadline was right**
-- [ ] **SH-110** — tailnet bind flake · *gates SH-114*
+- [x] **SH-110** — tailnet bind flake · *gates SH-114* · **not a flake: the dashboard advertised a probe, not its bind**
 - [ ] **SH-114** — C2 Transport: daemon-only
 - [ ] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal
 - [ ] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink`
@@ -1451,3 +1451,145 @@ consecutive story with no stall.
 **Unblocks SH-114**, and hands it two of its own dependencies as stories: SH-143
 (the spawn lock, which SH-114 puts on every command's path) and SH-144
 (`HttpInvoker::send`, likewise).
+
+### SH-110 — done
+
+**Outcome:** the story was filed as a flaky test with two test-side options, and
+both options were aimed at the wrong layer. It is a product defect: the
+dashboard advertised a host derived from a probe of *this machine* rather than
+from what the daemon *bound*. `reachable_host` is deleted, the daemon publishes
+its bind, and the six exposed tests read that instead of guessing. The story was
+retitled and its diagnosis corrected in place.
+
+**The story's own diagnosis was wrong for the test in its title, and measuring
+is what found it.** SH-110 says *"the daemon's tailnet bind is what failed, not
+name resolution."* But the advertised host came from `reachable_host()`, a
+**client-side** `tailscale status --json` probe with its own 3-second deadline
+that asked the daemon nothing. Five call sites used it — and every one of them
+**already held a `DaemonInfo`**. The daemon computed the right answer at bind
+time and threw it away: `info_for` recorded nothing about the tailnet.
+
+**Both directions reproduced deterministically, with a `tailscale` shim on
+`PATH` and an isolated scratch store. No load, no race:**
+
+| | daemon bound tailnet? | client advertised | reachable? |
+|---|---|---|---|
+| **A** client's probe hangs | **yes** — verified accepting | `http://127.0.0.1:19701` | yes, but not advertised |
+| **B** daemon's probe hangs | no — localhost only | `http://psamathe…ts.net:19702` | **no — refuses** |
+
+A is SH-110's recorded failure and **the bind did not fail**. B was unreported
+and is user-facing: `story web address` copies that dead URL to the system
+clipboard. `serve.rs` had the principle right for trust — *"trust follows bind"*
+— but advertisement did not.
+
+**Exposure was six tests, not two**, and five of them ran `bind_listeners`
+in-process inside the cargo test process at `--test-threads=4`, which is why
+they were load-sensitive.
+
+**The council was unanimous 3–0 in round one, and both non-authors voted against
+their own proposals** — the fifth time in this run, the third where both did.
+Audit trail in `.council/sh110-tailnet-bind-truth/`; verdict on the story.
+
+The decision was the **stored type**, which is the expensive-to-reverse part.
+Two seats proposed a rendered string; the winner stores structured
+`Option<TailnetBind>`. Three arguments converged:
+
+- **One type crosses both boundaries.** The rendered-string designs needed a
+  structured value for the in-process `ready` callback *and* a rendered one in
+  the portfile — two shapes for one fact. Its author called that decisive
+  against itself.
+- **`advertise_host: ""` collapses absence into a valid answer.** Both losing
+  proposals cited `store_path` as precedent; the architecture seat showed the
+  precedent argues the other way, because *its* empty value is **detectable** —
+  `serves()` answers `false` for it.
+- **The five bind tests connect to the IPv4.** The QA seat withdrew its own
+  proposal on this: a rendered host is the MagicDNS name, and the IP is gone.
+
+The challenger pressed the strongest available attack — that a bind-time
+snapshot goes stale — and **refuted it on the code**: `TcpListener::bind`
+appears exactly twice in `src/`, both inside `bind_listeners`, which runs once
+per process, and `trusted_hosts` is moved into `Serving` and never mutated. The
+bind set is immutable for the daemon's life. *"The inversion is complete: it is
+today's live probe that produces a permanently wrong answer for the daemon's
+whole life, because the daemon never re-binds."*
+
+**The chair published a false framing and the challenger caught it — then the
+correction refuted the challenger.** My brief compressed two separately recorded
+incidents into one, so the challenger reasonably read a contradiction and
+declared the probe-timeout mechanism *inferred rather than measured*. Checking
+the story showed both: incident A in the description, incident B in a comment
+whose captured daemon-leg stdout carries `warning: tailscale status --json did
+not answer within 3s; serving localhost only` **verbatim**. The 7.7× gap it
+called unbridged was bridged in practice and logged. Issuing that correction
+*before* the vote cut both ways — it restored the flake justification the
+challenger had tried to remove, and destroyed the challenger's own guard-test
+retry, which it withdrew with a better reason than I had: the retry re-runs the
+**test's** probe, which cannot re-run the **daemon's**.
+
+**Five binding grafts**, because the winner was not complete:
+
+1. **A positive control on the two rejection tests.** This commit rewrites where
+   `trusted_hosts` comes from, so a regression emptying it would 403 everything
+   and leave both tests green and vacuous. Their protection against that lived
+   in a *different* test function any later edit could delete.
+2. **One family member must never skip.** `tests/tailnet_advertise.rs` brings
+   its own `tailscale` and runs on any machine.
+3. **Test 357 needed a PATH-blanking step to be a regression test at all** —
+   the architecture seat's correction to its own proposal: on unfixed code the
+   client's probe returns the same FQDN, so both branches of its rewrite pass.
+4. **The sentinel discriminates or does not exist.** Dropped: one that fires
+   whenever this machine has a tailnet the daemon did not bind would fire during
+   exactly the load episode the story documents, relocating the flake.
+5. **`wait_for_addr` is not deleted.** `ready()` fires *before* the accept loops
+   are spawned, so bound-but-not-accepting is structural.
+
+**The suite pinned the defect as correct — a sixth consecutive story.** Test
+357 probed `tailscale` in the test process and then asserted the CLI printed
+what *this process* found, which passes under direction A by construction. Both
+private probe helpers used **unbounded `Command::output()`** — the orphan-maker
+shape already fixed in production and left live in the tests — and probed
+`tailscale ip -4` where the server probes `tailscale status --json`: two probes
+of two different commands standing in for one bind. Deleted, not repaired.
+
+**Red→green verified by disarm, and each test owns exactly its concern.** With a
+client-side probe restored: 2 of 3 fail in `tailnet_advertise`, and **1 of 136**
+in `web_test` — the titled test, reporting `must advertise
+http://psamathe.tail983f02.ts.net:26400 … got 127.0.0.1:26400`, which is
+SH-110's original recorded failure verbatim. The seam test was disarmed
+separately and names the offending file and line.
+
+**Also filed:** SH-146 (the daemon never re-attempts its tailnet bind — the real
+product bug this fix makes *visible* rather than fixes, and security-sensitive
+because a late re-bind makes `trusted_hosts` mutable at runtime), SH-147 (the
+probe runs **twice** on the port-fallback path, so 6s of probing fits inside a
+5s `SPAWN_DEADLINE` — found during the vote, previously unreported), SH-148
+(`bind_and_serve` is a `pub` production entry point with **no production
+caller**). Recorded on SH-140: `wait_for_addr`'s 5s panic is a sixth member of
+its class.
+
+**Filed out of band: SH-145.** Mikey noticed mid-story that the dashboard still
+showed SH-110 in its old column. The store, the daemon and the HTTP API all
+reported `in-progress` while the open page did not — checked at each layer
+rather than assumed — so the defect is in the live-update path, and a reload
+fixed it. Not SH-110's, so it became a story rather than a detour.
+
+**Behaviour change worth knowing:** a daemon whose tailnet bind failed now says
+`127.0.0.1` where it used to say a MagicDNS name. That is the correct answer and
+will look like a regression to anyone who has not read this. **Semver: minor** —
+`DaemonInfo` gains a field, `reachable_host` is removed from the library
+surface, and no interface a user types changed.
+
+**Gate:** `make test` and `make test-daemon` run as two separate supervised
+commands against the committed tree. Both exit 0, **105 green test-result blocks
+each**, 0 failures, plugin harness 18/0, clippy clean, no orphan daemons. **Sixth
+consecutive story with no wedge**, and the difference remains running the legs
+separately rather than through `make gate`.
+
+Both watchdogs used log growth as the pulse, and SH-94's finding held: a
+block-buffered `make` goes quiet near the end, so "no growth" was treated as a
+stall only after several consecutive silent intervals rather than the first. It
+never fired.
+
+**Unblocks SH-114**, which this story gated. SH-114 makes every command use a
+daemon, so the number of readers of the advertised host goes up — which is why
+publishing it rather than probing for it had to land first.
