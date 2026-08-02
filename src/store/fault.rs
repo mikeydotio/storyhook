@@ -184,12 +184,27 @@ mod armed {
         match std::env::var("STORYHOOK_FAULT") {
             Ok(name) if name == point.as_str() => {
                 // SAFETY: `kill` with this process's own pid and a valid signal
-                // number. It does not return.
+                // number.
                 unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
-                // Unreachable in practice; SIGKILL is delivered before the next
-                // instruction retires. Kept so the function still type-checks as
-                // returning, and so a platform that somehow ignored the signal
-                // fails loudly rather than continuing as if nothing happened.
+                // **`kill` posts a signal; it does not stop this thread
+                // mid-instruction.** So this is a wait to die, not a fallback.
+                //
+                // The line here used to be a bare `abort()`, on a comment
+                // calling itself unreachable. That was true while every armed
+                // process was a single-threaded CLI, and false the moment the
+                // armed process became the daemon: the kernel lets the calling
+                // thread run on often enough that six of `tests/crash_matrix.rs`'s
+                // thirteen cases reported `SIGABRT` the first time they were run
+                // against one. A crash test that reads `SIGABRT` concludes the
+                // fault did not fire — the exact opposite of what happened, and
+                // a diagnosis that sends the reader looking for a missing
+                // `fault-injection` feature.
+                //
+                // The sleep is not a guess at how long delivery takes; it is
+                // several orders of magnitude longer, and exists only so that a
+                // platform which somehow ignored `SIGKILL` fails loudly instead
+                // of hanging for ever.
+                std::thread::sleep(std::time::Duration::from_secs(10));
                 std::process::abort()
             }
             _ => Ok(()),
