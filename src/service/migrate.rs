@@ -54,6 +54,7 @@ use crate::store::{
 use super::project::{
     ProjectPointer, path_kind, pointer_path, read_pointer, unique_slug, write_pointer,
 };
+use super::state_set::write_states_repairing;
 
 /// What a repair did to one story's history.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -406,7 +407,10 @@ impl MigrationPlan {
             })?;
             tx.touch_project_path(project, &root, path_kind(&root))?;
 
-            tx.put_states(project, &self.project.states)?;
+            // Repairing, not refusing: a legacy tree predates the required
+            // floor, and refusing to migrate one because of a state it never
+            // had would make old data unmovable rather than conforming.
+            write_states_repairing(tx, project, &self.project.states)?;
             if !self.project.types.is_empty() {
                 tx.put_types(project, &self.project.types)?;
             }

@@ -34,6 +34,7 @@ use crate::store::{
 };
 
 use super::project::{DEFAULT_PREFIX, path_kind, unique_slug};
+use super::state_set::write_states_repairing;
 use super::{Clock, Ctx, append_and_fold, project_prefix};
 
 /// A whole project, as `story export` writes it and `story import-project`
@@ -296,7 +297,10 @@ pub fn import_project<S: Store>(
             }
         };
 
-        tx.put_states(project, &export.states)?;
+        // Repairing, and this is also where an unvalidated write used to be:
+        // an export document's catalog reached the store untouched, so a
+        // hand-edited document could install any state set at all.
+        write_states_repairing(tx, project, &export.states)?;
         if !export.types.is_empty() {
             tx.put_types(project, &export.types)?;
         }

@@ -25,7 +25,7 @@ use storyhook::service::{
     ConfigService, Ctx, NewStoryInput, StateListing, StoryService, config::state_usage,
 };
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo};
-use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
+use storyhook_test_support::{FIXTURE_NOW, ServiceFixture, default_states};
 
 // --- helpers ---------------------------------------------------------------
 
@@ -90,27 +90,40 @@ fn listing(fixture: &ServiceFixture, slug: &str) -> StateListing {
 
 /// A fixture with a second CLOSED state, so a superstate can be flipped
 /// without leaving the project with no CLOSED state at all.
+///
+/// Carries the required floor as well: a project below it cannot have its
+/// catalog edited, so a fixture that omitted `in-progress` or `blocked` would
+/// fail every test here on the floor rather than on its own subject.
 fn with_two_closed_states() -> ServiceFixture {
-    ServiceFixture::with_states(&[
-        StateDef {
-            slug: "todo".into(),
-            super_state: SuperState::Open,
-            role: None,
-            description: None,
-        },
-        StateDef {
-            slug: "done".into(),
-            super_state: SuperState::Closed,
-            role: None,
-            description: None,
-        },
-        StateDef {
-            slug: "wontfix".into(),
-            super_state: SuperState::Closed,
-            role: None,
-            description: None,
-        },
-    ])
+    let mut states = default_states();
+    states.push(StateDef {
+        slug: "wontfix".into(),
+        super_state: SuperState::Closed,
+        role: None,
+        description: None,
+    });
+    ServiceFixture::with_states(&states)
+}
+
+/// The state a test operates on when its subject is what happens to a state's
+/// *occupants*.
+const SPARE: &str = "in-review";
+
+/// A fixture with one OPEN state beyond the required floor.
+///
+/// Removal and reclassification cannot be performed on a required state at any
+/// occupancy (SH-125), so the tests about *how* those operations move stories
+/// need a state the floor does not protect. Using `todo` for them, as they
+/// used to, would now be testing the refusal instead of the migration.
+fn with_a_spare_state() -> ServiceFixture {
+    let mut states = default_states();
+    states.push(StateDef {
+        slug: SPARE.into(),
+        super_state: SuperState::Open,
+        role: None,
+        description: None,
+    });
+    ServiceFixture::with_states(&states)
 }
 
 // --- listing ---------------------------------------------------------------
@@ -124,7 +137,7 @@ fn states_are_listed_in_board_order_not_alphabetical_order() {
         .into_iter()
         .map(|listing| listing.state.slug)
         .collect();
-    assert_eq!(listed, ["todo", "in-progress", "done"]);
+    assert_eq!(listed, ["todo", "in-progress", "blocked", "done"]);
 }
 
 #[test]
@@ -165,7 +178,7 @@ fn every_configured_state_appears_in_the_usage_map_even_when_empty() {
         .expect("reading usage");
     let mut slugs: Vec<&str> = usage.keys().map(String::as_str).collect();
     slugs.sort_unstable();
-    assert_eq!(slugs, ["done", "in-progress", "todo"]);
+    assert_eq!(slugs, ["blocked", "done", "in-progress", "todo"]);
 }
 
 // --- adding states ---------------------------------------------------------
@@ -184,7 +197,7 @@ fn a_new_state_is_appended_to_the_board_order() {
     assert_eq!(added.slug, "in-review");
     assert_eq!(
         slugs(&fixture),
-        ["todo", "in-progress", "done", "in-review"]
+        ["todo", "in-progress", "blocked", "done", "in-review"]
     );
     assert_eq!(
         state(&fixture, "in-review").description.as_deref(),
@@ -199,7 +212,7 @@ fn adding_a_state_leaves_every_other_states_fields_intact() {
     // has a role; both must survive an edit that mentions neither.
     let fixture = ServiceFixture::new();
     ConfigService::new(&fixture.ctx())
-        .add_state("blocked", SuperState::Open, None, None)
+        .add_state("in-review", SuperState::Open, None, None)
         .expect("adding a state");
     assert_eq!(
         state(&fixture, "todo").description.as_deref(),
@@ -219,7 +232,7 @@ fn a_duplicate_state_slug_is_rejected() {
         .add_state("todo", SuperState::Open, None, None)
         .unwrap_err();
     assert!(message(error).contains("state `todo` already exists"));
-    assert_eq!(slugs(&fixture).len(), 3);
+    assert_eq!(slugs(&fixture).len(), 4);
 }
 
 #[test]
@@ -234,7 +247,7 @@ fn an_unaddressable_state_slug_is_rejected() {
             "`{bad}` was accepted"
         );
     }
-    assert_eq!(slugs(&fixture).len(), 3);
+    assert_eq!(slugs(&fixture).len(), 4);
 }
 
 #[test]
@@ -353,7 +366,7 @@ fn editing_one_field_never_drops_another() {
     assert_eq!(edited.super_state, SuperState::Open);
     assert_eq!(
         slugs(&fixture),
-        ["todo", "in-progress", "done"],
+        ["todo", "in-progress", "blocked", "done"],
         "an edit must not disturb the board order"
     );
 }
@@ -393,43 +406,18 @@ fn editing_an_unknown_state_is_not_found() {
     assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
 }
 
+/// The required floor reaches this case first, and that is the point.
+///
+/// This test used to walk a project down to zero OPEN states one flip at a
+/// time, and the "at least one OPEN state" rule caught it on the last one.
+/// `todo`, `in-progress` and `blocked` are now all required to be OPEN, so the
+/// first flip is refused and the walk never starts — the older rule is
+/// unreachable from here rather than gone, and `domain`'s
+/// `requires_open_and_closed_states` still covers it directly.
 #[test]
-fn a_project_cannot_be_left_without_an_open_state() {
+fn a_required_state_cannot_be_reclassified() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
-    let service = ConfigService::new(&ctx);
-    service
-        .update_state(
-            "todo",
-            &StateChanges {
-                super_state: Some(SuperState::Closed),
-                role: FieldEdit::Keep,
-                description: FieldEdit::Keep,
-            },
-            None,
-        )
-        .expect("the first flip still leaves `in-progress` OPEN");
-    let error = service
-        .update_state(
-            "in-progress",
-            &StateChanges {
-                super_state: Some(SuperState::Closed),
-                role: FieldEdit::Keep,
-                description: FieldEdit::Keep,
-            },
-            None,
-        )
-        .unwrap_err();
-    assert!(message(error).contains("at least one OPEN state"));
-    assert_eq!(state(&fixture, "in-progress").super_state, SuperState::Open);
-}
-
-#[test]
-fn reclassifying_an_occupied_state_requires_a_destination() {
-    let fixture = ServiceFixture::new();
-    let ctx = fixture.ctx();
-    let id = new_story(&ctx, "sitting in todo");
-
     let error = ConfigService::new(&ctx)
         .update_state(
             "todo",
@@ -442,11 +430,33 @@ fn reclassifying_an_occupied_state_requires_a_destination() {
         )
         .unwrap_err();
     let message = message(error);
-    assert!(message.contains("holds 1 open story"), "{message}");
-    assert!(message.contains("in-progress, done"), "{message}");
-
+    assert!(message.contains("`todo` must be OPEN"), "{message}");
     assert_eq!(state(&fixture, "todo").super_state, SuperState::Open);
-    assert_eq!(snapshot(&fixture, &id).state, "todo");
+}
+
+#[test]
+fn reclassifying_an_occupied_state_requires_a_destination() {
+    let fixture = with_a_spare_state();
+    let ctx = fixture.ctx();
+    let id = story_in(&ctx, "sitting in review", SPARE);
+
+    let error = ConfigService::new(&ctx)
+        .update_state(
+            SPARE,
+            &StateChanges {
+                super_state: Some(SuperState::Closed),
+                role: FieldEdit::Keep,
+                description: FieldEdit::Keep,
+            },
+            None,
+        )
+        .unwrap_err();
+    let message = message(error);
+    assert!(message.contains("holds 1 open story"), "{message}");
+    assert!(message.contains("todo, in-progress, blocked"), "{message}");
+
+    assert_eq!(state(&fixture, SPARE).super_state, SuperState::Open);
+    assert_eq!(snapshot(&fixture, &id).state, SPARE);
 }
 
 #[test]
@@ -470,17 +480,17 @@ fn a_metadata_edit_needs_no_destination_however_occupied_the_state_is() {
 
 #[test]
 fn reclassifying_migrates_its_occupants_and_reports_how_many() {
-    let fixture = ServiceFixture::new();
+    let fixture = with_a_spare_state();
     let ctx = fixture.ctx();
     let ids = [
-        new_story(&ctx, "one"),
-        new_story(&ctx, "two"),
-        new_story(&ctx, "three"),
+        story_in(&ctx, "one", SPARE),
+        story_in(&ctx, "two", SPARE),
+        story_in(&ctx, "three", SPARE),
     ];
 
     let edit = ConfigService::new(&ctx)
         .update_state(
-            "todo",
+            SPARE,
             &StateChanges {
                 super_state: Some(SuperState::Closed),
                 role: FieldEdit::Keep,
@@ -498,7 +508,7 @@ fn reclassifying_migrates_its_occupants_and_reports_how_many() {
         assert_eq!(story.superstate, SuperState::Open);
         assert_eq!(
             story.comments.last().map(|c| c.text.as_str()),
-            Some("[states] moved from `todo` to `in-progress`"),
+            Some("[states] moved from `in-review` to `in-progress`"),
             "the move must be traceable to the edit that caused it"
         );
     }
@@ -506,12 +516,12 @@ fn reclassifying_migrates_its_occupants_and_reports_how_many() {
 
 #[test]
 fn migrating_into_a_closed_state_closes_and_archives() {
-    let fixture = ServiceFixture::new();
+    let fixture = with_a_spare_state();
     let ctx = fixture.ctx();
-    let id = new_story(&ctx, "on its way out");
+    let id = story_in(&ctx, "on its way out", SPARE);
 
     ConfigService::new(&ctx)
-        .remove_state("todo", Some("done"))
+        .remove_state(SPARE, Some("done"))
         .expect("removing an occupied state");
 
     let story = snapshot(&fixture, &id);
@@ -528,26 +538,26 @@ fn migrating_into_a_closed_state_closes_and_archives() {
 
 #[test]
 fn an_unknown_destination_is_rejected_before_anything_moves() {
-    let fixture = ServiceFixture::new();
+    let fixture = with_a_spare_state();
     let ctx = fixture.ctx();
-    let id = new_story(&ctx, "staying put");
+    let id = story_in(&ctx, "staying put", SPARE);
     let error = ConfigService::new(&ctx)
-        .remove_state("todo", Some("nowhere"))
+        .remove_state(SPARE, Some("nowhere"))
         .unwrap_err();
     assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
-    assert_eq!(snapshot(&fixture, &id).state, "todo");
-    assert_eq!(slugs(&fixture).len(), 3);
+    assert_eq!(snapshot(&fixture, &id).state, SPARE);
+    assert_eq!(slugs(&fixture).len(), 5);
 }
 
 #[test]
 fn stories_cannot_be_migrated_into_the_state_being_edited() {
-    let fixture = ServiceFixture::new();
+    let fixture = with_a_spare_state();
     let ctx = fixture.ctx();
-    new_story(&ctx, "sitting in todo");
+    story_in(&ctx, "sitting in review", SPARE);
     let error = ConfigService::new(&ctx)
-        .remove_state("todo", Some("todo"))
+        .remove_state(SPARE, Some(SPARE))
         .unwrap_err();
-    assert!(message(error).contains("cannot be moved into `todo` itself"));
+    assert!(message(error).contains("cannot be moved into `in-review` itself"));
 }
 
 // --- the definition change that re-derives rows ----------------------------
@@ -590,12 +600,12 @@ fn flipping_a_superstate_re_derives_the_rows_of_the_stories_left_in_it() {
 
 #[test]
 fn an_empty_state_is_removed_without_ceremony() {
-    let fixture = ServiceFixture::new();
+    let fixture = with_a_spare_state();
     let moved = ConfigService::new(&fixture.ctx())
-        .remove_state("in-progress", None)
+        .remove_state(SPARE, None)
         .expect("removing an empty state");
     assert_eq!(moved, 0);
-    assert_eq!(slugs(&fixture), ["todo", "done"]);
+    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
 }
 
 #[test]
@@ -607,14 +617,24 @@ fn removing_an_unknown_state_is_not_found() {
     assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
 }
 
+/// As with reclassification, the floor is what refuses now: `done` is the
+/// CLOSED state every project must have, so "the last CLOSED state" is not a
+/// state a conforming project can be talked out of.
 #[test]
-fn the_last_closed_state_cannot_be_removed() {
+fn a_required_state_cannot_be_removed() {
     let fixture = ServiceFixture::new();
-    let error = ConfigService::new(&fixture.ctx())
-        .remove_state("done", None)
-        .unwrap_err();
-    assert!(message(error).contains("at least one OPEN state and one CLOSED state"));
-    assert_eq!(slugs(&fixture).len(), 3);
+    for slug in ["todo", "in-progress", "blocked", "done"] {
+        let error = ConfigService::new(&fixture.ctx())
+            .remove_state(slug, None)
+            .unwrap_err();
+        let message = message(error);
+        assert!(message.contains(slug), "removing `{slug}`: {message}");
+        assert!(
+            message.contains("story doctor --fix"),
+            "the refusal must name the repair: {message}"
+        );
+    }
+    assert_eq!(slugs(&fixture).len(), 4, "nothing was removed");
 }
 
 #[test]
@@ -632,25 +652,25 @@ fn a_state_with_archived_history_cannot_be_removed() {
         message.contains("fold against a state that no longer exists"),
         "{message}"
     );
-    assert_eq!(slugs(&fixture).len(), 3);
+    assert_eq!(slugs(&fixture).len(), 5);
 }
 
 #[test]
 fn a_deleted_story_does_not_hold_a_state_open() {
-    let fixture = ServiceFixture::new();
+    let fixture = with_a_spare_state();
     let ctx = fixture.ctx();
-    let id = new_story(&ctx, "doomed");
+    let id = story_in(&ctx, "doomed", SPARE);
     StoryService::new(&ctx)
         .delete(&id, "gone")
         .expect("deleting");
 
     ConfigService::new(&ctx)
-        .remove_state("todo", None)
+        .remove_state(SPARE, None)
         .expect("a deleted occupant neither blocks nor migrates");
-    assert_eq!(slugs(&fixture), ["in-progress", "done"]);
+    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
     assert_eq!(
         snapshot(&fixture, &id).state,
-        "todo",
+        SPARE,
         "the deleted story keeps the slug its history records"
     );
 }
@@ -662,12 +682,12 @@ fn a_deleted_story_does_not_hold_a_state_open() {
 fn a_migration_that_fails_part_way_moves_nothing_at_all() {
     use storyhook::store::fault::{FaultAction, FaultPoint, arm};
 
-    let fixture = ServiceFixture::new();
+    let fixture = with_a_spare_state();
     let ctx = fixture.ctx();
     let ids = [
-        new_story(&ctx, "one"),
-        new_story(&ctx, "two"),
-        new_story(&ctx, "three"),
+        story_in(&ctx, "one", SPARE),
+        story_in(&ctx, "two", SPARE),
+        story_in(&ctx, "three", SPARE),
     ];
     let before: Vec<_> = ids.iter().map(|id| snapshot(&fixture, id)).collect();
 
@@ -677,21 +697,21 @@ fn a_migration_that_fails_part_way_moves_nothing_at_all() {
             FaultAction::Fail("interrupted".to_string()),
         );
         ConfigService::new(&ctx)
-            .remove_state("todo", Some("in-progress"))
+            .remove_state(SPARE, Some("in-progress"))
             .expect_err("the injected fault must fail the removal")
     };
     assert!(error.to_string().contains("interrupted"), "{error}");
 
     assert_eq!(
         slugs(&fixture),
-        ["todo", "in-progress", "done"],
+        ["todo", "in-progress", "blocked", "done", SPARE],
         "the configuration change survived a rollback"
     );
     for (id, was) in ids.iter().zip(&before) {
         let now = snapshot(&fixture, id);
         assert_eq!(&now, was, "story `{id}` moved despite the rollback");
     }
-    assert_eq!(listing(&fixture, "todo").usage.open, 3);
+    assert_eq!(listing(&fixture, SPARE).usage.open, 3);
 }
 
 #[cfg(feature = "fault-injection")]
@@ -702,21 +722,21 @@ fn a_failed_migration_leaves_no_stray_comments_behind() {
     // leak. Its absence is the sharpest evidence the rollback was complete.
     use storyhook::store::fault::{FaultAction, FaultPoint, arm};
 
-    let fixture = ServiceFixture::new();
+    let fixture = with_a_spare_state();
     let ctx = fixture.ctx();
-    let id = new_story(&ctx, "one");
+    let id = story_in(&ctx, "one", SPARE);
     {
         let _fault = arm(
             FaultPoint::MidReadModelUpdate,
             FaultAction::Fail("interrupted".to_string()),
         );
         ConfigService::new(&ctx)
-            .remove_state("todo", Some("in-progress"))
+            .remove_state(SPARE, Some("in-progress"))
             .expect_err("the injected fault must fail the removal");
     }
 
     let story = snapshot(&fixture, &id);
-    assert_eq!(story.state, "todo");
+    assert_eq!(story.state, SPARE);
     assert!(
         story.comments.is_empty(),
         "a rolled-back migration left a comment: {:?}",
@@ -732,6 +752,7 @@ fn reordering_rewrites_the_board_order() {
     let order = vec![
         "done".to_string(),
         "todo".to_string(),
+        "blocked".to_string(),
         "in-progress".to_string(),
     ];
     let reordered = ConfigService::new(&fixture.ctx())
@@ -742,9 +763,9 @@ fn reordering_rewrites_the_board_order() {
             .iter()
             .map(|s| s.slug.as_str())
             .collect::<Vec<_>>(),
-        ["done", "todo", "in-progress"]
+        ["done", "todo", "blocked", "in-progress"]
     );
-    assert_eq!(slugs(&fixture), ["done", "todo", "in-progress"]);
+    assert_eq!(slugs(&fixture), ["done", "todo", "blocked", "in-progress"]);
 }
 
 #[test]
@@ -753,6 +774,7 @@ fn reordering_carries_every_states_fields_across() {
     let order = vec![
         "in-progress".to_string(),
         "todo".to_string(),
+        "blocked".to_string(),
         "done".to_string(),
     ];
     ConfigService::new(&fixture.ctx())
@@ -778,7 +800,7 @@ fn a_partial_order_is_rejected() {
     let message = message(error);
     assert!(message.contains("must list every state"), "{message}");
     assert!(message.contains("in-progress"), "{message}");
-    assert_eq!(slugs(&fixture), ["todo", "in-progress", "done"]);
+    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
 }
 
 #[test]
@@ -803,7 +825,7 @@ fn a_repeated_or_unknown_slug_is_rejected() {
         ])
         .unwrap_err();
     assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
-    assert_eq!(slugs(&fixture), ["todo", "in-progress", "done"]);
+    assert_eq!(slugs(&fixture), ["todo", "in-progress", "blocked", "done"]);
 }
 
 #[test]
@@ -814,6 +836,7 @@ fn reordering_changes_which_state_a_new_story_opens_in() {
         .reorder_states(&[
             "in-progress".to_string(),
             "todo".to_string(),
+            "blocked".to_string(),
             "done".to_string(),
         ])
         .expect("reordering");
@@ -838,11 +861,13 @@ fn concurrent_reorders_leave_one_state_per_position() {
         vec![
             "done".to_string(),
             "todo".to_string(),
+            "blocked".to_string(),
             "in-progress".to_string(),
         ],
         vec![
             "in-progress".to_string(),
             "done".to_string(),
+            "blocked".to_string(),
             "todo".to_string(),
         ],
     ];
@@ -859,9 +884,9 @@ fn concurrent_reorders_leave_one_state_per_position() {
     });
 
     let final_slugs = slugs(&fixture);
-    assert_eq!(final_slugs.len(), 3, "a state was lost or duplicated");
+    assert_eq!(final_slugs.len(), 4, "a state was lost or duplicated");
     let unique: std::collections::BTreeSet<&String> = final_slugs.iter().collect();
-    assert_eq!(unique.len(), 3);
+    assert_eq!(unique.len(), 4);
     assert!(orders.contains(&final_slugs), "{final_slugs:?}");
 }
 

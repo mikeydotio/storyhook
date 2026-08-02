@@ -332,9 +332,11 @@ fn sync_git_no_transition_without_active_state() {
         .assert()
         .success();
 
-    // Remove the default in-progress state so only todo/done remain (no active state)
+    // Clear the `active` role rather than removing the state that holds it:
+    // `in-progress` is required of every project now (SH-125), so a project
+    // with no active state is one where nothing carries the role.
     story(dir.path())
-        .args(["state", "remove", "in-progress"])
+        .args(["state", "set", "in-progress", "--role", "none"])
         .assert()
         .success();
 
@@ -405,56 +407,4 @@ fn sync_git_no_re_transition() {
         !output.contains("\u{2192}"),
         "should not re-transition, got: {output}"
     );
-}
-
-#[test]
-fn sync_git_heuristic_two_open_states() {
-    let dir = tempdir().unwrap();
-    init_git(dir.path());
-    story(dir.path())
-        .args(["project", "init"])
-        .assert()
-        .success();
-
-    // Default states include in-progress (with role=active).
-    // Remove it and re-add without role to test the heuristic path.
-    story(dir.path())
-        .args(["state", "remove", "in-progress"])
-        .assert()
-        .success();
-    story(dir.path())
-        .args(["state", "add", "in-progress", "--super", "OPEN"])
-        .assert()
-        .success();
-
-    story(dir.path())
-        .args(["new", "Heuristic transition test"])
-        .assert()
-        .success();
-
-    // Claims, so the heuristic's chosen state is what is under test rather
-    // than the claim grammar (SH-124).
-    git_commit(dir.path(), "Implements SH-1");
-
-    let assert = story(dir.path())
-        .args(["sync-git", "--since", "1h"])
-        .assert()
-        .success();
-
-    let output = String::from_utf8_lossy(&assert.get_output().stdout);
-    assert!(
-        output.contains("SH-1: todo"),
-        "expected transition message, got: {output}"
-    );
-    assert!(
-        output.contains("in-progress"),
-        "expected transition to in-progress, got: {output}"
-    );
-
-    // Verify the story is now in-progress
-    story(dir.path())
-        .args(["show", "SH-1"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("state: in-progress"));
 }

@@ -92,7 +92,7 @@ fn state_list_reflects_order() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
-        .args(["state", "reorder", "done,todo,in-progress"])
+        .args(["state", "reorder", "done,todo,blocked,in-progress"])
         .assert()
         .success();
 
@@ -280,12 +280,20 @@ fn state_set_superstate_requires_a_destination_when_occupied() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
+        .args(["state", "add", "in-review", "--super", "OPEN"])
+        .assert()
+        .success();
+    story(dir.path())
         .args(["new", "A story"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["move", "SH-1", "in-review"])
         .assert()
         .success();
 
     story(dir.path())
-        .args(["state", "set", "todo", "--super", "CLOSED"])
+        .args(["state", "set", "in-review", "--super", "CLOSED"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("1 open story"))
@@ -295,7 +303,7 @@ fn state_set_superstate_requires_a_destination_when_occupied() {
     story(dir.path())
         .args(["show", "SH-1"])
         .assert()
-        .stdout(predicate::str::contains("state: todo (OPEN)"));
+        .stdout(predicate::str::contains("state: in-review (OPEN)"));
 }
 
 #[test]
@@ -303,7 +311,15 @@ fn state_set_superstate_migrates_with_a_destination() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
+        .args(["state", "add", "in-review", "--super", "OPEN"])
+        .assert()
+        .success();
+    story(dir.path())
         .args(["new", "A story"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["move", "SH-1", "in-review"])
         .assert()
         .success();
 
@@ -311,7 +327,7 @@ fn state_set_superstate_migrates_with_a_destination() {
         .args([
             "state",
             "set",
-            "todo",
+            "in-review",
             "--super",
             "CLOSED",
             "--move-stories-to",
@@ -335,13 +351,19 @@ fn state_set_superstate_migrates_with_a_destination() {
 fn state_remove_drops_an_empty_state() {
     let dir = tempdir().unwrap();
     init(dir.path());
+    // A state beyond the required floor: the four a project must have cannot
+    // be removed at all (SH-125), so removal itself needs a fifth to remove.
+    story(dir.path())
+        .args(["state", "add", "in-review", "--super", "OPEN"])
+        .assert()
+        .success();
 
     story(dir.path())
-        .args(["state", "remove", "in-progress"])
+        .args(["state", "remove", "in-review"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("removed state in-progress"));
-    assert!(!state_listing(dir.path()).contains("in-progress"));
+        .stdout(predicate::str::contains("removed state in-review"));
+    assert!(!state_listing(dir.path()).contains("in-review"));
 }
 
 #[test]
@@ -349,12 +371,20 @@ fn state_remove_requires_a_destination_when_occupied() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
+        .args(["state", "add", "in-review", "--super", "OPEN"])
+        .assert()
+        .success();
+    story(dir.path())
         .args(["new", "A story"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["move", "SH-1", "in-review"])
         .assert()
         .success();
 
     story(dir.path())
-        .args(["state", "remove", "todo"])
+        .args(["state", "remove", "in-review"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("1 open story"));
@@ -365,7 +395,15 @@ fn state_remove_migrates_with_a_destination() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
+        .args(["state", "add", "in-review", "--super", "OPEN"])
+        .assert()
+        .success();
+    story(dir.path())
         .args(["new", "A story"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["move", "SH-1", "in-review"])
         .assert()
         .success();
 
@@ -373,7 +411,7 @@ fn state_remove_migrates_with_a_destination() {
         .args([
             "state",
             "remove",
-            "todo",
+            "in-review",
             "--move-stories-to",
             "in-progress",
         ])
@@ -413,8 +451,8 @@ fn state_remove_refuses_a_state_with_archived_history() {
         .stderr(predicate::str::contains("1 archived story"));
 }
 
-/// Removing the only CLOSED state fails on the structural rule first — a
-/// project with no CLOSED state has nowhere to finish work — whatever its
+/// Removing a required state fails on the structural rule first — the project
+/// would be left without a state every project must have — whatever its
 /// stories happen to be doing.
 #[test]
 fn state_remove_reports_the_structural_rule_before_story_counts() {
@@ -433,19 +471,31 @@ fn state_remove_reports_the_structural_rule_before_story_counts() {
         .args(["state", "remove", "done"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("at least one OPEN state"));
+        .stderr(predicate::str::contains("every project needs"))
+        .stderr(predicate::str::contains("`done`"));
 }
 
+/// Each of the four is refused, and each refusal names the way out. `done` is
+/// also the only CLOSED state a default project has, so this subsumes the
+/// older "at least one CLOSED state" refusal on this path (SH-125).
 #[test]
-fn state_remove_refuses_the_last_closed_state() {
+fn state_remove_refuses_every_required_state() {
     let dir = tempdir().unwrap();
     init(dir.path());
 
-    story(dir.path())
-        .args(["state", "remove", "done"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("at least one OPEN state"));
+    for slug in ["todo", "in-progress", "blocked", "done"] {
+        story(dir.path())
+            .args(["state", "remove", slug])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("every project needs"))
+            .stderr(predicate::str::contains("story doctor --fix"));
+    }
+
+    let listing = state_listing(dir.path());
+    for slug in ["todo", "in-progress", "blocked", "done"] {
+        assert!(listing.contains(slug), "`{slug}` was removed: {listing}");
+    }
 }
 
 // ============================================================
@@ -458,16 +508,16 @@ fn state_reorder_accepts_csv_and_separate_arguments() {
     init(dir.path());
 
     story(dir.path())
-        .args(["state", "reorder", "done,todo,in-progress"])
+        .args(["state", "reorder", "done,todo,blocked,in-progress"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("done, todo, in-progress"));
+        .stdout(predicate::str::contains("done, todo, blocked, in-progress"));
 
     story(dir.path())
-        .args(["state", "reorder", "todo", "in-progress", "done"])
+        .args(["state", "reorder", "todo", "in-progress", "blocked", "done"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("todo, in-progress, done"));
+        .stdout(predicate::str::contains("todo, in-progress, blocked, done"));
 }
 
 /// The first OPEN state is where `story new` puts a story, so reordering is
@@ -477,7 +527,7 @@ fn state_reorder_changes_where_new_stories_land() {
     let dir = tempdir().unwrap();
     init(dir.path());
     story(dir.path())
-        .args(["state", "reorder", "in-progress,todo,done"])
+        .args(["state", "reorder", "in-progress,todo,blocked,done"])
         .assert()
         .success();
 
@@ -509,7 +559,7 @@ fn state_reorder_rejects_unknown_slugs() {
     init(dir.path());
 
     story(dir.path())
-        .args(["state", "reorder", "todo,in-progress,done,nope"])
+        .args(["state", "reorder", "todo,in-progress,blocked,done,nope"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("`nope` not found"));
