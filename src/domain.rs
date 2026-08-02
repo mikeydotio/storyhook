@@ -1440,62 +1440,459 @@ impl DependencyGraph {
     }
 }
 
-/// Extract story IDs matching `{PREFIX}-{DIGITS}` from text.
-/// Returns unique matches respecting word boundaries:
-/// - Prefix must be preceded by start-of-string or a non-alphanumeric character
-/// - Digits must be followed by end-of-string or a non-digit character
-pub fn extract_story_ids(prefix: &str, text: &str) -> Vec<String> {
-    let mut results = Vec::new();
+/// Why a commit named a story (SH-124).
+///
+/// **The ordering is the merge rule.** One commit may name a story twice — once
+/// in its subject and again in a trailer — and the strongest intent wins, which
+/// [`scan_story_refs`] expresses as `max` over this type. Do not reorder the
+/// variants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReferenceIntent {
+    /// The commit named the story and asserted nothing about working on it.
+    /// `Refs SH-1`, `see SH-1`, or a bare `SH-1` in prose.
+    Mention,
+    /// The commit claimed the story: a claim word sits immediately before the
+    /// id. `Closes SH-1`, `implements SH-1`.
+    Claim,
+}
+
+/// One story named by one commit, carrying the intent that naming had.
+///
+/// # Why this is not a `String` (SH-124)
+///
+/// The predecessor returned `Vec<String>`, which cannot say "named, but nobody
+/// claimed work". `commit_sync` therefore had no way to tell a cross-reference
+/// from a claim of ownership, and moved every mentioned story into the active
+/// state — silently removing it from `story next` and `story list --ready`,
+/// which both exclude in-progress. The defect was expressible only because the
+/// return type threw the distinction away; carrying it here makes the wrong
+/// behaviour unwritable rather than merely unwritten.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoryReference {
+    /// The id exactly as the commit wrote it.
+    pub id: String,
+    /// Why the commit named it.
+    pub intent: ReferenceIntent,
+}
+
+impl StoryReference {
+    /// Whether this reference claims the story, and so may move it.
+    #[must_use]
+    pub fn claims(&self) -> bool {
+        self.intent == ReferenceIntent::Claim
+    }
+}
+
+/// A word that may precede a story id, and whether it claims the story.
+struct RefWord {
+    word: &'static str,
+    claims: bool,
+}
+
+/// Every word this grammar knows, and what it means.
+///
+/// **The table is the documentation and the test fixture at once.** The
+/// `claims: false` rows are never consulted by the matcher — a bare id is a
+/// mention already — they exist so `every_word_in_the_table_behaves_as_the_table_says`
+/// pins them in the *negative* direction. A word moved between the two groups
+/// changes behaviour and fails that test immediately, rather than drifting.
+///
+/// `refs` heads the non-claiming rows because `Refs CAL-21, CAL-28, CAL-29` is
+/// the trailer that caused SH-124. `story` is there because this repository
+/// writes `Story: SH-107` as a real per-commit trailer, and it must never
+/// become a claim word through a careless edit.
+static REF_WORDS: &[RefWord] = &[
+    RefWord {
+        word: "close",
+        claims: true,
+    },
+    RefWord {
+        word: "closes",
+        claims: true,
+    },
+    RefWord {
+        word: "closed",
+        claims: true,
+    },
+    RefWord {
+        word: "fix",
+        claims: true,
+    },
+    RefWord {
+        word: "fixes",
+        claims: true,
+    },
+    RefWord {
+        word: "fixed",
+        claims: true,
+    },
+    RefWord {
+        word: "resolve",
+        claims: true,
+    },
+    RefWord {
+        word: "resolves",
+        claims: true,
+    },
+    RefWord {
+        word: "resolved",
+        claims: true,
+    },
+    RefWord {
+        word: "implement",
+        claims: true,
+    },
+    RefWord {
+        word: "implements",
+        claims: true,
+    },
+    RefWord {
+        word: "implemented",
+        claims: true,
+    },
+    RefWord {
+        word: "implementing",
+        claims: true,
+    },
+    RefWord {
+        word: "complete",
+        claims: true,
+    },
+    RefWord {
+        word: "completes",
+        claims: true,
+    },
+    RefWord {
+        word: "completed",
+        claims: true,
+    },
+    RefWord {
+        word: "start",
+        claims: true,
+    },
+    RefWord {
+        word: "starts",
+        claims: true,
+    },
+    RefWord {
+        word: "started",
+        claims: true,
+    },
+    RefWord {
+        word: "starting",
+        claims: true,
+    },
+    RefWord {
+        word: "wip",
+        claims: true,
+    },
+    RefWord {
+        word: "refs",
+        claims: false,
+    },
+    RefWord {
+        word: "ref",
+        claims: false,
+    },
+    RefWord {
+        word: "references",
+        claims: false,
+    },
+    RefWord {
+        word: "see",
+        claims: false,
+    },
+    RefWord {
+        word: "related",
+        claims: false,
+    },
+    RefWord {
+        word: "part",
+        claims: false,
+    },
+    RefWord {
+        word: "mentions",
+        claims: false,
+    },
+    RefWord {
+        word: "cc",
+        claims: false,
+    },
+    RefWord {
+        word: "re",
+        claims: false,
+    },
+    RefWord {
+        word: "tracks",
+        claims: false,
+    },
+    RefWord {
+        word: "blocks",
+        claims: false,
+    },
+    RefWord {
+        word: "story",
+        claims: false,
+    },
+];
+
+/// Words that cancel a claim when they sit immediately before the claim word.
+///
+/// **Frozen at five, and frozen means frozen.** This is not a negation parser;
+/// natural language has no finite hand-rollable grammar and this does not
+/// pretend otherwise. It is a one-way valve: it can only demote a `Claim` to a
+/// `Mention`, never manufacture one, so its incompleteness buys *under*-claiming
+/// — and under-claiming is the visible failure, because `commit-sync`'s report
+/// names what it declined to act on, while over-claiming is the silent
+/// accumulating defect SH-124 exists to remove.
+///
+/// Growing this list is a design change, not a bug fix.
+/// `the_negation_list_is_frozen_at_five` fails if it grows.
+static NEGATIONS: [&str; 5] = ["not", "no", "never", "without", "unless"];
+
+/// The subject `git revert` writes, verbatim.
+///
+/// An exact match on git's own generated format rather than an inference about
+/// English, which is why this earns a place where a general natural-language
+/// rule would not.
+const REVERT_SUBJECT_PREFIX: &str = "Revert \"";
+
+/// Whether `word` claims a story it precedes.
+fn claim_word(word: &str) -> bool {
+    let folded = word.to_ascii_lowercase();
+    REF_WORDS
+        .iter()
+        .find(|entry| entry.word == folded)
+        .is_some_and(|entry| entry.claims)
+}
+
+/// Whether `word` cancels a claim it precedes.
+fn negates(word: &str) -> bool {
+    let folded = word.to_ascii_lowercase();
+    NEGATIONS.contains(&folded.as_str()) || folded.ends_with("n't")
+}
+
+/// Every `{PREFIX}-{DIGITS}` in one line, as `(start, end)` byte offsets.
+///
+/// Word boundaries as they have always been: the prefix must start the string
+/// or follow a non-alphanumeric byte, and the digits stop at the first
+/// non-digit. `PUSH-123` is not `SH-123`, and `SH-1SH-2` is one id.
+fn ids_in_line(prefix: &str, line: &str) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
     let prefix_bytes = prefix.as_bytes();
-    let text_bytes = text.as_bytes();
+    let bytes = line.as_bytes();
     let prefix_len = prefix_bytes.len();
-    let text_len = text_bytes.len();
 
     let mut i = 0;
-    while i + prefix_len < text_len {
-        // Check word boundary: preceded by start-of-string or non-alphanumeric
-        if i > 0 && text_bytes[i - 1].is_ascii_alphanumeric() {
+    while i + prefix_len < bytes.len() {
+        if i > 0 && bytes[i - 1].is_ascii_alphanumeric() {
             i += 1;
             continue;
         }
-
-        // Check prefix match
-        if &text_bytes[i..i + prefix_len] != prefix_bytes {
+        if &bytes[i..i + prefix_len] != prefix_bytes {
             i += 1;
             continue;
         }
-
-        // Check dash after prefix
-        let dash_pos = i + prefix_len;
-        if dash_pos >= text_len || text_bytes[dash_pos] != b'-' {
+        let dash = i + prefix_len;
+        if dash >= bytes.len() || bytes[dash] != b'-' {
             i += 1;
             continue;
         }
-
-        // Read digits after dash
-        let digits_start = dash_pos + 1;
+        let digits_start = dash + 1;
         let mut digits_end = digits_start;
-        while digits_end < text_len && text_bytes[digits_end].is_ascii_digit() {
+        while digits_end < bytes.len() && bytes[digits_end].is_ascii_digit() {
             digits_end += 1;
         }
-
         if digits_end == digits_start {
-            // No digits found
             i += 1;
             continue;
         }
-
-        // Boundary check: next char must be end-of-string or non-digit
-        // (already satisfied since we stopped reading at non-digit)
-
-        let matched = &text[i..digits_end];
-        if !results.contains(&matched.to_string()) {
-            results.push(matched.to_string());
-        }
+        found.push((i, digits_end));
         i = digits_end;
     }
+    found
+}
 
-    results
+/// Whether the text between two ids joins them into one run.
+///
+/// A run is ids separated by nothing but whitespace, `,`, `&` and the word
+/// `and`, so `Closes SH-1, SH-2 and SH-3` claims three. The first token that is
+/// none of those ends the run, which is what leaves `see SH-2` a mention in
+/// `Closes SH-1, see SH-2`.
+fn joins_a_run(gap: &str) -> bool {
+    let stripped: String = gap
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ',' && *c != '&')
+        .collect();
+    stripped.is_empty() || stripped.eq_ignore_ascii_case("and")
+}
+
+/// Which separator sits between a claim word and the id it precedes.
+enum Separator {
+    /// Whitespace alone. Claims unconditionally.
+    Whitespace,
+    /// A colon, then whitespace. Claims only when the id run is the whole
+    /// remainder of the line — see [`intent_for_run`].
+    Colon,
+}
+
+/// The claim word immediately before `id_start`, where it starts, and how it is
+/// separated from the id.
+///
+/// `None` when nothing there can claim: no whitespace before the id (which is
+/// what makes `fix:SH-1` a mention), or no word before the whitespace.
+fn preceding_word(line: &str, id_start: usize) -> Option<(&str, usize, Separator)> {
+    let bytes = line.as_bytes();
+    let mut at = id_start;
+
+    // An optional single `#`, so `Fixes #SH-1` reads like GitHub.
+    if at > 0 && bytes[at - 1] == b'#' {
+        at -= 1;
+    }
+
+    // Whitespace is mandatory. Its absence is the whole reason `fix:SH-1`
+    // cannot claim: a colon with nothing after it is not a trailer.
+    let whitespace_end = at;
+    while at > 0 && (bytes[at - 1] == b' ' || bytes[at - 1] == b'\t') {
+        at -= 1;
+    }
+    if at == whitespace_end {
+        return None;
+    }
+
+    let separator = if at > 0 && bytes[at - 1] == b':' {
+        at -= 1;
+        Separator::Colon
+    } else {
+        Separator::Whitespace
+    };
+
+    let word_end = at;
+    while at > 0 && bytes[at - 1].is_ascii_alphanumeric() {
+        at -= 1;
+    }
+    (at < word_end).then(|| (&line[at..word_end], at, separator))
+}
+
+/// The word before `word_start`, for the negation lookback.
+fn word_before(line: &str, word_start: usize) -> &str {
+    let bytes = line.as_bytes();
+    let mut at = word_start;
+    while at > 0 && (bytes[at - 1] == b' ' || bytes[at - 1] == b'\t') {
+        at -= 1;
+    }
+    let end = at;
+    while at > 0 && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'\'') {
+        at -= 1;
+    }
+    &line[at..end]
+}
+
+/// The intent of one run of ids on one line.
+///
+/// Gates, in order: the claim word, the negation lookback, and — for a colon
+/// separator only — the whole-remainder rule. The revert ceiling is applied by
+/// the caller, which is the only place that knows the line number.
+fn intent_for_run(line: &str, run_start: usize, run_end: usize) -> ReferenceIntent {
+    let Some((word, word_start, separator)) = preceding_word(line, run_start) else {
+        return ReferenceIntent::Mention;
+    };
+    if !claim_word(word) {
+        return ReferenceIntent::Mention;
+    }
+    if negates(word_before(line, word_start)) {
+        return ReferenceIntent::Mention;
+    }
+
+    if let Separator::Colon = separator {
+        // `git-interpret-trailers` defines a trailer as `token: value` where the
+        // value runs to end of line. Honouring the colon only in that shape is
+        // what accepts `Closes: SH-1` while rejecting `fix: SH-12 broken
+        // parser`, where the colon is a Conventional Commits *type* rather than
+        // a trailer key.
+        let rest = line[run_end..].trim();
+        if !(rest.is_empty() || rest == "." || rest == ";") {
+            return ReferenceIntent::Mention;
+        }
+    }
+
+    ReferenceIntent::Claim
+}
+
+/// Every story a commit message names, and why it named each one (SH-124).
+///
+/// Ids are unique and keep first-appearance order. One id named twice keeps the
+/// strongest intent, merged with `max` over [`ReferenceIntent`], so the caller
+/// never sees two entries for one story.
+///
+/// # The grammar
+///
+/// An id **claims** its story when, on the same physical line, a claim word
+/// immediately precedes it via one of two separators:
+///
+/// - **whitespace** — `Closes SH-1`. Claims unconditionally, anywhere on the
+///   line. Position is deliberately unanchored: `fixed SH-20`, `completed
+///   SH-27` and `start SH-41` all appear mid-prose as genuine claims in this
+///   repository's own history, and anchoring to line-start would repeat SH-58's
+///   mistake at a different position.
+/// - **a colon, then whitespace** — `Closes: SH-1`, and only when the id run is
+///   the whole remainder of the line.
+///
+/// Two gates may only *demote* a claim, never create one: a `Revert "…"` subject
+/// claims nothing on its first line, and [`NEGATIONS`] before the claim word
+/// cancels it.
+///
+/// Everything else — `Refs SH-1`, `see SH-1`, a bare `SH-1` — is a
+/// [`ReferenceIntent::Mention`], which still links.
+pub fn scan_story_refs(prefix: &str, message: &str) -> Vec<StoryReference> {
+    let mut order: Vec<String> = Vec::new();
+    let mut intents: BTreeMap<String, ReferenceIntent> = BTreeMap::new();
+
+    // `git revert` copies only the original subject into line 1, so line 1 is
+    // the whole hazard surface. Suppressing the entire message instead would
+    // discard a reverter's own hand-written `Closes SH-9 (tracking the revert)`.
+    let reverted_subject = message.starts_with(REVERT_SUBJECT_PREFIX);
+
+    for (number, line) in message.lines().enumerate() {
+        let occurrences = ids_in_line(prefix, line);
+        let mut index = 0;
+        while index < occurrences.len() {
+            // Extend the run while consecutive ids are joined by nothing but
+            // whitespace, `,`, `&` or `and`.
+            let mut last = index;
+            while last + 1 < occurrences.len()
+                && joins_a_run(&line[occurrences[last].1..occurrences[last + 1].0])
+            {
+                last += 1;
+            }
+
+            let intent = if reverted_subject && number == 0 {
+                ReferenceIntent::Mention
+            } else {
+                intent_for_run(line, occurrences[index].0, occurrences[last].1)
+            };
+
+            for (start, end) in &occurrences[index..=last] {
+                let id = line[*start..*end].to_string();
+                match intents.get_mut(&id) {
+                    Some(existing) => *existing = (*existing).max(intent),
+                    None => {
+                        order.push(id.clone());
+                        intents.insert(id, intent);
+                    }
+                }
+            }
+            index = last + 1;
+        }
+    }
+
+    order
+        .into_iter()
+        .map(|id| StoryReference {
+            intent: intents[&id],
+            id,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2190,42 +2587,288 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn extract_story_ids_single_match() {
-        assert_eq!(super::extract_story_ids("SH", "Fix SH-1 bug"), vec!["SH-1"]);
+    // -----------------------------------------------------------------------
+    // `scan_story_refs` — the boundary rules, unchanged from `extract_story_ids`
+    //
+    // These six re-point at the new scanner. What they pin — where an id starts
+    // and ends — is exactly what it always was, and must stay pinned: SH-124
+    // changed why a commit names a story, never what counts as a name.
+    // -----------------------------------------------------------------------
+
+    /// Every id the scanner found, in order, ignoring intent.
+    fn ids(prefix: &str, text: &str) -> Vec<String> {
+        super::scan_story_refs(prefix, text)
+            .into_iter()
+            .map(|reference| reference.id)
+            .collect()
+    }
+
+    /// Only the ids the message *claims*.
+    fn claimed(text: &str) -> Vec<String> {
+        super::scan_story_refs("SH", text)
+            .into_iter()
+            .filter(super::StoryReference::claims)
+            .map(|reference| reference.id)
+            .collect()
+    }
+
+    /// Whether a message claims exactly the ids named, and nothing else.
+    #[track_caller]
+    fn claims_exactly(text: &str, expected: &[&str]) {
+        assert_eq!(claimed(text), expected, "claims of {text:?}");
     }
 
     #[test]
-    fn extract_story_ids_multiple_matches() {
+    fn scan_finds_a_single_id() {
+        assert_eq!(ids("SH", "Fix SH-1 bug"), vec!["SH-1"]);
+    }
+
+    #[test]
+    fn scan_finds_several_ids() {
+        assert_eq!(ids("SH", "SH-1 and SH-2"), vec!["SH-1", "SH-2"]);
+    }
+
+    #[test]
+    fn scan_finds_nothing_in_text_without_ids() {
+        let none: Vec<String> = Vec::new();
+        assert_eq!(ids("SH", "no matches here"), none);
+    }
+
+    #[test]
+    fn scan_honours_a_custom_prefix() {
+        assert_eq!(ids("API", "API-42 done"), vec!["API-42"]);
+    }
+
+    #[test]
+    fn scan_does_not_match_inside_a_word() {
+        let none: Vec<String> = Vec::new();
+        assert_eq!(ids("SH", "PUSH-123"), none);
+    }
+
+    #[test]
+    fn scan_needs_a_boundary_between_two_ids() {
+        assert_eq!(ids("SH", "SH-1SH-2"), vec!["SH-1"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // The claim grammar (SH-124)
+    // -----------------------------------------------------------------------
+
+    /// The reported defect, verbatim from the story: the trailer shape that
+    /// moved five stories in `scad-caliper` must claim nothing.
+    #[test]
+    fn a_refs_trailer_over_a_list_claims_nothing() {
+        let scanned = super::scan_story_refs("CAL", "Refs CAL-21, CAL-28, CAL-29");
         assert_eq!(
-            super::extract_story_ids("SH", "SH-1 and SH-2"),
-            vec!["SH-1", "SH-2"]
+            scanned.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["CAL-21", "CAL-28", "CAL-29"],
+            "all three still link"
+        );
+        assert!(
+            scanned.iter().all(|r| !r.claims()),
+            "none of them may claim: {scanned:?}"
         );
     }
 
     #[test]
-    fn extract_story_ids_no_matches() {
-        let result: Vec<String> = Vec::new();
-        assert_eq!(super::extract_story_ids("SH", "no matches here"), result);
+    fn a_bare_mention_links_without_claiming() {
+        claims_exactly("This is groundwork for SH-1, which stays open.", &[]);
+        assert_eq!(ids("SH", "groundwork for SH-1"), vec!["SH-1"]);
     }
 
     #[test]
-    fn extract_story_ids_custom_prefix() {
+    fn a_claim_word_before_the_id_claims_it() {
+        claims_exactly("Closes SH-1", &["SH-1"]);
+        claims_exactly("feat: land the thing\n\nCloses SH-1", &["SH-1"]);
+    }
+
+    #[test]
+    fn a_claim_word_is_matched_case_insensitively() {
+        for spelling in ["Closes", "closes", "CLOSES", "CloSeS"] {
+            claims_exactly(&format!("{spelling} SH-1"), &["SH-1"]);
+        }
+    }
+
+    /// Position is unanchored, and this is why: all three are real commit lines
+    /// from this repository's own history.
+    #[test]
+    fn a_claim_word_claims_from_the_middle_of_a_line() {
+        claims_exactly(
+            "Reconciled stale state from sessions 1-5, fixed SH-20",
+            &["SH-20"],
+        );
+        claims_exactly("archive corruption, completed SH-27 (clippy).", &["SH-27"]);
+        claims_exactly(
+            "chore(storyhook): start SH-41 and file the defect",
+            &["SH-41"],
+        );
+    }
+
+    // --- the colon tier -----------------------------------------------------
+
+    /// A git trailer: `token: value` where the value is the whole rest of the
+    /// line.
+    #[test]
+    fn a_colon_trailer_claims_when_the_id_is_the_whole_remainder() {
+        claims_exactly("Closes: SH-1", &["SH-1"]);
+        claims_exactly("Closes: SH-1.", &["SH-1"]);
+        claims_exactly("Closes: SH-1;", &["SH-1"]);
+        claims_exactly("Closes: SH-1, SH-2", &["SH-1", "SH-2"]);
+    }
+
+    /// The decisive case. Here the colon is a Conventional Commits *type*, not a
+    /// trailer key, and the id is merely the first word of a description.
+    #[test]
+    fn a_conventional_commits_subject_does_not_claim() {
+        claims_exactly("fix: SH-12 broken parser", &[]);
+        claims_exactly("fix: SH-12 and SH-13 both need attention", &[]);
         assert_eq!(
-            super::extract_story_ids("API", "API-42 done"),
-            vec!["API-42"]
+            ids("SH", "fix: SH-12 broken parser"),
+            vec!["SH-12"],
+            "it still links"
+        );
+    }
+
+    /// A colon with nothing after it is not a trailer.
+    #[test]
+    fn a_colon_without_whitespace_never_claims() {
+        claims_exactly("fix:SH-1", &[]);
+        claims_exactly("Closes:SH-1", &[]);
+    }
+
+    /// The whitespace tier carries no whole-remainder rule, and must not: both
+    /// of these are real commit lines here, and a global rule would break them.
+    #[test]
+    fn the_whole_remainder_rule_binds_only_the_colon_tier() {
+        claims_exactly("Closes SH-123. Refs SH-113, SH-112.", &["SH-123"]);
+        claims_exactly("Closes SH-46. Part of the W7 repo cutover.", &["SH-46"]);
+        claims_exactly("Fixes SH-1 and SH-2 in one go", &["SH-1", "SH-2"]);
+    }
+
+    /// This repository writes `Story: SH-107` as a per-commit trailer. It is a
+    /// bookkeeping pointer, never a claim.
+    #[test]
+    fn a_story_trailer_is_a_mention_not_a_claim() {
+        claims_exactly("Story: SH-107", &[]);
+        assert_eq!(ids("SH", "Story: SH-107"), vec!["SH-107"], "it still links");
+    }
+
+    // --- runs ---------------------------------------------------------------
+
+    #[test]
+    fn a_claim_distributes_over_a_joined_run() {
+        claims_exactly("Closes SH-1, SH-2 and SH-3", &["SH-1", "SH-2", "SH-3"]);
+        claims_exactly("Fixes SH-1 & SH-2", &["SH-1", "SH-2"]);
+    }
+
+    /// The run ends at the first token that is neither an id nor a joiner.
+    #[test]
+    fn a_run_ends_at_a_word_that_is_not_a_joiner() {
+        claims_exactly("Closes SH-1, see SH-2", &["SH-1"]);
+        assert_eq!(ids("SH", "Closes SH-1, see SH-2"), vec!["SH-1", "SH-2"]);
+    }
+
+    // --- merging ------------------------------------------------------------
+
+    #[test]
+    fn one_id_claimed_and_mentioned_yields_one_claim() {
+        claims_exactly("Refs SH-1\n\nCloses SH-1", &["SH-1"]);
+        claims_exactly("Closes SH-1\n\nRefs SH-1", &["SH-1"]);
+        assert_eq!(
+            super::scan_story_refs("SH", "Refs SH-1\n\nCloses SH-1").len(),
+            1,
+            "one entry per id"
+        );
+    }
+
+    /// A claim word and its id must share a line — `%B` is multi-line, and a
+    /// trailer key at the end of one line does not reach across to the next.
+    #[test]
+    fn a_claim_word_does_not_reach_across_a_line_break() {
+        claims_exactly("Closes\nSH-1", &[]);
+    }
+
+    // --- the two demote-only gates -----------------------------------------
+
+    #[test]
+    fn a_revert_subject_claims_nothing_on_its_own_line() {
+        claims_exactly("Revert \"feat: closes SH-1\"", &[]);
+        assert_eq!(
+            ids("SH", "Revert \"feat: closes SH-1\""),
+            vec!["SH-1"],
+            "a revert still links, which is what you want to read later"
+        );
+    }
+
+    /// The ceiling is line 1 only: below it are the reverter's own words.
+    #[test]
+    fn a_reverts_own_body_still_claims() {
+        claims_exactly(
+            "Revert \"feat: closes SH-1\"\n\nThis reverts commit abc123.\nCloses SH-9",
+            &["SH-9"],
         );
     }
 
     #[test]
-    fn extract_story_ids_no_false_positive_inside_word() {
-        let result: Vec<String> = Vec::new();
-        assert_eq!(super::extract_story_ids("SH", "PUSH-123"), result);
+    fn a_negation_before_the_claim_word_cancels_the_claim() {
+        claims_exactly("This does not close SH-5", &[]);
+        claims_exactly("won't fix SH-5", &[]);
+        claims_exactly("doesn't close SH-5", &[]);
+        claims_exactly("never fixes SH-5", &[]);
+        claims_exactly("without closing SH-5", &[]);
     }
 
+    /// A negation only ever demotes, so the link survives it.
     #[test]
-    fn extract_story_ids_no_boundary_between_ids() {
-        assert_eq!(super::extract_story_ids("SH", "SH-1SH-2"), vec!["SH-1"]);
+    fn a_negated_claim_still_links() {
+        assert_eq!(ids("SH", "This does not close SH-5"), vec!["SH-5"]);
+    }
+
+    // --- the tables are the documentation ----------------------------------
+
+    /// Every row of the registry, exercised in both directions. A word moved
+    /// between the two groups fails here rather than drifting silently.
+    #[test]
+    fn every_word_in_the_table_behaves_as_the_table_says() {
+        for entry in super::REF_WORDS {
+            let message = format!("{} SH-1", entry.word);
+            let claims = !claimed(&message).is_empty();
+            assert_eq!(
+                claims, entry.claims,
+                "`{}` is registered claims={} but behaves claims={claims}",
+                entry.word, entry.claims
+            );
+            assert_eq!(
+                ids("SH", &message),
+                vec!["SH-1"],
+                "`{}` must link either way",
+                entry.word
+            );
+        }
+    }
+
+    /// Frozen at five. Growing this list is a design change, not a bug fix.
+    #[test]
+    fn the_negation_list_is_frozen_at_five() {
+        assert_eq!(
+            super::NEGATIONS.len(),
+            5,
+            "the negation list is frozen; growing it is a design change"
+        );
+        claims_exactly("hardly fixes SH-5", &["SH-5"]);
+    }
+
+    /// Closing implies working, so every word the post-merge hook closes on must
+    /// also claim here. Otherwise a story could be closed by a merge without
+    /// commit-sync ever having seen it active.
+    #[test]
+    fn every_closing_keyword_the_merge_hook_knows_also_claims() {
+        for word in ["close", "closes", "fix", "fixes", "resolve", "resolves"] {
+            assert!(
+                super::claim_word(word),
+                "`{word}` closes a story in the post-merge hook but does not claim here"
+            );
+        }
     }
 
     #[test]

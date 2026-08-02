@@ -174,7 +174,9 @@ fn the_comment_and_the_transition_are_one_atomic_batch() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Referenced");
-    commit(&fixture, &format!("feat: land {id}"));
+    // A claim, not a bare mention: only a claim moves a story (SH-124), and
+    // this test is about the move landing in the same batch as the comment.
+    commit(&fixture, &format!("feat: closes {id}"));
     sync(&fixture).expect("syncing");
 
     let events = events_of(&fixture, StoryNo::new(1));
@@ -206,7 +208,10 @@ fn the_project_setting_can_turn_the_transition_off() {
             )
         })
         .expect("writing settings");
-    commit(&fixture, &format!("feat: land {id}"));
+    // A commit that *would* have claimed. Without the claim word this test
+    // would pass for the wrong reason — the grammar rather than the setting —
+    // and would stop guarding the switch it names.
+    commit(&fixture, &format!("feat: closes {id}"));
     let message = sync(&fixture).expect("syncing");
 
     assert!(
@@ -222,7 +227,7 @@ fn an_absent_setting_leaves_the_transition_on() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Referenced");
-    commit(&fixture, &format!("feat: land {id}"));
+    commit(&fixture, &format!("feat: closes {id}"));
     let message = sync(&fixture).expect("syncing");
     assert!(
         message.contains(&format!("{id}: todo \u{2192} in-progress")),
@@ -244,7 +249,10 @@ fn commit_sync_fires_no_event_hooks() {
         marker.display()
     ));
     let id = create(&fixture, "Referenced");
-    commit(&fixture, &format!("feat: land {id}"));
+    // Claims, so that both hooks under test have something to fire *about*: a
+    // bare mention would leave no state change, and half this assertion would
+    // pass vacuously.
+    commit(&fixture, &format!("feat: closes {id}"));
     sync(&fixture).expect("syncing");
     assert!(
         !marker.exists(),
@@ -334,8 +342,10 @@ fn several_commits_naming_one_story_comment_it_each_time_and_move_it_once() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Busy story");
+    // Every one of them claims. The point is that the *second* and *third*
+    // claims change nothing, not that they failed to claim.
     for part in ["one", "two", "three"] {
-        commit(&fixture, &format!("feat: {id} part {part}"));
+        commit(&fixture, &format!("feat: fixes {id} part {part}"));
     }
 
     let message = sync(&fixture).expect("syncing");
@@ -415,7 +425,9 @@ fn a_story_already_out_of_the_default_state_is_commented_but_not_moved() {
     StoryService::new(&fixture.ctx())
         .set_state(&id, "in-progress", None, None)
         .expect("moving it on");
-    commit(&fixture, &format!("fix: more work on {id}"));
+    // It must *claim*. With a bare mention the story would stay put because of
+    // the grammar, and this test would prove nothing about the state it is in.
+    commit(&fixture, &format!("fix: fixes {id}, more work"));
 
     let message = sync(&fixture).expect("syncing");
     assert!(
@@ -424,6 +436,177 @@ fn a_story_already_out_of_the_default_state_is_commented_but_not_moved() {
     );
     assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 1);
     assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "in-progress");
+}
+
+// ---------------------------------------------------------------------------
+// SH-124: a mention links, a claim moves
+// ---------------------------------------------------------------------------
+
+/// The defect, at the service layer: the trailer shape that moved five stories
+/// in a sibling project links and changes nothing.
+#[test]
+fn a_bare_mention_links_the_commit_and_leaves_the_state_alone() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Merely referenced");
+    commit_with_body(&fixture, "feat: something else", &format!("Refs {id}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        !message.contains('\u{2192}'),
+        "a bare mention must not move a story: {message}"
+    );
+    assert_eq!(
+        comments_of(&fixture, StoryNo::new(1)).len(),
+        1,
+        "but it must still be linked — the comment trail is the useful half"
+    );
+    assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "todo");
+}
+
+/// A `Refs` trailer over a list: every id links, none of them claims.
+#[test]
+fn a_refs_trailer_over_a_list_moves_none_of_them() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let first = create(&fixture, "One");
+    let second = create(&fixture, "Two");
+    let third = create(&fixture, "Three");
+    commit_with_body(
+        &fixture,
+        "chore: unrelated work",
+        &format!("Refs {first}, {second}, {third}"),
+    );
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(!message.contains('\u{2192}'), "{message}");
+    for number in 1..=3 {
+        assert_eq!(
+            snapshot_of(&fixture, StoryNo::new(number)).state,
+            "todo",
+            "story {number} must not have moved"
+        );
+        assert_eq!(comments_of(&fixture, StoryNo::new(number)).len(), 1);
+    }
+}
+
+/// A git trailer claims: `Key: value` where the value is the whole line.
+#[test]
+fn a_colon_trailer_claims_and_moves_the_story() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Claimed by a trailer");
+    commit_with_body(&fixture, "feat: land the thing", &format!("Closes: {id}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.contains(&format!("{id}: todo \u{2192} in-progress")),
+        "{message}"
+    );
+}
+
+/// The decisive case the council split on: here the colon is a Conventional
+/// Commits *type*, not a trailer key, and the id is the first word of a
+/// description rather than the whole value.
+#[test]
+fn a_conventional_commits_subject_links_without_claiming() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Named in a subject");
+    commit(&fixture, &format!("fix: {id} broken parser"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        !message.contains('\u{2192}'),
+        "a CC type prefix is not a trailer key: {message}"
+    );
+    assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "todo");
+}
+
+/// One commit, two stories, two different intents.
+#[test]
+fn one_commit_may_claim_one_story_and_merely_mention_another() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let claimed = create(&fixture, "Worked on");
+    let mentioned = create(&fixture, "Merely related");
+    commit_with_body(
+        &fixture,
+        "feat: the work",
+        &format!("Closes {claimed}\nRefs {mentioned}"),
+    );
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.contains(&format!("{claimed}: todo \u{2192} in-progress")),
+        "{message}"
+    );
+    assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "in-progress");
+    assert_eq!(
+        snapshot_of(&fixture, StoryNo::new(2)).state,
+        "todo",
+        "the mentioned story must not have been dragged along"
+    );
+    assert_eq!(comments_of(&fixture, StoryNo::new(2)).len(), 1);
+}
+
+/// Without this line a project whose commits use no claim word cannot tell
+/// "auto-transition is off" from "auto-transition is broken".
+#[test]
+fn the_report_names_the_stories_it_linked_without_claiming() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Merely referenced");
+    commit_with_body(&fixture, "feat: something", &format!("Refs {id}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.contains("linked without claiming"),
+        "the run must say what it declined to move: {message}"
+    );
+    assert!(message.contains(&id), "{message}");
+}
+
+/// A story that some commit claimed is not reported as merely linked, however
+/// many other commits only mentioned it.
+#[test]
+fn a_claimed_story_is_not_also_reported_as_linked_only() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Mentioned then claimed");
+    commit_with_body(&fixture, "chore: groundwork", &format!("Refs {id}"));
+    commit_with_body(&fixture, "feat: the work", &format!("Closes {id}"));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        message.contains(&format!("{id}: todo \u{2192} in-progress")),
+        "{message}"
+    );
+    assert!(
+        !message.contains("linked without claiming"),
+        "it was claimed, so it must not be listed as linked-only: {message}"
+    );
+}
+
+/// `git revert` copies the original subject into line 1, keywords and all.
+#[test]
+fn a_revert_does_not_claim_the_story_its_quoted_subject_names() {
+    let fixture = ServiceFixture::new();
+    git_init(&fixture);
+    let id = create(&fixture, "Reverted work");
+    commit(&fixture, &format!("Revert \"feat: closes {id}\""));
+
+    let message = sync(&fixture).expect("syncing");
+    assert!(
+        !message.contains('\u{2192}'),
+        "a revert re-states the original subject; it does not claim it: {message}"
+    );
+    assert_eq!(
+        comments_of(&fixture, StoryNo::new(1)).len(),
+        1,
+        "the revert is still linked, which is what you want to read later"
+    );
 }
 
 #[test]
@@ -486,11 +669,21 @@ fn a_pinned_clock_stamps_every_event_the_run_writes() {
     let mut fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Referenced");
-    commit(&fixture, &format!("feat: land {id}"));
+    // Claims, so the run writes a `StoryStateChanged` as well as a link. A bare
+    // mention would leave only the link, and this loop would keep passing while
+    // covering half of what its name promises.
+    commit(&fixture, &format!("feat: closes {id}"));
     fixture.set_clock(Clock::Fixed("2030-06-01T12:00:00Z".to_string()));
     sync(&fixture).expect("syncing");
 
-    for event in events_of(&fixture, StoryNo::new(1)).iter().skip(1) {
+    let events = events_of(&fixture, StoryNo::new(1));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, StoryEvent::StoryStateChanged { .. })),
+        "the run must have written a state change for this loop to be worth running: {events:?}"
+    );
+    for event in events.iter().skip(1) {
         let at = match event {
             StoryEvent::StoryCommitLinked { at, .. } | StoryEvent::StoryStateChanged { at, .. } => {
                 at.as_str()
@@ -742,4 +935,100 @@ fn a_link_record_is_indistinguishable_from_the_comment_it_replaced() {
          string is rendered by `story list --stale`"
     );
     fixture.assert_no_drift();
+}
+
+// ---------------------------------------------------------------------------
+// SH-124: the two grammars must not drift apart
+// ---------------------------------------------------------------------------
+
+/// Every `.rs` file under `src/`, with its path relative to the crate root.
+fn sources() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                walk(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
+    assert!(
+        files.len() > 20,
+        "expected the whole tree, got {}",
+        files.len()
+    );
+    files
+}
+
+/// Closing implies working, so the post-merge hook must not be able to close a
+/// story `commit-sync` would never have claimed — otherwise a merge could close
+/// a story that was never seen active.
+///
+/// This reads the hook's own alternation out of `src/hooks.rs` rather than
+/// restating it, so editing one grammar without the other fails here.
+#[test]
+fn every_keyword_the_merge_hook_closes_on_also_claims() {
+    let hooks = sources()
+        .into_iter()
+        .find(|(path, _)| path.ends_with("hooks.rs"))
+        .expect("src/hooks.rs")
+        .1;
+
+    let alternation = hooks
+        .split_once("(closes?|fixes?|resolves?)")
+        .map(|_| ["close", "closes", "fix", "fixes", "resolve", "resolves"])
+        .expect(
+            "src/hooks.rs no longer contains the alternation `(closes?|fixes?|resolves?)`. \
+             The post-merge hook's closing grammar changed; update this test AND \
+             `REF_WORDS` together, because a word that closes a story must also claim it.",
+        );
+
+    for word in alternation {
+        let scanned = storyhook::domain::scan_story_refs("SH", &format!("{word} SH-1"));
+        assert!(
+            scanned
+                .first()
+                .is_some_and(storyhook::domain::StoryReference::claims),
+            "`{word}` closes a story in the post-merge hook but does not claim it in \
+             commit-sync, so a merge could close a story that was never active"
+        );
+    }
+}
+
+/// `ReferenceIntent::Claim` is constructed in exactly one module.
+///
+/// The defect SH-124 fixed was a caller deciding for itself what a reference
+/// meant. Keeping construction in `domain.rs` is what makes the grammar one
+/// thing rather than a rule each caller reimplements; a service that builds a
+/// `Claim` of its own has reintroduced the defect's shape.
+#[test]
+fn a_claim_is_constructed_in_exactly_one_module() {
+    let offenders: Vec<String> = sources()
+        .into_iter()
+        .filter(|(path, _)| !path.ends_with("domain.rs"))
+        .filter(|(_, text)| {
+            text.lines()
+                .map(str::trim_start)
+                .filter(|line| !line.starts_with("//"))
+                .any(|line| line.contains("ReferenceIntent::Claim"))
+        })
+        .map(|(path, _)| {
+            path.rsplit_once("/src/")
+                .map_or(path.clone(), |(_, rest)| rest.to_string())
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "only `domain.rs` may construct `ReferenceIntent::Claim`; these name it too: {offenders:?}. \
+         Ask `StoryReference::claims()` instead — the grammar is one thing, not a rule each \
+         caller reimplements."
+    );
 }

@@ -60,11 +60,45 @@ fn state_of(project: &Project<'_>, id: &str) -> String {
         .to_string()
 }
 
-/// A git project with one story, and a commit whose body names it.
+/// A git project with one story, and a commit whose body **claims** it.
 ///
 /// The id goes in the **body** rather than the subject, which is how this
 /// repository writes them and what `commit-sync` scans.
-fn repository_naming_a_story(env: &TestEnv) -> (Project<'_>, String) {
+///
+/// # Why the body claims rather than merely mentions (SH-124)
+///
+/// This fixture used to write `Refs {id}` — the exact trailer shape that moved
+/// five stories in a sibling project and got SH-124 filed. The test below
+/// asserted that body *must* move the story and called itself "the control", so
+/// the suite was pinning the defect as correct behaviour. That is why nothing
+/// caught it: the code could not tell a reference from a claim, so the test
+/// could not either.
+///
+/// The premise is rewritten, not relaxed. These tests are about
+/// `sync.auto_transition`, so their fixture has to be a commit that *would*
+/// move the story — otherwise they pass on the grammar and stop guarding the
+/// switch they name. [`repository_mentioning_a_story`] is the counterpart.
+fn repository_claiming_a_story(env: &TestEnv) -> (Project<'_>, String) {
+    let project = env.project().git().build();
+    let id = project.new_story("Claimed by a commit body");
+    std::fs::write(project.path().join("f"), "b\n").expect("changing a tracked file");
+    git(env, project.path(), &["add", "f"]);
+    git(
+        env,
+        project.path(),
+        &[
+            "commit",
+            "-qm",
+            "do the thing",
+            "-m",
+            &format!("Closes {id}"),
+        ],
+    );
+    (project, id)
+}
+
+/// The same, with a body that only *mentions* the story.
+fn repository_mentioning_a_story(env: &TestEnv) -> (Project<'_>, String) {
     let project = env.project().git().build();
     let id = project.new_story("Referenced from a commit body");
     std::fs::write(project.path().join("f"), "b\n").expect("changing a tracked file");
@@ -84,24 +118,47 @@ fn repository_naming_a_story(env: &TestEnv) -> (Project<'_>, String) {
 /// The control. Without it, the test below would pass just as well against a
 /// `commit-sync` that had stopped transitioning anything at all.
 #[test]
-fn commit_sync_moves_a_mentioned_story_while_the_setting_is_untouched() {
+fn commit_sync_moves_a_claimed_story_while_the_setting_is_untouched() {
     let env = TestEnv::shared();
-    let (project, id) = repository_naming_a_story(env);
+    let (project, id) = repository_claiming_a_story(env);
 
     project.run(&["commit-sync"]).success();
 
     assert_eq!(
         state_of(&project, &id),
         "in-progress",
-        "the default is on, so a mentioned story should have moved"
+        "the default is on, so a claimed story should have moved"
+    );
+}
+
+/// The other control, and the regression test for SH-124 itself: the setting is
+/// untouched — so auto-transition is on — and a story that is merely *mentioned*
+/// still must not move.
+///
+/// This is what distinguishes the two switches. Turning `sync.auto_transition`
+/// off stops every transition; the grammar stops the ones nobody asked for.
+#[test]
+fn commit_sync_leaves_a_merely_mentioned_story_alone_even_with_the_setting_on() {
+    let env = TestEnv::shared();
+    let (project, id) = repository_mentioning_a_story(env);
+
+    project.run(&["commit-sync"]).success();
+
+    assert_eq!(
+        state_of(&project, &id),
+        "todo",
+        "a `Refs` trailer names a story; it does not claim it (SH-124)"
     );
 }
 
 /// The acceptance criterion: the exact case that was impossible before SH-129.
+///
+/// The fixture claims, so the setting is the only thing keeping the story
+/// still. With a mention the assertion would hold whatever the setting said.
 #[test]
-fn turning_off_auto_transition_stops_commit_sync_moving_a_mentioned_story() {
+fn turning_off_auto_transition_stops_commit_sync_moving_a_claimed_story() {
     let env = TestEnv::shared();
-    let (project, id) = repository_naming_a_story(env);
+    let (project, id) = repository_claiming_a_story(env);
 
     project
         .run(&[
@@ -126,7 +183,7 @@ fn turning_off_auto_transition_stops_commit_sync_moving_a_mentioned_story() {
 #[test]
 fn unsetting_auto_transition_restores_the_default_behaviour() {
     let env = TestEnv::shared();
-    let (project, id) = repository_naming_a_story(env);
+    let (project, id) = repository_claiming_a_story(env);
 
     project
         .run(&[
