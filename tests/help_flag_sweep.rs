@@ -49,6 +49,7 @@ const VERBS: &[&[&str]] = &[
     &["project"],
     &["project", "init"],
     &["project", "list"],
+    &["project", "settings"],
     &["list"],
     &["next"],
     &["summary"],

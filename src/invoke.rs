@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::{
     DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, PhaseAction,
-    PluginAction, ProjectAction, StateAction, TypeAction, WebAction,
+    PluginAction, ProjectAction, SettingsAction, StateAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
 use crate::env::Environment;
@@ -37,8 +37,8 @@ use crate::service::{
     CatalogService, Clock, ConfigService, Ctx, DeinitOutcome, DeinitTarget, FieldEdits, GitService,
     GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
     NewStoryInput, PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService,
-    ReopenOutcome, SessionService, StateListing, StoryService, SystemService, TransferService,
-    migrate, session, system, transfer,
+    ReopenOutcome, SessionService, SettingsService, StateListing, StoryService, SystemService,
+    TransferService, migrate, session, system, transfer,
 };
 use crate::store::{ProjectId, ReadOps, Store};
 
@@ -544,6 +544,11 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             let summary = decompose_summary(&batch);
             Ok(Response::Stories(batch.views, Some(summary)))
         }
+        // The one `project` arm that names a project rather than creating,
+        // destroying or enumerating them, so the only one answered here.
+        Invocation::Project {
+            action: ProjectAction::Settings(action),
+        } => dispatch_project_settings(ctx, action),
         Invocation::Web { .. }
         | Invocation::Daemon { .. }
         | Invocation::Store { .. }
@@ -652,7 +657,34 @@ fn dispatch_project<S: Store>(
             }
             Ok(Response::Message(lines.join("\n")))
         }
+        // Answered by `dispatch` against a resolved context, because it is the
+        // one arm of this family that names a project. Reaching it here means a
+        // caller went round `is_project_less`.
+        ProjectAction::Settings(_) => Err(AppError::Usage(
+            "`story project settings` needs a project: run it in a checkout storyhook knows, \
+             or run `story project init` first."
+                .to_string(),
+        )),
     }
+}
+
+/// The `story project settings …` forms.
+///
+/// Every one answers with the same [`Response::ProjectSettings`], a list of one
+/// for the three that name a single key — so a caller parses one shape rather
+/// than four, and a write reports what it wrote without a second command.
+fn dispatch_project_settings<S: Store>(
+    ctx: &Ctx<'_, S>,
+    action: SettingsAction,
+) -> Result<Response, AppError> {
+    let service = SettingsService::new(ctx);
+    let settings = match action {
+        SettingsAction::List => service.list()?,
+        SettingsAction::Get { key } => vec![service.get(&key)?],
+        SettingsAction::Set { key, value } => vec![service.set(&key, &value)?],
+        SettingsAction::Unset { key } => vec![service.unset(&key)?],
+    };
+    Ok(Response::ProjectSettings(settings))
 }
 
 /// What `story project deinit [TARGET]` names.
@@ -1785,8 +1817,11 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
 /// failure this function exists to prevent.
 fn is_project_less(invocation: &Invocation) -> bool {
     match invocation {
-        Invocation::Project { .. }
-        | Invocation::ImportProject { .. }
+        // `project settings` is the exception in its own family: `init`,
+        // `deinit` and `list` are about projects, while `settings` is about
+        // *this* one and cannot be answered without resolving it.
+        Invocation::Project { action } => !matches!(action, ProjectAction::Settings(_)),
+        Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
