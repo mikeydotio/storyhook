@@ -750,14 +750,24 @@ fn verb_help_request(args: &[String]) -> Option<Invocation> {
     if verb == "help" || verb.starts_with('-') || !is_help_request(args) {
         return None;
     }
+    verb_is_recognized(verb).then(|| help_for_verb(verb))
+}
+
+/// Whether `verb` names a command this binary has.
+///
+/// Asks [`dispatch`] rather than consulting a second copy of the verb list,
+/// which could fall out of step with the first. Every caller wants the same
+/// answer for the same reason — to decline to speak about a verb that does not
+/// exist, so a typo is reported as an unknown *command* rather than being
+/// answered with usage text or a complaint about one of its flags.
+fn verb_is_recognized(verb: &str) -> bool {
     // `tui` is dispatched in main.rs before parsing ever happens, so
     // `dispatch` does not know it, but it is a verb like any other here.
-    let recognized = verb == "tui"
+    verb == "tui"
         || !matches!(
-            dispatch(&[args[0].clone()]),
+            dispatch(&[verb.to_string()]),
             Err(AppError::Usage(ref message)) if message.starts_with("unknown command")
-        );
-    recognized.then(|| help_for_verb(verb))
+        )
 }
 
 pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
