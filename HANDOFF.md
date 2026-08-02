@@ -1,65 +1,70 @@
-# Handoff — the hardening run, next up: SH-131
+# Handoff — the hardening run, next up: SH-115
 
-*(Supersedes the SH-132 handoff. SH-132 is closed: 505 fixture projects are gone,
-13 real ones remain, and the store is back to a usable size.)*
+*(Supersedes the SH-131 handoff. SH-131 is closed: the three store-isolation
+invariants each have one home, two of them a test, and a real harness gap was
+found and fixed on the way.)*
 
 The run itself is described by
 [`HARDENING_PROGRESS.md`](HARDENING_PROGRESS.md) — read its **START HERE**
 section first. That is the process; this file is only what the next story needs
 on top of it.
 
-## What SH-132 left behind
+## What SH-131 left behind
 
-Nothing in the code changed — SH-132 was data cleanup against the real store.
-Two facts about the store are now different, and one is a trap:
+Two new tests in `tests/store_isolation.rs`, one one-line script fix, and a
+`CLAUDE.md` that no longer states the invariants itself.
 
-1. **The store holds 13 projects, not 518.** `story project list`, the dashboard
-   and `/api/repos` all return the same 13. A fixture site in a neighbouring
-   repository that used to add junk here cannot any more (store isolation, v2.0.0),
-   but SH-95 — retiring the temp-path heuristic — is still open and is the
-   origin-fix for how the 505 arrived.
-2. **A hand-taken backup expires.** `src/daemon/backup.rs:87` prunes the backups
-   directory to the newest seven `storyhook-*.db` files, and cannot tell a daily
-   snapshot from a safety net someone took before a destructive operation.
-   SH-132's backup dodges this by *not* matching the pattern
-   (`store-pre-sh132-cleanup-20260802T165904Z.db`). **SH-130's does not** and is
-   roughly five daemon snapshots from silent deletion. Filed as **SH-135**.
-   If you take a backup by hand, do not name it `storyhook-*`.
+1. **`a_child_process_of_a_store_path_run_lands_in_the_same_store`** pins that a
+   `--store-path` run's children reach the same store, by running the binary
+   again from an event hook. **It pins the promise, not the mechanism** — this
+   matters directly to you if you take SH-114 or SH-116, which rewrite flag
+   resolution in `main`. Publish the flag differently and the test stays green;
+   leave children resolving somebody else's store and it goes red.
+2. **`every_harness_that_isolates_the_data_dir_neutralizes_the_store_path`** is
+   derived: it takes every tracked `*.sh` that exports `STORYHOOK_DATA_DIR` and
+   requires `unset STORYHOOK_STORE_PATH` beside it. **If you add a shell harness,
+   it must neutralize the store path or the suite fails.** That is deliberate —
+   it caught `scripts/capture-baseline.sh`, which had been missing the line since
+   store isolation landed.
+3. **`CLAUDE.md` now points at the spec** rather than restating three invariants.
+   `docs/spec/store-isolation.md`'s "As built" items 1, 5 and 6 each name the test
+   that guards them. Put new invariants there, not in `CLAUDE.md`.
 
-**Verify a backup with `sqlite3 -readonly`, never by opening it through the
-CLI.** `STORYHOOK_STORE_PATH=<backup> story project list` works, and also
-converts the file to WAL mode permanently — after which nothing can open it
-read-only without write access to create the `-shm`. Header bytes 18–19 tell you
-which mode a file is in: `1 1` is rollback journal, `2 2` is WAL. Every
-storyhook-produced snapshot is `1 1`; the daemon's own verification does not have
-this problem.
+## One operational warning, and it cost an hour
 
-## The next story: SH-131 — where the store-isolation invariants live
+**The council could not be convened in the SH-131 session.** Two seatings, six
+subagents, four rounds of pings, zero responses; both were stopped with
+`TaskStop`. If you invoke `council:council-vote` and the seats are still silent
+after ~10 minutes with no answer to a direct pulse request, **do not spend
+another 30 minutes on a second seating** — that was tried and failed identically.
+Stop them, write the abort, and decide as chair with your reasoning and blind
+spots recorded, as `.council/sh131-invariant-homes/{ABORT,DECISION}.md` does.
+Measure first either way: the measurements are what made a chairless decision
+defensible.
 
-`story show SH-131` is the brief and it is complete. It is a decision story, not
-a code story: three invariants currently homeless in `CLAUDE.md` each need one
-permanent home chosen from four options (standing rule, spec "As built", doc
-comment, or a test that fails loudly).
+**And verify your working directory before any command that writes.** An
+exploratory `story project init` whose `cd` had landed in `/private/tmp`
+initialized `/private/tmp` itself as a project, and since every fixture in the
+suite is built under `/private/tmp`, the resolution walk found that pointer from
+inside fixtures that should have had none. One test went red for a reason that
+had nothing to do with the change under test.
 
-- **The most valuable output is a gap, not a document.** Invariant 1 —
-  `--store-path` becomes `$STORYHOOK_STORE_PATH` in `main` before anything
-  resolves — appears to be pinned by no test at all. A refactor that threads the
-  flag "properly" would pass the whole suite while silently breaking the git
-  hooks, the TUI, `story daemon status` and the spawned daemon. Confirm or refute
-  that first; if confirmed, the test is the deliverable.
-- **Timing:** SH-131's own text says before **SH-114 and SH-116**, both of which
-  rewrite flag resolution in `main`.
+## The next story: SH-115 — C3 Identity
 
-**A note on ordering.** `story next` leads with **SH-115** (critical) rather than
-SH-131 (high), and SH-115 — C3 Identity, the remotes schema and URL normalizer —
-does not touch flag resolution, so taking it first would not endanger these
-invariants. The queue in `HARDENING_PROGRESS.md` nonetheless puts SH-131 first,
-and START HERE says to pick the first unchecked story in the queue. Follow the
-queue unless you have a reason to correct it in place, which the queue invites.
+`story show SH-115` is the brief. Critical, ready, and the first of the
+server-owned epic's remaining children. It adds the remotes schema and **one**
+URL normalizer; it does not touch flag resolution, so the invariants above are
+not in its way.
 
-## After SH-131
+Read its comments as well as its description — several stories in this backlog
+carry re-spec notes that contradict their own titles.
 
-The queue in `HARDENING_PROGRESS.md` is the forecast: SH-115, then SH-94 and
-SH-110 (both gating SH-114), then the epic proper. Two new stories filed during
-this run are not yet in it — **SH-134** (`add_type` accepts an unaddressable
-slug) and **SH-135** (backup retention, above).
+## After SH-115
+
+The queue in `HARDENING_PROGRESS.md` is the forecast: SH-94 and SH-110 (both
+gating SH-114), then SH-114 and the epic proper. Four stories filed during this
+run are not in the queue yet — **SH-133** (rollback drops project settings),
+**SH-134** (`add_type` accepts an unaddressable slug), **SH-135** (a hand-taken
+backup inherits the 7-deep retention) and **SH-136** (the daemon-address harness
+list is hand-maintained prose and was already stale). SH-136 is the direct
+sibling of what SH-131 fixed, and is small.
