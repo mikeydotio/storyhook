@@ -92,6 +92,7 @@ impl SilentPeer {
             started_at: "2026-01-01T00:00:00Z".to_string(),
             token: "not-the-real-token".to_string(),
             store_path: std::path::PathBuf::from("/private/tmp/storyhook-timeouts/store.db"),
+            tailnet: None,
         }
     }
 }
@@ -171,6 +172,7 @@ fn a_refused_connection_still_fails_immediately() {
         started_at: "2026-01-01T00:00:00Z".to_string(),
         token: "irrelevant".to_string(),
         store_path: std::path::PathBuf::from("/private/tmp/storyhook-timeouts/store.db"),
+        tailnet: None,
     };
 
     let started = Instant::now();

@@ -787,10 +787,9 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
         DaemonAction::Start { port } => {
             let info = crate::daemon::commands::start(&env, port)?;
             Ok(Response::Message(format!(
-                "storyhook daemon {} running at http://{}:{} (PID {})",
+                "storyhook daemon {} running at {} (PID {})",
                 info.version,
-                crate::daemon::tailnet::reachable_host(),
-                info.port,
+                info.dashboard_url(),
                 info.pid
             )))
         }

@@ -16,7 +16,6 @@
 use std::path::PathBuf;
 
 use crate::daemon::lifecycle::{self, DaemonInfo};
-use crate::daemon::tailnet::reachable_host;
 use crate::env::Environment;
 use crate::error::AppError;
 
@@ -80,10 +79,9 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                 )
             };
             Ok(format!(
-                "storyhook daemon {} running at http://{}:{} (PID {}){}\n\n{}\n{}",
+                "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}",
                 info.version,
-                reachable_host(),
-                info.port,
+                info.dashboard_url(),
                 info.pid,
                 staleness,
                 lifecycle::describe_paths(env),
