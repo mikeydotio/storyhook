@@ -28,8 +28,12 @@ file and the plan above. Read the plan, then:
    changing code. Every fix ships its regression test. Two hats: a behaviour
    change and a refactor never share a commit. Doc comments on every public
    item. Warnings are errors.
-5. **Gate**: `make gate` must be green before you push. Never `--no-verify`,
-   never `SKIP_PREPUSH_TESTS=1`.
+5. **Gate**: both legs must be green before you push. Never `--no-verify`,
+   never `SKIP_PREPUSH_TESTS=1`. Run them as **two separate supervised
+   commands** — `make test`, then `make test-daemon` — not as one `make gate`.
+   The daemon leg wedges when it follows the first leg on a tired machine, and
+   a single invocation gives you nothing to watch. See **Supervising background
+   work** below; this is the rule's most frequent application.
 6. **Land it** — branch off `main` in this checkout (not a worktree):
    ```
    git -c url."https://github.com/".insteadOf="git@github.com:" push origin <branch>
@@ -50,6 +54,44 @@ file and the plan above. Read the plan, then:
      queue "Continue the storyhook hardening run: read /Volumes/Code/mikeyward/storyhook/HARDENING_PROGRESS.md and follow its START HERE section." \
      --source storyhook-hardening --summary "<story just finished> done, next: <id>"
    ```
+
+**Supervising background work — never start it without a watchdog.**
+
+This rule exists because a `make gate` run wedged in its daemon leg and sat
+there for **eight hours and twenty-one minutes** before anyone looked. Nothing
+was broken; the leg passed in two minutes when re-run alone. The whole loss was
+supervision. A stall is the worst failure a background task can have — no
+failing test name, no error, no completion notification, because a notification
+only fires when work *ends* and a wedge never ends. **Waiting for a notification
+is not supervision.**
+
+Every background task — a `run_in_background` shell command, or a subagent —
+gets all four of these before it starts:
+
+1. **A heartbeat you can observe.**
+   - **Subagents:** instruct them, in their prompt, to send you a progress line
+     via `SendMessage` after **every tool call** — one sentence, **under ten
+     words** ("Read migrate.rs, found apply()", "Ran clippy, three warnings").
+     Terse on purpose: it is a pulse, not a report.
+   - **Shell commands:** they make no tool calls and cannot narrate themselves.
+     Redirect to a log file and treat **log growth** as the pulse:
+     `wc -c < log` is the heartbeat.
+2. **A stall timeout, chosen before starting.** Not the expected total runtime —
+   the longest plausible *gap between signs of progress*. For this suite that is
+   **120 seconds** (a single test prints its own "running for over 60 seconds"
+   notice, so a shorter bound cries wolf).
+3. **Polling on that timeout.** Check, compare against the last observation, and
+   keep checking. Do not end a turn expecting to be woken.
+4. **Kill and restart on silence.** If the timeout lands and the pulse has not
+   moved — no new subagent message, no new log bytes — the task is wedged. Kill
+   it, clean up after it (`scripts/check-no-orphan-servers.sh`; a killed run
+   leaves daemons that make the *next* run refuse to start), and restart it —
+   preferably a narrower slice, which is both faster and more diagnostic. Two
+   consecutive wedges of the same slice is a finding: stop, and log it.
+
+Every wedge and restart goes in the story's `## Log` entry, including how long
+it was wedged. That number is the only thing that makes this rule feel worth
+obeying next time.
 
 **Autonomy — never ask the user anything.** For any decision without one
 obviously correct answer, invoke the `council:council-vote` skill and implement
