@@ -1647,9 +1647,11 @@ impl Invoker for HttpInvoker {
             Ok(result) => result,
             Err(Transport::NotDelivered(detail) | Transport::Sent(detail)) => {
                 Err(AppError::Storage(format!(
-                    "could not reach the storyhook daemon: {detail}. Run `story daemon \
-                     status` to see what it thinks it is doing, or `story --local \
-                     <command>` to run without it."
+                    "could not reach the storyhook daemon: {detail}. It answered when this \
+                     command started and has stopped since. Run `story daemon status` to see \
+                     what it thinks it is doing, and `story daemon stop` before trying again \
+                     if it is still there.\n{}",
+                    crate::daemon::lifecycle::describe_paths(&self.env),
                 )))
             }
         }

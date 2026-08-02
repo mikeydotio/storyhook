@@ -442,8 +442,8 @@ fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
         }
 
         stand_down_legacy_daemon(env);
-        spawn_child(env)?;
-        await_healthy(env)
+        let child = spawn_child(env)?;
+        await_healthy(env, child)
     })();
 
     let _ = FileExt::unlock(&lock);
@@ -531,11 +531,24 @@ fn disinherit_descriptors() {
 ///
 /// It inherits **nothing else**, and that is enforced rather than assumed — see
 /// [`disinherit_descriptors`] and `tests/daemon_fd_hygiene.rs`.
-fn spawn_child(env: &Environment) -> Result<(), AppError> {
+///
+/// **The handle is returned rather than dropped**, and that is the whole point
+/// of this signature. A dropped `Child` on Unix is not a detached process, it
+/// is an unwatched one: the daemon still runs, but nobody can ask whether it is
+/// still running. [`await_healthy`] needs to, because a daemon that exits
+/// during startup is otherwise indistinguishable from one that is slow, and
+/// the client spent the whole five-second deadline finding that out.
+fn spawn_child(env: &Environment) -> Result<std::process::Child, AppError> {
     let (exe, _) = current_binary()?;
     std::fs::create_dir_all(env.daemon_state_dir())?;
     let log = File::create(env.daemon_log())
         .map_err(|e| AppError::Storage(format!("failed to create the daemon log: {e}")))?;
+    // Any failure still on disk belongs to a previous spawn. Removing it here —
+    // in the one place that starts a daemon, immediately before starting it —
+    // is what lets `read_startup_failure` treat whatever it finds afterwards as
+    // this child's. A stale one would be worse than none: it would report an
+    // old cause with total confidence.
+    let _ = std::fs::remove_file(env.daemon_failure());
 
     // The port and the store travel on the argv rather than in the child's
     // environment. A client that was asked for a particular port — or a
@@ -588,12 +601,26 @@ fn spawn_child(env: &Environment) -> Result<(), AppError> {
     }
     command
         .spawn()
-        .map_err(|e| AppError::Storage(format!("failed to start the storyhook daemon: {e}")))?;
-    Ok(())
+        .map_err(|e| AppError::Storage(format!("failed to start the storyhook daemon: {e}")))
 }
 
 /// Polls until a daemon of this build is answering, or gives up loudly.
-fn await_healthy(env: &Environment) -> Result<DaemonInfo, AppError> {
+///
+/// Two ways to stop waiting, and the second one is why `child` is a parameter:
+///
+/// 1. **A daemon answers.** The happy path.
+/// 2. **The child exits.** A daemon that could not open the store, could not
+///    bind, or was killed is *finished*, and no amount of further polling
+///    changes that. Waiting the full deadline for it made every startup failure
+///    cost five seconds and report a timeout, which describes the symptom and
+///    not one thing about the cause.
+///
+/// The deadline survives for the case neither of those covers: a child that is
+/// alive and has not published a portfile.
+fn await_healthy(
+    env: &Environment,
+    mut child: std::process::Child,
+) -> Result<DaemonInfo, AppError> {
     let deadline = Instant::now() + SPAWN_DEADLINE;
     while Instant::now() < deadline {
         if let Some(info) = read_info(env)
@@ -603,14 +630,87 @@ fn await_healthy(env: &Environment) -> Result<DaemonInfo, AppError> {
         {
             return Ok(info);
         }
+        // Asked *after* the health check, never before: a daemon can publish
+        // its portfile and be answering while this loop is between polls, and
+        // a child that exited in that window still started successfully.
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(daemon_exited(env, status));
+        }
         std::thread::sleep(SPAWN_POLL);
     }
     Err(AppError::Storage(format!(
-        "the storyhook daemon did not start within {}s. Its log is at {}; \
-         `story --local <command>` runs without it.",
+        "the storyhook daemon did not start within {}s, and is still running — so it is \
+         stuck rather than broken.\n{}\nIts log is the first place to look.",
         SPAWN_DEADLINE.as_secs(),
-        env.daemon_log().display()
+        describe_paths(env),
     )))
+}
+
+/// The error for a daemon that started and then stopped before answering.
+///
+/// Prefers the daemon's *own* error, recorded by [`record_startup_failure`],
+/// over anything this process could infer. A store that will not open is the
+/// case that matters: the daemon computes a diagnosis naming the file, the
+/// damage and the way back, and a client that reported "it exited with status
+/// 5" instead would be discarding the only useful sentence available.
+///
+/// The exit description is kept either way. With a recorded failure it is
+/// context; without one — a daemon killed by a signal, or one that died before
+/// it could write — it is all there is, and it is still better than a timeout.
+fn daemon_exited(env: &Environment, status: std::process::ExitStatus) -> AppError {
+    let how = describe_exit(status);
+    match read_startup_failure(env) {
+        Some(error) => error.with_context(&format!(
+            "the storyhook daemon could not start, so this command did not run. It {how}.\n{}",
+            describe_paths(env),
+        )),
+        None => AppError::Storage(format!(
+            "the storyhook daemon could not start: it {how}, without recording why.\n{}\nIts log \
+             is the place to look.",
+            describe_paths(env),
+        )),
+    }
+}
+
+/// Records why a daemon is about to stop, for the client that started it.
+///
+/// Written by the `--serve` process itself, on its way out, because it is the
+/// only one that knows. Best-effort by design: a daemon that cannot write this
+/// file has a worse problem than the report, and failing here would replace a
+/// good diagnosis with a bad one about a diagnostic.
+pub fn record_startup_failure(env: &Environment, error: &AppError) {
+    let _ = std::fs::create_dir_all(env.daemon_state_dir());
+    if let Ok(document) = serde_json::to_string(&crate::error::WireError::from(error)) {
+        let _ = std::fs::write(env.daemon_failure(), document);
+    }
+}
+
+/// The failure a previous `--serve` recorded, if this spawn left one.
+///
+/// [`spawn_child`] deletes any earlier file before starting, so anything read
+/// here belongs to the child this client just started. Without that, a client
+/// would attribute a months-old failure to today's daemon.
+fn read_startup_failure(env: &Environment) -> Option<AppError> {
+    let raw = std::fs::read_to_string(env.daemon_failure()).ok()?;
+    serde_json::from_str::<crate::error::WireError>(&raw)
+        .ok()
+        .map(AppError::from)
+}
+
+/// How a process ended, in words rather than in a `Debug` rendering.
+///
+/// A signal is reported as a signal. `ExitStatus`'s own `Display` renders one
+/// as `signal: 9 (SIGKILL)`, which is accurate and reads like a leaked
+/// implementation detail in the middle of a sentence.
+fn describe_exit(status: std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+        return format!("was killed by signal {signal}");
+    }
+    match status.code() {
+        Some(code) => format!("exited with status {code}"),
+        None => "stopped for a reason the operating system did not report".to_string(),
+    }
 }
 
 /// Blocks until `ready` answers true, or `deadline` elapses.

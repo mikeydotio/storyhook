@@ -87,6 +87,11 @@ fn main() {
         let result = storyhook::invoke::open_store(&environment)
             .and_then(|store| storyhook::daemon::lifecycle::run(&store, &environment));
         if let Err(e) = result {
+            // The client that started this process is waiting on a portfile it
+            // is never going to get, and this is the only process that knows
+            // why. Recorded before the message is printed, because stderr here
+            // is a log file nothing parses — see `Environment::daemon_failure`.
+            storyhook::daemon::lifecycle::record_startup_failure(&environment, &e);
             eprintln!("error: {e}");
             process::exit(e.exit_code());
         }

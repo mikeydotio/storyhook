@@ -38,6 +38,38 @@ impl AppError {
             Self::StateConflict(..) => 9,
         }
     }
+
+    /// The same error, told where it was met.
+    ///
+    /// A layer that catches an error and re-raises a summary of it has thrown
+    /// away the only sentence that named the actual problem. This adds without
+    /// removing: the variant, and therefore the exit code, is unchanged, and
+    /// the original message survives verbatim below the context.
+    ///
+    /// `StateConflict` is returned untouched. Its payload is two slugs a caller
+    /// compares programmatically, not prose, and prepending to either would
+    /// corrupt a value rather than annotate a message.
+    ///
+    /// The context joins the variant's *detail*, so for a variant whose
+    /// `Display` carries a prefix — `github auth: {0}` — the prefix stays
+    /// outermost. That is the right order: it names the subsystem, and the
+    /// context names the operation within it.
+    #[must_use]
+    pub fn with_context(self, context: &str) -> Self {
+        let joined = |detail: String| format!("{context}\n\n{detail}");
+        match self {
+            Self::Usage(detail) => Self::Usage(joined(detail)),
+            Self::Validation(detail) => Self::Validation(joined(detail)),
+            Self::NotFound(detail) => Self::NotFound(joined(detail)),
+            Self::LockTimeout(detail) => Self::LockTimeout(joined(detail)),
+            Self::Integrity(detail) => Self::Integrity(joined(detail)),
+            Self::Storage(detail) => Self::Storage(joined(detail)),
+            Self::GithubAuth(detail) => Self::GithubAuth(joined(detail)),
+            Self::GithubApi(detail) => Self::GithubApi(joined(detail)),
+            Self::SyncConflict(detail) => Self::SyncConflict(joined(detail)),
+            conflict @ Self::StateConflict(..) => conflict,
+        }
+    }
 }
 
 /// The wire form of [`AppError`] — a 1:1 mirror that carries the *variant*
@@ -177,5 +209,80 @@ impl From<rusqlite::Error> for AppError {
 impl From<serde_yml::Error> for AppError {
     fn from(value: serde_yml::Error) -> Self {
         Self::Storage(value.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Context is added; nothing is taken away. The original message has to
+    /// survive verbatim, because it is the only part that names the actual
+    /// problem — a layer that summarised it would be the defect this method
+    /// exists to prevent.
+    #[test]
+    fn context_is_added_without_losing_the_original_message() {
+        let error = AppError::Storage("the store is damaged".to_string())
+            .with_context("the daemon could not start");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("the daemon could not start"));
+        assert!(rendered.contains("the store is damaged"));
+    }
+
+    /// The variant survives, and therefore so does the exit code. A caller that
+    /// branches on `NotFound` must keep branching on it after a layer has
+    /// annotated the message.
+    #[test]
+    fn every_variant_keeps_its_own_exit_code_through_a_context() {
+        for error in [
+            AppError::Usage("u".into()),
+            AppError::Validation("v".into()),
+            AppError::NotFound("n".into()),
+            AppError::LockTimeout("l".into()),
+            AppError::Integrity("i".into()),
+            AppError::Storage("s".into()),
+            AppError::GithubAuth("ga".into()),
+            AppError::GithubApi("gp".into()),
+            AppError::SyncConflict("sc".into()),
+            AppError::StateConflict("todo".into(), "done".into()),
+        ] {
+            let before = error.exit_code();
+            let after = error.with_context("while doing the thing");
+            assert_eq!(
+                before,
+                after.exit_code(),
+                "annotating an error must not change what a script sees: {after}"
+            );
+        }
+    }
+
+    /// `StateConflict`'s payload is two slugs a caller compares, not prose.
+    /// Prepending to either would corrupt a value while appearing to annotate a
+    /// message — and `story move --if-state` reads them back.
+    #[test]
+    fn a_state_conflicts_two_slugs_are_left_alone() {
+        let error =
+            AppError::StateConflict("todo".into(), "done".into()).with_context("some context");
+        match error {
+            AppError::StateConflict(expected, actual) => {
+                assert_eq!(expected, "todo");
+                assert_eq!(actual, "done");
+            }
+            other => panic!("the variant must survive: {other}"),
+        }
+    }
+
+    /// A variant whose `Display` carries a prefix keeps it outermost: the
+    /// prefix names the subsystem, the context names the operation inside it.
+    #[test]
+    fn a_prefixed_variant_keeps_its_prefix_in_front() {
+        let rendered = AppError::GithubAuth("no token".into())
+            .with_context("while syncing")
+            .to_string();
+        assert!(
+            rendered.starts_with("github auth: while syncing"),
+            "got: {rendered}"
+        );
     }
 }
