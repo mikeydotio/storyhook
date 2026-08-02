@@ -1,51 +1,65 @@
-# Handoff — the hardening run, next up: SH-132
+# Handoff — the hardening run, next up: SH-131
 
-*(Supersedes the SH-130 purge handoff. SH-130 is closed: the schema half merged
-as #88, the purge as the PR that carries this file, and SH-20 is gone from the
-real store.)*
+*(Supersedes the SH-132 handoff. SH-132 is closed: 505 fixture projects are gone,
+13 real ones remain, and the store is back to a usable size.)*
 
 The run itself is described by
 [`HARDENING_PROGRESS.md`](HARDENING_PROGRESS.md) — read its **START HERE**
 section first. That is the process; this file is only what the next story needs
 on top of it.
 
-## What SH-130 left behind, for anyone who touches the store
+## What SH-132 left behind
 
-Two things landed that are easy to trip over and hard to guess:
+Nothing in the code changed — SH-132 was data cleanup against the real store.
+Two facts about the store are now different, and one is a trap:
 
-1. **`events_reject_delete` now names `stories`.** A migration that rebuilds
-   `stories` must drop that trigger at the top and recreate it at the bottom, or
-   `ALTER TABLE … RENAME TO` fails with `no such table: main.stories`. The
-   header of `src/store/schema/0005_purge_story.sql` explains it, and
-   `tests/store_migrations.rs` measures both directions. Note the reproduction
-   only exists through rusqlite's bundled SQLite 3.46 — the system `sqlite3` at
-   3.51 accepts the same batch, so do not "verify" this at a shell prompt.
-2. **`story purge <ID>` exists**, refuses a story that is not already
-   soft-deleted, and is the second and last operation permitted to delete
-   events. `Response::ConfirmationRequired` now carries a `ConfirmationPlan`
-   enum rather than a `DeinitPlan`; a third destructive verb adds a variant and
-   gets the whole gate for free.
+1. **The store holds 13 projects, not 518.** `story project list`, the dashboard
+   and `/api/repos` all return the same 13. A fixture site in a neighbouring
+   repository that used to add junk here cannot any more (store isolation, v2.0.0),
+   but SH-95 — retiring the temp-path heuristic — is still open and is the
+   origin-fix for how the 505 arrived.
+2. **A hand-taken backup expires.** `src/daemon/backup.rs:87` prunes the backups
+   directory to the newest seven `storyhook-*.db` files, and cannot tell a daily
+   snapshot from a safety net someone took before a destructive operation.
+   SH-132's backup dodges this by *not* matching the pattern
+   (`store-pre-sh132-cleanup-20260802T165904Z.db`). **SH-130's does not** and is
+   roughly five daemon snapshots from silent deletion. Filed as **SH-135**.
+   If you take a backup by hand, do not name it `storyhook-*`.
 
-## The next story: SH-132 — delete the 505 fixture projects
+**Verify a backup with `sqlite3 -readonly`, never by opening it through the
+CLI.** `STORYHOOK_STORE_PATH=<backup> story project list` works, and also
+converts the file to WAL mode permanently — after which nothing can open it
+read-only without write access to create the `-shm`. Header bytes 18–19 tell you
+which mode a file is in: `1 1` is rollback journal, `2 2` is WAL. Every
+storyhook-produced snapshot is `1 1`; the daemon's own verification does not have
+this problem.
 
-`story show SH-132` is the brief and it is complete. The parts that matter most:
+## The next story: SH-131 — where the store-isolation invariants live
 
-- **Back up `~/.local/share/storyhook/store.db`** to a dated file outside the
-  data directory, and verify the copy opens, *before the first deletion*. This
-  is 505 irreversible deletions against the real tracker.
-- **Drive the loop from the explicit keep-list on the story, never from a
-  `tmp*` pattern.** Re-verify the keep-list against `story project list` first —
-  a real project added since the story was filed has to be added to it.
-- The mechanism is `story project deinit <SLUG> --force`, one call per project.
-  There is no bulk form, so the loop is written by hand.
-- It runs **before SH-119**, which deletes `project_paths` — the only reliable
-  evidence of what is junk.
+`story show SH-131` is the brief and it is complete. It is a decision story, not
+a code story: three invariants currently homeless in `CLAUDE.md` each need one
+permanent home chosen from four options (standing rule, spec "As built", doc
+comment, or a test that fails loudly).
 
-**The store is now at schema 5**, and the installed binary carries migrations 4
-and 5. The migration framework took its own verified backup when they ran; that
-is not a substitute for the one SH-132 asks for.
+- **The most valuable output is a gap, not a document.** Invariant 1 —
+  `--store-path` becomes `$STORYHOOK_STORE_PATH` in `main` before anything
+  resolves — appears to be pinned by no test at all. A refactor that threads the
+  flag "properly" would pass the whole suite while silently breaking the git
+  hooks, the TUI, `story daemon status` and the spawned daemon. Confirm or refute
+  that first; if confirmed, the test is the deliverable.
+- **Timing:** SH-131's own text says before **SH-114 and SH-116**, both of which
+  rewrite flag resolution in `main`.
 
-## After SH-132
+**A note on ordering.** `story next` leads with **SH-115** (critical) rather than
+SH-131 (high), and SH-115 — C3 Identity, the remotes schema and URL normalizer —
+does not touch flag resolution, so taking it first would not endanger these
+invariants. The queue in `HARDENING_PROGRESS.md` nonetheless puts SH-131 first,
+and START HERE says to pick the first unchecked story in the queue. Follow the
+queue unless you have a reason to correct it in place, which the queue invites.
 
-The queue in `HARDENING_PROGRESS.md` is the forecast, re-derived from
-`story next` each iteration. SH-131 is next after SH-132, then SH-115.
+## After SH-131
+
+The queue in `HARDENING_PROGRESS.md` is the forecast: SH-115, then SH-94 and
+SH-110 (both gating SH-114), then the epic proper. Two new stories filed during
+this run are not yet in it — **SH-134** (`add_type` accepts an unaddressable
+slug) and **SH-135** (backup retention, above).
