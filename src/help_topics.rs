@@ -19,9 +19,10 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
             r#"story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
 story project deinit [PATH|SLUG] [--force]
 story project list
+story project settings list | get <key> | set <key> <value> | unset <key>
 
 A repository's whole lifecycle with storyhook: register one, list them,
-and remove one.
+remove one, and change how storyhook treats this one.
 
 init
   Creates the project in storyhook's store with default states (todo,
@@ -59,19 +60,96 @@ list
   Every project the store knows, including any whose checkout is not on
   this machine. This is the same set the dashboard shows.
 
+settings
+  Read and write this project's settings — the handful of per-project
+  values that change how storyhook treats it. See 'story help
+  project-settings' for the keys and what each one does.
+
 Examples:
   story project init                    # Default prefix "SH" → SH-1, SH-2, ...
   story project init --prefix API       # Custom prefix → API-1, API-2, ...
   story project init ~/code/thing       # Somewhere other than here
   story project list
+  story project settings list
   story project deinit                  # Asks before destroying anything
   story project deinit old-thing --force
 
 Related:
+  story help project-settings — The settings keys, in detail
   story migrate     — Bring a .storyhook/ repository into the store
   story relink      — Point a project at a checkout that moved
   story member add  — Add team members after init
   story new         — Create your first story
+"#,
+        );
+
+        m.insert(
+            "project-settings",
+            r#"story project settings list
+story project settings get <key>
+story project settings set <key> <value>
+story project settings unset <key>
+
+This project's settings: the per-project values that change how
+storyhook treats it. They live in storyhook's store, alongside the
+project itself, and travel with it rather than with a checkout.
+
+Three different things wear the word "config" here. This is not the
+other two:
+
+  story project settings — per PROJECT, in the store. This command.
+  story set <id> ...     — per STORY. Sets a story's fields (title,
+                           state, priority, assignee). Nothing to do
+                           with a project.
+  .storyhook.toml        — per REPOSITORY. Its [plugin] and [hooks]
+                           tables are decisions about this checkout,
+                           versioned with the branch and carried by a
+                           clone. Edit the file; storyhook does not
+                           write those for you.
+
+Settings:
+  sync.auto_transition    true|false, default true
+    Whether 'story commit-sync' moves a story a commit mentions into
+    the active state. Turn it off in a repository where naming a story
+    in a commit message should record a link and nothing more.
+
+  doctor.stale_threshold  a duration such as 14d, 2w, 36h, 90m
+    How long a story may sit untouched before it counts as stale.
+    NOTE: no command reads this yet. You can store a value, and
+    'story doctor' will not act on it. The listing says so too.
+
+  github.sync             read-only
+    The github-sync document: etags and story-to-issue mappings. It is
+    listed and readable here, but only 'story github-sync' writes it —
+    its contents have to agree with state this command cannot see.
+
+list reports every setting with the value in force and where that value
+came from:
+
+  set      you wrote it on this project
+  default  you have not written it, and the code applies this value
+  unset    you have not written it, and nothing applies
+
+Those last two are different answers, which is why they are different
+words. An unwritten sync.auto_transition is 'true' and in force; an
+unwritten doctor.stale_threshold means no threshold exists at all.
+
+unset clears a value, returning the setting to whichever of those it
+was born as. Unsetting something you never set is not an error.
+
+Examples:
+  story project settings list
+  story project settings get sync.auto_transition
+  story project settings set sync.auto_transition false
+  story project settings set doctor.stale_threshold 14d
+  story project settings unset doctor.stale_threshold
+  story project settings list --json     # source and value as fields
+
+Related:
+  story project      — init, deinit and list
+  story commit-sync  — What sync.auto_transition governs
+  story github-sync  — What owns the github.sync document
+  story set          — Change a STORY's fields, not a project's settings
 "#,
         );
 

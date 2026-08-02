@@ -147,6 +147,81 @@ pub struct PhaseView {
     pub story_ids: Vec<String>,
 }
 
+/// How a project setting's value is spelled, and therefore how a written one
+/// is validated.
+///
+/// Carried on the wire beside the value so a reader knows how to interpret a
+/// string it did not type. Deliberately *not* a serialized `serde_json::Value`
+/// per setting: see [`SettingView::value`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingKind {
+    /// `true` or `false`.
+    Boolean,
+    /// A duration such as `14d`, in the form `story commit-sync --since` takes.
+    Duration,
+    /// A structured document another command owns. Reported as presence only.
+    Document,
+}
+
+/// Where a project setting's effective value comes from.
+///
+/// Three-valued rather than an `is_default` flag, because two of the three are
+/// otherwise indistinguishable and the difference matters:
+/// `sync.auto_transition` unset means `true` is in force, while
+/// `doctor.stale_threshold` unset means *nothing* is in force. A boolean
+/// reports both as "not set by you" and so lies about the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingSource {
+    /// Written on this project. [`SettingView::value`] is what was written.
+    Set,
+    /// Never written, but the code supplies a default that is in force.
+    Default,
+    /// Never written, and nothing applies in its absence.
+    Unset,
+}
+
+/// One project setting, as `story project settings` reports it.
+///
+/// Everything a renderer needs travels here, including the prose — the
+/// description, the owning command, the "nothing reads this yet" note — so
+/// that the CLI and any other front end describe a setting the same way, and
+/// so that the annotations come from the registry row rather than from a
+/// string written at a render site. A hand-written label is one that survives
+/// the day the setting starts having an effect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingView {
+    /// The dotted name a user types, such as `sync.auto_transition`.
+    pub key: String,
+    /// How the value is spelled.
+    pub kind: SettingKind,
+    /// The value in force, or `None` when nothing is.
+    ///
+    /// A string rather than a typed JSON value, in every kind — the same
+    /// bargain `git config --list` makes, with [`kind`](Self::kind) naming how
+    /// to read it. A typed value would buy a `jq` consumer one `tonumber` and
+    /// would tempt [`SettingKind::Document`] into serializing the shape of a
+    /// document whose type does not exist without the `github-sync` cargo
+    /// feature — making the surface a property of the build.
+    pub value: Option<String>,
+    /// Whether [`value`](Self::value) was written, defaulted, or is absent.
+    pub source: SettingSource,
+    /// What applies when nothing is written, if anything does.
+    pub default: Option<String>,
+    /// Whether `story project settings set` accepts this key.
+    pub settable: bool,
+    /// For a key no user may write, the command that owns its value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_by: Option<String>,
+    /// One line saying what the setting is for.
+    pub description: String,
+    /// A caveat that belongs to the key itself — currently, that nothing reads
+    /// it yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 /// Everything a command can return, before any rendering decision is made.
 ///
 /// This is the **wire envelope**: `app::run` produces it, and every renderer
@@ -173,6 +248,13 @@ pub enum Response {
     Graph(Box<GraphView>),
     Issues(Vec<String>),
     PhaseList(Vec<PhaseView>),
+    /// One project's settings — the whole set from `list`, or the single
+    /// entry `get`, `set` and `unset` answer with.
+    ///
+    /// Always a list, even of one, so that all four forms of the verb render
+    /// through the same arm and a script does not have to branch on which one
+    /// it asked for.
+    ProjectSettings(Vec<SettingView>),
     /// Raw JSON output — bypasses normal envelope wrapping.
     /// Used by session-start and similar commands that need exact JSON control.
     RawJson(String),
@@ -218,6 +300,8 @@ struct JsonEnvelope<'a> {
     issues: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     phases: Option<&'a [PhaseView]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settings: Option<&'a [SettingView]>,
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
     warnings: &'a [String],
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
@@ -279,6 +363,7 @@ fn render_json(response: &Response) -> String {
             graph: None,
             issues: None,
             phases: None,
+            settings: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -291,6 +376,7 @@ fn render_json(response: &Response) -> String {
             graph: None,
             issues: None,
             phases: None,
+            settings: None,
             warnings: &view.warnings,
             flagged_reasons: &view.flagged_reasons,
         }),
@@ -303,6 +389,7 @@ fn render_json(response: &Response) -> String {
             graph: None,
             issues: None,
             phases: None,
+            settings: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -315,6 +402,7 @@ fn render_json(response: &Response) -> String {
             graph: None,
             issues: None,
             phases: None,
+            settings: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -327,6 +415,7 @@ fn render_json(response: &Response) -> String {
             graph: Some(graph.as_ref()),
             issues: None,
             phases: None,
+            settings: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -339,6 +428,7 @@ fn render_json(response: &Response) -> String {
             graph: None,
             issues: Some(issues),
             phases: None,
+            settings: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -351,6 +441,20 @@ fn render_json(response: &Response) -> String {
             graph: None,
             issues: None,
             phases: Some(phase_views),
+            settings: None,
+            warnings: &[],
+            flagged_reasons: &[],
+        }),
+        Response::ProjectSettings(settings) => serde_json::to_string_pretty(&JsonEnvelope {
+            result: "ok",
+            message: None,
+            story: None,
+            stories: None,
+            summary: None,
+            graph: None,
+            issues: None,
+            phases: None,
+            settings: Some(settings),
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -484,6 +588,7 @@ fn render_human(response: &Response) -> String {
             }
             body
         }
+        Response::ProjectSettings(settings) => render_project_settings(settings),
         Response::RawJson(raw) => {
             // Should not reach here — render_response handles RawJson before calling render_human.
             format!("{raw}\n")
@@ -505,6 +610,53 @@ fn render_human(response: &Response) -> String {
         }
         Response::ConfirmationRequired(plan) => render_deinit_plan(plan),
     }
+}
+
+/// `story project settings` in prose.
+///
+/// Each entry is a value line and its description, because a settings surface
+/// is read rarely and by someone deciding whether to change something. Every
+/// annotation — the default marker, the owning command, the caveat that
+/// nothing reads a value yet — comes from the [`SettingView`] rather than
+/// from a condition written here, so the day a setting starts having an effect
+/// the label stops appearing without this function being touched.
+fn render_project_settings(settings: &[SettingView]) -> String {
+    if settings.is_empty() {
+        return "no settings\n".to_string();
+    }
+
+    let mut entries = Vec::with_capacity(settings.len());
+    for view in settings {
+        let value = view
+            .value
+            .as_ref()
+            .map(|value| format!(" = {value}"))
+            .unwrap_or_default();
+
+        // One parenthetical rather than several, so an unset read-only key does
+        // not read as `github.sync (unset) (read-only, …)`.
+        let mut notes = Vec::new();
+        match view.source {
+            SettingSource::Set => {}
+            SettingSource::Default => notes.push("default".to_string()),
+            SettingSource::Unset => notes.push("unset".to_string()),
+        }
+        if let Some(owner) = &view.managed_by {
+            notes.push(format!("read-only, managed by `{owner}`"));
+        }
+        let notes = if notes.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", notes.join("; "))
+        };
+
+        let mut entry = format!("{}{value}{notes}\n    {}\n", view.key, view.description);
+        if let Some(note) = &view.note {
+            entry.push_str(&format!("    Note: {note}.\n"));
+        }
+        entries.push(entry);
+    }
+    entries.join("\n")
 }
 
 /// The warning a deinit prints before it asks.

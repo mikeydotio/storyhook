@@ -102,6 +102,7 @@ Usage:
   story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
   story project deinit [PATH|SLUG] [--force]       (delete a project and its stories)
   story project list                               (every project storyhook knows)
+  story project settings list|get|set|unset        (this project's settings)
   story new <title> [--state <slug>] [--type <slug>] [--description <text>]
                     [--priority <level>] [--assignee <member>] [--label <name> ...]
   story tui                                           (interactive terminal UI)
@@ -544,6 +545,41 @@ pub enum ProjectAction {
     },
     /// Every project the store knows, checkout or no checkout.
     List,
+    /// Read and write this project's settings.
+    ///
+    /// The one arm of this family that names a project rather than creating,
+    /// destroying or enumerating them — so it is the one arm answered against a
+    /// resolved [`Ctx`](crate::service::Ctx) rather than by
+    /// `dispatch_unscoped`.
+    Settings(SettingsAction),
+}
+
+/// The `story project settings …` forms.
+///
+/// Explicit subcommands rather than flags or a bare `key=value`, matching every
+/// other verb group in this parser — and so that one missing shell word cannot
+/// turn a read into a write.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SettingsAction {
+    /// Every setting, with its effective value and where that value came from.
+    List,
+    /// One setting.
+    Get {
+        /// The dotted name, such as `sync.auto_transition`.
+        key: String,
+    },
+    /// Write one setting.
+    Set {
+        /// The dotted name.
+        key: String,
+        /// The value, validated against the setting's kind.
+        value: String,
+    },
+    /// Clear one setting, returning it to its default or to nothing.
+    Unset {
+        /// The dotted name.
+        key: String,
+    },
 }
 
 /// The `story store …` subcommands.
@@ -807,7 +843,11 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 const PROJECT_USAGE: &str = "usage: story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] \
-                             [--no-agents-md] | deinit [PATH|SLUG] [--force] | list";
+                             [--no-agents-md] | deinit [PATH|SLUG] [--force] | list | settings \
+                             list|get|set|unset";
+
+const PROJECT_SETTINGS_USAGE: &str = "usage: story project settings list | get <key> | \
+                                      set <key> <value> | unset <key>";
 
 fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
     let action = args
@@ -819,8 +859,34 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
         "list" => Ok(Invocation::Project {
             action: ProjectAction::List,
         }),
+        "settings" => parse_project_settings(args),
         _ => Err(AppError::Usage(PROJECT_USAGE.to_string())),
     }
+}
+
+/// `story project settings <list|get|set|unset> …`.
+///
+/// Every form takes a fixed number of words and nothing else. A trailing word
+/// is refused rather than ignored: `settings set a b c` is more likely a
+/// quoting mistake than a value the user meant to lose half of.
+fn parse_project_settings(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = || AppError::Usage(PROJECT_SETTINGS_USAGE.to_string());
+    let word = |index: usize| args.get(index).cloned().ok_or_else(usage);
+
+    let action = match args.get(2).ok_or_else(usage)?.as_str() {
+        "list" if args.len() == 3 => SettingsAction::List,
+        "get" if args.len() == 4 => SettingsAction::Get { key: word(3)? },
+        "set" if args.len() == 5 => SettingsAction::Set {
+            key: word(3)?,
+            value: word(4)?,
+        },
+        "unset" if args.len() == 4 => SettingsAction::Unset { key: word(3)? },
+        _ => return Err(usage()),
+    };
+
+    Ok(Invocation::Project {
+        action: ProjectAction::Settings(action),
+    })
 }
 
 fn parse_project_deinit(args: &[String]) -> Result<Invocation, AppError> {
