@@ -79,6 +79,25 @@ pub struct DeletedProject {
     pub paths: usize,
 }
 
+/// What one [`WriteOps::purge_story`](crate::store::WriteOps::purge_story)
+/// destroyed.
+///
+/// Counted inside the purging transaction, for the same reason
+/// [`DeletedProject`] is: the caller has just told a user what it was about to
+/// destroy, and the honest report is of what actually went.
+/// One field, deliberately. The other tables a purge clears are counted by
+/// SQLite's `changes()`, which **excludes rows deleted by triggers** — and
+/// `story_relations` carries a mirror trigger, so a count taken there reports
+/// one edge where two rows went. A number that is quietly half the truth is
+/// worse than no number, and nothing needs it: the retracted claims a user
+/// cares about are reported by `StoryService::purge`, which knows which
+/// stories made them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PurgedStory {
+    /// Events removed — the story's whole log, which is the irreversible part.
+    pub events: usize,
+}
+
 /// An event as it was stored, with its position and its decoded payload.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredEvent {
