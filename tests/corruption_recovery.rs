@@ -448,3 +448,101 @@ fn a_checkout_naming_a_project_this_store_does_not_have_says_which_one() {
         "and the command that adopts it here: {message}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The commands that must survive a store they cannot open (SH-149)
+// ---------------------------------------------------------------------------
+
+/// A `story` invocation with nothing forced about the transport.
+///
+/// The rest of this file pins the transport deliberately. These cases must not:
+/// the whole claim is that the answer arrives before any invoker is chosen, so
+/// forcing one would test a narrower thing than the defect.
+fn story_however_it_runs(env: &TestEnv, cwd: &Path, args: &[&str]) -> Output {
+    env.raw_story(cwd)
+        .args(args)
+        .output()
+        .expect("running story")
+}
+
+/// Every command that is not about the data must survive a store that will not
+/// open.
+///
+/// This is the defect that made storyhook's own advice impossible to follow. The
+/// corruption diagnostic three tests above says, in as many words, *"to restore
+/// one: run `story daemon stop`, delete store.db …"* — and `story daemon stop`
+/// exited 5 with that same message, because `main` opened the store before
+/// dispatching anything. So did `story --help`, which is what every other error
+/// in the program tells the reader to run.
+///
+/// Each of the five is checked for two separate things, because they fail
+/// differently: the exit status, and the absence of the corruption text. A
+/// command that started reporting "damaged" while exiting 0 would be a
+/// regression this test would otherwise miss.
+#[test]
+fn a_store_that_will_not_open_does_not_take_down_the_commands_that_never_needed_it() {
+    let env = env_with_store_bytes(b"this is not a database at all\n");
+    let cwd = scratch_dir();
+
+    for args in [
+        vec!["--version"],
+        vec!["--help"],
+        vec!["daemon", "status"],
+        vec!["web", "status"],
+        vec!["help", "web"],
+    ] {
+        let out = story_however_it_runs(&env, cwd.path(), &args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "`story {}` needs no store, so a damaged one must not take it down; \
+             it exited {:?} saying: {stderr}",
+            args.join(" "),
+            out.status.code(),
+        );
+        assert!(
+            !stderr.contains("is damaged"),
+            "`story {}` must not report a store it never opened: {stderr}",
+            args.join(" "),
+        );
+    }
+}
+
+/// The remedy the corruption diagnostic prints, executed against a corrupt
+/// store.
+///
+/// Written as the drill rather than as a list of commands, because the claim is
+/// not "these five verbs work" — it is that a reader who does what the message
+/// says gets somewhere. `story daemon stop` is step one, and it was step one
+/// that failed.
+#[test]
+fn the_remedy_a_damaged_store_prints_can_actually_be_run() {
+    let env = env_with_store_bytes(b"not a database\n");
+    let cwd = scratch_dir();
+
+    let broken = story_in(&env, cwd.path(), &["list"]);
+    let message = failure_message(&broken, "story list");
+    assert!(
+        message.contains("story daemon stop"),
+        "the fixture assumes the diagnostic still names this step: {message}"
+    );
+
+    let step_one = story_however_it_runs(&env, cwd.path(), &["daemon", "stop"]);
+    assert!(
+        step_one.status.success(),
+        "the first step of storyhook's own remedy must run on the store it is a \
+         remedy for; it exited {:?} saying: {}",
+        step_one.status.code(),
+        String::from_utf8_lossy(&step_one.stderr)
+    );
+
+    // And the rest of the remedy then works, which is what makes step one worth
+    // fixing rather than merely worth reporting.
+    std::fs::remove_file(env.store_path()).expect("deleting the damaged store");
+    let after = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    assert!(
+        after.status.success(),
+        "a fresh store must open once the damaged one is gone: {}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+}
