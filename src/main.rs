@@ -223,9 +223,9 @@ enum Confirmed {
     CannotAsk(storyhook::error::AppError),
 }
 
-/// Asks the user to confirm a destructive plan by typing the project's slug.
+/// Asks the user to confirm a destructive plan by typing the token it names.
 ///
-/// A typed slug rather than `[y/N]`, because the weight of the gate should
+/// A typed token rather than `[y/N]`, because the weight of the gate should
 /// match the weight of the act: one keystroke is right for "reopen this deleted
 /// story" and wrong for "erase every event this project has".
 ///
@@ -240,20 +240,22 @@ enum Confirmed {
 ///
 /// `--quiet` deliberately does *not* suppress the warning. It suppresses
 /// successful output, and this is a question.
-fn confirm(plan: &storyhook::output::DeinitPlan, json: bool, quiet: bool) -> Confirmed {
+fn confirm(plan: &storyhook::output::ConfirmationPlan, json: bool, quiet: bool) -> Confirmed {
     use std::io::{IsTerminal, Write};
+
+    let token = plan.token();
 
     // The refusal carries the *whole* plan, not just the headline counts. A
     // caller being told to re-run with --force is being asked to authorize
-    // something sight-unseen otherwise, and the file list is the part they
-    // cannot reconstruct — which checkouts are known, and which AGENTS.md is
-    // being kept rather than removed.
+    // something sight-unseen otherwise, and the detail is the part they cannot
+    // reconstruct — which checkouts are known and which AGENTS.md is being kept
+    // rather than removed, or which stories still claim an edge into the one
+    // about to go.
     let refuse = |why: &str| {
         Confirmed::CannotAsk(storyhook::error::AppError::Validation(format!(
-            "this would permanently delete `{}`, and {why}.\n\n{}\nRe-run with --force to \
+            "this would permanently delete `{token}`, and {why}.\n\n{}\nRe-run with --force to \
              confirm.",
-            plan.slug,
-            storyhook::output::render_deinit_plan(plan),
+            storyhook::output::render_confirmation_plan(plan),
         )))
     };
     if json {
@@ -264,15 +266,15 @@ fn confirm(plan: &storyhook::output::DeinitPlan, json: bool, quiet: bool) -> Con
     }
 
     let _ = quiet;
-    eprint!("{}", storyhook::output::render_deinit_plan(plan));
-    eprint!("Type `{}` to confirm: ", plan.slug);
+    eprint!("{}", storyhook::output::render_confirmation_plan(plan));
+    eprint!("Type `{token}` to confirm: ");
     let _ = std::io::stderr().flush();
 
     let mut answer = String::new();
     if std::io::stdin().read_line(&mut answer).is_err() {
         return Confirmed::No;
     }
-    if answer.trim() == plan.slug {
+    if answer.trim() == token {
         Confirmed::Yes
     } else {
         Confirmed::No
