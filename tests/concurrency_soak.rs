@@ -12,10 +12,21 @@
 //! timeout that is fine at two writers and not at eight.
 //!
 //! So this file runs a load rather than a race. Eight clients, several rounds
-//! each, mixed operations — and **half of them go through the daemon while the
-//! other half write the file directly**, which is not an exotic configuration:
-//! it is a dashboard running while a git hook shells out to `story --local`,
-//! which happens on this machine on every commit.
+//! each, mixed operations, all of them through the daemon — which is not a
+//! choice the file makes but the only shape there is, since SH-114 collapsed the
+//! CLI to one transport.
+//!
+//! # What that cost, named rather than quietly absorbed
+//!
+//! Half of these clients used to write the database *directly*, so the file
+//! genuinely exercised SQLite's multi-process write path: `busy_timeout`, the
+//! `BEGIN IMMEDIATE` retry, `SQLITE_BUSY` reaching a user as exit code 4. With
+//! one transport there is one writing process, and that contention moved inside
+//! the daemon's own write mutex. The assertions below are kept — a lock held too
+//! long is still a lock held too long — but assertion 2 is now about a mutex
+//! rather than about a file lock, and nothing in this suite drives two processes
+//! at one store any more. The only thing that still can is `story tui`, which
+//! holds its own store handle; making it a client is SH-150.
 //!
 //! # The four things it asserts
 //!
@@ -68,21 +79,20 @@ const ROUNDS: usize = 3;
 /// otherwise, and the value stays: what was wrong was the diagnosis, not the
 /// number.
 ///
-/// Every wait inside a **local** client is bounded by five seconds — `ensure_wal`
-/// and SQLite lock acquisition by `busy_timeout`, one acquisition per write
-/// because the store takes `BEGIN IMMEDIATE`, and the event hooks' own
-/// `wait_timeout` — so nothing a local client does can reach thirty. What can is
-/// the *parent*: this thread, blocked in `read_to_end` on a pipe whose write end
-/// a daemon inherited by accident and holds for its whole life. That is fixed at
-/// its origin; see `tests/daemon_fd_hygiene.rs`.
+/// Every wait inside the *daemon* is bounded by five seconds — `ensure_wal` and
+/// SQLite lock acquisition by `busy_timeout`, one acquisition per write because
+/// the store takes `BEGIN IMMEDIATE`, and the event hooks' own `wait_timeout` —
+/// so nothing the work itself does can reach thirty.
 ///
-/// A **daemon** client has a second way, and it is not fixed. `spawn_locked`
-/// takes `daemon.spawn.lock` with a blocking `flock` that has no timeout, and
-/// holds it across `stand_down_legacy_daemon`, a five-second `wait_until` and
-/// `await_healthy` — so several daemon clients arriving at once queue serially
-/// behind up to fifteen seconds each. This is why every label below names its
-/// invoker: a `local` overrun and a `daemon` overrun have different causes and
-/// send the reader to different places.
+/// Two things can, and both are in the client. The *parent* can block in
+/// `read_to_end` on a pipe whose write end a daemon inherited by accident and
+/// holds for its whole life; that is fixed at its origin, see
+/// `tests/daemon_fd_hygiene.rs`. And `spawn_locked` takes `daemon.spawn.lock`
+/// with a blocking `flock` that has no timeout, held across
+/// `stand_down_legacy_daemon`, a five-second `wait_until` and `await_healthy` —
+/// so several clients arriving at once with no daemon running queue serially
+/// behind up to fifteen seconds each. That one is not fixed (SH-143), and it is
+/// now on *every* command's path rather than half of them.
 const DEADLINE: Duration = Duration::from_secs(30);
 
 /// Runs a command with a deadline, and fails loudly rather than hanging.
@@ -159,33 +169,9 @@ fn assert_clean(out: &Output, what: &str) {
     }
 }
 
-/// Which invoker a client index runs on.
-///
-/// Even clients write the database in their own process; odd clients send the
-/// work to the daemon. Both are supported modes and both are live on a real
-/// machine at the same moment.
-///
-/// This is a function rather than an expression inside [`client_command`]
-/// because every label below names it too, and the two must not be able to
-/// disagree. That matters more than it looks: the failures SH-94 was filed
-/// about reported `relate (2)`, and working out which invoker index 2 meant
-/// took reading this file. The two halves fail for completely different
-/// reasons — a local client can only be blocked by a descriptor somebody stole,
-/// while a daemon client also queues on the unbounded spawn lock at
-/// `daemon::lifecycle::spawn_locked` — so a report that does not say which one
-/// it was sends the next reader to the wrong place.
-fn invoker_for(index: usize) -> &'static str {
-    if index.is_multiple_of(2) {
-        "local"
-    } else {
-        "daemon"
-    }
-}
-
-/// One client's `story` command, on the invoker its index assigns it.
-fn client_command(env: &TestEnv, cwd: &Path, index: usize, args: &[&str]) -> Command {
+/// One client's `story` command.
+fn client_command(env: &TestEnv, cwd: &Path, args: &[&str]) -> Command {
     let mut cmd = env.raw_story(cwd);
-    cmd.env("STORYHOOK_INVOKER", invoker_for(index));
     cmd.args(args);
     cmd
 }
@@ -239,8 +225,7 @@ fn story_numbers(store: &SqliteStore, project: ProjectId) -> Vec<i64> {
 // The soak
 // ---------------------------------------------------------------------------
 
-/// Eight clients, three rounds each, three commands a round, half of them over
-/// RPC and half writing the file directly.
+/// Eight clients, three rounds each, three commands a round, all over RPC.
 ///
 /// Each client only ever touches stories it created itself, so every command in
 /// the run is *supposed* to succeed: there is no legitimate conflict to explain
@@ -248,7 +233,7 @@ fn story_numbers(store: &SqliteStore, project: ProjectId) -> Vec<i64> {
 /// places it belongs — the shared id counter, the shared write lock, the shared
 /// database file.
 #[test]
-fn mixed_local_and_daemon_clients_under_load_lose_nothing() {
+fn eight_concurrent_clients_under_load_lose_nothing() {
     let env = TestEnv::isolated();
     let project = env.project().prefix("SK").build();
     let _daemon = DaemonGuard(&env);
@@ -261,26 +246,21 @@ fn mixed_local_and_daemon_clients_under_load_lose_nothing() {
                 for round in 0..ROUNDS {
                     let title = format!("client {index} round {round}");
                     let out = run_bounded(
-                        client_command(env, root, index, &["new", &title, "--json"]),
-                        &format!("new ({index}/{round}, {})", invoker_for(index)),
+                        client_command(env, root, &["new", &title, "--json"]),
+                        &format!("new ({index}/{round})"),
                     );
                     assert_clean(&out, &format!("story new ({index}/{round})"));
                     let id = minted_id(&out);
 
                     let out = run_bounded(
-                        client_command(
-                            env,
-                            root,
-                            index,
-                            &["comment", &id, "seen under load", "--json"],
-                        ),
-                        &format!("comment ({index}/{round}, {})", invoker_for(index)),
+                        client_command(env, root, &["comment", &id, "seen under load", "--json"]),
+                        &format!("comment ({index}/{round})"),
                     );
                     assert_clean(&out, &format!("story comment ({index}/{round})"));
 
                     let out = run_bounded(
-                        client_command(env, root, index, &["move", &id, "in-progress", "--json"]),
-                        &format!("move ({index}/{round}, {})", invoker_for(index)),
+                        client_command(env, root, &["move", &id, "in-progress", "--json"]),
+                        &format!("move ({index}/{round})"),
                     );
                     assert_clean(&out, &format!("story move ({index}/{round})"));
                 }
@@ -339,8 +319,8 @@ fn concurrent_relation_writes_leave_a_symmetric_graph() {
             let root = project.path();
             scope.spawn(move || {
                 let out = run_bounded(
-                    client_command(env, root, index, &["relate", a, "blocks", b, "--json"]),
-                    &format!("relate ({index}, {})", invoker_for(index)),
+                    client_command(env, root, &["relate", a, "blocks", b, "--json"]),
+                    &format!("relate ({index})"),
                 );
                 assert_clean(&out, &format!("story relate ({index})"));
             });
@@ -401,13 +381,8 @@ fn story_numbers_stay_unique_under_a_burst_of_simultaneous_allocations() {
     // Every child spawned before any is waited on: waiting between spawns is
     // how a race test quietly becomes a sequential one.
     let mut children = Vec::new();
-    for index in 0..CLIENTS * 2 {
-        let mut cmd = client_command(
-            &env,
-            project.path(),
-            index,
-            &["new", "simultaneous", "--json"],
-        );
+    for _ in 0..CLIENTS * 2 {
+        let mut cmd = client_command(&env, project.path(), &["new", "simultaneous", "--json"]);
         children.push(
             cmd.stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -474,10 +449,9 @@ fn readers_run_through_a_write_storm_without_seeing_a_partial_story() {
                         client_command(
                             env,
                             root,
-                            index,
                             &["new", &format!("storm {index}/{round}"), "--json"],
                         ),
-                        &format!("storm writer ({index}, {})", invoker_for(index)),
+                        &format!("storm writer ({index})"),
                     );
                     assert_clean(&out, &format!("storm writer ({index})"));
                 }
@@ -489,8 +463,8 @@ fn readers_run_through_a_write_storm_without_seeing_a_partial_story() {
             scope.spawn(move || {
                 for _ in 0..ROUNDS * 2 {
                     let out = run_bounded(
-                        client_command(env, reader_cwd, index + 1, &["list", "--json"]),
-                        &format!("storm reader ({}, {})", index + 1, invoker_for(index + 1)),
+                        client_command(env, reader_cwd, &["list", "--json"]),
+                        &format!("storm reader ({})", index + 1),
                     );
                     assert_clean(&out, &format!("storm reader ({})", index + 1));
                     // Every story the reader sees must be whole: a title and a

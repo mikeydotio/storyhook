@@ -50,8 +50,9 @@ impl EventSource {
     /// # Why it polls rather than subscribing to the daemon's feed
     ///
     /// **A deliberate departure**, recorded because the plan said SSE. The TUI
-    /// holds its own store handle: it is a `--local` client by construction, and
-    /// it works with no daemon running at all. Subscribing to a daemon's feed
+    /// holds its own store handle rather than going through the daemon — since
+    /// SH-114 it is the last thing in storyhook that does, and it works with no
+    /// daemon running at all (SH-150). Subscribing to a daemon's feed
     /// would make a TUI that works today stop updating on a machine where the
     /// daemon is not up — and it would learn the same fact, one layer further
     /// away, over a connection that can drop. The change token is what the

@@ -8,9 +8,12 @@
 //!
 //! Two implementations, and they are not peers:
 //!
-//! * [`StoreInvoker`] runs the work in this process, against the store.
-//! * [`HttpInvoker`] sends it to the daemon, which runs it against the store
-//!   there. It is the default; `--local` picks the other one.
+//! * [`StoreInvoker`] runs the work in this process, against the store. It is
+//!   the **executor**, not a transport: the daemon uses it to run what a client
+//!   sent, and the TUI uses it to run its own work.
+//! * [`HttpInvoker`] sends the work to the daemon, which runs it against the
+//!   store there. It is the CLI's **only** door. A second one, `--local`, chose
+//!   `StoreInvoker` from `main` and was deleted in SH-114.
 //!
 //! A third, `LegacyInvoker`, forwarded to the pre-rearchitecture `app::run`
 //! and read and wrote `.storyhook/` directly. It was quarantined at the flip
@@ -1310,7 +1313,7 @@ pub fn dispatch_unscoped_with<S: Store>(
 /// Standard input cannot be resolved that way: the daemon does not have the
 /// client's. So it arrives in the envelope, read by the client before it sends
 /// anything, and `stdin` here is that content. `None` means "read this process's
-/// own", which is what a `--local` run does.
+/// own", which is what the TUI and the daemon's own in-process callers do.
 fn read_input(cwd: &Path, stdin: Option<&str>, file: Option<&str>) -> Result<String, AppError> {
     match file {
         Some(path) => {
@@ -1512,10 +1515,10 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
 
 /// Runs one invocation by asking the machine's daemon to run it.
 ///
-/// **The default.** Every `story` command goes through here unless `--local`
-/// says otherwise, and the reason is that one process owning the store is what
-/// makes a dashboard live, a change feed possible, and a second opinion about
-/// the data impossible.
+/// **The only route.** Every `story` command goes through here — there is no
+/// second one since SH-114 — and the reason is that one process owning the store
+/// is what makes a dashboard live, a change feed possible, and a second opinion
+/// about the data impossible.
 ///
 /// # What this does not do
 ///

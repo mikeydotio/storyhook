@@ -225,13 +225,8 @@ fn port_of(env: &TestEnv, pid: u32) -> u16 {
     }
 }
 
-/// A `story` command addressed at the daemon rather than at this process.
-///
-/// The override exists only while the in-process transport does: the suite
-/// wrapper still defaults every command to it, and these tests are about the
-/// daemon. It goes when the variable does.
+/// A `story` command, which is a client of whatever daemon is holding the store
+/// — and, by the time this is called, of the one this test armed.
 fn client_command(env: &TestEnv, cwd: &Path) -> std::process::Command {
-    let mut cmd = env.raw_story(cwd);
-    cmd.env("STORYHOOK_INVOKER", "daemon");
-    cmd
+    env.raw_story(cwd)
 }

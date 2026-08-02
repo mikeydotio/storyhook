@@ -49,12 +49,8 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 /// **whoever asks about the bytes must first make sure nobody is holding them**
 /// — `env.stop_daemon()` before the file is read or written, never a different
 /// transport.
-///
-/// The override exists only while the in-process transport does: the suite
-/// wrapper still defaults every command to it. It goes when the variable does.
 fn story_in(env: &TestEnv, cwd: &Path, args: &[&str]) -> Output {
     env.raw_story(cwd)
-        .env("STORYHOOK_INVOKER", "daemon")
         .args(args)
         .output()
         .expect("running story")

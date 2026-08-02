@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use storyhook::store::{ReadOps, SqliteStore, Store};
-use storyhook_test_support::{scratch_dir, story_binary};
+use storyhook_test_support::{daemon_containment, scratch_dir, story_binary};
 
 /// A data home that is **not** under any temporary directory.
 ///
@@ -46,12 +46,16 @@ fn init_in(cwd: &Path, data_home: &Path, allow: bool) -> std::process::Output {
         .env_clear()
         .env("HOME", cwd)
         .env("PATH", std::env::var("PATH").unwrap_or_default())
-        // Local, never the daemon: this asks what *one* process resolves, and a
-        // client that spawned a daemon would be asking a second process whose
-        // environment this test did not build.
-        .env("STORYHOOK_INVOKER", "local")
         .env("STORYHOOK_DATA_DIR", data_home)
         .args(["project", "init"]);
+    // The refusal happens wherever the store is opened, which is now the daemon
+    // — and the daemon inherits this command's environment, so it is still the
+    // environment this test built. These two are put back because a daemon with
+    // a cleared one would prefer the developer's dashboard port and outlive the
+    // run.
+    for (name, value) in daemon_containment() {
+        cmd.env(name, value);
+    }
     if allow {
         cmd.env("STORYHOOK_ALLOW_TEMP_PROJECT", "1");
     }
@@ -70,9 +74,11 @@ fn init_project_in(
         .env_clear()
         .env("HOME", cwd)
         .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("STORYHOOK_INVOKER", "local")
         .env("STORYHOOK_DATA_DIR", data_home)
         .args(["project", "init"]);
+    for (name, value) in daemon_containment() {
+        cmd.env(name, value);
+    }
     if let Some(path) = path {
         cmd.arg(path);
     }
