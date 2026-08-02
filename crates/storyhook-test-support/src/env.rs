@@ -254,6 +254,28 @@ impl TestEnv {
     pub fn daemon(&self) -> Option<storyhook::daemon::lifecycle::DaemonInfo> {
         storyhook::daemon::lifecycle::read_info(&self.environment())
     }
+
+    /// Whether a daemon is holding this environment's store *now*.
+    ///
+    /// The pidfile lock rather than [`Self::daemon`], and the difference is the
+    /// whole point: a portfile outlives the process that wrote it, so a test
+    /// asking "is anything holding the database" would get a stale yes from one
+    /// and the truth from the other.
+    #[must_use]
+    pub fn daemon_is_live(&self) -> bool {
+        storyhook::daemon::lifecycle::is_live(&self.environment())
+    }
+
+    /// Stands down whatever daemon is holding this environment's store.
+    ///
+    /// A no-op when there is none, so it is safe to call before any test that
+    /// wants the store to itself — which is every test that asks a question
+    /// about bytes on disk. A live daemon answers reads from its own page cache
+    /// and keeps a write-ahead log alive that would otherwise be checkpointed
+    /// away.
+    pub fn stop_daemon(&self) {
+        let _ = storyhook::daemon::lifecycle::stop(&self.environment());
+    }
 }
 
 /// The `story` binary under test — always this build's, never a globally

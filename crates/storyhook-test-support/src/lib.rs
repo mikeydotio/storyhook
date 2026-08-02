@@ -22,6 +22,8 @@
 //! - [`serve`] and friends — dashboard servers that cannot be handed a port
 //!   somebody else holds, and cannot outlive the test that started them
 //!   (SH-51).
+//! - [`crash_the_daemon`] and friends — killing the process that owns the write
+//!   transaction, which since the transport collapsed is the daemon.
 //!
 //! # Using it
 //!
@@ -34,6 +36,7 @@
 //! project.run(&["move", &id, "in-progress"]).success();
 //! ```
 
+mod crash;
 mod env;
 mod legacy_tree;
 mod project;
@@ -42,6 +45,7 @@ mod server;
 mod service;
 mod store;
 
+pub use crash::{Crash, assert_no_daemon, crash_a_starting_daemon, crash_the_daemon, spawn_daemon};
 pub use env::{TestEnv, story_binary};
 pub use project::{Project, ProjectBuilder};
 pub use scratch::{scratch_dir, scratch_dir_named, scratch_root};
