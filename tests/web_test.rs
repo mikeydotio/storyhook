@@ -21,6 +21,7 @@ use predicates::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
 use storyhook::cli::parse_invocation;
+use storyhook::daemon::serve::BoundAddress;
 use storyhook::env::Environment;
 use storyhook::invoke::{dispatch, dispatch_unscoped};
 use storyhook::service::Ctx;
@@ -47,6 +48,12 @@ struct Served {
     dir: tempfile::TempDir,
     /// The loopback port the server reported for itself.
     port: u16,
+    /// Every address the server reported binding, tailnet included.
+    ///
+    /// The only sanctioned way for a test to learn whether the best-effort
+    /// tailnet listener exists — see the tailnet section near the end of this
+    /// file for why probing `tailscale` here instead is the SH-110 defect.
+    bound: BoundAddress,
     /// The project's slug — what a dashboard URL calls a repo id.
     repo_id: String,
 }
@@ -177,6 +184,7 @@ fn served() -> Served {
         project,
         dir,
         port: bound.port(),
+        bound,
         repo_id,
     }
 }
@@ -346,20 +354,27 @@ fn web_open_and_address_succeed_when_running() {
         .success();
 }
 
-/// Regression coverage for the #35 follow-up: `story web
-/// start`/`status`/`address` now advertise this machine's MagicDNS FQDN
-/// (not just its raw tailnet IP) whenever Tailscale reports one, since the
-/// FQDN is trusted for mutations too — unlike the bare short label (see
-/// `web::TailnetIdentity::advertise_host`). Skips gracefully wherever
-/// MagicDNS isn't available, the same as every other tailnet-gated test in
-/// this file (see `test_env_tailnet_fqdn`).
+/// The CLI advertises the host the *daemon* bound, never one this process
+/// probed for. Direction A of SH-110, mechanized.
+///
+/// **Never skips.** On a machine with no tailnet the expected host is simply
+/// `127.0.0.1`, and the assertion still means something: all three commands
+/// must agree with the portfile.
+///
+/// The `tailscale` shim is what makes it a regression test rather than a
+/// restatement. The daemon starts with the real environment, so on a
+/// tailnet-equipped machine it binds and publishes its MagicDNS name — and then
+/// the three client commands run with a `tailscale` that *fails*, which is what
+/// a probe overrunning its three-second deadline under load looks like from the
+/// client's side. Before the fix those clients probed, got nothing, and printed
+/// `127.0.0.1` for a daemon reachable at its FQDN. Now they read what it
+/// published and the shim cannot affect them.
+///
+/// Reading the portfile while a daemon runs is deliberate and safe: unlike the
+/// store, it is written once, not held open, and `TestEnv::daemon` exists for
+/// exactly this.
 #[test]
-fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
-    let Some(fqdn) = test_env_tailnet_fqdn() else {
-        eprintln!("skipping: no tailscale MagicDNS name available in this environment");
-        return;
-    };
-
+fn web_start_status_address_advertise_the_host_the_daemon_bound() {
     let env = TestEnv::isolated();
     let dir = scratch_dir();
     let port = reserve_port();
@@ -368,22 +383,48 @@ fn web_start_status_address_advertise_magic_dns_fqdn_when_available() {
     env.story(dir.path())
         .args(["web", "start", "--port", &port.to_string()])
         .assert()
-        .success()
-        .stdout(predicate::str::contains(format!("http://{fqdn}:{port}")));
+        .success();
     wait_for_server(port);
 
-    env.story(dir.path())
-        .args(["web", "status"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(format!("http://{fqdn}:{port}")));
+    let info = env
+        .daemon()
+        .expect("the daemon published a portfile after binding");
+    let expected = format!("http://{}:{}", info.advertised_host(), port);
 
-    env.story(dir.path())
-        .env("STORYHOOK_CLIPBOARD_CMD", "cat")
-        .args(["web", "address"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(format!("http://{fqdn}:{port}/")));
+    // A `tailscale` that fails, ahead of everything else: a client that still
+    // probes gets nothing and falls back to loopback.
+    let broken = tempfile::Builder::new()
+        .prefix("storyhook-tailscale-broken-")
+        .tempdir_in("/private/tmp")
+        .expect("a scratch directory");
+    let shim = broken.path().join("tailscale");
+    std::fs::write(&shim, "#!/bin/sh\nexit 1\n").expect("writing the shim");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("making the shim executable");
+    }
+    let mut entries = vec![broken.path().to_path_buf()];
+    entries.extend(std::env::split_paths(&env.path_with_binary()));
+    let path = std::env::join_paths(entries).expect("joining PATH");
+
+    for args in [["web", "status"], ["web", "address"]] {
+        let printed = env
+            .story(dir.path())
+            .env("PATH", &path)
+            .env("STORYHOOK_CLIPBOARD_CMD", "cat")
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("running `story {}`: {e}", args.join(" ")));
+        let stdout = String::from_utf8_lossy(&printed.stdout).into_owned();
+        assert!(
+            stdout.contains(&expected),
+            "`story {}` must advertise {expected} — the address the daemon published — \
+             not a host derived from its own probe (SH-110); got: {stdout}",
+            args.join(" ")
+        );
+    }
 
     env.story(dir.path())
         .args(["web", "stop"])
@@ -2825,38 +2866,47 @@ fn an_unknown_project_is_refused_rather_than_invented() {
     assert_eq!(status_of(err), 404);
 }
 
-// --- Tailnet dual-bind (skips gracefully where `tailscale` isn't available) ---
+// --- Tailnet dual-bind ---
+//
+// These five ask about a real tailnet interface, so they need a machine that
+// has one and a server that managed to bind it. What they must never do is
+// decide that for themselves: a `tailscale` probe in this process answers "does
+// this machine have a tailnet?", while the only question that matters here is
+// "did the server I just started bind one?". Those came apart under load and
+// that is SH-110. Every one of them now takes the answer from
+// `fixture.bound.tailnet`, which is the server's own report.
+//
+// They still skip on a machine without a tailnet, and a skip is invisible. The
+// guard against the whole family silently going to zero is not here: it is
+// `tests/tailnet_advertise.rs`, whose tests bring their own `tailscale` and
+// never skip, plus the unit tests in `daemon::lifecycle`. A sentinel that
+// failed whenever *this* machine has a tailnet the daemon did not bind was
+// considered and rejected — it would fire during exactly the load episode the
+// story documents, relocating the flake rather than removing it.
 
-/// Mirrors `web::tailscale_ip()`'s own detection so the test can decide
-/// whether to skip without depending on a private function.
-fn test_env_tailscale_ip() -> Option<String> {
-    let output = std::process::Command::new("tailscale")
-        .args(["ip", "-4"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if ip.is_empty() { None } else { Some(ip) }
+/// Says why a tailnet test did not run. Loud, and uniform, so a run's output
+/// shows the whole family skipping together rather than one line lost in it.
+fn skip_no_tailnet_listener() {
+    eprintln!(
+        "skipping: the test server bound no tailnet interface (no tailnet on this \
+         machine, or its probe missed the 3s deadline)"
+    );
 }
 
 #[test]
 fn web_serve_binds_tailnet_ip_when_available() {
-    let Some(tailnet_ip) = test_env_tailscale_ip() else {
-        eprintln!("skipping: no tailscale IP available in this environment");
-        return;
-    };
-
     let fixture = served();
+    let Some(bind) = fixture.bound.tailnet.clone() else {
+        return skip_no_tailnet_listener();
+    };
     fixture.seed(&["new", "Reachable via tailnet"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-    // The tailnet listener binds promptly (same as loopback) but doesn't
-    // start *serving* until the watcher's own setup finishes — poll for a
-    // clear failure message if it never comes up at all; the `ureq::get`
-    // call below blocks for the real response regardless.
-    wait_for_addr(&format!("{tailnet_ip}:{port}"));
+    // Bound is not accepting: `ready` fires before the accept loops are
+    // spawned, so this wait is not made redundant by the server's report. What
+    // the report removes is the possibility of waiting on an address the server
+    // never bound at all — which is what timed out at five seconds in SH-110.
+    wait_for_addr(&format!("{}:{port}", bind.ip()));
 
     // Loopback still works.
     let loopback = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
@@ -2865,7 +2915,7 @@ fn web_serve_binds_tailnet_ip_when_available() {
     assert_eq!(loopback.status(), 200);
 
     // The tailnet interface is also bound and serves the same data.
-    let tailnet_url = format!("http://{tailnet_ip}:{port}/api/repos/{repo_id}/data");
+    let tailnet_url = format!("http://{}:{port}/api/repos/{repo_id}/data", bind.ip());
     let resp = ureq::get(&tailnet_url).call().unwrap_or_else(|e| {
         panic!("expected the dashboard to be reachable via its own tailnet IP {tailnet_url}: {e}")
     });
@@ -2877,26 +2927,22 @@ fn web_serve_binds_tailnet_ip_when_available() {
 
 #[test]
 fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
-    let Some(tailnet_ip) = test_env_tailscale_ip() else {
-        eprintln!("skipping: no tailscale IP available in this environment");
-        return;
-    };
-
     let fixture = served();
+    let Some(bind) = fixture.bound.tailnet.clone() else {
+        return skip_no_tailnet_listener();
+    };
     fixture.seed(&["new", "Move me from the tailnet"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-    // The tailnet listener binds promptly (same as loopback), but doesn't
-    // start *serving* until the watcher's own setup finishes — poll for a
-    // clear failure message if it never comes up at all; the `ureq::post`
-    // call below blocks for the real response regardless, so nothing here
-    // needs to guess how long that setup actually takes.
-    wait_for_addr(&format!("{tailnet_ip}:{port}"));
+    wait_for_addr(&format!("{}:{port}", bind.ip()));
 
     // No STORYHOOK_WEB_TRUSTED_HOSTS is set — the server itself decided to
     // bind this interface, so mutations through it must be trusted by
     // default, the same way loopback is.
-    let url = format!("http://{tailnet_ip}:{port}/api/repos/{repo_id}/story/SH-1/move");
+    let url = format!(
+        "http://{}:{port}/api/repos/{repo_id}/story/SH-1/move",
+        bind.ip()
+    );
     let resp = ureq::post(&url)
         .header("X-Storyhook", "1")
         .content_type("application/json")
@@ -2905,24 +2951,38 @@ fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
     assert_eq!(resp.status(), 200);
 }
 
-/// This machine's MagicDNS FQDN (trailing dot stripped, lowercased), if the
-/// `tailscale` CLI is present and reports one — independently derived from
-/// `tailscale status --json` (mirroring `web::parse_tailnet_identity`'s own
-/// extraction) so these tests don't depend on private lib internals. `None`
-/// (and the caller skips) wherever `tailscale` isn't installed, isn't logged
-/// in, or MagicDNS is disabled on this tailnet.
-fn test_env_tailnet_fqdn() -> Option<String> {
-    let output = std::process::Command::new("tailscale")
-        .args(["status", "--json"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let dns_name = json.get("Self")?.get("DNSName")?.as_str()?;
-    let fqdn = dns_name.trim_end_matches('.').to_ascii_lowercase();
-    if fqdn.is_empty() { None } else { Some(fqdn) }
+/// The MagicDNS FQDN this server's own bind earned, or a skip.
+///
+/// A test that needs the name rather than the address: a tailnet can be bound
+/// without MagicDNS being enabled on it.
+fn fqdn_of(fixture: &Served) -> Option<String> {
+    fixture
+        .bound
+        .tailnet
+        .as_ref()
+        .and_then(|bind| bind.magic_dns().map(str::to_string))
+}
+
+/// Asserts the tailnet listener answers a *trusted* mutation, so that a
+/// rejection asserted afterwards means "this host is not trusted" and not
+/// "nothing here accepts anything".
+///
+/// Without it, a regression that emptied `trusted_hosts` would make the two
+/// rejection tests below pass while proving nothing — and this change rewrites
+/// where `trusted_hosts` comes from, so that is the regression it is most
+/// exposed to. Their protection against it used to live in a *different* test
+/// function, which any later edit could delete without touching them.
+fn assert_the_listener_accepts_a_trusted_host(fixture: &Served, story: &str) {
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/{story}/move");
+    let resp = ureq::post(&url)
+        .header("X-Storyhook", "1")
+        .content_type("application/json")
+        .send(r#"{"state":"in-progress"}"#)
+        .unwrap_or_else(|e| {
+            panic!("the positive control failed: a trusted mutation must succeed here, or a 403 below proves nothing: {e}")
+        });
+    assert_eq!(resp.status(), 200, "the positive control must return 200");
 }
 
 #[test]
@@ -2934,23 +2994,20 @@ fn web_serve_trusts_magic_dns_fqdn_for_mutations() {
     // tailnet browser would actually send when it opens the MagicDNS URL —
     // the same technique `web_mutation_with_spoofed_host_is_403` uses in the
     // opposite direction — so it needs no real cross-machine network access,
-    // only that the tailnet listener actually bound (which is what
-    // populates `trusted_hosts` with the FQDN in the first place; hence the
-    // skip-if-unavailable gate and the `wait_for_addr` below).
-    let Some(fqdn) = test_env_tailnet_fqdn() else {
-        eprintln!("skipping: no tailscale MagicDNS name available in this environment");
-        return;
-    };
-    let Some(tailnet_ip) = test_env_tailscale_ip() else {
-        eprintln!("skipping: no tailscale IP available in this environment");
-        return;
-    };
-
+    // only that the tailnet listener actually bound (which is what populates
+    // `trusted_hosts` with the FQDN in the first place).
     let fixture = served();
+    let Some(bind) = fixture.bound.tailnet.clone() else {
+        return skip_no_tailnet_listener();
+    };
+    let Some(fqdn) = fqdn_of(&fixture) else {
+        eprintln!("skipping: the bound tailnet has no MagicDNS name");
+        return;
+    };
     fixture.seed(&["new", "Move me via MagicDNS"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-    wait_for_addr(&format!("{tailnet_ip}:{port}"));
+    wait_for_addr(&format!("{}:{port}", bind.ip()));
 
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
     let resp = ureq::post(&url)
@@ -2970,21 +3027,22 @@ fn web_serve_rejects_bare_magic_dns_short_label_for_mutations() {
     // must not be: unlike the FQDN, a single-label host can resolve through
     // a DNS search domain that isn't the tailnet's, so trusting it would
     // reopen a DNS-rebinding path. Locks in that deliberate boundary.
-    let Some(fqdn) = test_env_tailnet_fqdn() else {
-        eprintln!("skipping: no tailscale MagicDNS name available in this environment");
-        return;
-    };
-    let Some(tailnet_ip) = test_env_tailscale_ip() else {
-        eprintln!("skipping: no tailscale IP available in this environment");
-        return;
-    };
-    let short_label = fqdn.split('.').next().unwrap();
-
     let fixture = served();
+    let Some(bind) = fixture.bound.tailnet.clone() else {
+        return skip_no_tailnet_listener();
+    };
+    let Some(fqdn) = fqdn_of(&fixture) else {
+        eprintln!("skipping: the bound tailnet has no MagicDNS name");
+        return;
+    };
+    let short_label = fqdn.split('.').next().unwrap().to_string();
+
     fixture.seed(&["new", "Story"]);
+    fixture.seed(&["new", "Control"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-    wait_for_addr(&format!("{tailnet_ip}:{port}"));
+    wait_for_addr(&format!("{}:{port}", bind.ip()));
+    assert_the_listener_accepts_a_trusted_host(&fixture, "SH-2");
 
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
     let err = ureq::post(&url)
@@ -3001,22 +3059,25 @@ fn web_serve_rejects_foreign_ts_net_host_for_mutations() {
     // Proves the allowlist trusts THIS machine's FQDN specifically, not any
     // `ts.net` name under the same tailnet — another host's MagicDNS name
     // must still be rejected.
-    let Some(fqdn) = test_env_tailnet_fqdn() else {
-        eprintln!("skipping: no tailscale MagicDNS name available in this environment");
+    let fixture = served();
+    let Some(bind) = fixture.bound.tailnet.clone() else {
+        return skip_no_tailnet_listener();
+    };
+    let Some(fqdn) = fqdn_of(&fixture) else {
+        eprintln!("skipping: the bound tailnet has no MagicDNS name");
         return;
     };
-    let Some(tailnet_ip) = test_env_tailscale_ip() else {
-        eprintln!("skipping: no tailscale IP available in this environment");
-        return;
-    };
-    let suffix = fqdn.split_once('.').map_or(fqdn.as_str(), |(_, rest)| rest);
+    let suffix = fqdn
+        .split_once('.')
+        .map_or(fqdn.clone(), |(_, rest)| rest.to_string());
     let foreign_host = format!("definitely-not-this-host.{suffix}");
 
-    let fixture = served();
     fixture.seed(&["new", "Story"]);
+    fixture.seed(&["new", "Control"]);
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
-    wait_for_addr(&format!("{tailnet_ip}:{port}"));
+    wait_for_addr(&format!("{}:{port}", bind.ip()));
+    assert_the_listener_accepts_a_trusted_host(&fixture, "SH-2");
 
     let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move");
     let err = ureq::post(&url)
