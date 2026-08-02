@@ -103,6 +103,15 @@ pub const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema/0005_purge_story.sql"),
         foreign_keys_off: false,
     },
+    Migration {
+        version: 6,
+        name: "project_remotes",
+        sql: include_str!("schema/0006_project_remotes.sql"),
+        // Creates one table and one index; rebuilds nothing, so enforcement
+        // stays on and migration 5's `events_reject_delete` warning does not
+        // apply. Its own header says so where the next author will look.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

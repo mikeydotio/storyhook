@@ -148,7 +148,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-130** — illegal state combinations + a supported purge · *two PRs: the schema half, then the purge*
 - [x] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
 - [x] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
-- [ ] **SH-115** — C3 Identity: remotes schema + one URL normalizer
+- [x] **SH-115** — C3 Identity: remotes schema + one URL normalizer
 - [ ] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114*
 - [ ] **SH-110** — tailnet bind flake · *gates SH-114*
 - [ ] **SH-114** — C2 Transport: daemon-only
@@ -1069,3 +1069,193 @@ commands against the committed tree. Both exit 0, 101 green test-result blocks
 each, plugin harness 18/0, clippy clean. Third consecutive story with no wedge,
 and the difference remains running the legs separately rather than through
 `make gate`.
+
+### SH-115 — done
+
+**Outcome:** a project is now identified by its git origins rather than by where
+its checkout happens to sit. `project_remotes` exists at schema 6, one
+normalizer reduces any spelling of a URL to one key, and all five acceptance
+criteria are met. The CLI verbs (SH-117) and the selection order (SH-116) are
+untouched by design.
+
+**Measuring first turned the story's premise from an argument into a fact.**
+SH-115's case for origin-based identity was reasoning about how paths *could*
+rot. On this machine they already had: `story project list` reports seven of the
+thirteen real projects as having "no checkout on this machine", and **every one
+of those seven has a checkout on this machine right now** — `blink`,
+`duckduckgo-apple`, `keymux`, `memlayer`, `opengrid-scad`, `ourdio`, `webtail`.
+Two had merely been renamed on disk: `openGrid-SCAD` is `opengrid-scad` on
+GitHub, `Ourdio` is `ourdio`. Path identity is wrong for 54% of the real data,
+today, on the machine the tracker runs on.
+
+Worth noting against SH-132's log, which recorded those same seven as "no
+checkout on this machine" and took it at face value. It was reading the store's
+answer, not the disk. The disk disagreed.
+
+**The corpus also contradicted the story's own list of forms.** 46 distinct
+remote URLs under `/Volumes/Code/mikeyward`. The story names four shapes to
+collapse; **two of the 46 carry userinfo** — `https://wookiee@github.com/…` —
+which is on none of them. Seven of 46 carry a mixed-case owner or repo, so
+storing the raw form beside the key is load-bearing here rather than a gesture
+at a future normalizer. And zero use `git@host:` or `ssh://` on this machine at
+all, which follows from the global rule to push over HTTPS — so the scp-like
+form had to be built from the specification rather than from evidence, and that
+is stated rather than glossed.
+
+**The drift the story exists to prevent already existed.**
+`src/github/sync_state.rs::parse_github_url` matches three literal prefixes and
+returns `None` for the userinfo form, so **github-sync is silently unavailable
+for the real `keymux` project today**. Filed as SH-137, not fixed here — see the
+council's Q4 below.
+
+**Council: three seats, and all three voted against their own proposal.** A
+first for this run; SH-125 and SH-130 each managed two of three. Round one was
+2-1 for P1, and one deliberation round converged it to unanimity. Audit trail in
+`.council/sh115-remotes-identity/`; the verdict is a comment on SH-115.
+
+Each reversal was caused by a specific verified fact rather than by argument:
+
+- **Seat 1 → P2** for a finding neither other seat made: `delete_project` must
+  be extended in **three** places at once — `PROJECT_SCOPED_TABLES`, the match
+  arm and `DeletedProject` — and `verify_project_is_gone` exists precisely to
+  catch a table added to the schema and forgotten there. Also conceded P2's
+  module placement, which it "didn't check".
+- **Seat 2 → P1**, against two of its own answers. Its blanket refusal of local
+  paths "loses a legitimate identity case that both P1 and P3 correctly
+  preserve"; and it withdrew its own proposal to reimplement `parse_github_url`.
+- **Seat 3 → P1** after the chair put a contradiction in P3 to it: P3's
+  algorithm preserved the scheme in the key, so `https://h/o/r` and
+  `ssh://git@h/o/r` produced *different* keys — contradicting the story's first
+  acceptance criterion and P3's own first named test. It confirmed the one-line
+  repair, then said repairing it exposed a deeper flaw in its own Q3: refusing
+  relative paths at *registration* leaves `normalize()` still returning a key
+  for `../sibling`, so a future lookup implementer calling it directly can
+  still collide.
+
+**The decisions, and why each is not the obvious one.**
+
+*Case folding* — fold host **and path**, every host, no allowlist. Unanimous.
+An allowlist is correct where it applies and silently wrong everywhere else: a
+GitHub Enterprise host at `github.example.com` is case-insensitive and would not
+be on it, so one repository registers twice as two projects. Folding uniformly
+can only fail the other way, loudly, and one `unlink` undoes it. The epic
+requires a refusal rather than a guess, and this is the only answer consistent
+with it.
+
+*The type* — `RemoteUrl` carries `{raw, normalized}`, has no public fields, and
+only two constructors. **Equality and hashing key on `normalized` alone**, by
+hand: Seat 2 found in deliberation that a derived `PartialEq` compares `raw`
+too, so two values naming one repository would compare unequal — the exact bug
+the key exists to prevent, reintroduced inside the type meant to prevent it.
+Nobody had noticed across two rounds. The precedent for a domain type in a store
+signature was verified rather than assumed: `append_events` takes
+`&[StoryEvent]`, `put_story` takes `&StorySnapshot`.
+
+*The lookup ergonomics* — the question the vote left open, and all three seats
+independently proposed the same answer: keep three error variants for
+registration, add `normalize_for_lookup(raw) -> Option<RemoteUrl>`. Seat 3 gave
+the reason that makes the shape non-obvious: the body must be `.ok()` and **not
+a match**, because a match has to be revisited when a fourth variant is added
+and the revisit is what gets forgotten. Seat 2 was blunt about the limit — "this
+is an ergonomics/discoverability fix, not an enforcement one" — so it ships with
+a doc comment on `normalize` itself and a source-grep test, not alone.
+
+*Relative paths refused inside `normalize`*, not at a call site. Seat 3 supplied
+the case and then voted against its own placement for it: two unrelated
+repositories can each set `origin` to `../sibling`, so no code path may be able
+to construct that key at all.
+
+*`parse_github_url` left alone* (SH-137). Its only advocate voted against itself
+and gave the governing rule: a discovered defect becomes a story before it
+becomes a fix, and fix-at-origin "answers where in the codebase a fix belongs
+once you've committed to making it now; it doesn't override the separate process
+gate".
+
+**Chair corrections, recorded because the council's own output needed them.**
+Four items in the winning revision were corrected before implementation, each
+against something already settled or a rule of this repository: the revision's
+step 7 reversed the unanimous Q1 by folding host case only (treated as a slip —
+its round-1 text argued the opposite, and the measured evidence is against it);
+a host-only URL is `Err` rather than a key with an empty path; the proposed
+down-migration test cannot exist because the framework is forward-only; and the
+proposed "assert the SELECT precedes the INSERT via a mock" cannot be built,
+because there is no mock `Store` and none may be created. All four are itemized
+in `deliberation.md` with their source.
+
+**Protocol deviation: no ranked-choice runoff.** Deliberation left one surviving
+proposal — Seat 1 revised P1 to absorb everything, and Seats 2 and 3 both
+returned `stand` while endorsing that same merged design. An IRV over one
+candidate returns it, so the convergence was recorded instead of staging a
+formality.
+
+**The council worked this time, and the difference is worth carrying.** SH-131's
+two seatings produced no proposals at all from six agents. This one dispatched
+the seats **synchronously** rather than backgrounded, which the council
+protocol's own hard rule requires — a backgrounded seat never reports back into
+the chair's turn. Three complete proposals, no retries, no abstentions.
+
+**Red→green verified by disarming four mechanisms, and each owns exactly its
+own tests:**
+
+| disarmed | fails | stays green |
+|---|---|---|
+| the look-up-first holder naming | `a_remote_already_held_by_another_project_is_refused_naming_the_holder` (1) | every other conformance test, and the raw-insert schema test |
+| the unique index | `the_schema_refuses_a_second_project_claiming_one_origin` (1) | **all 14** conformance tests — the pre-check still catches it |
+| `project_remotes` in `PROJECT_SCOPED_TABLES` | `deleting_a_project_forgets_its_remotes` (1) | everything else |
+| path case folding | 4 unit tests | `all_four_url_forms_normalize_to_the_same_key` — those forms are already lowercase |
+
+The second row is the interesting one: it is what says the index and the
+pre-check are **separately** load-bearing rather than one being decoration. The
+fourth is the "guards against going too far" shape — the collapse test and the
+folding tests are different concerns and fail independently.
+
+**One test is green the day it lands, and says so in its own doc comment.**
+`a_normalize_error_is_never_matched_outside_the_normalizer` greps `src/` and
+guards a rule SH-116 has not had the chance to break yet. It is here rather than
+in SH-116's PR because the failure it guards is silent: a lookup that matches on
+`NormalizeError` compiles, reads as "handling the error properly" in review, and
+quietly makes a malformed origin behave differently from an absent one.
+
+**Two tests assert only that nothing panics**, for IPv6 literals and
+percent-encoded paths, and carry a comment forbidding anyone from tightening
+them to a literal key. That restriction is the point: this run has found four
+consecutive stories where the suite pinned a defect as intended behaviour, and
+asserting whatever the first implementation happened to produce would be a
+fifth. Filed as SH-139 so the non-decision is visible rather than implicit.
+
+**46 new tests** — 28 in `domain::remote`, 14 in the store conformance suite, 4
+in `tests/remote_identity.rs`.
+
+**Also filed:** SH-137 (the `parse_github_url` userinfo defect, with its live
+repro), SH-138 (rollback drops a project's registered origins — the sibling of
+SH-133, kept separate because the recoverability arguments differ), SH-139 (the
+two non-decisions). All three were completion conditions of the council's
+verdict, not optional courtesies.
+
+**Recorded on SH-94:** a third member of its defect class, found here.
+`tui::event::tests::a_write_from_elsewhere_reports_a_change` failed one full
+`make test` on a 5s `recv_timeout`, then passed alone in **0.28s** and did not
+reproduce on a second full run. Same shape as `concurrency_soak` and SH-110 — a
+deadline chosen for an unloaded machine, sitting in the project's only gate —
+so a fix aimed only at `run_bounded`'s constant would leave the class open.
+
+**A process failure of mine, caught immediately.** Restoring a disarm with
+`git restore src/store/sqlite/write.rs` reverted **every** change to that file,
+not just the disarm, because `git restore` restores from HEAD and knows nothing
+about which edit was the experiment. Recovered from a copy taken before the
+first disarm, verified by five content probes, and re-run green. The lesson is
+narrow and worth keeping: **a disarm experiment needs its own backup, taken
+before the experiment; `git restore` is not an undo for one edit.**
+
+**Gate:** `make test` and `make test-daemon` run as two separate supervised
+commands. Both exit 0, 102 green test-result blocks each, plugin harness 18/0,
+clippy clean, no orphan daemons. **Fourth consecutive story with no wedge**, and
+the difference remains running the legs separately rather than through
+`make gate`. One earlier `make test` exited 2 on `cargo fmt --check` before
+running anything — a formatting failure, not a test failure, and the log said so
+plainly.
+
+**Unblocks SH-116 and SH-117.** SH-116 gets `project_by_remote` and
+`normalize_for_lookup`; SH-117 gets `link_remote`/`unlink_remote` and the three
+`NormalizeError` variants to render. Neither has to decide any of the questions
+settled above.

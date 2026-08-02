@@ -4,6 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
+/// Git remote URLs, reduced to the one key project identity is decided by.
+///
+/// Its own file rather than another thousand lines here: the grammar is
+/// self-contained, has no dependency on anything else in this module, and is
+/// the sort of thing a reader looks for by name.
+pub mod remote;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportStory {
     pub title: String,
