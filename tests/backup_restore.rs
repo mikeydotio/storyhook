@@ -193,11 +193,18 @@ fn the_documented_restore_is_necessary_as_well_as_sufficient() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    // The property is that the naive restore **fails**, not that it fails with
+    // one of two particular sentences. It has produced a third since SH-130
+    // changed the shape of `stories`: the stale write-ahead log replays pages
+    // laid out for the old table over the new one, and the read comes back with
+    // a column type that cannot be decoded. Which flavour of wrong you get
+    // depends on the schema, so asserting on the flavour made this test a
+    // tripwire for unrelated migrations. The exit status is the durable signal.
     assert!(
-        said.contains("after the snapshot") || said.contains("is damaged"),
-        "the naive restore is supposed to be unsafe — either the old log is replayed \
-         into the new pages, or the result is malformed. If it has become safe, this \
-         test and the restore instructions both want revisiting: {said}"
+        !out.status.success(),
+        "the naive restore is supposed to be unsafe — the old log is replayed into \
+         the new pages, or the result is malformed. If it has become safe, this test \
+         and the restore instructions both want revisiting: {said}"
     );
     assert_ne!(
         titles_after_a_successful_list(&out),

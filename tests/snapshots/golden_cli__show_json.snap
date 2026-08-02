@@ -197,7 +197,7 @@ source: tests/golden_cli.rs
           "id": "SH-13",
           "priority": "low",
           "relationships": [],
-          "state": "todo",
+          "state": "done",
           "story_type": "chore",
           "superstate": "CLOSED",
           "title": "Old approach: file-per-story",

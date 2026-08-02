@@ -34,7 +34,7 @@ use storyhook::env::Environment;
 use storyhook::error::AppError;
 use storyhook::invoke::{InvokeRequest, Invoker, StoreInvoker};
 use storyhook::output::Response;
-use storyhook::store::{ProjectId, SqliteStore, Store as _, WriteOps, diff_read_model};
+use storyhook::store::{ProjectId, SqliteStore, Store as _, diff_read_model};
 use storyhook::tui::action::{FilterSpec, View};
 use storyhook::tui::components::board::{Board, RowItem};
 use storyhook::tui::data::DataStore;
@@ -138,9 +138,12 @@ fn init_project(prefix: &str) -> Fixture {
 /// the *reader* survives such a project, which means something has to be able
 /// to make one.
 fn force_states(fixture: &Fixture, states: &[StateDef]) {
-    fixture
-        .store
-        .write(|tx| tx.put_states(fixture.project(), states))
+    // Since SH-130 the store's own write API cannot do this either: `stories`
+    // carries a composite foreign key into `project_states`, so dropping a
+    // state a story still occupies fails at COMMIT. The fabrication moves down
+    // one more layer, to the corruption API whose whole job is producing shapes
+    // the schema refuses.
+    storyhook::store::test_support::replace_states(&fixture.store, fixture.project(), states)
         .expect("replacing the state set");
 }
 

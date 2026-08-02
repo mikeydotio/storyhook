@@ -136,6 +136,81 @@ pub fn forget_story(
     })
 }
 
+/// Replaces a project's whole state catalog, stories be damned.
+///
+/// The catalog-wide sibling of [`forget_state`], for the fixtures that need a
+/// project with no OPEN state at all, or one that has dropped a state a story
+/// still sits in. Both shapes are refused by `story state …`, by the service
+/// layer, and — since SH-130 — by the composite foreign key on `stories`, which
+/// is what makes this back door necessary rather than merely convenient.
+///
+/// Foreign keys are disabled for this connection only, so the constraint is
+/// back in force for every other reader and writer.
+pub fn replace_states(
+    store: &SqliteStore,
+    project: ProjectId,
+    states: &[crate::domain::StateDef],
+) -> Result<(), StoreError> {
+    let conn = Connection::open(store.path())
+        .map_err(|e| StoreError::from_sqlite(e, "opening the store for injection"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| StoreError::from_sqlite(e, "setting the injection busy timeout"))?;
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(|e| StoreError::from_sqlite(e, "lowering foreign keys for injection"))?;
+
+    conn.execute(
+        "DELETE FROM project_states WHERE project_id = ?1",
+        rusqlite::params![project.get()],
+    )
+    .map_err(|e| StoreError::from_sqlite(e, "clearing the state catalog"))?;
+    for (position, state) in states.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO project_states (project_id, position, slug, superstate, role, description) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                project.get(),
+                i64::try_from(position).expect("a short catalog"),
+                state.slug,
+                state.super_state.as_str(),
+                state.role,
+                state.description,
+            ],
+        )
+        .map_err(|e| StoreError::from_sqlite(e, "writing a fabricated state"))?;
+    }
+    Ok(())
+}
+
+/// Retires a state from a project's catalog while stories still name it.
+///
+/// Since SH-130 `stories` carries a composite foreign key into
+/// `project_states`, so this is refused through every ordinary path — which is
+/// the point of the constraint, and the reason a test that wants the shape has
+/// to come through here. `ConfigService::remove_state` migrates or refuses;
+/// `put_states` hits the foreign key at COMMIT.
+///
+/// The shape is still worth fabricating: a database written by an older
+/// storyhook can hold it, so the rebuild oracle has to keep *reporting* it
+/// rather than propagating it, and `doctor --fix` has to refuse to guess at it.
+///
+/// Foreign keys are disabled for this connection only. The store's own
+/// connections are unaffected, so the constraint is back in force the moment
+/// anything reads or writes normally.
+pub fn forget_state(store: &SqliteStore, project: ProjectId, slug: &str) -> Result<(), StoreError> {
+    let conn = Connection::open(store.path())
+        .map_err(|e| StoreError::from_sqlite(e, "opening the store for injection"))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| StoreError::from_sqlite(e, "setting the injection busy timeout"))?;
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(|e| StoreError::from_sqlite(e, "lowering foreign keys for injection"))?;
+    conn.execute(
+        "DELETE FROM project_states WHERE project_id = ?1 AND slug = ?2",
+        rusqlite::params![project.get(), slug],
+    )
+    .map_err(|e| StoreError::from_sqlite(e, "retiring a state"))?;
+    Ok(())
+}
+
 /// Rewrites a story's read-model row to a snapshot its own events do not
 /// support.
 ///
@@ -167,8 +242,17 @@ pub fn corrupt_snapshot(
         .map_err(|e| StoreError::from_sqlite(e, "setting the corruption busy timeout"))?;
     let encoded = serde_json::to_string(&snapshot)
         .map_err(|e| StoreError::Invariant(format!("encoding a snapshot: {e}")))?;
+    // `closed_at` and `archived` travel with the edit, not just `state` and
+    // `superstate`. Two CHECKs tie them to each other and to the superstate
+    // (`archived = (closed_at IS NOT NULL)` from schema 1, and SH-130's
+    // `(superstate = 'CLOSED') = archived`), so writing half the row produces a
+    // constraint failure rather than the fabricated corruption the caller
+    // asked for. The fabricated row still disagrees with its *events* — which
+    // is the shape under test — while remaining internally consistent, which is
+    // all the schema ever claimed to guarantee.
     conn.execute(
-        "UPDATE stories SET snapshot = ?3, superstate = ?4, state = ?5 \
+        "UPDATE stories SET snapshot = ?3, superstate = ?4, state = ?5, \
+         closed_at = ?6, archived = ?7 \
          WHERE project_id = ?1 AND story_no = ?2",
         rusqlite::params![
             project.get(),
@@ -176,6 +260,8 @@ pub fn corrupt_snapshot(
             encoded,
             snapshot.superstate.as_str(),
             snapshot.state,
+            snapshot.closed_at,
+            i64::from(snapshot.closed_at.is_some()),
         ],
     )
     .map_err(|e| StoreError::from_sqlite(e, "corrupting a read-model row"))?;

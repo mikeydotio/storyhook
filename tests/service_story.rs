@@ -1245,8 +1245,11 @@ fn deleting_a_story_closes_it_and_records_the_reason() {
     assert_eq!(after.deleted_reason.as_deref(), Some("created in error"));
     assert_eq!(after.superstate, SuperState::Closed);
     assert_eq!(after.comments[0].text, "[deleted] created in error");
-    // The state slug is preserved as a truthful record of what the story was.
-    assert_eq!(after.state, "todo");
+    // SH-130: the story comes to rest somewhere genuinely CLOSED, rather than
+    // keeping an OPEN slug while claiming CLOSED. The truthful record of what
+    // it was lives in the event log, which is append-only and cannot lie; the
+    // read model says where the story is now.
+    assert_eq!(after.state, "done");
 }
 
 #[test]
