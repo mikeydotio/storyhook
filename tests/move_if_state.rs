@@ -152,29 +152,51 @@ fn move_comment_containing_if_state_token_is_not_spliced_or_dropped() {
 }
 
 #[test]
-fn move_with_typoed_flag_name_immediately_after_state_is_comment_not_error() {
-    // A flag name is recognized only via an exact string match in the one
-    // position immediately after <state> — a typo like `--if-stat`
-    // (missing the trailing `e`) in that exact position is therefore never
-    // mistaken for an attempt at the real flag. It is preserved as ordinary
-    // comment text, and the move proceeds unconditionally (exactly as it
-    // would have before `--if-state` existed), rather than being rejected
-    // or silently treated as a defeated CAS guard.
+fn move_with_typoed_flag_name_immediately_after_state_is_refused() {
+    // This test used to assert the opposite, and the premise was wrong (SH-62).
+    //
+    // It required `--if-stat` — `--if-state` missing its last letter — to be
+    // kept as ordinary comment text while "the move proceeds unconditionally".
+    // The reasoning was sound about one thing: a typo must never be *mistaken*
+    // for the real flag, because silently treating it as a defeated CAS guard
+    // would be the worst outcome of the three. But it drew the wrong conclusion
+    // from that, and blessed the second-worst: the user asked for a guarded
+    // move, the guard was silently absent, and the story moved anyway. Nothing
+    // told them. That is the exact harm SH-62 was filed about — "the user
+    // believes they set a field, and instead they wrote garbage" — and here the
+    // field is a concurrency guard rather than a title.
+    //
+    // There is a third option and it is the correct one: refuse, and name the
+    // token. The move does not happen, so no guard is defeated and none is
+    // silently skipped.
     let (dir, id) = init_and_create();
 
-    story(dir.path())
+    let out = story(dir.path())
         .args(["move", &id, "in-progress", "--if-stat", "todo"])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+
+    assert_eq!(out.status.code(), Some(2), "a typoed flag is refused");
+    assert!(
+        stderr.contains("--if-stat"),
+        "the refusal names the token the user actually typed: {stderr}"
+    );
+    assert!(
+        stderr.contains("--if-state"),
+        "and lists the real flag, which is the whole repair: {stderr}"
+    );
 
     let show = story(dir.path())
         .args(["show", &id, "--json"])
         .output()
         .unwrap();
     let show_json: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
-    assert_eq!(show_json["story"]["story"]["state"], "in-progress");
-    let comments = show_json["story"]["story"]["comments"].as_array().unwrap();
-    assert_eq!(comments.last().unwrap()["text"], "--if-stat todo");
+    assert_eq!(
+        show_json["story"]["story"]["state"], "todo",
+        "the story must not have moved: a guarded move whose guard did not \
+         parse must not fall back to an unguarded one"
+    );
 }
 
 #[test]

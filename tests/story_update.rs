@@ -20,12 +20,16 @@ fn story(dir: &std::path::Path) -> Command {
 
 #[test]
 fn update_rejects_unknown_flag() {
+    // The message moved with SH-62 — the flag gate answers ahead of
+    // `parse_update` and names the token instead of printing a usage line —
+    // but the contract this test exists for is unchanged: exit 2, and the
+    // rejection is about the flag.
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["update", "--bogus"])
         .assert()
         .code(2)
-        .stderr(contains("usage: story update"));
+        .stderr(contains("unknown flag `--bogus`"));
 }
 
 #[test]
@@ -50,14 +54,17 @@ fn update_check_and_force_are_mutually_exclusive() {
 
 #[test]
 fn update_is_a_recognized_command() {
-    // A bad flag must yield the update-specific usage, NOT the top-level
-    // "unknown command" error — proving the dispatch arm is wired.
+    // A bad flag must be answered as a bad *flag for this verb*, NOT as the
+    // top-level "unknown command" error — proving the dispatch arm is wired.
+    // Since SH-62 the flag gate answers first, and it names the verb, so the
+    // proof is stronger than it was: the message could not say `story update`
+    // unless `update` had been recognized.
     let dir = tempdir().unwrap();
     story(dir.path())
         .args(["update", "--bogus"])
         .assert()
         .code(2)
-        .stderr(contains("usage: story update").and(contains("unknown command").not()));
+        .stderr(contains("for `story update`").and(contains("unknown command").not()));
 }
 
 #[test]

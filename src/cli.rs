@@ -650,6 +650,16 @@ pub fn split_global_flags(args: &[String]) -> Result<(GlobalFlags, Vec<String>),
 
     let mut i = 0;
     while i < args.len() {
+        // A bare `--` ends option scanning for globals too. Without this the
+        // terminator would be an escape that leaks: `story comment SH-1 --
+        // --json is great` would still lose the word and still flip stdout to
+        // an envelope, which is worse than having no escape at all. The
+        // terminator itself is kept and removed later, so the verb parser can
+        // still see where it was.
+        if args[i] == "--" {
+            filtered.extend_from_slice(&args[i..]);
+            break;
+        }
         match args[i].as_str() {
             "--json" => {
                 // If --json is followed by a JSON object literal, treat it as a
@@ -750,14 +760,393 @@ fn verb_help_request(args: &[String]) -> Option<Invocation> {
     if verb == "help" || verb.starts_with('-') || !is_help_request(args) {
         return None;
     }
+    verb_is_recognized(verb).then(|| help_for_verb(verb))
+}
+
+/// Whether `verb` names a command this binary has.
+///
+/// Asks [`dispatch`] rather than consulting a second copy of the verb list,
+/// which could fall out of step with the first. Every caller wants the same
+/// answer for the same reason — to decline to speak about a verb that does not
+/// exist, so a typo is reported as an unknown *command* rather than being
+/// answered with usage text or a complaint about one of its flags.
+fn verb_is_recognized(verb: &str) -> bool {
     // `tui` is dispatched in main.rs before parsing ever happens, so
     // `dispatch` does not know it, but it is a verb like any other here.
-    let recognized = verb == "tui"
+    verb == "tui"
         || !matches!(
-            dispatch(&[args[0].clone()]),
+            dispatch(&[verb.to_string()]),
             Err(AppError::Usage(ref message)) if message.starts_with("unknown command")
-        );
-    recognized.then(|| help_for_verb(verb))
+        )
+}
+
+/// One long flag a verb accepts, and whether the token after it is its value.
+///
+/// `takes_value` exists so the gate stays a *necessary-condition* check: the
+/// token after `--description` is that flag's value and is never judged, so
+/// `story new t --description --odd` keeps working exactly as it does today.
+/// The gate may only refuse what a parser would have swallowed; it may never
+/// refuse what one would have accepted.
+#[derive(Clone, Copy, Debug)]
+struct Flag {
+    name: &'static str,
+    takes_value: bool,
+}
+
+/// A value-taking flag.
+const fn value(name: &'static str) -> Flag {
+    Flag {
+        name,
+        takes_value: true,
+    }
+}
+
+/// A flag that stands alone.
+const fn bare(name: &'static str) -> Flag {
+    Flag {
+        name,
+        takes_value: false,
+    }
+}
+
+/// The long flags one verb path accepts.
+///
+/// `subcommand` is `Some` only where two subcommands of the same verb accept
+/// genuinely different flags (`state add` versus `state set`). Lookup tries the
+/// two-token key first and falls back to the verb alone, which is what keeps
+/// `story move SH-1 done --if-state x` working: `SH-1` is an argument, not a
+/// subcommand, so no two-token entry matches and `move`'s own entry answers.
+struct VerbFlags {
+    verb: &'static str,
+    subcommand: Option<&'static str>,
+    flags: &'static [Flag],
+}
+
+/// Every long flag this CLI accepts, by verb path.
+///
+/// **This table fails closed.** A verb with no entry declares nothing, so every
+/// flag-shaped token reaching it is refused. That is deliberate: forgetting to
+/// declare a new verb's flags produces a loud, immediate error, where forgetting
+/// a per-verb guard would silently re-inherit SH-62. Rot in the loud direction
+/// is recoverable; rot in the quiet direction is this defect.
+///
+/// Two verbs cannot be checked against their own help text, because their help
+/// names no flags at all — see `UNDISCOVERABLE` in `tests/unknown_flag_sweep.rs`.
+static VERB_FLAGS: &[VerbFlags] = &[
+    VerbFlags {
+        verb: "new",
+        subcommand: None,
+        flags: &[
+            value("state"),
+            value("type"),
+            value("description"),
+            value("priority"),
+            value("assignee"),
+            value("label"),
+            value("labels"),
+        ],
+    },
+    VerbFlags {
+        verb: "list",
+        subcommand: None,
+        flags: &[
+            value("state"),
+            value("assignee"),
+            value("priority"),
+            value("label"),
+            value("created-after"),
+            value("updated-after"),
+            value("stale"),
+            value("phase"),
+            value("type"),
+            bare("flagged"),
+            bare("blocked"),
+            bare("ready"),
+        ],
+    },
+    VerbFlags {
+        verb: "next",
+        subcommand: None,
+        flags: &[value("count"), value("phase")],
+    },
+    VerbFlags {
+        verb: "set",
+        subcommand: None,
+        flags: &[
+            value("title"),
+            value("state"),
+            value("priority"),
+            value("assignee"),
+            value("labels"),
+            value("blocked"),
+            value("json"),
+            value("type"),
+            value("description"),
+            bare("unblocked"),
+        ],
+    },
+    VerbFlags {
+        verb: "move",
+        subcommand: None,
+        flags: &[value("if-state")],
+    },
+    VerbFlags {
+        verb: "reopen",
+        subcommand: None,
+        flags: &[bare("force")],
+    },
+    VerbFlags {
+        verb: "report",
+        subcommand: None,
+        flags: &[bare("html")],
+    },
+    VerbFlags {
+        verb: "doctor",
+        subcommand: None,
+        flags: &[bare("fix")],
+    },
+    VerbFlags {
+        verb: "update",
+        subcommand: None,
+        flags: &[bare("check"), bare("force")],
+    },
+    VerbFlags {
+        verb: "handoff",
+        subcommand: None,
+        flags: &[value("since")],
+    },
+    VerbFlags {
+        verb: "commit-sync",
+        subcommand: None,
+        flags: &[value("since")],
+    },
+    VerbFlags {
+        verb: "sync-git",
+        subcommand: None,
+        flags: &[value("since")],
+    },
+    VerbFlags {
+        verb: "github-sync",
+        subcommand: None,
+        flags: &[bare("dry-run")],
+    },
+    VerbFlags {
+        verb: "decompose",
+        subcommand: None,
+        flags: &[bare("stdin"), bare("dry-run")],
+    },
+    VerbFlags {
+        verb: "migrate",
+        subcommand: None,
+        flags: &[bare("dry-run")],
+    },
+    VerbFlags {
+        verb: "load-context",
+        subcommand: None,
+        flags: &[value("format")],
+    },
+    VerbFlags {
+        verb: "context",
+        subcommand: None,
+        flags: &[value("format")],
+    },
+    VerbFlags {
+        verb: "graph",
+        subcommand: None,
+        flags: &[
+            bare("critical-path"),
+            bare("parallel-groups"),
+            value("blocked-by"),
+        ],
+    },
+    VerbFlags {
+        verb: "help",
+        subcommand: None,
+        flags: &[bare("compact"), bare("all")],
+    },
+    // `--serve` is a subcommand spelled as a flag: it is what the spawner
+    // execs, never what a user types. Declared, or the daemon cannot start.
+    VerbFlags {
+        verb: "daemon",
+        subcommand: None,
+        flags: &[bare("serve"), value("port")],
+    },
+    VerbFlags {
+        verb: "web",
+        subcommand: None,
+        flags: &[bare("serve"), value("port")],
+    },
+    VerbFlags {
+        verb: "project",
+        subcommand: Some("init"),
+        flags: &[value("prefix"), value("name"), bare("no-agents-md")],
+    },
+    VerbFlags {
+        verb: "project",
+        subcommand: Some("deinit"),
+        flags: &[bare("force")],
+    },
+    VerbFlags {
+        verb: "member",
+        subcommand: Some("add"),
+        flags: &[value("github")],
+    },
+    VerbFlags {
+        verb: "type",
+        subcommand: Some("add"),
+        flags: &[value("description")],
+    },
+    VerbFlags {
+        verb: "state",
+        subcommand: Some("add"),
+        flags: &[value("super"), value("role"), value("description")],
+    },
+    VerbFlags {
+        verb: "state",
+        subcommand: Some("set"),
+        flags: &[
+            value("super"),
+            value("role"),
+            value("description"),
+            bare("no-description"),
+            value("move-stories-to"),
+        ],
+    },
+    VerbFlags {
+        verb: "state",
+        subcommand: Some("remove"),
+        flags: &[value("move-stories-to")],
+    },
+];
+
+/// Whether `token` is shaped like a long flag rather than like data.
+///
+/// Shape, not prefix, and the difference is the whole reason free text
+/// survives this gate. A token containing whitespace is never flag-shaped, so a
+/// quoted title or comment — `story new "--fix the ingest path"` — arrives as
+/// one argv element with a space in it and is data, untouched. `---` and a bare
+/// `--` are likewise not flag-shaped: the first is a rule line someone pasted,
+/// the second is the end-of-options terminator.
+fn is_flag_shaped(token: &str) -> bool {
+    if token.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let Some(rest) = token.strip_prefix("--") else {
+        return false;
+    };
+    let name = rest.split_once('=').map_or(rest, |(name, _)| name);
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+}
+
+/// The flags declared for this invocation's verb path, or `None` when the verb
+/// declares nothing — which, because the table fails closed, means every
+/// flag-shaped token is unknown.
+fn declared_flags(args: &[String]) -> Option<&'static [Flag]> {
+    let verb = args.first()?.as_str();
+    let subcommand = args
+        .get(1)
+        .map(String::as_str)
+        .filter(|token| !is_flag_shaped(token));
+
+    subcommand
+        .and_then(|sub| {
+            VERB_FLAGS
+                .iter()
+                .find(|entry| entry.verb == verb && entry.subcommand == Some(sub))
+        })
+        .or_else(|| {
+            VERB_FLAGS
+                .iter()
+                .find(|entry| entry.verb == verb && entry.subcommand.is_none())
+        })
+        .map(|entry| entry.flags)
+}
+
+/// Refuses a flag-shaped token the verb does not declare, before any parser can
+/// read it as data.
+///
+/// This is the one place ahead of all of them, for the same reason
+/// [`verb_help_request`] is: verbs parse their own flags, so a rule applied
+/// per-verb is a rule some verb will miss. SH-52 was this defect for `--help`
+/// and was fixed one token at a time; SH-62 is the rest of the flag space
+/// arriving two waves later, with eight verbs measured writing junk silently
+/// and four of them minting a durable object nobody asked for.
+///
+/// It runs **after** `verb_help_request`, so a help request still outranks a
+/// complaint about a flag, and it declines to speak about an unrecognized verb,
+/// so `story frobnicate --typo` still reports the unknown *command*.
+fn reject_unknown_flags(args: &[String]) -> Result<(), AppError> {
+    let Some(verb) = args.first() else {
+        return Ok(());
+    };
+    // `story --help` and `story -V` are not verbs; `dispatch` answers them.
+    if verb.starts_with('-') || !verb_is_recognized(verb) {
+        return Ok(());
+    }
+
+    let declared = declared_flags(args).unwrap_or(&[]);
+    let mut index = 1;
+    while index < args.len() {
+        let token = args[index].as_str();
+        if token == "--" {
+            return Ok(());
+        }
+        if !is_flag_shaped(token) {
+            index += 1;
+            continue;
+        }
+        let name = token
+            .strip_prefix("--")
+            .and_then(|rest| rest.split('=').next())
+            .unwrap_or_default();
+        let Some(flag) = declared.iter().find(|flag| flag.name == name) else {
+            return Err(AppError::Usage(unknown_flag_message(args, token, declared)));
+        };
+        // `--flag=value` carries its value in the same token.
+        index += if flag.takes_value && !token.contains('=') {
+            2
+        } else {
+            1
+        };
+    }
+    Ok(())
+}
+
+/// The refusal a user reads: the token, the verb's real flags, and how to say
+/// it if it was text all along.
+///
+/// The escape advice is deliberately not a ready-made command. Half the verbs
+/// this can fire on take no positional argument at all, so a synthesized
+/// `story doctor "--typo …"` would be an example that does not work — worse
+/// than no example, because the reader would try it.
+fn unknown_flag_message(args: &[String], token: &str, declared: &[Flag]) -> String {
+    let path = args
+        .iter()
+        .take(2)
+        .take_while(|word| !is_flag_shaped(word))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let known = if declared.is_empty() {
+        format!("`story {path}` takes no flags.")
+    } else {
+        format!(
+            "`story {path}` takes: {}",
+            declared
+                .iter()
+                .map(|flag| format!("--{}", flag.name))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    format!(
+        "unknown flag `{token}` for `story {path}`.\n\n{known}\nIf `{token}` was meant as text \
+         rather than a flag, quote it as one argument, or put it after a `--`."
+    )
 }
 
 pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
@@ -769,7 +1158,24 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, AppError> {
         return Ok(help);
     }
 
-    dispatch(args)
+    reject_unknown_flags(args)?;
+
+    dispatch(&strip_terminator(args))
+}
+
+/// Removes the first bare `--`, so no verb parser ever sees the terminator.
+///
+/// Only the first: a second `--` is data, which is what `git` does and what a
+/// title made of dashes needs.
+fn strip_terminator(args: &[String]) -> Vec<String> {
+    match args.iter().position(|arg| arg == "--") {
+        Some(at) => {
+            let mut kept = args.to_vec();
+            kept.remove(at);
+            kept
+        }
+        None => args.to_vec(),
+    }
 }
 
 /// Routes an invocation to its verb's parser. Pure: it inspects `args` and
@@ -2156,16 +2562,25 @@ fn parse_move(args: &[String]) -> Result<Invocation, AppError> {
 
     // `--if-state` is recognized only as the literal token immediately
     // following <state> (args[3]) — never scanned for anywhere else in the
-    // trailing args. A token-by-token flag loop over free-text comment
-    // content is what previously let a comment beginning with `--` fail as
-    // an "unrecognized flag" (a real backward-compatibility break: comments
-    // have always been unrestricted free text), and let an unrelated
-    // `--if-state` substring inside an unquoted multi-word comment be
-    // silently spliced out mid-comment and mistaken for a real CAS guard.
-    // Pinning the flag to one unambiguous position means every other
-    // trailing token, anywhere, is comment prose with zero restrictions —
-    // restoring the pre-existing `join_tokens(&args[3..])` guarantee for
-    // any caller not opting into `--if-state`.
+    // trailing args. What that protects against is an unrelated `--if-state`
+    // substring inside an unquoted multi-word comment being silently spliced
+    // out mid-comment and mistaken for a real CAS guard. That reasoning is
+    // unchanged and this position-pinning stays.
+    //
+    // What *has* changed (SH-62) is the sentence this comment used to carry
+    // next: that a comment beginning with `--` must never fail as an
+    // unrecognized flag, because comments have always been unrestricted free
+    // text. The council that settled SH-62 overturned that in the letter and
+    // kept it in the spirit, and the distinction is worth stating here because
+    // this is where a reader will come looking.
+    //
+    // A flag-shaped token is now refused ahead of every parser — but *shape*,
+    // not prefix: a token containing whitespace is never flag-shaped. So a real
+    // comment (`story move SH-1 done "--sprint-23 wrapped"`) is one argv
+    // element with spaces in it and is still unrestricted free text, exactly as
+    // before. Only the unquoted single-token form (`… done --sprint-23`) now
+    // errors, and it does so naming the token and offering `--`. A repo-wide
+    // search for that form found one hit: SH-62's own defect description.
     let (if_state, comment_start) = if args.get(3).map(String::as_str) == Some("--if-state") {
         let value = args
             .get(4)
@@ -2821,6 +3236,185 @@ mod tests {
                 assert_eq!(story_type, None);
             }
             other => panic!("expected SetFields, got {:?}", other),
+        }
+    }
+
+    mod flag_shape {
+        use super::super::{VERB_FLAGS, declared_flags, is_flag_shaped, reject_unknown_flags};
+
+        fn argv(words: &[&str]) -> Vec<String> {
+            words.iter().map(|word| word.to_string()).collect()
+        }
+
+        /// The shape rule, case by case. Each row is a decision the gate makes
+        /// before any verb sees the token.
+        #[test]
+        fn shape_distinguishes_a_flag_from_data() {
+            for flag in [
+                "--typo",
+                "--dry-run",
+                "--state=todo",
+                "--x",
+                "--a1",
+                "--json={}",
+            ] {
+                assert!(is_flag_shaped(flag), "`{flag}` is shaped like a flag");
+            }
+
+            for data in [
+                // The constraint-(a) case: quoted prose is one argv token with
+                // a space in it, so it can never be mistaken for a flag.
+                "--fix the ingest path",
+                "-- leading terminator then text",
+                // The terminator itself, and a pasted rule line.
+                "--",
+                "---",
+                "-----",
+                // Single dashes are out of scope by the council's decision.
+                "-h",
+                "-5",
+                "-",
+                "-typo",
+                // Not a flag name: must start with a letter.
+                "--1st",
+                "---dash",
+                "--=value",
+                // Ordinary data.
+                "SH-1",
+                "todo",
+                "",
+            ] {
+                assert!(!is_flag_shaped(data), "`{data}` is data, not a flag");
+            }
+        }
+
+        /// The reported defect, at the level the gate decides it.
+        #[test]
+        fn an_undeclared_flag_is_refused() {
+            let error = reject_unknown_flags(&argv(&["new", "--typo", "x"]))
+                .expect_err("`story new --typo x` must be refused");
+            let message = error.to_string();
+            assert!(message.contains("--typo"), "names the token: {message}");
+            assert!(message.contains("story new"), "names the verb: {message}");
+            assert!(
+                message.contains("--priority"),
+                "lists the verb's real flags: {message}"
+            );
+            assert!(
+                message.contains("--"),
+                "offers the terminator escape: {message}"
+            );
+        }
+
+        /// Every currently-valid invocation still parses. The gate may only
+        /// reject what a parser would have swallowed.
+        #[test]
+        fn a_declared_flag_is_left_alone() {
+            for invocation in [
+                vec!["new", "A title", "--priority", "high"],
+                vec!["new", "A title", "--labels", "a,b", "--type", "bug"],
+                vec!["list", "--ready", "--state", "todo"],
+                vec!["move", "SH-1", "done", "--if-state", "in-progress"],
+                vec!["set", "SH-1", "--title", "New", "--unblocked"],
+                vec!["state", "add", "review", "--super", "OPEN"],
+                vec!["state", "set", "review", "--no-description"],
+                vec!["state", "remove", "review", "--move-stories-to", "todo"],
+                vec!["project", "init", "--prefix", "AB", "--no-agents-md"],
+                vec!["project", "deinit", "--force"],
+                vec!["member", "add", "--github", "someone"],
+                vec!["type", "add", "spike", "--description", "text"],
+                vec!["graph", "--blocked-by", "SH-1"],
+                vec!["help", "--compact"],
+                vec!["decompose", "--stdin", "--dry-run"],
+                // Subcommands spelled as flags, which the spawner execs.
+                vec!["daemon", "--serve", "--port", "0"],
+                vec!["web", "--serve", "--port", "0"],
+                vec!["daemon", "start", "--port", "3456"],
+            ] {
+                reject_unknown_flags(&argv(&invocation))
+                    .unwrap_or_else(|error| panic!("`story {}`: {error}", invocation.join(" ")));
+            }
+        }
+
+        /// A flag's value is that flag's business, never the gate's — so the
+        /// one flag in this grammar whose value may begin with dashes keeps
+        /// working.
+        #[test]
+        fn the_token_after_a_value_taking_flag_is_never_judged() {
+            reject_unknown_flags(&argv(&["new", "t", "--description", "--odd"]))
+                .expect("a value-taking flag's value is not judged");
+            reject_unknown_flags(&argv(&["new", "t", "--labels", "--weird"]))
+                .expect("likewise for --labels");
+        }
+
+        /// `--` ends option scanning, which is what makes a dash-leading value
+        /// expressible at all.
+        #[test]
+        fn a_terminator_ends_the_scan() {
+            reject_unknown_flags(&argv(&["new", "--", "--typo", "x"]))
+                .expect("everything after `--` is data");
+            reject_unknown_flags(&argv(&["comment", "SH-1", "--", "--json", "is", "great"]))
+                .expect("likewise in a comment");
+        }
+
+        /// The gate declines to speak about a verb that does not exist, so a
+        /// mistyped command still reports the command rather than its flags.
+        #[test]
+        fn an_unrecognized_verb_is_left_to_dispatch() {
+            reject_unknown_flags(&argv(&["frobnicate", "--typo"]))
+                .expect("an unknown command is dispatch's to report");
+            reject_unknown_flags(&argv(&["--help"])).expect("a global flag is not a verb");
+            reject_unknown_flags(&argv(&["-V"])).expect("nor is a version request");
+        }
+
+        /// Fail-closed: a verb with no table entry refuses every flag-shaped
+        /// token rather than inheriting the defect this gate exists to remove.
+        #[test]
+        fn a_verb_that_declares_nothing_refuses_every_flag() {
+            for invocation in [
+                vec!["comment", "SH-1", "--typo"],
+                vec!["block", "SH-1", "--typo"],
+                vec!["delete", "SH-1", "--typo"],
+                vec!["label", "SH-1", "--typo"],
+                vec!["epic", "create", "--typo"],
+                vec!["search", "--typo"],
+                vec!["show", "--typo"],
+            ] {
+                let refused = reject_unknown_flags(&argv(&invocation));
+                assert!(
+                    refused.is_err(),
+                    "`story {}` must be refused",
+                    invocation.join(" ")
+                );
+            }
+        }
+
+        /// Every entry in the table is reachable: a two-token entry must name a
+        /// verb that exists, so a typo in the table is caught here rather than
+        /// by a flag silently ceasing to work.
+        #[test]
+        fn every_table_entry_names_a_real_verb() {
+            for entry in VERB_FLAGS {
+                let mut path = vec![entry.verb.to_string()];
+                if let Some(sub) = entry.subcommand {
+                    path.push(sub.to_string());
+                }
+                let found = declared_flags(&path).expect("the entry resolves");
+                assert_eq!(
+                    found.len(),
+                    entry.flags.len(),
+                    "`story {}` resolved to a different entry than its own",
+                    path.join(" ")
+                );
+            }
+        }
+
+        /// A second token that is an *argument* must not be read as a
+        /// subcommand — the bug that would silently disarm `move`'s only flag.
+        #[test]
+        fn an_argument_in_the_subcommand_slot_falls_back_to_the_verb() {
+            let flags = declared_flags(&argv(&["move", "SH-1", "done"])).expect("move declares");
+            assert!(flags.iter().any(|flag| flag.name == "if-state"));
         }
     }
 }
