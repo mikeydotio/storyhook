@@ -147,7 +147,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-125** — enforce the minimum state set
 - [x] **SH-130** — illegal state combinations + a supported purge · *two PRs: the schema half, then the purge*
 - [x] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
-- [ ] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
+- [x] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
 - [ ] **SH-115** — C3 Identity: remotes schema + one URL normalizer
 - [ ] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114*
 - [ ] **SH-110** — tailnet bind flake · *gates SH-114*
@@ -955,3 +955,117 @@ difference remains running the legs separately rather than through `make gate`.
 **Unblocks SH-119**, which deletes `project_paths` — the evidence this story
 needed. It can now run without destroying the only reliable way to tell what was
 junk.
+
+### SH-131 — done
+
+**Outcome:** each of the three invariants has one home, and two of the three are
+now a test rather than a paragraph. The story asked for a decision and predicted
+the decision would surface a gap; it surfaced two, and one of them was a live
+hazard nobody had reported.
+
+**The rule that placed all three: an invariant's home is decided by what happens
+when somebody breaks it.** Silent, and reachable by an ordinary refactor → a
+test, the only home that acts. Loud at the point of contact → a doc comment where
+the reader already is. Rationale no failure can teach → the spec's "As built".
+`CLAUDE.md` is for what a contributor must know *before* reading any code, and an
+invariant that fails loudly on its own no longer qualifies. So `CLAUDE.md` keeps
+a pointer and no invariant text, invariant 2 keeps the `canonical_ish` doc
+comment it already had, and invariants 1 and 3 became tests.
+
+**Invariant 1 was pinned — and that turned out to be the more interesting
+answer.** The handoff suspected no test covered it. Disarming
+`publish_store_path` (the `set_var` removed, the flag still threaded) failed
+exactly one of thirteen: `the_store_path_flag_reaches_the_daemon_family_too`,
+because `dispatch_daemon` re-resolves with `from_process(None)`. But it fails
+with the **test-build refusal** — *"refusing to guess where the store lives"* —
+which names neither the flag nor the invariant, and whose most natural repair is
+to export the variable in the fixture. That repair makes the failure go away and
+unpins the invariant permanently. A pin whose obvious fix is its own removal is
+not a pin, and that is a shape worth recognising elsewhere: **coverage that
+exists but fails illegibly is worse than none, because it also reads as
+"covered"**.
+
+It also covered one consumer of four. `Environment::from_process(None)` is called
+by `dispatch_daemon`, by all five `story web` handlers and by `tui::run`, and a
+child process re-resolves by definition. The new test observes the **child** —
+the consumer nothing else sees, and the only one whose breakage is silent in a
+real build rather than merely invisible. An event hook runs the binary again with
+no flag and no variable of its own; its story has to land in the store the parent
+named. It pins the *promise*, not the mechanism, which is what makes it safe for
+SH-114 and SH-116 to redesign flag resolution: keep children in the named store
+by any means and it stays green.
+
+**The second gap was real and unreported.** Four shell files export
+`STORYHOOK_DATA_DIR`, not the three `CLAUDE.md` claimed — and
+`scripts/capture-baseline.sh` never neutralized `STORYHOOK_STORE_PATH`, while its
+own section comment claims it provides *"the same contract
+`scripts/run-tests.sh` provides"*. All three `unset` lines landed in one commit,
+store isolation's own; this file was missed and stayed missed for a release. The
+spec had said "four harnesses" all along, so the two documents disagreed and the
+one that was wrong is the one everybody reads.
+
+**Priced, not asserted:** `cargo test --test event_hooks` with the variable
+exported and an isolated data dir also set passes **9/9**, never creates the
+isolated store, and writes 184 KB — 9 projects and 7 stories — into the leaked
+one. From one nine-test file. That is a second route to exactly the harm SH-132
+spent a story cleaning up, and it is the argument for a derived rule over a list:
+a list in a document could not see the omission, a rule derived from
+`git ls-files` cannot miss it, and a fifth harness inherits the check by
+existing. The test carries a floor of three matches so a broken pattern fails
+instead of passing silently.
+
+**Red→green, both directions, both tests.** The child-process test: green 15/15
+in 1.70s, red under the disarm with a message naming what happened and printing
+the store's contents. The harness test: red naming `scripts/capture-baseline.sh`
+and the fix, green after the one line.
+
+**The council could not be convened, and that is recorded rather than papered
+over.** Two seatings — technical-writer, qa-engineer, skeptic each time — six
+agents, four rounds of chair pings including two explicit "answer now, an absent
+proposal is an abstention" deadlines. Not one proposal, pulse or acknowledgement.
+Both seatings were stopped with `TaskStop`, after roughly 30 and 40 minutes.
+`.council/sh131-invariant-homes/ABORT.md` records it, and `DECISION.md` is
+labelled a **chair decision** rather than a verdict. ABORT.md also names the three
+claims no adversary examined — that deleting the `CLAUDE.md` bullets loses
+nothing, that a Rust test reading bash is an acceptable coupling, and that a
+guard inside the binary is not the better origin-fix — so the next reader knows
+where this decision is thinnest. The second seating's brief was the remedy the
+supervision rule prescribes: narrower slice, every fact inline, a six-tool-call
+budget. It did not help, which is itself the finding.
+
+**The chair used the wait rather than only spending it.** Both candidate tests
+were built and measured while the seats were silent, which is why the second
+brief could ask seats to *judge* rather than design. Had a seat answered, it
+would have been voting on evidence rather than on a proposal.
+
+**A process failure of mine, and it broke the suite.** A `cd` that landed in
+`/private/tmp` made an exploratory `story project init` initialize **`/private/tmp`
+itself** as a project, leaving `/private/tmp/.storyhook.toml` behind. Every
+fixture in the suite builds under `/private/tmp`, so the project-resolution walk
+found that pointer from inside fixtures that were supposed to have none, and
+`invoker_seam.rs::a_directory_with_only_legacy_config_is_not_reported_as_unmigrated`
+went red — reporting a uuid I could match to my own stray file. The real store was
+never touched (every probe named a scratch store; `story project list` still
+returns exactly the 13 SH-132 left). Two things worth keeping: **verify the
+working directory before a command that writes**, and the failure was diagnosable
+in one step only because the error message carried the project uuid.
+
+**Also filed: SH-136.** `CLAUDE.md`'s adjacent rule enumerates the places that
+pin `STORYHOOK_DAEMON_ADDR` and `STORYHOOK_PARENT_PID` by hand, and said four
+when there are five — the same defect shape, one variable over, found by the same
+count. It differs in being *accurate in behaviour*: all five really do export
+both, so there is no defect to reproduce and any test would be green on arrival.
+The count is corrected here; deriving the list is SH-136 rather than scope creep
+into this story.
+
+**Deviation — the council.** The run's rule is to convene one for any decision
+without an obviously correct answer, and this was the run's only decision story.
+It was attempted twice and failed twice. Proceeding as chair, with the failure and
+its blind spots written into the artifact directory, was the honest option; the
+alternative — reporting a verdict that no panel reached — was not.
+
+**Gate:** `make test` and `make test-daemon` run as two separate supervised
+commands against the committed tree. Both exit 0, 101 green test-result blocks
+each, plugin harness 18/0, clippy clean. Third consecutive story with no wedge,
+and the difference remains running the legs separately rather than through
+`make gate`.

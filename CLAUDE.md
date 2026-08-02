@@ -59,19 +59,9 @@ every command, and `story store new` creates one. Design of record:
 [`docs/spec/store-isolation.md`](docs/spec/store-isolation.md), whose "As built"
 section records the six decisions taken during implementation.
 
-Three things to know before touching it:
-
-- **`--store-path` becomes `$STORYHOOK_STORE_PATH`** in `main`, before anything
-  resolves. That is what makes it reach `story daemon status`, the TUI, a git
-  hook, and the daemon this run spawns — none of which are threaded.
-- **Canonicalization must not change when the store file appears.**
-  `Path::join("")` appends a separator; that turned one store into two daemons
-  the moment its file existed, and is pinned by
-  `the_same_path_resolves_the_same_before_and_after_it_exists`.
-- **`$STORYHOOK_STORE_PATH` outranks `$STORYHOOK_DATA_DIR`**, so every harness
-  neutralizes it — `TestEnv`'s `ISOLATED_VARS` plus the three shell harnesses.
-  An exported one in a developer's shell would otherwise run the whole suite
-  against their own store, and the data-dir guard would not notice.
+Its load-bearing invariants are pinned by tests rather than by this file, and
+that "As built" section names the test guarding each (SH-131). A change that
+breaks one fails the suite; one that keeps the promise by other means does not.
 
 Standing rules for every wave:
 
@@ -97,10 +87,12 @@ Standing rules for every wave:
 - **A test build refuses to resolve a real data home** (`storyhook::env::is_test_build`), which
   is what makes a bare `cargo test` safe. Consequence: the binary `cargo test` leaves in
   `target/debug` will not touch a real store; `cargo build` produces one that will.
-- **Nothing in any test may bind port 3456 or outlive its run.** Four places export
+- **Nothing in any test may bind port 3456 or outlive its run.** Five places export
   `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` and `STORYHOOK_PARENT_PID`: `scripts/run-tests.sh`,
-  `TestEnv`, and *both* `plugin/claude-code/tests/{lib.sh,run-tests.sh}` — the last two
-  because `run-tests.sh` sets `STORYHOOK_TEST_HOME`, which makes `lib.sh` skip its block.
+  `scripts/capture-baseline.sh`, `TestEnv`, and *both*
+  `plugin/claude-code/tests/{lib.sh,run-tests.sh}` — the last two because `run-tests.sh`
+  sets `STORYHOOK_TEST_HOME`, which makes `lib.sh` skip its block. Nothing derives this
+  list, and it said four until SH-131 counted (SH-136).
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
