@@ -51,8 +51,8 @@ Execution state — wave status, step log, discovered defects — lives in
 **The program is complete and merged.** Follow-on work now lands as ordinary
 branches; the rules below still apply to anything touching the store or the seam.
 
-**In flight:** `feat/store-isolation` — SH-113, the first child of the
-server-owned epic (SH-112), and the origin-fix for SH-123. Daemon runtime state
+**Store isolation landed** in v2.0.0 (SH-113, the first child of the
+server-owned epic SH-112, and the origin-fix for SH-123). Daemon runtime state
 is derived from the **canonical store path**, so one store has exactly one
 daemon by construction; `--store-path`/`$STORYHOOK_STORE_PATH` name a store on
 every command, and `story store new` creates one. Design of record:
@@ -72,11 +72,6 @@ Three things to know before touching it:
   neutralizes it — `TestEnv`'s `ISOLATED_VARS` plus the three shell harnesses.
   An exported one in a developer's shell would otherwise run the whole suite
   against their own store, and the data-dir guard would not notice.
-
-Release-from-`main`, once the project-lifecycle rename lands: reinstall the
-`story` binary — the installed one predates both the flip *and* that rename, so
-`story init` still works there and `story project init` does not — then
-`/semver bump major`.
 
 Standing rules for every wave:
 
