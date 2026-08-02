@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use rusqlite::Connection;
 
+use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
@@ -41,7 +42,8 @@ use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, PathKind, ProjectId, S
 use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version};
 use crate::store::types::{
     DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord,
-    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
+    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
+    StoryQuery, StoryRow,
 };
 use crate::store::{ReadOps, Store, WriteOps};
 
@@ -579,6 +581,20 @@ macro_rules! impl_read_ops {
                 read::project_paths(&self.conn, project)
             }
 
+            fn project_by_remote(
+                &self,
+                remote: &RemoteUrl,
+            ) -> Result<Option<ProjectRecord>, StoreError> {
+                read::project_by_remote(&self.conn, remote)
+            }
+
+            fn project_remotes(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<ProjectRemoteRecord>, StoreError> {
+                read::project_remotes(&self.conn, project)
+            }
+
             fn states(&self, project: ProjectId) -> Result<Vec<StateDef>, StoreError> {
                 read::states(&self.conn, project)
             }
@@ -702,6 +718,23 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn forget_project_path(&mut self, project: ProjectId, path: &Path) -> Result<bool, StoreError> {
         write::forget_project_path(&self.conn, project, path)
+    }
+
+    fn link_remote(
+        &mut self,
+        project: ProjectId,
+        remote: &RemoteUrl,
+        registered_at: &str,
+    ) -> Result<(), StoreError> {
+        write::link_remote(&self.conn, project, remote, registered_at)
+    }
+
+    fn unlink_remote(
+        &mut self,
+        project: ProjectId,
+        remote: &RemoteUrl,
+    ) -> Result<bool, StoreError> {
+        write::unlink_remote(&self.conn, project, remote)
     }
 
     fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError> {

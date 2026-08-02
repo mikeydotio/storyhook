@@ -61,6 +61,7 @@ macro_rules! store_conformance_suite {
                 Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, TypeDef,
                 fold_story,
             };
+            use $crate::domain::remote::RemoteUrl;
             use $crate::store::{
                 ConformanceFixture, EventSeq, ExpectedSeq, GlobalSeq, NewProject, PathKind,
                 ProjectId, ProjectSettings, RawEvent, ReadOps, Store, StoreError, StoredPayload,
@@ -1043,6 +1044,317 @@ macro_rules! store_conformance_suite {
                         .read(|tx| tx.project_paths(project))
                         .unwrap()
                         .is_empty()
+                );
+            }
+
+            // ===============================================================
+            // Project remotes — identity by git origin
+            //
+            // The store's half of SH-115. The URL grammar itself is tested in
+            // `domain::remote`; everything here is about what the *store*
+            // promises: many remotes per project, one project per remote, and a
+            // refusal that names the holder.
+            // ===============================================================
+
+            /// A fixed timestamp. The store holds no clock, so registration
+            /// time is a caller's parameter and a test can pin it.
+            const REGISTERED_AT: &str = "2026-08-02T12:00:00Z";
+
+            fn remote(raw: &str) -> RemoteUrl {
+                RemoteUrl::normalize(raw)
+                    .unwrap_or_else(|error| panic!("`{raw}` should normalize: {error}"))
+            }
+
+            fn link_origin(store: &Subject, project: ProjectId, raw: &str) -> Result<(), StoreError> {
+                store.write(|tx| tx.link_remote(project, &remote(raw), REGISTERED_AT))
+            }
+
+            #[test]
+            fn every_form_of_one_origin_resolves_to_the_project_that_registered_it() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                link_origin(f.store(), project, "git@github.com:acme/widgets.git").unwrap();
+
+                // Registered through the scp-like form; found through the other
+                // three. This is the acceptance criterion the whole story is
+                // about, asserted against a real database rather than against
+                // the normalizer alone.
+                for form in [
+                    "https://github.com/acme/widgets",
+                    "https://github.com/acme/widgets.git",
+                    "ssh://git@github.com/acme/widgets",
+                    "https://GitHub.com/Acme/Widgets/",
+                ] {
+                    let found = f
+                        .store()
+                        .read(|tx| tx.project_by_remote(&remote(form)))
+                        .unwrap();
+                    assert_eq!(found.expect("should resolve").id, project, "{form}");
+                }
+            }
+
+            #[test]
+            fn a_second_checkout_of_one_origin_is_the_same_project() {
+                // The epic's stated consequence: a linked git worktree shares its
+                // main tree's origin, so it resolves identically *by
+                // construction* — no worktree bookkeeping, no runtime git walk.
+                // Two directories, one origin, one answer.
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                link_origin(f.store(), project, "https://github.com/acme/widgets.git").unwrap();
+
+                let from_main = f
+                    .store()
+                    .read(|tx| tx.project_by_remote(&remote("https://github.com/acme/widgets.git")))
+                    .unwrap();
+                let from_worktree = f
+                    .store()
+                    .read(|tx| tx.project_by_remote(&remote("https://github.com/acme/widgets.git")))
+                    .unwrap();
+                assert_eq!(from_main.unwrap().id, from_worktree.unwrap().id);
+            }
+
+            #[test]
+            fn github_io_and_github_com_can_be_held_by_different_projects() {
+                let f = <$fixture>::create();
+                let pages = seed(f.store(), "pages", "PG");
+                let code = seed(f.store(), "code", "CO");
+
+                // Neither registration refuses the other, which is what says the
+                // normalizer did not fold Pages into the code host.
+                link_origin(f.store(), pages, "https://acme.github.io/widgets").unwrap();
+                link_origin(f.store(), code, "https://github.com/acme/widgets").unwrap();
+
+                assert_eq!(
+                    f.store()
+                        .read(|tx| tx.project_by_remote(&remote("https://acme.github.io/widgets")))
+                        .unwrap()
+                        .unwrap()
+                        .id,
+                    pages
+                );
+                assert_eq!(
+                    f.store()
+                        .read(|tx| tx.project_by_remote(&remote("https://github.com/acme/widgets")))
+                        .unwrap()
+                        .unwrap()
+                        .id,
+                    code
+                );
+            }
+
+            #[test]
+            fn a_remote_already_held_by_another_project_is_refused_naming_the_holder() {
+                let f = <$fixture>::create();
+                let alpha = seed(f.store(), "alpha", "SH");
+                let beta = seed(f.store(), "beta", "SH");
+                link_origin(f.store(), alpha, "https://github.com/acme/widgets.git").unwrap();
+
+                // A *different spelling* of the same origin, so this also proves
+                // the refusal keys on the normalized form rather than on the
+                // string.
+                let error = link_origin(f.store(), beta, "git@github.com:Acme/Widgets").unwrap_err();
+                let message = error.to_string();
+                assert!(
+                    matches!(error, StoreError::Invariant(_)),
+                    "expected an invariant violation, got {error}"
+                );
+                assert!(
+                    message.contains("alpha"),
+                    "the refusal must name the project that already holds it: {message}"
+                );
+
+                // And the holder is unchanged: a refused write leaves nothing
+                // behind.
+                assert_eq!(
+                    f.store()
+                        .read(|tx| tx.project_by_remote(&remote("https://github.com/acme/widgets")))
+                        .unwrap()
+                        .unwrap()
+                        .id,
+                    alpha
+                );
+                assert!(
+                    f.store().read(|tx| tx.project_remotes(beta)).unwrap().is_empty()
+                );
+            }
+
+            #[test]
+            fn one_project_holds_many_remotes_and_each_resolves_to_it() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                // A repository that moved, plus a second canonical remote.
+                link_origin(f.store(), project, "https://github.com/old-owner/widgets.git").unwrap();
+                link_origin(f.store(), project, "https://github.com/acme/widgets.git").unwrap();
+                link_origin(f.store(), project, "ssh://git@git.acme.example/mirror/widgets").unwrap();
+
+                for form in [
+                    "https://github.com/old-owner/widgets",
+                    "git@github.com:acme/widgets.git",
+                    "https://git.acme.example/mirror/widgets",
+                ] {
+                    assert_eq!(
+                        f.store()
+                            .read(|tx| tx.project_by_remote(&remote(form)))
+                            .unwrap()
+                            .expect("should resolve")
+                            .id,
+                        project,
+                        "{form}"
+                    );
+                }
+                assert_eq!(f.store().read(|tx| tx.project_remotes(project)).unwrap().len(), 3);
+            }
+
+            #[test]
+            fn the_raw_form_of_every_registration_is_recoverable() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let typed = "https://WOOKIEE@GitHub.com/mikeyward/KeyMux.GIT/";
+                link_origin(f.store(), project, typed).unwrap();
+
+                let records = f.store().read(|tx| tx.project_remotes(project)).unwrap();
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].raw, typed, "the raw form must survive byte for byte");
+                assert_eq!(records[0].normalized, "github.com/mikeyward/keymux");
+                assert_eq!(records[0].registered_at, REGISTERED_AT);
+            }
+
+            #[test]
+            fn relinking_a_remote_to_the_same_project_records_it_once() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                link_origin(f.store(), project, "https://github.com/acme/widgets.git").unwrap();
+                // The same identity, a different spelling and a different day.
+                f.store()
+                    .write(|tx| {
+                        tx.link_remote(
+                            project,
+                            &remote("git@github.com:acme/widgets"),
+                            "2026-09-01T00:00:00Z",
+                        )
+                    })
+                    .unwrap();
+
+                let records = f.store().read(|tx| tx.project_remotes(project)).unwrap();
+                assert_eq!(records.len(), 1, "one identity is one row");
+                assert_eq!(records[0].raw, "git@github.com:acme/widgets", "the newest raw wins");
+                assert_eq!(records[0].registered_at, "2026-09-01T00:00:00Z");
+            }
+
+            #[test]
+            fn unlinking_a_remote_reports_whether_there_was_one() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                link_origin(f.store(), project, "https://github.com/acme/widgets.git").unwrap();
+
+                let url = remote("git@github.com:acme/widgets");
+                assert!(
+                    f.store().write(|tx| tx.unlink_remote(project, &url)).unwrap(),
+                    "unlinking by an equivalent spelling must find the row"
+                );
+                assert!(
+                    !f.store().write(|tx| tx.unlink_remote(project, &url)).unwrap(),
+                    "unlinking twice reports the second as a no-op"
+                );
+                assert!(
+                    f.store().read(|tx| tx.project_by_remote(&url)).unwrap().is_none()
+                );
+
+                // And the freed identity can now be claimed by someone else.
+                let beta = seed(f.store(), "beta", "SH");
+                link_origin(f.store(), beta, "https://github.com/acme/widgets").unwrap();
+            }
+
+            #[test]
+            fn a_project_with_no_remotes_has_none() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                assert!(f.store().read(|tx| tx.project_remotes(project)).unwrap().is_empty());
+            }
+
+            #[test]
+            fn an_unregistered_remote_resolves_to_nothing_rather_than_failing() {
+                // Project selection consults this on every command. "Nobody has
+                // registered this origin" is an ordinary answer, not an error.
+                let f = <$fixture>::create();
+                seed(f.store(), "alpha", "SH");
+                assert!(
+                    f.store()
+                        .read(|tx| tx.project_by_remote(&remote("https://github.com/nobody/nothing")))
+                        .unwrap()
+                        .is_none()
+                );
+            }
+
+            #[test]
+            fn project_remotes_are_listed_in_key_order() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                link_origin(f.store(), project, "https://c.example/o/r").unwrap();
+                link_origin(f.store(), project, "https://a.example/o/r").unwrap();
+                link_origin(f.store(), project, "https://b.example/o/r").unwrap();
+                let keys: Vec<String> = f
+                    .store()
+                    .read(|tx| tx.project_remotes(project))
+                    .unwrap()
+                    .into_iter()
+                    .map(|record| record.normalized)
+                    .collect();
+                assert_eq!(keys, ["a.example/o/r", "b.example/o/r", "c.example/o/r"]);
+            }
+
+            #[test]
+            fn a_registered_remote_survives_a_reopen() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                link_origin(f.store(), project, "https://github.com/acme/widgets.git").unwrap();
+
+                let f = f.reopen();
+                assert_eq!(
+                    f.store()
+                        .read(|tx| tx.project_by_remote(&remote("git@github.com:acme/widgets")))
+                        .unwrap()
+                        .unwrap()
+                        .id,
+                    project
+                );
+            }
+
+            #[test]
+            fn deleting_a_project_forgets_its_remotes() {
+                // Also the test that proves `project_remotes` was added to
+                // `PROJECT_SCOPED_TABLES`: `verify_project_is_gone` walks that
+                // same list, so an omission fails the delete rather than
+                // silently orphaning rows keyed by an id SQLite will reissue.
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                link_origin(f.store(), project, "https://github.com/acme/widgets.git").unwrap();
+                link_origin(f.store(), project, "https://github.com/acme/gadgets.git").unwrap();
+
+                let removed = f.store().write(|tx| tx.delete_project(project)).unwrap();
+                assert_eq!(removed.remotes, 2);
+
+                // The identity is genuinely free again, not merely unreachable.
+                let beta = seed(f.store(), "beta", "SH");
+                link_origin(f.store(), beta, "https://github.com/acme/widgets.git").unwrap();
+            }
+
+            #[test]
+            fn a_local_path_remote_is_stored_like_any_other() {
+                // A bare repository on a mounted volume is a real git remote, and
+                // its key lives in a separate space that cannot collide with a
+                // host-shaped one.
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                link_origin(f.store(), project, "/Volumes/nas/git/widgets.git").unwrap();
+                assert_eq!(
+                    f.store()
+                        .read(|tx| tx.project_by_remote(&remote("file:///Volumes/nas/git/widgets.git")))
+                        .unwrap()
+                        .unwrap()
+                        .id,
+                    project
                 );
             }
 

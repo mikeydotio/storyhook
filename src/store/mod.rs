@@ -72,6 +72,7 @@ pub mod types;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 
 pub use conformance::ConformanceFixture;
@@ -86,8 +87,8 @@ pub use rebuild::{
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
     DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord,
-    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
-    StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
+    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
+    StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -181,6 +182,23 @@ pub trait ReadOps {
 
     /// Every checkout of a project, ordered by path.
     fn project_paths(&self, project: ProjectId) -> Result<Vec<ProjectPathRecord>, StoreError>;
+
+    /// The project that registered this git origin, if any.
+    ///
+    /// The lookup half of project identity, and the reason
+    /// [`RemoteUrl`](crate::domain::remote::RemoteUrl) is a type rather than a
+    /// string: the *only* way to obtain one is through the normalizer, so this
+    /// and [`link_remote`](WriteOps::link_remote) cannot key on different
+    /// grammars however far apart their callers drift.
+    ///
+    /// Unlike every other method here this takes no [`ProjectId`] — deciding
+    /// which project you are in is its whole job. An origin nobody registered
+    /// is `Ok(None)`, never an error: project selection consults this on every
+    /// command, and "nothing is registered here" is an ordinary answer.
+    fn project_by_remote(&self, remote: &RemoteUrl) -> Result<Option<ProjectRecord>, StoreError>;
+
+    /// Every git origin registered to a project, ordered by identity key.
+    fn project_remotes(&self, project: ProjectId) -> Result<Vec<ProjectRemoteRecord>, StoreError>;
 
     /// How many events a project holds.
     ///
@@ -306,6 +324,46 @@ pub trait WriteOps: ReadOps {
     /// work recorded against it — which is exactly the mistake the legacy
     /// registry made impossible to make only because it held no data.
     fn forget_project_path(&mut self, project: ProjectId, path: &Path) -> Result<bool, StoreError>;
+
+    /// Registers a git origin as belonging to this project.
+    ///
+    /// A project may hold many origins — a repository that moved, a second
+    /// canonical remote — but an origin belongs to at most one project. That
+    /// second half is a `UNIQUE` index on the normalized key rather than an
+    /// application rule, so ambiguous resolution is *unrepresentable* instead of
+    /// merely handled.
+    ///
+    /// The holder is looked up **before** the insert, so a refusal can name the
+    /// project that already holds the origin — SQLite's constraint error names a
+    /// column and has no way to name a project. Catching the constraint and
+    /// looking up afterwards would leave the racing writer's message anonymous,
+    /// which is the one case where naming the holder matters most. The lookup is
+    /// safe from a race because a write transaction is `BEGIN IMMEDIATE` and so
+    /// exclusive among writers, the same reasoning
+    /// [`create_project`](Self::create_project) uses for uuid and slug.
+    ///
+    /// Registering an origin this project already holds **updates** the raw form
+    /// and the timestamp rather than failing, so `link origin` is safely
+    /// re-runnable. Registering one another project holds is
+    /// [`StoreError::Invariant`].
+    ///
+    /// `registered_at` is a parameter because the store holds no clock.
+    fn link_remote(
+        &mut self,
+        project: ProjectId,
+        remote: &RemoteUrl,
+        registered_at: &str,
+    ) -> Result<(), StoreError>;
+
+    /// Forgets one git origin of a project, reporting whether there was one.
+    ///
+    /// The project and its stories survive, for the same reason
+    /// [`forget_project_path`](Self::forget_project_path) leaves them: a
+    /// repository being transferred, renamed, or replaced by a new canonical
+    /// remote is not a reason to lose the work recorded against it. The freed
+    /// identity becomes available to another project immediately.
+    fn unlink_remote(&mut self, project: ProjectId, remote: &RemoteUrl)
+    -> Result<bool, StoreError>;
 
     /// Sets a project's display name.
     ///
