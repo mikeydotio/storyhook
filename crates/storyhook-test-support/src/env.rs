@@ -148,17 +148,9 @@ impl TestEnv {
 
     /// The daemon-shaped settings every command this environment builds carries.
     ///
-    /// Two, and neither is optional:
-    ///
-    /// * **`STORYHOOK_DAEMON_ADDR` is loopback port 0.** The daemon's preferred
-    ///   port is 3456, which is where a developer's own dashboard lives; a suite
-    ///   that could bind it would, on any machine where it happened to be free,
-    ///   and then a test would be talking to something a human was using.
-    /// * **`STORYHOOK_PARENT_PID` is this test binary.** Every `story` this
-    ///   environment runs inherits it, so a daemon one of them spawns inherits
-    ///   it too and exits when this process does — including when this process
-    ///   is killed rather than ended. A leaked daemon poisons every later run on
-    ///   the machine, which is not a hypothetical: it cost 78 of 139 tests once.
+    /// Neither is optional, and the reason each exists is on
+    /// [`daemon_containment`] — one copy of it, because a reason stated twice is
+    /// a reason that can come to disagree with itself.
     pub fn daemon_vars(&self) -> [(&'static str, String); 2] {
         daemon_containment()
     }
