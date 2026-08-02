@@ -74,7 +74,7 @@ destructively touch the real store outside SH-132's sanctioned procedure.
 - [x] **1.4** Apply 14 dependency edges
 - [x] **1.5** Apply 20 priority changes
 - [x] **1.6** Verify — graph acyclic, nothing leaks into `--ready`, no `none` priorities, `story doctor` clean
-- [ ] **1.7** Commit Phase 1 via `docs:` PR
+- [x] **1.7** Commit Phase 1 via `docs:` PR — merged as #81
 
 **Result:** 34 open → 36 open (four filed, two closed). 44 dependency edges.
 Critical path lengthened from 4 to 5: `SH-94 → SH-114 → SH-116 → SH-119 → SH-121`.
@@ -99,7 +99,7 @@ fragility is SH-63, still open.)
 Projected order. Re-derived from `story next` each iteration, so this list is a
 forecast and gets corrected in place as the graph moves.
 
-- [ ] **SH-129** — project settings CLI · *gates SH-124 and SH-68; nothing can go first* · **design settled, see its council comment**
+- [x] **SH-129** — project settings CLI · *gates SH-124 and SH-68; nothing can go first* · **design settled, see its council comment**
 - [ ] **SH-124** — commit-sync transitions every mentioned story · *protects this loop's own queue*
 - [ ] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first*
 - [ ] **SH-125** — enforce the minimum state set
@@ -195,3 +195,63 @@ precautionary, not a response to a violation.
 **Discovered:** `.council/` and `.freshen/` were not gitignored, so a single
 `git add -A` would have swept council transcripts and ephemeral signal files
 into a commit. Fixed in the same PR as this entry.
+
+### SH-129 — attempt 2 · done
+
+**Outcome:** merged. `story project settings list | get | set | unset` exists,
+and the setting the story was filed about now reaches the code that reads it.
+
+**Built to the council verdict, without re-running the vote.** The comment on
+SH-129 settled the verb, the grammar, the key names, the three-valued
+`source`, the typed response and the error kinds; all of it was implemented as
+written. The five binding constraints were treated as acceptance criteria:
+
+1. **The corruption hazard** — `set` and `unset` read the whole settings row,
+   change one field and write it back inside a single `store().write(|tx| …)`
+   closure. Pinned by two tests that configure a github-sync document, run an
+   unrelated `set` and an unrelated `unset`, and assert the stored
+   `serde_json::Value` is unchanged. The wrong pattern (`migrate.rs:416`)
+   was never reached for.
+2. **Duration validation** — `parse_duration` is filtered through a
+   strictly-positive check, because it parses its count as `i64` and answers
+   `Some` for `0d` and `-14d`. `0d`, `-14d`, `0h`, `14`, `14x`, `d`, empty and
+   whitespace are all `Validation`.
+3. **Feature-flag invariance** — `github.sync` reports opaque presence
+   (`configured`), never a parsed shape. Every test that touches it writes the
+   document *through the store* rather than through `GithubSyncService`, so the
+   file has no `#[cfg(feature = …)]` and asserts the same thing in both builds.
+4. **The rollback gap** — reported, not fixed. `tests/migrate_round_trip.rs`'s
+   header now says why the gap stopped being benign and names SH-133 (already
+   filed) with the three places a fix has to touch. The export document was not
+   widened: `golden-export.json` is compared literally and mixing that with a
+   feature would be two hats in one commit.
+5. **The annotation is derived** — "no command reads this yet" is a field on
+   the registry row, carried through `SettingView.note` to the renderer.
+   Deleting that one line is the completion criterion for whoever makes
+   `story doctor` read the value; nothing at a render site has to change.
+
+**The registry is the design, as approved.** `static REGISTRY: [SettingSpec; 3]`
+is read by both the renderer and the write dispatcher, and `settable()` is
+*derived* from `managed_by` rather than stored beside it — two fields can
+disagree, one cannot. There is no match on key names anywhere.
+`every_registry_entry_agrees_with_its_dispatch` iterates the registry rather
+than naming three keys, so a fourth added later inherits the check.
+
+**33 new tests**, all green, plus the contract suites they oblige:
+`tests/service_settings.rs` (17) and `tests/project_settings.rs` (16). The
+headline one is not a round trip through a column — it turns the setting off,
+runs `story commit-sync` over a commit whose body names a story, and asserts
+the story did **not** move. Its control asserts that it does when the setting
+is untouched.
+
+**Deviations:** none from the verdict. Two small calls it did not cover:
+`get` renders the same line as `list` rather than a bare value, because the
+inertness and read-only annotations are the load-bearing part and a script has
+`--json`; and a boolean is accepted case-insensitively but stored canonically.
+
+**Wire contract:** `Response::ProjectSettings(Vec<SettingView>)` is a permanent
+addition, so `tests/wire_envelope.rs` grew a populated corpus entry covering
+all three `SettingSource` values and both sides of `settable`, an empty one,
+and four `SettingsAction` invocations. `make gate` — both legs — is green.
+
+**Council:** not re-run. The verdict on the story was the input, as instructed.
