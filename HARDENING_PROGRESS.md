@@ -101,7 +101,7 @@ forecast and gets corrected in place as the graph moves.
 
 - [x] **SH-129** — project settings CLI · *gates SH-124 and SH-68; nothing can go first* · **design settled, see its council comment**
 - [x] **SH-124** — commit-sync transitions every mentioned story · *protects this loop's own queue*
-- [ ] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first*
+- [~] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first* · **in flight**
 - [ ] **SH-125** — enforce the minimum state set
 - [ ] **SH-130** — illegal state combinations + a supported purge · *hard-deletes SH-20 as its proving case*
 - [ ] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
@@ -370,3 +370,86 @@ clippy clean. Note for whoever runs this next: `concurrency_soak`'s
 `readers_run_through_a_write_storm_without_seeing_a_partial_story` failed on the
 *baseline* run before any change, and passes in isolation in 6.4s against a 30s
 deadline. That is SH-94 exactly, still open, still load-sensitive.
+
+### SH-62 — in flight
+
+**Outcome:** implementation complete, gate running, not yet merged. This entry
+is written as the work happens rather than after it, and its last section is the
+part still open.
+
+**The story understated its own extent, and measuring first is what found it.**
+SH-62 reported `story new --typo x`. Running the real binary against an isolated
+scratch store showed **eight** write-capable verbs accept a flag-shaped token
+and exit 0 — four of which mint a durable object nobody asked for (`new`,
+`epic create`, `type add`, `member add`) and four of which attach junk to a
+write the user did ask for (`comment`'s body, `block`'s reason, `delete`'s audit
+reason, and a literal `--typo` label). The probe script is
+`scratchpad/probe.sh`; the table is `.council/cli-unknown-flag-refusal/CHAIR-EVIDENCE.md`.
+
+**The council was convened because two defensible rules collided**, and it
+mattered: `src/cli.rs` carried a deliberate prior decision (from SH-124's
+neighbourhood) that comment free-text is unrestricted and a comment beginning
+with `--` must never fail as an unrecognized flag. A blanket refusal overturns
+that. Three seats, two rounds, **2-1 for the fail-closed flag-shape gate**.
+
+**The winning idea is shape, not prefix.** A token containing whitespace is
+never flag-shaped, so `story new "--fix the ingest path"` is one argv element
+with spaces in it and stays data. That single clause is what let the rule close
+all eight defects *without* gutting the free-text guarantee: only the unquoted
+single-token form changes. A repo-wide search for that form across `plugin/`,
+`bin/`, `scripts/`, `README.md`, `docs/` and every `.md`/`.sh`/`.rs`/`.toml`
+returned exactly one hit — SH-62's own defect description in
+`docs/rearch/STATE.md`. The form being withdrawn is one nobody uses.
+
+**Fail-closed is the actual defect-CLASS fix.** A verb with no table entry
+refuses every flag-shaped token, so forgetting to declare a new verb's flags is
+loud at test time rather than a silent re-inheritance of this bug. That property
+is why both non-authors voted against their own proposals: per-site rules fail
+*open*, and this defect has already recurred once — SH-52 was the same shape for
+`--help`, fixed one token position at a time, and SH-62 is the rest of the flag
+space arriving two waves later.
+
+**The suite was pinning the defect as correct — again.**
+`move_if_state.rs::move_with_typoed_flag_name_immediately_after_state_is_comment_not_error`
+required `story move SH-1 in-progress --if-stat todo` to *succeed*: the typo
+became comment text and, in its own words, "the move proceeds unconditionally".
+So a user who asked for a compare-and-swap guard silently did not get one and
+the story moved anyway. The old reasoning was right that a typo must never be
+*mistaken* for the real flag — that would be the worst of three outcomes — but
+it blessed the second-worst instead of the correct third: refuse, and name the
+token. The premise is rewritten, not relaxed. This is the second consecutive
+story in this run where the test suite documented the defect as intended
+behaviour; SH-124's `Refs {id}` fixture was the first.
+
+**Three test files changed for that reason rather than because they broke
+badly**: `story_update.rs` (two tests asserting the literal string
+`usage: story update`), `service_migrate.rs` (`an_unknown_flag_is_a_usage_error_rather_than_a_path`,
+whose premise was already right and only its expected text stale), and four
+frozen `golden_cli` error snapshots. All four snapshot entries improved in the
+same direction — `story list --no-such-flag` now names the token instead of
+printing a twelve-flag usage line — and no exit code moved.
+
+**Deviations from the verdict, both recorded on the story:**
+
+1. The council sequenced the table as a behaviour-neutral commit ahead of the
+   wiring. Rust makes that impossible without `#[allow(dead_code)]`: an unwired
+   gate is dead code and `-D warnings` rejects it. The gate and its wiring
+   therefore land together; the two-hats split is preserved by the *refactor*
+   commit that precedes both.
+2. The error message does not synthesize an example command. The verdict's
+   draft offered `story doctor "--typo …"`, but half the verbs this fires on
+   take no positional at all, so that example would not work — worse than none,
+   because a reader would try it.
+
+**Also filed:** SH-134, `add_type` accepts an unaddressable slug. All three
+seats endorsed it unprompted as a *domain*-origin defect the parser gate cannot
+substitute for — the gate stops `story type add --typo` but not the TUI,
+`import`, `decompose`, `migrate`, the web API or a direct `InvokeRequest`, and
+it would never catch `in review`, which is invalid for the same addressability
+reason while not being flag-shaped at all.
+
+**Still open at the time of writing:** `make gate` both legs, the PR, and the
+merge. Baseline on arrival was green locally and red on the daemon leg through
+SH-110 alone (`web_serve_binds_tailnet_ip_when_available`, a sibling of the test
+in SH-110's title, passing in isolation in 0.09s — recorded on that story, which
+widens it from one test to a shared expectation).
