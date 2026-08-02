@@ -334,3 +334,51 @@ fn every_declared_flag_is_accepted_by_its_verb() {
         );
     }
 }
+
+/// **A script that still passes `--local` fails, loudly, rather than being
+/// ignored.**
+///
+/// The flag was deleted in SH-114, and a deleted global flag has two possible
+/// afterlives. It could be accepted and ignored, which is the shape this whole
+/// file exists to prevent: a hook or a CI job would go on passing it and go on
+/// appearing to run in its own process while starting a daemon on every
+/// invocation. Or it can be refused by name, which is what SH-62's gate does to
+/// any flag-shaped token a verb does not declare — and it needed no special case
+/// to do it, which is the point of a fail-closed rule.
+///
+/// Both positions are checked because they are answered by different code. After
+/// a verb it is the gate; before one it is the verb parser, which reads a
+/// flag-shaped first token as a command name. Neither is silent, and both name
+/// the token.
+#[test]
+fn the_deleted_local_flag_is_refused_rather_than_ignored() {
+    let project = project();
+
+    for args in [
+        vec!["list", "--local"],
+        vec!["--local", "list"],
+        vec!["new", "--local", "a story nobody asked for"],
+    ] {
+        let out = project.story().args(&args).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success(),
+            "`story {}` must fail: a flag that no longer exists and is quietly \
+             accepted is a script that believes something untrue about where its \
+             command ran",
+            args.join(" ")
+        );
+        assert!(
+            stderr.contains("--local"),
+            "`story {}` must name the token it refused: {stderr}",
+            args.join(" ")
+        );
+    }
+
+    // And nothing was written by the one that would have written something.
+    let listed = project.json(&["list"]).to_string();
+    assert!(
+        !listed.contains("a story nobody asked for"),
+        "a refused command must write nothing: {listed}"
+    );
+}
