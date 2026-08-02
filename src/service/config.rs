@@ -32,11 +32,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cli::MemberInput;
 use crate::domain::{
     Member, StateChanges, StateDef, StateUsage, StoryEvent, SuperState, TypeDef,
-    validate_state_defs_for_write,
+    validate_required_states, validate_state_defs_for_write,
 };
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoryQuery, WriteOps};
 
+use super::state_set::write_states;
 use super::story::state_transition_events;
 use super::{Ctx, append_and_fold, project_prefix, refold_story};
 
@@ -114,7 +115,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
             };
             states.push(state.clone());
             validate_state_defs_for_write(&states)?;
-            tx.put_states(project, &states)?;
+            write_states(tx, project, &states)?;
             Ok(state)
         })?)
     }
@@ -170,9 +171,17 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
                     }
                 })
                 .collect();
-            // Validated before any story is touched, so an edit that would
-            // leave the project without an OPEN (or CLOSED) state fails having
+            // Both validators run before any story is touched, so an edit that
+            // would leave the project without a state it needs fails having
             // changed nothing.
+            //
+            // The floor goes first, and is asked here as well as at the funnel,
+            // for the sake of the sentence the user reads: reclassifying `done`
+            // breaks the general "one CLOSED state" rule *and* the floor, and
+            // only the floor's message names the state and the way out. Asking
+            // it later would also let `resolve_migration` demand a destination
+            // for the occupants of an edit that was never going to be allowed.
+            validate_required_states(&next_states)?;
             validate_state_defs_for_write(&next_states)?;
 
             let mut moved = 0;
@@ -189,7 +198,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
                 moved = migrate_occupants(tx, project, slug, &destination, &now)?;
             }
 
-            tx.put_states(project, &next_states)?;
+            write_states(tx, project, &next_states)?;
             if superstate_changed {
                 // Whatever is left in this state — archived stories, which do
                 // not migrate — was folded against the old definition and now
@@ -226,6 +235,11 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
                 .filter(|state| state.slug != slug)
                 .cloned()
                 .collect();
+            // The floor first, for the same two reasons as in `update_state`:
+            // its message is the specific one, and a required state cannot be
+            // removed at any occupancy — so asking where its stories should go
+            // would offer a way out that does not exist.
+            validate_required_states(&retained)?;
             validate_state_defs_for_write(&retained)?;
 
             let archived = state_usage(&*tx, project)?
@@ -245,7 +259,7 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
             {
                 moved = migrate_occupants(tx, project, slug, &destination, &now)?;
             }
-            tx.put_states(project, &retained)?;
+            write_states(tx, project, &retained)?;
             Ok(moved)
         })?)
     }
@@ -295,7 +309,11 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
                 .iter()
                 .map(|slug| (*by_slug.get(slug.as_str()).expect("checked above")).clone())
                 .collect();
-            tx.put_states(project, &reordered)?;
+            // A permutation cannot break the required floor — every member
+            // survives a reorder — but it routes through the funnel anyway, so
+            // that "every state set is written by one function" stays a
+            // property of the code rather than a claim about it.
+            write_states(tx, project, &reordered)?;
             Ok(reordered)
         })?)
     }

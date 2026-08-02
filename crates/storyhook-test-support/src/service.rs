@@ -49,7 +49,8 @@ pub struct ServiceFixture {
 
 impl ServiceFixture {
     /// A fixture with the default catalog: `todo` (open), `in-progress` (open,
-    /// active), `done` (closed); types `feature` and `bug`; no members.
+    /// active), `blocked` (open), `done` (closed); types `feature` and `bug`;
+    /// no members.
     #[must_use]
     pub fn new() -> Self {
         Self::with_states(&default_states())
@@ -193,7 +194,13 @@ impl Drop for ServiceFixture {
     }
 }
 
-/// The default state set: two open states and one closed, with an active role.
+/// The default state set: three open states and one closed, with an active
+/// role.
+///
+/// Carries `blocked` because [`storyhook::domain::REQUIRED_STATES`] requires it
+/// of every project (SH-125). A fixture seeded below that floor cannot have its
+/// catalog edited at all, so a state test written against one would be testing
+/// the refusal rather than the edit.
 #[must_use]
 pub fn default_states() -> Vec<StateDef> {
     vec![
@@ -207,6 +214,12 @@ pub fn default_states() -> Vec<StateDef> {
             slug: "in-progress".into(),
             super_state: SuperState::Open,
             role: Some("active".into()),
+            description: None,
+        },
+        StateDef {
+            slug: "blocked".into(),
+            super_state: SuperState::Open,
+            role: None,
             description: None,
         },
         StateDef {

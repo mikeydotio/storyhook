@@ -276,8 +276,12 @@ story <a> <relationship> <b> [--remove]
 ## States
 
 - Every project state maps to exactly one superstate: `OPEN` or `CLOSED`.
+- Every project has `todo`, `in-progress` and `blocked` as `OPEN` states and
+  `done` as a `CLOSED` one. Those four cannot be removed and their superstates
+  cannot be changed; anything else you add is yours to arrange. A project
+  created before this rule reports it in `story doctor`, and
+  `story doctor --fix` adds whatever is missing.
 - A project must have at least one `OPEN` state and at least one `CLOSED` state.
-- New projects start with `todo -> OPEN` and `done -> CLOSED`.
 - Moving a story into a `CLOSED` state immediately archives it to SQLite.
 - Closed stories remain readable but are no longer mutable.
 - State order is user-visible: it's the dashboard board's column order, and
@@ -288,7 +292,8 @@ story <a> <relationship> <b> [--remove]
   enters when work starts — where `story commit-sync` moves a story that a
   commit *claims* (`Closes SH-1`), as opposed to merely names (`Refs SH-1`).
 - There is no rename: a slug is recorded in every state-change event ever
-  written. Add the new state, migrate to it, and remove the old one.
+  written. Add the new state, migrate to it, and remove the old one — which is
+  therefore not a way around the four states every project must have.
 
 Configure states from the CLI (`story state …`), the dashboard
 (**Settings → Statuses**), or the TUI (press `s`) — all three go through the

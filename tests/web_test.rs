@@ -861,8 +861,8 @@ fn web_serve_api_data_meta_states_are_ordered() {
     // Must match .storyhook/states.toml insertion order, not alphabetical.
     assert_eq!(
         states,
-        vec!["todo", "in-progress", "done", "archived"],
-        "states must be in states.toml order, not alphabetical"
+        vec!["todo", "in-progress", "blocked", "done", "archived"],
+        "states must be in configured order, not alphabetical"
     );
 
     let done = json["meta"]["states"]
@@ -1947,7 +1947,7 @@ fn web_states_list_reports_config_and_counts_in_board_order() {
     fixture.seed(&["move", "SH-2", "done"]);
 
     let json = get_states(port, repo_id);
-    assert_eq!(slugs(&json), vec!["todo", "in-progress", "done"]);
+    assert_eq!(slugs(&json), vec!["todo", "in-progress", "blocked", "done"]);
 
     let todo = &json["states"][0];
     assert_eq!(todo["super_state"], "OPEN");
@@ -1957,7 +1957,7 @@ fn web_states_list_reports_config_and_counts_in_board_order() {
     assert!(todo["description"].is_null());
 
     assert_eq!(json["states"][1]["role"], "active");
-    assert_eq!(json["states"][2]["archived_count"], 1);
+    assert_eq!(json["states"][3]["archived_count"], 1);
 }
 
 #[test]
@@ -1973,8 +1973,11 @@ fn web_states_create_adds_a_state_and_returns_the_new_list() {
     assert_eq!(resp.status(), 201);
 
     let json = json_body(resp);
-    assert_eq!(slugs(&json), vec!["todo", "in-progress", "done", "review"]);
-    assert_eq!(json["states"][3]["description"], "Waiting on a reviewer");
+    assert_eq!(
+        slugs(&json),
+        vec!["todo", "in-progress", "blocked", "done", "review"]
+    );
+    assert_eq!(json["states"][4]["description"], "Waiting on a reviewer");
     assert_eq!(slugs(&get_states(port, repo_id)), slugs(&json));
 }
 
@@ -2035,8 +2038,12 @@ fn web_states_patch_leaves_unmentioned_fields_alone() {
 fn web_states_patch_requires_a_destination_for_occupied_states() {
     let fixture = serve_project();
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    // A state beyond the required floor: `todo` cannot be reclassified at all
+    // now (SH-125), so the destination rule needs a state that can be.
+    fixture.seed(&["state", "add", "in-review", "--super", "OPEN"]);
     fixture.seed(&["new", "A story"]);
-    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/todo");
+    fixture.seed(&["move", "SH-1", "in-review"]);
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/in-review");
 
     let error = patch_json(&url, r#"{"super_state":"CLOSED"}"#).unwrap_err();
     assert_eq!(status_of(error), 422);
@@ -2049,8 +2056,14 @@ fn web_states_patch_requires_a_destination_for_occupied_states() {
         )
         .unwrap(),
     );
-    assert_eq!(json["states"][0]["super_state"], "CLOSED");
-    assert_eq!(json["states"][0]["open_count"], 0);
+    let reclassified = json["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|state| state["slug"] == "in-review")
+        .expect("the state is still listed");
+    assert_eq!(reclassified["super_state"], "CLOSED");
+    assert_eq!(reclassified["open_count"], 0);
     assert_eq!(json["states"][1]["open_count"], 1);
     assert!(
         json["message"]
@@ -2070,11 +2083,11 @@ fn web_states_patch_reorders_the_collection() {
     let json = json_body(
         patch_json(
             &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
-            r#"{"order":["done","todo","in-progress"]}"#,
+            r#"{"order":["done","todo","blocked","in-progress"]}"#,
         )
         .unwrap(),
     );
-    assert_eq!(slugs(&json), vec!["done", "todo", "in-progress"]);
+    assert_eq!(slugs(&json), vec!["done", "todo", "blocked", "in-progress"]);
     assert_eq!(slugs(&get_states(port, repo_id)), slugs(&json));
 }
 
@@ -2117,24 +2130,26 @@ fn web_states_a_state_named_reorder_is_still_addressable() {
         )
         .unwrap(),
     );
-    assert_eq!(json["states"][3]["description"], "an unfortunate name");
+    assert_eq!(json["states"][4]["description"], "an unfortunate name");
 }
 
 #[test]
 fn web_states_delete_removes_and_migrates() {
     let fixture = serve_project();
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    fixture.seed(&["state", "add", "in-review", "--super", "OPEN"]);
     fixture.seed(&["new", "A story"]);
-    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/todo");
+    fixture.seed(&["move", "SH-1", "in-review"]);
+    let url = format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states/in-review");
 
     // Occupied and no destination named: refused, nothing changed.
     let error = delete_json(&url, "{}").unwrap_err();
     assert_eq!(status_of(error), 422);
-    assert_eq!(slugs(&get_states(port, repo_id)).len(), 3);
+    assert_eq!(slugs(&get_states(port, repo_id)).len(), 5);
 
     let json = json_body(delete_json(&url, r#"{"move_stories_to":"in-progress"}"#).unwrap());
-    assert_eq!(slugs(&json), vec!["in-progress", "done"]);
-    assert_eq!(json["states"][0]["open_count"], 1);
+    assert_eq!(slugs(&json), vec!["todo", "in-progress", "blocked", "done"]);
+    assert_eq!(json["states"][1]["open_count"], 1);
 }
 
 #[test]
