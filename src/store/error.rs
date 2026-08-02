@@ -188,6 +188,11 @@ fn constraint_detail(error: &rusqlite::Error) -> String {
         "events are append-only".to_string()
     } else if raw.contains("project_paths.path") {
         "that path is already registered to a different project".to_string()
+    } else if raw.contains("project_remotes.normalized") {
+        // The backstop, not the ordinary message. `link_remote` reads the
+        // holder first so it can name it; reaching this text means the index
+        // caught a write that did not come through there.
+        "that git origin is already registered to a different project".to_string()
     } else if raw.contains("archived = (closed_at IS NOT NULL)") {
         "a story is archived exactly when it has a close timestamp".to_string()
     } else if raw.contains("story_relations") && raw.contains("story_no <> other_no") {

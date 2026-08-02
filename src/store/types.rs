@@ -62,6 +62,25 @@ pub struct ProjectPathRecord {
     pub last_seen_at: String,
 }
 
+/// A git origin registered against a project.
+///
+/// `normalized` is the identity key project selection matches on, produced by
+/// [`RemoteUrl`](crate::domain::remote::RemoteUrl). `raw` is what the user
+/// actually supplied — kept beside it because the normalizer is lossy on
+/// purpose and will improve later, and a registration must not lose the string
+/// it was made from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectRemoteRecord {
+    /// The identity key: `host[:port]/owner/repo`, or `local:<path>` for a
+    /// filesystem remote.
+    pub normalized: String,
+    /// The URL exactly as it was given at registration.
+    pub raw: String,
+    /// RFC3339 timestamp of the registration, supplied by the caller — the
+    /// store holds no clock.
+    pub registered_at: String,
+}
+
 /// What one [`WriteOps::delete_project`](crate::store::WriteOps::delete_project)
 /// destroyed.
 ///
@@ -77,6 +96,9 @@ pub struct DeletedProject {
     pub events: usize,
     /// Checkout registrations removed.
     pub paths: usize,
+    /// Origin registrations removed, freeing those identities for another
+    /// project to claim.
+    pub remotes: usize,
 }
 
 /// What one [`WriteOps::purge_story`](crate::store::WriteOps::purge_story)

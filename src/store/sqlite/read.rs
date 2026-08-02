@@ -15,12 +15,14 @@ use std::path::Path;
 
 use rusqlite::{Connection, Row, params, params_from_iter};
 
+use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, PathKind, ProjectId, StoryNo};
 use crate::store::types::{
-    FeedEvent, ProjectPathRecord, ProjectRecord, ProjectSettings, RelationEdge, StoredEvent,
-    StoredPayload, StoryQuery, StoryRow, StorySort, parse_priority, parse_superstate,
+    FeedEvent, ProjectPathRecord, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
+    RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort, parse_priority,
+    parse_superstate,
 };
 
 const PROJECT_COLUMNS: &str =
@@ -125,6 +127,57 @@ pub(super) fn project_by_path(
         project_from_row,
         "reading a project by path",
     )
+}
+
+/// The project that registered this git origin.
+///
+/// Matched on the normalized key alone. `idx_project_remotes_normalized`
+/// guarantees at most one row can match, so there is no ordering to choose and
+/// no ambiguity to resolve — which is the entire point of putting the
+/// uniqueness in the schema.
+pub(super) fn project_by_remote(
+    conn: &Connection,
+    remote: &RemoteUrl,
+) -> Result<Option<ProjectRecord>, StoreError> {
+    let columns = PROJECT_COLUMNS
+        .split(", ")
+        .map(|c| format!("p.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    one(
+        conn,
+        &format!(
+            "SELECT {columns} FROM projects p \
+             JOIN project_remotes pr ON pr.project_id = p.id WHERE pr.normalized = ?1"
+        ),
+        params![remote.key()],
+        project_from_row,
+        "reading a project by remote",
+    )
+}
+
+pub(super) fn project_remotes(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<ProjectRemoteRecord>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare_cached(
+            "SELECT normalized, raw, registered_at FROM project_remotes \
+             WHERE project_id = ?1 ORDER BY normalized",
+        ),
+        "preparing project_remotes",
+    )?;
+    let rows = sql(
+        stmt.query_map(params![project.get()], |row| {
+            Ok(ProjectRemoteRecord {
+                normalized: row.get(0)?,
+                raw: row.get(1)?,
+                registered_at: row.get(2)?,
+            })
+        }),
+        "reading project remotes",
+    )?;
+    collect(rows, "reading project remotes")
 }
 
 pub(super) fn projects(conn: &Connection) -> Result<Vec<ProjectRecord>, StoreError> {
