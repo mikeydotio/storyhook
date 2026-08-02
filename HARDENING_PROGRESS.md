@@ -145,7 +145,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-124** — commit-sync transitions every mentioned story · *protects this loop's own queue*
 - [x] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first*
 - [x] **SH-125** — enforce the minimum state set
-- [~] **SH-130** — illegal state combinations + a supported purge · **schema half merged; the purge and SH-20 remain — see `HANDOFF.md`, story still open**
+- [x] **SH-130** — illegal state combinations + a supported purge · *two PRs: the schema half, then the purge*
 - [ ] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
 - [ ] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
 - [ ] **SH-115** — C3 Identity: remotes schema + one URL normalizer
@@ -740,3 +740,109 @@ command to get a list and a count, which cost the machine 20 minutes; the second
 invocation was pure waste.
 
 **Council:** yes — unanimous, round 1. `.council/sh130-illegal-state-pair/DECISION.md`.
+
+### SH-130 — the purge · done · the story closes
+
+**Outcome:** `story purge <ID>` exists, and **SH-20 is gone from the real
+store** — the story this was filed about, and the first story ever removed from
+storyhook by a supported command. All seven acceptance criteria are met.
+
+Built to the council's D4 **without re-running the vote**, as the handoff
+instructed. The verb, the precondition, the typed-id guard, migration 5's AND-ed
+predicate, the `StoryRelationshipRemoved` retraction and the never-reissued
+story number were all implemented as written.
+
+**The cost D4 could not have priced, and it is permanent.** The narrowed trigger
+names `stories`, so **a future migration that rebuilds `stories` must drop
+`events_reject_delete` first and recreate it afterwards**. `ALTER TABLE … RENAME
+TO` re-parses every trigger in the schema to rewrite references to the renamed
+table, and between the `DROP TABLE` and the rename there is nothing for the
+`WHEN` clause to resolve. Found by four *existing* framework tests going red —
+not by reasoning — and my first attempt to reproduce it was wrong in an
+instructive way: the system `sqlite3` at 3.51.0 accepts the same batch happily,
+so the failure only exists through rusqlite's bundled 3.46. Reaching for the
+shell would have "disproved" a defect that is real. The failure is loud, names
+both the trigger and the table, and rolls back untouched, which is why the cost
+is acceptable rather than merely small. Pinned in both directions — one test
+proves a rebuild that forgets fails, and `REBUILD_STORIES` shows the two lines
+that fix it — and `0005`'s header is written for whoever writes migration 6.
+
+**A conformance assertion caught me publishing a number that was half true.**
+`PurgedStory` first reported `relations` alongside `events`, and read 1 where two
+rows had gone: SQLite's `changes()` **excludes rows deleted by triggers**, and
+`story_relations` carries a mirror trigger. The field is deleted rather than
+corrected — nothing needed it, since the retracted claims a user cares about are
+reported by the service, which knows which *stories* made them.
+
+**One gate, not two.** `Response::ConfirmationRequired` carried a `DeinitPlan`,
+so the only thing in this program that asks a question could only ask about a
+project. It carries a `ConfirmationPlan` enum now, landed as its own refactor
+commit ahead of the feature. Everything `main.rs`'s `confirm` does — refuse
+under `--json`, refuse with no terminal, print the warning, ask for a typed
+token, name `--force` — is identical whatever is being destroyed; a second
+`Response` variant would have been a second copy, and the copy that drifts is
+the one used least. A third destructive verb now adds a variant and inherits the
+whole gate.
+
+The enum is **internally** tagged, which was not a style choice. The dashboard
+draws its modal from `err.body.plan.slug` and friends out of a 409, and serde's
+default external tagging would have moved every one of those a level down — a
+browser-only breakage invisible to a Rust round-trip test.
+`a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads` asserts on the
+JSON for exactly that reason.
+
+**The retraction reads the claimant's snapshot, not the relation table.** The
+table materializes the mirror of every edge, so the far end of a one-sided claim
+holds a row it never asserted; retracting from it would append an event
+annulling a claim that was never made — fabricated history, the thing this
+council refused everywhere else in SH-130. A one-sided claim cannot be built
+through `story relate`, so the test that pins it injects one.
+
+**The fixture was wrong before the code was.** Four tests failed on
+`story relate SH-2 blocks SH-1` — *"story `SH-1` is closed and cannot be
+modified"*. A claim into a doomed story can only have been made **before** it was
+deleted, so relate-then-delete is the only shape a real purge ever meets; a
+fixture that related afterwards was testing something that cannot happen.
+
+**Red→green verified in both directions rather than assumed.** Disarming the
+retraction fails exactly four tests — and leaves
+`a_story_that_never_claimed_the_edge_gets_no_retraction` green, which is its job:
+it guards against the fix going *too far*. Disarming the precondition fails
+exactly one. Neither disarm touched the other's tests.
+
+**The compact reference has a hard 3000-character budget** and adding `purge`
+took it to 3071. That budget is real — the document is what an agent reads at
+session start. The line that went was `Use --json for structured output suitable
+for piping and automation.`, which says what the `--json` entry two sections
+above it already says. The purge line was then reshaped to name `--force`,
+because an agent has no TTY and would otherwise meet the refusal without knowing
+the way past it. 2993 characters.
+
+**Also fixed, broken by this change rather than found by it:**
+`migrating_a_database_from_a_newer_storyhook_is_also_refused` simulated "newer
+than this binary" with the literal `5`. That version now exists; it is 99.
+
+**SH-20, against the real store.** Daemon stopped first (it holds the store open
+with its own page cache and would have gone on serving schema-3 code). Verified
+backup by `VACUUM INTO` — `~/.local/state/storyhook/backups/storyhook-20260802T165012Z-pre-sh130-purge.db`,
+reopened, `integrity_check` ok, 518 projects / 838 stories / 4,427 events. Then
+`make install`, then `story doctor`, which applied migrations 4 and 5 and
+reported no integrity issues. **Migration 4 repaired SH-20 on the way through** —
+`todo` → `done`, still CLOSED, still deleted — and all six illegal rows
+store-wide are now zero. The unforced purge printed the plan and refused with no
+terminal, naming `--force`; the forced one removed it. After: 837 stories, 4,424
+events — exactly the three the plan named — `story show SH-20` not found, nothing
+for `story_no 20` in either raw table, and `story doctor` clean.
+
+**Gate:** `make test` and `make test-daemon` run as two separate supervised
+commands against the committed tree. Both exit 0, 101 green test-result blocks
+each, plugin harness 18/0, clippy clean. **No wedge this time** — worth recording
+against the eight-hour one in the entry above, since the difference was running
+the legs separately rather than through `make gate`.
+
+**Semver: minor**, when someone bumps it. A new verb and a schema migration, no
+interface removed — with one caveat worth knowing: an *older* CLI talking to a
+newer daemon can no longer decode a `ConfirmationRequired`, because the plan
+gained its discriminant. SH-54's version gate is what makes that loud.
+
+**Council:** not re-run. D4 was the input, as instructed.
