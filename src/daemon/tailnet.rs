@@ -1,31 +1,88 @@
 //! This machine's Tailscale identity — the second interface the daemon binds,
 //! and the only non-loopback `Host` values it will trust for a mutation.
 //!
-//! **Moved here verbatim.** Every rule in [`TailnetIdentity::trusted_hosts`] is
-//! a decision about what an attacker can and cannot forge an origin for, and the
-//! reasoning is in the doc comments rather than in a commit message for exactly
-//! that reason.
+//! Every rule in [`TailnetBind::trusted_hosts`] is a decision about what an
+//! attacker can and cannot forge an origin for, and the reasoning is in the doc
+//! comments rather than in a commit message for exactly that reason.
+//!
+//! # Two types, because a probe is not a bind
+//!
+//! [`TailnetIdentity`] is what `tailscale status --json` said about this
+//! machine. [`TailnetBind`] is what a daemon actually bound, and only a
+//! successful `TcpListener::bind` can produce one. Everything with authority —
+//! what is trusted, what is advertised — hangs off the second, so neither can
+//! be answered from a probe alone.
 
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-/// This machine's Tailscale identity, derived from a single `tailscale
-/// status --json` invocation — the IPv4 to bind the tailnet listener to and,
-/// when MagicDNS is enabled, the fully-qualified MagicDNS name a tailnet
-/// peer's browser sends as `Host` when it reaches this machine by name
-/// rather than by raw IP (see [`parse_tailnet_identity`], which is what
-/// actually derives this).
+/// What `tailscale status --json` reported about this machine — a *probe
+/// result*, and nothing more.
+///
+/// Deliberately inert. It carries no authority over what is trusted or
+/// advertised, because a probe answers "does this machine have a tailnet?"
+/// while every question this daemon actually has is "did *this daemon* bind
+/// it?". Those came apart in SH-110. The only thing you can do with an
+/// identity is [`Self::into_bound`] it, after a bind has succeeded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TailnetIdentity {
     /// The IPv4 address to bind the tailnet listener to.
-    pub bind_ip: String,
+    pub bind_ip: std::net::Ipv4Addr,
     /// This machine's MagicDNS FQDN, when MagicDNS is enabled.
     pub magic_dns: Option<String>,
 }
 
 impl TailnetIdentity {
+    /// Promotes a probe result to a [`TailnetBind`], the evidence that the
+    /// interface is being served.
+    ///
+    /// Consuming, and `pub(crate)`, so the probe result is *used up* by the
+    /// bind: nothing downstream can reach back past it to the unbound facts.
+    /// Call this only where `TcpListener::bind` has just returned `Ok`.
+    pub(crate) fn into_bound(self) -> TailnetBind {
+        TailnetBind {
+            ip: self.bind_ip,
+            magic_dns: self.magic_dns,
+        }
+    }
+}
+
+/// A tailnet interface a daemon has bound, and the names that bind earns.
+///
+/// Only [`TailnetIdentity::into_bound`] constructs one, and only after
+/// `TcpListener::bind` returned `Ok`, so a value of this type *is* the
+/// evidence that the interface is being served. Both what the daemon trusts
+/// ([`Self::trusted_hosts`]) and what it advertises ([`Self::advertise_host`])
+/// are projections of this one value, so they cannot disagree — SH-110 was
+/// exactly that disagreement, in a daemon that trusted only what it bound and
+/// advertised whatever a fresh probe happened to say.
+///
+/// The fields are private on purpose: with `Deserialize` derived, the only two
+/// ways to obtain one are `into_bound` and reading a portfile a daemon wrote
+/// after its own bind. A hand-forged portfile could inject one, but that file
+/// also carries a full-privilege bearer token at mode 0600, so anyone able to
+/// write it already owns the API.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TailnetBind {
+    /// The tailnet IPv4 the listener is bound to.
+    ip: std::net::Ipv4Addr,
+    /// This machine's MagicDNS FQDN, when MagicDNS is enabled.
+    magic_dns: Option<String>,
+}
+
+impl TailnetBind {
+    /// The tailnet IPv4 this listener is bound to.
+    pub fn ip(&self) -> std::net::Ipv4Addr {
+        self.ip
+    }
+
+    /// This machine's MagicDNS FQDN, when MagicDNS is enabled.
+    pub fn magic_dns(&self) -> Option<&str> {
+        self.magic_dns.as_deref()
+    }
+
     /// `Host` values a browser may legitimately send for *this* machine that
     /// an external attacker can never forge an origin for: the tailnet IPv4
     /// itself, and — when MagicDNS is on — its fully-qualified name. A
@@ -38,7 +95,7 @@ impl TailnetIdentity {
     /// name to this machine's IP — the very attack class this allowlist
     /// exists to stop.
     pub fn trusted_hosts(&self) -> Vec<String> {
-        let mut hosts = vec![self.bind_ip.clone()];
+        let mut hosts = vec![self.ip.to_string()];
         hosts.extend(self.magic_dns.clone());
         hosts
     }
@@ -47,8 +104,10 @@ impl TailnetIdentity {
     /// name when available — memorable, and, since it's also in
     /// [`Self::trusted_hosts`], guaranteed to work for mutations too — else
     /// the bare tailnet IPv4.
-    pub fn advertise_host(&self) -> &str {
-        self.magic_dns.as_deref().unwrap_or(&self.bind_ip)
+    pub fn advertise_host(&self) -> String {
+        self.magic_dns
+            .clone()
+            .unwrap_or_else(|| self.ip.to_string())
     }
 }
 
@@ -79,8 +138,7 @@ fn parse_tailnet_identity(status_json: &str) -> Option<TailnetIdentity> {
     let bind_ip = me
         .tailscale_ips
         .iter()
-        .find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())?
-        .clone();
+        .find_map(|ip| ip.parse::<std::net::Ipv4Addr>().ok())?;
     // `DNSName` is reported rooted (a trailing `.`) and MagicDNS names are
     // already lowercase, but normalize defensively rather than assume.
     let fqdn = me.dns_name.trim_end_matches('.').to_ascii_lowercase();
@@ -160,17 +218,6 @@ fn tailscale_status_json(timeout: Duration) -> Option<String> {
     }
 }
 
-/// The best host to show or copy for reaching this machine, used by `story
-/// daemon status`/`story web address` output: this machine's MagicDNS FQDN when
-/// [`tailnet_identity`] reports one (memorable, and guaranteed to work for
-/// mutations too — see [`TailnetIdentity::trusted_hosts`]), else its bare
-/// tailnet IPv4, else loopback if no tailnet identity is available at all.
-pub fn reachable_host() -> String {
-    tailnet_identity()
-        .map(|identity| identity.advertise_host().to_string())
-        .unwrap_or_else(|| "127.0.0.1".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,7 +238,7 @@ mod tests {
     #[test]
     fn parse_tailnet_identity_happy_path() {
         let identity = parse_tailnet_identity(STATUS_JSON).unwrap();
-        assert_eq!(identity.bind_ip, "100.71.206.33");
+        assert_eq!(identity.bind_ip.to_string(), "100.71.206.33");
         assert_eq!(
             identity.magic_dns.as_deref(),
             Some("psamathe.tail983f02.ts.net")
@@ -221,7 +268,7 @@ mod tests {
     fn parse_tailnet_identity_missing_dns_name_is_ip_only() {
         let json = r#"{"Self": {"DNSName": "", "TailscaleIPs": ["100.71.206.33"]}}"#;
         let identity = parse_tailnet_identity(json).unwrap();
-        assert_eq!(identity.bind_ip, "100.71.206.33");
+        assert_eq!(identity.bind_ip.to_string(), "100.71.206.33");
         assert_eq!(identity.magic_dns, None);
     }
 
@@ -246,13 +293,25 @@ mod tests {
     fn parse_tailnet_identity_picks_first_ipv4_among_mixed_order() {
         let json = r#"{"Self": {"DNSName": "", "TailscaleIPs": ["fd7a:115c:a1e0::6701:ce21", "100.71.206.33"]}}"#;
         let identity = parse_tailnet_identity(json).unwrap();
-        assert_eq!(identity.bind_ip, "100.71.206.33");
+        assert_eq!(identity.bind_ip.to_string(), "100.71.206.33");
+    }
+
+    /// A [`TailnetBind`] as a successful bind would produce it, for the tests
+    /// below that are about the bind's projections rather than about parsing.
+    fn bound(bind_ip: &str, magic_dns: Option<&str>) -> TailnetBind {
+        TailnetIdentity {
+            bind_ip: bind_ip.parse().expect("a test fixture's IPv4 parses"),
+            magic_dns: magic_dns.map(str::to_string),
+        }
+        .into_bound()
     }
 
     #[test]
     fn trusted_hosts_includes_ip_and_fqdn_but_not_short_label_or_ipv6() {
-        let identity = parse_tailnet_identity(STATUS_JSON).unwrap();
-        let hosts = identity.trusted_hosts();
+        let hosts = parse_tailnet_identity(STATUS_JSON)
+            .unwrap()
+            .into_bound()
+            .trusted_hosts();
         assert_eq!(
             hosts,
             vec![
@@ -273,25 +332,41 @@ mod tests {
 
     #[test]
     fn trusted_hosts_is_ip_only_without_magic_dns() {
-        let identity = TailnetIdentity {
-            bind_ip: "100.71.206.33".to_string(),
-            magic_dns: None,
-        };
-        assert_eq!(identity.trusted_hosts(), vec!["100.71.206.33".to_string()]);
+        assert_eq!(
+            bound("100.71.206.33", None).trusted_hosts(),
+            vec!["100.71.206.33".to_string()]
+        );
     }
 
     #[test]
     fn advertise_host_prefers_magic_dns_over_ip() {
-        let identity = parse_tailnet_identity(STATUS_JSON).unwrap();
-        assert_eq!(identity.advertise_host(), "psamathe.tail983f02.ts.net");
+        let bind = parse_tailnet_identity(STATUS_JSON).unwrap().into_bound();
+        assert_eq!(bind.advertise_host(), "psamathe.tail983f02.ts.net");
     }
 
     #[test]
     fn advertise_host_falls_back_to_ip_without_magic_dns() {
-        let identity = TailnetIdentity {
-            bind_ip: "100.71.206.33".to_string(),
-            magic_dns: None,
-        };
-        assert_eq!(identity.advertise_host(), "100.71.206.33");
+        assert_eq!(
+            bound("100.71.206.33", None).advertise_host(),
+            "100.71.206.33"
+        );
+    }
+
+    /// The two projections of a bind agree about which names it earned: the
+    /// host a user is told to visit is always one the mutation guard will
+    /// accept. SH-110 was these two answers coming from different sources.
+    #[test]
+    fn what_a_bind_advertises_is_always_something_it_trusts() {
+        for bind in [
+            bound("100.71.206.33", Some("psamathe.tail983f02.ts.net")),
+            bound("100.71.206.33", None),
+        ] {
+            assert!(
+                bind.trusted_hosts().contains(&bind.advertise_host()),
+                "advertised {} but trusts only {:?}",
+                bind.advertise_host(),
+                bind.trusted_hosts()
+            );
+        }
     }
 }
