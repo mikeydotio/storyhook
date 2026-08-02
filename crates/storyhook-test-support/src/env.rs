@@ -148,22 +148,11 @@ impl TestEnv {
 
     /// The daemon-shaped settings every command this environment builds carries.
     ///
-    /// Two, and neither is optional:
-    ///
-    /// * **`STORYHOOK_DAEMON_ADDR` is loopback port 0.** The daemon's preferred
-    ///   port is 3456, which is where a developer's own dashboard lives; a suite
-    ///   that could bind it would, on any machine where it happened to be free,
-    ///   and then a test would be talking to something a human was using.
-    /// * **`STORYHOOK_PARENT_PID` is this test binary.** Every `story` this
-    ///   environment runs inherits it, so a daemon one of them spawns inherits
-    ///   it too and exits when this process does — including when this process
-    ///   is killed rather than ended. A leaked daemon poisons every later run on
-    ///   the machine, which is not a hypothetical: it cost 78 of 139 tests once.
+    /// Neither is optional, and the reason each exists is on
+    /// [`daemon_containment`] — one copy of it, because a reason stated twice is
+    /// a reason that can come to disagree with itself.
     pub fn daemon_vars(&self) -> [(&'static str, String); 2] {
-        [
-            ("STORYHOOK_DAEMON_ADDR", "127.0.0.1:0".to_string()),
-            ("STORYHOOK_PARENT_PID", std::process::id().to_string()),
-        ]
+        daemon_containment()
     }
 
     /// `PATH` with the directory holding the binary under test in front.
@@ -254,6 +243,58 @@ impl TestEnv {
     pub fn daemon(&self) -> Option<storyhook::daemon::lifecycle::DaemonInfo> {
         storyhook::daemon::lifecycle::read_info(&self.environment())
     }
+
+    /// Whether a daemon is holding this environment's store *now*.
+    ///
+    /// The pidfile lock rather than [`Self::daemon`], and the difference is the
+    /// whole point: a portfile outlives the process that wrote it, so a test
+    /// asking "is anything holding the database" would get a stale yes from one
+    /// and the truth from the other.
+    #[must_use]
+    pub fn daemon_is_live(&self) -> bool {
+        storyhook::daemon::lifecycle::is_live(&self.environment())
+    }
+
+    /// Stands down whatever daemon is holding this environment's store.
+    ///
+    /// A no-op when there is none, so it is safe to call before any test that
+    /// wants the store to itself — which is every test that asks a question
+    /// about bytes on disk. A live daemon answers reads from its own page cache
+    /// and keeps a write-ahead log alive that would otherwise be checkpointed
+    /// away.
+    pub fn stop_daemon(&self) {
+        let _ = storyhook::daemon::lifecycle::stop(&self.environment());
+    }
+}
+
+/// The two settings that stop a test-spawned daemon reaching anything real.
+///
+/// A free function rather than a method, because the sites that most need it are
+/// the ones with no [`TestEnv`] to ask: three test files call `env_clear()` on
+/// purpose, so that the variable *they* are about cannot arrive from the ambient
+/// shell. They used to name the in-process transport and never start a daemon at
+/// all; since SH-114 they start one like everything else, and a daemon with a
+/// cleared environment would prefer port 3456 — the developer's own dashboard —
+/// and outlive the run that made it.
+///
+/// One definition rather than a copy per site is deliberate. SH-136 is about a
+/// hand-maintained list of places that export this pair; adding three more by
+/// hand would have made that story worse.
+#[must_use]
+pub fn daemon_containment() -> [(&'static str, String); 2] {
+    [
+        // The daemon's preferred port is 3456, which is where a developer's own
+        // dashboard lives; a suite that could bind it would, on any machine
+        // where it happened to be free, and then a test would be talking to
+        // something a human was using.
+        ("STORYHOOK_DAEMON_ADDR", "127.0.0.1:0".to_string()),
+        // Every `story` a test runs inherits this, so a daemon one of them
+        // spawns inherits it too and exits when this process does — including
+        // when this process is killed rather than ended. A leaked daemon poisons
+        // every later run on the machine, which is not a hypothetical: it cost
+        // 78 of 139 tests once.
+        ("STORYHOOK_PARENT_PID", std::process::id().to_string()),
+    ]
 }
 
 /// The `story` binary under test — always this build's, never a globally

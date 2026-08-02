@@ -175,6 +175,36 @@ impl ChildGuard {
     pub fn new(child: std::process::Child) -> Self {
         ChildGuard(child)
     }
+
+    /// The child's process id.
+    ///
+    /// The identity a crash test compares against: "a daemon died" is not the
+    /// claim, "the daemon this test armed died" is.
+    pub fn pid(&self) -> u32 {
+        self.0.id()
+    }
+
+    /// Waits for the child to exit and reports how it died.
+    ///
+    /// Safe to call once and then let the guard drop: a reaped child's status is
+    /// cached, and the `kill` in [`Drop`] fails harmlessly on a process that is
+    /// already gone.
+    pub fn wait(&mut self) -> std::process::ExitStatus {
+        self.0
+            .wait()
+            .expect("waiting for a child this test started")
+    }
+
+    /// How the child died, or `None` while it is still running.
+    ///
+    /// For the tests that have several children and cannot know which will
+    /// finish first — where blocking on one in turn would deadlock on whichever
+    /// is waiting for something the caller has not done yet.
+    pub fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
+        self.0
+            .try_wait()
+            .expect("asking after a child this test started")
+    }
 }
 
 impl Drop for ChildGuard {

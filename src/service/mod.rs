@@ -158,8 +158,8 @@ impl<'a, S: Store> Ctx<'a, S> {
     /// process's own.
     ///
     /// The daemon does not have the client's terminal, so a command that reads
-    /// stdin has it read on the client and carried in the request envelope. A
-    /// `--local` run leaves this unset and reads its own.
+    /// stdin has it read on the client and carried in the request envelope. An
+    /// in-process caller leaves this unset and reads its own.
     #[must_use]
     pub fn with_stdin(mut self, stdin: Option<String>) -> Self {
         self.stdin = stdin;

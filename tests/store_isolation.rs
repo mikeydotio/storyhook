@@ -88,9 +88,6 @@ impl Probe {
             .env("HOME", self.home())
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("XDG_STATE_HOME", self.state_home())
-            // Through the daemon, always. This whole file is about which daemon
-            // answers, and `--local` has no daemon to be wrong about.
-            .env("STORYHOOK_INVOKER", "daemon")
             // Never the production port: a suite that could bind 3456 would
             // fight the developer's own dashboard for it.
             .env("STORYHOOK_DAEMON_ADDR", "127.0.0.1:0")
@@ -99,11 +96,18 @@ impl Probe {
         cmd
     }
 
-    /// A `story` invocation that runs in its own process.
-    fn local_story(&self, cwd: &Path) -> Command {
-        let mut cmd = self.story(cwd);
-        cmd.env("STORYHOOK_INVOKER", "local");
-        cmd
+    /// Stands down whatever daemon is holding the store under `data_dir`.
+    ///
+    /// This replaces the in-process transport, which is what the byte questions
+    /// below used to reach for. A daemon holds the database open with its own
+    /// page cache and its own write-ahead-log handle, so a byte comparison taken
+    /// while one is running compares a file nobody has finished writing.
+    fn quiesce(&self, cwd: &Path, data_dir: &Path) {
+        let _ = self
+            .story(cwd)
+            .env("STORYHOOK_DATA_DIR", data_dir)
+            .args(["daemon", "stop"])
+            .output();
     }
 }
 
@@ -408,9 +412,10 @@ fn concurrent_clients_produce_exactly_one_daemon_per_store() {
 
 /// A run against a named store must leave the ambient one exactly as it was.
 ///
-/// Local throughout for the ambient store, and never a daemon on it: a daemon
-/// holds the database open with its own page cache and would answer from memory
-/// rather than notice the file.
+/// The ambient store's daemon is stood down before either byte reading, and only
+/// then: a daemon holds the database open with its own page cache and its own
+/// log, so a comparison taken while one is running compares a file nobody has
+/// finished writing.
 #[test]
 fn a_store_path_run_leaves_the_ambient_store_byte_identical() {
     let probe = Probe::new();
@@ -420,20 +425,21 @@ fn a_store_path_run_leaves_the_ambient_store_byte_identical() {
     let elsewhere = probe.dir("elsewhere");
 
     ok(probe
-        .local_story(&repo)
+        .story(&repo)
         .env("STORYHOOK_DATA_DIR", &ambient)
         .args(["project", "init", "--prefix", "AMB"]));
     ok(probe
-        .local_story(&repo)
+        .story(&repo)
         .env("STORYHOOK_DATA_DIR", &ambient)
         .args(["new", "Do not touch me"]));
 
     let store = ambient.join("store.db");
-    let before = bytes(&store);
     let listed_before = ok(probe
-        .local_story(&repo)
+        .story(&repo)
         .env("STORYHOOK_DATA_DIR", &ambient)
         .args(["list"]));
+    probe.quiesce(&repo, &ambient);
+    let before = bytes(&store);
 
     for args in [
         vec!["project", "init", "--prefix", "NAMED"],
@@ -453,13 +459,14 @@ fn a_store_path_run_leaves_the_ambient_store_byte_identical() {
         ok(&mut cmd);
     }
 
+    probe.quiesce(&repo, &ambient);
     assert_eq!(
         bytes(&store),
         before,
         "a --store-path run must leave the ambient store byte-identical"
     );
     let listed_after = ok(probe
-        .local_story(&repo)
+        .story(&repo)
         .env("STORYHOOK_DATA_DIR", &ambient)
         .args(["list"]));
     assert_eq!(listed_before, listed_after);
@@ -721,14 +728,9 @@ fn a_child_process_of_a_store_path_run_lands_in_the_same_store() {
     let repo = probe.dir("repo");
     let flag = store.to_str().unwrap().to_string();
 
-    ok(probe.local_story(&repo).args([
-        "--store-path",
-        &flag,
-        "project",
-        "init",
-        "--prefix",
-        "CHD",
-    ]));
+    ok(probe
+        .story(&repo)
+        .args(["--store-path", &flag, "project", "init", "--prefix", "CHD"]));
 
     let pointer = repo.join(".storyhook.toml");
     let existing = std::fs::read_to_string(&pointer).expect("the project has a pointer file");
@@ -742,12 +744,10 @@ fn a_child_process_of_a_store_path_run_lands_in_the_same_store() {
     .expect("configuring the hook");
 
     ok(probe
-        .local_story(&repo)
+        .story(&repo)
         .args(["--store-path", &flag, "new", "the parent"]));
 
-    let listed = ok(probe
-        .local_story(&repo)
-        .args(["--store-path", &flag, "list"]));
+    let listed = ok(probe.story(&repo).args(["--store-path", &flag, "list"]));
     assert!(
         listed.contains("from the hook"),
         "the hook's `story new` carried no flag and no store variable of its own, \

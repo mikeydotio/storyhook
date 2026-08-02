@@ -9,6 +9,9 @@ publish = false
 
 [dependencies]
 assert_cmd = { workspace = true }
+# `crash.rs` asserts that a daemon died by SIGKILL rather than by any other
+# route, and the signal number is worth naming rather than spelling `9`.
+libc = "0.2"
 serde_json = { workspace = true }
 # The `fault-injection` feature is requested here, not in the root
 # manifest's `default`, so that `cargo test` builds a storyhook with the

@@ -19,12 +19,11 @@
 //! backup over the database" is a procedure that can make things worse, which
 //! is why the drill performs it exactly as written rather than as intended.
 
-use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 
 use storyhook::daemon::backup;
-use storyhook::store::{ReadOps, SqliteStore, Store, StoryQuery};
-use storyhook_test_support::{Project, TestEnv, project_id_at};
+use storyhook::store::{FaultPoint, ReadOps, SqliteStore, Store, StoryQuery};
+use storyhook_test_support::{Project, TestEnv, crash_the_daemon, project_id_at};
 
 /// Where a CLI-driven store puts its snapshots: the state home, not beside the
 /// data.
@@ -48,11 +47,31 @@ fn cli_shaped_store(env: &TestEnv) -> SqliteStore {
 
 /// Runs `story <args>` in the project and returns the raw output.
 ///
-/// Every fixture here is built with [`ProjectBuilder::local`], so this is
-/// already in-process — the wrapper exists to hand back the `Output` rather than
-/// an assertion handle.
-fn story_locally(project: &Project<'_>, args: &[&str]) -> std::process::Output {
+/// The wrapper exists to hand back the `Output` rather than an assertion handle.
+fn story_in(project: &Project<'_>, args: &[&str]) -> std::process::Output {
     project.story().args(args).output().expect("running story")
+}
+
+/// Stands the daemon down, immediately before the store is handled as a file.
+///
+/// Every fixture here used to be built with `--local`, so no daemon ever existed
+/// to confuse the questions this file asks — and every question it asks is about
+/// bytes on disk. There is one transport now, so a daemon exists whether or not
+/// a test wants one: it answers reads from its own page cache, and its `-shm`
+/// keeps a write-ahead log alive that would otherwise be checkpointed away.
+///
+/// **The call belongs immediately before the bytes are touched, not once at the
+/// top of a test.** Every `story` command starts a daemon if none is live, so a
+/// fixture that quiesced itself at construction is holding the store again by
+/// its second line.
+///
+/// Which makes this the honest version of what `--local` was standing in for,
+/// rather than a workaround: it is exactly what storyhook's own restore
+/// instructions tell a user to do first, and
+/// `the_corruption_diagnostic_names_the_directory_the_snapshots_are_in` asserts
+/// they still say so.
+fn quiesce(env: &TestEnv) {
+    env.stop_daemon();
 }
 
 /// Takes a snapshot now, whatever the schedule thinks.
@@ -70,7 +89,7 @@ fn snapshot_now(store: &SqliteStore, env: &TestEnv) -> std::path::PathBuf {
 
 /// The titles of every story the CLI can see in `project`.
 fn titles_via_cli(project: &Project<'_>) -> Vec<String> {
-    let out = story_locally(project, &["list", "--json"]);
+    let out = story_in(project, &["list", "--json"]);
     assert!(
         out.status.success(),
         "`story list --json` failed: {}",
@@ -105,10 +124,11 @@ fn remove_store(env: &TestEnv) {
 #[test]
 fn a_snapshot_restores_a_store_that_was_destroyed() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("BK").build();
+    let project = env.project().prefix("BK").build();
     project.new_story("before the backup");
     let before = titles_via_cli(&project);
 
+    quiesce(&env);
     let store = cli_shaped_store(&env);
     let snapshot = snapshot_now(&store, &env);
     drop(store);
@@ -129,12 +149,12 @@ fn a_snapshot_restores_a_store_that_was_destroyed() {
     );
     // And it is a live store, not a museum piece.
     assert!(
-        story_locally(&project, &["new", "after the restore"])
+        story_in(&project, &["new", "after the restore"])
             .status
             .success()
     );
     assert_eq!(titles_via_cli(&project).len(), before.len() + 1);
-    assert!(story_locally(&project, &["doctor"]).status.success());
+    assert!(story_in(&project, &["doctor"]).status.success());
 }
 
 /// The trap: restoring over a database whose write-ahead log is still hot.
@@ -159,25 +179,23 @@ fn a_snapshot_restores_a_store_that_was_destroyed() {
 #[test]
 fn the_documented_restore_is_necessary_as_well_as_sufficient() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("BK").build();
+    let project = env.project().prefix("BK").build();
     project.new_story("in the snapshot");
 
+    quiesce(&env);
     let store = cli_shaped_store(&env);
     let snapshot = snapshot_now(&store, &env);
     drop(store);
 
     // A commit that survives its process: durable, in the log, uncheckpointed.
-    let killed = env
-        .raw_story(project.path())
-        .env("STORYHOOK_INVOKER", "local")
-        .env("STORYHOOK_FAULT", "after_commit_before_ack")
-        .args(["new", "after the snapshot"])
-        .output()
-        .expect("running the doomed command");
-    assert_eq!(
-        killed.status.signal(),
-        Some(libc::SIGKILL),
-        "the fixture needs a process that died holding a hot log"
+    // The process has to be the daemon, because the daemon is the one holding
+    // the transaction — and it has to be killed rather than stopped, because a
+    // process that exits normally checkpoints the log this test is about.
+    crash_the_daemon(
+        &env,
+        project.path(),
+        FaultPoint::AfterCommitBeforeAck,
+        &["new", "after the snapshot"],
     );
     let wal = env.store_path().with_extension("db-wal");
     assert!(
@@ -187,7 +205,7 @@ fn the_documented_restore_is_necessary_as_well_as_sufficient() {
 
     // Necessary: the naive restore does not produce the snapshot.
     std::fs::copy(&snapshot, env.store_path()).expect("restoring over the live database");
-    let out = story_locally(&project, &["list", "--json"]);
+    let out = story_in(&project, &["list", "--json"]);
     let said = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -212,14 +230,17 @@ fn the_documented_restore_is_necessary_as_well_as_sufficient() {
         "and it must not quietly look like it worked"
     );
 
-    // Sufficient: the documented procedure produces exactly the snapshot.
+    // Sufficient: the documented procedure produces exactly the snapshot. Step
+    // one of it is standing the daemon down, which the naive attempt above just
+    // started — and which is the step that makes the rest work.
+    quiesce(&env);
     remove_store(&env);
     std::fs::copy(&snapshot, env.store_path()).expect("restoring properly");
     assert_eq!(
         titles_via_cli(&project),
         vec!["in the snapshot".to_string()]
     );
-    assert!(story_locally(&project, &["doctor"]).status.success());
+    assert!(story_in(&project, &["doctor"]).status.success());
 }
 
 /// The titles in a `story list --json` output, or `None` if it failed.
@@ -242,16 +263,17 @@ fn titles_after_a_successful_list(out: &std::process::Output) -> Option<Vec<Stri
 #[test]
 fn the_corruption_diagnostic_names_the_directory_the_snapshots_are_in() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("BK").build();
+    let project = env.project().prefix("BK").build();
     project.new_story("real data");
 
+    quiesce(&env);
     let store = cli_shaped_store(&env);
     let snapshot = snapshot_now(&store, &env);
     drop(store);
     remove_store(&env);
     std::fs::write(env.store_path(), b"not a database any more").expect("breaking the store");
 
-    let out = story_locally(&project, &["list"]);
+    let out = story_in(&project, &["list"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !out.status.success(),
@@ -291,7 +313,7 @@ fn the_corruption_diagnostic_names_the_directory_the_snapshots_are_in() {
 #[test]
 fn rotation_keeps_seven_snapshots_and_every_one_of_them_is_a_database() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("BK").build();
+    let project = env.project().prefix("BK").build();
     let store = cli_shaped_store(&env);
     let dir = backups_dir(&env);
 
@@ -413,7 +435,7 @@ fn assert_openable(path: &Path) {
 #[test]
 fn the_backups_age_is_reachable_from_the_command_line() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("BK").build();
+    let project = env.project().prefix("BK").build();
 
     let before = String::from_utf8_lossy(
         &project
@@ -455,7 +477,7 @@ fn the_backups_age_is_reachable_from_the_command_line() {
 #[test]
 fn taking_a_snapshot_does_not_disturb_the_store() {
     let env = TestEnv::isolated();
-    let project = env.project().local().prefix("BK").build();
+    let project = env.project().prefix("BK").build();
     project.new_story("one");
     project.new_story("two");
     let before = titles_via_cli(&project);

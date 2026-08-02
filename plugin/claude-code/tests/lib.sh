@@ -50,14 +50,11 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
   unset STORYHOOK_STORE_PATH
   mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$STORYHOOK_DATA_DIR"
 
-  # This suite is about story.sh's shell behaviour, so every `story` it runs
-  # goes in-process. Without this the suite auto-spawned a daemon per test
-  # home and left them running: two were found alive after a gate run, from
-  # this worktree's binary, having tried for the port a developer's own
-  # dashboard uses. The other two are belt and braces for a test that
-  # deliberately wants a daemon one day -- it can never take port 3456, and it
-  # cannot outlive this run.
-  export STORYHOOK_INVOKER="${STORYHOOK_INVOKER:-local}"
+  # Every `story` this suite runs starts a daemon, because since SH-114 every
+  # `story` does. These two are what stop those daemons poisoning anything: one
+  # was found alive after a gate run, from this worktree's binary, having tried
+  # for the port a developer's own dashboard uses. A daemon started here can
+  # never take port 3456, and cannot outlive this run.
   export STORYHOOK_DAEMON_ADDR="${STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}"
   export STORYHOOK_PARENT_PID="$$"
 fi
