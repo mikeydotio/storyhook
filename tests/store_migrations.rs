@@ -694,9 +694,14 @@ const REBUILD_STORIES: &str = "
 /// every future service rule would be testing something else.
 fn seed_a_labelled_story(path: &Path) {
     let conn = Connection::open(path).unwrap();
+    // The state catalog is not optional scenery: since SH-130 `stories` carries
+    // a composite foreign key into `project_states`, so a story naming a state
+    // the project does not define is refused — correctly.
     conn.execute_batch(
         "INSERT INTO projects (id, uuid, slug, name, prefix, created_at)
              VALUES (1, 'u-1', 'proj', 'Proj', 'SH', '2026-01-01T00:00:00Z');
+         INSERT INTO project_states (project_id, position, slug, superstate)
+             VALUES (1, 0, 'todo', 'OPEN'), (1, 1, 'done', 'CLOSED');
          INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate,
                               priority, priority_rank, created_at, updated_at, snapshot)
              VALUES (1, 1, 1, 'A story', 'todo', 'OPEN', 'none', 4,
