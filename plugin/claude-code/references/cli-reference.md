@@ -28,7 +28,7 @@ story new "Fix login redirect" --json
 
 Initialize a new storyhook project. `PATH` defaults to the current directory; a relative one resolves against the directory you are standing in.
 
-- Creates the project in the store, writes `.storyhook.toml` (commit it — a clone needs it to know which project it is), generates an `AGENTS.md`, and seeds default states: `todo` (OPEN), `in-progress` (OPEN, `role active`), `done` (CLOSED)
+- Creates the project in the store, writes `.storyhook.toml` (commit it — a clone needs it to know which project it is), generates an `AGENTS.md`, and seeds the states every project must have: `todo` (OPEN), `in-progress` (OPEN, `role active`), `blocked` (OPEN), `done` (CLOSED)
 - Default prefix is **`SH`** — hard-coded, not derived from the directory name. Pass `--prefix` for anything else.
 - **Use when**: starting a new project or adding storyhook to an existing repo
 - **Idempotent**: run in a checkout that already belongs to a project, it re-registers the checkout and leaves the catalog and the prefix alone
@@ -63,7 +63,7 @@ story member add -g octocat
 
 ### `story state add <slug> --super OPEN|CLOSED [--role active]`
 
-Add a custom workflow state. `todo`/`in-progress`/`done` already exist after `init` — only use this for additional states (e.g., `review`, `verifying`, `blocked`).
+Add a custom workflow state. `todo`/`in-progress`/`blocked`/`done` already exist after `init` and cannot be removed — only use this for additional states (e.g., `review`, `verifying`, `wont-fix`).
 
 - `--super OPEN` or `--super CLOSED` — whether the state counts as open or closed work
 - `--role active` — marks this as *the* in-progress-equivalent state for automation

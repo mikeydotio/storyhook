@@ -25,9 +25,10 @@ A repository's whole lifecycle with storyhook: register one, list them,
 remove one, and change how storyhook treats this one.
 
 init
-  Creates the project in storyhook's store with default states (todo,
-  in-progress, done) and default types, writes .storyhook.toml naming
-  it, and generates an AGENTS.md if the repository has none.
+  Creates the project in storyhook's store with the states every
+  project must have (todo, in-progress, blocked, done) and default
+  types, writes .storyhook.toml naming it, and generates an AGENTS.md
+  if the repository has none.
 
   Commit .storyhook.toml. It is how a fresh clone — or a linked worktree
   — knows which project this checkout belongs to before it has a local
@@ -269,7 +270,7 @@ State order matters: it is the column order on the web dashboard's
 board, and the first OPEN state is where new stories land.
 
 When to use:
-  Setting a project up ('review', 'blocked', 'verifying'), or adjusting
+  Setting a project up ('review', 'verifying', 'wont-fix'), or adjusting
   the workflow later. The same edits are available in the web dashboard
   (Settings -> Statuses) and the TUI (press 's').
 
@@ -278,7 +279,7 @@ Examples:
   story state add review --super OPEN --description "Waiting on a reviewer"
   story state set review --role active
   story state set review --no-description
-  story state reorder todo,in-progress,review,done
+  story state reorder todo,in-progress,review,blocked,done
   story state remove review --move-stories-to todo
 
 Moving stories out of the way:
@@ -296,6 +297,11 @@ Moving stories out of the way:
 Rules:
   - Slugs are lowercase letters, digits, and single dashes ('in-review').
     They are typed as CLI arguments and appear in dashboard URLs.
+  - Every project keeps 'todo', 'in-progress' and 'blocked' as OPEN
+    states and 'done' as a CLOSED one. They cannot be removed, and
+    their superstates cannot be changed; anything else you add is
+    yours to arrange. A project that predates this rule reports it in
+    'story doctor', and 'story doctor --fix' adds what is missing.
   - A state set always keeps at least one OPEN and one CLOSED state.
   - At most one state may carry --role active, which marks the state a
     story enters when work starts (used by 'story commit-sync').
@@ -509,6 +515,14 @@ When to use:
   When stories seem inconsistent, or periodically as a health check.
   Use --fix to auto-repair. Also checks that each story's stored row
   still equals a fold of its own event history.
+
+  --fix is also how a project created before the required states
+  existed gets them: it adds any of 'todo', 'in-progress', 'blocked'
+  and 'done' the project is missing, placing a new OPEN state at the
+  end of the OPEN run so the state new stories land in does not move.
+  It only ever adds. A project that already defines one of those slugs
+  under the wrong superstate is reported rather than rewritten, because
+  changing it would reclassify the stories sitting in it.
 
 Examples:
   story doctor          # Check only, report issues
