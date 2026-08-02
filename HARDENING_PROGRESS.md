@@ -101,7 +101,7 @@ forecast and gets corrected in place as the graph moves.
 
 - [x] **SH-129** — project settings CLI · *gates SH-124 and SH-68; nothing can go first* · **design settled, see its council comment**
 - [x] **SH-124** — commit-sync transitions every mentioned story · *protects this loop's own queue*
-- [~] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first* · **in flight**
+- [x] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first*
 - [ ] **SH-125** — enforce the minimum state set
 - [ ] **SH-130** — illegal state combinations + a supported purge · *hard-deletes SH-20 as its proving case*
 - [ ] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
@@ -371,11 +371,16 @@ clippy clean. Note for whoever runs this next: `concurrency_soak`'s
 *baseline* run before any change, and passes in isolation in 6.4s against a 30s
 deadline. That is SH-94 exactly, still open, still load-sensitive.
 
-### SH-62 — in flight
+### SH-62 — done
 
-**Outcome:** implementation complete, gate running, not yet merged. This entry
-is written as the work happens rather than after it, and its last section is the
-part still open.
+**Outcome:** merged as #85. A flag-shaped token the verb does not declare is now
+refused ahead of every parser, and the eight verbs that silently wrote junk no
+longer do.
+
+This entry was written *while* the work happened rather than after it, at
+Mikey's request, and then closed out. That is worth keeping as the habit: the
+two findings below were recorded at the moment they were understood, not
+reconstructed at the end when the reason for a decision has already faded.
 
 **The story understated its own extent, and measuring first is what found it.**
 SH-62 reported `story new --typo x`. Running the real binary against an isolated
@@ -448,8 +453,34 @@ substitute for — the gate stops `story type add --typo` but not the TUI,
 it would never catch `in review`, which is invalid for the same addressability
 reason while not being flag-shaped at all.
 
-**Still open at the time of writing:** `make gate` both legs, the PR, and the
-merge. Baseline on arrival was green locally and red on the daemon leg through
-SH-110 alone (`web_serve_binds_tailnet_ip_when_available`, a sibling of the test
-in SH-110's title, passing in isolation in 0.09s — recorded on that story, which
-widens it from one test to a shared expectation).
+**Gate:** `make gate` — both legs — exits 0. 194 green test-result blocks,
+plugin harness 18/0, clippy clean. 18 new tests (9 unit, 9 integration in
+`tests/unknown_flag_sweep.rs`).
+
+**Red→green was verified rather than assumed.** The gate was disarmed with a
+one-line edit and the sweep re-run: exactly three tests fail without it —
+`every_verb_refuses_a_flag_it_does_not_declare`, `a_refused_flag_writes_nothing`
+and `new_refuses_a_typo_instead_of_titling_a_story_with_it`. The other six pass
+either way, and that is their job: they guard against the fix going *too far*
+(quoted prose still data, the terminator still working, every declared flag
+still accepted), so a rule that over-refused would fail them while the three
+defect tests stayed green.
+
+**Baseline on arrival**, for the next reader: green locally; the daemon leg was
+red through SH-110 alone — `web_serve_binds_tailnet_ip_when_available`, a
+*sibling* of the test in SH-110's title, passing in isolation in 0.09s. Recorded
+on that story, which it widens from one test to a shared expectation
+("assert the best-effort tailnet bind succeeded"). It did not fire on the final
+gate run.
+
+**Two process notes worth carrying**, both cases of nearly reporting something
+untrue:
+
+- A `make test` reported "exit code 0" three separate times while actually
+  failing. The command was `make test > log; echo "EXIT: $?"`, so the reported
+  status was the *echo's*. Read the log, or make the command under test the last
+  thing in the chain.
+- A 60-second stall in `store_isolation` was nearly attributed to this change.
+  It was orphaned daemons left by my own earlier interrupted runs; the file
+  passes in 1.85s clean. `scripts/check-no-orphan-servers.sh` exists for exactly
+  this and is cheaper than the wrong conclusion.
