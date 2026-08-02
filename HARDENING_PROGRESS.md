@@ -2,11 +2,67 @@
 
 Started 2026-08-02T00:21:48Z · 34 open stories at start · store holds 518 projects (505 junk)
 
-Plan of record: `~/.claude/plans/please-audit-the-dependency-majestic-hanrahan.md`
+Plan of record:
+`/Users/mikey/.claude/plans/please-audit-the-dependency-majestic-hanrahan.md`
 
-An autonomous run: a backlog audit, then one subagent per story in `story next`
-order, until the queue empties or the orchestrator's context reaches 80%. Every
-story gets a `## Log` entry below whether it succeeded, failed, or was skipped.
+An autonomous run over storyhook's backlog: a dependency-and-priority audit
+(done, PR #81), then **one story per context**, cleared by Freshen between them.
+Every story gets a `## Log` entry below — successes, failures and skips alike.
+
+---
+
+## ▶ START HERE — you are resuming this run
+
+You have no memory of the session that began it. Everything you need is in this
+file and the plan above. Read the plan, then:
+
+1. **Pick** the first unchecked story in the Phase 2 queue. Confirm it is ready
+   (`story list --ready`). Skip **SH-112** — it is an epic and closes when its
+   children do.
+2. **Claim** it: `story move <id> in-progress`.
+3. **Read it whole**: `story show <id>`, comments included. Several stories
+   carry re-spec notes that contradict their own titles (SH-42, SH-43, SH-44,
+   SH-109), and **SH-129 carries a complete council verdict — do not re-run
+   that vote.** The comment always wins over the title.
+4. **Work it.** Red→green TDD. Reproduce a bug with a failing test before
+   changing code. Every fix ships its regression test. Two hats: a behaviour
+   change and a refactor never share a commit. Doc comments on every public
+   item. Warnings are errors.
+5. **Gate**: `make gate` must be green before you push. Never `--no-verify`,
+   never `SKIP_PREPUSH_TESTS=1`.
+6. **Land it** — branch off `main` in this checkout (not a worktree):
+   ```
+   git -c url."https://github.com/".insteadOf="git@github.com:" push origin <branch>
+   gh pr create ...
+   gh pr merge <n> --merge --delete-branch
+   ```
+   Merge commit only — squash and rebase are disabled org-wide. Verify it
+   landed, return to clean `main`, `git pull --ff-only`. Stage only paths you
+   changed; never `git add -A`. Story ids in commit **bodies**, never subjects.
+   **Never force-push. Never bump the version. Never deploy.**
+7. **Close it**: `story move <id> done`.
+8. **Record it**: tick the box below and append a `## Log` entry — as its own
+   commit on the same PR, so the record lands with the work.
+9. **Freshen, then stop.** Queue the next cycle and end your turn. Do not start
+   a second story in this context:
+   ```
+   bash /Users/mikey/.claude/plugins/cache/agentics/freshen/2.38.0/bin/freshen.sh \
+     queue "Continue the storyhook hardening run: read /Volumes/Code/mikeyward/storyhook/HARDENING_PROGRESS.md and follow its START HERE section." \
+     --source storyhook-hardening --summary "<story just finished> done, next: <id>"
+   ```
+
+**Autonomy — never ask the user anything.** For any decision without one
+obviously correct answer, invoke the `council:council-vote` skill and implement
+its verdict, recording question and verdict as a `story comment`. That also
+satisfies CLAUDE.md's requirement for approval of a type-system proposal.
+
+**On failure:** `story move <id> todo`, comment what blocked it, `story block`
+if genuinely stuck, write the log entry anyway, and freshen. One failure never
+halts the loop.
+
+**Refuse and log** rather than improvise if `make gate` is red on arrival, the
+acceptance criteria need another story to land first, or the work would
+destructively touch the real store outside SH-132's sanctioned procedure.
 
 ---
 
@@ -43,13 +99,13 @@ fragility is SH-63, still open.)
 Projected order. Re-derived from `story next` each iteration, so this list is a
 forecast and gets corrected in place as the graph moves.
 
-- [ ] **SH-P** — project settings CLI · *gates SH-124 and SH-68; nothing can go first*
+- [ ] **SH-129** — project settings CLI · *gates SH-124 and SH-68; nothing can go first* · **design settled, see its council comment**
 - [ ] **SH-124** — commit-sync transitions every mentioned story · *protects this loop's own queue*
 - [ ] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first*
 - [ ] **SH-125** — enforce the minimum state set
-- [ ] **SH-S** — illegal state combinations + a supported purge · *hard-deletes SH-20 as its proving case*
-- [ ] **SH-J** — delete the 505 fixture projects · *back up `store.db` first*
-- [ ] **SH-C** — where the store-isolation invariants live · *before the epic churns `main`*
+- [ ] **SH-130** — illegal state combinations + a supported purge · *hard-deletes SH-20 as its proving case*
+- [ ] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
+- [ ] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
 - [ ] **SH-115** — C3 Identity: remotes schema + one URL normalizer
 - [ ] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114*
 - [ ] **SH-110** — tailnet bind flake · *gates SH-114*
@@ -84,3 +140,58 @@ forecast and gets corrected in place as the graph moves.
 ## Log
 
 _Entries appended as work completes. Newest last._
+
+### Architecture change — 2026-08-02, after the first attempt
+
+The run began with **one subagent per story**. That is withdrawn.
+
+The SH-129 subagent compacted mid-story. Nothing it wrote reached a commit and
+the revert was clean — but the failure mode is what matters: an autonomous agent
+holding destructive instructions (`git add -A`, force-push, version bump, merge
+authority) inside a context I could not observe, where I had no way to tell
+whether those prohibitions had survived the compact. Re-asserting the contract
+by message treats the symptom; the design was wrong.
+
+**Replacement:** work each story directly in the main context, where every step
+is visible and interruptible, and use **Freshen** to clear between stories. One
+story per context. The 80% context ceiling is retired — it no longer binds, so
+the run ends when the queue empties rather than when a window fills.
+
+Two rules relaxed by the change, deliberately: `HARDENING_PROGRESS.md` is now
+safe to stage (one writer, not many), so each story's log entry rides in that
+story's own PR as a separate commit.
+
+### SH-129 — attempt 1 · killed and reverted · no PR
+
+**Outcome:** killed mid-flight on Mikey's call, after a suspected context
+compact made its correctness across the interruption unjudgeable.
+
+**What was reverted:** 9 modified tracked files (`src/cli.rs`,
+`src/help_topics.rs`, `src/invoke.rs`, `src/output.rs`, `src/service/mod.rs`,
+`README.md`, and three test files) plus 3 new files (`src/service/settings.rs`,
+`tests/project_settings.rs`, `tests/service_settings.rs`). Reverted with git,
+not by hand. Nothing was committed, pushed, or merged, so `main` was untouched
+and the branch was deleted unmerged.
+
+**What survived, and matters:** the agent ran its council vote *before*
+implementing, and that verdict is now a comment on SH-129 — three seats, two
+rounds, unanimous on first preference. It settles the verb (`settings`, not
+`config`, after Seat 1 verified the collision against the code and abandoned
+their own naming), the grammar, dotted key names, and three-valued
+unset-vs-default semantics. It also attaches five binding constraints found by
+reading the code, the decisive one being a **corruption hazard**: `put_settings`
+rewrites every column unconditionally, there are two call sites, and the one
+that reads more naturally (`migrate.rs:416`) silently destroys a configured
+github-sync document on the first `settings set`. **Attempt 2 starts from that
+comment and does not re-run the vote.**
+
+**Council:** yes — recorded on SH-129, audit trail in
+`.council/project-settings-cli-surface/`.
+
+**Deviation:** the agent honoured every prohibition it was given — it never
+touched `HARDENING_PROGRESS.md`, never committed, never pushed. The kill was
+precautionary, not a response to a violation.
+
+**Discovered:** `.council/` and `.freshen/` were not gitignored, so a single
+`git add -A` would have swept council transcripts and ephemeral signal files
+into a commit. Fixed in the same PR as this entry.
