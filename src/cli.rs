@@ -99,7 +99,10 @@ pub enum EpicAction {
 pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
-  story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
+  story project new --prefix <PREFIX> [--name <NAME>] [--attach <PATH> | --no-attach]
+                    [--no-agents-md]                (no flags at a terminal: it asks)
+  story project link origin [URL] | link checkout [PATH]
+  story project unlink origin [URL] | unlink checkout
   story project delete [--force]                   (delete a project and its stories)
   story project list                               (every project storyhook knows)
   story project settings list|get|set|unset        (this project's settings)
@@ -134,7 +137,6 @@ Usage:
   story import-project <file>
   story migrate [<path>] [--dry-run]               (move a .storyhook tree into the store)
   story store new <path>                           (create an empty store beside the default one)
-  story relink <project> <path>                    (point a project at its moved checkout)
   story load-context [--format markdown|json]
   story handoff [--since <duration>]
   story phase list
@@ -355,19 +357,6 @@ pub enum Invocation {
         /// Report what would be imported and write nothing.
         dry_run: bool,
     },
-    /// Point a project at the checkout it now lives in.
-    ///
-    /// The complement of deregistration. A registration is a claim that a
-    /// project can be opened at a path; when the checkout *moves*, the claim is
-    /// wrong rather than stale, and re-registering cannot fix it from inside
-    /// the new location if the store still resolves the old one.
-    Relink {
-        /// The project's slug, as `story project list` prints it.
-        project: String,
-        /// The moved checkout: its `.storyhook.toml`, or the directory holding
-        /// it. Both are things a person reasonably types.
-        pointer: String,
-    },
     Context {
         format: Option<String>,
     },
@@ -531,32 +520,12 @@ pub enum DaemonAction {
 pub enum ProjectAction {
     /// Create a project, optionally attaching a checkout to it.
     ///
-    /// The verb that replaces [`Init`](Self::Init). It differs in three ways
-    /// and no others: the checkout is named by `--attach PATH` rather than by a
+    /// The verb that replaced `init`, and differs from it in three ways and no
+    /// others: the checkout is named by `--attach PATH` rather than by a
     /// positional nobody could tell from a name, `--no-attach` makes the
     /// filesystem opt-out sayable at all, and a prefix is *required* rather
     /// than silently defaulted to `SH` (SH-109).
     New(NewProjectRequest),
-    /// Create a project for a checkout, or re-register one that already exists.
-    Init {
-        /// The checkout to initialize; `None` means the working directory.
-        ///
-        /// Carried as text and left unresolved on purpose. A relative path has
-        /// to resolve against the *client's* working directory, and only the
-        /// invoker knows what that is — the daemon's own is wherever it was
-        /// spawned.
-        path: Option<String>,
-        /// The story-id prefix for a project being created.
-        prefix: Option<String>,
-        /// The project's display name.
-        ///
-        /// The catalog is the projects table, so this is the only place a
-        /// chosen name can go. `story web register --name` was its former
-        /// and only home.
-        name: Option<String>,
-        /// Skip generating `AGENTS.md`.
-        no_agents_md: bool,
-    },
     /// Destroy a project and everything recorded against it.
     ///
     /// **No target of its own.** Which project this is comes from the ordinary
@@ -1173,21 +1142,21 @@ static VERB_FLAGS: &[VerbFlags] = &[
     },
     VerbFlags {
         verb: "project",
-        subcommand: Some("init"),
-        flags: &[value("prefix"), value("name"), bare("no-agents-md")],
-    },
-    VerbFlags {
-        verb: "project",
         subcommand: Some("delete"),
         flags: &[bare("force")],
     },
-    // A retired verb keeps its entry, and this is the reason rather than an
-    // oversight. `deinit` is a redirect now, and SH-62's gate runs *ahead* of
-    // every parser — so without an entry declaring what it used to take,
-    // `story project deinit --force` would be answered "unknown flag `--force`"
-    // and the redirect naming `story project delete` would never fire. A
-    // redirect that only works for the flagless spelling is half a redirect.
-    // The entry goes when the redirect does, at 3.0.0.
+    // The two retired verbs keep their entries, and this is the reason rather
+    // than an oversight. Both are redirects now, and SH-62's gate runs *ahead*
+    // of every parser — so without an entry declaring what each used to take,
+    // `story project init --prefix AB` would be answered "unknown flag
+    // `--prefix`" and the redirect naming `story project new` would never fire.
+    // A redirect that only works for the flagless spelling is half a redirect.
+    // Both entries go when the redirects do, at 3.0.0.
+    VerbFlags {
+        verb: "project",
+        subcommand: Some("init"),
+        flags: &[value("prefix"), value("name"), bare("no-agents-md")],
+    },
     VerbFlags {
         verb: "project",
         subcommand: Some("deinit"),
@@ -1413,8 +1382,9 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         // ever seen storyhook all say `story init`; the least useful thing to
         // tell any of them is that no such command exists.
         "init" => Err(AppError::Usage(
-            "`story init` is now `story project init`.\n\nThe project verbs moved into one \
-             group: `story project init`, `story project list`, `story project delete`."
+            "`story init` is now `story project new`.\n\nThe project verbs moved into one \
+             group: `story project new`, `story project list`, `story project delete`.\n\n  \
+             story project new --prefix <PREFIX>"
                 .to_string(),
         )),
         "project" => parse_project(args),
@@ -1430,7 +1400,18 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "decompose" => parse_decompose(args),
         "import-project" => parse_import_project(args),
         "migrate" => parse_migrate(args),
-        "relink" => parse_relink(args),
+        // Deleted rather than redirected-and-kept: `link checkout` is strictly
+        // more capable. `relink` needed a pointer file in the directory it was
+        // pointed at, which is precisely what a checkout that has been moved,
+        // renamed or freshly cloned may not have; `link checkout` records the
+        // path against a project named the ordinary way and asks the directory
+        // for nothing.
+        "relink" => Err(AppError::Usage(
+            "`story relink` is now `story project link checkout`.\n\nIt no longer reads a \
+             pointer file, so it works for a checkout that never had one:\n\n  story --project \
+             <SLUG> project link checkout <PATH>"
+                .to_string(),
+        )),
         "export" => Ok(Invocation::Export),
         "load-context" | "context" => parse_context(args),
         "phase" => parse_phase(args),
@@ -1471,8 +1452,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 const PROJECT_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
-                             [--attach <PATH> | --no-attach] [--no-agents-md] | init [PATH] \
-                             [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md] | delete \
+                             [--attach <PATH> | --no-attach] [--no-agents-md] | delete \
                              [--force] | list | link origin [URL]|checkout [PATH] | \
                              unlink origin [URL]|checkout | settings list|get|set|unset";
 
@@ -1504,12 +1484,25 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
         .ok_or_else(|| AppError::Usage(PROJECT_USAGE.to_string()))?;
     match action.as_str() {
         "new" => parse_project_new(args),
-        "init" => parse_project_init(args),
         "delete" => parse_project_delete(args),
-        // A redirect, never `unknown command`. Being told where a command went
-        // is the whole difference from being told it never existed, and this
-        // one changed more than its name: it no longer touches the filesystem
-        // and it no longer takes a target of its own.
+        // Redirects, never `unknown command`. Being told where a command went
+        // is the whole difference from being told it never existed, and 34
+        // files and five years of documents say `story project init`. Kept for
+        // the life of the 2.x line, removed at 3.0.0, and listed as commands
+        // nowhere — a redirect is a signpost, not a surface.
+        //
+        // Not aliases, deliberately. An alias would keep the drive-by creation
+        // shape alive under a new name, and that shape is the thing being
+        // retired: a positional nobody could tell from a name, and a prefix
+        // minted silently into every id the project will ever have.
+        "init" => Err(AppError::Usage(
+            "`story project init` is now `story project new`.\n\nIt takes no path: name the \
+             checkout with `--attach <PATH>`, or `--no-attach` for a project with no checkout \
+             here. `--prefix` is required — it is minted into every story id and cannot be \
+             changed afterwards.\n\n  story project new --prefix <PREFIX> [--name <NAME>] \
+             [--attach <PATH> | --no-attach]\n\nRun it with no flags at a terminal to be asked."
+                .to_string(),
+        )),
         "deinit" => Err(AppError::Usage(
             "`story project deinit` is now `story project delete`.\n\nIt takes no path or slug: \
              it destroys the project this directory resolves to, or the one named by `--project \
@@ -1710,57 +1703,6 @@ fn parse_project_new(args: &[String]) -> Result<Invocation, AppError> {
             name,
             no_agents_md,
         })),
-    })
-}
-
-fn parse_project_init(args: &[String]) -> Result<Invocation, AppError> {
-    let mut path = None;
-    let mut prefix = None;
-    let mut name = None;
-    let mut no_agents_md = false;
-    let mut index = 2;
-
-    // A leading bare word is the path. Anything beginning with `-` is a flag,
-    // which means a path that starts with a dash needs `./-thing` — the same
-    // bargain every other positional in this CLI makes.
-    if let Some(next) = args.get(2)
-        && !next.starts_with('-')
-    {
-        path = Some(next.clone());
-        index = 3;
-    }
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--prefix" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage("--prefix requires a value".to_string()))?;
-                prefix = Some(value.clone());
-                index += 2;
-            }
-            "--name" => {
-                let value = args
-                    .get(index + 1)
-                    .ok_or_else(|| AppError::Usage("--name requires a value".to_string()))?;
-                name = Some(value.clone());
-                index += 2;
-            }
-            "--no-agents-md" => {
-                no_agents_md = true;
-                index += 1;
-            }
-            _ => return Err(AppError::Usage(PROJECT_USAGE.to_string())),
-        }
-    }
-
-    Ok(Invocation::Project {
-        action: ProjectAction::Init {
-            path,
-            prefix,
-            name,
-            no_agents_md,
-        },
     })
 }
 
@@ -2300,24 +2242,6 @@ fn parse_migrate(args: &[String]) -> Result<Invocation, AppError> {
         }
     }
     Ok(Invocation::Migrate { path, dry_run })
-}
-
-fn parse_relink(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story relink <project> <path-to-pointer-file>";
-    let mut positional = Vec::new();
-    for arg in &args[1..] {
-        if arg.starts_with('-') {
-            return Err(AppError::Usage(usage.to_string()));
-        }
-        positional.push(arg.clone());
-    }
-    let [project, pointer] = positional.as_slice() else {
-        return Err(AppError::Usage(usage.to_string()));
-    };
-    Ok(Invocation::Relink {
-        project: project.clone(),
-        pointer: pointer.clone(),
-    })
 }
 
 fn parse_context(args: &[String]) -> Result<Invocation, AppError> {
@@ -3730,8 +3654,13 @@ mod tests {
                 vec!["state", "add", "review", "--super", "OPEN"],
                 vec!["state", "set", "review", "--no-description"],
                 vec!["state", "remove", "review", "--move-stories-to", "todo"],
+                // Both retired verbs, and their entries are what makes the
+                // redirect — rather than a complaint about a flag — what a
+                // user meets. See the comment on `VERB_FLAGS`.
                 vec!["project", "init", "--prefix", "AB", "--no-agents-md"],
                 vec!["project", "deinit", "--force"],
+                vec!["project", "new", "--prefix", "AB", "--no-agents-md"],
+                vec!["project", "delete", "--force"],
                 vec!["member", "add", "--github", "someone"],
                 vec!["type", "add", "spike", "--description", "text"],
                 vec!["graph", "--blocked-by", "SH-1"],

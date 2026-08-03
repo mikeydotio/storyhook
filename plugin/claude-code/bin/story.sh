@@ -966,7 +966,7 @@ cmd_doctor() {
 # CLOSED-superstate state the project defines, or $STORY_DONE_STATE.
 #
 # Not hard-coded to "done": the state set is user-editable (this very repo
-# defines five states, not the three `story project init` seeds). Read from
+# defines five states, not the three `story project new` seeds). Read from
 # `story state list` rather than from a file — see story_state_list.
 story_closed_state() {
   if [ -n "$DONE_STATE" ]; then printf '%s' "$DONE_STATE"; return 0; fi

@@ -999,7 +999,7 @@ fn migrating_a_directory_with_no_legacy_tree_is_not_found_rather_than_a_crash() 
         .arg("migrate")
         .assert()
         .code(3)
-        .stderr(predicates::str::contains("story project init"));
+        .stderr(predicates::str::contains("story project new"));
 }
 
 #[test]

@@ -1,15 +1,21 @@
-//! `story project init` and `story project list`.
+//! `story project new`'s filesystem side, `story project list`, and the three
+//! redirects.
 //!
-//! The lifecycle verbs became a group because all three of them — init, deinit,
-//! list — are about the *project* rather than about a story, and because the
-//! two that change something needed the same thing: a way to name a checkout
-//! other than "wherever you happen to be standing".
+//! The lifecycle verbs are a group because all of them are about the *project*
+//! rather than about a story. `tests/project_new.rs` owns the grammar — which
+//! flags are required, what a bare word does, what `--attach` and `--no-attach`
+//! mean. What is here is the rest: what a created project records, what
+//! `project list` shows, and what the retired spellings say now.
 //!
-//! The path argument is what most of this file is about. It is carried as text
-//! and resolved against the **client's** working directory, which is the only
-//! interesting part: over the daemon the process doing the work has a working
-//! directory of its own — wherever it was spawned, often `/` — so a relative
-//! path resolved there would create a project somewhere nobody named.
+//! # The redirects, and why they are tested rather than deleted
+//!
+//! `story init`, `story project init`, `story project deinit` and `story
+//! relink` are gone as commands and kept as signposts. Five years of documents,
+//! this repo's own plugin skill and every agent that has ever seen storyhook
+//! say some of those words; the least useful thing this binary could do is tell
+//! them no such command exists. Each redirect is asserted to name its
+//! replacement *and* not to say "unknown command" — the second half is what
+//! stops somebody deleting the arm as dead code.
 
 use std::path::Path;
 
@@ -32,56 +38,8 @@ fn bare_dir(env: &TestEnv, name: &str) -> std::path::PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// init
+// what a created project records
 // ---------------------------------------------------------------------------
-
-#[test]
-fn project_init_creates_a_usable_project_in_the_working_directory() {
-    let env = TestEnv::isolated();
-    let dir = bare_dir(&env, "repo");
-
-    project(&env, &dir, &["init"]).success();
-
-    env.story(&dir).arg("summary").assert().success();
-    env.story(&dir)
-        .args(["new", "The first story"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("SH-1"));
-    assert!(dir.join("AGENTS.md").exists(), "init generates AGENTS.md");
-}
-
-#[test]
-fn project_init_takes_a_path_and_initializes_that_directory_not_the_cwd() {
-    let env = TestEnv::isolated();
-    let here = bare_dir(&env, "here");
-    let there = bare_dir(&env, "there");
-
-    project(&env, &here, &["init", there.to_str().unwrap()]).success();
-
-    // The named directory is a project…
-    env.story(&there).arg("summary").assert().success();
-    assert!(there.join(".storyhook.toml").exists());
-    // …and the one the command ran in is not.
-    assert!(!here.join(".storyhook.toml").exists());
-    env.story(&here).arg("summary").assert().failure();
-}
-
-#[test]
-fn a_relative_path_resolves_against_the_directory_the_client_ran_in() {
-    // The daemon's own working directory is wherever it was spawned. If this
-    // resolved there, `story project init ./sub` would create a project at a
-    // path nobody named — and the failure would be invisible, because a
-    // project *would* appear, just not here.
-    let env = TestEnv::isolated();
-    let here = bare_dir(&env, "here");
-    let sub = bare_dir(&env, "here/sub");
-
-    project(&env, &here, &["init", "./sub"]).success();
-
-    assert!(sub.join(".storyhook.toml").exists(), "created under `here`");
-    env.story(&sub).arg("summary").assert().success();
-}
 
 /// Everything `story project list` printed for the project rooted at `dir`.
 fn listing(env: &TestEnv, dir: &Path) -> String {
@@ -94,20 +52,20 @@ fn listing(env: &TestEnv, dir: &Path) -> String {
 }
 
 /// Attaching a checkout records it in `projects.checkout_path` as well as in
-/// the resolution index, which is what makes `project init` and the
-/// `project new --attach` that replaces it mean the same thing.
+/// the resolution index. Two facts about one directory, and SH-119 collapses
+/// them — a test that watched only one would not notice the wrong one going.
 #[test]
-fn initializing_a_project_records_the_directory_as_its_checkout() {
+fn creating_a_project_records_the_directory_as_its_checkout() {
     let env = TestEnv::isolated();
     let dir = bare_dir(&env, "repo");
 
-    project(&env, &dir, &["init", "--no-agents-md"]).success();
+    project(&env, &dir, &["new", "--prefix", "SH", "--no-agents-md"]).success();
 
     let canonical = dir.canonicalize().expect("canonicalizing the checkout");
     let listed = listing(&env, &dir);
     assert!(
         listed.contains(&format!("checkout  {}", canonical.display())),
-        "`project list` must report the checkout init attached:\n{listed}"
+        "`project list` must report the checkout that was attached:\n{listed}"
     );
 }
 
@@ -119,20 +77,20 @@ fn initializing_a_project_records_the_directory_as_its_checkout() {
 /// somebody finds out weeks later that dispatch has been running in the wrong
 /// tree.
 #[test]
-fn initializing_a_second_clone_does_not_steal_the_first_ones_checkout() {
+fn a_second_clone_does_not_steal_the_first_ones_checkout() {
     let env = TestEnv::isolated();
     let first = bare_dir(&env, "first");
     let second = bare_dir(&env, "second");
-    project(&env, &first, &["init", "--no-agents-md"]).success();
+    project(&env, &first, &["new", "--prefix", "SH", "--no-agents-md"]).success();
 
     // A clone is a directory carrying the same committed pointer, which is the
-    // route `init` adopts an existing project through.
+    // route `new` adopts an existing project through.
     std::fs::copy(
         first.join(".storyhook.toml"),
         second.join(".storyhook.toml"),
     )
     .expect("copying the pointer file");
-    project(&env, &second, &["init", "--no-agents-md"]).success();
+    project(&env, &second, &["new", "--prefix", "SH", "--no-agents-md"]).success();
 
     let listed = listing(&env, &first);
     let kept = first.canonicalize().expect("canonicalizing the first");
@@ -147,29 +105,17 @@ fn initializing_a_second_clone_does_not_steal_the_first_ones_checkout() {
     );
 }
 
+/// A prefix is fixed at creation. Running `new` again in a checkout that
+/// already belongs to a project re-registers it and leaves the prefix alone —
+/// so a second `--prefix` is ignored rather than silently re-minting every
+/// future id under a different name.
 #[test]
-fn project_init_is_idempotent_and_does_not_rewind_the_story_counter() {
+fn creating_again_leaves_the_prefix_alone() {
     let env = TestEnv::isolated();
     let dir = bare_dir(&env, "repo");
-    project(&env, &dir, &["init"]).success();
-    env.story(&dir).args(["new", "First"]).assert().success();
+    project(&env, &dir, &["new", "--prefix", "ZZ"]).success();
 
-    project(&env, &dir, &["init"]).success();
-
-    env.story(&dir)
-        .args(["new", "Second"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("SH-2"));
-}
-
-#[test]
-fn re_initializing_leaves_the_prefix_alone() {
-    let env = TestEnv::isolated();
-    let dir = bare_dir(&env, "repo");
-    project(&env, &dir, &["init", "--prefix", "ZZ"]).success();
-
-    project(&env, &dir, &["init", "--prefix", "QQ"]).success();
+    project(&env, &dir, &["new", "--prefix", "QQ"]).success();
 
     env.story(&dir)
         .args(["new", "First"])
@@ -179,14 +125,19 @@ fn re_initializing_leaves_the_prefix_alone() {
 }
 
 #[test]
-fn project_init_records_a_display_name_when_asked() {
+fn project_new_records_a_display_name_when_asked() {
     // `--name` had exactly one home before this: `web register --name`. The
     // catalog *is* the projects table, so a flag that is accepted and dropped
     // would be worse than one that does not exist.
     let env = TestEnv::isolated();
     let dir = bare_dir(&env, "repo");
 
-    project(&env, &dir, &["init", "--name", "Nicely Named"]).success();
+    project(
+        &env,
+        &dir,
+        &["new", "--prefix", "SH", "--name", "Nicely Named"],
+    )
+    .success();
 
     project(&env, &dir, &["list"])
         .success()
@@ -194,21 +145,26 @@ fn project_init_records_a_display_name_when_asked() {
 }
 
 #[test]
-fn project_init_can_skip_the_agent_instructions() {
+fn project_new_can_skip_the_agent_instructions() {
     let env = TestEnv::isolated();
     let dir = bare_dir(&env, "repo");
 
-    project(&env, &dir, &["init", "--no-agents-md"]).success();
+    project(&env, &dir, &["new", "--prefix", "SH", "--no-agents-md"]).success();
 
     assert!(!dir.join("AGENTS.md").exists());
 }
 
 #[test]
-fn project_init_refuses_a_path_that_is_not_a_directory() {
+fn project_new_refuses_an_attach_target_that_is_not_a_directory() {
     let env = TestEnv::isolated();
     let here = bare_dir(&env, "here");
 
-    let assert = project(&env, &here, &["init", "./nope"]).failure();
+    let assert = project(
+        &env,
+        &here,
+        &["new", "--prefix", "SH", "--attach", "./nope"],
+    )
+    .failure();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(
         stderr.contains("nope"),
@@ -226,28 +182,6 @@ fn project_with_no_subcommand_prints_usage() {
     assert!(stderr.contains("usage: story project"), "{stderr}");
 }
 
-#[test]
-fn story_init_still_works_and_agrees_with_project_init() {
-    // C2 adds the group without removing the old spelling; the removal is its
-    // own commit so that a bisect can tell "the group is wrong" from "the
-    // rename is wrong".
-    let env = TestEnv::isolated();
-    let old = bare_dir(&env, "old");
-    let new = bare_dir(&env, "new");
-
-    env.story(&old)
-        .args(["project", "new", "--prefix", "SH"])
-        .assert()
-        .success();
-    project(&env, &new, &["init"]).success();
-
-    for dir in [&old, &new] {
-        assert!(dir.join(".storyhook.toml").exists());
-        assert!(dir.join("AGENTS.md").exists());
-        env.story(dir).arg("summary").assert().success();
-    }
-}
-
 // ---------------------------------------------------------------------------
 // list
 // ---------------------------------------------------------------------------
@@ -257,8 +191,8 @@ fn project_list_reports_every_project_with_its_checkout() {
     let env = TestEnv::isolated();
     let alpha = bare_dir(&env, "alpha");
     let beta = bare_dir(&env, "beta");
-    project(&env, &alpha, &["init"]).success();
-    project(&env, &beta, &["init"]).success();
+    project(&env, &alpha, &["new", "--prefix", "AL"]).success();
+    project(&env, &beta, &["new", "--prefix", "BE"]).success();
 
     let assert = project(&env, &alpha, &["list"]).success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
@@ -287,7 +221,7 @@ fn project_list_runs_outside_a_project() {
     let env = TestEnv::isolated();
     let inside = bare_dir(&env, "inside");
     let outside = bare_dir(&env, "outside");
-    project(&env, &inside, &["init"]).success();
+    project(&env, &inside, &["new", "--prefix", "IN"]).success();
 
     project(&env, &outside, &["list"])
         .success()
@@ -302,8 +236,8 @@ fn project_list_shows_a_project_whose_checkout_this_machine_does_not_have() {
     let env = TestEnv::isolated();
     let gone = bare_dir(&env, "gone");
     let here = bare_dir(&env, "here");
-    project(&env, &gone, &["init"]).success();
-    project(&env, &here, &["init"]).success();
+    project(&env, &gone, &["new", "--prefix", "GO"]).success();
+    project(&env, &here, &["new", "--prefix", "HE"]).success();
     std::fs::remove_dir_all(&gone).expect("deleting the checkout");
 
     env.story(&here)
@@ -320,36 +254,106 @@ fn project_list_shows_a_project_whose_checkout_this_machine_does_not_have() {
 }
 
 // ---------------------------------------------------------------------------
-// The old spelling
+// The retired spellings
 // ---------------------------------------------------------------------------
 
+/// Every redirect: the exact tokens someone types, what each must name, and the
+/// one thing none of them may say.
+///
+/// A table rather than four near-identical tests, because the property is the
+/// same for all of them and the fourth would have been the one somebody forgot
+/// to write. `unknown command` is asserted *against* on purpose — it is what
+/// each of these produces the moment its arm is deleted as dead code, and it is
+/// the failure this whole design is about avoiding.
 #[test]
-fn story_init_says_where_the_command_went() {
-    // Not left to fall through to `unknown command`. Every shipped document,
-    // this repo's own plugin skill, and every agent that has ever seen
-    // storyhook say `story init`; telling all of them that no such command
-    // exists is the least useful thing this binary could do.
+fn every_retired_verb_names_the_command_that_replaced_it() {
+    let env = TestEnv::isolated();
+    let dir = bare_dir(&env, "repo");
+
+    for (typed, replacement) in [
+        (vec!["init"], "story project new"),
+        (vec!["project", "init"], "story project new"),
+        (vec!["project", "deinit"], "story project delete"),
+        (vec!["relink"], "story project link checkout"),
+    ] {
+        let out = env
+            .story(&dir)
+            .args(&typed)
+            .output()
+            .expect("running a retired spelling");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let typed = typed.join(" ");
+
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`story {typed}` must be a usage error; stderr={stderr}"
+        );
+        assert!(
+            stderr.contains(replacement),
+            "`story {typed}` must name `{replacement}`: {stderr}"
+        );
+        assert!(
+            !stderr.contains("unknown command"),
+            "`story {typed}` must not pretend the command never existed: {stderr}"
+        );
+    }
+
+    assert!(
+        !dir.join(".storyhook.toml").exists(),
+        "and no redirect creates anything on its way to saying so"
+    );
+}
+
+/// A redirect fires for the shape people actually type, not only the bare one.
+///
+/// SH-62's gate runs ahead of every parser and fails closed, so a retired verb
+/// with no entry in the flag table answers "unknown flag `--prefix`" and the
+/// redirect never runs. That is why both entries are still in `VERB_FLAGS`, and
+/// this is the test that says so — it goes red the moment somebody tidies them
+/// away.
+#[test]
+fn a_retired_verb_redirects_even_when_its_old_flags_are_passed() {
+    let env = TestEnv::isolated();
+    let dir = bare_dir(&env, "repo");
+
+    for (typed, replacement) in [
+        (
+            vec!["project", "init", "--prefix", "AB"],
+            "story project new",
+        ),
+        (vec!["project", "deinit", "--force"], "story project delete"),
+    ] {
+        let out = env
+            .story(&dir)
+            .args(&typed)
+            .output()
+            .expect("running a retired spelling with its old flags");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(replacement),
+            "`story {}` must reach the redirect rather than a flag complaint: {stderr}",
+            typed.join(" ")
+        );
+    }
+}
+
+/// `story relink` is not merely renamed, and the redirect says so.
+///
+/// `link checkout` records a path against a project named the ordinary way and
+/// reads nothing in the directory. Somebody who types the old command needs the
+/// selector, because the old grammar's first positional was the project.
+#[test]
+fn the_relink_redirect_names_the_selector_the_new_grammar_needs() {
     let env = TestEnv::isolated();
     let dir = bare_dir(&env, "repo");
 
     let out = env
         .story(&dir)
-        .arg("init")
+        .arg("relink")
         .output()
         .expect("running the old spelling");
 
-    assert_eq!(out.status.code(), Some(2), "a usage error");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("story project init"),
-        "the error must name the new spelling: {stderr}"
-    );
-    assert!(
-        !stderr.contains("unknown command"),
-        "and must not pretend the command never existed: {stderr}"
-    );
-    assert!(
-        !dir.join(".storyhook.toml").exists(),
-        "a refused init writes nothing"
-    );
+    assert!(stderr.contains("--project"), "{stderr}");
 }

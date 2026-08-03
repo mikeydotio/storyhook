@@ -1,4 +1,4 @@
-//! `story init` — what a freshly initialized project has.
+//! `story project new` — what a freshly created project has.
 //!
 //! This file used to assert the *shape of a directory*: `project.toml`,
 //! `states.toml`, `types.toml`, `open/stories/`, `archive/archive.db`. None of
@@ -37,11 +37,11 @@ fn initialized() -> TempDir {
 
 /// The `AGENTS.md` a freshly initialized project has.
 fn agents_md(dir: &std::path::Path) -> String {
-    std::fs::read_to_string(dir.join("AGENTS.md")).expect("init must generate AGENTS.md")
+    std::fs::read_to_string(dir.join("AGENTS.md")).expect("`project new` must generate AGENTS.md")
 }
 
 #[test]
-fn init_creates_a_usable_project() {
+fn new_creates_a_usable_project() {
     let dir = initialized();
 
     // A project exists: the read surface answers instead of exiting 3.
@@ -66,7 +66,7 @@ fn init_creates_a_usable_project() {
 }
 
 #[test]
-fn init_is_idempotent() {
+fn new_is_idempotent() {
     let dir = initialized();
     story(dir.path()).args(["new", "Before"]).assert().success();
 
@@ -84,7 +84,7 @@ fn init_is_idempotent() {
 }
 
 #[test]
-fn init_generates_agents_md_and_nothing_else_at_the_repository_root() {
+fn new_generates_agents_md_and_nothing_else_at_the_repository_root() {
     let dir = initialized();
     let entries: Vec<String> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -92,7 +92,7 @@ fn init_generates_agents_md_and_nothing_else_at_the_repository_root() {
         .filter(|name| name != ".storyhook")
         .collect();
 
-    // Two artifacts, both of them things the user asked for by running `init`:
+    // Two artifacts, both of them things the user asked for by running `new`:
     // the instructions, and the pointer file naming which project this is.
     // Anything else appearing here is storyhook writing into a repository
     // during ordinary operation, which is the thing the rearchitecture exists
@@ -102,14 +102,14 @@ fn init_generates_agents_md_and_nothing_else_at_the_repository_root() {
     for name in &sorted {
         assert!(
             name == "AGENTS.md" || name == ".storyhook.toml",
-            "init wrote an unexpected repository artifact: {name} (all: {sorted:?})"
+            "`project new` wrote an unexpected repository artifact: {name} (all: {sorted:?})"
         );
     }
     assert!(sorted.contains(&"AGENTS.md".to_string()), "{sorted:?}");
 }
 
 #[test]
-fn init_agents_md_has_no_mcp_references() {
+fn agents_md_has_no_mcp_references() {
     let dir = initialized();
     let agents_md = agents_md(dir.path());
     assert!(
@@ -123,7 +123,7 @@ fn init_agents_md_has_no_mcp_references() {
 }
 
 #[test]
-fn init_agents_md_references_help() {
+fn agents_md_references_help() {
     let agents_md = agents_md(initialized().path());
     assert!(
         agents_md.contains("story help <command>"),
@@ -136,7 +136,7 @@ fn init_agents_md_references_help() {
 }
 
 #[test]
-fn init_agents_md_documents_every_relationship_type() {
+fn agents_md_documents_every_relationship_type() {
     let agents_md = agents_md(initialized().path());
     for relation in [
         "blocks",
@@ -156,7 +156,7 @@ fn init_agents_md_documents_every_relationship_type() {
 }
 
 #[test]
-fn init_agents_md_documents_decompose_and_graph() {
+fn agents_md_documents_decompose_and_graph() {
     let agents_md = agents_md(initialized().path());
     assert!(
         agents_md.contains("story decompose"),

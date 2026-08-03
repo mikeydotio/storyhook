@@ -80,7 +80,7 @@ impl<'ctx, S: Store> GitLinkService<'ctx, S> {
     /// re-run from a script.
     ///
     /// **Loud for anybody else.** This is the site SH-116 deferred that loudness
-    /// to: `story project init` *skips* a collision, because the user typed no
+    /// to: `story project new` *skips* a collision, because the user typed no
     /// URL and a monorepo's second project must still be creatable, while here
     /// the user typed the URL and is owed an answer about it.
     ///

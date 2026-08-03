@@ -145,7 +145,6 @@ impl InvokeRequest {
             Invocation::Project { action } => match action {
                 ProjectAction::Delete { force } => *force = true,
                 ProjectAction::New(_)
-                | ProjectAction::Init { .. }
                 | ProjectAction::List
                 | ProjectAction::Link(_)
                 | ProjectAction::Unlink(_)
@@ -615,7 +614,6 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::Update { .. }
         | Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
-        | Invocation::Relink { .. }
         | Invocation::Project { .. }
         | Invocation::Help
         | Invocation::HelpTopic { .. }
@@ -701,39 +699,11 @@ fn dispatch_project<S: Store>(
                 .map(|p| p.slug);
             Ok(Response::Message(new_message(&outcome, attach, &slug)))
         }
-        ProjectAction::Init {
-            path,
-            prefix,
-            name,
-            no_agents_md,
-        } => {
-            let target = target_dir(root, path.as_deref());
-            // Named explicitly rather than left to fail later inside
-            // `write_pointer`: `story project init ./typo` is an ordinary
-            // mistake, and the raw io error it used to produce named a file
-            // the user never typed.
-            if !target.is_dir() {
-                return Err(AppError::NotFound(format!(
-                    "cannot initialize `{}`: no such directory",
-                    target.display()
-                )));
-            }
-            let outcome = ProjectService::new(store, target)
-                .clock(Clock::Fixed(now.to_string()))
-                .init(&InitOptions {
-                    prefix,
-                    name,
-                    agents_md: !no_agents_md,
-                    pointer,
-                    attach: true,
-                })?;
-            Ok(Response::Message(init_message(&outcome)))
-        }
         ProjectAction::List => {
             let entries = CatalogService::new(store).all()?;
             if entries.is_empty() {
                 return Ok(Response::Message(
-                    "No projects yet. Run `story project init` in a repository to add one."
+                    "No projects yet. Run `story project new` in a repository to add one."
                         .to_string(),
                 ));
             }
@@ -774,7 +744,7 @@ fn dispatch_project<S: Store>(
         // caller went round `is_project_less`.
         ProjectAction::Settings(_) => Err(AppError::Usage(
             "`story project settings` needs a project: run it in a checkout storyhook knows, \
-             or run `story project init` first."
+             or run `story project new` first."
                 .to_string(),
         )),
         ProjectAction::Link(_) | ProjectAction::Unlink(_) => Err(AppError::Usage(
@@ -1209,7 +1179,7 @@ fn format_state_line(listing: &StateListing) -> String {
 
 /// Dispatch for the invocations that run *before* a project is resolved.
 ///
-/// `story project init` is the reason this exists. Every other command names a project
+/// `story project new` is the reason this exists. Every other command names a project
 /// and therefore takes a [`Ctx`]; init is the command that creates one, so on
 /// a virgin store there is no [`ProjectId`](crate::store::ProjectId) for a
 /// context to hold. Rather than let a caller invent one, the arms that do not
@@ -1337,7 +1307,7 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
     }
 }
 
-/// [`dispatch_unscoped`], told whether `story project init` should write the pointer
+/// [`dispatch_unscoped`], told whether `story project new` should write the pointer
 /// file.
 pub fn dispatch_unscoped_with<S: Store>(
     store: &S,
@@ -1415,18 +1385,6 @@ pub fn dispatch_unscoped_with<S: Store>(
         // project this checkout belongs to — the legacy tree is the input, and
         // `MigrationPlan::apply` refuses inside its own transaction if that
         // checkout has already been migrated.
-        Invocation::Relink { project, pointer } => {
-            let entry =
-                crate::service::CatalogService::new(store).relink(&project, Path::new(&pointer))?;
-            Ok(Response::Message(format!(
-                "Relinked `{}` to `{}`",
-                entry.id,
-                entry
-                    .path
-                    .as_ref()
-                    .map_or_else(|| "(none)".to_string(), |p| p.display().to_string())
-            )))
-        }
         Invocation::Migrate { path, dry_run } => {
             let source = match path {
                 Some(path) => {
@@ -1441,8 +1399,8 @@ pub fn dispatch_unscoped_with<S: Store>(
                 None => crate::legacy::find_root(root).ok_or_else(|| {
                     AppError::NotFound(format!(
                         "no legacy `.storyhook` project at `{}` or above it; `story migrate` \
-                         moves an existing tree into the store, and `story project init` creates a \
-                         new project",
+                         moves an existing tree into the store, and `story project new` creates \
+                         a new project",
                         root.display()
                     ))
                 })?,
@@ -1591,7 +1549,7 @@ fn decompose_summary(batch: &ImportBatch) -> String {
     summary
 }
 
-/// What `story project init` tells the user.
+/// What `story project new` tells the user.
 ///
 /// The text still describes the legacy storage model — a `.storyhook/`
 /// directory to commit — because it is the text users and scripts see today
@@ -1637,23 +1595,6 @@ fn new_message(outcome: &InitOutcome, attached: bool, slug: &Option<String>) -> 
     message
 }
 
-fn init_message(outcome: &InitOutcome) -> String {
-    let mut message = "initialized story project\n\n\
-         Your stories live in storyhook's own store, outside this repository — \
-         one truth\nfor every branch, worktree and clone."
-        .to_string();
-    if outcome.pointer {
-        message.push_str(
-            "\n\nWrote .storyhook.toml, which names this project. Commit it: a clone \
-             without it\ndoes not know which project it is looking at.",
-        );
-    }
-    if outcome.agents_md {
-        message.push_str("\n\nGenerated AGENTS.md for AI agent discoverability.");
-    }
-    message
-}
-
 /// The error an unported [`Invocation`] answers with.
 ///
 /// Loud and specific on purpose. Only [`dispatch_unscoped`] still reaches it,
@@ -1678,7 +1619,6 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "help",
         Invocation::Project { .. } => "project",
-        Invocation::Relink { .. } => "relink",
         Invocation::New { .. } => "new",
         Invocation::MemberAdd { .. } => "member-add",
         Invocation::State { .. } => "state",
@@ -1918,7 +1858,7 @@ pub struct StoreInvoker<'a, S: Store> {
 impl<'a, S: Store> StoreInvoker<'a, S> {
     /// An invoker over `store`, running from `cwd` under `env`.
     ///
-    /// Writes the pointer file on `story project init`, because for a process served
+    /// Writes the pointer file on `story project new`, because for a process served
     /// this way the store *is* where the project lives, and a checkout with no
     /// pointer is one a fresh clone cannot identify.
     pub fn new(store: &'a S, cwd: impl Into<PathBuf>, env: Environment) -> Self {
@@ -1938,7 +1878,7 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
         self
     }
 
-    /// Sets whether `story project init` writes the pointer file.
+    /// Sets whether `story project new` writes the pointer file.
     #[must_use]
     pub fn pointer(mut self, pointer: bool) -> Self {
         self.pointer = pointer;
@@ -2063,11 +2003,11 @@ fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppE
 ///
 /// The sentence above is the whole reason this function exists, and until
 /// SH-117 the code did not keep it: the `Project` arm matched
-/// `ProjectAction::Init` inside a `_ => None` catch-all, so a *fifth* creating
-/// arm — the one that replaces `init` — would have fallen straight through it
-/// and created projects unguarded, with a green build and a green suite. The
-/// guard has exactly one call site, in [`StoreInvoker::invoke`], reachable only
-/// through this match; there is no second layer to catch the miss.
+/// `ProjectAction::Init` inside a `_ => None` catch-all, so `New` — the arm
+/// that replaced `init` — would have fallen straight through it and created
+/// projects unguarded, with a green build and a green suite. The guard has
+/// exactly one call site, in [`StoreInvoker::invoke`], reachable only through
+/// this match; there is no second layer to catch the miss.
 ///
 /// Listing every `ProjectAction` makes the compiler the thing that notices,
 /// which is what the paragraph above always claimed and only now enforces.
@@ -2075,7 +2015,6 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
     match invocation {
         Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
         Invocation::Project { action } => match action {
-            ProjectAction::Init { path, .. } => Some(target_dir(cwd, path.as_deref())),
             // `--no-attach` creates nothing at a path, so there is no path for
             // this guard to judge — a deliberate narrowing of SH-95, pinned by
             // a test of its own rather than left to be rediscovered.
@@ -2173,7 +2112,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                 );
             }
             // A repository that still has its stories in `.storyhook/` gets a
-            // diagnosis rather than an invitation to `story project init`, which would
+            // diagnosis rather than an invitation to `story project new`, which would
             // mint an empty second project beside data the user still has.
             if let Some(tree) = crate::service::project::legacy_project_at(&self.cwd) {
                 return Err(crate::service::project::unmigrated_error(&tree));
@@ -2186,8 +2125,9 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             if let Some(pointer) = self.pointer_at_or_above() {
                 return Err(AppError::NotFound(format!(
                     "this checkout belongs to storyhook project {}, which this machine's \
-                     store does not have. Run `story project init` here to adopt it, or `story \
-                     import-project` if you have an export of it.",
+                     store does not have. Run `story project new --prefix <PREFIX>` here to \
+                     adopt it — an adopted checkout keeps the prefix its pointer file names — \
+                     or `story import-project` if you have an export of it.",
                     pointer.uuid
                 )));
             }
@@ -2262,7 +2202,6 @@ fn describe_unscoped(invocation: &Invocation) -> String {
         // not act on a single project.
         Invocation::Project { action } => match action {
             ProjectAction::New(_) => "project new",
-            ProjectAction::Init { .. } => "project init",
             ProjectAction::Delete { .. } => "project delete",
             ProjectAction::List => "project list",
             ProjectAction::Link(_) => "project link",
@@ -2312,10 +2251,9 @@ fn is_project_less(invocation: &Invocation) -> bool {
         // because it carried its own target and resolved it itself; `delete`
         // has no target of its own, so the ordinary selector is what names it
         // — which is also what gives it `no_project_refusal` for free.
-        Invocation::Project { action } => matches!(
-            action,
-            ProjectAction::New(_) | ProjectAction::Init { .. } | ProjectAction::List
-        ),
+        Invocation::Project { action } => {
+            matches!(action, ProjectAction::New(_) | ProjectAction::List)
+        }
         Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Plugin { .. } => true,
@@ -2359,8 +2297,9 @@ fn orphan_advice(orphans: &[crate::service::OrphanedRegistration]) -> Vec<String
         })
         .collect();
     lines.push(format!(
-        "{} stale {}. Run `story doctor --fix` to deregister them, or `story relink <project> \
-         <path>` if the checkout moved — deregistering forgets only the path, never the stories.",
+        "{} stale {}. Run `story doctor --fix` to deregister them, or `story --project <slug> \
+         project link checkout <path>` if the checkout moved — deregistering forgets only the \
+         path, never the stories.",
         orphans.len(),
         if orphans.len() == 1 {
             "registration"
@@ -2388,7 +2327,7 @@ fn deregistered_message(forgotten: &[crate::service::OrphanedRegistration]) -> S
     out.push_str(
         "\n\nOnly the paths were forgotten. Every story is still in the store, they are \
                   still listed by `story project list` and still on the dashboard, and \
-                  `story relink` puts a project back where its checkout moved to.",
+                  `story project link checkout` puts a project back where its checkout moved to.",
     );
     out
 }

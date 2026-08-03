@@ -748,12 +748,12 @@ fn invocation_corpus() -> Vec<Invocation> {
             })),
         },
         Invocation::Project {
-            action: ProjectAction::Init {
-                path: Some("../elsewhere".to_string()),
-                prefix: Some("API".to_string()),
+            action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+                attach: Attach::Path("../elsewhere".to_string()),
+                prefix: "API".to_string(),
                 name: Some("Elsewhere — renamed".to_string()),
                 no_agents_md: true,
-            },
+            })),
         },
         Invocation::Project {
             action: ProjectAction::Delete { force: true },
@@ -1108,10 +1108,6 @@ fn invocation_corpus() -> Vec<Invocation> {
             path: None,
             dry_run: true,
         },
-        Invocation::Relink {
-            project: "example".to_string(),
-            pointer: "/some/checkout".to_string(),
-        },
         Invocation::Daemon {
             action: DaemonAction::Status,
         },
@@ -1129,7 +1125,6 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "Help",
         Invocation::Project { .. } => "Project",
-        Invocation::Relink { .. } => "Relink",
         Invocation::New { .. } => "New",
         Invocation::MemberAdd { .. } => "MemberAdd",
         Invocation::State { .. } => "State",
@@ -1193,7 +1188,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        53,
+        52,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }
