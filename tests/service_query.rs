@@ -5,14 +5,21 @@
 //! one) or afford the twelve-story fixture the ordering defects need to become
 //! visible. Those two things live here.
 //!
-//! # The orderings pinned below are DEFECTS, deliberately frozen
+//! # One ordering below is a DEFECT, deliberately frozen
 //!
-//! `list` and `search` sort by story *number*; `graph`, `handoff`, `context`
-//! and `summary`'s ready list sort **lexicographically**, so `SH-10` comes
-//! before `SH-2`. The golden CLI corpus freezes the current bytes, so the wave
-//! that ports these surfaces has to reproduce the defect rather than repair
-//! it. These tests exist so that a later wave changing it does so on purpose:
-//! they will fail, and their names say what the fix is.
+//! `list` and `search` sort by story *number*; `graph` and `handoff` sort
+//! **lexicographically**, so `SH-10` comes before `SH-2`. The golden CLI
+//! corpus freezes the current bytes, so the wave that ports these surfaces
+//! has to reproduce the defect rather than repair it. That test exists so
+//! that a later wave changing it (SH-64) does so on purpose: it will fail,
+//! and its name says what the fix is.
+//!
+//! `summary` and `context`'s ready lists are **not** part of that contract —
+//! they rank by `domain::ready_order` (priority, then story number), a total
+//! order the legacy `priority, created_at` comparator did not have (SH-63).
+//! The lexicographic answer those two used to give was never a promise
+//! anyone could rely on: it was whichever order a `BTreeMap` happened to
+//! iterate two same-second, same-priority stories in.
 
 use storyhook::cli::GraphMode;
 use storyhook::domain::{Priority, StorySnapshot, SuperState};
@@ -98,26 +105,26 @@ fn search_sorts_by_story_number() {
     assert_eq!(ids(&views)[9..], ["SH-10", "SH-11", "SH-12"]);
 }
 
-/// KNOWN DEFECT, frozen by the golden corpus: `summary`'s ready preview is
-/// ordered by `priority ASC, created_at ASC`, and when those tie — which they
-/// do for any two stories created in the same second — the stable sort falls
-/// back to the id-*string* order the story map arrived in.
+/// `summary`'s ready preview ranks by `domain::ready_order`: all twelve
+/// stories tie on priority (`None`, unset), so the story number decides —
+/// `SH-1 … SH-5`, not the lexicographic `SH-1, SH-10, SH-11, SH-12, SH-2` a
+/// `BTreeMap`'s own iteration order used to produce (SH-63).
 #[test]
-fn summary_previews_ready_stories_in_lexicographic_id_order() {
+fn summary_previews_ready_stories_in_numeric_id_order() {
     let fixture = ServiceFixture::new();
     twelve_stories(&fixture);
     let summary = query(&fixture, |service| service.summary());
     assert_eq!(summary.ready_count, 12);
     assert_eq!(
         ids(&summary.ready_stories),
-        ["SH-1", "SH-10", "SH-11", "SH-12", "SH-2"],
-        "the preview is lexicographic, not numeric — a frozen defect"
+        ["SH-1", "SH-2", "SH-3", "SH-4", "SH-5"],
+        "the same-priority tie breaks on story number now, not on id-string order"
     );
 }
 
-/// The same defect, in `context`'s Markdown body.
+/// The same rule, in `context`'s Markdown body.
 #[test]
-fn context_lists_ready_stories_in_lexicographic_id_order() {
+fn context_lists_ready_stories_in_numeric_id_order() {
     let fixture = ServiceFixture::new();
     twelve_stories(&fixture);
     let body = query(&fixture, |service| service.context(false));
@@ -127,7 +134,34 @@ fn context_lists_ready_stories_in_lexicographic_id_order() {
         .filter_map(|line| line.strip_prefix("- "))
         .map(|line| line.split(' ').next().unwrap_or_default())
         .collect();
-    assert_eq!(listed, ["SH-1", "SH-10", "SH-11", "SH-12", "SH-2"]);
+    assert_eq!(listed, ["SH-1", "SH-2", "SH-3", "SH-4", "SH-5"]);
+}
+
+/// `story next` is asked twice with nothing changed in between — the exact
+/// shape of the production defect SH-63 was filed against. Every candidate
+/// ties on priority (`None`) *and* was created in the fixture's one pinned
+/// second, so the old `priority, created_at` comparator had no third key and
+/// answered from whichever order the read model happened to hand it. Twelve
+/// stories, well past the `SH-9`/`SH-10` boundary where a lexicographic
+/// fallback and a numeric one visibly disagree.
+#[test]
+fn next_orders_same_second_ties_by_story_number_and_agrees_with_itself() {
+    let fixture = ServiceFixture::new();
+    twelve_stories(&fixture);
+    let first = query(&fixture, |service| service.next(12, None));
+    let second = query(&fixture, |service| service.next(12, None));
+    assert_eq!(
+        ids(&first),
+        [
+            "SH-1", "SH-2", "SH-3", "SH-4", "SH-5", "SH-6", "SH-7", "SH-8", "SH-9", "SH-10",
+            "SH-11", "SH-12"
+        ],
+    );
+    assert_eq!(
+        ids(&first),
+        ids(&second),
+        "asking twice must not change the answer"
+    );
 }
 
 /// And in `handoff`, which additionally splits open stories from archived ones
