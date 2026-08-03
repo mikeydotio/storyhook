@@ -58,13 +58,23 @@ Worth knowing before changing anything here:
 
 - **`repo_root()` uses `--git-common-dir`, not `--show-toplevel`.** Run from
   inside a dispatched worktree, `--show-toplevel` would return that worktree's
-  root and the next worktree would be nested inside it.
-- **Every `story` call goes through `story_cli()`,** which anchors to the
-  project root. The CLI resolves a project by walking up from its working
-  directory and every checkout of a repository resolves to the same project, so
-  this is no longer what stands between you and the wrong tracker (SH-46). It
-  is what stands between you and *no* project, or a neighbouring one: these
-  verbs can be invoked from anywhere, including outside the repository.
+  root and the next worktree would be nested inside it. It answers "where does
+  worktree bookkeeping happen?", never "which project is this?" — only
+  `dispatch`, `capture` and `complete` call it.
+- **`story_cli()` does not choose a project.** The CLI does, and it knows things
+  a shell walk cannot: `$STORYHOOK_PROJECT`, and whether a repository's origin
+  is registered. `story_cli` used to `cd` to `repo_root()` first, which
+  *overrode* that — in a monorepo with a project at the top level and another in
+  a subdirectory, `view` from the subdirectory reported "not found" and `list`
+  listed the root project's stories, silently, while the CLI standing in the
+  same place answered correctly (SH-121).
+- **`--project <slug>` is story.sh's own global option**, stripped before the
+  verb and forwarded to every `story` call. It is what makes the read verbs
+  usable outside a repository.
+- **A failure is never defaulted away.** `list` used to fall back to
+  `{"stories":[]}` on any error, so a refusal read as "No ready stories to pick
+  up" — an empty answer for the tool whose job is handing out work (SH-163).
+  `_load_ready_stories` fails loudly and carries the CLI's own diagnostic.
 - **`is_ready()` is not "unclaimed".** It returns true for an already
   in-progress story, so `dispatch` carries its own guard and `list` filters the
   active state out.
