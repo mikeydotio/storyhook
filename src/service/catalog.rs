@@ -29,9 +29,7 @@
 use std::path::PathBuf;
 
 use crate::error::AppError;
-use crate::store::{
-    PathKind, ProjectId, ProjectPathRecord, ProjectRecord, ReadOps, Store, WriteOps,
-};
+use crate::store::{ProjectId, ProjectRecord, ReadOps, Store};
 
 /// One row of `story project list`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,10 +44,10 @@ pub struct CatalogEntry {
     pub path: Option<PathBuf>,
 }
 
-/// A registration naming a directory that is not there any more.
+/// A linked checkout naming a directory that is not there any more.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrphanedRegistration {
-    /// The project the stale registration belongs to.
+    /// The project the stale link belongs to.
     pub project: ProjectId,
     /// Its slug, which is what a user deregisters or re-links it by.
     pub slug: String,
@@ -74,66 +72,72 @@ impl<'a, S: Store> CatalogService<'a, S> {
         Self { store }
     }
 
-    /// Every registered checkout whose directory is no longer on disk.
+    /// Every linked checkout whose directory is no longer on disk.
     ///
-    /// A registration is a claim that a project can be opened at a path. When
+    /// A linked checkout is a claim that a project can be opened at a path. When
     /// the path is gone the claim is stale, and a stale claim is not harmless:
     /// it is a row in `story project list` and a card on the dashboard's home
     /// screen, indistinguishable from a real repository until it is clicked.
     ///
     /// This is what 394 fixture directories looked like after their test run
-    /// ended — every one of them registered, every one pointing at nothing.
+    /// ended — every one of them recorded, every one pointing at nothing.
     ///
     /// Reported rather than repaired on sight. A path can be missing because an
     /// external disk is not mounted, and silently forgetting a real project's
-    /// only registration because a volume was unplugged would be a worse defect
+    /// only checkout because a volume was unplugged would be a worse defect
     /// than the one being fixed. `story doctor --fix` is where the user says
     /// yes, and `story project link checkout` is the answer when the checkout
     /// moved rather than went away.
+    ///
+    /// # What it audits now
+    ///
+    /// `checkout_path`, and nothing else. SH-119 named this method for deletion
+    /// along with the `project_paths` index it read, on the ground that it
+    /// "exists only to police stored paths" — and `checkout_path`, which did not
+    /// exist when that was written, is the stored path that survives. Deleting
+    /// the audit outright would leave `story project list` and the dashboard
+    /// printing a directory that is gone, with no command to clean it up. So the
+    /// subject narrows rather than the method going: one path per project, the
+    /// one `story project link checkout` records.
     pub fn orphaned(&self) -> Result<Vec<OrphanedRegistration>, AppError> {
         Ok(self.store.read(|tx| {
             let mut orphans = Vec::new();
             for project in tx.projects()? {
-                let stories = tx
-                    .stories(project.id, &crate::store::StoryQuery::all())?
-                    .len();
-                for record in tx.project_paths(project.id)? {
-                    let path = PathBuf::from(&record.path);
-                    if !path.exists() {
-                        orphans.push(OrphanedRegistration {
-                            project: project.id,
-                            slug: project.slug.clone(),
-                            path,
-                            stories,
-                        });
-                    }
+                let Some(path) = tx.checkout_path(project.id)? else {
+                    continue;
+                };
+                if path.exists() {
+                    continue;
                 }
+                orphans.push(OrphanedRegistration {
+                    project: project.id,
+                    slug: project.slug.clone(),
+                    path,
+                    stories: tx
+                        .stories(project.id, &crate::store::StoryQuery::all())?
+                        .len(),
+                });
             }
             Ok(orphans)
         })?)
     }
 
-    /// Forgets every registration [`orphaned`](Self::orphaned) found, and
-    /// returns them.
+    /// Forgets every link [`orphaned`](Self::orphaned) found, and returns them.
     ///
-    /// Only the path rows go — and the recorded checkout with them, when it is
-    /// the same vanished directory. The project, its stories and its identity
-    /// all survive: it stays in `story project list` and on the dashboard, and
-    /// `story project link checkout` or a fresh `story project new` puts a
-    /// path back. That reversibility is what makes it safe to offer from
+    /// Only the link goes. The project, its stories and its identity all
+    /// survive: it stays in `story project list` and on the dashboard, and
+    /// `story project link checkout` or a fresh `story project new` puts a path
+    /// back. That reversibility is what makes it safe to offer from
     /// `doctor --fix` rather than demanding a hand-written transaction.
     ///
-    /// The checkout half is not decoration. One directory is recorded in two
-    /// places — a `project_paths` row that resolution reads, and
-    /// `checkout_path` that says where the project's repo-side work runs — and
-    /// forgetting one without the other leaves `story project list` printing a
-    /// directory that is gone, on the line below the one that just stopped
-    /// printing it. See [`forget_checkout`](super::project::forget_checkout).
+    /// Conditional on the paths still matching, which is
+    /// [`forget_checkout`](super::project::forget_checkout)'s own rule: a
+    /// project pointed somewhere else between the report and the repair must not
+    /// lose a link somebody made on purpose.
     pub fn deregister_orphaned(&self) -> Result<Vec<OrphanedRegistration>, AppError> {
         let orphans = self.orphaned()?;
         self.store.write(|tx| {
             for orphan in &orphans {
-                tx.forget_project_path(orphan.project, &orphan.path)?;
                 super::project::forget_checkout(tx, orphan.project, &orphan.path)?;
             }
             Ok(())
@@ -161,33 +165,22 @@ impl<'a, S: Store> CatalogService<'a, S> {
     ///
     /// `list` still exists, and still filters, for the callers that genuinely
     /// need a directory to act in.
+    ///
+    /// The directory is `checkout_path` — the one a project names, rather than
+    /// the best of the several the resolution index used to hold. Choosing
+    /// between them was `preferred_checkout`'s job, and it has none: a project
+    /// has at most one checkout by construction, and a linked worktree is
+    /// nobody's answer to "where does this project's work run".
     pub fn all(&self) -> Result<Vec<CatalogEntry>, AppError> {
         Ok(self.store.read(|tx| {
             let mut entries = Vec::new();
             for project in tx.projects()? {
-                let path = preferred_checkout(tx.project_paths(project.id)?);
+                let path = tx.checkout_path(project.id)?;
                 entries.push(entry(project, path));
             }
             Ok(entries)
         })?)
     }
-}
-
-/// The checkout a caller should act in, given every checkout a project has.
-///
-/// The main working tree wins; a linked worktree is the fallback; a project
-/// with neither has none. `project_paths` is ordered by *path*, so without this
-/// the answer was whichever directory happened to sort first — and a linked
-/// worktree is a branch somebody is working on, whose hooks and whose
-/// `AGENTS.md` belong to that branch rather than to the project. `PathKind` has
-/// been recorded since schema 1 and, until now, consulted nowhere.
-#[must_use]
-pub fn preferred_checkout(mut paths: Vec<ProjectPathRecord>) -> Option<PathBuf> {
-    paths.sort_by_key(|record| match record.kind {
-        PathKind::Main => 0,
-        PathKind::Worktree => 1,
-    });
-    paths.into_iter().next().map(|r| PathBuf::from(r.path))
 }
 
 /// One catalog row from a project record.
