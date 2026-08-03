@@ -345,7 +345,7 @@ fn export_import_export_is_byte_identical() {
             "new",
             "Parent story",
             "--type",
-            "story",
+            "normal",
             "--priority",
             "high",
             "--labels",

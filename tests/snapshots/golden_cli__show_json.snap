@@ -147,7 +147,7 @@ source: tests/golden_cli.rs
             }
           ],
           "state": "in-progress",
-          "story_type": "story",
+          "story_type": "normal",
           "superstate": "OPEN",
           "title": "Implement the SQLite engine",
           "updated_at": "[timestamp]"

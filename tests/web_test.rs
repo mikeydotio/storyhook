@@ -546,6 +546,21 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
             "statuses editor should reference {call}"
         );
     }
+
+    // SH-157: the type badge — its lookup function, its CSS class, the
+    // accessible name an emoji-only span needs, and the drawer's mount
+    // point for it.
+    assert!(body.contains("function typeGlyph"));
+    assert!(body.contains("function buildTypeBadge"));
+    assert!(body.contains(".type-badge"));
+    assert!(body.contains(r#"aria-label"#));
+    assert!(body.contains(r#""Type: " + slug"#));
+    assert!(body.contains(r#"id="drawer-type-badge""#));
+    // The vocabulary fix: every picker labels "no type" the same way
+    // `story list --type none` already does, not "–"/"Untyped"/"Default
+    // type" for one idea in three places.
+    assert!(body.contains("function typeLabel"));
+    assert!(body.contains(r#"return "none";"#));
 }
 
 #[test]
@@ -941,6 +956,20 @@ fn web_serve_api_data_meta_has_types_priorities_relations_members() {
         .collect();
     assert!(types.contains(&"bug"));
     assert!(types.contains(&"epic"));
+    // SH-157: `task` was a default type; it no longer is.
+    assert!(!types.contains(&"task"));
+
+    // SH-157: each default type carries the emoji the dashboard's badge
+    // reads — this is `meta_json`'s own field, not `TypeDef`'s `Serialize`
+    // impl, so a handler that forgets to plumb it through would not be
+    // caught by the domain-level round-trip tests alone.
+    let bug = json["meta"]["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["slug"] == "bug")
+        .expect("the default bug type");
+    assert_eq!(bug["emoji"], "🐞");
 
     let priorities: Vec<&str> = json["meta"]["priorities"]
         .as_array()

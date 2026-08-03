@@ -96,8 +96,14 @@ fn init_creates_a_project_with_its_catalog_and_counters() {
         .read(|tx| tx.types(outcome.project))
         .expect("reading types");
     let slugs: Vec<&str> = types.iter().map(|t| t.slug.as_str()).collect();
-    assert_eq!(slugs, ["story", "epic", "bug", "chore", "task"]);
+    // SH-157: `task` was a fifth default type; it no longer is. `story` was
+    // renamed to `normal`, to stop reading as "a story of type story".
+    assert_eq!(slugs, ["normal", "epic", "bug", "chore"]);
     assert!(types.iter().all(|t| t.description.is_some()));
+    assert!(
+        types.iter().all(|t| t.emoji.is_some()),
+        "every default type carries the emoji the web dashboard's badge reads"
+    );
 }
 
 #[test]

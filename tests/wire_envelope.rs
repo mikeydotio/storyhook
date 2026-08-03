@@ -952,6 +952,16 @@ fn invocation_corpus() -> Vec<Invocation> {
             action: TypeAction::Add {
                 slug: "spike".to_string(),
                 description: Some("A timeboxed investigation".to_string()),
+                emoji: Some("🔬".to_string()),
+            },
+        },
+        Invocation::Type {
+            action: TypeAction::Set {
+                slug: "spike".to_string(),
+                description: Some("A timeboxed investigation".to_string()),
+                clear_description: false,
+                emoji: None,
+                clear_emoji: true,
             },
         },
         Invocation::Type {

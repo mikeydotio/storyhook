@@ -17,9 +17,8 @@ by type:
   bug: 1
   chore: 3
   epic: 1
+  normal: 7
   spike: 2
-  story: 4
-  task: 3
 blocked: 3
 flagged: 0
 ready: 8
@@ -46,9 +45,8 @@ by type:
   bug: 1
   chore: 3
   epic: 1
+  normal: 7
   spike: 2
-  story: 4
-  task: 3
 blocked: 3
 flagged: 0
 ready: 8
