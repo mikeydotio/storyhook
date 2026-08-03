@@ -329,7 +329,14 @@ const POINTER: &str = ".storyhook.toml";
 /// accident.
 pub fn assert_selection_is_not_inherited(dir: &Path) {
     let root = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    if root.join(POINTER).is_file() {
+    // Its own pointer file, or its own repository — either way nothing above it
+    // is reachable. The second clause is the resolver's bound applied to the
+    // starting directory rather than only to the climb: `ancestors()` pushes the
+    // working directory and breaks immediately when it holds a `.git`
+    // *directory*, so a repository top level with no pointer resolves by its
+    // origin or refuses. It never inherits, and a guard that failed it would be
+    // stricter than the rule it exists to encode.
+    if root.join(POINTER).is_file() || root.join(".git").is_dir() {
         return;
     }
     for ancestor in root.ancestors().skip(1) {
@@ -695,6 +702,14 @@ mod tests {
             "a directory with no pointer of its own, under one that has a pointer, must be \
              refused — it would silently resolve the outer project"
         );
+
+        // The guard against the guard going too far, and the shape a second
+        // checkout has: a repository top level with no pointer file inherits
+        // nothing, because the resolver's climb stops at a `.git` directory
+        // before it ever leaves. Refusing this would be stricter than the rule.
+        let repo = outer.path().join("nested/its-own-repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("creating a repository top level");
+        assert_selection_is_not_inherited(&repo);
     }
 
     #[test]
