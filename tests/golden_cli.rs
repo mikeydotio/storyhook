@@ -178,28 +178,6 @@ fn build_corpus() -> Project<'static> {
         let mut args = vec!["new", title];
         args.extend(extra);
         run(&args);
-        // KNOWN-DEFECT (needs a story; ids cannot be minted from this worktree):
-        // the ready-list sort is `priority ASC, then created_at ASC`
-        // (`src/app.rs:302`, and the same comparator at 335/664/1033/2326), but
-        // `created_at` has SECOND precision. Stories created within one second
-        // tie on both keys, and the stable sort then falls back to the order the
-        // story files happened to be read in -- so `story next`, `story
-        // summary`, `story context` and `story handoff` return DIFFERENT
-        // orderings for identical input depending only on whether the writes
-        // straddled a second boundary. Observed live: SH-2 and SH-12 (both
-        // `high`) swap places in roughly a third of runs.
-        //
-        // This sleep makes the fixture immune rather than fixing the defect
-        // (this step ships no production changes). Sleeping >= 1s guarantees the
-        // stories before it and after it land in different seconds, and the
-        // ready set is arranged so that every same-priority PAIR straddles this
-        // point -- {SH-1,SH-5} critical, {SH-2,SH-12} high, {SH-4,SH-10} medium.
-        // Within each half no two ready stories share a priority, so no tie can
-        // form there and the ordering is fully determined by the documented
-        // comparator. One sleep, not fourteen, for that reason.
-        if title == "Write the migration runner" {
-            std::thread::sleep(std::time::Duration::from_millis(1100));
-        }
     }
 
     run(&["relate", "SH-1", "parent-of", "SH-2"]);
