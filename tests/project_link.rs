@@ -12,16 +12,22 @@
 //! may name the same directory: that is a monorepo, not an ambiguity. Nothing
 //! here may ever assert that linking a checkout makes a directory resolve.
 //!
-//! # The omitted URL is where SH-151 lives
+//! # The omitted URL is where SH-151 started
 //!
 //! `git config --get remote.origin.url` **walks up the directory tree**, so a
 //! subdirectory of a repository reports the *enclosing* repository's origin.
 //! Registration cannot use that answer: an origin belongs to at most one
 //! project, so claiming the parent's identity from a child directory is
 //! permanent and locks every sibling out. `link origin` with no URL therefore
-//! requires the working directory to be its repository's own top level, and
-//! `origin_here_refuses_inside_an_enclosing_repository` is the test that would
-//! go green if somebody ever "simplified" that check away.
+//! requires the working directory to **own** the origin it reports, and
+//! `an_omitted_url_refuses_inside_an_enclosing_repository` is the test that
+//! would go green if somebody ever "simplified" that check away.
+//!
+//! SH-151 finished the job the other side of this file could not see: the
+//! *explicit*-URL form is guarded too, `story project new` is guarded, and
+//! ownership now means "the main working tree", not merely "a top level".
+//! `tests/origin_ownership.rs` is where the whole rule and its layout table
+//! live; what stays here is this verb's own surface.
 
 use std::path::Path;
 use std::process::Command;
@@ -215,6 +221,11 @@ fn an_omitted_url_takes_this_repositorys_own_origin() {
 /// repository's identity against this project — permanently, since an origin
 /// belongs to at most one project, locking out every sibling project in that
 /// repository.
+///
+/// The refusal used to say "not the top level of its repository". It says who
+/// *owns* the origin now, because being a top level stopped being the whole
+/// test when SH-151 made a linked worktree — which is its own top level, and
+/// shares its main checkout's config — a non-owner too.
 #[test]
 fn an_omitted_url_refuses_inside_an_enclosing_repository() {
     let env = TestEnv::isolated();
@@ -234,8 +245,12 @@ fn an_omitted_url_refuses_inside_an_enclosing_repository() {
     );
     let message = stderr(&out);
     assert!(
-        message.contains("top level"),
+        message.contains("does not own its repository's origin"),
         "the refusal must say why: {message}"
+    );
+    assert!(
+        message.contains(&*repo.path().canonicalize().unwrap().to_string_lossy()),
+        "and must name the directory that does own it: {message}"
     );
     assert!(
         message.contains("link origin <url>"),

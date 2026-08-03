@@ -97,11 +97,16 @@ link origin [URL] / unlink origin [URL]
 
   URL may be omitted, and then it is the origin THIS directory's own
   repository records — storyhook reads exactly
-  'git config --get remote.origin.url'. That command walks up the
-  directory tree, so the omitted form additionally requires you to be at
-  the repository's top level: from a subdirectory it would otherwise
-  register the enclosing repository's identity against this project,
-  permanently, and lock out every other project in that repository.
+  'git config --get remote.origin.url'.
+
+  Either way, only the directory that OWNS an origin may register it:
+  the repository's main working tree. That command walks up the
+  directory tree and answers the same in every worktree, so from a
+  subdirectory or a linked worktree it would otherwise register the
+  enclosing repository's identity against this project, permanently,
+  and lock out every other project in that repository. A project inside
+  a larger repository is identified by its committed .storyhook.toml
+  instead, or by --project.
 
 link checkout [PATH] / unlink checkout
   Where this project's repo-side work runs. AT MOST ONE per project, and

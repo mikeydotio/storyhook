@@ -74,7 +74,9 @@ pub use github::{GithubSyncService, StoreSyncStorage};
 pub use grouping::{GroupingService, PhaseCleared};
 pub use integrity::IntegrityService;
 pub use migrate::{MigrationPlan, MigrationReport};
-pub use project::{DeleteOutcome, InitOptions, InitOutcome, ProjectPointer, ProjectService};
+pub use project::{
+    DeleteOutcome, InitOptions, InitOutcome, OriginOutcome, ProjectPointer, ProjectService,
+};
 pub use query::{ListFilters, QueryService};
 pub use relation::{RelationOutcome, RelationService};
 pub use session::SessionService;
