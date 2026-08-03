@@ -14,7 +14,7 @@ use crate::output::Response;
 
 use self::client::GithubClient;
 use self::conflict::{Resolution, ResolvedConflict, resolve_conflicts_interactive};
-use self::diff::{FieldConflict, FieldUpdates, MergeResult, three_way_merge};
+use self::diff::{ConflictField, FieldConflict, FieldUpdates, MergeResult, three_way_merge};
 use self::field_map::{
     RemoteSnapshot, format_comment_for_github, github_comment_to_story, is_sync_generated_comment,
     issue_to_remote_snapshot, story_to_create_request, updates_to_issue_request,
@@ -915,16 +915,16 @@ fn apply_conflict_locally(
     };
 
     let now = sync.now();
-    let event = match conflict.field.as_str() {
-        "title" => StoryEvent::StoryTitleSet {
+    let event = match conflict.field {
+        ConflictField::Title => StoryEvent::StoryTitleSet {
             at: now,
             title: conflict.remote_value.clone(),
         },
-        "state" => StoryEvent::StoryStateChanged {
+        ConflictField::State => StoryEvent::StoryStateChanged {
             at: now,
             state: conflict.remote_value.clone(),
         },
-        "assignee" => {
+        ConflictField::Assignee => {
             if conflict.remote_value == "<none>" {
                 return Ok(());
             }
@@ -933,11 +933,11 @@ fn apply_conflict_locally(
                 member_id: conflict.remote_value.clone(),
             }
         }
-        "priority" => {
+        ConflictField::Priority => {
             let priority = Priority::parse(&conflict.remote_value).unwrap_or(Priority::None);
             StoryEvent::StoryPrioritySet { at: now, priority }
         }
-        "awaiting" => {
+        ConflictField::Awaiting => {
             if conflict.remote_value == "<none>" {
                 StoryEvent::StoryAwaitingCleared { at: now }
             } else {
@@ -947,7 +947,7 @@ fn apply_conflict_locally(
                 }
             }
         }
-        "labels" => {
+        ConflictField::Labels => {
             let labels: Vec<String> = conflict
                 .remote_value
                 .split(", ")
@@ -956,7 +956,7 @@ fn apply_conflict_locally(
                 .collect();
             StoryEvent::StoryLabelsSet { at: now, labels }
         }
-        "description" => {
+        ConflictField::Description => {
             let description = if conflict.remote_value == "<none>" {
                 String::new()
             } else {
@@ -967,7 +967,6 @@ fn apply_conflict_locally(
                 description,
             }
         }
-        _ => return Ok(()),
     };
 
     sync.write_events(story_id, &[event])
@@ -992,28 +991,28 @@ fn apply_conflict_remotely(
     };
 
     let mut updates = FieldUpdates::default();
-    match conflict.field.as_str() {
-        "title" => updates.title = Some(conflict.local_value.clone()),
-        "state" => updates.state = Some(conflict.local_value.clone()),
-        "assignee" => {
+    match conflict.field {
+        ConflictField::Title => updates.title = Some(conflict.local_value.clone()),
+        ConflictField::State => updates.state = Some(conflict.local_value.clone()),
+        ConflictField::Assignee => {
             if conflict.local_value == "<none>" {
                 updates.assignee = Some(None);
             } else {
                 updates.assignee = Some(Some(conflict.local_value.clone()));
             }
         }
-        "priority" => {
+        ConflictField::Priority => {
             let priority = Priority::parse(&conflict.local_value).unwrap_or(Priority::None);
             updates.priority = Some(priority);
         }
-        "awaiting" => {
+        ConflictField::Awaiting => {
             if conflict.local_value == "<none>" {
                 updates.awaiting = Some(None);
             } else {
                 updates.awaiting = Some(Some(conflict.local_value.clone()));
             }
         }
-        "labels" => {
+        ConflictField::Labels => {
             let labels: Vec<String> = conflict
                 .local_value
                 .split(", ")
@@ -1022,14 +1021,13 @@ fn apply_conflict_remotely(
                 .collect();
             updates.labels = Some(labels);
         }
-        "description" => {
+        ConflictField::Description => {
             if conflict.local_value == "<none>" {
                 updates.description = Some(None);
             } else {
                 updates.description = Some(Some(conflict.local_value.clone()));
             }
         }
-        _ => return Ok(()),
     }
 
     let update_req = updates_to_issue_request(&updates, story, members, states);

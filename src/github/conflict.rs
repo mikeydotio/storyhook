@@ -1,6 +1,6 @@
 use dialoguer::Select;
 
-use super::diff::FieldConflict;
+use super::diff::{ConflictField, FieldConflict};
 
 /// How a conflict was resolved.
 #[derive(Debug, Clone)]
@@ -13,7 +13,7 @@ pub enum Resolution {
 /// A conflict together with its chosen resolution.
 #[derive(Debug, Clone)]
 pub struct ResolvedConflict {
-    pub field: String,
+    pub field: ConflictField,
     pub resolution: Resolution,
 }
 
@@ -49,7 +49,7 @@ pub fn resolve_conflicts_interactive(
         };
 
         resolutions.push(ResolvedConflict {
-            field: conflict.field.clone(),
+            field: conflict.field,
             resolution,
         });
     }
@@ -68,7 +68,7 @@ pub fn resolve_conflicts_batch(
     conflicts
         .iter()
         .map(|c| ResolvedConflict {
-            field: c.field.clone(),
+            field: c.field,
             resolution: keep.clone(),
         })
         .collect()
@@ -76,25 +76,25 @@ pub fn resolve_conflicts_batch(
 
 #[cfg(test)]
 mod tests {
-    use super::super::diff::FieldConflict;
+    use super::super::diff::{ConflictField, FieldConflict};
     use super::*;
 
     fn sample_conflicts() -> Vec<FieldConflict> {
         vec![
             FieldConflict {
-                field: "title".to_string(),
+                field: ConflictField::Title,
                 base_value: "Original".to_string(),
                 local_value: "Local title".to_string(),
                 remote_value: "Remote title".to_string(),
             },
             FieldConflict {
-                field: "state".to_string(),
+                field: ConflictField::State,
                 base_value: "todo".to_string(),
                 local_value: "in-progress".to_string(),
                 remote_value: "done".to_string(),
             },
             FieldConflict {
-                field: "priority".to_string(),
+                field: ConflictField::Priority,
                 base_value: "none".to_string(),
                 local_value: "high".to_string(),
                 remote_value: "low".to_string(),
@@ -111,9 +111,9 @@ mod tests {
         for r in &resolutions {
             assert!(matches!(r.resolution, Resolution::KeepLocal));
         }
-        assert_eq!(resolutions[0].field, "title");
-        assert_eq!(resolutions[1].field, "state");
-        assert_eq!(resolutions[2].field, "priority");
+        assert_eq!(resolutions[0].field, ConflictField::Title);
+        assert_eq!(resolutions[1].field, ConflictField::State);
+        assert_eq!(resolutions[2].field, ConflictField::Priority);
     }
 
     #[test]
