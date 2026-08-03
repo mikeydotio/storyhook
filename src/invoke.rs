@@ -129,13 +129,23 @@ impl InvokeRequest {
     ///
     /// A request with nothing to confirm is returned unchanged, which is what
     /// makes this safe to call unconditionally.
+    ///
+    /// # Why the `Project` arm is exhaustive
+    ///
+    /// It used to be `ProjectAction::Deinit { force, .. }` beside a `_ => {}`,
+    /// and a destructive project verb added later would have fallen through it
+    /// silently — the client would ask the user, get a yes, re-send a request
+    /// that is still unforced, and be answered with the same question forever.
+    /// A confirmation loop with no error and no compile failure. Listing every
+    /// variant means the next one is a compile error here instead.
     #[must_use]
     pub fn forced(mut self) -> Self {
         match &mut self.invocation {
-            Invocation::Project {
-                action: ProjectAction::Deinit { force, .. },
-            }
-            | Invocation::Purge { force, .. } => *force = true,
+            Invocation::Project { action } => match action {
+                ProjectAction::Deinit { force, .. } => *force = true,
+                ProjectAction::Init { .. } | ProjectAction::List | ProjectAction::Settings(_) => {}
+            },
+            Invocation::Purge { force, .. } => *force = true,
             _ => {}
         }
         self
@@ -1857,12 +1867,26 @@ fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppE
 /// later without a guard is exactly how SH-95 happened the first time.
 ///
 /// A dry-run migration writes nothing and is deliberately not a creation.
+///
+/// # Why the `Project` arm is exhaustive
+///
+/// The sentence above is the whole reason this function exists, and until
+/// SH-117 the code did not keep it: the `Project` arm matched
+/// `ProjectAction::Init` inside a `_ => None` catch-all, so a *fifth* creating
+/// arm — the one that replaces `init` — would have fallen straight through it
+/// and created projects unguarded, with a green build and a green suite. The
+/// guard has exactly one call site, in [`StoreInvoker::invoke`], reachable only
+/// through this match; there is no second layer to catch the miss.
+///
+/// Listing every `ProjectAction` makes the compiler the thing that notices,
+/// which is what the paragraph above always claimed and only now enforces.
 fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBuf> {
     match invocation {
         Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
-        Invocation::Project {
-            action: ProjectAction::Init { path, .. },
-        } => Some(target_dir(cwd, path.as_deref())),
+        Invocation::Project { action } => match action {
+            ProjectAction::Init { path, .. } => Some(target_dir(cwd, path.as_deref())),
+            ProjectAction::Deinit { .. } | ProjectAction::List | ProjectAction::Settings(_) => None,
+        },
         Invocation::Migrate { path, dry_run } if !dry_run => Some(target_dir(cwd, path.as_deref())),
         _ => None,
     }
