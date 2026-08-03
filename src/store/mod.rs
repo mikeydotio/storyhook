@@ -78,7 +78,7 @@ use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 pub use conformance::ConformanceFixture;
 pub use error::StoreError;
 pub use fault::FaultPoint;
-pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo};
+pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo, StoryRef};
 pub use migrate::{MIGRATIONS, Migration, current_schema_version};
 pub use rebuild::{
     Divergence, ReadModelDiff, RebuiltStory, RepairReport, diff_read_model, rebuild_read_model,
