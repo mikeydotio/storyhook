@@ -1,79 +1,65 @@
-# Handoff — SH-119: C7, the subtraction, now carrying four blocking criteria
+# Handoff — SH-64: the id-ordering split, unblocked by SH-63
 
-**SH-151 is done and merged.** The run itself is described by
+**SH-63 is done, PR open from this worktree.** The run itself is described by
 [`HARDENING_PROGRESS.md`](HARDENING_PROGRESS.md) — read its **START HERE**
-section first. That is the process; this file is only what comes next.
+section first, and SH-63's own log entry for what changed. That is the
+process; this file is only what comes next.
 
-## Take SH-119, and read R1–R4 on it before planning anything
+## Take SH-64
 
-SH-119 is `critical`, it is the next link in the server-owned epic's critical
-path, and SH-151 has just unblocked it. `story next` will lead with something
-else — that is SH-63 talking, the ready comparator tying on second-precision
-timestamps — and order among ready stories of one priority is the orchestrator's
-call.
+SH-64 was `blocked-by SH-63`; SH-63's merge clears that. It is `low` priority,
+so `story next` will not lead with it — pick it up deliberately, the way
+SH-63's own entry records this run doing for SH-119.
 
-**SH-119 is no longer the story its description says it is.** SH-151's council
-recorded four blocking acceptance criteria on it as story comments, and one of
-them contradicts SH-119's own written AC. Read them first; they are the plan.
+**What's actually left, now that SH-63 narrowed it.** SH-63 fixed the
+*ready-list* comparator (`next`, `summary`, `report`, `context`) to rank by
+`domain::ready_order` — priority, then story number, a total order. SH-64 is
+the *other* half of the same defect family: two different id orderings ship
+in the same binary.
 
-- **R1 — `uuid` and `prefix` survive in `.storyhook.toml`.** SH-119's text
-  deletes identity from that file. It cannot: under SH-151's rule a project that
-  does not own its repository's origin may never be associated with it, so the
-  committed pointer is the *only* thing that can tell two projects in one
-  repository apart. `project_paths`, `PathKind`, `touch_project_path`,
-  `project_by_path` and the **path half** of `resolve_at` still go. Bound the
-  pointer climb with a stat for `.git`, not a subprocess.
-- **R2 — the rejected alternatives**, so they are not re-proposed: an
-  `(origin, subpath)` key, and `projects.checkout_path` as a resolution index.
-  Both are argued out on the story.
-- **R3 — the pin.** `invoker_seam.rs::the_nearest_project_wins_over_an_outer_one`
-  already asserts nested-project resolution today, and
-  `origin_ownership.rs::a_second_project_in_one_repository_resolves_by_its_pointer`
-  now sits beside it. Deleting the pointer step deletes a behaviour with two
-  named passing tests.
-- **R4 — back-fill origins in the same wave.** Measured 2026-08-03: the live
-  store has **13 projects, zero registered remotes, zero `checkout_path`s**.
-  Deleting the walk without a backfill leaves every one of them unresolvable.
-  Use SH-151's ownership constructor against each project's recorded checkout,
-  and **report** the projects that own no origin rather than guessing.
+- **Numeric** (`SH-2` before `SH-10`): `list`, `search`, `epic list`,
+  `phase show` — via `service::query::sort_story_views`, which itself now
+  delegates to `domain::story_number` (folded there in SH-63's refactor
+  commit).
+- **Lexicographic** (`SH-1, SH-10, SH-11, SH-2, …`): `graph`'s roots/leaves
+  and `handoff`'s created/updated/closed sections — both iterate
+  `story_map`'s `BTreeMap<String, StorySnapshot>` directly, keyed by the id
+  *string*. `query.rs`'s module doc comment names both explicitly as the
+  remaining defect; `tests/service_query.rs`'s
+  `graph_reports_roots_and_leaves_in_lexicographic_id_order` and
+  `handoff_lists_open_stories_then_archived_ones_each_lexicographically`
+  pin the current (wrong) bytes and are the two tests this story flips.
 
-If the pointer step is deleted anyway, the failure is not a refusal: a
-sub-project on a fresh clone silently answers as the repository-root project.
+A sibling SH-64 names on its own story: `story phase list` sorts phases by
+**label text** (`BTreeMap<String, _>` keyed on `phase:<n>`), so phase `10`
+sorts before phase `2`. Decide that one in the same story, per SH-64's text.
 
-## What SH-151 leaves you
+**The golden CLI corpus moves.** Unlike SH-63, this one's own description
+says so: "Fixing it will move snapshots, deliberately." `graph_human`,
+`graph_json`, `narrative_human` and `narrative_json` all carry the
+lexicographic ordering today; expect all four to need `INSTA_UPDATE=always`
+plus a reviewed diff, not a red gate to chase down.
 
-- **`service::project::origin_at(cwd) -> RepoOrigin`** is the ownership check:
-  `Owned` / `Inherited { owner }` / `Unknown(reason)` / `Absent`. Only `Owned`
-  yields the `OwnedOrigin` that `register_origin` — the sole `link_remote`
-  caller in `src/`, pinned by a source grep — accepts.
-- **The predicate**, if you need it again: `canonical(cwd) == canonical(rev-parse
-  --show-toplevel)` **and** `--git-dir == --git-common-dir`, from one
-  invocation. Not `git worktree list --porcelain`, whose head is the *gitdir*
-  inside a submodule.
-- **`git_output` scrubs nine `GIT_*` variables and deliberately keeps
-  `GIT_CONFIG_*`** — that is how the suite isolates git config.
-- **D3's refusal half is deliberately unbuilt** and belongs to you: refusing a
-  run that would leave a project identified by neither an owned origin nor a
-  pointer only becomes possible once the path row is gone.
-- **Two new stories.** SH-160 (the daemon inherits its first client's git
-  environment — it breaks today's resolution, not only ownership) and SH-161
-  (`doctor`'s pointer-vs-origin advisory, now un-blocked).
+## What SH-63 leaves you
 
-## Three things that bit during SH-151
-
-- **A fast non-zero exit from `make test` is usually `cargo fmt --check`**, which
-  runs before the tests. 30 seconds and exit 2 is formatting, not a failure.
-- **A test asserting on a refusal's wording broke on a design widening.** The
-  SH-151 guard in `project_link.rs` asserted "top level"; ownership is wider than
-  that now. Rewrite the assertion to the promise, not the sentence.
-- **Building a rule whose premise is false costs more than deferring it.** D3's
-  refusal took down two legitimate fixtures on its first run, because
-  `project_paths` still resolves what it claimed was unreachable.
+- **`domain::ready_order(a, b) -> Ordering`** and **`domain::story_number(id)
+  -> u64`** are the two primitives SH-63 added, both in `src/domain.rs`
+  beside `is_ready`/`has_children`. `story_number` is very likely the
+  right tool for making `graph`/`handoff` numeric — it already sorts an
+  unparseable id last rather than first, which is the same edge case a
+  `BTreeMap`-to-`Vec` conversion in either of those two functions will need
+  to handle.
+- **Read `query.rs`'s module doc comment first** — it states the ordering
+  contract precisely, including which two commands are still deliberately
+  lexicographic and why the golden corpus is what makes that deliberate.
+- **`priority_rank`/`StorySort::Priority`** (`src/store/sqlite/read.rs`,
+  `src/store/types.rs`) already do this numerically at the SQL layer, if
+  `graph`/`handoff` end up wanting to read through the store rather than sort
+  a `Vec` in the service.
 
 ## Gate
 
-`make test`, supervised in the background with **log growth as the heartbeat**
-and a 120-second stall bound. Fourteenth consecutive story with no wedge; the
-streak is worth keeping. Budget ~4–10 minutes per run. Do **not** push with
-`SKIP_PREPUSH_TESTS=1` — SH-117's log records why that was the wrong call even
-with a green gate.
+`make test`, supervised in the background with **log growth as the
+heartbeat** and a 120-second stall bound. Budget ~4–10 minutes per run. Do
+**not** push with `SKIP_PREPUSH_TESTS=1`. Never bump the version or deploy
+from a linked worktree — land the PR and let `main` handle both.
