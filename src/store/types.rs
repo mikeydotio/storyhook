@@ -326,8 +326,10 @@ pub enum StorySort {
     /// Priority first (critical → none), then ascending story number.
     ///
     /// A *total* order, unlike the legacy `priority ASC, created_at ASC`
-    /// comparator whose second key has one-second precision and therefore ties
-    /// (the nondeterminism recorded against `story next`).
+    /// comparator whose second key has one-second precision and therefore
+    /// ties. `domain::ready_order` (SH-63) is the same rule, adopted by the
+    /// service layer's ready-list comparators after this one had already
+    /// proven it here.
     Priority,
     /// Most recently updated first, then ascending story number.
     UpdatedAt,
