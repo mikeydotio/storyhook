@@ -20,7 +20,7 @@ use tiny_http::{Header, Method};
 
 use crate::api::http::{Reply, error_reply, header_value, json_reply, text_reply, to_json};
 use crate::api::wire::{WireRequest, WireResponse};
-use crate::daemon::lifecycle::{Hello, PROTOCOL};
+use crate::daemon::lifecycle::{self, Hello, PROTOCOL};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::invoke::{InvokeRequest, Invoker, StoreInvoker};
@@ -108,6 +108,20 @@ pub fn route<S: Store>(
 /// command; a panic in a daemon kills everything the machine is doing, and
 /// `store.transact` is panic-safe by construction (the transaction rolls back on
 /// drop), so there is nothing to be gained by letting one through.
+///
+/// # Why this publishes what it is doing
+///
+/// The daemon writes no bytes until this function returns, and it serves one
+/// request at a time, so a waiting client can learn nothing from its socket and
+/// nothing from a second request. It therefore publishes a
+/// [`CurrentRequest`] here and retracts it before returning, which makes the
+/// record change exactly when the daemon **finishes something** — the signal a
+/// client's deadline resets on (SH-144).
+///
+/// **Here rather than in the accept loop**, because a record is only worth
+/// reading if it can *name* the command, and the command does not exist until
+/// the envelope above has parsed. A record written earlier could say no more
+/// than `POST /api/v1/invoke`, which is the one thing the user already knows.
 fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
     let request: WireRequest = match serde_json::from_str(body) {
         Ok(request) => request,
@@ -124,6 +138,20 @@ fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
         // reconstructs any other failure.
         return answer(&request.request_id, Err(mismatch));
     }
+
+    // Published before the work and retracted after it, including after a
+    // panic — `catch_unwind` returns rather than unwinding past here, so the
+    // retraction below is reached on every path out of the command.
+    lifecycle::publish_current(
+        env,
+        &lifecycle::CurrentRequest {
+            request_id: request.request_id.clone(),
+            command: crate::invoke::invocation_name(&request.invocation).to_string(),
+            project: request.project.as_ref().map(|p| p.slug().to_string()),
+            pid: std::process::id(),
+            started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        },
+    );
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         StoreInvoker::new(store, &request.cwd, env.clone())
@@ -143,6 +171,7 @@ fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
         ))
     });
 
+    lifecycle::clear_current(env);
     answer(&request.request_id, result)
 }
 
