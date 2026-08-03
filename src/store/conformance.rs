@@ -102,10 +102,12 @@ macro_rules! store_conformance_suite {
                     TypeDef {
                         slug: "feature".into(),
                         description: None,
+                        emoji: None,
                     },
                     TypeDef {
                         slug: "bug".into(),
                         description: Some("Something is broken".into()),
+                        emoji: Some("🐞".into()),
                     },
                 ]
             }
@@ -3235,12 +3237,22 @@ macro_rules! store_conformance_suite {
             }
 
             #[test]
+            fn a_types_emoji_round_trips_including_its_absence() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let read = f.store().read(|tx| tx.types(project)).unwrap();
+                assert_eq!(read[0].emoji, None);
+                assert_eq!(read[1].emoji.as_deref(), Some("🐞"));
+            }
+
+            #[test]
             fn replacing_the_type_set_reorders_and_removes() {
                 let f = <$fixture>::create();
                 let project = seed(f.store(), "alpha", "SH");
                 let replacement = vec![TypeDef {
                     slug: "chore".into(),
                     description: None,
+                    emoji: None,
                 }];
                 f.store()
                     .write(|tx| tx.put_types(project, &replacement))
@@ -3734,6 +3746,7 @@ macro_rules! store_conformance_suite {
                 let replacement = vec![TypeDef {
                     slug: "chore".into(),
                     description: None,
+                    emoji: None,
                 }];
                 f.store()
                     .write(|tx| tx.put_types(beta, &replacement))

@@ -9,9 +9,8 @@ done (CLOSED) — 2 archived
 review (OPEN) — 1 open — Awaiting code review
 
 $ story type list
-story — A user story or feature
-epic — A large initiative containing child stories
-bug — A defect or regression
-chore — Maintenance or infrastructure work
-task — A discrete unit of work
+📖 story — A user story or feature
+📚 epic — A large initiative containing child stories
+🐞 bug — A defect or regression
+🧺 chore — Maintenance or infrastructure work
 spike — A timeboxed investigation

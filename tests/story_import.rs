@@ -265,12 +265,13 @@ fn import_accepts_valid_story_type() {
         .assert()
         .success();
 
+    // SH-157: `task` was a fifth default type; it no longer is, so the four
+    // remaining defaults are the whole set worth exercising here.
     let json = r#"[
         {"title": "A bug", "story_type": "bug"},
         {"title": "A story", "story_type": "story"},
         {"title": "A chore", "story_type": "chore"},
-        {"title": "An epic", "story_type": "epic"},
-        {"title": "A task", "story_type": "task"}
+        {"title": "An epic", "story_type": "epic"}
     ]"#;
 
     story(dir.path())
@@ -279,7 +280,7 @@ fn import_accepts_valid_story_type() {
         .assert()
         .success();
 
-    // Verify all five were created with correct types
+    // Verify all four were created with correct types
     story(dir.path())
         .args(["show", "SH-1"])
         .assert()
@@ -300,9 +301,4 @@ fn import_accepts_valid_story_type() {
         .assert()
         .success()
         .stdout(predicate::str::contains("type: epic"));
-    story(dir.path())
-        .args(["show", "SH-5"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("type: task"));
 }

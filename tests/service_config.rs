@@ -920,7 +920,7 @@ fn types_are_listed_in_configured_order() {
 fn a_new_type_is_appended_and_keeps_its_description() {
     let fixture = ServiceFixture::new();
     let added = ConfigService::new(&fixture.ctx())
-        .add_type("spike", Some("A timeboxed investigation"))
+        .add_type("spike", Some("A timeboxed investigation"), None)
         .expect("adding a type");
     assert_eq!(added.slug, "spike");
     let types = ConfigService::new(&fixture.ctx())
@@ -946,7 +946,7 @@ fn the_slugs_that_mean_no_type_are_reserved() {
     let fixture = ServiceFixture::new();
     for reserved in ["none", "NONE", "default", "Default"] {
         let error = ConfigService::new(&fixture.ctx())
-            .add_type(reserved, None)
+            .add_type(reserved, None, None)
             .unwrap_err();
         assert!(
             message(error).contains("is reserved and cannot be used"),
@@ -959,7 +959,7 @@ fn the_slugs_that_mean_no_type_are_reserved() {
 fn a_duplicate_type_slug_is_rejected() {
     let fixture = ServiceFixture::new();
     let error = ConfigService::new(&fixture.ctx())
-        .add_type("bug", None)
+        .add_type("bug", None, None)
         .unwrap_err();
     assert!(message(error).contains("type `bug` already exists"));
 }

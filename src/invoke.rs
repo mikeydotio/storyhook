@@ -31,7 +31,7 @@ use crate::cli::{
     NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
     TypeAction, WebAction,
 };
-use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
+use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState, TypeChanges, TypeDef};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::help_topics;
@@ -1151,22 +1151,65 @@ fn dispatch_type<S: Store>(ctx: &Ctx<'_, S>, action: TypeAction) -> Result<Respo
             service
                 .list_types()?
                 .iter()
-                .map(|t| match &t.description {
-                    Some(description) => format!("{} — {description}", t.slug),
-                    None => t.slug.clone(),
-                })
+                .map(format_type_line)
                 .collect::<Vec<_>>()
                 .join("\n"),
         )),
-        TypeAction::Add { slug, description } => Ok(Response::Message(format!(
-            "added type {}",
-            service.add_type(&slug, description.as_deref())?.slug
-        ))),
+        TypeAction::Add {
+            slug,
+            description,
+            emoji,
+        } => {
+            let added = service.add_type(&slug, description.as_deref(), emoji.as_deref())?;
+            let mut message = format!("added type {}", added.slug);
+            if added.emoji.is_none() {
+                message.push_str(&format!(
+                    "; give it a glyph with `story type set {} --emoji <glyph>`",
+                    added.slug
+                ));
+            }
+            Ok(Response::Message(message))
+        }
+        TypeAction::Set {
+            slug,
+            description,
+            clear_description,
+            emoji,
+            clear_emoji,
+        } => {
+            let changes = TypeChanges {
+                description: if clear_description {
+                    FieldEdit::Clear
+                } else {
+                    description.map_or(FieldEdit::Keep, FieldEdit::Set)
+                },
+                emoji: if clear_emoji {
+                    FieldEdit::Clear
+                } else {
+                    emoji.map_or(FieldEdit::Keep, FieldEdit::Set)
+                },
+            };
+            let updated = service.update_type(&slug, &changes)?;
+            Ok(Response::Message(format!("updated type {}", updated.slug)))
+        }
         TypeAction::Remove { slug } => {
             service.remove_type(&slug)?;
             Ok(Response::Message(format!("removed type {slug}")))
         }
     }
+}
+
+/// One line of `story type list`: `<emoji> <slug> — <description>`, with
+/// either half omitted when the type has none.
+fn format_type_line(t: &TypeDef) -> String {
+    let mut line = match &t.emoji {
+        Some(emoji) => format!("{emoji} {}", t.slug),
+        None => t.slug.clone(),
+    };
+    if let Some(description) = &t.description {
+        line.push_str(&format!(" — {description}"));
+    }
+    line
 }
 
 /// `OPEN` or `CLOSED`, as a superstate.

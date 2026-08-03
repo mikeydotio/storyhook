@@ -119,10 +119,11 @@ fn build_corpus() -> Project<'static> {
             ],
         ),
         (
+            // Was `--type task` before SH-157 retired the default `task` type.
             "Write the migration runner",
             vec![
                 "--type",
-                "task",
+                "story",
                 "--priority",
                 "medium",
                 "--label",
@@ -155,12 +156,15 @@ fn build_corpus() -> Project<'static> {
             vec!["--type", "story", "--priority", "medium"],
         ),
         (
+            // Was `--type task` before SH-157 retired the default `task`
+            // type; `story` is its replacement everywhere task-typed stories
+            // are retyped, so the golden fixture follows suit.
             "Ship the CLI shim",
-            vec!["--type", "task", "--priority", "medium"],
+            vec!["--type", "story", "--priority", "medium"],
         ),
         (
             "Audit error codes",
-            vec!["--type", "task", "--priority", "low"],
+            vec!["--type", "story", "--priority", "low"],
         ),
         (
             "Harden concurrent writes",

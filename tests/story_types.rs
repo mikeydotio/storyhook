@@ -30,8 +30,332 @@ fn type_list_shows_default_types() {
         .stdout(predicate::str::contains("story"))
         .stdout(predicate::str::contains("epic"))
         .stdout(predicate::str::contains("bug"))
-        .stdout(predicate::str::contains("chore"))
+        .stdout(predicate::str::contains("chore"));
+}
+
+// SH-157: `task` was a fifth default type, retired because it generalized
+// nothing a plain `story` didn't already cover. Retired, not reserved —
+// `type_add_after_removal_recreates_it` below is what proves the difference.
+#[test]
+fn type_list_no_longer_shows_task_by_default() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("task").not());
+}
+
+#[test]
+fn type_add_after_removal_recreates_it() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    // `task` is absent from a fresh project's catalog...
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("task").not());
+
+    // ...but the slug itself was never reserved, so it can come back.
+    story(dir.path())
+        .args(["type", "add", "task"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("added type task"));
+
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
         .stdout(predicate::str::contains("task"));
+}
+
+#[test]
+fn type_list_shows_default_types_emoji() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("📖 story"))
+        .stdout(predicate::str::contains("📚 epic"))
+        .stdout(predicate::str::contains("🐞 bug"))
+        .stdout(predicate::str::contains("🧺 chore"));
+}
+
+#[test]
+fn type_add_with_emoji_round_trips_through_list() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "add", "spike", "--emoji", "🔬"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("added type spike"))
+        // A type created with a glyph is not told to go get one.
+        .stdout(predicate::str::contains("give it a glyph").not());
+
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("🔬 spike"));
+}
+
+#[test]
+fn type_add_without_emoji_suggests_setting_one() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "add", "spike"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("story type set spike --emoji"));
+}
+
+#[test]
+fn type_set_emoji_changes_an_existing_type() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["type", "add", "spike"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "set", "spike", "--emoji", "🔬"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("updated type spike"));
+
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("🔬 spike"));
+}
+
+#[test]
+fn type_set_no_emoji_clears_an_existing_glyph() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["type", "add", "spike", "--emoji", "🔬"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "set", "spike", "--no-emoji"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("🔬").not())
+        .stdout(predicate::str::contains("spike"));
+}
+
+#[test]
+fn type_set_description_updates_it() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["type", "add", "spike"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args([
+            "type",
+            "set",
+            "spike",
+            "--description",
+            "A timeboxed investigation",
+        ])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "spike — A timeboxed investigation",
+        ));
+}
+
+#[test]
+fn type_set_no_description_clears_it() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args([
+            "type",
+            "add",
+            "spike",
+            "--description",
+            "A timeboxed investigation",
+        ])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "set", "spike", "--no-description"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("A timeboxed investigation").not());
+}
+
+#[test]
+fn type_set_unknown_slug_rejected() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "set", "no-such-type", "--emoji", "🔬"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn type_set_with_no_flags_rejected() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["type", "add", "spike"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "set", "spike"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to change"));
+}
+
+#[test]
+fn type_add_blank_emoji_rejected() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "add", "spike", "--emoji", "   "])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be blank"));
+}
+
+#[test]
+fn type_add_overlong_emoji_rejected() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    // No whitespace, so this fails on length specifically rather than on the
+    // whitespace rule `type_add_emoji_with_whitespace_rejected` already
+    // covers — 13 `char`s, one over the bound.
+    story(dir.path())
+        .args([
+            "type",
+            "add",
+            "spike",
+            "--emoji",
+            "🔬🔬🔬🔬🔬🔬🔬🔬🔬🔬🔬🔬🔬",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("12 characters or fewer"));
+}
+
+#[test]
+fn type_add_emoji_with_whitespace_rejected() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "add", "spike", "--emoji", "a b"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn type_add_zwj_family_sequence_emoji_accepted() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    // 👨‍👩‍👧‍👦 is 7 `char`s — a real emoji that a naive length check would
+    // reject if the bound were tighter than the `validate_type_glyph` doc
+    // comment's own worked example.
+    story(dir.path())
+        .args(["type", "add", "spike", "--emoji", "👨‍👩‍👧‍👦"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["type", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("👨‍👩‍👧‍👦 spike"));
 }
 
 #[test]
@@ -708,7 +1032,7 @@ fn type_remove_last_type_rejected() {
         .success();
 
     // Remove all but one type
-    for slug in &["epic", "bug", "chore", "task"] {
+    for slug in &["epic", "bug", "chore"] {
         story(dir.path())
             .args(["type", "remove", slug])
             .assert()

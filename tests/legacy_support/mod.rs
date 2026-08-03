@@ -115,10 +115,12 @@ pub fn custom_config_tree() -> (TempDir, PathBuf) {
             TypeDef {
                 slug: "story".to_string(),
                 description: None,
+                emoji: None,
             },
             TypeDef {
                 slug: "spike".to_string(),
                 description: Some("Time-boxed investigation".to_string()),
+                emoji: None,
             },
         ],
     )

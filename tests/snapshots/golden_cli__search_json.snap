@@ -192,7 +192,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "task",
+            "story_type": "story",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"

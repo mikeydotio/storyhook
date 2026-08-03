@@ -45,6 +45,16 @@ pub enum TypeAction {
     Add {
         slug: String,
         description: Option<String>,
+        emoji: Option<String>,
+    },
+    Set {
+        slug: String,
+        description: Option<String>,
+        /// `--no-description`, which clears rather than sets.
+        clear_description: bool,
+        emoji: Option<String>,
+        /// `--no-emoji`, which clears rather than sets.
+        clear_emoji: bool,
     },
     Remove {
         slug: String,
@@ -174,7 +184,9 @@ Usage:
   story link <a> <relationship-type> <b>
   story unlink <a> <relationship-type> <b>
   story type list
-  story type add <slug> [--description "<text>"]
+  story type add <slug> [--description "<text>"] [--emoji <glyph>]
+  story type set <slug> [--description "<text>"] [--no-description]
+                        [--emoji <glyph>] [--no-emoji]
   story type remove <slug>
   story epic list
   story epic show <id>
@@ -1202,7 +1214,17 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "type",
         subcommand: Some("add"),
-        flags: &[value("description")],
+        flags: &[value("description"), value("emoji")],
+    },
+    VerbFlags {
+        verb: "type",
+        subcommand: Some("set"),
+        flags: &[
+            value("description"),
+            bare("no-description"),
+            value("emoji"),
+            bare("no-emoji"),
+        ],
     },
     VerbFlags {
         verb: "state",
@@ -1839,6 +1861,12 @@ fn parse_member(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
+const TYPE_USAGE: &str = "usage: story type list | story type add <slug> [...] | story type set <slug> [...] | story type remove <slug>";
+const TYPE_ADD_USAGE: &str =
+    "usage: story type add <slug> [--description \"<text>\"] [--emoji <glyph>]";
+const TYPE_SET_USAGE: &str = "usage: story type set <slug> [--description \"<text>\"] [--no-description] [--emoji <glyph>] [--no-emoji]";
+const TYPE_REMOVE_USAGE: &str = "usage: story type remove <slug>";
+
 const STATE_USAGE: &str = "usage: story state list | story state add <slug> --super OPEN|CLOSED | story state set <slug> [...] | story state remove <slug> | story state reorder <slug,...>";
 const STATE_ADD_USAGE: &str =
     "usage: story state add <slug> --super OPEN|CLOSED [--role active] [--description \"<text>\"]";
@@ -2360,60 +2388,87 @@ fn parse_phase(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_type(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story type list | story type add <slug> [--description \"<text>\"] | story type remove <slug>";
-    if args.len() < 2 {
-        return Err(AppError::Usage(usage.to_string()));
-    }
+    let subcommand = args
+        .get(1)
+        .ok_or_else(|| AppError::Usage(TYPE_USAGE.to_string()))?;
 
-    match args[1].as_str() {
-        "list" => Ok(Invocation::Type {
-            action: TypeAction::List,
-        }),
+    let action = match subcommand.as_str() {
+        "list" => TypeAction::List,
+
         "add" => {
             let slug = args
                 .get(2)
-                .ok_or_else(|| {
-                    AppError::Usage(
-                        "usage: story type add <slug> [--description \"<text>\"]".to_string(),
-                    )
-                })?
-                .clone();
+                .cloned()
+                .ok_or_else(|| AppError::Usage(TYPE_ADD_USAGE.to_string()))?;
             let mut description = None;
-            let mut index = 3;
-            while index < args.len() {
-                match args[index].as_str() {
-                    "--description" => {
-                        let value = args.get(index + 1).ok_or_else(|| {
-                            AppError::Usage(
-                                "usage: story type add <slug> [--description \"<text>\"]"
-                                    .to_string(),
-                            )
-                        })?;
-                        description = Some(value.clone());
-                        index += 2;
+            let mut emoji = None;
+            for (flag, value) in parse_dash_flags(&args[3..], TYPE_ADD_USAGE)? {
+                match flag.as_str() {
+                    "description" => {
+                        description = Some(flag_value(value, "description", TYPE_ADD_USAGE)?)
                     }
-                    _ => {
-                        return Err(AppError::Usage(
-                            "usage: story type add <slug> [--description \"<text>\"]".to_string(),
-                        ));
-                    }
+                    "emoji" => emoji = Some(flag_value(value, "emoji", TYPE_ADD_USAGE)?),
+                    _ => return Err(AppError::Usage(TYPE_ADD_USAGE.to_string())),
                 }
             }
-            Ok(Invocation::Type {
-                action: TypeAction::Add { slug, description },
-            })
+            TypeAction::Add {
+                slug,
+                description,
+                emoji,
+            }
         }
+
+        "set" => {
+            let slug = args
+                .get(2)
+                .cloned()
+                .ok_or_else(|| AppError::Usage(TYPE_SET_USAGE.to_string()))?;
+            let mut description = None;
+            let mut clear_description = false;
+            let mut emoji = None;
+            let mut clear_emoji = false;
+            for (flag, value) in parse_dash_flags(&args[3..], TYPE_SET_USAGE)? {
+                match flag.as_str() {
+                    "description" => {
+                        description = Some(flag_value(value, "description", TYPE_SET_USAGE)?)
+                    }
+                    "no-description" => clear_description = true,
+                    "emoji" => emoji = Some(flag_value(value, "emoji", TYPE_SET_USAGE)?),
+                    "no-emoji" => clear_emoji = true,
+                    _ => return Err(AppError::Usage(TYPE_SET_USAGE.to_string())),
+                }
+            }
+            if description.is_some() && clear_description {
+                return Err(AppError::Usage(
+                    "--description and --no-description contradict each other".to_string(),
+                ));
+            }
+            if emoji.is_some() && clear_emoji {
+                return Err(AppError::Usage(
+                    "--emoji and --no-emoji contradict each other".to_string(),
+                ));
+            }
+            TypeAction::Set {
+                slug,
+                description,
+                clear_description,
+                emoji,
+                clear_emoji,
+            }
+        }
+
         "remove" => {
             let slug = args
                 .get(2)
-                .ok_or_else(|| AppError::Usage("usage: story type remove <slug>".to_string()))?
-                .clone();
-            Ok(Invocation::Type {
-                action: TypeAction::Remove { slug },
-            })
+                .cloned()
+                .ok_or_else(|| AppError::Usage(TYPE_REMOVE_USAGE.to_string()))?;
+            TypeAction::Remove { slug }
         }
-        _ => Err(AppError::Usage(usage.to_string())),
-    }
+
+        _ => return Err(AppError::Usage(TYPE_USAGE.to_string())),
+    };
+
+    Ok(Invocation::Type { action })
 }
 
 fn parse_epic(args: &[String]) -> Result<Invocation, AppError> {
@@ -3286,10 +3341,16 @@ mod tests {
             parse_invocation(&["type".to_string(), "add".to_string(), "bug".to_string()]).unwrap();
         match inv {
             Invocation::Type {
-                action: TypeAction::Add { slug, description },
+                action:
+                    TypeAction::Add {
+                        slug,
+                        description,
+                        emoji,
+                    },
             } => {
                 assert_eq!(slug, "bug");
                 assert_eq!(description, None);
+                assert_eq!(emoji, None);
             }
             other => panic!("expected Type::Add, got {:?}", other),
         }
@@ -3307,13 +3368,115 @@ mod tests {
         .unwrap();
         match inv {
             Invocation::Type {
-                action: TypeAction::Add { slug, description },
+                action:
+                    TypeAction::Add {
+                        slug,
+                        description,
+                        emoji,
+                    },
             } => {
                 assert_eq!(slug, "epic");
                 assert_eq!(description.as_deref(), Some("A large body of work"));
+                assert_eq!(emoji, None);
             }
             other => panic!("expected Type::Add, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn type_add_with_emoji() {
+        let inv = parse_invocation(&[
+            "type".to_string(),
+            "add".to_string(),
+            "epic".to_string(),
+            "--emoji".to_string(),
+            "📚".to_string(),
+        ])
+        .unwrap();
+        match inv {
+            Invocation::Type {
+                action:
+                    TypeAction::Add {
+                        slug,
+                        description,
+                        emoji,
+                    },
+            } => {
+                assert_eq!(slug, "epic");
+                assert_eq!(description, None);
+                assert_eq!(emoji.as_deref(), Some("📚"));
+            }
+            other => panic!("expected Type::Add, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_set_description_and_emoji() {
+        let inv = parse_invocation(&[
+            "type".to_string(),
+            "set".to_string(),
+            "bug".to_string(),
+            "--description".to_string(),
+            "A defect".to_string(),
+            "--emoji".to_string(),
+            "🐞".to_string(),
+        ])
+        .unwrap();
+        match inv {
+            Invocation::Type {
+                action:
+                    TypeAction::Set {
+                        slug,
+                        description,
+                        clear_description,
+                        emoji,
+                        clear_emoji,
+                    },
+            } => {
+                assert_eq!(slug, "bug");
+                assert_eq!(description.as_deref(), Some("A defect"));
+                assert!(!clear_description);
+                assert_eq!(emoji.as_deref(), Some("🐞"));
+                assert!(!clear_emoji);
+            }
+            other => panic!("expected Type::Set, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_set_no_emoji_clears_it() {
+        let inv = parse_invocation(&[
+            "type".to_string(),
+            "set".to_string(),
+            "bug".to_string(),
+            "--no-emoji".to_string(),
+        ])
+        .unwrap();
+        match inv {
+            Invocation::Type {
+                action:
+                    TypeAction::Set {
+                        emoji, clear_emoji, ..
+                    },
+            } => {
+                assert_eq!(emoji, None);
+                assert!(clear_emoji);
+            }
+            other => panic!("expected Type::Set, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn type_set_emoji_and_no_emoji_contradict() {
+        let result = parse_invocation(&[
+            "type".to_string(),
+            "set".to_string(),
+            "bug".to_string(),
+            "--emoji".to_string(),
+            "🐞".to_string(),
+            "--no-emoji".to_string(),
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]
