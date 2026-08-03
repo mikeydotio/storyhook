@@ -108,6 +108,16 @@ fn main() {
         }
     };
 
+    // A bare `story project new` is a request to be asked, and this process is
+    // the only one that can answer it. Resolved here, before anything opens a
+    // store: a cancellation must not have started a daemon.
+    let invocation = match ask_about_a_new_project(invocation, &cwd, json) {
+        Asked::Proceed(invocation) => *invocation,
+        // The questionnaire has already said so on the stream it was given;
+        // saying it again here would be the second owner of one message.
+        Asked::Cancelled => return,
+    };
+
     // `store new` names the store it creates, and is the one command that must
     // not resolve the ambient one first — see `invoke::create_store`.
     if let Invocation::Store {
@@ -255,6 +265,83 @@ fn publish_store_path(flag: Option<&std::path::Path>, json: bool) {
     let Some(flag) = flag else { return };
     match storyhook::env::canonical_ish(flag) {
         Ok(canonical) => unsafe { env::set_var("STORYHOOK_STORE_PATH", &canonical) },
+        Err(error) => fail(&error, json),
+    }
+}
+
+/// What [`ask_about_a_new_project`] decided.
+enum Asked {
+    /// Carry on with this invocation — either the original, or a bare `project
+    /// new` filled in by the questionnaire.
+    ///
+    /// Boxed because the other variant is a unit: an `Invocation` is large
+    /// enough that carrying one inline would make every `Asked` that size.
+    Proceed(Box<Invocation>),
+    /// The user declined. Nothing has been created and the exit code is 0.
+    Cancelled,
+}
+
+/// Turns a bare `story project new` into a fully stated one, by asking.
+///
+/// **The client is the only process that can do this.** The work runs in a
+/// daemon with no terminal and no way to reach one, so the conversation happens
+/// here and travels as an ordinary, fully specified request — the same shape a
+/// script would have sent. `main.rs` owns the `IsTerminal` decision and the two
+/// streams; `service::questionnaire` owns every word of the conversation and
+/// never names stdin, which is what keeps the interactive seam a single site.
+///
+/// Two cases cannot be asked at all, and both are refusals quoting a working
+/// non-interactive command rather than assumptions either way:
+///
+/// * **`--json`.** The contract is one self-describing document on stdout, and
+///   a prompt corrupts it for every scripted caller.
+/// * **No terminal.** A pipeline, a CI job, an agent. Defaulting a prefix here
+///   would be SH-109's silent `SH` wearing a new verb, in the one place nobody
+///   would ever notice.
+fn ask_about_a_new_project(invocation: Invocation, cwd: &std::path::Path, json: bool) -> Asked {
+    use std::io::IsTerminal;
+    use storyhook::cli::{NewProjectRequest, ProjectAction};
+    use storyhook::service::questionnaire::{self, Answered, Surroundings};
+
+    if !matches!(
+        invocation,
+        Invocation::Project {
+            action: ProjectAction::New(NewProjectRequest::Ask)
+        }
+    ) {
+        return Asked::Proceed(Box::new(invocation));
+    }
+
+    let refuse = |why: &str| -> ! {
+        fail(
+            &storyhook::error::AppError::Validation(format!(
+                "`story project new` needs somebody to ask, and {why}.\n\nState the answers \
+                 instead — `--prefix` is the only required one:\n\n  story project new --prefix \
+                 <PREFIX> [--name <NAME>] [--no-attach]"
+            )),
+            json,
+        )
+    };
+    if json {
+        refuse("--json cannot carry a prompt");
+    }
+    if !std::io::stdin().is_terminal() {
+        refuse("there is no terminal here");
+    }
+
+    let surroundings = Surroundings {
+        dir: cwd.to_path_buf(),
+        origin: storyhook::service::project::origin_of(cwd).map(|url| url.raw().to_string()),
+        agents_md_exists: cwd.join(storyhook::service::project::AGENTS_MD).is_file(),
+    };
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    let mut out = std::io::stderr();
+    match questionnaire::ask(&surroundings, &mut input, &mut out) {
+        Ok(Answered::Create(spec)) => Asked::Proceed(Box::new(Invocation::Project {
+            action: ProjectAction::New(NewProjectRequest::Stated(*spec)),
+        })),
+        Ok(Answered::Cancelled) => Asked::Cancelled,
         Err(error) => fail(&error, json),
     }
 }
