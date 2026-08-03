@@ -97,7 +97,6 @@ fn adopting_a_registry_records_the_checkouts_of_projects_the_store_knows() {
     ProjectService::new(&store, &root)
         .init(&InitOptions {
             agents_md: false,
-            pointer: true,
             ..InitOptions::default()
         })
         .expect("initializing");

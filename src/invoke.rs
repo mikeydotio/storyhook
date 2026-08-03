@@ -623,12 +623,11 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact
         | Invocation::HelpAll
-        | Invocation::Version => dispatch_unscoped_with(
+        | Invocation::Version => dispatch_unscoped_with_stdin(
             ctx.store(),
             ctx.cwd(),
             &ctx.now(),
             invocation,
-            true,
             ctx.stdin(),
         ),
     }
@@ -658,7 +657,6 @@ fn dispatch_project<S: Store>(
     store: &S,
     root: &Path,
     now: &str,
-    pointer: bool,
     action: ProjectAction,
 ) -> Result<Response, AppError> {
     match action {
@@ -695,7 +693,6 @@ fn dispatch_project<S: Store>(
                     prefix: Some(spec.prefix),
                     name: spec.name,
                     agents_md: !spec.no_agents_md,
-                    pointer,
                     attach,
                 })?;
             let slug = store
@@ -1234,12 +1231,7 @@ pub fn dispatch_unscoped<S: Store>(
     now: &str,
     invocation: Invocation,
 ) -> Result<Response, AppError> {
-    // The pointer file is the repository's copy of which project it is, and
-    // the store is the identity of record — so `init` writes it. The parameter
-    // survives on [`dispatch_unscoped_with`] for the legacy web daemon, whose
-    // `init` still builds a `.storyhook/` tree and must not also leave a
-    // pointer claiming a project that tree is not in.
-    dispatch_unscoped_with(store, root, now, invocation, true, None)
+    dispatch_unscoped_with_stdin(store, root, now, invocation, None)
 }
 
 /// Whether an invocation can be answered without opening a store at all.
@@ -1294,7 +1286,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
 /// must gate on [`needs_no_store`] first; an invocation that needs a store
 /// reaches the fallback arm, which is an internal error rather than a guess.
 ///
-/// [`dispatch_unscoped_with`] forwards here rather than keeping its own copies,
+/// [`dispatch_unscoped_with_stdin`] forwards here rather than keeping its own copies,
 /// so the CLI's pre-store path and the daemon's dispatcher cannot answer the
 /// same invocation differently.
 pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppError> {
@@ -1344,21 +1336,19 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
     }
 }
 
-/// [`dispatch_unscoped`], told whether `story project new` should write the pointer
-/// file.
-pub fn dispatch_unscoped_with<S: Store>(
+/// [`dispatch_unscoped`], given whatever the client read on standard input.
+pub fn dispatch_unscoped_with_stdin<S: Store>(
     store: &S,
     root: &Path,
     now: &str,
     invocation: Invocation,
-    pointer: bool,
     stdin_input: Option<&str>,
 ) -> Result<Response, AppError> {
     if needs_no_store(&invocation) {
         return dispatch_without_store(invocation);
     }
     match invocation {
-        Invocation::Project { action } => dispatch_project(store, root, now, pointer, action),
+        Invocation::Project { action } => dispatch_project(store, root, now, action),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
         // answered before it ever looked for a project — so this arm does too,
@@ -1904,22 +1894,16 @@ pub struct StoreInvoker<'a, S: Store> {
     cwd: PathBuf,
     env: Environment,
     hook_depth: u32,
-    pointer: bool,
 }
 
 impl<'a, S: Store> StoreInvoker<'a, S> {
     /// An invoker over `store`, running from `cwd` under `env`.
-    ///
-    /// Writes the pointer file on `story project new`, because for a process served
-    /// this way the store *is* where the project lives, and a checkout with no
-    /// pointer is one a fresh clone cannot identify.
     pub fn new(store: &'a S, cwd: impl Into<PathBuf>, env: Environment) -> Self {
         Self {
             store,
             cwd: cwd.into(),
             env,
             hook_depth: 0,
-            pointer: true,
         }
     }
 
@@ -1927,13 +1911,6 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     #[must_use]
     pub fn hook_depth(mut self, hook_depth: u32) -> Self {
         self.hook_depth = hook_depth;
-        self
-    }
-
-    /// Sets whether `story project new` writes the pointer file.
-    #[must_use]
-    pub fn pointer(mut self, pointer: bool) -> Self {
-        self.pointer = pointer;
         self
     }
 
@@ -2185,12 +2162,11 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                     describe_unscoped(&request.invocation)
                 )));
             }
-            return dispatch_unscoped_with(
+            return dispatch_unscoped_with_stdin(
                 self.store,
                 &self.cwd,
                 &now,
                 request.invocation,
-                self.pointer,
                 request.stdin.as_deref(),
             );
         }
@@ -2208,12 +2184,11 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             // files, and the legacy path printed them with default values in a
             // directory it knew nothing about.
             if matches!(request.invocation, Invocation::Scaffold { .. }) {
-                return dispatch_unscoped_with(
+                return dispatch_unscoped_with_stdin(
                     self.store,
                     &self.cwd,
                     &now,
                     request.invocation,
-                    self.pointer,
                     request.stdin.as_deref(),
                 );
             }

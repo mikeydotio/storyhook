@@ -327,17 +327,24 @@ fn every_project_gets_its_own_portable_identity() {
 // --- what reaches the repository -------------------------------------------
 
 #[test]
-fn the_pointer_file_is_written_only_when_asked_for() {
+fn an_attaching_run_always_leaves_the_checkout_carrying_its_identity() {
+    // The premise this replaces was `InitOptions::pointer`, a switch whose
+    // `false` no caller in `src/` ever set — `StoreInvoker::new` hard-coded
+    // `true` — and whose only effect was to leave a project no directory could
+    // identify. Once the recorded-path index went (SH-119) that state stopped
+    // being merely undesirable and became unrepresentable: an attaching run
+    // writes the file, or adopts the one already there.
+    //
+    // `--no-attach` is the verb for "identified by nothing on this machine",
+    // and `tests/project_new.rs` holds it to writing no pointer at all.
     let fixture = Fixture::new();
     let outcome = fixture.init(&bare());
-    assert!(!outcome.pointer);
+    assert!(outcome.pointer, "an attaching run writes the pointer file");
+    assert!(pointer_path(&fixture.root().canonicalize().unwrap()).exists());
     assert!(
-        !pointer_path(&fixture.root().canonicalize().unwrap()).exists(),
-        "init wrote a pointer file nobody asked for"
-    );
-    assert_eq!(
-        read_pointer(fixture.root()).expect("reading the absent pointer"),
-        None
+        read_pointer(fixture.root())
+            .expect("reading the pointer")
+            .is_some()
     );
 }
 
@@ -346,7 +353,6 @@ fn the_pointer_file_names_the_project_it_points_at() {
     let fixture = Fixture::new();
     let outcome = fixture.init(&InitOptions {
         prefix: Some("PT".into()),
-        pointer: true,
         ..bare()
     });
     assert!(outcome.pointer);
@@ -455,7 +461,6 @@ fn init_writes_nothing_else_into_the_repository() {
     // regression toward the storage model this replaces.
     let fixture = Fixture::new();
     fixture.init(&InitOptions {
-        pointer: true,
         ..InitOptions::default()
     });
 
@@ -504,10 +509,7 @@ fn a_project_with_no_closed_state_still_renders_a_template() {
 #[test]
 fn a_user_authored_pointer_file_survives_a_second_init() {
     let fixture = Fixture::new();
-    fixture.init(&InitOptions {
-        pointer: true,
-        ..bare()
-    });
+    fixture.init(&InitOptions { ..bare() });
     let root = fixture.root().canonicalize().expect("canonicalizing");
 
     // The user adds their hooks by hand, as they always have — storyhook writes
@@ -518,10 +520,7 @@ fn a_user_authored_pointer_file_survives_a_second_init() {
     );
     std::fs::write(pointer_path(&root), &authored).expect("authoring hooks");
 
-    let second = fixture.init(&InitOptions {
-        pointer: true,
-        ..bare()
-    });
+    let second = fixture.init(&InitOptions { ..bare() });
     assert!(
         !second.pointer,
         "a second init must report that it wrote no pointer file"
@@ -542,10 +541,7 @@ fn a_broken_config_table_does_not_make_the_repository_unresolvable() {
     // would mean a misspelled timeout stopped storyhook knowing which project
     // it was standing in.
     let fixture = Fixture::new();
-    let outcome = fixture.init(&InitOptions {
-        pointer: true,
-        ..bare()
-    });
+    let outcome = fixture.init(&InitOptions { ..bare() });
     let root = fixture.root().canonicalize().expect("canonicalizing");
     let mut text = std::fs::read_to_string(pointer_path(&root)).expect("reading the pointer");
     text.push_str("\n[hooks]\ntimeout_seconds = \"not a number\"\nnonsense = [1, 2]\n");
@@ -566,10 +562,7 @@ fn a_broken_config_table_does_not_make_the_repository_unresolvable() {
 #[test]
 fn a_clone_carrying_a_pointer_is_adopted_rather_than_given_a_second_project() {
     let fixture = Fixture::new();
-    let first = fixture.init(&InitOptions {
-        pointer: true,
-        ..bare()
-    });
+    let first = fixture.init(&InitOptions { ..bare() });
     let root = fixture.root().canonicalize().expect("canonicalizing");
     let pointer = std::fs::read_to_string(pointer_path(&root)).expect("reading the pointer");
 
@@ -579,10 +572,7 @@ fn a_clone_carrying_a_pointer_is_adopted_rather_than_given_a_second_project() {
     std::fs::write(pointer_path(clone.path()), pointer).expect("committing the pointer");
     let second = ProjectService::new(&fixture.store, clone.path())
         .clock(Clock::Fixed(FIXTURE_NOW.to_string()))
-        .init(&InitOptions {
-            pointer: true,
-            ..bare()
-        })
+        .init(&InitOptions { ..bare() })
         .expect("initializing the clone");
 
     assert_eq!(

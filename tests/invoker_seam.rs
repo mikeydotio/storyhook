@@ -65,7 +65,11 @@ mod resolution {
     use tempfile::TempDir;
 
     /// A store, and a project rooted at a scratch directory.
-    fn project(pointer: bool) -> (TempDir, SqliteStore, TempDir, ProjectId) {
+    ///
+    /// The checkout carries a pointer file, because an attaching run always
+    /// writes one (SH-119); a test whose subject is a checkout without one
+    /// removes the file itself, and says why.
+    fn project() -> (TempDir, SqliteStore, TempDir, ProjectId) {
         let dir = scratch_dir();
         let store =
             SqliteStore::open(Environment::at(dir.path()).store_path()).expect("opening the store");
@@ -74,11 +78,15 @@ mod resolution {
         let outcome = ProjectService::new(&store, root.path())
             .init(&InitOptions {
                 agents_md: false,
-                pointer,
                 ..InitOptions::default()
             })
             .expect("initializing");
         (dir, store, root, outcome.project)
+    }
+
+    /// Removes a checkout's pointer file, leaving only its recorded path row.
+    fn forget_the_pointer(root: &Path) {
+        std::fs::remove_file(root.join(".storyhook.toml")).expect("removing the pointer file");
     }
 
     /// `story summary` from `cwd`, which needs a resolved project to answer.
@@ -89,7 +97,7 @@ mod resolution {
 
     #[test]
     fn a_command_run_in_a_subdirectory_finds_the_project_above_it() {
-        let (_dir, store, root, _project) = project(true);
+        let (_dir, store, root, _project) = project();
         let deep = root.path().join("src/service/nested");
         std::fs::create_dir_all(&deep).expect("creating a subdirectory");
 
@@ -102,13 +110,12 @@ mod resolution {
 
     #[test]
     fn the_nearest_project_wins_over_an_outer_one() {
-        let (_dir, store, outer, outer_id) = project(true);
+        let (_dir, store, outer, outer_id) = project();
         let inner_root = outer.path().join("vendor/embedded");
         std::fs::create_dir_all(&inner_root).expect("creating the inner checkout");
         let inner_id = ProjectService::new(&store, &inner_root)
             .init(&InitOptions {
                 agents_md: false,
-                pointer: true,
                 ..InitOptions::default()
             })
             .expect("initializing the inner project")
@@ -133,7 +140,7 @@ mod resolution {
 
     #[test]
     fn a_directory_under_no_project_at_all_still_refuses() {
-        let (_dir, store, _root, _project) = project(true);
+        let (_dir, store, _root, _project) = project();
         let stranger = scratch_dir();
         let error = summary(&store, stranger.path()).expect_err("nothing to resolve");
         assert!(matches!(error, AppError::NotFound(_)), "{error}");
@@ -143,7 +150,8 @@ mod resolution {
     fn the_walk_resolves_by_a_recorded_path_when_there_is_no_pointer() {
         // Repositories migrated before the pointer existed, and the legacy web
         // daemon's checkouts, have a path row and no committed file.
-        let (_dir, store, root, _project) = project(false);
+        let (_dir, store, root, _project) = project();
+        forget_the_pointer(root.path());
         let deep = root.path().join("deep/er/still");
         std::fs::create_dir_all(&deep).expect("creating a subdirectory");
         summary(&store, &deep).expect("a recorded path is an identity too");
@@ -151,7 +159,7 @@ mod resolution {
 
     #[test]
     fn a_pointer_naming_an_unknown_project_does_not_shadow_a_valid_path_row() {
-        let (_dir, store, root, _project) = project(false);
+        let (_dir, store, root, _project) = project();
         write_pointer(
             root.path(),
             &ProjectPointer::new("no-such-uuid".to_string(), "SH".to_string()),
@@ -169,7 +177,7 @@ mod resolution {
         // The rearchitecture's headline property, at the level resolution owns
         // it: the pointer file is committed, so a second checkout carries it and
         // answers with the same project id.
-        let (_dir, store, root, project_id) = project(true);
+        let (_dir, store, root, project_id) = project();
         let pointer = std::fs::read_to_string(root.path().join(".storyhook.toml"))
             .expect("reading the pointer");
         let clone = scratch_dir();

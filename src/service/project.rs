@@ -848,13 +848,6 @@ pub struct InitOptions {
     /// rather than a surprising one: `--no-attach` says the project is not
     /// identified by anything on this machine.
     pub attach: bool,
-    /// Write the committed [pointer file](ProjectPointer).
-    ///
-    /// Off by default and left off by the dispatcher: until the store becomes
-    /// the identity of record, a pointer file in a repository that is still
-    /// tracked by `.storyhook/` would be a second answer to "which project is
-    /// this", and the two would disagree the moment either moved.
-    pub pointer: bool,
 }
 
 impl Default for InitOptions {
@@ -863,7 +856,6 @@ impl Default for InitOptions {
             prefix: None,
             name: None,
             agents_md: true,
-            pointer: false,
             attach: true,
         }
     }
@@ -1099,7 +1091,15 @@ impl<'a, S: Store> ProjectService<'a, S> {
         // second `init` in a repository that already has a pointer must leave
         // the user's configuration exactly where it is rather than replacing
         // the file with a freshly generated identity-only copy.
-        let pointer = options.pointer && existing_pointer.is_none();
+        //
+        // **Not optional (SH-119).** An attaching run either writes this file or
+        // adopts the one already here, so it cannot leave a project that no
+        // directory identifies. That used to be a switch — `InitOptions::pointer`
+        // — whose `false` was reachable from no caller in `src/` and whose only
+        // effect was to make an unreachable project expressible. SH-151's council
+        // asked for a refusal here; deleting the switch makes the state
+        // unrepresentable instead, which is the same answer in a stronger form.
+        let pointer = existing_pointer.is_none();
         if pointer {
             write_pointer(&root, &ProjectPointer::new(uuid, prefix.clone()))?;
         }
