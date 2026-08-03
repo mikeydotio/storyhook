@@ -74,6 +74,16 @@ pub struct InvokeRequest {
     /// no way to reach the terminal the user is typing into.
     #[serde(default)]
     pub stdin: Option<String>,
+    /// The project this invocation names, and how it named it.
+    ///
+    /// `None` means "nothing named one", which sends the resolver to the working
+    /// directory. It does **not** mean "fall back to a default": there is no
+    /// default, and a `Some` naming no project is refused rather than falling
+    /// through — which is the whole of SH-116's refuse-don't-guess invariant,
+    /// expressed as a type rather than as a check. See
+    /// [`ProjectSelector`](crate::api::wire::ProjectSelector).
+    #[serde(default)]
+    pub project: Option<crate::api::wire::ProjectSelector>,
 }
 
 impl InvokeRequest {
@@ -83,6 +93,7 @@ impl InvokeRequest {
             invocation,
             no_hooks: false,
             stdin: None,
+            project: None,
         }
     }
 
@@ -90,6 +101,13 @@ impl InvokeRequest {
     #[must_use]
     pub fn stdin(mut self, stdin: Option<String>) -> Self {
         self.stdin = stdin;
+        self
+    }
+
+    /// Names the project this invocation acts on.
+    #[must_use]
+    pub fn project(mut self, project: Option<crate::api::wire::ProjectSelector>) -> Self {
+        self.project = project;
         self
     }
 
@@ -1625,7 +1643,8 @@ impl Invoker for HttpInvoker {
         let wire = crate::api::wire::WireRequest::new(request.invocation, &self.cwd)
             .no_hooks(request.no_hooks)
             .hook_depth(self.hook_depth)
-            .stdin(request.stdin);
+            .stdin(request.stdin)
+            .project(request.project);
 
         let daemon = crate::daemon::lifecycle::ensure(&self.env)?;
         match Self::send(&daemon, &wire) {
@@ -1725,18 +1744,63 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
         self
     }
 
-    /// The project this working directory belongs to, if any.
+    /// The project this invocation acts on, in the order SH-116 fixed.
     ///
-    /// Walks the directory and then its ancestors. Reading a pointer file is
-    /// one `stat` plus, at most, one small `read`, so the walk costs a handful
-    /// of syscalls per level even in the failing case where it reaches the
-    /// filesystem root and answers `None`.
-    fn resolve(&self) -> Result<Option<ProjectId>, AppError> {
+    /// Four steps, written as four consecutive early-returns rather than as
+    /// nested conditions, and that shape is load-bearing: SH-119 deletes step 2
+    /// and the remaining three are literally the order the story states. A nest
+    /// would make that deletion a rewrite, and a rewrite is what stops a bisect
+    /// attributing a regression.
+    ///
+    /// 1. **The selector** — `--project`, else `$STORYHOOK_PROJECT`, collapsed
+    ///    into one value by the client. **Binding**: it resolves or it refuses,
+    ///    and never falls through to the directory. That is the fix for a
+    ///    measured defect — `STORYHOOK_PROJECT=nonesuch story list` used to be
+    ///    ignored in silence and answer about whatever project the directory
+    ///    happened to be.
+    /// 2. **The legacy walk** — the pointer file, then the recorded path, at the
+    ///    working directory and then each ancestor. SH-119's to delete.
+    /// 3. **The origin** — this directory's `origin`, normalized, looked up
+    ///    among the registered ones.
+    /// 4. Otherwise `None`, and the caller refuses.
+    ///
+    /// # Why the walk outranks the origin, for now
+    ///
+    /// Measured, not preferred: when this was written **no project in the store
+    /// and no fixture in the suite had a registered origin**, so consulting one
+    /// first would spend a `git` subprocess — 14 ms, against an 11.8 ms
+    /// whole-command baseline — to learn nothing, on every command on the
+    /// machine. Last means it is paid only by a command that is about to refuse
+    /// anyway, where it buys the refusal its `origin` line.
+    ///
+    /// The cost is that a pointer file outranks a registered origin when the two
+    /// disagree. That state is a checkout claiming two projects, which is a
+    /// defect rather than a preference, so `story doctor` reports it where
+    /// reporting is free instead of the resolver paying for it every time.
+    fn resolve_project(
+        &self,
+        selector: Option<&crate::api::wire::ProjectSelector>,
+    ) -> Result<Option<ProjectId>, AppError> {
+        if let Some(selector) = selector {
+            let found = self
+                .store
+                .read(|tx| tx.project_by_slug(selector.slug()))?
+                .ok_or_else(|| crate::service::project::unknown_project_refusal(selector))?;
+            return Ok(Some(found.id));
+        }
+
         for dir in ancestors(&self.cwd) {
             if let Some(project) = resolve_at(self.store, &dir)? {
                 return Ok(Some(project));
             }
         }
+
+        if let Some(remote) = crate::service::project::origin_of(&self.cwd)
+            && let Some(found) = self.store.read(|tx| tx.project_by_remote(&remote))?
+        {
+            return Ok(Some(found.id));
+        }
+
         Ok(None)
     }
 
@@ -1827,6 +1891,19 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             )?;
         }
         if is_project_less(&request.invocation) {
+            // A *flag* naming a project for a command that acts on none is a
+            // mistake in this invocation, and saying so is cheap. A *variable*
+            // is not: it is set once and inherited by everything, so refusing it
+            // would mean one `export` breaks `story project list` — which is
+            // precisely the command somebody runs to find out which slugs exist.
+            // The asymmetry is the design, not an oversight.
+            if let Some(crate::api::wire::ProjectSelector::Flag { slug }) = &request.project {
+                return Err(AppError::Usage(format!(
+                    "`story {}` does not act on a single project, so `--project {slug}` has \
+                     nothing to select. Re-run it without the flag.",
+                    describe_unscoped(&request.invocation)
+                )));
+            }
             return dispatch_unscoped_with(
                 self.store,
                 &self.cwd,
@@ -1837,7 +1914,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             );
         }
 
-        let Some(project) = self.resolve()? else {
+        let Some(project) = self.resolve_project(request.project.as_ref())? else {
             // `session-start` is a hook, and a hook that reports an error
             // writes that error into a model's context. Silence is its answer
             // for a directory storyhook has never heard of.
@@ -1878,9 +1955,15 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                     pointer.uuid
                 )));
             }
-            return Err(AppError::NotFound(
-                "story project not initialized in this directory; run `story project init`"
-                    .to_string(),
+            // Nothing named a project and nothing here answers for one. The
+            // origin is looked up again rather than threaded down from
+            // `resolve_project`: this branch is the refusal, so the second call
+            // is paid only by a command that is already failing, and threading
+            // it would put a `Some`-carrying parameter on the success path where
+            // nothing reads it.
+            return Err(crate::service::project::no_project_refusal(
+                &self.cwd,
+                crate::service::project::origin_of(&self.cwd).as_ref(),
             ));
         };
 
@@ -1890,6 +1973,71 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             .with_stdin(request.stdin);
         dispatch(&ctx, request.invocation)
     }
+}
+
+/// Whether this invocation must answer `{}` rather than report a failure it
+/// could not avoid.
+///
+/// **One member, and that is the design rather than a starting point.** A list
+/// would need a rule for joining it; a single `matches!` cannot drift.
+///
+/// `session-start` is not a command a person types — it is a hook, fired
+/// involuntarily at the top of an agent session, and its output goes into a
+/// model's context window rather than onto a terminal. Its contract is already
+/// "print `{}` when there is nothing to say" ([`crate::service::session::SILENT`]),
+/// and it already keeps that contract for every failure *inside* the daemon. The
+/// gap this closes is the failure that happens before a daemon exists to ask: a
+/// store that will not open used to put 1.2 kB of corruption diagnosis into a
+/// model's context and exit 5.
+///
+/// # Why this is not the silence SH-114 spent a story removing
+///
+/// SH-114 made the *transport's* diagnostics loud, for commands a human ran and
+/// was waiting on. This exemption touches no such command. A diagnostic here is
+/// not louder — it is **misdirected**: it reads as project state to the only
+/// reader who receives it, and reaches nobody who can act on it. And nothing is
+/// swallowed, only routed: a daemon that fails to start still records why to
+/// [`crate::env::Environment::daemon_failure`], and `story daemon status` still
+/// reports it, so the person who wants the diagnosis gets it in full from the
+/// command they would run to ask.
+///
+/// The three managed git hooks deliberately have **no** entry here. They run
+/// `commit-sync`, `move` and `next` — ordinary verbs a human also runs — so a
+/// predicate over [`Invocation`] would silence `story next` for a person
+/// standing at a terminal. Their silence belongs to the hook scripts, where
+/// `tests/hook_silence.rs` pins it in both directions.
+#[must_use]
+pub fn failure_is_silent(invocation: &Invocation) -> bool {
+    matches!(invocation, Invocation::SessionStart)
+}
+
+/// How to spell a project-less invocation back to the user, for the refusal
+/// that tells them `--project` has nothing to select.
+///
+/// Deliberately coarse — the verb and, where a family splits, its subcommand.
+/// The reader already typed the command; what they need is confirmation of
+/// *which* one storyhook thinks takes no project, not an echo of their
+/// arguments.
+fn describe_unscoped(invocation: &Invocation) -> String {
+    match invocation {
+        Invocation::Project { action } => match action {
+            ProjectAction::Init { .. } => "project init",
+            ProjectAction::Deinit { .. } => "project deinit",
+            _ => "project list",
+        },
+        Invocation::ImportProject { .. } => "import-project",
+        Invocation::Migrate { .. } => "migrate",
+        Invocation::Plugin { .. } => "plugin",
+        Invocation::Hooks { .. } => "hooks",
+        Invocation::Decompose { .. } => "decompose",
+        Invocation::Daemon { .. } => "daemon",
+        Invocation::Web { .. } => "web",
+        Invocation::Store { .. } => "store",
+        Invocation::Update { .. } => "update",
+        Invocation::Version => "version",
+        _ => "help",
+    }
+    .to_string()
 }
 
 /// Whether an invocation is answered without resolving a project.
