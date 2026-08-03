@@ -167,10 +167,10 @@ removes any legacy plugin directory left by older versions.
 
 ## Quick start
 
-Initialize a project inside the repository you want to track:
+Create a project inside the repository you want to track. With no flags at a terminal it asks; with any flag it never does, and `--prefix` is required:
 
 ```bash
-story project init
+story project new --prefix SH
 ```
 
 Create a story:
@@ -229,8 +229,9 @@ story doctor
 ## Command reference
 
 ```text
-story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
-story project deinit [PATH|SLUG] [--force]
+story project new --prefix <PREFIX> [--name <NAME>]
+                  [--attach <PATH> | --no-attach] [--no-agents-md]
+story project delete [--force]
 story project list
 story project settings list | get <key> | set <key> <value> | unset <key>
 story new <title>
@@ -386,7 +387,7 @@ Behavior:
 
 `story` includes a local web dashboard for browsing and triaging stories visually, alongside the CLI. One dashboard serves **every project the store knows** — a home screen with a summary card per repo, a repo-select dropdown for fast switching, and, per repo, the same Board/List/drawer views a single-project dashboard has always had.
 
-There is no registration step. A project reaches the dashboard by existing: `story project init` puts it in the store, and the store is what the dashboard reads. `story project list` prints the same set.
+There is no registration step. A project reaches the dashboard by existing: `story project new` puts it in the store, and the store is what the dashboard reads. `story project list` prints the same set.
 
 ```bash
 story web start [--port <PORT>]      # start the dashboard (default port 3456)

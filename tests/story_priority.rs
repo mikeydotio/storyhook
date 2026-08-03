@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn set_and_show_priority() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -40,7 +40,7 @@ fn set_and_show_priority() {
 fn priority_defaults_to_none() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -59,7 +59,7 @@ fn priority_defaults_to_none() {
 fn override_priority() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -82,7 +82,7 @@ fn override_priority() {
 fn invalid_priority_fails() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -101,7 +101,7 @@ fn invalid_priority_fails() {
 fn list_filters_by_priority() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -134,7 +134,7 @@ fn list_filters_by_priority() {
 fn priority_in_json_output() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -157,7 +157,7 @@ fn priority_in_json_output() {
 fn list_shows_priority_in_line() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())

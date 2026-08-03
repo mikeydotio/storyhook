@@ -167,11 +167,11 @@ button { cursor: pointer; }
    "not a normal repo", full opacity and a pointer because it is still worth
    clicking into. */
 .repo-card.read-only { border-style: dashed; }
-.deinit-panel { border: 1px solid var(--danger); border-radius: var(--radius); padding: 0.875rem; margin-bottom: 1rem; }
-.deinit-title { font-weight: 700; margin-bottom: 0.5rem; }
-.deinit-line { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); }
-.deinit-warning { color: var(--danger); font-weight: 600; margin-top: 0.5rem; }
-.deinit-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; }
+.delete-panel { border: 1px solid var(--danger); border-radius: var(--radius); padding: 0.875rem; margin-bottom: 1rem; }
+.delete-title { font-weight: 700; margin-bottom: 0.5rem; }
+.delete-line { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); }
+.delete-warning { color: var(--danger); font-weight: 600; margin-top: 0.5rem; }
+.delete-actions { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; }
 .repo-card-name { font-weight: 700; font-size: 0.9375rem; margin-bottom: 0.25rem; }
 .repo-card-path { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); overflow-wrap: anywhere; margin-bottom: 0.625rem; }
 .repo-card-stats { display: flex; gap: 0.75rem; font-size: 0.75rem; color: var(--fg-muted); font-weight: 600; }
@@ -2255,7 +2255,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       // Its own node, outside the table: the table is rebuilt on every repo
       // refresh, and a confirmation panel that vanished mid-typing because a
       // poll landed would be worse than no confirmation at all.
-      container.appendChild(el("div", { id: "settings-deinit" }, []));
+      container.appendChild(el("div", { id: "settings-delete" }, []));
       container.appendChild(el("div", { id: "settings-table-wrap" }, []));
       container.dataset.built = "1";
     }
@@ -2284,7 +2284,7 @@ tbody tr:hover { background: var(--bg-sunken); }
             onClick: function() { goStatuses(r.id); }
           }, ["Statuses"])
         ]),
-        el("td", {}, [el("button", { class: "btn btn-danger", onClick: function() { deinitProject(r.id); } }, ["Delete"])])
+        el("td", {}, [el("button", { class: "btn btn-danger", onClick: function() { deleteProject(r.id); } }, ["Delete"])])
       ]));
     });
     wrap.appendChild(el("table", { class: "settings-table" }, [
@@ -2609,57 +2609,93 @@ tbody tr:hover { background: var(--bg-sunken); }
       });
   }
 
-  /** `story project init`, from the browser.
+  /** A prefix suggested from the last segment of a path.
+   *
+   * The same derivation `story project new`'s questionnaire offers, and only
+   * ever a SUGGESTION: it pre-fills a field the user can overwrite, and the
+   * server validates whatever is actually submitted through
+   * `domain::prefix::validate`. That is what makes six lines of untestable
+   * JavaScript safe to ship — a wrong derivation is a 400, not a stored bad
+   * value. */
+  function derivePrefix(path) {
+    var last = String(path || "").replace(/[\/\\]+$/, "").split(/[\/\\]/).pop() || "";
+    var parts = last.split(/[^A-Za-z0-9]+/).filter(function(p) { return p.length; });
+    var candidate = "";
+    if (parts.length >= 2) candidate = parts.slice(0, 4).map(function(p) { return p[0]; }).join("");
+    else if (parts.length === 1) candidate = parts[0].slice(0, 3);
+    candidate = candidate.toUpperCase();
+    // The same shape `domain::prefix::validate` accepts. A candidate that would
+    // be refused is no suggestion at all — `123-456` derives "14", which the
+    // server rejects — so the field is left empty and the user chooses. Empty
+    // rather than "SH", deliberately: the field is required, and pre-filling a
+    // default nobody chose is SH-109 wearing a form.
+    return /^[A-Z][A-Z0-9]{0,9}$/.test(candidate) ? candidate : "";
+  }
+
+  /** `story project new`, from the browser.
    *
    * There is no "register a repo" any more — a project reaches the dashboard
    * by existing. This creates one at a path on this machine, which is the same
-   * operation the CLI performs, through the same dispatcher. */
+   * operation the CLI performs, through the same dispatcher.
+   *
+   * The prefix is REQUIRED, and the browser is why. It is the one caller that
+   * can never be asked: the CLI has a questionnaire for a bare `story project
+   * new`, and a form has no equivalent. A server-side default here would be
+   * SH-109's silent `SH` wearing a form, in the one place nobody would notice
+   * it happening. */
   function buildInitForm() {
     var pathInput = el("input", { type: "text", placeholder: "Path to a repository on this machine" });
     var nameInput = el("input", { type: "text", placeholder: "Display name (optional)" });
-    var prefixInput = el("input", { type: "text", placeholder: "Story-id prefix (default SH)" });
+    var prefixInput = el("input", { type: "text", placeholder: "Story-id prefix (required, e.g. SH)" });
+    // Filled from the path as a suggestion, and never over something typed.
+    var prefixTouched = false;
+    prefixInput.addEventListener("input", function() { prefixTouched = true; });
+    pathInput.addEventListener("input", function() {
+      if (!prefixTouched) prefixInput.value = derivePrefix(pathInput.value);
+    });
     var error = el("div", { class: "modal-error" }, []);
     var submit = el("button", { class: "btn btn-primary", onClick: function() {
       var path = pathInput.value.trim();
       if (!path) { error.textContent = "Path is required."; return; }
-      var body = { path: path };
+      var prefix = prefixInput.value.trim();
+      if (!prefix) { error.textContent = "Story-id prefix is required. It is minted into every story id and cannot be changed afterwards."; return; }
+      var body = { path: path, prefix: prefix };
       if (nameInput.value.trim()) body.name = nameInput.value.trim();
-      if (prefixInput.value.trim()) body.prefix = prefixInput.value.trim();
       api("POST", "/api/repos", body)
         .then(function() {
-          pathInput.value = ""; nameInput.value = ""; prefixInput.value = ""; error.textContent = "";
-          toast("Project initialized", "success");
+          pathInput.value = ""; nameInput.value = ""; prefixInput.value = ""; prefixTouched = false; error.textContent = "";
+          toast("Project created", "success");
           fetchReposOnce();
         })
         .catch(function(err) { error.textContent = err.message; });
-    } }, ["Initialize"]);
+    } }, ["Create"]);
     return el("div", { class: "settings-form" }, [pathInput, nameInput, prefixInput, submit, error]);
   }
 
-  /** `story project deinit`, from the browser.
+  /** `story project delete`, from the browser.
    *
    * Two steps, exactly as the terminal is. The first DELETE carries no
    * confirmation and answers 409 with the plan — what would be destroyed,
    * counted, having written nothing. The second carries the slug the user
    * typed. Both render the *same* value the CLI prompt is drawn from, which is
    * what stops the two front-ends from growing two different warnings. */
-  function deinitProject(id) {
+  function deleteProject(id) {
     api("DELETE", "/api/repos/" + encodeURIComponent(id), null)
       .then(function() {
         // A project with nothing in it needs no ceremony, but the server is
         // the one that decides that — if it ever stops asking, this still works.
-        afterDeinit(id);
+        afterDelete(id);
       })
       .catch(function(err) {
         if (err.status === 409 && err.body && err.body.plan) {
-          showDeinitConfirm(err.body.plan);
+          showDeleteConfirm(err.body.plan);
         } else {
           toastError(err);
         }
       });
   }
 
-  function afterDeinit(id) {
+  function afterDelete(id) {
     toast("Project deleted", "success");
     if (state.repoId === id) {
       state.repoId = null;
@@ -2673,25 +2709,30 @@ tbody tr:hover { background: var(--bg-sunken); }
    * only accepts the project's slug typed in full. A single click is the right
    * weight for reopening a story and the wrong weight for erasing every event
    * a project has. */
-  function showDeinitConfirm(plan) {
-    var wrap = $("settings-deinit");
+  function showDeleteConfirm(plan) {
+    var wrap = $("settings-delete");
     if (!wrap) return;
     clear(wrap);
 
     var lines = [
-      el("div", { class: "deinit-title" }, ["Delete " + plan.slug + " — " + plan.name]),
-      el("div", { class: "deinit-line" }, [
+      el("div", { class: "delete-title" }, ["Delete " + plan.slug + " — " + plan.name]),
+      el("div", { class: "delete-line" }, [
         plan.stories + (plan.stories === 1 ? " story" : " stories") + " and " +
         plan.events + (plan.events === 1 ? " event" : " events") + " will be permanently deleted."
       ])
     ];
-    (plan.files || []).forEach(function(f) {
-      lines.push(el("div", { class: "deinit-line" }, ["remove  " + f]));
+    // The checkouts are named, and then told apart from a list of casualties.
+    // Nothing under them is deleted since SH-117, and a bare list of paths in a
+    // destruction warning reads as exactly the opposite.
+    (plan.checkouts || []).forEach(function(path) {
+      lines.push(el("div", { class: "delete-line" }, ["checkout  " + path]));
     });
-    (plan.kept || []).forEach(function(pair) {
-      lines.push(el("div", { class: "deinit-line" }, ["keep    " + pair[0] + " (" + pair[1] + ")"]));
-    });
-    lines.push(el("div", { class: "deinit-warning" }, ["This cannot be undone."]));
+    if ((plan.checkouts || []).length) {
+      lines.push(el("div", { class: "delete-line" }, [
+        "Nothing in those directories is touched; their .storyhook.toml is left naming a project that will not exist."
+      ]));
+    }
+    lines.push(el("div", { class: "delete-warning" }, ["This cannot be undone."]));
 
     var error = el("div", { class: "modal-error" }, []);
     var typed = el("input", { type: "text", placeholder: "Type " + plan.slug + " to confirm" });
@@ -2701,13 +2742,13 @@ tbody tr:hover { background: var(--bg-sunken); }
         return;
       }
       api("DELETE", "/api/repos/" + encodeURIComponent(plan.slug), { confirm: plan.slug })
-        .then(function() { clear(wrap); afterDeinit(plan.slug); })
+        .then(function() { clear(wrap); afterDelete(plan.slug); })
         .catch(function(err) { error.textContent = err.message; });
     } }, ["Delete permanently"]);
     var cancel = el("button", { class: "btn", onClick: function() { clear(wrap); } }, ["Cancel"]);
 
-    wrap.appendChild(el("div", { class: "deinit-panel" },
-      lines.concat([el("div", { class: "deinit-actions" }, [typed, confirm, cancel]), error])));
+    wrap.appendChild(el("div", { class: "delete-panel" },
+      lines.concat([el("div", { class: "delete-actions" }, [typed, confirm, cancel]), error])));
     typed.focus();
   }
 

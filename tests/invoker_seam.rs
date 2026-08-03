@@ -352,7 +352,7 @@ mod unmigrated {
         // directory, and look like it worked.
         let project = legacy_checkout();
         project
-            .run(&["project", "init"])
+            .run(&["project", "new", "--prefix", "SH"])
             .code(3)
             .stderr(predicates::str::contains("story migrate"));
     }
@@ -405,13 +405,13 @@ mod unmigrated {
             .expect("running story list");
         let stderr = String::from_utf8_lossy(&out.stderr);
         // The ordinary refusal, which SH-116 rewrote: it used to be one line
-        // naming `story project init` and now names all three ways out. What
+        // naming a single command and now names all three ways out. What
         // this test is about is unchanged and is the *second* assertion — that
         // a directory carrying only legacy *config* is not accused of being an
         // unmigrated tree. The first is here to prove it got the ordinary
         // refusal rather than some other failure on the way.
         assert!(
-            stderr.contains("story project init"),
+            stderr.contains("story project new"),
             "expected the ordinary refusal, got: {stderr}"
         );
         assert!(!stderr.contains("story migrate"), "{stderr}");

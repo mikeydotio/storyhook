@@ -119,7 +119,7 @@ fn mutating(method: &Method) -> bool {
 /// Decides how to respond to a request against `store`.
 ///
 /// `/` always serves the single-page app; `/api/repos` (list/init) and
-/// `/api/repos/<id>` (deinit) operate on the project catalog; every other
+/// `/api/repos/<id>` (delete) operate on the project catalog; every other
 /// `/api/repos/<id>/...` path resolves `<id>` to that project and delegates to
 /// [`route_project`], the entire per-project API surface.
 pub fn route<S: Store>(
@@ -154,7 +154,7 @@ pub fn route<S: Store>(
             Method::Delete => Routed::changing(
                 method,
                 guarded(headers, trusted_hosts, body, |b| {
-                    route_deinit_repo(store, env, id, b)
+                    route_delete_repo(store, env, id, b)
                 }),
                 Changed::Catalog,
             ),
@@ -307,8 +307,9 @@ fn pathless_refusal(slug: &str) -> AppError {
     AppError::Validation(format!(
         "`{slug}` has {NO_CHECKOUT}, so there is nowhere to run this change: a write fires the \
          project's event hooks and its git operations in its working directory. Its stories stay \
-         readable here.\n\nRun `story project init` in a checkout of it to adopt one, or \
-         `story relink {slug} <path>` if the checkout simply moved."
+         readable here.\n\nRun `story project new --prefix <PREFIX>` in a checkout of it to \
+         adopt one, or `story --project {slug} project link checkout <path>` if the checkout \
+         simply moved."
     ))
 }
 
@@ -417,13 +418,26 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
     to_json(&repos)
 }
 
-/// `POST /api/repos` — initialize a project at a path on this machine.
-/// Body: `{"path": "...", "name"?: "...", "prefix"?: "..."}`.
+/// `POST /api/repos` — create a project at a path on this machine.
+/// Body: `{"path": "...", "prefix": "...", "name"?: "..."}`.
 ///
-/// The same operation as `story project init`, reached through the same
-/// **invoker**, so the browser cannot create a project the CLI would have
-/// created differently. There is no longer a "register" that is distinct from
-/// this: a project reaches the dashboard by existing.
+/// The same operation as `story project new --attach <path>`, reached through
+/// the same **invoker**, so the browser cannot create a project the CLI would
+/// have created differently. There is no longer a "register" that is distinct
+/// from this: a project reaches the dashboard by existing.
+///
+/// # Why `prefix` is required here
+///
+/// The browser is the one caller that can never be asked. The CLI has a
+/// questionnaire for a bare `story project new`; a form has no equivalent, so a
+/// server-side default would be SH-109's silent `SH` wearing a form, in the one
+/// place nobody would ever notice it happening. Absent is a 400 naming the
+/// field, raised by the same `AppError::Usage` the CLI raises.
+///
+/// The form derives a suggestion from the last path segment client-side, and
+/// this route validates whatever arrives through `domain::prefix::validate` —
+/// which is what makes an untestable six-line JavaScript derivation safe to
+/// ship. A wrong derivation is a 400, not a stored bad value.
 ///
 /// # Why the invoker and not the dispatcher
 ///
@@ -439,16 +453,28 @@ fn route_init_repo<S: Store>(store: &S, env: &Environment, body: &str) -> Reply 
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let path = require_str(&obj, "path")?;
+        let prefix = get_str(&obj, "prefix")
+            .map(str::trim)
+            .filter(|prefix| !prefix.is_empty())
+            .ok_or_else(|| {
+                AppError::Usage(
+                    "`prefix` is required. It is minted into every story id this project ever \
+                     creates and cannot be changed afterwards, so it is not defaulted."
+                        .to_string(),
+                )
+            })?;
         let invocation = Invocation::Project {
-            action: ProjectAction::Init {
-                // Absolute, because a relative path would resolve against the
-                // daemon's own working directory and the browser has no
-                // meaningful one to offer.
-                path: Some(path.to_string()),
-                prefix: get_str(&obj, "prefix").map(str::to_string),
-                name: get_str(&obj, "name").map(str::to_string),
-                no_agents_md: false,
-            },
+            action: ProjectAction::New(crate::cli::NewProjectRequest::Stated(
+                crate::cli::NewProjectSpec {
+                    // Absolute, because a relative path would resolve against
+                    // the daemon's own working directory and the browser has no
+                    // meaningful one to offer.
+                    attach: crate::cli::Attach::Path(path.to_string()),
+                    prefix: crate::domain::prefix::validate(prefix)?,
+                    name: get_str(&obj, "name").map(str::to_string),
+                    no_agents_md: false,
+                },
+            )),
         };
         let response = invoke_from_browser(store, env, std::path::Path::new(path), invocation)?;
         Ok(json_reply(201, render_response(&response, true, false)))
@@ -473,21 +499,40 @@ fn invoke_from_browser<S: Store>(
     cwd: &std::path::Path,
     invocation: Invocation,
 ) -> Result<Response, AppError> {
+    invoke_from_browser_as(store, env, cwd, invocation, None)
+}
+
+/// [`invoke_from_browser`], for a route that names its project by slug.
+///
+/// A browser has no working directory to resolve from, so a scoped verb
+/// reached from one has to carry a selector — the same
+/// [`ProjectSelector::Flag`](crate::api::wire::ProjectSelector::Flag) a
+/// `--project <slug>` on the command line produces. Routing it through the
+/// selector rather than through a target field of the action's own is what
+/// keeps SH-116's "three ways and no fourth" true of the browser too.
+fn invoke_from_browser_as<S: Store>(
+    store: &S,
+    env: &Environment,
+    cwd: &std::path::Path,
+    invocation: Invocation,
+    project: Option<crate::api::wire::ProjectSelector>,
+) -> Result<Response, AppError> {
     use crate::invoke::{InvokeRequest, Invoker as _};
-    crate::invoke::StoreInvoker::new(store, cwd, env.clone()).invoke(InvokeRequest::new(invocation))
+    crate::invoke::StoreInvoker::new(store, cwd, env.clone())
+        .invoke(InvokeRequest::new(invocation).project(project))
 }
 
 /// `DELETE /api/repos/{id}` — **permanently delete** a project and everything
 /// recorded against it.
 ///
 /// Two-step, exactly as the CLI is. Without a body naming the project's slug
-/// this answers `409` carrying the same [`DeinitPlan`](crate::output::DeinitPlan)
+/// this answers `409` carrying the same [`DeletePlan`](crate::output::DeletePlan)
 /// the terminal prompt is drawn from, and writes nothing; the browser renders
 /// that as its confirmation modal and sends the slug back. One value, two
 /// front-ends, so the warning cannot say two different things.
 ///
 /// Body: `{"confirm": "<slug>"}`.
-fn route_deinit_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &str) -> Reply {
+fn route_delete_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let confirmed = parse_json_object(body)
             .ok()
@@ -495,15 +540,21 @@ fn route_deinit_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &st
             .is_some_and(|typed| typed == id);
 
         let invocation = Invocation::Project {
-            action: ProjectAction::Deinit {
-                target: Some(id.to_string()),
-                force: confirmed,
-            },
+            action: ProjectAction::Delete { force: confirmed },
         };
-        // The daemon has no working directory of the user's; a slug target does
-        // not need one, and `deinit` only touches repository files in a
-        // directory the caller named by path.
-        let response = invoke_from_browser(store, env, std::path::Path::new("/"), invocation)?;
+        // The project is named the way every other scoped verb names one — the
+        // selector — rather than by a target field the action no longer has.
+        // The daemon has no working directory of the user's and does not need
+        // one: `delete` reads no filesystem, and the slug answers on its own.
+        let response = invoke_from_browser_as(
+            store,
+            env,
+            std::path::Path::new("/"),
+            invocation,
+            Some(crate::api::wire::ProjectSelector::Flag {
+                slug: id.to_string(),
+            }),
+        )?;
         let status = match response {
             Response::ConfirmationRequired(_) => 409,
             _ => 200,

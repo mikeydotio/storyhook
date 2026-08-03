@@ -25,7 +25,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn delete_excludes_story_from_open_counts() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -63,7 +63,7 @@ fn delete_excludes_story_from_report_open_count() {
     // `summary`'s text happening to match.
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
@@ -85,7 +85,7 @@ fn delete_excludes_story_from_report_open_count() {
 fn delete_excludes_story_from_next_and_list_ready() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -116,7 +116,7 @@ fn delete_excludes_story_from_next_and_list_ready() {
 fn delete_marks_deleted_story_in_plain_list() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -144,7 +144,7 @@ fn delete_marks_deleted_story_in_plain_list() {
 fn deleted_blocker_no_longer_blocks_dependent() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -186,7 +186,7 @@ fn deleted_blocker_no_longer_blocks_dependent() {
 fn delete_show_json_exposes_superstate_and_deleted_fields() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -227,7 +227,7 @@ fn delete_show_json_exposes_superstate_and_deleted_fields() {
 fn delete_closes_the_story_and_leaves_it_readable() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -268,7 +268,7 @@ fn delete_closes_the_story_and_leaves_it_readable() {
 fn reopen_deleted_story_without_force_fails_and_stays_closed() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -302,7 +302,7 @@ fn reopen_deleted_story_without_force_fails_and_stays_closed() {
 fn reopen_deleted_story_with_force_undeletes() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -354,7 +354,7 @@ fn reopen_ordinarily_closed_story_needs_no_force() {
     // must be completely unaffected by the guarded-undelete behavior.
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())

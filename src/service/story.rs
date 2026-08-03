@@ -485,7 +485,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// deliberately a verb of its own rather than a flag on `delete`. A flag
     /// that turns a reversible act into an irreversible one is the wrong shape
     /// — `story delete --hard` is one keystroke away from `story delete`, and
-    /// the two do incomparable things. `story project deinit` set the
+    /// the two do incomparable things. `story project delete` sets the
     /// precedent.
     ///
     /// It **refuses a story that has not been soft-deleted**, which is also the

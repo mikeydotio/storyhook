@@ -144,7 +144,7 @@ fn hook_outputs_empty_json_when_no_storyhook_dir() {
 fn hook_outputs_empty_json_when_plugin_disabled() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -173,7 +173,7 @@ fn hook_outputs_empty_json_when_plugin_disabled() {
 fn hook_outputs_system_message_for_valid_project() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -203,7 +203,7 @@ fn hook_outputs_system_message_for_valid_project() {
 fn hook_system_message_contains_story_count() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -232,7 +232,7 @@ fn hook_system_message_contains_story_count() {
 fn hook_system_message_contains_next_story_info() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -265,7 +265,7 @@ fn hook_system_message_contains_next_story_info() {
 fn hook_completes_within_timeout() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -293,7 +293,7 @@ fn hook_completes_within_timeout() {
 fn hook_handles_empty_project_gracefully() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     // No stories created
@@ -324,7 +324,7 @@ fn hook_handles_empty_project_gracefully() {
 fn hook_output_is_strictly_valid_json() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -360,7 +360,7 @@ fn hook_system_message_contains_cli_reference() {
     // to use storyhook commands.
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -387,7 +387,7 @@ fn hook_system_message_contains_project_state() {
     // status, but enough for the LLM to orient).
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -424,7 +424,7 @@ fn hook_system_message_contains_project_state() {
 fn hook_handles_special_characters_in_story_title() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -448,7 +448,7 @@ fn hook_handles_special_characters_in_story_title() {
 fn hook_handles_unicode_in_story_title() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())

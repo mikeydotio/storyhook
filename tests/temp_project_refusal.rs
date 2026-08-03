@@ -47,7 +47,7 @@ fn init_in(cwd: &Path, data_home: &Path, allow: bool) -> std::process::Output {
         .env("HOME", cwd)
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("STORYHOOK_DATA_DIR", data_home)
-        .args(["project", "init"]);
+        .args(["project", "new", "--prefix", "SH"]);
     // The refusal happens wherever the store is opened, which is now the daemon
     // — and the daemon inherits this command's environment, so it is still the
     // environment this test built. These two are put back because a daemon with
@@ -62,7 +62,7 @@ fn init_in(cwd: &Path, data_home: &Path, allow: bool) -> std::process::Output {
     cmd.output().expect("running the binary under test")
 }
 
-/// [`init_in`], for `story project init` and its optional `PATH`.
+/// [`init_in`], for `story project new` and its optional `--attach` target.
 fn init_project_in(
     cwd: &Path,
     path: Option<&str>,
@@ -75,12 +75,12 @@ fn init_project_in(
         .env("HOME", cwd)
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("STORYHOOK_DATA_DIR", data_home)
-        .args(["project", "init"]);
+        .args(["project", "new", "--prefix", "SH"]);
     for (name, value) in daemon_containment() {
         cmd.env(name, value);
     }
     if let Some(path) = path {
-        cmd.arg(path);
+        cmd.args(["--attach", path]);
     }
     if allow {
         cmd.env("STORYHOOK_ALLOW_TEMP_PROJECT", "1");
@@ -162,8 +162,8 @@ fn init_in_a_temp_dir_is_allowed_when_the_store_is_temporary_too() {
     );
 }
 
-/// `story project init <PATH>` gave the guard a second thing to be wrong
-/// about: it used to judge the working directory, and now the working
+/// Naming a target other than the working directory gave the guard a second
+/// thing to be wrong about: it used to judge the working directory, and now the working
 /// directory and the directory being created can differ.
 ///
 /// These two cases are the halves of that, and they fail in opposite

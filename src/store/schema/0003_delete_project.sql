@@ -7,7 +7,7 @@
 --     A future `delete_project` operation has to drop these guards inside its
 --     own migration and say so — it cannot happen by accident.
 --
--- This is that migration, and this is it saying so. `story project deinit`
+-- This is that migration, and this is it saying so. `story project delete`
 -- removes a project and everything recorded against it, which means removing
 -- its event log — and an unconditional trigger cannot tell that teardown from
 -- the history rewrite it exists to prevent.

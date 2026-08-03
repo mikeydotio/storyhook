@@ -5,8 +5,8 @@
 //!
 //! * the checkout is **gone** — the claim is stale, and `story doctor --fix`
 //!   forgets it;
-//! * the checkout **moved** — the claim is wrong, and `story relink` corrects
-//!   it.
+//! * the checkout **moved** — the claim is wrong, and
+//!   `story project link checkout` records where it went.
 //!
 //! Both live here because the distinction is the interesting part: forgetting a
 //! project that merely moved would be data loss dressed as tidying.
@@ -68,7 +68,7 @@ fn fixture(label: &str) -> Fixture {
     let workdir = real_dir(&format!("{label}-workdir"));
     let checkout = real_dir(&format!("{label}-checkout"));
     for (dir, prefix) in [(&workdir, "WD"), (&checkout, "PH")] {
-        let out = story(dir, &data_home, &["project", "init", "--prefix", prefix]);
+        let out = story(dir, &data_home, &["project", "new", "--prefix", prefix]);
         assert_eq!(
             out.status.code(),
             Some(0),
@@ -118,7 +118,7 @@ fn doctor_reports_a_registration_whose_directory_is_gone() {
         "doctor must say the path is gone: {text}"
     );
     assert!(
-        text.contains("story doctor --fix") && text.contains("story relink"),
+        text.contains("story doctor --fix") && text.contains("project link checkout"),
         "it must offer both answers — forget it, or point it somewhere real: {text}"
     );
     assert!(
@@ -171,9 +171,13 @@ fn doctor_fix_deregisters_the_orphan_but_keeps_the_stories() {
     );
 }
 
-/// The moved-checkout case: `relink` points the project at its new home.
+/// The moved-checkout case: `link checkout` records where it went.
+///
+/// One of three tests that were about `relink`, kept as *capability* tests
+/// rather than deleted with the verb. Each pins something `link checkout` can do
+/// that `relink` could not, and this one pins the part they share.
 #[test]
-fn relink_points_a_project_at_its_new_checkout() {
+fn link_checkout_records_a_checkout_that_moved() {
     let f = fixture("relink-move");
     story(
         &f.checkout,
@@ -194,82 +198,114 @@ fn relink_points_a_project_at_its_new_checkout() {
     let out = story(
         &f.workdir,
         &f.data_home,
-        &["relink", &slug, moved.to_str().unwrap()],
+        &[
+            "--project",
+            &slug,
+            "project",
+            "link",
+            "checkout",
+            moved.to_str().unwrap(),
+        ],
     );
     assert_eq!(
         out.status.code(),
         Some(0),
-        "relink failed: {}",
+        "link checkout failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
     let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
     assert!(
-        listed.contains(moved.to_str().unwrap()),
-        "the catalog must name the new location: {listed}"
-    );
-    // **Both** facts move, not just the one resolution reads. A directory is
-    // recorded twice — as a `project_paths` row and as `checkout_path` — and a
-    // relink that carried only the first would leave the project claiming its
-    // repo-side work runs in a directory that no longer exists.
-    assert!(
-        !listed.contains(&f.checkout.display().to_string()),
-        "no trace of the address it moved out of may survive: {listed}"
-    );
-    assert!(
         listed.contains(&format!("checkout  {}", moved.display())),
-        "and the recorded checkout is the new location: {listed}"
+        "the recorded checkout is the new location: {listed}"
     );
 
-    // And the project is usable from there, with its story.
+    // And the project is usable from there, with its story — by the pointer file
+    // the move carried, not by anything `link checkout` wrote. Linking a
+    // checkout never touches resolution (D21), which is the whole difference
+    // between the two facts a directory can be recorded as.
     let summary = stdout(&story(&moved, &f.data_home, &["summary"]));
     assert!(
         summary.contains("stories: 1"),
         "the story must have come with it: {summary}"
     );
+
+    // The stale *path row* for the address it moved out of is a separate fact
+    // with a separate answer. `relink` forgot it as a side effect; `doctor --fix`
+    // is where that decision is taken now, with the story count in front of the
+    // person taking it.
+    story(&f.workdir, &f.data_home, &["doctor", "--fix"]);
+    let after = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
+    assert!(
+        !after.contains(&f.checkout.display().to_string()),
+        "no trace of the address it moved out of may survive a --fix: {after}"
+    );
 }
 
-/// Relinking across identities is refused.
+/// A checkout carrying **another project's** pointer file is linked, not
+/// refused — and the directory still resolves to the project its pointer names.
 ///
-/// Without this check `relink` would be a way to staple one project's identity
-/// onto another project's checkout, and the store would then resolve one
-/// repository to two projects depending on which door it came in by.
+/// `relink` refused this outright, because it read the pointer file and required
+/// the uuid to match. It had to: it wrote a `project_paths` row, so a mismatch
+/// really would have left one directory resolving to two projects depending on
+/// which door it came in by. `link checkout` writes a column nothing resolves
+/// by, so the same arrangement is merely two projects whose repo-side work runs
+/// in one tree — which is a monorepo, and SH-151's subject.
 #[test]
-fn relink_refuses_a_pointer_naming_a_different_project() {
+fn link_checkout_does_not_read_the_pointer_file_it_is_pointed_at() {
     let f = fixture("relink-mismatch");
     let second = real_dir("relink-mismatch-other");
-    story(
-        &second,
-        &f.data_home,
-        &["project", "init", "--prefix", "QQ"],
-    );
+    story(&second, &f.data_home, &["project", "new", "--prefix", "QQ"]);
     let first_slug = slug_for(&f, "relink-mismatch-checkout");
 
     let out = story(
         &f.workdir,
         &f.data_home,
-        &["relink", &first_slug, second.to_str().unwrap()],
+        &[
+            "--project",
+            &first_slug,
+            "project",
+            "link",
+            "checkout",
+            second.to_str().unwrap(),
+        ],
     );
 
     assert_eq!(
         out.status.code(),
-        Some(2),
-        "relinking across identities must be refused"
+        Some(0),
+        "a checkout link is not a claim on identity; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // The load-bearing half: the directory still answers for the project its
+    // pointer file names. If this ever changes, `link checkout` has become a
+    // `project_paths` write and SH-151 has been foreclosed by accident.
+    let summary = stdout(&story(&second, &f.data_home, &["project", "list"]));
     assert!(
-        stderr.contains("different project"),
-        "the refusal must say why: {stderr}"
+        summary.contains(&format!("checkout  {}", second.display())),
+        "the link is recorded: {summary}"
     );
+    let ids = stdout(&story(
+        &second,
+        &f.data_home,
+        &["new", "Whose project is this"],
+    ));
     assert!(
-        stderr.contains("story project init"),
-        "and name the command that does adopt a checkout: {stderr}"
+        ids.contains("QQ-1"),
+        "the directory must still resolve to the project its pointer names: {ids}"
     );
 }
 
-/// A directory with no pointer file cannot be relinked to.
+/// A directory with **no pointer file** is linked. This is the capability
+/// `relink` did not have.
+///
+/// `relink` needed a `.storyhook.toml` in the directory it was pointed at and
+/// answered exit 3 without one — which ruled out exactly the cases that most
+/// need it: a fresh clone, a worktree, a checkout whose pointer was never
+/// committed. `link checkout` asks the directory for nothing.
 #[test]
-fn relink_refuses_a_directory_with_no_pointer_file() {
+fn link_checkout_accepts_a_directory_with_no_pointer_file() {
     let f = fixture("relink-nopointer");
     let bare = real_dir("relink-nopointer-bare");
     let slug = slug_for(&f, "relink-nopointer-checkout");
@@ -277,15 +313,24 @@ fn relink_refuses_a_directory_with_no_pointer_file() {
     let out = story(
         &f.workdir,
         &f.data_home,
-        &["relink", &slug, bare.to_str().unwrap()],
+        &[
+            "--project",
+            &slug,
+            "project",
+            "link",
+            "checkout",
+            bare.to_str().unwrap(),
+        ],
     );
     assert_eq!(
         out.status.code(),
-        Some(3),
-        "nothing to relink to is a not-found"
+        Some(0),
+        "a directory with no pointer file is exactly the case this replaces; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
     );
+    let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains(".storyhook.toml"),
-        "the message must name what is missing"
+        listed.contains(&format!("checkout  {}", bare.display())),
+        "and it is recorded: {listed}"
     );
 }

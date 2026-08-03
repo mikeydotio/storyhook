@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn graph_overview() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
@@ -37,7 +37,7 @@ fn graph_overview() {
 fn graph_critical_path() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "First"]).assert().success();
@@ -64,7 +64,7 @@ fn graph_critical_path() {
 fn graph_blocked_by() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -101,7 +101,7 @@ fn graph_blocked_by() {
 fn graph_parallel_groups() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     // Group 1: SH-1 -> SH-2
@@ -134,7 +134,7 @@ fn graph_parallel_groups() {
 fn graph_json_output() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "Task"]).assert().success();
@@ -151,7 +151,7 @@ fn graph_json_output() {
 fn graph_no_dependencies() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -170,7 +170,7 @@ fn graph_no_dependencies() {
 fn graph_blocked_by_nonexistent() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

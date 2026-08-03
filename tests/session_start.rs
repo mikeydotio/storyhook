@@ -78,7 +78,7 @@ fn session_start_no_project_outputs_empty_json() {
 fn session_start_plugin_disabled_outputs_empty_json() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -107,7 +107,7 @@ fn session_start_plugin_disabled_outputs_empty_json() {
 fn session_start_plugin_disabled_string_value_outputs_empty_json() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -136,7 +136,7 @@ fn session_start_plugin_disabled_string_value_outputs_empty_json() {
 fn session_start_valid_project_outputs_system_message() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -177,7 +177,7 @@ fn session_start_valid_project_outputs_system_message() {
 fn session_start_uses_additional_context_not_system_message() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -228,7 +228,7 @@ fn session_start_uses_additional_context_not_system_message() {
 fn session_start_contains_cli_reference() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -277,7 +277,7 @@ fn session_start_contains_cli_reference() {
 fn session_start_contains_project_state() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -323,7 +323,7 @@ fn session_start_contains_project_state() {
 fn session_start_contains_next_story_info() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -356,7 +356,7 @@ fn session_start_contains_next_story_info() {
 fn session_start_empty_project_zero_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -392,7 +392,7 @@ fn session_start_empty_project_zero_stories() {
 fn session_start_special_characters_in_title() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -429,7 +429,7 @@ fn session_start_special_characters_in_title() {
 fn session_start_unicode_in_story_title() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -455,7 +455,7 @@ fn session_start_unicode_in_story_title() {
 fn session_start_newline_in_story_title() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     // Create a story with a title containing special JSON chars
@@ -487,7 +487,7 @@ fn session_start_newline_in_story_title() {
 fn session_start_output_is_valid_json_object() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -522,7 +522,7 @@ fn session_start_output_is_valid_json_object() {
 fn session_start_system_message_under_4000_chars() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -565,7 +565,7 @@ fn session_start_system_message_under_4000_chars() {
 fn session_start_completes_within_two_seconds() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -596,7 +596,7 @@ fn session_start_completes_within_two_seconds() {
 fn session_start_ignores_json_flag() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -668,7 +668,7 @@ fn session_start_no_project_with_json_flag() {
 fn session_start_next_story_shows_priority() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -775,7 +775,7 @@ fn session_start_survives_a_pointer_naming_a_project_that_is_not_there() {
 fn session_start_plugin_config_extra_whitespace_bug_documented() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -805,7 +805,7 @@ fn session_start_plugin_config_extra_whitespace_bug_documented() {
 fn session_start_plugin_config_enabled_true_produces_system_message() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -840,7 +840,7 @@ fn session_start_plugin_config_enabled_true_produces_system_message() {
 fn session_start_plugin_config_malformed_still_works() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -877,7 +877,7 @@ fn session_start_plugin_config_malformed_still_works() {
 fn session_start_plugin_config_no_space_enabled_equals_false() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -903,7 +903,7 @@ fn session_start_plugin_config_no_space_enabled_equals_false() {
 fn session_start_plugin_config_comments_and_extra_keys() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -937,7 +937,7 @@ fn session_start_plugin_config_comments_and_extra_keys() {
 fn session_start_plugin_config_nested_table() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -969,7 +969,7 @@ fn session_start_plugin_config_nested_table() {
 fn session_start_no_plugin_config_file_produces_system_message() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -1009,7 +1009,7 @@ fn session_start_output_is_one_of_two_valid_shapes() {
     // No top-level `systemMessage` key should ever be present.
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -1051,7 +1051,7 @@ fn session_start_output_is_one_of_two_valid_shapes() {
 fn session_start_stderr_is_empty() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -1080,7 +1080,7 @@ fn session_start_stderr_is_empty() {
 fn session_start_utf8_safe_truncation_with_multibyte_titles() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -1137,7 +1137,7 @@ fn session_start_utf8_safe_truncation_with_multibyte_titles() {
 fn session_start_quiet_flag_still_outputs_json() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
