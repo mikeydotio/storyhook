@@ -41,10 +41,49 @@ impl FieldUpdates {
     }
 }
 
+/// The one field a [`FieldConflict`] is about.
+///
+/// A closed set rather than a string, so that every site acting on a conflict —
+/// applying it to either side, or restoring its value into a merge base — is
+/// checked by the compiler for the field it forgot. A `_ =>` arm over field
+/// *names* silently does nothing for a field added later, which is the shape of
+/// defect this module has already shipped once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConflictField {
+    Title,
+    State,
+    Assignee,
+    Priority,
+    Awaiting,
+    Labels,
+    Description,
+}
+
+impl ConflictField {
+    /// The name this field goes by in a report, and in `story show`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::State => "state",
+            Self::Assignee => "assignee",
+            Self::Priority => "priority",
+            Self::Awaiting => "awaiting",
+            Self::Labels => "labels",
+            Self::Description => "description",
+        }
+    }
+}
+
+impl std::fmt::Display for ConflictField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A conflict where both sides changed the same field to different values.
 #[derive(Debug, Clone)]
 pub struct FieldConflict {
-    pub field: String,
+    pub field: ConflictField,
     pub base_value: String,
     pub local_value: String,
     pub remote_value: String,
@@ -69,7 +108,7 @@ pub fn three_way_merge(
 
     // 1. title — scalar string comparison
     merge_scalar(
-        "title",
+        ConflictField::Title,
         &base.title,
         &local.title,
         &remote.title,
@@ -80,7 +119,7 @@ pub fn three_way_merge(
 
     // 2. state — compare state slugs
     merge_scalar(
-        "state",
+        ConflictField::State,
         &base.state,
         &local.state,
         &remote.state,
@@ -91,7 +130,7 @@ pub fn three_way_merge(
 
     // 3. assignee — Option<String> comparison
     merge_optional(
-        "assignee",
+        ConflictField::Assignee,
         &base.assignee,
         &local.assignee,
         &remote.assignee,
@@ -122,7 +161,7 @@ pub fn three_way_merge(
                     // Converged — no action
                 } else {
                     conflicts.push(FieldConflict {
-                        field: "priority".to_string(),
+                        field: ConflictField::Priority,
                         base_value: base_str.to_string(),
                         local_value: local_str.to_string(),
                         remote_value: remote_str.to_string(),
@@ -134,7 +173,7 @@ pub fn three_way_merge(
 
     // 5. awaiting — Option<String> comparison
     merge_optional(
-        "awaiting",
+        ConflictField::Awaiting,
         &base.awaiting,
         &local.awaiting,
         &remote.awaiting,
@@ -155,7 +194,7 @@ pub fn three_way_merge(
 
     // 6b. description — Option<String> comparison, same shape as awaiting
     merge_optional(
-        "description",
+        ConflictField::Description,
         &base.description,
         &local.description,
         &remote.description,
@@ -179,7 +218,7 @@ pub fn three_way_merge(
 
 /// Helper: merge a scalar (non-optional) string field.
 fn merge_scalar(
-    field: &str,
+    field: ConflictField,
     base: &str,
     local: &str,
     remote: &str,
@@ -203,7 +242,7 @@ fn merge_scalar(
                 // Converged
             } else {
                 conflicts.push(FieldConflict {
-                    field: field.to_string(),
+                    field,
                     base_value: base.to_string(),
                     local_value: local.to_string(),
                     remote_value: remote.to_string(),
@@ -215,7 +254,7 @@ fn merge_scalar(
 
 /// Helper: merge an optional string field.
 fn merge_optional(
-    field: &str,
+    field: ConflictField,
     base: &Option<String>,
     local: &Option<String>,
     remote: &Option<String>,
@@ -241,7 +280,7 @@ fn merge_optional(
                 let fmt =
                     |v: &Option<String>| -> String { v.as_deref().unwrap_or("<none>").to_string() };
                 conflicts.push(FieldConflict {
-                    field: field.to_string(),
+                    field,
                     base_value: fmt(base),
                     local_value: fmt(local),
                     remote_value: fmt(remote),
@@ -280,7 +319,7 @@ fn merge_labels(
 
     if !label_conflicts.is_empty() {
         conflicts.push(FieldConflict {
-            field: "labels".to_string(),
+            field: ConflictField::Labels,
             base_value: format_label_set(&base_set),
             local_value: format_label_set(&local_set),
             remote_value: format_label_set(&remote_set),
@@ -444,7 +483,7 @@ mod tests {
         let result = three_way_merge(&base, &local, &remote);
 
         assert_eq!(result.conflicts.len(), 1);
-        assert_eq!(result.conflicts[0].field, "title");
+        assert_eq!(result.conflicts[0].field, ConflictField::Title);
         assert_eq!(result.conflicts[0].base_value, "Base title");
         assert_eq!(result.conflicts[0].local_value, "Local title");
         assert_eq!(result.conflicts[0].remote_value, "Remote title");
@@ -558,7 +597,7 @@ mod tests {
         let result = three_way_merge(&base, &local, &remote);
 
         assert_eq!(result.conflicts.len(), 1);
-        assert_eq!(result.conflicts[0].field, "priority");
+        assert_eq!(result.conflicts[0].field, ConflictField::Priority);
         assert_eq!(result.conflicts[0].local_value, "high");
         assert_eq!(result.conflicts[0].remote_value, "low");
     }
@@ -789,7 +828,7 @@ mod tests {
         let result = three_way_merge(&base, &local, &remote);
 
         assert_eq!(result.conflicts.len(), 1);
-        assert_eq!(result.conflicts[0].field, "description");
+        assert_eq!(result.conflicts[0].field, ConflictField::Description);
         assert_eq!(result.conflicts[0].base_value, "<none>");
         assert_eq!(result.conflicts[0].local_value, "Local description");
         assert_eq!(result.conflicts[0].remote_value, "Remote description");
