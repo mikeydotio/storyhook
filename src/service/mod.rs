@@ -40,6 +40,7 @@ pub mod integrity;
 pub mod migrate;
 pub mod project;
 pub mod query;
+pub mod questionnaire;
 pub mod relation;
 pub mod session;
 pub mod settings;

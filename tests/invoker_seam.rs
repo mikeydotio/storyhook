@@ -650,3 +650,121 @@ fn no_client_process_probes_for_the_host_it_prints() {
         found.join("\n  ")
     );
 }
+
+/// **The daemon never prompts, and this is what keeps it true.**
+///
+/// The whole architecture rests on one sentence: the work runs in a process
+/// with no terminal and no way to reach one, so every question is asked by the
+/// client and travels as an ordinary request. A second prompting site added
+/// without a guard is how that becomes three, and the failure is silent — a
+/// daemon sitting at a `dialoguer::Select` looks exactly like a slow command.
+///
+/// # Two axes, because one of them misses the worst offender
+///
+/// A `stdin()` grep alone would pass while `src/github/conflict.rs` sat at an
+/// interactive menu: `dialoguer` reads the terminal itself and never names
+/// `std::io::stdin`. So this checks for both, and matches the *full* path
+/// `std::io::stdin` so that `Ctx::stdin()` — an accessor for input the envelope
+/// carried, not a process read — does not false-positive.
+///
+/// # The allowlist ships populated, and every entry names its story
+///
+/// Shipping it red would have meant weakening the assertion or fixing four
+/// unrelated defects inside a story about project verbs. Shipping it populated
+/// makes each existing violation a *recorded, story-linked exemption* instead
+/// of a silent hole, and a fifth one a deliberate edit that shows up in review.
+/// Removing a violation shrinks the list, which is why the count is asserted.
+///
+/// `src/service/questionnaire.rs` is deliberately **not** here: it takes
+/// `impl BufRead` and never names stdin at all, which is the shape a prompting
+/// module is supposed to have.
+#[test]
+fn every_interactive_prompt_is_in_the_allowlist() {
+    use std::path::Path;
+
+    fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    /// The two ways a file under `src/` can talk to a terminal.
+    const PROMPTS: [&str; 3] = ["std::io::stdin", ".interact()", ".interact_text()"];
+
+    /// Every file permitted to, with the story that will remove it.
+    ///
+    /// * `src/main.rs` — the client, and the one legitimate site. It owns the
+    ///   `IsTerminal` decision for both prompts in the program.
+    /// * `src/invoke.rs` — `Ctx`'s envelope-stdin fallback, documented as
+    ///   deliberate for the TUI and in-process callers.
+    /// * `src/service/story.rs` — `confirm_undelete` prompts from the *service*
+    ///   layer, so `story reopen` can never ask and always refuses (SH-154).
+    /// * `src/github/conflict.rs` — `.interact().unwrap_or(2)`, so with no
+    ///   terminal every sync conflict silently resolves as Skip and every
+    ///   conflicting remote edit is lost, with no message anywhere (SH-152).
+    ///   The highest-severity finding SH-117 made.
+    /// * `src/github/initial.rs` — three `Select::interact()` sites with no
+    ///   terminal check at all (SH-153).
+    const ALLOWED: [&str; 5] = [
+        "src/main.rs",
+        "src/invoke.rs",
+        "src/service/story.rs",
+        "src/github/conflict.rs",
+        "src/github/initial.rs",
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    assert!(
+        files.len() > 20,
+        "expected the whole tree, got {}",
+        files.len()
+    );
+
+    let mut breaches = Vec::new();
+    for (path, text) in &files {
+        let relative = path
+            .rsplit_once("/src/")
+            .map(|(_, rest)| format!("src/{rest}"))
+            .unwrap_or_else(|| path.clone());
+        if ALLOWED.contains(&relative.as_str()) {
+            continue;
+        }
+        for (number, line) in text.lines().enumerate() {
+            // A doc comment may describe a prompt; it cannot perform one.
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            for prompt in PROMPTS {
+                if code.contains(prompt) {
+                    breaches.push(format!("{relative}:{}: {}", number + 1, code.trim()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        breaches.is_empty(),
+        "the daemon never prompts, so a prompt under `src/` belongs in `main.rs` or in the \
+         allowlist above with the story that will remove it:\n  {}",
+        breaches.join("\n  ")
+    );
+
+    // Asserted so that *removing* a violation is also a deliberate edit here:
+    // the list is a ledger of four filed defects plus one legitimate site, and
+    // it should only ever get shorter.
+    assert_eq!(
+        ALLOWED.len(),
+        5,
+        "the allowlist changed; each entry is a filed exemption, so adding one needs a story \
+         and removing one needs the defect to be gone"
+    );
+}
