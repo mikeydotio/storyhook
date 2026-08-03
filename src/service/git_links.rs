@@ -84,7 +84,7 @@ impl<'ctx, S: Store> GitLinkService<'ctx, S> {
     /// URL and a monorepo's second project must still be creatable, while here
     /// the user typed the URL and is owed an answer about it.
     ///
-    /// # Why the holder is read outside the transaction
+    /// # Why the holder is found inside the transaction
     ///
     /// The store already refuses a cross-project registration — `link_remote`
     /// raises `StoreError::Invariant`, and the unique index on
@@ -93,19 +93,26 @@ impl<'ctx, S: Store> GitLinkService<'ctx, S> {
     /// wrong diagnosis for an ordinary conflict, and SQLite's constraint error
     /// names a column where a user needs a project *slug* they can act on.
     ///
-    /// So the holder is looked up first, purely to produce the right refusal.
-    /// That read and the write are not one transaction, and the consequence is
-    /// stated rather than hidden: two `link origin` calls racing for one URL
-    /// will have the loser refused by the index instead, with exit 5 and an
-    /// uglier message. Nothing is mis-registered either way — the index is what
-    /// guarantees that, and it is still the backstop.
-    pub fn link_origin(&self, remote: &RemoteUrl) -> Result<OriginLink, AppError> {
+    /// So the holder is looked up to produce the right refusal — inside the
+    /// same transaction as the write, through
+    /// [`register_origin`](crate::service::project::register_origin). It used
+    /// to be a separate read beforehand, with the race stated as a known cost:
+    /// two `link origin` calls racing for one URL had the loser refused by the
+    /// index instead, with exit 5 and an uglier message. SH-151 needed the
+    /// funnel anyway, and one transaction closes that window for free.
+    pub fn link_origin(
+        &self,
+        origin: &crate::domain::remote::OwnedOrigin,
+    ) -> Result<OriginLink, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         let slug = self.slug()?;
-        if let Some(holder) = self.ctx.store().read(|tx| tx.project_by_remote(remote))?
-            && holder.id != project
-        {
+        let remote = origin.url();
+        let registration = self
+            .ctx
+            .store()
+            .write(|tx| crate::service::project::register_origin(tx, project, origin, &now))?;
+        if let crate::service::project::Registration::HeldBy(held) = registration {
             return Err(AppError::Validation(format!(
                 "`{raw}` is already registered to project `{held}`, and a git origin belongs to \
                  at most one project.\n\nIf `{held}` should no longer own it:\n\n  story \
@@ -113,12 +120,8 @@ impl<'ctx, S: Store> GitLinkService<'ctx, S> {
                  link origin {raw}\n\n`story project list` shows which project holds which \
                  origin.",
                 raw = remote.raw(),
-                held = holder.slug,
             )));
         }
-        self.ctx
-            .store()
-            .write(|tx| tx.link_remote(project, remote, &now))?;
         Ok(OriginLink {
             project: slug,
             raw: remote.raw().to_string(),

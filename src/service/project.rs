@@ -281,6 +281,104 @@ pub fn origin_of(cwd: &Path) -> Option<crate::domain::remote::RemoteUrl> {
     crate::domain::remote::RemoteUrl::normalize_for_lookup(&raw)
 }
 
+/// This directory's origin **and its right to claim it** (SH-151).
+///
+/// [`origin_of`] answers "what origin is reported here?", which every directory
+/// in a repository answers identically. This answers the question registration
+/// actually has: *may this directory register it?* — and the two are different
+/// because `git config --get remote.origin.url` walks up. Before this existed,
+/// `story project new` in `monorepo/service-a` registered the monorepo's
+/// identity against `service-a`, permanently, and locked out every sibling
+/// including the repository's own top level.
+///
+/// # The predicate, and the two shapes that decide it
+///
+/// One `git rev-parse --show-toplevel --git-dir --git-common-dir` supplies both
+/// clauses:
+///
+/// 1. **`cwd` is its repository's top level.** A plain subdirectory reports the
+///    enclosing origin and owns nothing.
+/// 2. **`--git-dir` is `--git-common-dir`.** This is "cwd is the *main* working
+///    tree". A linked worktree holds a `.git` **file** and shares the main
+///    checkout's config, so the remote recorded there is not its to claim —
+///    wherever the worktree sits, inside the checkout or outside it. A
+///    **submodule** root passes both clauses, which is right: it has its own
+///    `.git` and reports its own origin, not the superproject's.
+///
+/// Both paths are resolved against `cwd` before comparison, because git answers
+/// the second pair relatively in some layouts (`.git` and `../.git`) and
+/// absolutely in others. A literal string comparison passes for the main
+/// worktree's own root and fails one level down, which is a difference that
+/// would not change the verdict but would name the wrong owner in the refusal.
+///
+/// # Why `git worktree list` is not used
+///
+/// It looks like the direct question and answers a different one: inside a
+/// **submodule** its first `worktree` line is the *gitdir*
+/// (`<super>/.git/modules/<name>`), not the checkout. A rule comparing `cwd`
+/// against that head calls a submodule root a non-owner and leaves a genuine
+/// repository unable to register the identity it holds.
+///
+/// # Cost
+///
+/// Two subprocesses when an origin exists, one when it does not, paid only by
+/// `story project new` and `story project link origin`. **Resolution pays
+/// none** — it still calls [`origin_of`], and still last.
+#[must_use]
+pub fn origin_at(cwd: &Path) -> crate::domain::remote::RepoOrigin {
+    use crate::domain::remote::{OwnedOrigin, RepoOrigin};
+
+    let Some(origin) = origin_of(cwd) else {
+        return RepoOrigin::Absent;
+    };
+    const FACTS: [&str; 4] = [
+        "rev-parse",
+        "--show-toplevel",
+        "--git-dir",
+        "--git-common-dir",
+    ];
+    let unreadable = || RepoOrigin::Unknown(format!("git {}", FACTS.join(" ")));
+    let Some(answer) = git_output(cwd, &FACTS) else {
+        return unreadable();
+    };
+    let mut lines = answer.lines();
+    let (Some(toplevel), Some(git_dir), Some(common_dir)) =
+        (lines.next(), lines.next(), lines.next())
+    else {
+        return unreadable();
+    };
+
+    let toplevel = canonical(Path::new(toplevel));
+    let main_worktree = canonical(&cwd.join(git_dir)) == canonical(&cwd.join(common_dir));
+    if main_worktree && canonical(cwd) == toplevel {
+        return RepoOrigin::Owned(OwnedOrigin::computed(origin));
+    }
+    RepoOrigin::Inherited {
+        owner: if main_worktree {
+            toplevel
+        } else {
+            main_worktree_of(&canonical(&cwd.join(common_dir)))
+        },
+        origin,
+    }
+}
+
+/// The main working tree that owns `common_dir`, for a refusal that names it.
+///
+/// A linked worktree's common dir is the main checkout's `.git`, so its parent
+/// is the directory being named. The one layout that does not fit — a linked
+/// worktree *of a submodule*, whose common dir is `<super>/.git/modules/<name>`
+/// — names that path instead: not a checkout, but a real path that identifies
+/// the repository, which is better than naming nothing.
+fn main_worktree_of(common_dir: &Path) -> PathBuf {
+    match common_dir.file_name() {
+        Some(name) if name == ".git" => common_dir
+            .parent()
+            .map_or_else(|| common_dir.to_path_buf(), Path::to_path_buf),
+        _ => common_dir.to_path_buf(),
+    }
+}
+
 /// The origin `cwd`'s **own** repository records, or a refusal saying why there
 /// is none to take.
 ///
@@ -315,63 +413,145 @@ pub fn origin_of(cwd: &Path) -> Option<crate::domain::remote::RemoteUrl> {
 /// about origins and got nothing, so the reverse is true: the reason is the
 /// whole of what they need, and the refusal names the URL they can pass
 /// explicitly instead.
-pub fn origin_here(cwd: &Path) -> Result<crate::domain::remote::RemoteUrl, AppError> {
-    let toplevel = git_output(cwd, &["rev-parse", "--show-toplevel"]);
-    let Some(toplevel) = toplevel else {
-        return Err(AppError::Validation(format!(
+pub fn origin_here(cwd: &Path) -> Result<crate::domain::remote::OwnedOrigin, AppError> {
+    use crate::domain::remote::RepoOrigin;
+
+    match origin_at(cwd) {
+        RepoOrigin::Owned(origin) => Ok(origin),
+        RepoOrigin::Inherited { owner, .. } => Err(not_this_directorys_origin(cwd, &owner)),
+        RepoOrigin::Unknown(command) => Err(AppError::Validation(format!(
+            "no URL was given, and `{command}` failed in `{}`, so storyhook cannot tell whether \
+             this directory owns the origin it reports.\n\nName the origin explicitly:\n\n  \
+             story project link origin <url>",
+            cwd.display()
+        ))),
+        RepoOrigin::Absent => Err(no_origin_to_take(cwd)),
+    }
+}
+
+/// A URL the user typed, checked against the one shape it may not be.
+///
+/// `story project link origin <url>` is deliberately permissive: it exists so a
+/// project whose checkout is on another machine — or in no repository at all —
+/// can register the origin it answers to. So an unrelated URL is accepted
+/// wherever it is typed, and the store's uniqueness index remains the guard
+/// against two projects claiming one origin.
+///
+/// The exception is the case that index cannot see. If the URL *is* the
+/// enclosing repository's own origin and this directory does not own it, then
+/// nobody may be holding it yet, so there is no collision to refuse — and the
+/// first sub-directory to ask takes the repository's identity permanently,
+/// locking out every sibling project and the repository's own top level.
+///
+/// # Errors
+///
+/// [`AppError::Validation`] naming the directory that does own it.
+pub fn claim_stated(
+    cwd: &Path,
+    url: crate::domain::remote::RemoteUrl,
+) -> Result<crate::domain::remote::OwnedOrigin, AppError> {
+    let claim = origin_at(cwd);
+    if let Some(owner) = claim.forbids(&url) {
+        return Err(not_this_directorys_origin(cwd, owner));
+    }
+    Ok(crate::domain::remote::OwnedOrigin::explicit(url))
+}
+
+/// The refusal for taking an origin some other directory owns.
+///
+/// One constructor because two verbs raise it — the omitted-URL form of `link
+/// origin`, and the explicit-URL form when the URL given *is* the enclosing
+/// repository's — and they are owed the same sentence: which directory owns it,
+/// and why standing here is not enough.
+fn not_this_directorys_origin(cwd: &Path, owner: &Path) -> AppError {
+    AppError::Validation(format!(
+        "`{}` does not own its repository's origin — `{}` does.\n\n`git config --get \
+         remote.origin.url` answers the same for every directory in a repository and for every \
+         worktree of it, so registering it here would take another checkout's identity, and an \
+         origin belongs to at most one project.\n\nRun it in the directory that owns it, or name \
+         a different origin explicitly:\n\n  story project link origin <url>",
+        canonical(cwd).display(),
+        owner.display()
+    ))
+}
+
+/// The refusal when there is no origin here to take at all, distinguishing the
+/// two reasons a user can act on differently.
+///
+/// [`origin_at`] deliberately folds "not a repository" and "no `origin`" into
+/// one answer, because a *resolution* path must not tell them apart. A user who
+/// typed a command about origins is owed the opposite, so this asks the one
+/// extra question — on a path that is already failing.
+fn no_origin_to_take(cwd: &Path) -> AppError {
+    if git_output(cwd, &["rev-parse", "--show-toplevel"]).is_none() {
+        return AppError::Validation(format!(
             "no URL was given, and `{}` is not inside a git repository.\n\nName the origin \
              explicitly:\n\n  story project link origin <url>",
             cwd.display()
-        )));
-    };
-
-    // Compared canonically because git answers with the real path and the
-    // caller's may reach it through a symlink — `/tmp` on macOS being the case
-    // every test on this machine goes through.
-    let here = canonical(cwd);
-    let root = canonical(Path::new(&toplevel));
-    if here != root {
-        return Err(AppError::Validation(format!(
-            "no URL was given, and `{}` is not the top level of its repository — `{}` is.\n\n\
-             `git config --get remote.origin.url` walks up, so taking the origin here would \
-             register the enclosing repository's identity against this project, and an origin \
-             belongs to at most one project.\n\nName the origin explicitly:\n\n  story project \
-             link origin <url>",
-            here.display(),
-            root.display()
-        )));
+        ));
     }
-
-    origin_of(cwd).ok_or_else(|| {
-        let remotes = git_output(cwd, &["remote", "-v"]).unwrap_or_default();
-        let seen = if remotes.trim().is_empty() {
-            "  remotes    (none)".to_string()
-        } else {
-            remotes
-                .lines()
-                .map(|line| format!("  remotes    {line}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        AppError::Validation(format!(
-            "no URL was given, and `{}` records no usable `remote.origin.url`.\n\n{seen}\n\n\
-             storyhook reads exactly `git config --get remote.origin.url`. Name the origin \
-             explicitly:\n\n  story project link origin <url>",
-            cwd.display()
-        ))
-    })
+    let remotes = git_output(cwd, &["remote", "-v"]).unwrap_or_default();
+    let seen = if remotes.trim().is_empty() {
+        "  remotes    (none)".to_string()
+    } else {
+        remotes
+            .lines()
+            .map(|line| format!("  remotes    {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    AppError::Validation(format!(
+        "no URL was given, and `{}` records no usable `remote.origin.url`.\n\n{seen}\n\n\
+         storyhook reads exactly `git config --get remote.origin.url`. Name the origin \
+         explicitly:\n\n  story project link origin <url>",
+        cwd.display()
+    ))
 }
+
+/// The git environment variables every probe here removes.
+///
+/// **`git config --get remote.origin.url` obeys `$GIT_DIR` over `cwd`, and
+/// `git rev-parse --show-toplevel` does not.** With one inherited, the two
+/// disagree: the origin is read from whatever repository the variable names
+/// while the top level is read from the working directory, so an ownership
+/// check comparing them agrees with itself and registers another repository's
+/// identity. Measured on git 2.50.1.
+///
+/// The reachability is not the one it looks like. No git hook sets `GIT_DIR`
+/// on that version — `pre-commit`, `post-commit`, `post-checkout` and
+/// `pre-push` all run without it. What does reach here is a daemon: it inherits
+/// the environment of whichever client started it and keeps it for its whole
+/// life, and since SH-114 the daemon is the process that runs these probes.
+/// That is SH-160, whose fix is at the spawn; this list is what makes *these*
+/// probes correct regardless of it.
+///
+/// `GIT_CONFIG_*` is deliberately **not** here: the test suite isolates git
+/// config through it, and removing it would make every fixture read the
+/// developer's real `~/.gitconfig`.
+const GIT_ENV_TO_SCRUB: [&str; 9] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_NAMESPACE",
+];
 
 /// `git <args>` in `cwd`, or `None` if git failed for any reason at all.
 ///
-/// Shared by [`origin_of`] and [`origin_here`] so there is one place that knows
-/// a missing `git`, a non-repository and a failed command are the same outcome.
+/// Shared by [`origin_of`], [`origin_at`] and [`origin_here`] so there is one
+/// place that knows a missing `git`, a non-repository and a failed command are
+/// the same outcome — and one place that scrubs the inherited git environment
+/// (see [`GIT_ENV_TO_SCRUB`]), so a probe answers about `cwd` and nothing else.
 fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new("git");
+    for name in GIT_ENV_TO_SCRUB {
+        command.env_remove(name);
+    }
+    let output = command.current_dir(cwd).args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -380,45 +560,91 @@ fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
         .map(|text| text.trim().to_string())
 }
 
-/// Whether `project` may register `remote`, or somebody else already holds it.
+/// Records an origin against a project — **the only place `src/` calls
+/// [`link_remote`](crate::store::WriteOps::link_remote)**.
 ///
-/// # Why `init` skips rather than refuses
+/// Pinned by `tests/invoker_seam.rs`, which fails if a second call site appears.
+/// The point is not tidiness: the argument is an
+/// [`OwnedOrigin`](crate::domain::remote::OwnedOrigin), which cannot be built
+/// from a bare [`RemoteUrl`](crate::domain::remote::RemoteUrl) outside the
+/// ownership check and one audited escape hatch. One funnel plus that type is
+/// what makes "a directory registers only the origin it owns" a property rather
+/// than a habit, and a new registration site cannot be added without answering
+/// the ownership question.
 ///
-/// SH-116's council ruled that a collision here should **fail** `init`, on the
-/// stated ground that it was unreachable — no project in the store had a
-/// registered origin, so nothing could regress. Building it falsified that
-/// premise immediately: `init` is what registers origins, so within a single
-/// test run many projects have one, and **five existing tests failed at once**.
+/// # The SH-116 deviation this withdraws
 ///
-/// The reason is a fact about git that the design did not account for.
-/// `git config --get remote.origin.url` **walks up**, so a directory that is not
-/// itself a repository but sits inside one reports the *enclosing* repository's
-/// origin. Two storyhook projects in one repository — a monorepo with a project
-/// per service, which storyhook supports today — therefore both resolve to the
-/// same origin, and a refusal would make the second one impossible to create.
-/// That is a working arrangement broken by a rule meant to prevent an ambiguity.
-///
-/// Skipping prevents the ambiguity just as completely, because the invariant
-/// that matters is **one origin resolves to one project**, and it is the unique
-/// index on `project_remotes.normalized` that guarantees it either way. The
-/// second project simply is not reachable *by origin* — which is honest, since
-/// its origin genuinely does not identify it — and stays reachable by
-/// `--project`, by `$STORYHOOK_PROJECT`, and by the walk until SH-119 removes
-/// it.
-///
-/// Recorded as a deviation on the story rather than taken quietly. The
-/// after-the-fact registration verb SH-117 owns is the right place for a *loud*
-/// collision, because there the user typed the URL and is owed an answer about
-/// it; here they typed `story project new` and said nothing about origins at
-/// all.
-fn claimable(
-    tx: &impl ReadOps,
-    remote: &crate::domain::remote::RemoteUrl,
+/// A collision used to be **skipped** by `init`, on the ground that refusing it
+/// would make a monorepo's second project impossible to create: every directory
+/// in a repository reports the same origin, so the second `story project new`
+/// collided with the first. SH-151 removes that reason — a sub-directory never
+/// computes `Owned`, so it never reaches this at all — and a collision now means
+/// something else entirely: a genuinely new project taking an origin another
+/// project already holds, which is one repository wearing two identities.
+/// [`adopt_origin`] refuses it.
+pub(crate) fn register_origin(
+    tx: &mut impl WriteOps,
     project: ProjectId,
-) -> Result<bool, crate::store::StoreError> {
-    Ok(tx
-        .project_by_remote(remote)?
-        .is_none_or(|holder| holder.id == project))
+    origin: &crate::domain::remote::OwnedOrigin,
+    now: &str,
+) -> Result<Registration, crate::store::StoreError> {
+    let url = origin.url();
+    if let Some(holder) = tx.project_by_remote(url)?
+        && holder.id != project
+    {
+        return Ok(Registration::HeldBy(holder.slug));
+    }
+    tx.link_remote(project, url, now)?;
+    Ok(Registration::Recorded)
+}
+
+/// What [`register_origin`] did.
+///
+/// A value rather than an error, because the two callers owe the user different
+/// sentences for the same fact: `story project link origin` names the URL the
+/// user typed and how to move it, while `story project new` says that commands
+/// here already resolve to the holder. Deciding that here would give one of them
+/// the wrong message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Registration {
+    /// The project holds the origin — it may already have.
+    Recorded,
+    /// Another project holds it, named by slug. **Nothing was written.**
+    HeldBy(String),
+}
+
+/// Registers `claim` against `project` if it is this directory's to register,
+/// refusing if another project holds it.
+///
+/// The refusal is raised **inside the transaction** as
+/// [`StoreError::Rejected`](crate::store::StoreError::Rejected), so the project
+/// row this call is part of creating rolls back with it. That is what makes
+/// "one origin, one project" hold against two `story project new` runs racing:
+/// the check and the write are one transaction rather than a read followed by a
+/// hopeful write.
+fn adopt_origin(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    claim: &crate::domain::remote::RepoOrigin,
+    now: &str,
+) -> Result<(), crate::store::StoreError> {
+    let Some(owned) = claim.owned() else {
+        return Ok(());
+    };
+    match register_origin(tx, project, owned, now)? {
+        Registration::Recorded => Ok(()),
+        Registration::HeldBy(holder) => Err(crate::store::StoreError::Rejected(Box::new(
+            AppError::Validation(format!(
+                "`{url}` is already registered to project `{holder}`, and a git origin belongs to at \
+                 most one project.\n\nCommands run in this checkout already resolve to \
+                 `{holder}`, so there is probably nothing to do. If this really is a second \
+                 project for the same repository, create it detached and name it \
+                 explicitly:\n\n  story project new --prefix <PREFIX> --no-attach\n\nOr move the \
+                 origin:\n\n  story --project {holder} project unlink origin {url}",
+                url = owned.url().raw(),
+            )),
+        ))),
+    }
 }
 
 /// Records `root` as the project's checkout, unless it already has one.
@@ -658,6 +884,33 @@ pub struct InitOutcome {
     pub agents_md: bool,
     /// Whether the pointer file was written by this run.
     pub pointer: bool,
+    /// What became of this directory's git origin.
+    pub origin: OriginOutcome,
+}
+
+/// What `story project new` did about the origin the directory reports.
+///
+/// Reported rather than left silent (SH-151). A project created in a
+/// subdirectory of a repository is a legitimate arrangement — a monorepo with a
+/// project per service — but it is identified by its committed pointer file
+/// rather than by an origin, and somebody who does not know that will wonder
+/// why `story project list` shows no origin against it, or worse will not
+/// wonder at all until a clone stops resolving.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OriginOutcome {
+    /// Registered: this checkout answers for the project by its origin, on any
+    /// machine that clones it.
+    Registered(String),
+    /// The origin belongs to another directory, which is named. `holder` is the
+    /// project that has registered it, if one has.
+    Inherited {
+        /// The directory entitled to the origin.
+        owner: PathBuf,
+        /// The project holding it, if any.
+        holder: Option<String>,
+    },
+    /// No origin here: not a git repository, or no `origin` remote.
+    Absent,
 }
 
 /// The name of the agent-instruction file `init` generates.
@@ -741,7 +994,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
             return Err(unmigrated_error(&root));
         }
 
-        // Read *before* the transaction opens. `origin_of` spawns `git`, and a
+        // Read *before* the transaction opens. The probe spawns `git`, and a
         // subprocess inside a `BEGIN IMMEDIATE` holds the store's only write
         // lock for however long that process takes — which is 14 ms on a good
         // day and unbounded on a bad one.
@@ -751,7 +1004,34 @@ impl<'a, S: Store> ProjectService<'a, S> {
         // nothing ever writes. Registering here rather than in a new verb keeps
         // the boundary the epic drew — `story project link origin <url>`, for
         // adopting an origin after the fact, is SH-117's.
-        let origin = origin_of(&root);
+        //
+        // `origin_at` rather than `origin_of` (SH-151): the question here is not
+        // "what origin is reported?" — every directory in a repository reports
+        // the same one — but "may this directory register it?".
+        let claim = origin_at(&root);
+        if let crate::domain::remote::RepoOrigin::Unknown(command) = &claim {
+            // Fail closed. Reading an unanswerable probe as "not owned" would be
+            // safe today and wrong the moment a git too old to answer makes
+            // every directory a non-owner; reading it as owned restores the
+            // defect silently. Neither, and the user is told which command to
+            // try themselves.
+            return Err(AppError::Validation(format!(
+                "`{command}` failed in `{}`, so storyhook cannot tell whether this directory \
+                 owns the origin it reports.\n\nCreate the project without attaching an \
+                 origin:\n\n  story project new --prefix <PREFIX> --no-attach",
+                root.display()
+            )));
+        }
+        // The council's D3 also asked for a refusal here — a run that leaves the
+        // project identified by *neither* an owned origin nor a pointer file.
+        // It is not built, because that arrangement does not exist yet: an
+        // attaching run always writes a `project_paths` row, and resolution
+        // still reads it, so such a project is reachable from its own directory
+        // whatever this verb does about origins and pointers. Building the
+        // refusal against a premise that is false today would have refused two
+        // legitimate fixtures on its first run, and it would have to be re-tuned
+        // anyway. It is recorded on SH-119 instead, beside R1: the wave that
+        // deletes the path row is the wave in which "neither" becomes possible.
 
         let (project, created, uuid, prefix) = self.store.write(|tx| {
             if let Some(pointer) = &existing_pointer
@@ -759,11 +1039,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
             {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
                 adopt_checkout(tx, existing.id, &root)?;
-                if let Some(remote) = &origin
-                    && claimable(&*tx, remote, existing.id)?
-                {
-                    tx.link_remote(existing.id, remote, &now)?;
-                }
+                adopt_origin(tx, existing.id, &claim, &now)?;
                 if let Some(name) = &options.name {
                     tx.rename_project(existing.id, name)?;
                 }
@@ -772,11 +1048,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
             if let Some(existing) = tx.project_by_path(&root)? {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
                 adopt_checkout(tx, existing.id, &root)?;
-                if let Some(remote) = &origin
-                    && claimable(&*tx, remote, existing.id)?
-                {
-                    tx.link_remote(existing.id, remote, &now)?;
-                }
+                adopt_origin(tx, existing.id, &claim, &now)?;
                 if let Some(name) = &options.name {
                     tx.rename_project(existing.id, name)?;
                 }
@@ -816,11 +1088,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
             })?;
             tx.touch_project_path(project, &root, path_kind(&root))?;
             adopt_checkout(tx, project, &root)?;
-            if let Some(remote) = &origin
-                && claimable(&*tx, remote, project)?
-            {
-                tx.link_remote(project, remote, &now)?;
-            }
+            adopt_origin(tx, project, &claim, &now)?;
             write_states(tx, project, &default_states())?;
             tx.put_types(project, &default_types())?;
             Ok((project, true, uuid, prefix))
@@ -839,11 +1107,34 @@ impl<'a, S: Store> ProjectService<'a, S> {
         let done_state = self.store.read(|tx| Ok(closed_state(tx, project)?))?;
         let agents_md = options.agents_md && self.write_agents_md(&root, &prefix, &done_state)?;
 
+        // Read after the transaction, because the holder is only interesting
+        // when this directory did *not* register — and in that case the write
+        // did not touch the remotes table, so there is nothing to be stale
+        // about.
+        let origin = match &claim {
+            crate::domain::remote::RepoOrigin::Owned(owned) => {
+                OriginOutcome::Registered(owned.url().raw().to_string())
+            }
+            crate::domain::remote::RepoOrigin::Inherited { origin, owner } => {
+                OriginOutcome::Inherited {
+                    owner: owner.clone(),
+                    holder: self
+                        .store
+                        .read(|tx| tx.project_by_remote(origin))?
+                        .map(|held| held.slug),
+                }
+            }
+            // `Unknown` is refused above, before anything is written.
+            crate::domain::remote::RepoOrigin::Unknown(_)
+            | crate::domain::remote::RepoOrigin::Absent => OriginOutcome::Absent,
+        };
+
         Ok(InitOutcome {
             project,
             created,
             agents_md,
             pointer,
+            origin,
         })
     }
 
@@ -886,6 +1177,9 @@ impl<'a, S: Store> ProjectService<'a, S> {
             created: true,
             agents_md: false,
             pointer: false,
+            // Nothing on disk was read, so there is no directory whose origin
+            // this could be about.
+            origin: OriginOutcome::Absent,
         })
     }
 
