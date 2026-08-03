@@ -436,6 +436,11 @@ fn unlinking_a_checkout_reports_what_went_and_is_safe_when_there_was_none() {
     let env = TestEnv::isolated();
     let (dir, slug) = project(&env);
 
+    // Creating a project attached to a directory records that directory as the
+    // checkout, so the empty slot has to be *made* rather than assumed. This
+    // first unlink is the setup; the second one is the case under test.
+    scoped(&env, dir.path(), &slug, &["unlink", "checkout"]);
+
     // Nothing linked: a success reporting so, unlike `unlink origin`. There is
     // exactly one checkout slot, so "there was nothing there" is unambiguous
     // and the caller cannot have removed the wrong one.

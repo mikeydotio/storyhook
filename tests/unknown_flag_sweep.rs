@@ -63,6 +63,12 @@ const SWALLOWERS: &[&[&str]] = &[
     &["import-project", "--zzz-not-a-flag"],
     &["hooks", "test", "--zzz-not-a-flag"],
     &["plugin", "install", "--zzz-not-a-flag"],
+    &["project", "new", "--zzz-not-a-flag"],
+    // `link` and `unlink` declare an *empty* flag list, which is a different
+    // statement from having no entry: it says the verb takes no flags, and
+    // these two rows are what proves the statement is enforced.
+    &["project", "link", "origin", "--zzz-not-a-flag"],
+    &["project", "unlink", "origin", "--zzz-not-a-flag"],
     &["project", "settings", "get", "--zzz-not-a-flag"],
     &["state", "remove", "--zzz-not-a-flag"],
     &["phase", "remove", "--zzz-not-a-flag"],
@@ -316,6 +322,11 @@ fn every_declared_flag_is_accepted_by_its_verb() {
         ),
         (&["type", "add", "spike"], "--description", Some("text")),
         (&["member", "add"], "--github", Some("octocat")),
+        (&["project", "new"], "--prefix", Some("ZZ")),
+        (&["project", "new"], "--name", Some("declared")),
+        (&["project", "new"], "--attach", Some(".")),
+        (&["project", "new"], "--no-attach", None),
+        (&["project", "new"], "--no-agents-md", None),
     ];
 
     for (path, flag, value) in declared {

@@ -18,9 +18,9 @@
 //! pins that a hop through JSON changes neither.
 
 use storyhook::cli::{
-    DaemonAction, EpicAction, GraphMode, HistoryAction, HooksAction, Invocation, MemberInput,
-    PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction, StoreAction, TypeAction,
-    WebAction,
+    Attach, DaemonAction, EpicAction, GraphMode, HistoryAction, HooksAction, Invocation,
+    MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction,
+    SettingsAction, StateAction, StoreAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
     Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent, StoryRelation,
@@ -723,6 +723,37 @@ fn error_variants_travel_under_a_kind_tag() {
 fn invocation_corpus() -> Vec<Invocation> {
     vec![
         Invocation::Help,
+        // All four `NewProjectRequest`/`Attach` shapes. `Ask` is on the wire
+        // deliberately: the client is the only process that can answer it, and
+        // the dispatcher's refusal of it is only reachable if it survives a
+        // round trip.
+        Invocation::Project {
+            action: ProjectAction::New(NewProjectRequest::Ask),
+        },
+        Invocation::Project {
+            action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+                attach: Attach::Cwd,
+                prefix: "API".to_string(),
+                name: None,
+                no_agents_md: false,
+            })),
+        },
+        Invocation::Project {
+            action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+                attach: Attach::Path("../elsewhere".to_string()),
+                prefix: "API".to_string(),
+                name: Some("Elsewhere — renamed".to_string()),
+                no_agents_md: true,
+            })),
+        },
+        Invocation::Project {
+            action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+                attach: Attach::Nothing,
+                prefix: "OFF".to_string(),
+                name: Some("off-machine".to_string()),
+                no_agents_md: true,
+            })),
+        },
         Invocation::Project {
             action: ProjectAction::Init {
                 path: Some("../elsewhere".to_string()),
