@@ -159,7 +159,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-152** — github-sync resolves every conflict as Skip with no terminal · *critical, data-loss; filed by SH-117's council* · **the loss was one sync later, and it destroyed the local edit**
 - [x] **SH-151** — two projects in one repository share an origin · *gates SH-119* · **it was a wrong answer, not a missing one**
 - [x] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk · *R1–R4 accepted; six calls they did not cover* · **the fixture surface was 15 tests, and measuring it first is what made the shape obvious**
-- [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures
+- [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures · *unblocked by SH-119; `story next` leads with SH-95 on age, and the queue order stands*
 - [ ] **SH-118** — C6 Ids: bare integers
 - [ ] **SH-120** — C8 Dispatch plumbing
 - [ ] **SH-50** — C9 Dispatch button + authorization review
@@ -2760,5 +2760,26 @@ test from a stalled one.
 the crate is a binary — but a schema migration deletes a table, the resolution
 order changes, and a project with neither a committed pointer nor a registered
 origin stops resolving from its own directory. `story doctor` is the ramp.
+
+**The live store, and AC-4 verified against a real pre-migration database.**
+Daemon stopped first; backup by `VACUUM INTO` to
+`store-pre-sh119-subtraction-20260803T170516Z.db` — deliberately not matching
+`storyhook-*.db`, so the daemon's seven-file FIFO cannot prune it (SH-135) — and
+verified with `sqlite3 -readonly`, **never through `story`**, which is what
+converted SH-132's backup to WAL: `integrity_check` ok, `foreign_key_check`
+empty, header bytes 18/19 `1 1`, 13 projects / 348 stories / 3,311 events.
+
+`story doctor` then applied migrations **6, 7 and 8 in one pass**, because the
+installed binary was v2.0.0 and predates SH-115's and SH-117's — the store was
+still at schema 5. All six main checkouts carried into `projects.checkout_path`,
+and the one worktree row (`storyhook/.claude/worktrees/rearch`) was dropped
+without being promoted. That is AC-4 against a database this build could not
+have produced, which is worth more than the four unit tests beside it.
+
+R4's backfill then registered all six origins, and a second `story doctor` says
+"no integrity issues found". The census after is **identical** to the backup —
+13 / 348 / 3,311 — plus six rows in `project_remotes`. Live resolution checked
+three ways: from the checkout root, from `src/`, and from `/private/tmp`, which
+refuses while naming the directory, the absent origin and both ways out.
 
 **Council:** not convened. R1-R4 were the input, as SH-151 instructed.
