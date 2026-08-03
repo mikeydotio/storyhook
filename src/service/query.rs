@@ -811,18 +811,10 @@ pub fn story_view(
 ///
 /// `SH-10` sorts after `SH-2` here and before it in a string comparison, which
 /// is the difference between a list a human reads and one they re-sort in
-/// their head.
+/// their head. [`domain::story_number`] is the same parser `ready_order` uses
+/// for its own tiebreak — one story-number parser, not two.
 pub fn sort_story_views(views: &mut [StoryView]) {
-    views.sort_by_key(|view| numeric_story_id(&view.story.id));
-}
-
-/// The number half of a story id, or `u64::MAX` for an id that has none — so
-/// an unparseable id sorts last rather than first.
-fn numeric_story_id(id: &str) -> u64 {
-    id.split('-')
-        .nth(1)
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(u64::MAX)
+    views.sort_by_key(|view| domain::story_number(&view.story.id));
 }
 
 /// A view carrying only the snapshot — what `search` returns.
