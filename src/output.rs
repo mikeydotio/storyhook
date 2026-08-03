@@ -45,7 +45,7 @@ pub struct StoryView {
 /// either now: `delete` touches no filesystem, so there is nothing to promise
 /// about one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DeinitPlan {
+pub struct DeletePlan {
     /// The project's slug — what the user must type to confirm.
     pub slug: String,
     /// Its display name.
@@ -66,7 +66,7 @@ pub struct DeinitPlan {
 
 /// What `story purge` would destroy, read before anything is.
 ///
-/// The sibling of [`DeinitPlan`], and typed for the same reason: the numbers
+/// The sibling of [`DeletePlan`], and typed for the same reason: the numbers
 /// are the warning, and a pre-rendered English sentence would leave a second
 /// front-end parsing prose.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -105,7 +105,7 @@ pub struct PurgePlan {
 #[serde(tag = "confirm", rename_all = "kebab-case")]
 pub enum ConfirmationPlan {
     /// `story project delete` — a project and everything recorded against it.
-    Deinit(DeinitPlan),
+    Delete(DeletePlan),
     /// `story purge` — one story and everything recorded against it.
     Purge(PurgePlan),
 }
@@ -118,7 +118,7 @@ impl ConfirmationPlan {
     #[must_use]
     pub fn token(&self) -> &str {
         match self {
-            Self::Deinit(plan) => &plan.slug,
+            Self::Delete(plan) => &plan.slug,
             Self::Purge(plan) => &plan.id,
         }
     }
@@ -679,14 +679,14 @@ fn render_human(response: &Response) -> String {
 #[must_use]
 pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
     match plan {
-        ConfirmationPlan::Deinit(plan) => render_deinit_plan(plan),
+        ConfirmationPlan::Delete(plan) => render_delete_plan(plan),
         ConfirmationPlan::Purge(plan) => render_purge_plan(plan),
     }
 }
 
 /// The warning a purge prints before it asks.
 ///
-/// Ordered the way [`render_deinit_plan`] is, by what a person needs in order
+/// Ordered the way [`render_delete_plan`] is, by what a person needs in order
 /// to answer: which story this is, what is irreversible about it, what else
 /// changes, and only then the question. The retracted claims are here rather
 /// than left as a surprise because they are edits to *other* stories' histories
@@ -770,7 +770,7 @@ fn render_project_settings(settings: &[SettingView]) -> String {
 /// alone. Without it the list reads exactly as it did when this verb removed
 /// them, which is the one misreading that matters here — a person scanning a
 /// destruction warning takes a list of paths as a list of casualties.
-pub fn render_deinit_plan(plan: &DeinitPlan) -> String {
+pub fn render_delete_plan(plan: &DeletePlan) -> String {
     let mut body = String::new();
     body.push_str(&format!("{} — {}\n", plan.slug, plan.name));
     body.push_str(&format!(

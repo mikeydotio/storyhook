@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{StateDef, SuperState, TypeDef};
 use crate::error::AppError;
-use crate::output::DeinitPlan;
+use crate::output::DeletePlan;
 use crate::store::{
     DeletedProject, NewProject, PathKind, ProjectId, ProjectRecord, ReadOps, Store, WriteOps,
 };
@@ -663,11 +663,11 @@ pub struct InitOutcome {
 /// The name of the agent-instruction file `init` generates.
 pub const AGENTS_MD: &str = "AGENTS.md";
 
-/// What a [`ProjectService::deinit`] destroyed.
+/// What a [`ProjectService::delete`] destroyed.
 #[derive(Clone, Debug)]
-pub struct DeinitOutcome {
+pub struct DeleteOutcome {
     /// The plan it carried out.
-    pub plan: DeinitPlan,
+    pub plan: DeletePlan,
     /// What the store deleted, counted inside the deleting transaction.
     pub removed: DeletedProject,
 }
@@ -889,7 +889,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
         })
     }
 
-    /// Everything a [`deinit`](Self::deinit) would destroy. Writes nothing, and
+    /// Everything a [`delete`](Self::delete) would destroy. Writes nothing, and
     /// **reads no filesystem**.
     ///
     /// Separated from the deletion so that the answer can be shown to somebody
@@ -902,7 +902,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
     /// something only the person confirming can decide what to do about. They
     /// are not a list of files about to be destroyed: since SH-117 this verb
     /// destroys none.
-    pub fn deinit_plan(&self, project: ProjectId) -> Result<DeinitPlan, AppError> {
+    pub fn delete_plan(&self, project: ProjectId) -> Result<DeletePlan, AppError> {
         let record = self.project_record(project)?;
         let (stories, events, checkouts) = self.store.read(|tx| {
             Ok((
@@ -915,7 +915,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
             ))
         })?;
 
-        Ok(DeinitPlan {
+        Ok(DeletePlan {
             slug: record.slug,
             name: record.name,
             prefix: record.prefix,
@@ -940,10 +940,10 @@ impl<'a, S: Store> ProjectService<'a, S> {
     /// a clear diagnosis; a deleted `AGENTS.md` is work gone. A tracker whose
     /// data lives in a store outside every repository has no business writing
     /// to a repository at all.
-    pub fn deinit(&self, project: ProjectId) -> Result<DeinitOutcome, AppError> {
-        let plan = self.deinit_plan(project)?;
+    pub fn delete(&self, project: ProjectId) -> Result<DeleteOutcome, AppError> {
+        let plan = self.delete_plan(project)?;
         let removed = self.store.write(|tx| tx.delete_project(project))?;
-        Ok(DeinitOutcome { plan, removed })
+        Ok(DeleteOutcome { plan, removed })
     }
 
     /// This project's catalog row, or a `NotFound` naming the id.

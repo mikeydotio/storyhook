@@ -279,12 +279,12 @@ fn delete_refuses_and_then_deletes_over_the_wire() {
     );
 }
 
-/// So is the purge's, and for a reason the deinit case cannot cover.
+/// So is the purge's, and for a reason the delete case cannot cover.
 ///
 /// `ConfirmationPlan` is an enum since SH-130, so the plan a purge answers with
 /// has to survive the JSON hop that `/api/v1/invoke` gives it *and* be
 /// recognised by `InvokeRequest::forced()`, which is what turns the client's
-/// answer back into a second request. A `forced()` that only knew about deinit
+/// answer back into a second request. A `forced()` that only knew about `delete`
 /// would loop forever here rather than fail: the daemon would keep answering
 /// with the plan and the client would keep asking.
 #[test]
