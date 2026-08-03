@@ -1090,29 +1090,38 @@ fn a_migrated_store_has_no_resolution_index_left() {
 }
 
 // ---------------------------------------------------------------------------
-// Migration 9: type emoji, and `task` is retired (SH-157)
+// Migration 9: type emoji, `story` is renamed to `normal`, and `task` is
+// retired (SH-157)
 // ---------------------------------------------------------------------------
 
 /// A store at schema v8 — the last version before `project_types.emoji`
 /// existed — carrying one project with the full default catalog (`task`
 /// deliberately placed in the *middle* of the position order, so the
 /// migration's gap-closing renumbering has a real gap to close rather than
-/// one that already happens to be contiguous) and two stories: one typed
-/// `task`, one typed `story` and otherwise untouched.
+/// one that already happens to be contiguous) and three stories: one typed
+/// `task`, one typed `story` (both rename to `normal`), and one typed `epic`
+/// — the control that proves the migration is selective rather than
+/// retyping every story it can see.
 ///
 /// `project_types` is seeded in raw SQL at the v8 shape (no `emoji` column) —
 /// the same reason `tests/store_schema_fixture.rs` seeds it that way now:
 /// `WriteOps::put_types` assumes the column this migration adds.
-fn v8_store_with_a_task_story(
+fn v8_store_with_renamed_and_retired_type_stories(
     dir: &Path,
-) -> (SqliteStore, storyhook::store::ProjectId, StoryNo, StoryNo) {
+) -> (
+    SqliteStore,
+    storyhook::store::ProjectId,
+    StoryNo,
+    StoryNo,
+    StoryNo,
+) {
     use storyhook::domain::{StateDef, SuperState, fold_story};
     use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
 
     let store = SqliteStore::open(dir.join("store.db")).unwrap();
     store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
 
-    let (project, task_story, story_story) = store
+    let (project, task_story, story_story, epic_story) = store
         .write(|tx| {
             let project = tx.create_project(&NewProject {
                 uuid: "types".into(),
@@ -1140,50 +1149,47 @@ fn v8_store_with_a_task_story(
             )?;
             let state_map = tx.state_map(project)?;
 
-            let task_events = vec![
-                StoryEvent::StoryCreated {
-                    at: "2026-01-01T00:00:00Z".into(),
-                    title: "A task-typed story".into(),
-                    state: "todo".into(),
-                },
-                StoryEvent::StoryTypeSet {
-                    at: "2026-01-01T00:01:00Z".into(),
-                    story_type: "task".into(),
-                },
-            ];
-            let task_no = tx.allocate_story_no(project)?;
-            let task_head = tx.append_events(
-                project,
-                task_no,
-                ExpectedSeq::Exact(EventSeq::ZERO),
-                &task_events,
-            )?;
-            let task_snapshot = fold_story(&task_no.to_id("SH"), &task_events, &state_map).unwrap();
-            tx.put_story(project, &task_snapshot, task_head)?;
+            let mut make_story =
+                |title: &str, created_at: &str, typed_at: &str, story_type: &str| {
+                    let events = vec![
+                        StoryEvent::StoryCreated {
+                            at: created_at.to_string(),
+                            title: title.to_string(),
+                            state: "todo".into(),
+                        },
+                        StoryEvent::StoryTypeSet {
+                            at: typed_at.to_string(),
+                            story_type: story_type.to_string(),
+                        },
+                    ];
+                    let no = tx.allocate_story_no(project)?;
+                    let head =
+                        tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+                    let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
+                    tx.put_story(project, &snapshot, head)?;
+                    Ok::<_, storyhook::store::StoreError>(no)
+                };
 
-            let story_events = vec![
-                StoryEvent::StoryCreated {
-                    at: "2026-01-01T00:00:10Z".into(),
-                    title: "An ordinary story".into(),
-                    state: "todo".into(),
-                },
-                StoryEvent::StoryTypeSet {
-                    at: "2026-01-01T00:01:10Z".into(),
-                    story_type: "story".into(),
-                },
-            ];
-            let story_no = tx.allocate_story_no(project)?;
-            let story_head = tx.append_events(
-                project,
-                story_no,
-                ExpectedSeq::Exact(EventSeq::ZERO),
-                &story_events,
+            let task_no = make_story(
+                "A task-typed story",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:01:00Z",
+                "task",
             )?;
-            let story_snapshot =
-                fold_story(&story_no.to_id("SH"), &story_events, &state_map).unwrap();
-            tx.put_story(project, &story_snapshot, story_head)?;
+            let story_no = make_story(
+                "An ordinary story",
+                "2026-01-01T00:00:10Z",
+                "2026-01-01T00:01:10Z",
+                "story",
+            )?;
+            let epic_no = make_story(
+                "An epic",
+                "2026-01-01T00:00:20Z",
+                "2026-01-01T00:01:20Z",
+                "epic",
+            )?;
 
-            Ok((project, task_no, story_no))
+            Ok((project, task_no, story_no, epic_no))
         })
         .unwrap();
 
@@ -1203,7 +1209,7 @@ fn v8_store_with_a_task_story(
         .unwrap();
     }
 
-    (store, project, task_story, story_story)
+    (store, project, task_story, story_story, epic_story)
 }
 
 /// `(story_type, updated_at, head_seq)` for one story, read back through the
@@ -1273,22 +1279,23 @@ fn type_catalog(store: &SqliteStore, project: storyhook::store::ProjectId) -> Ve
 }
 
 #[test]
-fn migration_nine_retypes_task_stories_by_appending_a_real_event() {
+fn migration_nine_retypes_task_stories_to_normal_by_appending_a_real_event() {
     let dir = scratch_dir();
-    let (store, project, task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+    let (store, project, task_story, _story_story, _epic_story) =
+        v8_store_with_renamed_and_retired_type_stories(dir.path());
     let before = next_global_seq(&store, project);
 
     store.migrate().unwrap();
 
     let (story_type, updated_at, head_seq) = story_type_updated_head(&store, project, task_story);
-    assert_eq!(story_type.as_deref(), Some("story"));
+    assert_eq!(story_type.as_deref(), Some("normal"));
     assert_ne!(
         updated_at, "2026-01-01T00:01:00Z",
         "updated_at must move: the fold sets it from the appended event's `at`"
     );
     assert_eq!(
         head_seq, 3,
-        "StoryCreated, StoryTypeSet(task), StoryTypeSet(story)"
+        "StoryCreated, StoryTypeSet(task), StoryTypeSet(normal)"
     );
 
     let events = events_of(&store, project, task_story);
@@ -1297,33 +1304,70 @@ fn migration_nine_retypes_task_stories_by_appending_a_real_event() {
         vec![
             ("StoryCreated".to_string(), None),
             ("StoryTypeSet".to_string(), Some("task".to_string())),
-            ("StoryTypeSet".to_string(), Some("story".to_string())),
+            ("StoryTypeSet".to_string(), Some("normal".to_string())),
         ],
         "the original `task` event survives; the migration appends rather than rewrites"
     );
 
     assert_eq!(
         next_global_seq(&store, project),
-        before + 1,
-        "the project's counter advances past the one event this migration appended"
+        before + 2,
+        "the project's counter advances past both events this migration appended \
+         — one for the `task`-typed story, one for the `story`-typed story"
     );
 }
 
 #[test]
-fn migration_nine_leaves_a_non_task_story_completely_alone() {
+fn migration_nine_retypes_story_stories_to_normal_by_appending_a_real_event() {
     let dir = scratch_dir();
-    let (store, project, _task_story, story_story) = v8_store_with_a_task_story(dir.path());
-    let before = story_type_updated_head(&store, project, story_story);
+    let (store, project, _task_story, story_story, _epic_story) =
+        v8_store_with_renamed_and_retired_type_stories(dir.path());
 
     store.migrate().unwrap();
 
-    let after = story_type_updated_head(&store, project, story_story);
+    let (story_type, updated_at, head_seq) = story_type_updated_head(&store, project, story_story);
+    assert_eq!(
+        story_type.as_deref(),
+        Some("normal"),
+        "the catalog's `story` slug is renamed to `normal`, so a `story`-typed \
+         story must move with it — leaving it behind would orphan its \
+         story_type against a catalog entry that no longer exists"
+    );
+    assert_ne!(updated_at, "2026-01-01T00:01:10Z");
+    assert_eq!(
+        head_seq, 3,
+        "StoryCreated, StoryTypeSet(story), StoryTypeSet(normal)"
+    );
+
+    let events = events_of(&store, project, story_story);
+    assert_eq!(
+        events,
+        vec![
+            ("StoryCreated".to_string(), None),
+            ("StoryTypeSet".to_string(), Some("story".to_string())),
+            ("StoryTypeSet".to_string(), Some("normal".to_string())),
+        ],
+        "the original `story` event survives; the migration appends rather than rewrites"
+    );
+}
+
+#[test]
+fn migration_nine_leaves_an_epic_typed_story_completely_alone() {
+    let dir = scratch_dir();
+    let (store, project, _task_story, _story_story, epic_story) =
+        v8_store_with_renamed_and_retired_type_stories(dir.path());
+    let before = story_type_updated_head(&store, project, epic_story);
+
+    store.migrate().unwrap();
+
+    let after = story_type_updated_head(&store, project, epic_story);
     assert_eq!(
         before, after,
-        "a story never typed `task` must not be touched by this migration at all"
+        "a story typed neither `task` nor `story` must not be touched by this \
+         migration at all — proves it is selective, not \"retype everything\""
     );
     assert_eq!(
-        events_of(&store, project, story_story).len(),
+        events_of(&store, project, epic_story).len(),
         2,
         "no event is appended to a story the migration has no reason to touch"
     );
@@ -1334,22 +1378,24 @@ fn migration_nine_read_model_agrees_with_the_event_log_afterward() {
     use storyhook::store::diff_read_model;
 
     let dir = scratch_dir();
-    let (store, project, _task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+    let (store, project, _task_story, _story_story, _epic_story) =
+        v8_store_with_renamed_and_retired_type_stories(dir.path());
 
     store.migrate().unwrap();
 
     let diff = diff_read_model(&store, project).unwrap();
     assert!(
         diff.is_clean(),
-        "the row the migration edited must still agree with its own event log: {}",
+        "the rows the migration edited must still agree with their own event log: {}",
         diff.describe()
     );
 }
 
 #[test]
-fn migration_nine_drops_task_from_the_catalog_and_closes_the_position_gap() {
+fn migration_nine_drops_task_and_renames_story_closing_the_position_gap() {
     let dir = scratch_dir();
-    let (store, project, _task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+    let (store, project, _task_story, _story_story, _epic_story) =
+        v8_store_with_renamed_and_retired_type_stories(dir.path());
 
     store.migrate().unwrap();
 
@@ -1357,8 +1403,8 @@ fn migration_nine_drops_task_from_the_catalog_and_closes_the_position_gap() {
     let slugs: Vec<&str> = catalog.iter().map(|(slug, _)| slug.as_str()).collect();
     assert_eq!(
         slugs,
-        vec!["story", "epic", "bug", "chore"],
-        "`task` is gone; the survivors keep their relative order"
+        vec!["normal", "epic", "bug", "chore"],
+        "`task` is gone, `story` is `normal`; the survivors keep their relative order"
     );
     let positions: Vec<i64> = catalog.iter().map(|(_, position)| *position).collect();
     assert_eq!(
@@ -1373,7 +1419,8 @@ fn migration_nine_backfills_emoji_for_the_four_default_slugs_only() {
     use storyhook::store::ReadOps;
 
     let dir = scratch_dir();
-    let (store, project, _task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+    let (store, project, _task_story, _story_story, _epic_story) =
+        v8_store_with_renamed_and_retired_type_stories(dir.path());
 
     store.migrate().unwrap();
 
@@ -1384,7 +1431,7 @@ fn migration_nine_backfills_emoji_for_the_four_default_slugs_only() {
             .find(|t| t.slug == slug)
             .and_then(|t| t.emoji.clone())
     };
-    assert_eq!(emoji_of("story").as_deref(), Some("📖"));
+    assert_eq!(emoji_of("normal").as_deref(), Some("📙"));
     assert_eq!(emoji_of("epic").as_deref(), Some("📚"));
     assert_eq!(emoji_of("bug").as_deref(), Some("🐞"));
     assert_eq!(emoji_of("chore").as_deref(), Some("🧺"));
@@ -1395,7 +1442,8 @@ fn migration_nine_does_not_invent_an_emoji_for_a_custom_type() {
     use storyhook::store::ReadOps;
 
     let dir = scratch_dir();
-    let (store, project, _task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+    let (store, project, _task_story, _story_story, _epic_story) =
+        v8_store_with_renamed_and_retired_type_stories(dir.path());
     let conn = Connection::open(store.path()).unwrap();
     conn.execute(
         "INSERT INTO project_types (project_id, position, slug, description) \
@@ -1549,7 +1597,8 @@ fn migration_nine_removes_an_unused_task_catalog_entry_without_touching_any_stor
     assert_eq!(events_of(&store, project, no).len(), 1);
     assert_eq!(
         type_catalog(&store, project),
-        vec![("story".to_string(), 0)],
-        "only the catalog row is removed when no story used it"
+        vec![("normal".to_string(), 0)],
+        "the `task` row is removed and `story` is renamed to `normal`, \
+         even with no story left to retype"
     );
 }

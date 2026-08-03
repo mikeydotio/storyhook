@@ -129,8 +129,8 @@ fn summary_shows_type_breakdown() {
         .assert()
         .success();
 
-    // Create stories: 2 with no type (Default), 1 bug, 2 stories
-    // "bug" and "story" are default types from init
+    // Create stories: 2 with no type (Default), 1 bug, 2 normal
+    // "bug" and "normal" are default types from init
     story(dir.path())
         .args(["new", "Untyped A"])
         .assert()
@@ -144,11 +144,11 @@ fn summary_shows_type_breakdown() {
         .assert()
         .success();
     story(dir.path())
-        .args(["new", "Story X", "--type", "story"])
+        .args(["new", "Story X", "--type", "normal"])
         .assert()
         .success();
     story(dir.path())
-        .args(["new", "Story Y", "--type", "story"])
+        .args(["new", "Story Y", "--type", "normal"])
         .assert()
         .success();
 
@@ -160,5 +160,5 @@ fn summary_shows_type_breakdown() {
         .stdout(predicate::str::contains("by type:"))
         .stdout(predicate::str::contains("Default: 2"))
         .stdout(predicate::str::contains("bug: 1"))
-        .stdout(predicate::str::contains("story: 2"));
+        .stdout(predicate::str::contains("normal: 2"));
 }

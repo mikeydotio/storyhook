@@ -57,7 +57,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -141,7 +141,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -169,7 +169,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -192,7 +192,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"
@@ -256,7 +256,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"

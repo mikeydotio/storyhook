@@ -103,7 +103,7 @@ tbody tr:hover { background:var(--table-hover); }
 
 <div class="section">
 <div class="section-title">Type Breakdown</div>
-<div class="priorities"><span class="priority-badge priority-none">bug: 1</span><span class="priority-badge priority-none">chore: 3</span><span class="priority-badge priority-none">epic: 1</span><span class="priority-badge priority-none">spike: 2</span><span class="priority-badge priority-none">story: 7</span></div>
+<div class="priorities"><span class="priority-badge priority-none">bug: 1</span><span class="priority-badge priority-none">chore: 3</span><span class="priority-badge priority-none">epic: 1</span><span class="priority-badge priority-none">normal: 7</span><span class="priority-badge priority-none">spike: 2</span></div>
 </div>
 
 <div class="section">

@@ -100,7 +100,7 @@ story state remove review
 
 ### `story type list` / `story type add <slug> [--description "<text>"] [--emoji <glyph>]` / `story type set <slug> [...]` / `story type remove <slug>`
 
-Manage story types. Defaults after `init`: `story` 📖, `epic` 📚, `bug` 🐞, `chore` 🧺 — each with an emoji the web dashboard renders next to stories of that type. Set a story's type at creation with `story new <title> --type <slug>`, or with `story set <id> --type <slug>`. `story type set` edits an existing type's description and/or emoji in place (`--no-description`/`--no-emoji` clear rather than set); a type with no emoji renders a generic 🏷️ on the dashboard.
+Manage story types. Defaults after `init`: `normal` 📙, `epic` 📚, `bug` 🐞, `chore` 🧺 — each with an emoji the web dashboard renders next to stories of that type. Set a story's type at creation with `story new <title> --type <slug>`, or with `story set <id> --type <slug>`. `story type set` edits an existing type's description and/or emoji in place (`--no-description`/`--no-emoji` clear rather than set); a type with no emoji renders a generic 🏷️ on the dashboard.
 
 ```bash
 story type list
