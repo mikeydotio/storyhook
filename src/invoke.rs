@@ -38,7 +38,7 @@ use crate::help_topics;
 use crate::output::{ConfirmationPlan, Response, render_html_report};
 use crate::service::transfer::ProjectExport;
 use crate::service::{
-    CatalogService, Clock, ConfigService, Ctx, DeinitOutcome, FieldEdits, GitService,
+    CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits, GitService,
     GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
     NewStoryInput, PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService,
     ReopenOutcome, SessionService, SettingsService, StateListing, StoryService, SystemService,
@@ -802,11 +802,11 @@ fn dispatch_project_delete<S: Store>(ctx: &Ctx<'_, S>, force: bool) -> Result<Re
         ProjectService::new(ctx.store(), ctx.cwd()).clock(Clock::Fixed(ctx.now().to_string()));
     if !force {
         return Ok(Response::ConfirmationRequired(Box::new(
-            ConfirmationPlan::Deinit(service.deinit_plan(ctx.project())?),
+            ConfirmationPlan::Delete(service.delete_plan(ctx.project())?),
         )));
     }
-    let outcome = service.deinit(ctx.project())?;
-    Ok(Response::Message(deinit_message(&outcome)))
+    let outcome = service.delete(ctx.project())?;
+    Ok(Response::Message(delete_message(&outcome)))
 }
 
 /// `story project link origin|checkout …` against a resolved project.
@@ -915,7 +915,7 @@ fn dispatch_project_settings<S: Store>(
 }
 
 /// What a completed delete tells the user.
-fn deinit_message(outcome: &DeinitOutcome) -> String {
+fn delete_message(outcome: &DeleteOutcome) -> String {
     let plan = &outcome.plan;
     let mut lines = vec![format!("deleted {} — {}", plan.slug, plan.name)];
     lines.push(format!(

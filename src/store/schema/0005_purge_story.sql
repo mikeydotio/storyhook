@@ -20,7 +20,7 @@
 -- Schema 1 made `events` append-only with an unconditional trigger and said
 -- that a future operation needing to delete events "has to drop these guards
 -- inside its own migration and say so — it cannot happen by accident". Schema 3
--- was the first such migration, for `story project deinit`, and narrowed the
+-- was the first such migration, for `story project delete`, and narrowed the
 -- guard to abstain only for an event whose *project* row is already gone.
 --
 -- This is the second, and it **composes with** schema 3 rather than replacing

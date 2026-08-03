@@ -213,7 +213,7 @@ pub trait ReadOps {
 
     /// How many events a project holds.
     ///
-    /// A count rather than `events_since(..).len()`: `story project deinit`
+    /// A count rather than `events_since(..).len()`: `story project delete`
     /// has to state the size of what it is about to destroy, and paging a
     /// whole change feed to say "4,812" would make describing the deletion
     /// cost what performing it costs.

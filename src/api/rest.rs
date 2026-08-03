@@ -154,7 +154,7 @@ pub fn route<S: Store>(
             Method::Delete => Routed::changing(
                 method,
                 guarded(headers, trusted_hosts, body, |b| {
-                    route_deinit_repo(store, env, id, b)
+                    route_delete_repo(store, env, id, b)
                 }),
                 Changed::Catalog,
             ),
@@ -500,13 +500,13 @@ fn invoke_from_browser_as<S: Store>(
 /// recorded against it.
 ///
 /// Two-step, exactly as the CLI is. Without a body naming the project's slug
-/// this answers `409` carrying the same [`DeinitPlan`](crate::output::DeinitPlan)
+/// this answers `409` carrying the same [`DeletePlan`](crate::output::DeletePlan)
 /// the terminal prompt is drawn from, and writes nothing; the browser renders
 /// that as its confirmation modal and sends the slug back. One value, two
 /// front-ends, so the warning cannot say two different things.
 ///
 /// Body: `{"confirm": "<slug>"}`.
-fn route_deinit_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &str) -> Reply {
+fn route_delete_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let confirmed = parse_json_object(body)
             .ok()

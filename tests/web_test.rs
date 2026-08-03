@@ -2401,7 +2401,7 @@ fn web_init_requires_the_guard_header() {
 /// An unconfirmed delete answers with the plan and destroys nothing.
 ///
 /// The same two-step the terminal runs, and deliberately the same value: the
-/// browser draws its warning from the `DeinitPlan` the CLI prompts from, so the
+/// browser draws its warning from the `DeletePlan` the CLI prompts from, so the
 /// two front-ends cannot grow two different ideas of what delete does.
 #[test]
 fn web_delete_without_confirmation_returns_the_plan_and_deletes_nothing() {

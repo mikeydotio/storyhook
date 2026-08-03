@@ -28,7 +28,7 @@ use storyhook::domain::{
 };
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
-    BlockedChainView, ConfirmationPlan, DeinitPlan, GraphOverview, GraphView, PhaseView,
+    BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
     ProjectSnapshotView, PurgePlan, Response, SettingKind, SettingSource, SettingView, StaleInfo,
     StoryView, SummaryView, render_error, render_response,
 };
@@ -401,7 +401,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         ),
         (
             "confirmation_required",
-            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Delete(DeletePlan {
                 slug: "storyhook".to_string(),
                 name: "storyhook — the tracker".to_string(),
                 prefix: "SH".to_string(),
@@ -415,7 +415,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         ),
         (
             "confirmation_required_empty_project",
-            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Delete(DeletePlan {
                 slug: "empty".to_string(),
                 name: "empty".to_string(),
                 prefix: "EM".to_string(),
@@ -478,7 +478,7 @@ fn a_second_wire_hop_is_a_fixed_point() {
     }
 }
 
-/// A deinit plan's fields stay directly under `plan`, alongside the `confirm`
+/// A delete plan's fields stay directly under `plan`, alongside the `confirm`
 /// discriminant rather than nested beneath it.
 ///
 /// The dashboard reads `err.body.plan.slug`, `.stories`, `.events` and
@@ -488,8 +488,8 @@ fn a_second_wire_hop_is_a_fixed_point() {
 /// those a level down — a browser-only breakage, invisible to a Rust round-trip
 /// test, which is exactly why this asserts on the JSON rather than on a value.
 #[test]
-fn a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
-    let response = Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
+fn a_delete_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
+    let response = Response::ConfirmationRequired(Box::new(ConfirmationPlan::Delete(DeletePlan {
         slug: "storyhook".to_string(),
         name: "storyhook — the tracker".to_string(),
         prefix: "SH".to_string(),
@@ -504,7 +504,7 @@ fn a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
 
     assert_eq!(document["result"], "confirmation-required");
     assert_eq!(
-        plan["confirm"], "deinit",
+        plan["confirm"], "delete",
         "the kind is stated, not inferred"
     );
     assert_eq!(plan["slug"], "storyhook");
