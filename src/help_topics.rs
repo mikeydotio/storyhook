@@ -665,7 +665,7 @@ Related:
 
         m.insert(
             "github-sync",
-            r#"story github-sync [<id>] [--dry-run]
+            r#"story github-sync [<id>] [--dry-run] [--resolve local|remote]
 
 Sync stories with GitHub Issues bidirectionally. Pulls remote changes
 and pushes local changes using three-way merge. Requires the
@@ -680,6 +680,19 @@ Examples:
   story github-sync                  # Full project sync
   story github-sync SH-1            # Sync a single story
   story github-sync --dry-run       # Preview changes without applying
+  story github-sync SH-1 --resolve remote   # Take GitHub's side of SH-1
+
+Conflicts:
+  When both sides changed one field to different values, storyhook
+  applies everything else, prints all three values, and exits 8 without
+  deciding. Nothing is chosen for you, and nothing is lost: the
+  merge base holds the disputed field, so the same conflict is still
+  there next time rather than GitHub quietly winning. Answer it with
+  --resolve on that one story, or set the field to the same value on
+  both sides and re-run.
+
+  --resolve needs an explicit <id>. A whole-sync resolution would decide
+  conflicts you have not read.
 
 Configuration (per project, in the store):
   sync_mode = "manual"    # off | manual

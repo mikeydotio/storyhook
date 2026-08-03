@@ -156,7 +156,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-114** — C2 Transport: daemon-only · *two PRs: the diagnostics, then the removal*
 - [x] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal · *`git config --get` walks up, which cost two clauses of the verdict*
 - [x] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink` · *part 1 #101, part 2 PRs #103 and this one* · **the whole surface, and the three retirements**
-- [ ] **SH-152** — github-sync resolves every conflict as Skip with no terminal · *critical, data-loss; filed by SH-117's council* · **what `story next` leads with**
+- [x] **SH-152** — github-sync resolves every conflict as Skip with no terminal · *critical, data-loss; filed by SH-117's council* · **the loss was one sync later, and it destroyed the local edit**
 - [ ] **SH-151** — two projects in one repository share an origin · *gates SH-119*
 - [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk · *blocked by SH-151*
 - [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures
@@ -2378,3 +2378,118 @@ asks for and will not find — `relink`, `CatalogService::relink`,
 `repository_roots`, `agents_md_is_pristine` — because `-D warnings` took them
 when their callers went. `HANDOFF.md` says so, and says which two tests hold
 D21's line so SH-119 knows what it is allowed to move.
+
+### SH-152 — done
+
+**Outcome:** merged. `story github-sync` no longer chooses a resolution nobody
+asked for. A conflict it has not been told how to settle comes back as
+`AppError::SyncConflict` — exit 8, with all three values — and the merge base
+holds the disputed field so the conflict is still there next time.
+
+**The story was right that it was critical and wrong about which edit died, and
+measuring is what found that.** SH-152 says the conflicting *remote* edit is
+dropped on the floor. It is not. `sync_single_story` advanced the merge base to
+the local story unconditionally, including for a story whose conflicts were all
+left unresolved — so on the **next** sync `merge_scalar` saw a field the local
+side appeared not to have touched and the remote side had, filed the remote
+value as an ordinary pull, and overwrote the **local** edit with no conflict
+raised and nothing said. "Skip (resolve later)" was really "remote wins next
+time, silently". The prompt failing is the trigger; the base advance is what
+makes the loss permanent, and it is one layer deeper than the line the story
+names.
+
+**Two failure modes on one line, not one.** `Select::interact()` renders on
+`Term::stderr()` and returns `Err(NotConnected)` when that stream is not a tty,
+so under a spawned daemon (`stderr` → log file) `unwrap_or(2)` fires. But a
+daemon started in the *foreground* from a terminal — `story daemon --serve`,
+which `main.rs:75` supports — has a real tty there, so `is_term()` passes and
+the daemon **blocks in `read_key()`**, drawing a menu on the terminal of
+whoever started the daemon rather than of whoever ran the sync. With
+`HttpInvoker::send` still unbounded (SH-144) that client waits forever. There is
+no reachable terminal that belongs to the right person, which is why the menu is
+deleted rather than guarded.
+
+**Three corrections to the brief, all from reading rather than assuming:**
+
+1. "No message anywhere" was imprecise. The `println!` of base/local/remote went
+   to a daemon stdout that is `/dev/null`, but the report *did* travel back and
+   named the conflicting stories and their field names. What was true is that
+   the values never arrived, the exit code was 0, the line above said "GitHub
+   sync complete.", and `--quiet` erased the whole thing.
+2. The three sibling sites in `initial.rs` (SH-153) do `.map_err(…)?`. They
+   have no terminal check, but they fail loud. `conflict.rs` was the only site
+   in the program that **swallowed**.
+3. Freezing the base entirely — the obvious alternative — would have re-pushed
+   every already-pushed comment on every later sync, because `merge_comments`
+   computes new local comments as "in local, not in base". Hence
+   `base_after_sync`: advance for everything the sync settled, hold only what is
+   still in dispute. Converged fields then merge as both-changed-and-equal and
+   stay quiet.
+
+**Council: unanimous, round 1 — and both non-authors voted against their own
+proposals for the fourth time in this run.** The reversal that mattered was the
+QA seat's: its own proposal made a `GithubApi` trait seam a *precondition* for
+red-green, and it withdrew that after checking `diff.rs` and finding the
+two-sync regression expressible as a pure unit test over hand-built snapshots.
+The architect seat independently found that seam is larger than claimed, because
+`run_sync_with` builds its own `GithubClient` (`mod.rs:204`) rather than
+receiving one. The CLI seat switched on one clause — the winner refuses
+`--resolve` without an explicit `<id>`, where its own flag would have permitted
+a blanket keep-local across every story in one invocation. Audit trail in
+`.council/sh152-conflict-with-no-terminal/`; the verdict is a comment on SH-152
+and was implemented without re-running the vote.
+
+**The one rule I moved, and why.** The verdict put the "`--resolve` needs an
+`<id>`" refusal in the parser. It is in `run_sync_with` instead: the parser is
+one door, and the dashboard, the TUI and a hand-built `InvokeRequest` are three
+more. SH-134 was filed in this run for exactly that class — a parser gate
+standing in for a domain rule. It is asked before the sync configuration is
+loaded, so it still costs no network and the CLI still exits 2.
+
+**Red→green verified in both directions rather than assumed.** Restoring the
+base advance (a one-line stub returning `synced`) fails exactly three `diff`
+tests, the load-bearing one reporting **0 conflicts on the second sync where 1
+is required** — the defect, stated as a number.
+`a_sync_with_no_unresolved_conflicts_advances_the_base_whole` stays green
+throughout, which is its job: it guards against the fix freezing bases it should
+not. Disarming the refusal separately fails exactly three `outcome_tests` and
+leaves `a_run_with_no_conflicts_still_answers_with_a_message` green, which is
+the same guard on the other half.
+
+**A type change carried the fix.** `FieldConflict.field` was a `String`, and both
+sites that act on a conflict matched on names under `_ => return Ok(())`. It is
+a `ConflictField` enum in its own behaviour-neutral commit ahead of the fix, so
+the restore in `base_after_sync` is exhaustive by construction — a field added
+to the merge later cannot be silently forgotten by it.
+`every_conflict_field_is_held_back_and_nothing_else_is` iterates the variants
+rather than naming them.
+
+**The allowlist lost its first entry.** `tests/invoker_seam.rs`'s prompt list
+goes 5 → 4. `AppError::SyncConflict`, dead since it was written, now has its
+caller — so **SH-65 is closed as obviated** rather than deleted, and
+`error_contract.rs`'s claim that the variant is "constructed nowhere" is
+corrected to what is now true: reachable, but not provokable offline while
+`GithubClient` has no seam.
+
+**Two stories filed, one of them the council's own deferral:**
+
+- **SH-158** — `GithubClient` has no trait seam, so `run_sync_with` and
+  `sync_single_story` have no automated test at all. Emptying
+  `error_contract.rs`'s `UNPROVOKABLE` list is its acceptance criterion.
+- **SH-159** — the sibling sweep. `SyncReport.errors` is still reported inside a
+  "complete" message at exit 0. Same shape, one field along in the same struct;
+  filed rather than folded in because whether a partial network failure should
+  fail the whole run is a design call, and `SyncReport::outcome` — which this
+  story created — is the one place a fix would touch.
+
+**Gate:** `make test` exits 0 — **112 green test-result blocks**, 0 failures,
+plugin harness 18/0, clippy clean, orphan check green on both ends. **Thirteenth
+consecutive story with no wedge.** Supervised as the rule requires: a background
+run with the log redirected, a `Monitor` sampling `wc -c` every 30 seconds, and a
+120-second stall bound that would have emitted a line if growth stopped. It never
+fired.
+
+**Semver: minor.** A new flag, no interface removed — but `story github-sync`
+now exits 8 and emits `"result":"error"` whenever any story conflicts, even if
+forty others synced cleanly. Any script treating exit 0 as "the sync ran" was
+already wrong and now finds out.
