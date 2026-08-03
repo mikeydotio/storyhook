@@ -27,8 +27,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation, PhaseAction,
-    PluginAction, ProjectAction, SettingsAction, StateAction, TypeAction, WebAction,
+    Attach, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
+    NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
+    TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState};
 use crate::env::Environment;
@@ -143,7 +144,8 @@ impl InvokeRequest {
         match &mut self.invocation {
             Invocation::Project { action } => match action {
                 ProjectAction::Deinit { force, .. } => *force = true,
-                ProjectAction::Init { .. }
+                ProjectAction::New(_)
+                | ProjectAction::Init { .. }
                 | ProjectAction::List
                 | ProjectAction::Link(_)
                 | ProjectAction::Unlink(_)
@@ -655,6 +657,47 @@ fn dispatch_project<S: Store>(
     action: ProjectAction,
 ) -> Result<Response, AppError> {
     match action {
+        // The client is the only process with a terminal, so it is the only one
+        // that can turn `Ask` into an answer. Reaching here means a caller went
+        // round `main.rs` — over the daemon, through a hand-built
+        // `InvokeRequest`, from a front-end that has not been taught the rule.
+        // Refused rather than defaulted: quietly supplying a prefix nobody
+        // chose is SH-109's silent `SH` wearing a new verb.
+        ProjectAction::New(NewProjectRequest::Ask) => Err(AppError::Validation(
+            "`story project new` was given nothing to work from and there is nobody here to \
+             ask.\n\nPass the answers on the command line — `--prefix` is the only required \
+             one:\n\n  story project new --prefix <PREFIX>"
+                .to_string(),
+        )),
+        ProjectAction::New(NewProjectRequest::Stated(spec)) => {
+            let attach = !matches!(spec.attach, Attach::Nothing);
+            let target = match &spec.attach {
+                Attach::Cwd | Attach::Nothing => root.to_path_buf(),
+                Attach::Path(path) => target_dir(root, Some(path)),
+            };
+            // Named explicitly rather than left to fail later inside
+            // `write_pointer`, and asked only when the directory is going to be
+            // used: `--no-attach` does not read it at all.
+            if attach && !target.is_dir() {
+                return Err(AppError::NotFound(format!(
+                    "cannot attach `{}`: no such directory",
+                    target.display()
+                )));
+            }
+            let outcome = ProjectService::new(store, target)
+                .clock(Clock::Fixed(now.to_string()))
+                .init(&InitOptions {
+                    prefix: Some(spec.prefix),
+                    name: spec.name,
+                    agents_md: !spec.no_agents_md,
+                    pointer,
+                    attach,
+                })?;
+            let slug = store
+                .read(|tx| tx.project(outcome.project))?
+                .map(|p| p.slug);
+            Ok(Response::Message(new_message(&outcome, attach, &slug)))
+        }
         ProjectAction::Init {
             path,
             prefix,
@@ -679,6 +722,7 @@ fn dispatch_project<S: Store>(
                     name,
                     agents_md: !no_agents_md,
                     pointer,
+                    attach: true,
                 })?;
             Ok(Response::Message(init_message(&outcome)))
         }
@@ -1569,6 +1613,44 @@ fn decompose_summary(batch: &ImportBatch) -> String {
 /// the moment the store becomes the identity of record, and the wave that
 /// makes that switch owns rewriting it; changing it here would move a
 /// user-visible string in a wave whose entire claim is that it moves none.
+/// What `story project new` reports.
+///
+/// Names the slug in both shapes, for different reasons. Attached, it is how
+/// the user recognizes the project in `story project list`; detached, it is the
+/// *only* way to reach the project at all — no directory resolves to it, so a
+/// message without it would leave somebody holding a project they cannot name.
+fn new_message(outcome: &InitOutcome, attached: bool, slug: &Option<String>) -> String {
+    let mut message = if outcome.created {
+        "created story project".to_string()
+    } else {
+        "this checkout already belongs to a story project".to_string()
+    };
+    if let Some(slug) = slug {
+        message.push_str(&format!(" `{slug}`"));
+    }
+    if attached {
+        message.push_str(
+            "\n\nYour stories live in storyhook's own store, outside this repository — one \
+             truth\nfor every branch, worktree and clone.",
+        );
+    } else {
+        message.push_str(
+            "\n\nNothing on disk was touched, and no directory resolves to it. Name it with\n\
+             `--project <slug>`, or attach a checkout later with `story project link checkout`.",
+        );
+    }
+    if outcome.pointer {
+        message.push_str(
+            "\n\nWrote .storyhook.toml, which names this project. Commit it: a clone \
+             without it\ndoes not know which project it is looking at.",
+        );
+    }
+    if outcome.agents_md {
+        message.push_str("\n\nGenerated AGENTS.md for AI agent discoverability.");
+    }
+    message
+}
+
 fn init_message(outcome: &InitOutcome) -> String {
     let mut message = "initialized story project\n\n\
          Your stories live in storyhook's own store, outside this repository — \
@@ -2008,6 +2090,23 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
         Invocation::Project { action } => match action {
             ProjectAction::Init { path, .. } => Some(target_dir(cwd, path.as_deref())),
+            // `--no-attach` creates nothing at a path, so there is no path for
+            // this guard to judge — a deliberate narrowing of SH-95, pinned by
+            // a test of its own rather than left to be rediscovered.
+            //
+            // A request still carrying `Ask` is guarded as though it attached
+            // the working directory. The dispatcher refuses it a moment later
+            // either way; guarding it is the conservative order, so a caller
+            // that went round `main.rs` cannot reach `create_project` by a
+            // route the guard declined to look at.
+            ProjectAction::New(request) => match request {
+                NewProjectRequest::Ask => Some(target_dir(cwd, None)),
+                NewProjectRequest::Stated(spec) => match &spec.attach {
+                    Attach::Cwd => Some(target_dir(cwd, None)),
+                    Attach::Path(path) => Some(target_dir(cwd, Some(path))),
+                    Attach::Nothing => None,
+                },
+            },
             ProjectAction::Deinit { .. }
             | ProjectAction::List
             | ProjectAction::Link(_)
@@ -2176,6 +2275,7 @@ fn describe_unscoped(invocation: &Invocation) -> String {
         // somebody running `story project link` that `story project list` does
         // not act on a single project.
         Invocation::Project { action } => match action {
+            ProjectAction::New(_) => "project new",
             ProjectAction::Init { .. } => "project init",
             ProjectAction::Deinit { .. } => "project deinit",
             ProjectAction::List => "project list",
@@ -2215,15 +2315,18 @@ fn is_project_less(invocation: &Invocation) -> bool {
         return true;
     }
     match invocation {
-        // `init`, `deinit` and `list` are about projects in general; the other
-        // three are about *this* one and cannot be answered without resolving
-        // it. Stated positively, so a variant added later is project-less only
-        // because somebody said so — the negated form classified every new arm
-        // as unscoped, which is how `link` would have been dispatched with no
-        // project and no way to see a selector.
+        // `new`, `init`, `deinit` and `list` are about projects in general; the
+        // other three are about *this* one and cannot be answered without
+        // resolving it. Stated positively, so a variant added later is
+        // project-less only because somebody said so — the negated form
+        // classified every new arm as unscoped, which is how `link` would have
+        // been dispatched with no project and no way to see a selector.
         Invocation::Project { action } => matches!(
             action,
-            ProjectAction::Init { .. } | ProjectAction::Deinit { .. } | ProjectAction::List
+            ProjectAction::New(_)
+                | ProjectAction::Init { .. }
+                | ProjectAction::Deinit { .. }
+                | ProjectAction::List
         ),
         Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }

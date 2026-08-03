@@ -529,6 +529,14 @@ pub enum DaemonAction {
 /// "wherever you happen to be standing".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProjectAction {
+    /// Create a project, optionally attaching a checkout to it.
+    ///
+    /// The verb that replaces [`Init`](Self::Init). It differs in three ways
+    /// and no others: the checkout is named by `--attach PATH` rather than by a
+    /// positional nobody could tell from a name, `--no-attach` makes the
+    /// filesystem opt-out sayable at all, and a prefix is *required* rather
+    /// than silently defaulted to `SH` (SH-109).
+    New(NewProjectRequest),
     /// Create a project for a checkout, or re-register one that already exists.
     Init {
         /// The checkout to initialize; `None` means the working directory.
@@ -575,6 +583,75 @@ pub enum ProjectAction {
     /// `dispatch_unscoped`. [`Link`](Self::Link) and [`Unlink`](Self::Unlink)
     /// are the others.
     Settings(SettingsAction),
+}
+
+/// What `story project new` was told, or that it was told nothing at all.
+///
+/// **The absence of every verb-local switch is itself the request.** A bare
+/// `story project new` is somebody asking to be walked through it; the same
+/// command with any switch on it is a script that has already decided. Nothing
+/// else distinguishes the two, which is what makes the rule predictable from
+/// either side — and it is the rule `main.rs::confirm()` already applies, so
+/// the program has one rule about prompting rather than two.
+///
+/// [`Ask`](Self::Ask) is resolved into [`Stated`](Self::Stated) by the client,
+/// which is the only process with a terminal. It is nonetheless a wire variant
+/// rather than a client-side placeholder, because a request carrying it *can*
+/// reach the dispatcher — a caller that went round `main.rs`, a hand-built
+/// `InvokeRequest`, a future front-end — and the dispatcher must refuse it
+/// loudly. The alternative, quietly supplying defaults for what it could not
+/// ask about, is SH-109's silent `SH` wearing a new verb.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NewProjectRequest {
+    /// No verb-local switch was given: ask, or refuse.
+    Ask,
+    /// Everything the verb needs, stated on the command line.
+    Stated(NewProjectSpec),
+}
+
+/// A fully specified `story project new`.
+///
+/// Every field the verb needs is here and none of them is a promise the caller
+/// did not make: [`prefix`](Self::prefix) is a `String` rather than an
+/// `Option`, so "created without anybody choosing a prefix" is not a state this
+/// type can hold.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewProjectSpec {
+    /// What, if anything, the project is attached to.
+    pub attach: Attach,
+    /// The story-id prefix, already through
+    /// [`domain::prefix::validate`](crate::domain::prefix::validate).
+    pub prefix: String,
+    /// The project's display name; `None` takes the attach target's basename.
+    pub name: Option<String>,
+    /// Skip generating `AGENTS.md`.
+    pub no_agents_md: bool,
+}
+
+/// The checkout `story project new` attaches, or the decision not to.
+///
+/// One enum rather than `Option<String>` beside a `no_attach: bool`, because
+/// those two fields can disagree — `--attach ./here --no-attach` is
+/// representable in that shape and meaningless. Here the parser refuses the
+/// contradiction once and nothing downstream can meet it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Attach {
+    /// The directory the client ran in — what `--attach` defaults to, and what
+    /// a bare `story project new` does.
+    Cwd,
+    /// The named directory.
+    ///
+    /// Carried as text and left unresolved on purpose: a relative path resolves
+    /// against the *client's* working directory, and over the daemon that is
+    /// not this process's.
+    Path(String),
+    /// Nothing. The store record is written and no directory is touched,
+    /// recorded or resolved.
+    ///
+    /// Deliberately **outside** SH-95's temp-store guard, because nothing is
+    /// created at a path for that guard to judge — pinned as a recorded
+    /// narrowing rather than left to be rediscovered as a hole.
+    Nothing,
 }
 
 /// What `story project link` attaches.
@@ -1081,6 +1158,17 @@ static VERB_FLAGS: &[VerbFlags] = &[
     },
     VerbFlags {
         verb: "project",
+        subcommand: Some("new"),
+        flags: &[
+            value("prefix"),
+            value("name"),
+            value("attach"),
+            bare("no-attach"),
+            bare("no-agents-md"),
+        ],
+    },
+    VerbFlags {
+        verb: "project",
         subcommand: Some("init"),
         flags: &[value("prefix"), value("name"), bare("no-agents-md")],
     },
@@ -1366,10 +1454,17 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
     }
 }
 
-const PROJECT_USAGE: &str = "usage: story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] \
-                             [--no-agents-md] | deinit [PATH|SLUG] [--force] | list | link \
-                             origin [URL]|checkout [PATH] | unlink origin [URL]|checkout | \
-                             settings list|get|set|unset";
+const PROJECT_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
+                             [--attach <PATH> | --no-attach] [--no-agents-md] | init [PATH] \
+                             [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md] | deinit \
+                             [PATH|SLUG] [--force] | list | link origin [URL]|checkout [PATH] | \
+                             unlink origin [URL]|checkout | settings list|get|set|unset";
+
+const PROJECT_NEW_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
+                                 [--attach <PATH> | --no-attach] [--no-agents-md]\n\nRun with no \
+                                 flags at a terminal to be asked. `story project new` takes no \
+                                 positional argument: name the project with --name and the \
+                                 checkout with --attach.";
 
 const PROJECT_LINK_USAGE: &str = "usage: story project link origin [URL] | story project link checkout [PATH]\n\nThese attach \
      *git* associations to a project. They are unrelated to `story link`, which is an alias for \
@@ -1387,6 +1482,7 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
         .get(1)
         .ok_or_else(|| AppError::Usage(PROJECT_USAGE.to_string()))?;
     match action.as_str() {
+        "new" => parse_project_new(args),
         "init" => parse_project_init(args),
         "deinit" => parse_project_deinit(args),
         "list" => Ok(Invocation::Project {
@@ -1486,6 +1582,108 @@ fn parse_project_deinit(args: &[String]) -> Result<Invocation, AppError> {
 
     Ok(Invocation::Project {
         action: ProjectAction::Deinit { target, force },
+    })
+}
+
+/// `story project new [--prefix P] [--name N] [--attach PATH | --no-attach]
+/// [--no-agents-md]`.
+///
+/// **No positional of any kind.** A bare word after `new` could be a name or a
+/// path with equal plausibility, and `deinit` already demonstrates what happens
+/// when a parser has to guess: it is refused, naming both flags, rather than
+/// resolved by a rule the user would have to know.
+///
+/// The absence of *every* switch is the interactive request. Only when at least
+/// one is present does `--prefix` become required, because at that point
+/// nobody is going to be asked for it and the alternative is minting `SH-1` in
+/// a project the user never named `SH`.
+fn parse_project_new(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = || AppError::Usage(PROJECT_NEW_USAGE.to_string());
+    let mut attach: Option<String> = None;
+    let mut no_attach = false;
+    let mut prefix: Option<String> = None;
+    let mut name = None;
+    let mut no_agents_md = false;
+    let mut index = 2;
+    // The first switch seen, kept so a refusal can name what made this
+    // invocation non-interactive. "Pass --prefix" is advice; "you passed
+    // --name, so I will not ask" is a diagnosis.
+    let mut trigger: Option<String> = None;
+
+    let value = |index: usize, flag: &str| {
+        args.get(index + 1)
+            .cloned()
+            .ok_or_else(|| AppError::Usage(format!("{flag} requires a value")))
+    };
+
+    while index < args.len() {
+        let word = args[index].as_str();
+        if trigger.is_none() {
+            trigger = Some(word.to_string());
+        }
+        match word {
+            "--attach" => {
+                attach = Some(value(index, "--attach")?);
+                index += 2;
+            }
+            "--no-attach" => {
+                no_attach = true;
+                index += 1;
+            }
+            "--prefix" => {
+                prefix = Some(value(index, "--prefix")?);
+                index += 2;
+            }
+            "--name" => {
+                name = Some(value(index, "--name")?);
+                index += 2;
+            }
+            "--no-agents-md" => {
+                no_agents_md = true;
+                index += 1;
+            }
+            _ => return Err(usage()),
+        }
+    }
+
+    // Nothing was said, so nothing is assumed. The client decides whether it
+    // can ask; a request that reaches the dispatcher still carrying this is
+    // refused there rather than defaulted.
+    if args.len() == 2 {
+        return Ok(Invocation::Project {
+            action: ProjectAction::New(NewProjectRequest::Ask),
+        });
+    }
+
+    let attach = match (attach, no_attach) {
+        (Some(_), true) => {
+            return Err(AppError::Usage(
+                "`--attach` and `--no-attach` contradict each other: pass one or neither."
+                    .to_string(),
+            ));
+        }
+        (Some(path), false) => Attach::Path(path),
+        (None, true) => Attach::Nothing,
+        (None, false) => Attach::Cwd,
+    };
+    let prefix = prefix.ok_or_else(|| {
+        AppError::Usage(format!(
+            "`story project new` needs `--prefix <PREFIX>`. You passed `{}`, and any switch \
+             means this invocation is being driven by a script rather than a person, so nothing \
+             will be asked. A prefix is minted into every story id this project ever creates and \
+             cannot be changed afterwards, so it is not defaulted.\n\n{PROJECT_NEW_USAGE}",
+            trigger.as_deref().unwrap_or("a switch"),
+        ))
+    })?;
+    let prefix = crate::domain::prefix::validate(&prefix)?;
+
+    Ok(Invocation::Project {
+        action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+            attach,
+            prefix,
+            name,
+            no_agents_md,
+        })),
     })
 }
 

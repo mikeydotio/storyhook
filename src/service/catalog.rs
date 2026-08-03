@@ -111,16 +111,25 @@ impl<'a, S: Store> CatalogService<'a, S> {
     /// Forgets every registration [`orphaned`](Self::orphaned) found, and
     /// returns them.
     ///
-    /// Only the path rows go. The project, its stories and its identity all
-    /// survive — it stays in `story project list` and on the dashboard, and
+    /// Only the path rows go — and the recorded checkout with them, when it is
+    /// the same vanished directory. The project, its stories and its identity
+    /// all survive: it stays in `story project list` and on the dashboard, and
     /// [`relink`](Self::relink) or a fresh `story project init` puts a path
     /// back. That reversibility is what makes it safe to offer from
     /// `doctor --fix` rather than demanding a hand-written transaction.
+    ///
+    /// The checkout half is not decoration. One directory is recorded in two
+    /// places — a `project_paths` row that resolution reads, and
+    /// `checkout_path` that says where the project's repo-side work runs — and
+    /// forgetting one without the other leaves `story project list` printing a
+    /// directory that is gone, on the line below the one that just stopped
+    /// printing it. See [`forget_checkout`](super::project::forget_checkout).
     pub fn deregister_orphaned(&self) -> Result<Vec<OrphanedRegistration>, AppError> {
         let orphans = self.orphaned()?;
         self.store.write(|tx| {
             for orphan in &orphans {
                 tx.forget_project_path(orphan.project, &orphan.path)?;
+                super::project::forget_checkout(tx, orphan.project, &orphan.path)?;
             }
             Ok(())
         })?;
@@ -197,9 +206,17 @@ impl<'a, S: Store> CatalogService<'a, S> {
         let moved = dir.clone();
         self.store.write(|tx| {
             for existing in tx.project_paths(id)? {
-                tx.forget_project_path(id, Path::new(&existing.path))?;
+                let path = PathBuf::from(&existing.path);
+                tx.forget_project_path(id, &path)?;
+                // The checkout follows the project rather than being left at
+                // the address it just moved out of. Conditional on the paths
+                // matching, so a checkout somebody linked elsewhere on purpose
+                // survives; `adopt_checkout` below then fills the slot only if
+                // this emptied it.
+                super::project::forget_checkout(tx, id, &path)?;
             }
-            tx.touch_project_path(id, &moved, path_kind(&moved))
+            tx.touch_project_path(id, &moved, path_kind(&moved))?;
+            super::project::adopt_checkout(tx, id, &moved)
         })?;
         Ok(entry(record, Some(dir)))
     }
