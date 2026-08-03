@@ -501,6 +501,38 @@ story list --flagged --json
 story SH-2 is done --quiet
 ```
 
+### Driving `story` from a test suite
+
+If your suite shells out to `story` — to build a fixture project, exercise a
+plugin, or drive an integration test — give it a store of its own. Story data
+lives in one store shared by everything on the machine (see
+[Storage model](#storage-model)); a suite that never names a store writes into
+that same shared store, permanently, with no error and nothing to notice. One
+run of one unisolated suite once put 394 junk projects into a real tracker this
+way.
+
+```bash
+story store new /path/to/scratch/store.db   # create it once
+story --store-path /path/to/scratch/store.db project new --prefix TST
+```
+
+`--store-path` (or its variable, `$STORYHOOK_STORE_PATH`) names a store on
+every command and is the supported way to isolate a suite. `$STORYHOOK_DATA_DIR`
+also works, but the flag and the variable above it both outrank it silently —
+set at most one. Add these two if the suite runs more than one `story` command
+so a spawned daemon behaves:
+
+```bash
+export STORYHOOK_DAEMON_ADDR=127.0.0.1:0   # a kernel-assigned port, not 3456
+export STORYHOOK_PARENT_PID=$$             # the daemon dies with this run
+```
+
+`story` also refuses, on its own, to create a project at a path under a
+temporary directory when the store it would write to is not itself temporary —
+a backstop for a suite that built a fixture but forgot to name a store at all.
+It is not a substitute for isolating deliberately: it only catches the shape
+above, not every way a command can reach the wrong store.
+
 ## AI agent integration
 
 Three commands support AI coding agent workflows:
