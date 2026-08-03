@@ -78,7 +78,7 @@ use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 pub use conformance::ConformanceFixture;
 pub use error::StoreError;
 pub use fault::FaultPoint;
-pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, PathKind, ProjectId, StoryNo};
+pub use ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo};
 pub use migrate::{MIGRATIONS, Migration, current_schema_version};
 pub use rebuild::{
     Divergence, ReadModelDiff, RebuiltStory, RepairReport, diff_read_model, rebuild_read_model,
@@ -86,9 +86,9 @@ pub use rebuild::{
 };
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
-    DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord,
-    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
-    StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
+    DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectRecord, ProjectRemoteRecord,
+    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
+    StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -171,17 +171,8 @@ pub trait ReadOps {
     /// id.
     fn project_by_slug(&self, slug: &str) -> Result<Option<ProjectRecord>, StoreError>;
 
-    /// The project registered at this checkout directory.
-    ///
-    /// `path` is matched as stored: canonicalization belongs to the caller,
-    /// which is the layer that knows whether the directory still exists.
-    fn project_by_path(&self, path: &Path) -> Result<Option<ProjectRecord>, StoreError>;
-
     /// Every project, ordered by slug.
     fn projects(&self) -> Result<Vec<ProjectRecord>, StoreError>;
-
-    /// Every checkout of a project, ordered by path.
-    fn project_paths(&self, project: ProjectId) -> Result<Vec<ProjectPathRecord>, StoreError>;
 
     /// The project that registered this git origin, if any.
     ///
@@ -203,8 +194,8 @@ pub trait ReadOps {
     /// Where this project's repo-side operations run, if a checkout was linked.
     ///
     /// **Never an answer to "which project is this?"** — that is
-    /// [`project_by_remote`](Self::project_by_remote) and, until SH-119 removes
-    /// it, [`project_by_path`](Self::project_by_path). This is the reverse
+    /// [`project_by_remote`](Self::project_by_remote) and the committed pointer
+    /// file, which storyhook reads rather than the store. This is the reverse
     /// direction and the only direction: a project names a directory, and
     /// nothing looks a project up by it. If anything ever does, the epic's
     /// invariant — nothing about the filesystem is ever *required* to answer
@@ -319,23 +310,6 @@ pub trait WriteOps: ReadOps {
     /// Creates a project and returns its id.
     fn create_project(&mut self, project: &NewProject) -> Result<ProjectId, StoreError>;
 
-    /// Records that this checkout belongs to this project, refreshing its
-    /// last-seen timestamp.
-    fn touch_project_path(
-        &mut self,
-        project: ProjectId,
-        path: &Path,
-        kind: PathKind,
-    ) -> Result<(), StoreError>;
-
-    /// Forgets one checkout of a project, reporting whether there was one.
-    ///
-    /// The project row and its stories survive. A checkout that has been
-    /// deleted, moved, or taken off the dashboard is not a reason to lose the
-    /// work recorded against it — which is exactly the mistake the legacy
-    /// registry made impossible to make only because it held no data.
-    fn forget_project_path(&mut self, project: ProjectId, path: &Path) -> Result<bool, StoreError>;
-
     /// Registers a git origin as belonging to this project.
     ///
     /// A project may hold many origins — a repository that moved, a second
@@ -368,21 +342,18 @@ pub trait WriteOps: ReadOps {
 
     /// Forgets one git origin of a project, reporting whether there was one.
     ///
-    /// The project and its stories survive, for the same reason
-    /// [`forget_project_path`](Self::forget_project_path) leaves them: a
-    /// repository being transferred, renamed, or replaced by a new canonical
-    /// remote is not a reason to lose the work recorded against it. The freed
+    /// The project and its stories survive. A repository being transferred,
+    /// renamed, or replaced by a new canonical remote is not a reason to lose
+    /// the work recorded against it. The freed
     /// identity becomes available to another project immediately.
     fn unlink_remote(&mut self, project: ProjectId, remote: &RemoteUrl)
     -> Result<bool, StoreError>;
 
     /// Sets — or with `None`, clears — where this project's repo-side work runs.
     ///
-    /// A plain overwrite, because a project has **at most one** checkout. That
-    /// is the difference from [`touch_project_path`](Self::touch_project_path),
-    /// which accumulates rows for a resolution index that must know about every
-    /// directory; here a second call replaces the first, and there is nothing
-    /// to disambiguate on the way out.
+    /// A plain overwrite, because a project has **at most one** checkout: a
+    /// second call replaces the first, and there is nothing to disambiguate on
+    /// the way out.
     ///
     /// The path is not checked for existence, uniqueness or gitness. It is
     /// consulted by exactly one consumer, which fails loudly on its own if the

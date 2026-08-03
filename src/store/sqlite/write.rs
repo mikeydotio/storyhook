@@ -17,7 +17,6 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, params};
 
 use crate::domain::remote::RemoteUrl;
@@ -26,7 +25,7 @@ use crate::domain::{
 };
 use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
-use crate::store::ids::{EventSeq, ExpectedSeq, PathKind, ProjectId, StoryNo};
+use crate::store::ids::{EventSeq, ExpectedSeq, ProjectId, StoryNo};
 use crate::store::sqlite::read;
 use crate::store::types::{
     DeletedProject, NewProject, ProjectSettings, PurgedStory, RawEvent, priority_rank,
@@ -83,35 +82,7 @@ pub(super) fn create_project(
     Ok(ProjectId::new(id))
 }
 
-/// Records that storyhook has just been used in `path`.
-///
-/// A project has many checkouts, and every one of them resolves to the same
-/// project — that plurality is what ends SH-46. The unique index on `path`
-/// means a directory already claimed by another project is rejected rather
-/// than silently re-pointed.
-pub(super) fn touch_project_path(
-    conn: &Connection,
-    project: ProjectId,
-    path: &Path,
-    kind: PathKind,
-) -> Result<(), StoreError> {
-    sql(
-        conn.execute(
-            "INSERT INTO project_paths (project_id, path, kind, last_seen_at) \
-             VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT (project_id, path) DO UPDATE SET \
-                 kind = excluded.kind, last_seen_at = excluded.last_seen_at",
-            params![project.get(), path.to_string_lossy(), kind.as_str(), now()],
-        ),
-        "recording a project path",
-    )?;
-    Ok(())
-}
-
-/// Forgets one checkout of a project, reporting whether there was one.
-///
-/// The project itself survives: a checkout that is deleted, moved, or removed
-/// from the dashboard is not a reason to lose its stories.
+/// Renames a project, leaving every other column alone.
 pub(super) fn rename_project(
     conn: &Connection,
     project: ProjectId,
@@ -160,7 +131,6 @@ const PROJECT_SCOPED_TABLES: &[(&str, &str)] = &[
     ("project_members", "project_id"),
     ("project_types", "project_id"),
     ("project_states", "project_id"),
-    ("project_paths", "project_id"),
     ("project_remotes", "project_id"),
     ("projects", "id"),
     ("events", "project_id"),
@@ -194,7 +164,6 @@ pub(super) fn delete_project(
         )?;
         match *table {
             "stories" => removed.stories = count,
-            "project_paths" => removed.paths = count,
             "project_remotes" => removed.remotes = count,
             "events" => removed.events = count,
             _ => {}
@@ -386,8 +355,7 @@ pub(super) fn unlink_remote(
 /// Sets or clears `projects.checkout_path`.
 ///
 /// An overwrite rather than an insert, because a project has at most one
-/// checkout — see the trait method and migration 0007's header for why that
-/// plurality is the opposite of `project_paths`'s on purpose.
+/// checkout — see the trait method and migration 0007's header.
 pub(super) fn set_checkout_path(
     conn: &Connection,
     project: ProjectId,
@@ -401,21 +369,6 @@ pub(super) fn set_checkout_path(
         "recording a project checkout",
     )?;
     Ok(())
-}
-
-pub(super) fn forget_project_path(
-    conn: &Connection,
-    project: ProjectId,
-    path: &Path,
-) -> Result<bool, StoreError> {
-    let removed = sql(
-        conn.execute(
-            "DELETE FROM project_paths WHERE project_id = ?1 AND path = ?2",
-            params![project.get(), path.to_string_lossy()],
-        ),
-        "forgetting a project path",
-    )?;
-    Ok(removed > 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,13 +1041,4 @@ pub(super) fn put_github_base(
         "writing a github base",
     )?;
     Ok(())
-}
-
-/// The store's only two clock reads are `project_paths.last_seen_at` and
-/// `schema_migrations.applied_at`: bookkeeping nothing asserts on. Every
-/// timestamp that a user can see arrives as a parameter, so the injectable
-/// clock this design calls for can live in the caller's `Environment` rather
-/// than being threaded through the storage layer.
-fn now() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }

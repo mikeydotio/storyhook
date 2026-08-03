@@ -191,42 +191,6 @@ impl std::fmt::Display for ExpectedSeq {
     }
 }
 
-/// Whether a recorded checkout is a repository's main working tree or a linked
-/// worktree.
-///
-/// Both resolve to the same project. That is the entire point: SH-46 exists
-/// because a worktree used to resolve to a *different* tracker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PathKind {
-    /// The repository's main working tree.
-    Main,
-    /// A linked worktree created by `git worktree add`.
-    Worktree,
-}
-
-impl PathKind {
-    /// The value stored in the `project_paths.kind` column.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Main => "main",
-            Self::Worktree => "worktree",
-        }
-    }
-
-    /// Parses a stored `project_paths.kind` value.
-    pub fn parse(raw: &str) -> Result<Self, StoreError> {
-        match raw {
-            "main" => Ok(Self::Main),
-            "worktree" => Ok(Self::Worktree),
-            other => Err(StoreError::Corrupt(format!(
-                "project_paths.kind holds unknown value `{other}`"
-            ))),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,14 +225,6 @@ mod tests {
                 "`{id}` should not parse"
             );
         }
-    }
-
-    #[test]
-    fn path_kinds_round_trip_through_their_stored_form() {
-        for kind in [PathKind::Main, PathKind::Worktree] {
-            assert_eq!(PathKind::parse(kind.as_str()).unwrap(), kind);
-        }
-        assert!(PathKind::parse("submodule").is_err());
     }
 
     #[test]

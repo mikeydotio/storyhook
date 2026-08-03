@@ -63,7 +63,7 @@ macro_rules! store_conformance_suite {
             };
             use $crate::domain::remote::RemoteUrl;
             use $crate::store::{
-                ConformanceFixture, EventSeq, ExpectedSeq, GlobalSeq, NewProject, PathKind,
+                ConformanceFixture, EventSeq, ExpectedSeq, GlobalSeq, NewProject,
                 ProjectId, ProjectSettings, RawEvent, ReadOps, Store, StoreError, StoredPayload,
                 StoryNo, StoryQuery, StorySort, WriteOps, partition_known,
             };
@@ -448,7 +448,6 @@ macro_rules! store_conformance_suite {
                     .expect("deleting the project");
 
                 assert_eq!(removed.stories, 2);
-                assert_eq!(removed.paths, 0);
                 assert!(removed.events >= 2, "every event goes: {removed:?}");
                 assert!(f.store().read(|tx| tx.project(project)).unwrap().is_none());
                 assert!(f.store().read(|tx| tx.projects()).unwrap().is_empty());
@@ -456,7 +455,7 @@ macro_rules! store_conformance_suite {
             }
 
             #[test]
-            fn deleting_a_project_forgets_its_checkouts() {
+            fn deleting_a_project_forgets_its_checkout() {
                 let f = <$fixture>::create();
                 let project = seed(f.store(), "alpha", "SH");
                 // A story, so the teardown has an event log to clear. Without
@@ -464,22 +463,22 @@ macro_rules! store_conformance_suite {
                 // still unconditional, and prove nothing about the migration.
                 new_story(f.store(), project, "First");
                 f.store()
-                    .write(|tx| {
-                        tx.touch_project_path(project, Path::new("/w/main"), PathKind::Main)?;
-                        tx.touch_project_path(project, Path::new("/w/tree"), PathKind::Worktree)
-                    })
+                    .write(|tx| tx.set_checkout_path(project, Some(Path::new("/w/main"))))
                     .unwrap();
 
-                let removed = f.store().write(|tx| tx.delete_project(project)).unwrap();
+                f.store().write(|tx| tx.delete_project(project)).unwrap();
 
-                assert_eq!(removed.paths, 2);
-                // The unique index on `path` alone would refuse a re-register
-                // if a row had survived, so this also proves the directory is
-                // claimable again.
+                // The column went with the row it lived in, so a second project
+                // may name the same directory — which two projects in one
+                // repository legitimately do (migration 0007's header).
                 let other = seed(f.store(), "beta", "SH");
                 f.store()
-                    .write(|tx| tx.touch_project_path(other, Path::new("/w/main"), PathKind::Main))
-                    .expect("the path is free again");
+                    .write(|tx| tx.set_checkout_path(other, Some(Path::new("/w/main"))))
+                    .expect("the directory is nobody's now");
+                assert_eq!(
+                    f.store().read(|tx| tx.checkout_path(other)).unwrap().as_deref(),
+                    Some(Path::new("/w/main"))
+                );
             }
 
             #[test]
@@ -868,186 +867,6 @@ macro_rules! store_conformance_suite {
             }
 
             // ===============================================================
-            // Project paths — one project, many checkouts (SH-46)
-            // ===============================================================
-
-            #[test]
-            fn a_registered_path_resolves_to_its_project() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                f.store()
-                    .write(|tx| {
-                        tx.touch_project_path(project, Path::new("/repos/alpha"), PathKind::Main)
-                    })
-                    .unwrap();
-                let found = f
-                    .store()
-                    .read(|tx| tx.project_by_path(Path::new("/repos/alpha")))
-                    .unwrap();
-                assert_eq!(found.unwrap().id, project);
-            }
-
-            #[test]
-            fn an_unregistered_path_resolves_to_nothing() {
-                let f = <$fixture>::create();
-                seed(f.store(), "alpha", "SH");
-                assert!(
-                    f.store()
-                        .read(|tx| tx.project_by_path(Path::new("/elsewhere")))
-                        .unwrap()
-                        .is_none()
-                );
-            }
-
-            #[test]
-            fn every_checkout_of_a_repository_resolves_to_the_same_project() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                f.store()
-                    .write(|tx| {
-                        tx.touch_project_path(project, Path::new("/repos/alpha"), PathKind::Main)?;
-                        tx.touch_project_path(
-                            project,
-                            Path::new("/repos/alpha/.worktrees/a"),
-                            PathKind::Worktree,
-                        )?;
-                        tx.touch_project_path(
-                            project,
-                            Path::new("/repos/alpha/.worktrees/b"),
-                            PathKind::Worktree,
-                        )
-                    })
-                    .unwrap();
-                // The whole of SH-46: under the old design each of these was an
-                // independent, silently divergent tracker.
-                for path in [
-                    "/repos/alpha",
-                    "/repos/alpha/.worktrees/a",
-                    "/repos/alpha/.worktrees/b",
-                ] {
-                    let found = f
-                        .store()
-                        .read(|tx| tx.project_by_path(Path::new(path)))
-                        .unwrap();
-                    assert_eq!(found.unwrap().id, project, "{path}");
-                }
-            }
-
-            #[test]
-            fn touching_a_path_twice_records_it_once() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                for _ in 0..3 {
-                    f.store()
-                        .write(|tx| {
-                            tx.touch_project_path(
-                                project,
-                                Path::new("/repos/alpha"),
-                                PathKind::Main,
-                            )
-                        })
-                        .unwrap();
-                }
-                assert_eq!(
-                    f.store().read(|tx| tx.project_paths(project)).unwrap().len(),
-                    1
-                );
-            }
-
-            #[test]
-            fn touching_a_path_can_change_its_kind() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                f.store()
-                    .write(|tx| {
-                        tx.touch_project_path(
-                            project,
-                            Path::new("/repos/alpha"),
-                            PathKind::Worktree,
-                        )
-                    })
-                    .unwrap();
-                f.store()
-                    .write(|tx| {
-                        tx.touch_project_path(project, Path::new("/repos/alpha"), PathKind::Main)
-                    })
-                    .unwrap();
-                let paths = f.store().read(|tx| tx.project_paths(project)).unwrap();
-                assert_eq!(paths[0].kind, PathKind::Main);
-            }
-
-            #[test]
-            fn a_path_already_claimed_by_another_project_is_refused() {
-                let f = <$fixture>::create();
-                let alpha = seed(f.store(), "alpha", "SH");
-                let beta = seed(f.store(), "beta", "SH");
-                f.store()
-                    .write(|tx| {
-                        tx.touch_project_path(alpha, Path::new("/repos/shared"), PathKind::Main)
-                    })
-                    .unwrap();
-                let error = f
-                    .store()
-                    .write(|tx| {
-                        tx.touch_project_path(beta, Path::new("/repos/shared"), PathKind::Main)
-                    })
-                    .unwrap_err();
-                assert!(matches!(error, StoreError::Invariant(_)), "{error}");
-                assert_eq!(
-                    f.store()
-                        .read(|tx| tx.project_by_path(Path::new("/repos/shared")))
-                        .unwrap()
-                        .unwrap()
-                        .id,
-                    alpha
-                );
-            }
-
-            #[test]
-            fn project_paths_are_listed_in_path_order() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                f.store()
-                    .write(|tx| {
-                        tx.touch_project_path(project, Path::new("/c"), PathKind::Worktree)?;
-                        tx.touch_project_path(project, Path::new("/a"), PathKind::Main)?;
-                        tx.touch_project_path(project, Path::new("/b"), PathKind::Worktree)
-                    })
-                    .unwrap();
-                let paths: Vec<String> = f
-                    .store()
-                    .read(|tx| tx.project_paths(project))
-                    .unwrap()
-                    .into_iter()
-                    .map(|p| p.path)
-                    .collect();
-                assert_eq!(paths, ["/a", "/b", "/c"]);
-            }
-
-            #[test]
-            fn a_recorded_path_carries_a_last_seen_timestamp() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                f.store()
-                    .write(|tx| tx.touch_project_path(project, Path::new("/a"), PathKind::Main))
-                    .unwrap();
-                let paths = f.store().read(|tx| tx.project_paths(project)).unwrap();
-                assert!(paths[0].last_seen_at.ends_with('Z'), "{:?}", paths[0]);
-            }
-
-            #[test]
-            fn a_project_with_no_checkouts_has_no_paths() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                assert!(
-                    f.store()
-                        .read(|tx| tx.project_paths(project))
-                        .unwrap()
-                        .is_empty()
-                );
-            }
-
-            // ===============================================================
             // Project remotes — identity by git origin
             //
             // The store's half of SH-115. The URL grammar itself is tested in
@@ -1269,10 +1088,11 @@ macro_rules! store_conformance_suite {
             // ===============================================================
             // The linked checkout — where repo-side work runs
             //
-            // The mirror image of `project_paths`, and every assertion here is
-            // about a difference from it: at most one per project, no
-            // cross-project uniqueness, and nothing in the store looks a
-            // project up by it. See migration 0007's header.
+            // The only path the store holds since SH-119 deleted the resolution
+            // index, and the shape it took there is the shape it keeps: at most
+            // one per project, no cross-project uniqueness, and no lookup keyed
+            // on it. See migration 0007's header, and 0008's for why the index
+            // it used to sit beside is gone.
             // ===============================================================
 
             #[test]
@@ -1299,10 +1119,11 @@ macro_rules! store_conformance_suite {
             }
 
             /// A project has **at most one** checkout, so a second link replaces
-            /// the first rather than accumulating beside it. This is the whole
-            /// difference from `touch_project_path`, which must accumulate
-            /// because it feeds a resolution index that has to know about every
-            /// directory.
+            /// the first rather than accumulating beside it. `project_paths`
+            /// accumulated, because it fed a resolution index that had to know
+            /// about every directory; nothing reads this one to answer a
+            /// question about a directory, so there is nothing to accumulate
+            /// for.
             #[test]
             fn linking_a_second_checkout_replaces_the_first() {
                 let f = <$fixture>::create();
@@ -1346,28 +1167,15 @@ macro_rules! store_conformance_suite {
                 );
             }
 
-            /// The two associations are independent: a recorded path is not a
-            /// linked checkout and a linked checkout is not a recorded path.
-            /// Until SH-119 deletes `project_paths`, `story project new` writes
-            /// both — and a change that starts writing only one has to fail
-            /// here rather than in whichever of resolution or `dispatch` was
-            /// unlucky.
-            #[test]
-            fn a_linked_checkout_is_not_a_recorded_path() {
-                let f = <$fixture>::create();
-                let project = seed(f.store(), "alpha", "SH");
-                let path = std::path::Path::new("/code/alpha");
-                f.store().write(|tx| tx.set_checkout_path(project, Some(path))).unwrap();
-
-                assert!(
-                    f.store().read(|tx| tx.project_paths(project)).unwrap().is_empty(),
-                    "linking a checkout must not write the resolution index"
-                );
-                assert!(
-                    f.store().read(|tx| tx.project_by_path(path)).unwrap().is_none(),
-                    "nothing may resolve a project by its linked checkout"
-                );
-            }
+            // `a_linked_checkout_is_not_a_recorded_path` used to sit here,
+            // asserting that `set_checkout_path` wrote no `project_paths` row
+            // and that `project_by_path` found nothing. Both halves are now
+            // unstatable — there is no index and no lookup to ask — and what
+            // replaced them says more: `invoker_seam.rs`'s source grep fails if
+            // any file under `src/` so much as names `project_paths`, and
+            // `tests/project_link.rs::linking_a_checkout_records_it_without
+            // _making_it_resolve` fails if `link checkout` ever starts
+            // answering the resolution question again.
 
             #[test]
             fn a_project_with_no_remotes_has_none() {
@@ -3885,41 +3693,6 @@ macro_rules! store_conformance_suite {
                         .id,
                     beta
                 );
-            }
-
-            #[test]
-            fn isolation_project_lookup_by_path() {
-                let f = <$fixture>::create();
-                let (alpha, beta) = twin_projects(f.store());
-                f.store()
-                    .write(|tx| {
-                        tx.touch_project_path(alpha, Path::new("/repos/alpha"), PathKind::Main)?;
-                        tx.touch_project_path(beta, Path::new("/repos/beta"), PathKind::Main)
-                    })
-                    .unwrap();
-                assert_eq!(
-                    f.store()
-                        .read(|tx| tx.project_by_path(Path::new("/repos/beta")))
-                        .unwrap()
-                        .unwrap()
-                        .id,
-                    beta
-                );
-            }
-
-            #[test]
-            fn isolation_project_paths() {
-                let f = <$fixture>::create();
-                let (alpha, beta) = twin_projects(f.store());
-                f.store()
-                    .write(|tx| {
-                        tx.touch_project_path(alpha, Path::new("/repos/alpha"), PathKind::Main)?;
-                        tx.touch_project_path(beta, Path::new("/repos/beta"), PathKind::Main)
-                    })
-                    .unwrap();
-                let paths = f.store().read(|tx| tx.project_paths(alpha)).unwrap();
-                assert_eq!(paths.len(), 1);
-                assert_eq!(paths[0].path, "/repos/alpha");
             }
 
             #[test]

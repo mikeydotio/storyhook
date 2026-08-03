@@ -11,18 +11,17 @@
 //! silently returns another project's story.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::error::StoreError;
-use crate::store::ids::{EventSeq, GlobalSeq, PathKind, ProjectId, StoryNo};
+use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::types::{
-    FeedEvent, ProjectPathRecord, ProjectRecord, ProjectRemoteRecord, ProjectSettings,
-    RelationEdge, StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort, parse_priority,
-    parse_superstate,
+    FeedEvent, ProjectRecord, ProjectRemoteRecord, ProjectSettings, RelationEdge, StoredEvent,
+    StoredPayload, StoryQuery, StoryRow, StorySort, parse_priority, parse_superstate,
 };
 
 const PROJECT_COLUMNS: &str =
@@ -100,32 +99,6 @@ pub(super) fn project_by_slug(
         params![slug],
         project_from_row,
         "reading a project by slug",
-    )
-}
-
-/// Resolves a checkout directory to its project.
-///
-/// The path is matched as stored; canonicalization is the caller's job,
-/// because the store must not resolve symlinks differently at write time and
-/// read time, and cannot canonicalize a directory that has since been removed.
-pub(super) fn project_by_path(
-    conn: &Connection,
-    path: &Path,
-) -> Result<Option<ProjectRecord>, StoreError> {
-    let columns = PROJECT_COLUMNS
-        .split(", ")
-        .map(|c| format!("p.{c}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    one(
-        conn,
-        &format!(
-            "SELECT {columns} FROM projects p \
-             JOIN project_paths pp ON pp.project_id = p.id WHERE pp.path = ?1"
-        ),
-        params![path.to_string_lossy()],
-        project_from_row,
-        "reading a project by path",
     )
 }
 
@@ -217,39 +190,6 @@ pub(super) fn event_count(conn: &Connection, project: ProjectId) -> Result<usize
         "counting a project's events",
     )?;
     Ok(usize::try_from(count).unwrap_or(usize::MAX))
-}
-
-pub(super) fn project_paths(
-    conn: &Connection,
-    project: ProjectId,
-) -> Result<Vec<ProjectPathRecord>, StoreError> {
-    let mut stmt = sql(
-        conn.prepare_cached(
-            "SELECT path, kind, last_seen_at FROM project_paths \
-             WHERE project_id = ?1 ORDER BY path",
-        ),
-        "preparing project_paths",
-    )?;
-    let rows = sql(
-        stmt.query_map(params![project.get()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        }),
-        "reading project paths",
-    )?;
-    let raw: Vec<(String, String, String)> = collect(rows, "reading project paths")?;
-    raw.into_iter()
-        .map(|(path, kind, last_seen_at)| {
-            Ok(ProjectPathRecord {
-                path,
-                kind: PathKind::parse(&kind)?,
-                last_seen_at,
-            })
-        })
-        .collect()
 }
 
 /// A project's story-id prefix, needed wherever a `StorySnapshot`'s textual id

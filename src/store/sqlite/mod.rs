@@ -38,12 +38,11 @@ use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::error::StoreError;
 use crate::store::fault::{FaultPoint, fire};
-use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, PathKind, ProjectId, StoryNo};
+use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version};
 use crate::store::types::{
-    DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectPathRecord, ProjectRecord,
-    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
-    StoryQuery, StoryRow,
+    DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectRecord, ProjectRemoteRecord,
+    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoryQuery, StoryRow,
 };
 use crate::store::{ReadOps, Store, WriteOps};
 
@@ -562,23 +561,12 @@ macro_rules! impl_read_ops {
                 read::project_by_slug(&self.conn, slug)
             }
 
-            fn project_by_path(&self, path: &Path) -> Result<Option<ProjectRecord>, StoreError> {
-                read::project_by_path(&self.conn, path)
-            }
-
             fn projects(&self) -> Result<Vec<ProjectRecord>, StoreError> {
                 read::projects(&self.conn)
             }
 
             fn event_count(&self, project: ProjectId) -> Result<usize, StoreError> {
                 read::event_count(&self.conn, project)
-            }
-
-            fn project_paths(
-                &self,
-                project: ProjectId,
-            ) -> Result<Vec<ProjectPathRecord>, StoreError> {
-                read::project_paths(&self.conn, project)
             }
 
             fn project_by_remote(
@@ -707,21 +695,8 @@ impl WriteOps for SqliteWriteTx<'_> {
         write::create_project(&self.conn, project)
     }
 
-    fn touch_project_path(
-        &mut self,
-        project: ProjectId,
-        path: &Path,
-        kind: PathKind,
-    ) -> Result<(), StoreError> {
-        write::touch_project_path(&self.conn, project, path, kind)
-    }
-
     fn allocate_story_no(&mut self, project: ProjectId) -> Result<StoryNo, StoreError> {
         write::allocate_story_no(&self.conn, project)
-    }
-
-    fn forget_project_path(&mut self, project: ProjectId, path: &Path) -> Result<bool, StoreError> {
-        write::forget_project_path(&self.conn, project, path)
     }
 
     fn link_remote(
