@@ -207,21 +207,145 @@ impl<'a> ProjectBuilder<'a> {
 
     /// Runs `git <args>` in `cwd` under this environment, asserting success.
     fn run_git(&self, cwd: &Path, args: &[&str]) {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(cwd);
-        self.env.apply(&mut cmd);
-        // Defensive: a fixture regression that ever points at a real origin
-        // must fail fast rather than block on a credential prompt.
-        cmd.env("GIT_TERMINAL_PROMPT", "0");
-        cmd.args(args);
-        let out = cmd.output().expect("running git");
-        assert!(
-            out.status.success(),
-            "`git {}` in {} failed: {}",
-            args.join(" "),
-            cwd.display(),
-            String::from_utf8_lossy(&out.stderr)
+        git(self.env, cwd, args);
+    }
+}
+
+/// Runs `git <args>` in `cwd` under `env`, asserting success.
+///
+/// Free and public because a fixture is rarely finished when `build()` returns:
+/// a test that commits the pointer file, adds a worktree, or clones the origin
+/// needs the same isolated `git`, and three test files had each declared their
+/// own byte-identical copy of it.
+///
+/// `GIT_TERMINAL_PROMPT=0` is not decoration. A fixture regression that ever
+/// pointed at a real origin would otherwise block on a credential prompt for as
+/// long as the run lasts, which is the worst failure a test can have — see
+/// `HARDENING_PROGRESS.md` on supervising background work.
+pub fn git(env: &TestEnv, cwd: &Path, args: &[&str]) {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(cwd);
+    env.apply(&mut cmd);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.args(args);
+    let out = cmd.output().expect("running git");
+    assert!(
+        out.status.success(),
+        "`git {}` in {} failed: {}",
+        args.join(" "),
+        cwd.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A second checkout of a project's repository, cloned from its origin.
+///
+/// Built by [`Project::second_checkout`]; see there for why this shape exists
+/// and what it is the only way to test. Dropping it removes the clone (and its
+/// worktrees) from disk.
+pub struct SecondCheckout<'a> {
+    env: &'a TestEnv,
+    dir: TempDir,
+    worktrees: BTreeMap<String, PathBuf>,
+}
+
+impl<'a> SecondCheckout<'a> {
+    /// The clone's root directory.
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// The environment this checkout lives in.
+    pub fn env(&self) -> &'a TestEnv {
+        self.env
+    }
+
+    /// Adds a linked worktree at `.claude/worktrees/<name>` — the shape
+    /// `story.sh dispatch` creates.
+    ///
+    /// It carries no pointer file either, and neither does anything between it
+    /// and the clone's top level, which is asserted rather than assumed: a
+    /// worktree that inherited one would take the whole file back to proving
+    /// nothing.
+    #[must_use]
+    pub fn with_worktree(mut self, name: &str) -> Self {
+        let path = self.dir.path().join(".claude/worktrees").join(name);
+        git(
+            self.env,
+            self.dir.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--no-track",
+                "-b",
+                &format!("worktree-{name}"),
+                &path_arg(&path),
+                "HEAD",
+            ],
         );
+        assert_selection_is_not_inherited(&path);
+        self.worktrees.insert(name.to_string(), path);
+        self
+    }
+
+    /// A linked worktree added by [`Self::with_worktree`].
+    pub fn worktree_path(&self, name: &str) -> &Path {
+        self.worktrees
+            .get(name)
+            .unwrap_or_else(|| panic!("no worktree named {name} in this second checkout"))
+    }
+
+    /// A `story` command in this checkout, ready for arguments.
+    pub fn story(&self) -> assert_cmd::Command {
+        self.env.story(self.path())
+    }
+}
+
+/// The file a checkout carries to name the project it belongs to.
+const POINTER: &str = ".storyhook.toml";
+
+/// Fails unless `dir` decides its own project rather than inheriting one.
+///
+/// **The invariant every fixture in this suite has to hold** (SH-121, AC-2).
+/// Project resolution climbs from the working directory to the first ancestor
+/// holding a `.git` **directory**, taking the nearest pointer file it meets. So
+/// a fixture directory with no pointer of its own, sited under a directory that
+/// has one, silently answers about *that* project — and the test still passes,
+/// against the wrong tracker.
+///
+/// This is not hypothetical. `tests/project_path_hygiene.rs` builds its
+/// fixtures under `CARGO_TARGET_TMPDIR`, which is `target/` inside this
+/// checkout, and storyhook's own committed `.storyhook.toml` is four levels
+/// above it. That file defended itself in prose — *"every command below
+/// therefore runs from a directory with a pointer file of its own"* — which is
+/// a convention, and a convention is one forgotten `project new` from silence.
+///
+/// The predicate is deliberately an **either**, because both shapes are
+/// legitimate: a checkout that carries its own pointer selects explicitly, and
+/// so does one with no pointer above it anywhere (it will select by `--project`,
+/// `$STORYHOOK_PROJECT`, or its registered origin, and refuse if none of those
+/// answer). What is never legitimate is the third case — inheriting one by
+/// accident.
+pub fn assert_selection_is_not_inherited(dir: &Path) {
+    let root = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    if root.join(POINTER).is_file() {
+        return;
+    }
+    for ancestor in root.ancestors().skip(1) {
+        assert!(
+            !ancestor.join(POINTER).is_file(),
+            "fixture at {} carries no {POINTER} of its own, and {} above it does — every \
+             command run here would silently resolve *that* project. Give the fixture its own \
+             pointer file, site it somewhere with none above it, or select with `--project`.",
+            root.display(),
+            ancestor.display()
+        );
+        // The resolver's own bound: a `.git` directory is where a repository's
+        // identity stops being inheritable, so it is where this stops looking.
+        if ancestor.join(".git").is_dir() {
+            break;
+        }
     }
 }
 
@@ -317,6 +441,51 @@ impl<'a> Project<'a> {
     /// Whether this fixture is a legacy `.storyhook/` tree.
     pub fn is_legacy(&self) -> bool {
         self.legacy
+    }
+
+    /// A **second checkout** of this project's repository: a `git clone` of its
+    /// origin, carrying no pointer file.
+    ///
+    /// The only fixture shape that can exercise the mechanism the server-owned
+    /// epic is built on. A checkout produced any other way carries
+    /// `.storyhook.toml`, which resolution takes first — so a test built on one
+    /// passes whether or not a repository-level identity works at all. This one
+    /// has nothing else to answer with: the builder pushes to the bare origin
+    /// **before** `story project new` runs, so the pointer is written after the
+    /// push and never travels.
+    ///
+    /// Panics unless the fixture was built with
+    /// [`ProjectBuilder::with_local_origin`] — a second checkout of a repository
+    /// with no origin is not a thing that can resolve.
+    pub fn second_checkout(&self) -> SecondCheckout<'a> {
+        let origin = self.origin_path().unwrap_or_else(|| {
+            panic!(
+                "a second checkout is a clone of the project's origin — build the fixture with \
+                 `with_local_origin()`"
+            )
+        });
+        let dir = scratch_dir_named("second-checkout-");
+        // Cloning *into* an existing empty directory, so the fixture owns the
+        // `TempDir` that reclaims it. The working directory is the scratch root
+        // rather than the project, so nothing about the clone depends on where
+        // it was run from.
+        git(
+            self.env,
+            &crate::scratch::scratch_root(),
+            &["clone", "-q", &path_arg(origin), &path_arg(dir.path())],
+        );
+        assert!(
+            !dir.path().join(POINTER).is_file(),
+            "fixture: a second checkout must carry no {POINTER}, or it resolves by the pointer \
+             and proves nothing about the origin. Something committed the pointer file before \
+             the push."
+        );
+        assert_selection_is_not_inherited(dir.path());
+        SecondCheckout {
+            env: self.env,
+            dir,
+            worktrees: BTreeMap::new(),
+        }
     }
 
     /// Creates a story and returns the id storyhook minted for it.
@@ -449,6 +618,82 @@ mod tests {
         assert!(
             listed.contains(".claude/worktrees/abc-SH-1"),
             "git must know about the worktree: {listed}"
+        );
+    }
+
+    /// The default fixture states how it selects: by the pointer file in its
+    /// own directory, and by nothing else.
+    ///
+    /// SH-121, AC-2. Taking the pointer away has to take the answer away — a
+    /// fixture that went on resolving would be resolving by something nobody
+    /// wrote down, which is the whole failure this criterion is about.
+    #[test]
+    fn the_default_fixture_selects_by_its_own_pointer_file() {
+        let env = TestEnv::shared();
+        let project = env.project().build();
+        project.run(&["list"]).success();
+
+        std::fs::remove_file(project.path().join(POINTER)).expect("removing the pointer file");
+        let out = project
+            .story()
+            .args(["list"])
+            .output()
+            .expect("running story");
+        assert_eq!(
+            out.status.code(),
+            Some(3),
+            "with its pointer file gone the default fixture must refuse, not find a project by \
+             some other route. stdout: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    /// A second checkout is a real clone, and it carries nothing that could
+    /// answer for it except its origin.
+    #[test]
+    fn a_second_checkout_is_a_real_clone_with_no_pointer_file() {
+        let env = TestEnv::shared();
+        let project = env.project().with_local_origin().build();
+        let second = project.second_checkout().with_worktree("a");
+
+        assert!(second.path().join(".git").is_dir(), "a clone has a git dir");
+        assert!(
+            !second.path().join(POINTER).exists(),
+            "and no pointer file — that is what makes it useful"
+        );
+        let worktree = second.worktree_path("a");
+        assert!(
+            worktree.join(".git").is_file(),
+            "a linked worktree's .git is a file pointing at the clone"
+        );
+        assert_eq!(
+            git_stdout(second.path(), &["config", "--get", "remote.origin.url"]),
+            project
+                .origin_path()
+                .expect("an origin")
+                .to_string_lossy()
+                .into_owned(),
+            "the clone must record the very origin the project registered"
+        );
+    }
+
+    /// The guard fires. An assertion nobody has ever seen fail is an assertion
+    /// that might be vacuous, and this one exists to catch a shape that is easy
+    /// to create by accident and impossible to notice afterwards.
+    #[test]
+    fn a_fixture_that_would_inherit_a_project_is_refused() {
+        let outer = scratch_dir_named("inheriting-");
+        std::fs::write(outer.path().join(POINTER), "uuid = \"whatever\"\n")
+            .expect("writing an outer pointer file");
+        let inner = outer.path().join("nested/deeper");
+        std::fs::create_dir_all(&inner).expect("creating the nested directory");
+
+        assert_selection_is_not_inherited(outer.path());
+        let inherited = std::panic::catch_unwind(|| assert_selection_is_not_inherited(&inner));
+        assert!(
+            inherited.is_err(),
+            "a directory with no pointer of its own, under one that has a pointer, must be \
+             refused — it would silently resolve the outer project"
         );
     }
 
