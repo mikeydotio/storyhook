@@ -11,6 +11,13 @@ use crate::error::AppError;
 /// the sort of thing a reader looks for by name.
 pub mod remote;
 
+/// The story-id prefix — one validator, one derivation, no second opinion.
+///
+/// Its own file for the same reason [`remote`] is: it is a self-contained
+/// grammar with three callers that must never disagree, and a reader looks for
+/// it by name.
+pub mod prefix;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportStory {
     pub title: String,

@@ -421,6 +421,56 @@ fn claimable(
         .is_none_or(|holder| holder.id == project))
 }
 
+/// Records `root` as the project's checkout, unless it already has one.
+///
+/// **Fills a gap; never replaces.** A project's checkout answers where its
+/// repo-side work runs, and moving it is `story project link checkout`'s job —
+/// a verb that reports the path it displaced, precisely because a silent
+/// replacement is how somebody discovers six weeks later that dispatch has been
+/// running in the wrong tree. Attaching a *second* clone must not quietly
+/// perform that move.
+///
+/// This is also what makes `story project init` and `story project new
+/// --attach` do the same thing, which is the premise the SH-117 fixture sweep
+/// rests on: 251 call sites can only be rewritten mechanically if the two verbs
+/// mean the same thing at every one of them.
+pub(super) fn adopt_checkout(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    root: &Path,
+) -> Result<(), crate::store::StoreError> {
+    if tx.checkout_path(project)?.is_none() {
+        tx.set_checkout_path(project, Some(root))?;
+    }
+    Ok(())
+}
+
+/// Forgets the recorded checkout, if it is the directory being forgotten.
+///
+/// **The other half of [`adopt_checkout`], and it exists because the first half
+/// alone is a leak.** Two facts are recorded about one directory — a
+/// `project_paths` row, which resolution reads, and `checkout_path`, which says
+/// where the project's repo-side work runs — and a caller that forgets one and
+/// not the other leaves a project claiming to have a checkout at a path that no
+/// longer exists. `doctor --fix` did exactly that the first time this was run:
+/// it deregistered the orphaned registration and `story project list` went on
+/// printing the vanished directory on the line below.
+///
+/// Conditional on the paths matching, deliberately. A project may have been
+/// pointed at some *other* checkout by `story project link checkout`, and
+/// forgetting a stale resolution row must not silently discard a link somebody
+/// made on purpose.
+pub(super) fn forget_checkout(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    path: &Path,
+) -> Result<(), crate::store::StoreError> {
+    if tx.checkout_path(project)?.as_deref() == Some(path) {
+        tx.set_checkout_path(project, None)?;
+    }
+    Ok(())
+}
+
 /// What to tell someone whose directory names no project.
 ///
 /// **The one constructor for this refusal**, which is what makes "it always
@@ -557,6 +607,21 @@ pub struct InitOptions {
     pub name: Option<String>,
     /// Generate `AGENTS.md` when the repository does not already have one.
     pub agents_md: bool,
+    /// Whether the directory this service was pointed at becomes the project's
+    /// checkout.
+    ///
+    /// `true` is everything `story project init` has always done: the path is
+    /// recorded for resolution, the origin registered, the checkout adopted,
+    /// and the repository-side files written. `false` — `story project new
+    /// --no-attach` — writes the store record and nothing else, for the project
+    /// whose repository is on another machine or does not exist yet.
+    ///
+    /// **Idempotence is a property of the attach target, so `false` has none.**
+    /// With no directory to match on there is nothing to recognize a second run
+    /// by, and each one creates another project. That is the honest answer
+    /// rather than a surprising one: `--no-attach` says the project is not
+    /// identified by anything on this machine.
+    pub attach: bool,
     /// Write the committed [pointer file](ProjectPointer).
     ///
     /// Off by default and left off by the dispatcher: until the store becomes
@@ -573,6 +638,7 @@ impl Default for InitOptions {
             name: None,
             agents_md: true,
             pointer: false,
+            attach: true,
         }
     }
 }
@@ -682,7 +748,14 @@ impl<'a, S: Store> ProjectService<'a, S> {
     /// pointer names a project the store may well know — and answering by path
     /// alone would mint a second project for a repository that already has one,
     /// leaving the clone pointing at the old identity and storing into the new.
+    ///
+    /// With [`attach`](InitOptions::attach) off, none of the paragraph above
+    /// applies: nothing outside the store is read or written, so there is
+    /// nothing to adopt and every call creates a project. See that field.
     pub fn init(&self, options: &InitOptions) -> Result<InitOutcome, AppError> {
+        if !options.attach {
+            return self.create_detached(options);
+        }
         let root = canonical(&self.root);
         let now = self.clock.now();
         let existing_pointer = read_pointer(&root)?;
@@ -715,6 +788,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 && let Some(existing) = tx.project_by_uuid(&pointer.uuid)?
             {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                adopt_checkout(tx, existing.id, &root)?;
                 if let Some(remote) = &origin
                     && claimable(&*tx, remote, existing.id)?
                 {
@@ -727,6 +801,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
             }
             if let Some(existing) = tx.project_by_path(&root)? {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                adopt_checkout(tx, existing.id, &root)?;
                 if let Some(remote) = &origin
                     && claimable(&*tx, remote, existing.id)?
                 {
@@ -770,6 +845,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 created_at: now.clone(),
             })?;
             tx.touch_project_path(project, &root, path_kind(&root))?;
+            adopt_checkout(tx, project, &root)?;
             if let Some(remote) = &origin
                 && claimable(&*tx, remote, project)?
             {
@@ -798,6 +874,48 @@ impl<'a, S: Store> ProjectService<'a, S> {
             created,
             agents_md,
             pointer,
+        })
+    }
+
+    /// Creates a project attached to nothing — `story project new --no-attach`.
+    ///
+    /// The store record and nothing else. No directory is read, canonicalized,
+    /// registered or written to, which is what makes this the verb for a
+    /// project whose repository lives on another machine, or does not exist
+    /// yet, or is one of several this store will never see.
+    ///
+    /// The directory the client ran in still supplies the *default name*, and
+    /// only that. It is the one documented default `--name` has, and a caller
+    /// who does not want it is one word away from saying so.
+    fn create_detached(&self, options: &InitOptions) -> Result<InitOutcome, AppError> {
+        let now = self.clock.now();
+        let name = options
+            .name
+            .clone()
+            .unwrap_or_else(|| display_name(&canonical(&self.root)));
+        let prefix = options
+            .prefix
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PREFIX.to_string());
+
+        let project = self.store.write(|tx| {
+            let project = tx.create_project(&NewProject {
+                uuid: uuid::Uuid::new_v4().to_string(),
+                slug: unique_slug(&*tx, &name)?,
+                name,
+                prefix,
+                created_at: now.clone(),
+            })?;
+            write_states(tx, project, &default_states())?;
+            tx.put_types(project, &default_types())?;
+            Ok(project)
+        })?;
+
+        Ok(InitOutcome {
+            project,
+            created: true,
+            agents_md: false,
+            pointer: false,
         })
     }
 

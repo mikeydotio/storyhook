@@ -208,6 +208,18 @@ fn relink_points_a_project_at_its_new_checkout() {
         listed.contains(moved.to_str().unwrap()),
         "the catalog must name the new location: {listed}"
     );
+    // **Both** facts move, not just the one resolution reads. A directory is
+    // recorded twice — as a `project_paths` row and as `checkout_path` — and a
+    // relink that carried only the first would leave the project claiming its
+    // repo-side work runs in a directory that no longer exists.
+    assert!(
+        !listed.contains(&f.checkout.display().to_string()),
+        "no trace of the address it moved out of may survive: {listed}"
+    );
+    assert!(
+        listed.contains(&format!("checkout  {}", moved.display())),
+        "and the recorded checkout is the new location: {listed}"
+    );
 
     // And the project is usable from there, with its story.
     let summary = stdout(&story(&moved, &f.data_home, &["summary"]));
