@@ -791,8 +791,8 @@ fn dispatch_project_link<S: Store>(
     let service = crate::service::GitLinkService::new(ctx);
     match target {
         crate::cli::LinkTarget::Origin { url } => {
-            let remote = remote_argument(ctx, url.as_deref())?;
-            let link = service.link_origin(&remote)?;
+            let origin = claimed_remote_argument(ctx, url.as_deref())?;
+            let link = service.link_origin(&origin)?;
             Ok(Response::Message(format!(
                 "linked `{}` to project `{}`\ncommands run in a checkout of it now resolve \
                  without --project",
@@ -848,25 +848,58 @@ fn dispatch_project_unlink<S: Store>(
     }
 }
 
-/// The URL a `link origin` / `unlink origin` was given, or the one this
-/// directory's own repository records.
+/// The origin a `link origin` was given, or the one this directory's own
+/// repository records — and in both cases, one this directory may claim.
 ///
-/// The two paths differ in more than convenience. A URL the user typed is
-/// normalized and any failure names it; an omitted one goes through
-/// [`origin_here`](crate::service::project::origin_here), which additionally
-/// requires the working directory to be its repository's *top level* — see that
-/// function for why taking the enclosing repository's origin would be a
-/// permanent, cross-project mistake rather than a recoverable one.
+/// The two paths differ in more than convenience. An omitted URL goes through
+/// [`origin_here`](crate::service::project::origin_here), which computes the
+/// entitlement. A URL the user typed is normalized, any failure names it, and
+/// then it faces **one** further question (SH-151): is this the enclosing
+/// repository's own origin, given from a directory that does not own it?
+///
+/// That single case is refused because nothing else catches it. The store's
+/// uniqueness index refuses a *second* claim on an origin, but the first
+/// sub-directory to ask meets no collision at all — it simply takes the
+/// repository's identity, permanently, and every sibling project and the
+/// repository's own top level are locked out from then on. Every other URL is
+/// registered as asked: naming some unrelated repository's origin from a
+/// directory that is not a checkout of it is exactly what this verb is for.
+fn claimed_remote_argument<S: Store>(
+    ctx: &Ctx<'_, S>,
+    url: Option<&str>,
+) -> Result<crate::domain::remote::OwnedOrigin, AppError> {
+    let Some(url) = url else {
+        return crate::service::project::origin_here(ctx.cwd());
+    };
+    crate::service::project::claim_stated(ctx.cwd(), normalized_remote(url)?)
+}
+
+/// The URL an `unlink origin` names — with **no** entitlement question asked.
+///
+/// Removing a registration is not claiming one, and the directory a cleanup is
+/// run from says nothing about whether it should happen: `story --project a
+/// project unlink origin <url>` is the way to undo a wrong claim, and refusing
+/// it because the caller happens to be standing inside the repository would
+/// leave the mistake in place. The omitted form still goes through
+/// [`origin_here`](crate::service::project::origin_here), because "the origin
+/// here" has to mean the same directory's origin for both verbs.
 fn remote_argument<S: Store>(
     ctx: &Ctx<'_, S>,
     url: Option<&str>,
 ) -> Result<crate::domain::remote::RemoteUrl, AppError> {
     match url {
-        Some(url) => crate::domain::remote::RemoteUrl::normalize(url).map_err(|error| {
-            AppError::Validation(format!("`{url}` is not a git remote URL: {error}"))
-        }),
-        None => crate::service::project::origin_here(ctx.cwd()),
+        Some(url) => normalized_remote(url),
+        None => Ok(crate::service::project::origin_here(ctx.cwd())?
+            .url()
+            .clone()),
     }
+}
+
+/// A URL the user typed, as a [`RemoteUrl`](crate::domain::remote::RemoteUrl),
+/// with the refusal naming what they typed.
+fn normalized_remote(url: &str) -> Result<crate::domain::remote::RemoteUrl, AppError> {
+    crate::domain::remote::RemoteUrl::normalize(url)
+        .map_err(|error| AppError::Validation(format!("`{url}` is not a git remote URL: {error}")))
 }
 
 /// The `story project settings …` forms.
@@ -1593,6 +1626,21 @@ fn new_message(outcome: &InitOutcome, attached: bool, slug: &Option<String>) -> 
              without it\ndoes not know which project it is looking at.",
         );
     }
+    // Said out loud, because the alternative is a user wondering later why
+    // `story project list` shows no origin against this project — or not
+    // wondering, and being surprised by a clone that does not resolve (SH-151).
+    if let crate::service::OriginOutcome::Inherited { owner, holder } = &outcome.origin {
+        let held = holder.as_ref().map_or_else(
+            || "no project has registered it".to_string(),
+            |slug| format!("project `{slug}` has registered it"),
+        );
+        message.push_str(&format!(
+            "\n\nThis directory does not own its repository's origin — `{}` does, and {held}.\n\
+             That is fine for a project inside a larger repository: this one is identified by\n\
+             the .storyhook.toml here, so commit it, or name the project with `--project`.",
+            owner.display()
+        ));
+    }
     if outcome.agents_md {
         message.push_str("\n\nGenerated AGENTS.md for AI agent discoverability.");
     }
@@ -1934,15 +1982,51 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
             return Ok(Some(found.id));
         }
 
+        // The nearest directory that *claims* a project this store does not
+        // have. It is not an answer, but it outranks every farther one: see
+        // `unresolvable_pointer_refusal`.
+        let mut claimed: Option<String> = None;
         for dir in ancestors(&self.cwd) {
             if let Some(project) = resolve_at(self.store, &dir)? {
+                if let Some(uuid) = &claimed {
+                    return Err(unresolvable_pointer_refusal(uuid));
+                }
                 return Ok(Some(project));
+            }
+            // Read only once the directory has failed to resolve, which is what
+            // keeps `a_pointer_naming_an_unknown_project_does_not_shadow_a_valid_path_row`
+            // true: a stale pointer beside a working path row in the *same*
+            // directory still resolves there, because `resolve_at` answered.
+            if claimed.is_none()
+                && let Ok(Some(pointer)) = crate::service::project::read_pointer(&dir)
+            {
+                claimed = Some(pointer.uuid);
             }
         }
 
         if let Some(remote) = crate::service::project::origin_of(&self.cwd)
             && let Some(found) = self.store.read(|tx| tx.project_by_remote(&remote))?
         {
+            // SH-151. An origin answers for the *whole* repository, so it will
+            // happily answer for a sub-checkout that claims a project this
+            // store does not have — with the enclosing project, silently. That
+            // is the fresh-clone-of-a-monorepo shape: `service-b`'s identity
+            // travelled in the commit, this machine has never seen it, and the
+            // root project's origin is right there to be resolved by mistake.
+            //
+            // The ownership probe is asked only in that already-rare case, and
+            // only to tell this apart from the legitimate one: a checkout at
+            // the *top level* whose committed pointer came from somebody else's
+            // store, where adopting by the origin the user registered
+            // themselves is exactly right.
+            if let Some(uuid) = &claimed
+                && matches!(
+                    crate::service::project::origin_at(&self.cwd),
+                    crate::domain::remote::RepoOrigin::Inherited { .. }
+                )
+            {
+                return Err(unresolvable_pointer_refusal(uuid));
+            }
             return Ok(Some(found.id));
         }
 
@@ -1962,6 +2046,24 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
             .into_iter()
             .find_map(|dir| crate::service::project::read_pointer(&dir).ok().flatten())
     }
+}
+
+/// What to tell a checkout that names a project this store does not have.
+///
+/// **One constructor, because two very different paths raise it** and the
+/// answer is the same either way. One is the plain fresh clone, where nothing
+/// else answers at all. The other is SH-151's: a sub-checkout inside a
+/// repository whose origin belongs to *another* project, where something else
+/// would very much have answered — with the wrong project, and without saying
+/// so. A checkout that states its identity in a committed file is not
+/// uninitialized, and neither reader should be told it is.
+fn unresolvable_pointer_refusal(uuid: &str) -> AppError {
+    AppError::NotFound(format!(
+        "this checkout belongs to storyhook project {uuid}, which this machine's store does not \
+         have. Run `story project new --prefix <PREFIX>` here to adopt it — an adopted checkout \
+         keeps the prefix its pointer file names — or `story import-project` if you have an \
+         export of it."
+    ))
 }
 
 /// A directory and every ancestor of it, nearest first.
@@ -2127,13 +2229,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             // and "not initialized in this directory" sends the reader looking
             // for the wrong thing.
             if let Some(pointer) = self.pointer_at_or_above() {
-                return Err(AppError::NotFound(format!(
-                    "this checkout belongs to storyhook project {}, which this machine's \
-                     store does not have. Run `story project new --prefix <PREFIX>` here to \
-                     adopt it — an adopted checkout keeps the prefix its pointer file names — \
-                     or `story import-project` if you have an export of it.",
-                    pointer.uuid
-                )));
+                return Err(unresolvable_pointer_refusal(&pointer.uuid));
             }
             // Nothing named a project and nothing here answers for one. The
             // origin is looked up again rather than threaded down from

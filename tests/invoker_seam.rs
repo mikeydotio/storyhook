@@ -517,6 +517,96 @@ fn the_legacy_write_path_is_gone() {
     );
 }
 
+/// **An origin enters the store through exactly one function** (SH-151).
+///
+/// `service::project::register_origin` is the only `src/` caller of
+/// `WriteOps::link_remote`, and the only thing that can hand it an origin is an
+/// `OwnedOrigin` — a type with no public constructor except the audited
+/// `explicit`, which `story project link origin <url>` uses and which is itself
+/// gated by `claim_stated`.
+///
+/// The funnel is what makes the rule survive its author. Before SH-151 there
+/// were four call sites, three of them inside one `init` transaction, and every
+/// one of them independently decided whether the directory it stood in was
+/// entitled to the URL it had read — which is how a subdirectory came to
+/// register the enclosing repository's identity in the first place. A fifth
+/// site cannot be added now without answering the ownership question, because
+/// the argument type will not construct itself.
+///
+/// Greps the source for the same reason
+/// [`the_legacy_write_path_is_gone`] does: it is what a reviewer would do, it
+/// needs no build graph, and it cannot be satisfied by a re-export.
+#[test]
+fn an_origin_is_registered_in_exactly_one_place() {
+    use std::path::Path;
+
+    fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+
+    // The trait's own declaration, and the SQLite implementation of it, are not
+    // call sites; the funnel is the only thing that *invokes* it.
+    const ALLOWED: [&str; 5] = [
+        "src/service/project.rs",
+        "src/store/mod.rs",
+        "src/store/sqlite/mod.rs",
+        "src/store/sqlite/write.rs",
+        "src/store/conformance.rs",
+    ];
+
+    let mut callers = Vec::new();
+    for (path, text) in &files {
+        let relative = path
+            .rsplit_once("/src/")
+            .map_or_else(|| path.clone(), |(_, rest)| format!("src/{rest}"));
+        if ALLOWED.contains(&relative.as_str()) {
+            continue;
+        }
+        for (number, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            // `unlink_remote` is a different verb with a different rule:
+            // removing a registration asks nothing about entitlement, so it
+            // needs no funnel and must not trip this.
+            if code.contains("link_remote(") && !code.contains("unlink_remote(") {
+                callers.push(format!("{relative}:{}: {}", number + 1, code.trim()));
+            }
+        }
+    }
+
+    assert!(
+        callers.is_empty(),
+        "an origin is registered through `service::project::register_origin` and nowhere else, \
+         so that ownership is asked once rather than at each site. Route these through \
+         it:\n  {}",
+        callers.join("\n  ")
+    );
+
+    // And the funnel is really there — a rename that emptied the grep would
+    // otherwise pass this test by deleting the thing it protects.
+    let funnel = std::fs::read_to_string(root.join("service/project.rs"))
+        .expect("reading src/service/project.rs");
+    assert_eq!(
+        funnel.matches("tx.link_remote(").count(),
+        1,
+        "`register_origin` holds the single call; if it moved, move this assertion with it"
+    );
+}
+
 /// `.storyhook` is a path literal, and after the flip a production module that
 /// still holds one is a module that still writes into the user's repository.
 ///
