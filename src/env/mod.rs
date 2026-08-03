@@ -291,6 +291,35 @@ impl Environment {
         self.daemon_state_dir().join("daemon.log")
     }
 
+    /// Where the daemon publishes the one request it is currently serving.
+    ///
+    /// **The observable the wire does not have.** A daemon writes no bytes at
+    /// all until its handler returns, so a client waiting on `/api/v1/invoke`
+    /// cannot tell — from the socket — whether its command is running, queued
+    /// behind somebody else's, or wedged. This file is how it finds out, and it
+    /// is read without asking the daemon anything, which matters because the
+    /// daemon serves one request at a time and a wedged one answers nothing
+    /// (SH-144).
+    ///
+    /// Written by [`crate::api::rpc`] when a request's envelope has parsed and
+    /// removed when its answer is ready, so it changes exactly when the daemon
+    /// **finishes something**. That is the whole signal: a client's deadline
+    /// resets on every change, which is what lets queueing be unbounded while
+    /// the client's own served time is not.
+    ///
+    /// The third of three files a client reads about a daemon rather than from
+    /// it, beside [`Self::daemon_attempt`] (a *client* on a start attempt) and
+    /// [`Self::daemon_failure`] (the *daemon* on its way out). This one is the
+    /// daemon on what it is doing right now.
+    ///
+    /// **No schema version, deliberately.** `lifecycle::usable` trusts a daemon
+    /// only when it is running this very binary, so a client can only ever read
+    /// a record its own build wrote. A version field here would be a second
+    /// answer to a question the binary check has already settled.
+    pub fn daemon_current(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.current.json")
+    }
+
     /// Where a daemon that fails to start records *why*, for the client that
     /// started it.
     ///

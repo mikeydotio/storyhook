@@ -1674,7 +1674,12 @@ fn not_yet_ported(invocation: &Invocation) -> AppError {
 /// variant added tomorrow stops this file compiling until somebody decides
 /// whether it dispatches, which is the only reliable way to keep an additive
 /// port honest.
-fn invocation_name(invocation: &Invocation) -> &'static str {
+///
+/// Public because the daemon publishes it in
+/// [`crate::daemon::lifecycle::CurrentRequest`] and the client reads it back to
+/// choose a deadline — so these strings are a small wire vocabulary shared
+/// between the two, not only a diagnostic (SH-144).
+pub fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "help",
         Invocation::Project { .. } => "project",
