@@ -58,12 +58,12 @@ source: tests/golden_cli.rs
             1
           ],
           [
-            "spike",
-            2
+            "normal",
+            7
           ],
           [
-            "story",
-            7
+            "spike",
+            2
           ]
         ],
         "flagged_count": 0,
@@ -163,7 +163,7 @@ source: tests/golden_cli.rs
                 }
               ],
               "state": "todo",
-              "story_type": "story",
+              "story_type": "normal",
               "superstate": "OPEN",
               "title": "Define the Store trait",
               "updated_at": "[timestamp]"
@@ -178,7 +178,7 @@ source: tests/golden_cli.rs
               "priority": "high",
               "relationships": [],
               "state": "todo",
-              "story_type": "story",
+              "story_type": "normal",
               "superstate": "OPEN",
               "title": "Harden concurrent writes",
               "updated_at": "[timestamp]"
@@ -201,7 +201,7 @@ source: tests/golden_cli.rs
                 }
               ],
               "state": "review",
-              "story_type": "story",
+              "story_type": "normal",
               "superstate": "OPEN",
               "title": "Write the migration runner",
               "updated_at": "[timestamp]"
@@ -269,12 +269,12 @@ source: tests/golden_cli.rs
             1
           ],
           [
-            "spike",
-            2
+            "normal",
+            7
           ],
           [
-            "story",
-            7
+            "spike",
+            2
           ]
         ],
         "flagged_count": 0,
@@ -374,7 +374,7 @@ source: tests/golden_cli.rs
                 }
               ],
               "state": "todo",
-              "story_type": "story",
+              "story_type": "normal",
               "superstate": "OPEN",
               "title": "Define the Store trait",
               "updated_at": "[timestamp]"
@@ -389,7 +389,7 @@ source: tests/golden_cli.rs
               "priority": "high",
               "relationships": [],
               "state": "todo",
-              "story_type": "story",
+              "story_type": "normal",
               "superstate": "OPEN",
               "title": "Harden concurrent writes",
               "updated_at": "[timestamp]"
@@ -412,7 +412,7 @@ source: tests/golden_cli.rs
                 }
               ],
               "state": "review",
-              "story_type": "story",
+              "story_type": "normal",
               "superstate": "OPEN",
               "title": "Write the migration runner",
               "updated_at": "[timestamp]"

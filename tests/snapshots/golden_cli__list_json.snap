@@ -68,7 +68,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -96,7 +96,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -119,7 +119,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"
@@ -221,7 +221,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Add the daemon transport",
             "updated_at": "[timestamp]"
@@ -236,7 +236,7 @@ source: tests/golden_cli.rs
             "priority": "medium",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Ship the CLI shim",
             "updated_at": "[timestamp]"
@@ -251,7 +251,7 @@ source: tests/golden_cli.rs
             "priority": "low",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Audit error codes",
             "updated_at": "[timestamp]"
@@ -266,7 +266,7 @@ source: tests/golden_cli.rs
             "priority": "high",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Harden concurrent writes",
             "updated_at": "[timestamp]"
@@ -380,7 +380,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -466,7 +466,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Add the daemon transport",
             "updated_at": "[timestamp]"
@@ -481,7 +481,7 @@ source: tests/golden_cli.rs
             "priority": "medium",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Ship the CLI shim",
             "updated_at": "[timestamp]"
@@ -496,7 +496,7 @@ source: tests/golden_cli.rs
             "priority": "low",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Audit error codes",
             "updated_at": "[timestamp]"
@@ -511,7 +511,7 @@ source: tests/golden_cli.rs
             "priority": "high",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Harden concurrent writes",
             "updated_at": "[timestamp]"
@@ -542,7 +542,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"
@@ -767,7 +767,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -795,7 +795,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -843,7 +843,7 @@ source: tests/golden_cli.rs
             "priority": "high",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Harden concurrent writes",
             "updated_at": "[timestamp]"
@@ -909,7 +909,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -937,7 +937,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -960,7 +960,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"
@@ -1003,7 +1003,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -1079,7 +1079,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -1129,7 +1129,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -1167,7 +1167,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Add the daemon transport",
             "updated_at": "[timestamp]"
@@ -1242,7 +1242,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -1265,7 +1265,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"
@@ -1328,7 +1328,7 @@ source: tests/golden_cli.rs
             "priority": "medium",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Ship the CLI shim",
             "updated_at": "[timestamp]"
@@ -1343,7 +1343,7 @@ source: tests/golden_cli.rs
             "priority": "low",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Audit error codes",
             "updated_at": "[timestamp]"
@@ -1358,7 +1358,7 @@ source: tests/golden_cli.rs
             "priority": "high",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Harden concurrent writes",
             "updated_at": "[timestamp]"
@@ -1401,7 +1401,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -1429,7 +1429,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -1518,7 +1518,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -1546,7 +1546,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -1569,7 +1569,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"
@@ -1671,7 +1671,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Add the daemon transport",
             "updated_at": "[timestamp]"
@@ -1686,7 +1686,7 @@ source: tests/golden_cli.rs
             "priority": "medium",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Ship the CLI shim",
             "updated_at": "[timestamp]"
@@ -1701,7 +1701,7 @@ source: tests/golden_cli.rs
             "priority": "low",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Audit error codes",
             "updated_at": "[timestamp]"
@@ -1716,7 +1716,7 @@ source: tests/golden_cli.rs
             "priority": "high",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Harden concurrent writes",
             "updated_at": "[timestamp]"
@@ -1837,7 +1837,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -1865,7 +1865,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -1888,7 +1888,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"
@@ -1990,7 +1990,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Add the daemon transport",
             "updated_at": "[timestamp]"
@@ -2005,7 +2005,7 @@ source: tests/golden_cli.rs
             "priority": "medium",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Ship the CLI shim",
             "updated_at": "[timestamp]"
@@ -2020,7 +2020,7 @@ source: tests/golden_cli.rs
             "priority": "low",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Audit error codes",
             "updated_at": "[timestamp]"
@@ -2035,7 +2035,7 @@ source: tests/golden_cli.rs
             "priority": "high",
             "relationships": [],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Harden concurrent writes",
             "updated_at": "[timestamp]"
@@ -2157,7 +2157,7 @@ source: tests/golden_cli.rs
     }
   },
   {
-    "argv": "story list --type story --label backend --json",
+    "argv": "story list --type normal --label backend --json",
     "stdout": {
       "result": "ok",
       "stories": [
@@ -2190,7 +2190,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "todo",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Define the Store trait",
             "updated_at": "[timestamp]"
@@ -2218,7 +2218,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "in-progress",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Implement the SQLite engine",
             "updated_at": "[timestamp]"
@@ -2241,7 +2241,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "story",
+            "story_type": "normal",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"

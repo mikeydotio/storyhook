@@ -175,7 +175,7 @@ fn import_with_story_type() {
 
     let json = r#"[
         {"title": "Login crash", "story_type": "bug"},
-        {"title": "New dashboard", "story_type": "story"},
+        {"title": "New dashboard", "story_type": "normal"},
         {"title": "Plain task"}
     ]"#;
 
@@ -196,7 +196,7 @@ fn import_with_story_type() {
         .args(["show", "SH-2"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("type: story"));
+        .stdout(predicate::str::contains("type: normal"));
 
     // Verify untyped story has no type set
     story(dir.path())
@@ -269,7 +269,7 @@ fn import_accepts_valid_story_type() {
     // remaining defaults are the whole set worth exercising here.
     let json = r#"[
         {"title": "A bug", "story_type": "bug"},
-        {"title": "A story", "story_type": "story"},
+        {"title": "A story", "story_type": "normal"},
         {"title": "A chore", "story_type": "chore"},
         {"title": "An epic", "story_type": "epic"}
     ]"#;
@@ -290,7 +290,7 @@ fn import_accepts_valid_story_type() {
         .args(["show", "SH-2"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("type: story"));
+        .stdout(predicate::str::contains("type: normal"));
     story(dir.path())
         .args(["show", "SH-3"])
         .assert()

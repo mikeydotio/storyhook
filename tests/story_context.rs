@@ -109,7 +109,7 @@ fn context_shows_type_distribution() {
         .assert()
         .success();
     story(dir.path())
-        .args(["new", "Add dashboard", "--type", "story"])
+        .args(["new", "Add dashboard", "--type", "normal"])
         .assert()
         .success();
     story(dir.path())
@@ -123,7 +123,7 @@ fn context_shows_type_distribution() {
         .success()
         .stdout(predicate::str::contains("## Type Distribution"))
         .stdout(predicate::str::contains("- bug: 1"))
-        .stdout(predicate::str::contains("- story: 1"))
+        .stdout(predicate::str::contains("- normal: 1"))
         .stdout(predicate::str::contains("- Default: 1"));
 }
 

@@ -1296,13 +1296,23 @@ pub fn default_states() -> Vec<StateDef> {
 ///
 /// `task` was a fifth default until SH-157, which removed it: no default type
 /// should exist only to be picked among near-synonyms, and every story it
-/// generalizes over is already a `story`. Retiring it is not a reservation —
-/// `story type add task` still works — so an existing project that wants it
-/// back can have it.
+/// generalizes over is already an ordinary, unclassified one. Retiring it is
+/// not a reservation — `story type add task` still works — so an existing
+/// project that wants it back can have it.
+///
+/// The plain default is `normal`, not `story` — `story` is this whole tool's
+/// own name, and reusing it as a type slug reads as "a story of type story"
+/// everywhere the badge or the picker renders it. `default`, the other
+/// obvious candidate, was rejected for a sharper reason: it collides with the
+/// literal word `add_type` already refuses as a reserved slug (`none` and
+/// `default` are how the CLI *unsets* a type), and with the fallback text
+/// (`output.rs`'s `"Default"`) an untyped story renders today — a type
+/// actually named `default` would be visually indistinguishable from having
+/// no type at all, exactly the ambiguity SH-157 set out to remove.
 #[must_use]
 pub fn default_types() -> Vec<TypeDef> {
     [
-        ("story", "A user story or feature", "📖"),
+        ("normal", "A user story or feature", "📙"),
         ("epic", "A large initiative containing child stories", "📚"),
         ("bug", "A defect or regression", "🐞"),
         ("chore", "Maintenance or infrastructure work", "🧺"),

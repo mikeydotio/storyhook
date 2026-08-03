@@ -27,7 +27,7 @@ fn type_list_shows_default_types() {
         .args(["type", "list"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("story"))
+        .stdout(predicate::str::contains("normal"))
         .stdout(predicate::str::contains("epic"))
         .stdout(predicate::str::contains("bug"))
         .stdout(predicate::str::contains("chore"));
@@ -92,7 +92,7 @@ fn type_list_shows_default_types_emoji() {
         .args(["type", "list"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("📖 story"))
+        .stdout(predicate::str::contains("📙 normal"))
         .stdout(predicate::str::contains("📚 epic"))
         .stdout(predicate::str::contains("🐞 bug"))
         .stdout(predicate::str::contains("🧺 chore"));
@@ -394,7 +394,7 @@ fn type_add_duplicate_rejected() {
         .success();
 
     story(dir.path())
-        .args(["type", "add", "story"])
+        .args(["type", "add", "normal"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("already exists"));
@@ -1041,7 +1041,7 @@ fn type_remove_last_type_rejected() {
 
     // Attempting to remove the last type should fail
     story(dir.path())
-        .args(["type", "remove", "story"])
+        .args(["type", "remove", "normal"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("last"));
@@ -1185,15 +1185,15 @@ fn full_epic_lifecycle() {
 
     // 2. Create child stories
     story(dir.path())
-        .args(["new", "Login page", "--type", "story"])
+        .args(["new", "Login page", "--type", "normal"])
         .assert()
         .success();
     story(dir.path())
-        .args(["new", "Signup page", "--type", "story"])
+        .args(["new", "Signup page", "--type", "normal"])
         .assert()
         .success();
     story(dir.path())
-        .args(["new", "Password reset", "--type", "story"])
+        .args(["new", "Password reset", "--type", "normal"])
         .assert()
         .success();
 
@@ -1267,11 +1267,11 @@ fn full_epic_lifecycle() {
 
     // 11. Verify story list --type filters work
     let output = story(dir.path())
-        .args(["list", "--type", "story"])
+        .args(["list", "--type", "normal"])
         .assert()
         .success();
     let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    // Only story-typed stories (SH-2, SH-3, SH-4 are archived after being closed,
+    // Only normal-typed stories (SH-2, SH-3, SH-4 are archived after being closed,
     // so list won't show them since it only shows open stories by default)
-    assert!(!stdout.contains("SH-1")); // SH-1 is epic type, not story
+    assert!(!stdout.contains("SH-1")); // SH-1 is epic type, not normal
 }

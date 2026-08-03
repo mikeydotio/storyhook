@@ -3,33 +3,33 @@ source: tests/golden_cli.rs
 ---
 $ story list
 SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
-SH-3 [in-progress] (high) [story] Implement the SQLite engine [backend, phase:1]
-SH-4 [review] (medium) [story] Write the migration runner [backend]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
+SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
+SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
 SH-7 [todo] [chore] Document the data layer
 SH-8 [done] (low) [chore] Retire the JSONL reader
-SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
-SH-10 [todo] (medium) [story] Ship the CLI shim
-SH-11 [todo] (low) [story] Audit error codes
-SH-12 [todo] (high) [story] Harden concurrent writes
+SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
+SH-10 [todo] (medium) [normal] Ship the CLI shim
+SH-11 [todo] (low) [normal] Audit error codes
+SH-12 [todo] (high) [normal] Harden concurrent writes
 SH-13 [done] (low) [chore] Old approach: file-per-story [deleted]
 SH-14 [done] (medium) [spike] Prototype the archive format
 
 $ story list --state todo
 SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
 SH-7 [todo] [chore] Document the data layer
-SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
-SH-10 [todo] (medium) [story] Ship the CLI shim
-SH-11 [todo] (low) [story] Audit error codes
-SH-12 [todo] (high) [story] Harden concurrent writes
+SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
+SH-10 [todo] (medium) [normal] Ship the CLI shim
+SH-11 [todo] (low) [normal] Audit error codes
+SH-12 [todo] (high) [normal] Harden concurrent writes
 
 $ story list --state review
-SH-4 [review] (medium) [story] Write the migration runner [backend]
+SH-4 [review] (medium) [normal] Write the migration runner [backend]
 
 $ story list --state done
 SH-8 [done] (low) [chore] Retire the JSONL reader
@@ -48,25 +48,25 @@ no stories found
 
 $ story list --priority critical,high
 SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
-SH-3 [in-progress] (high) [story] Implement the SQLite engine [backend, phase:1]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
+SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
-SH-12 [todo] (high) [story] Harden concurrent writes
+SH-12 [todo] (high) [normal] Harden concurrent writes
 
 $ story list --priority none
 SH-7 [todo] [chore] Document the data layer
 
 $ story list --label backend
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
-SH-3 [in-progress] (high) [story] Implement the SQLite engine [backend, phase:1]
-SH-4 [review] (medium) [story] Write the migration runner [backend]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
+SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
+SH-4 [review] (medium) [normal] Write the migration runner [backend]
 
 $ story list --label api,defect
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 
 $ story list --assignee ada-lovelace
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
 
 $ story list --assignee nobody
 no stories found
@@ -75,23 +75,23 @@ $ story list --flagged
 no stories found
 
 $ story list --blocked
-SH-3 [in-progress] (high) [story] Implement the SQLite engine [backend, phase:1]
+SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
-SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
+SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
 
 $ story list --ready
 SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
-SH-4 [review] (medium) [story] Write the migration runner [backend]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
+SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-7 [todo] [chore] Document the data layer
-SH-10 [todo] (medium) [story] Ship the CLI shim
-SH-11 [todo] (low) [story] Audit error codes
-SH-12 [todo] (high) [story] Harden concurrent writes
+SH-10 [todo] (medium) [normal] Ship the CLI shim
+SH-11 [todo] (low) [normal] Audit error codes
+SH-12 [todo] (high) [normal] Harden concurrent writes
 
 $ story list --phase 1
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
-SH-3 [in-progress] (high) [story] Implement the SQLite engine [backend, phase:1]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
+SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
 
 $ story list --phase 9
 no stories found
@@ -101,17 +101,17 @@ no stories found
 
 $ story list --created-after 2000-01-01
 SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
-SH-3 [in-progress] (high) [story] Implement the SQLite engine [backend, phase:1]
-SH-4 [review] (medium) [story] Write the migration runner [backend]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
+SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
+SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
 SH-7 [todo] [chore] Document the data layer
 SH-8 [done] (low) [chore] Retire the JSONL reader
-SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
-SH-10 [todo] (medium) [story] Ship the CLI shim
-SH-11 [todo] (low) [story] Audit error codes
-SH-12 [todo] (high) [story] Harden concurrent writes
+SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
+SH-10 [todo] (medium) [normal] Ship the CLI shim
+SH-11 [todo] (low) [normal] Audit error codes
+SH-12 [todo] (high) [normal] Harden concurrent writes
 SH-13 [done] (low) [chore] Old approach: file-per-story [deleted]
 SH-14 [done] (medium) [spike] Prototype the archive format
 
@@ -120,17 +120,17 @@ no stories found
 
 $ story list --updated-after 2000-01-01
 SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
-SH-3 [in-progress] (high) [story] Implement the SQLite engine [backend, phase:1]
-SH-4 [review] (medium) [story] Write the migration runner [backend]
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
+SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
+SH-4 [review] (medium) [normal] Write the migration runner [backend]
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-6 [todo] (low) [spike] Benchmark the rebuild path
 SH-7 [todo] [chore] Document the data layer
 SH-8 [done] (low) [chore] Retire the JSONL reader
-SH-9 [todo] (medium) [story] Add the daemon transport [phase:2]
-SH-10 [todo] (medium) [story] Ship the CLI shim
-SH-11 [todo] (low) [story] Audit error codes
-SH-12 [todo] (high) [story] Harden concurrent writes
+SH-9 [todo] (medium) [normal] Add the daemon transport [phase:2]
+SH-10 [todo] (medium) [normal] Ship the CLI shim
+SH-11 [todo] (low) [normal] Audit error codes
+SH-12 [todo] (high) [normal] Harden concurrent writes
 SH-13 [done] (low) [chore] Old approach: file-per-story [deleted]
 SH-14 [done] (medium) [spike] Prototype the archive format
 
@@ -138,7 +138,7 @@ $ story list --state todo --priority critical
 SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 
-$ story list --type story --label backend
-SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
-SH-3 [in-progress] (high) [story] Implement the SQLite engine [backend, phase:1]
-SH-4 [review] (medium) [story] Write the migration runner [backend]
+$ story list --type normal --label backend
+SH-2 [todo] (high) [normal] Define the Store trait [api, backend, phase:1]
+SH-3 [in-progress] (high) [normal] Implement the SQLite engine [backend, phase:1]
+SH-4 [review] (medium) [normal] Write the migration runner [backend]

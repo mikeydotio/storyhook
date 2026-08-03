@@ -53,7 +53,7 @@ SH-3 Implement the SQLite engine
 state: in-progress (OPEN)
 assignee: -
 priority: high
-type: story
+type: normal
 labels: backend, phase:1
 flagged: no
 relationships:

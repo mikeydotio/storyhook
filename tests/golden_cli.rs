@@ -100,7 +100,7 @@ fn build_corpus() -> Project<'static> {
             "Define the Store trait",
             vec![
                 "--type",
-                "story",
+                "normal",
                 "--priority",
                 "high",
                 "--labels",
@@ -111,7 +111,7 @@ fn build_corpus() -> Project<'static> {
             "Implement the SQLite engine",
             vec![
                 "--type",
-                "story",
+                "normal",
                 "--priority",
                 "high",
                 "--label",
@@ -119,11 +119,12 @@ fn build_corpus() -> Project<'static> {
             ],
         ),
         (
-            // Was `--type task` before SH-157 retired the default `task` type.
+            // Was `--type task` before SH-157 retired the default `task` type
+            // and renamed `story` to `normal`.
             "Write the migration runner",
             vec![
                 "--type",
-                "story",
+                "normal",
                 "--priority",
                 "medium",
                 "--label",
@@ -153,22 +154,22 @@ fn build_corpus() -> Project<'static> {
         ),
         (
             "Add the daemon transport",
-            vec!["--type", "story", "--priority", "medium"],
+            vec!["--type", "normal", "--priority", "medium"],
         ),
         (
             // Was `--type task` before SH-157 retired the default `task`
-            // type; `story` is its replacement everywhere task-typed stories
-            // are retyped, so the golden fixture follows suit.
+            // type; `normal` is its replacement everywhere task-typed
+            // stories are retyped, so the golden fixture follows suit.
             "Ship the CLI shim",
-            vec!["--type", "story", "--priority", "medium"],
+            vec!["--type", "normal", "--priority", "medium"],
         ),
         (
             "Audit error codes",
-            vec!["--type", "story", "--priority", "low"],
+            vec!["--type", "normal", "--priority", "low"],
         ),
         (
             "Harden concurrent writes",
-            vec!["--type", "story", "--priority", "high"],
+            vec!["--type", "normal", "--priority", "high"],
         ),
         (
             "Old approach: file-per-story",
@@ -472,7 +473,7 @@ const LIST: &[&[&str]] = &[
     &["list", "--updated-after", "2000-01-01"],
     // Two filters at once: they must intersect, not replace each other.
     &["list", "--state", "todo", "--priority", "critical"],
-    &["list", "--type", "story", "--label", "backend"],
+    &["list", "--type", "normal", "--label", "backend"],
 ];
 
 #[test]
