@@ -161,7 +161,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk · *R1–R4 accepted; six calls they did not cover* · **the fixture surface was 15 tests, and measuring it first is what made the shape obvious**
 - [x] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures · *the file it replaces passes 2 of 2 with the origin lookup disarmed* · **`story.sh` was answering about the wrong project; SH-163 filed by the probe and closed with it**
 - [x] **SH-163** — `story.sh list` renders a refusal as "no ready stories" · *not in the projected order — filed by SH-121's own probe* · **closed inside SH-121, because AC-3 could not be met honestly while it stood**
-- [ ] **SH-118** — C6 Ids: bare integers
+- [x] **SH-118** — C6 Ids: bare integers · *the audit undercounted the id positions by three, and both non-authors caught it* · **and the plugin was calling a ready story unready**
 - [ ] **SH-120** — C8 Dispatch plumbing
 - [ ] **SH-50** — C9 Dispatch button + authorization review
 - [ ] **SH-95** — retire the temp-path heuristic
@@ -3004,3 +3004,143 @@ first, because `checkout` restores a *file*, not a change.
 `story.sh list` now fails where it used to answer with an empty set — any
 caller treating that empty set as "no work" was already being misled and now
 finds out.
+
+### SH-118 — done
+
+**Outcome:** merged. `story show 5` names the same story `story show SH-5` does,
+at every verb that takes an id, and an id carrying another project's prefix is
+refused rather than reported as a story that does not exist. All four acceptance
+criteria are met.
+
+**The council was unanimous 3-0 in round one, and both non-authors voted against
+their own proposals** — the sixth time in this run. Neither was talked round;
+each was refuted by a fact I published before the ballot and had checked in the
+source myself. Audit trail in `.council/sh118-bare-integer-ids/`, verdict as a
+comment on SH-118.
+
+**My own brief was wrong in two places, and the panel found both.** That is the
+part worth carrying forward, because the brief was the document written to
+enumerate this surface:
+
+1. **It undercounted the id positions by three.** I published 21 across 17
+   variants; it is **24 across 19**. Seat 1 named `HistoryAction::Read` and
+   `Restore`, Seat 3 named those *and* `GraphMode::BlockedBy`. Both verified.
+   An enumeration that was already wrong is the whole argument against the
+   losing design, whose correctness is staked on a hand-kept list of funnels —
+   so the miss did not merely embarrass the brief, it decided the vote.
+2. **`dispatch` is not quite the only door.** `src/api/rest.rs:723
+   route_patch_story` calls `StoryService::set_fields` and `ctx.story_view`
+   directly and never reaches it — its own doc comment says why. A grep for
+   `Service::new(ctx)` across `src/api/`, `src/tui/` and `src/web.rs` returns
+   exactly that one hit plus a `ConfigService` call carrying no story id, so it
+   is **one hole, not a class**. The winning proposal is the runner-up plus that
+   second call site.
+
+**And the two losing placements were each refuted by the other seat's fact.**
+Seat 2 put the pass at the top of `dispatch` alone — which C2 above leaves
+incomplete. Seat 3 put it in `StoreInvoker::invoke` — which misses all 14
+`rest.rs` dispatch sites, because the dashboard calls `dispatch` directly. That
+is what a council is for: neither hole was visible from inside the proposal that
+had it.
+
+**The sharpest fact came from the seat asked to attack the brief, and it decided
+the shape.** `src/service/relation.rs` resolves both ids through
+`resolve_open_story`, then compares them with a **raw string** `if a == b` for
+the self-relation guard, and persists `other_id: b.to_string()` — the raw string
+— into the append-only event log. So expanding inside `resolve_story`, which is
+where the rule looks like it belongs, would have let `story relate SH-1 blocks 1`
+pass the self-relation guard and write `"1"` into history. A wrong answer in a
+log that is by design never rewritten. That killed funnel-level normalization
+outright.
+
+**The run's most reliable finding did not hold this time, and that is worth
+recording too.** Seven consecutive stories found the suite pinning the defect as
+intended behaviour, and I expected `tests/service_story.rs:326
+a_story_id_from_another_project_is_not_found_rather_than_invalid` to be the
+eighth. All three seats said otherwise and they were right: it calls
+`StoryService::comment` **directly**, below any gate this story installs, and
+asserts only the error *variant*. No test anywhere pins the *text* of a
+foreign-prefix refusal — the golden snapshots use `SH-999`, the correct prefix
+under the selected project, which stays `NotFound` exit 3. The test survives
+untouched under all three proposals, `resolve_story`'s prior decision is
+**scoped** rather than overturned, and **no test premise was rewritten in this
+story at all**. My framing overstated it; the streak is seven, not eight.
+
+**AC-3 needed no code.** Project resolution returns in `StoreInvoker::invoke`
+before `dispatch` is ever called, so `story show 1` outside a project already
+produced the selection refusal — measured before designing, not assumed. What it
+needed was a test pinning that *ordering*, because a design that expanded ids
+first would answer "story `1` not found" and send the reader hunting for a story
+instead of for a project.
+
+**The plugin was the live defect, and it was not the one the council recorded.**
+Seat 3 flagged that `plugin/claude-code/bin/story.sh` interpolates the id
+verbatim into worktree paths and branch names. True, and worse than naming:
+`dispatch`'s ready gate tests membership against `story list --ready --json`,
+whose ids are canonical — so the moment `story show 5` started succeeding, a
+bare id passed step 4 and was then reported **not ready**, a wrong answer about a
+story that is perfectly ready. Four verbs now take the id from the *response*
+through one `canonical_story_id` helper: `dispatch`, `view` and
+`_complete_prepare` from the `story show` they already ran, and `capture` from a
+read it did not previously make — which it pays for because the window it hunts
+was named by `dispatch` from the canonical form.
+
+**Red→green verified in both directions rather than assumed**, three disarms:
+
+| disarmed | fails | stays green |
+|---|---|---|
+| the `dispatch` pass | 9 of 12 | the 3 too-far guards |
+| the `Elsewhere` refusal only | exactly 3 | the 9 expansion tests |
+| `canonical_story_id` in the plugin | exactly 1 | the other 19 |
+
+The middle row is the one that matters: the expansion and the refusal are
+separately load-bearing, and neither disarm touched the other's tests. The three
+that stay green throughout are doing their job — `a_token_that_is_not_an_id_is_unchanged`,
+`a_foreign_id_never_switches_project` and AC-3's ordering pin all guard against
+the fix going *too far*, so a rule that over-expanded would fail them while the
+nine defect tests stayed green.
+
+**The grammar is one function, not two agreeing ones.** `StoryNo::parse_id` and
+`StoryRef::classify` both take their number rule from `story_number` — `n >= 1`
+and `n.to_string() == text` — so `5` and `SH-5` cannot come to disagree about
+what a number is. That is the property the whole story rests on, and it is
+structural rather than tested-into-place.
+
+**One case the verdict did not cover: our own prefix in the wrong case.** `sh-1`
+under prefix `SH` is `Unrecognized`, deliberately. Not `Here`, because accepting
+it would add a leniency nobody asked for and `parse_id` refuses it. Emphatically
+not `Elsewhere`, because a stored prefix is always uppercase, so the claimant
+lookup would find **the selected project itself** and produce a refusal naming
+one project twice. What is left is what it has always been: not an id this
+project recognizes.
+
+**The exit code moved, and that is the one contract break.** A foreign-prefix id
+was `NotFound` exit 3 and is now `Validation` exit 2. Uniformly, whatever the
+store holds — which is why the winner beat the runner-up, whose refusal flipped
+between 2 and 3 depending on whether some unrelated project happened to claim
+the prefix, a fact the caller cannot see. Nothing in the golden corpus moved,
+because no snapshot used a foreign prefix.
+
+**26 new tests** — 12 in `tests/bare_integer_ids.rs`, 7 on the classifier, 3 on
+the position pass, 3 on the CLI parser, 1 in the plugin harness — and one
+harness refactor that deleted two copies of the same seven-line `slug_at`
+helper rather than adding a third.
+
+**Also filed:** SH-167. README's command reference spells eleven commands
+id-first (`story <id> assign <member>`, `story <id> is <state>`), and none of
+them have ever worked — `story SH-1 assign someone` is `unknown command`, exit 2.
+Found while adding this story's own `### Story ids` section immediately below
+that block, which is the argument for fixing it soon: a reader meets the wrong
+grammar first.
+
+**Gate:** `make test` — the whole gate — exit 0, **114 green test-result blocks**
+(up from 108), 0 failures, 0 warnings, plugin harness **20/0**, no orphan
+daemons. **Green on the first attempt, and no wedge** — the tenth consecutive
+story without one.
+
+**Semver: minor.** `StoryRef` and the bare form are additions and no interface
+was removed. Two things a reader should know: a foreign-prefix id now exits 2
+where it exited 3, and `story github-sync 5` now reaches the store instead of
+printing a usage line.
+
+**Council:** yes — unanimous, round 1. `.council/sh118-bare-integer-ids/DECISION.md`.

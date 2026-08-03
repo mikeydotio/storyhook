@@ -46,6 +46,8 @@ use crate::service::{
 };
 use crate::store::{ProjectId, ReadOps, Store};
 
+pub(crate) mod story_ids;
+
 /// One unit of work for an [`Invoker`]: the command, plus the execution
 /// context that has to travel with it.
 ///
@@ -269,7 +271,21 @@ pub fn create_store(cwd: &Path, requested: &str) -> Result<Response, AppError> {
 ///
 /// `tests/differential_lifecycle.rs` holds the roster and asserts that it
 /// accounts for every variant.
-pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Response, AppError> {
+///
+/// # Story ids are canonical by the time an arm sees one
+///
+/// The first thing this does is expand every story id the invocation carries
+/// (SH-118): a bare `5` becomes `SH-5`, and an id naming a *different*
+/// project's prefix is refused here rather than resolved wrongly further down.
+/// It is here, ahead of the match, because this is the one call every door
+/// passes through — the CLI, the TUI, the dashboard's routes and a hand-built
+/// `InvokeRequest` — so no arm has to remember, and the arms below may treat
+/// their `id` as canonical. See [`story_ids`].
+pub fn dispatch<S: Store>(
+    ctx: &Ctx<'_, S>,
+    mut invocation: Invocation,
+) -> Result<Response, AppError> {
+    story_ids::canonicalize(ctx, &mut invocation)?;
     match invocation {
         Invocation::New {
             title,

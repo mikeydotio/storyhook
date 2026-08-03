@@ -79,6 +79,12 @@ impl StoryNo {
     /// load-bearing: it is what stops a relation, or a snapshot, from naming a
     /// story in another project — the failure mode a shared database makes
     /// possible for the first time.
+    ///
+    /// Strict about the prefix's *case* as well as its letters, because a
+    /// stored prefix is always canonical uppercase
+    /// ([`crate::domain::prefix::validate`] uppercases before storing) and this
+    /// is the parser data goes through. A user typing `sh-1` at a terminal is
+    /// [`StoryRef::classify`]'s problem, not this one's.
     pub fn parse_id(prefix: &str, id: &str) -> Result<Self, StoreError> {
         let rest = id.strip_prefix(prefix).and_then(|r| r.strip_prefix('-'));
         let Some(rest) = rest else {
@@ -86,17 +92,122 @@ impl StoryNo {
                 "story id `{id}` does not belong to a project with prefix `{prefix}`"
             )));
         };
-        // Reject `SH-007` and `SH-+1`: a number that does not render back to
-        // the same text would make `to_id` and `parse_id` disagree.
-        let number: i64 = rest.parse().map_err(|_| {
-            StoreError::Validation(format!("story id `{id}` has a non-numeric story number"))
-        })?;
-        if number < 1 || number.to_string() != rest {
-            return Err(StoreError::Validation(format!(
-                "story id `{id}` has a malformed story number"
-            )));
+        story_number(rest)
+            .map(Self)
+            .map_err(|why| StoreError::Validation(format!("story id `{id}` has a {why} number")))
+    }
+}
+
+/// Why a string is not a story number.
+///
+/// Two variants because the two messages predate this function and are worth
+/// keeping: "that is not a number at all" and "that is a number written a way
+/// this project cannot mint" are different mistakes.
+enum NotANumber {
+    NonNumeric,
+    Malformed,
+}
+
+impl std::fmt::Display for NotANumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonNumeric => write!(f, "non-numeric story"),
+            Self::Malformed => write!(f, "malformed story"),
         }
-        Ok(Self(number))
+    }
+}
+
+/// The number half of a story id, under the single rule that applies to it
+/// wherever it appears.
+///
+/// `n >= 1`, and the number must render back to the text it came from — so
+/// `007`, `+1`, `-1` and `01` are refused, because a number that does not
+/// round-trip would make [`StoryNo::to_id`] and [`StoryNo::parse_id`] disagree.
+///
+/// It is a function rather than two copies because [`StoryNo::parse_id`] and
+/// [`StoryRef::classify`] must not be *able* to disagree about what a story
+/// number is: `5` and `SH-5` naming different things is precisely the defect
+/// SH-118 exists to make unrepresentable.
+fn story_number(text: &str) -> Result<i64, NotANumber> {
+    let number: i64 = text.parse().map_err(|_| NotANumber::NonNumeric)?;
+    if number < 1 || number.to_string() != text {
+        return Err(NotANumber::Malformed);
+    }
+    Ok(number)
+}
+
+/// What a token in an id position turns out to be, once the selected project's
+/// prefix is known.
+///
+/// The whole of SH-118's grammar, as three arms rather than a bool and a
+/// convention. A caller that has one of these cannot forget the middle case,
+/// which is the one that used to be answered — wrongly — with *not found*.
+///
+/// # Why the middle arm exists at all
+///
+/// Under one global store, `OTH-1` typed while scoped to `probe` is not a
+/// missing story: it is a story that exists, in a project this command was not
+/// pointed at. Reporting it as absent sends the reader looking for the wrong
+/// thing, and the right answer — refuse, and name both — needs a way to say
+/// "this names somewhere else" that is distinct from "I do not recognize this".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoryRef {
+    /// A story in the selected project: `SH-5` under prefix `SH`, or a bare `5`.
+    Here(StoryNo),
+    /// A well-formed canonical id under a **different** prefix, carrying that
+    /// prefix exactly as it was typed.
+    ///
+    /// Whether any project actually holds that prefix is not settled here, and
+    /// deliberately: this type is pure, and the lookup costs a read that only a
+    /// command already on its way to refusing should pay.
+    Elsewhere { prefix: String },
+    /// Anything else — `007`, `1x`, `SH-`, `nonsense`, and a prefix in the
+    /// wrong case.
+    Unrecognized,
+}
+
+impl StoryRef {
+    /// Classifies one token typed in an id position, against the selected
+    /// project's `prefix`.
+    ///
+    /// Pure, and total: every string is one of the three arms. The number rule
+    /// is [`story_number`]'s, shared with [`StoryNo::parse_id`].
+    ///
+    /// # A prefix in the wrong case is `Unrecognized`, not `Elsewhere`
+    ///
+    /// `sh-1` under prefix `SH` could be read three ways and only one of them
+    /// is honest. It is not `Here`: accepting it would add a leniency nobody
+    /// asked for, and `parse_id` — the rule stored data goes through — refuses
+    /// it. It is emphatically not `Elsewhere`, because a stored prefix is
+    /// always uppercase, so the claimant lookup would find *the selected
+    /// project itself* and produce a refusal naming one project twice. What is
+    /// left is the truth: that is not an id this project recognizes, which is
+    /// exactly what it has always been.
+    #[must_use]
+    pub fn classify(prefix: &str, token: &str) -> Self {
+        if let Ok(number) = story_number(token) {
+            return Self::Here(StoryNo(number));
+        }
+        let Some((left, rest)) = token.split_once('-') else {
+            return Self::Unrecognized;
+        };
+        if left.eq_ignore_ascii_case(prefix) {
+            return match StoryNo::parse_id(prefix, token) {
+                Ok(no) => Self::Here(no),
+                Err(_) => Self::Unrecognized,
+            };
+        }
+        // A prefix shape this tool could have minted, and a number it could
+        // have minted — which together is what makes the token a *claim about
+        // another project* rather than a typo. `validate` is asked rather than
+        // re-implemented, so the two cannot come to disagree about what a
+        // prefix is.
+        if crate::domain::prefix::validate(left).is_ok() && story_number(rest).is_ok() {
+            return Self::Elsewhere {
+                prefix: left.to_string(),
+            };
+        }
+        Self::Unrecognized
     }
 }
 
@@ -231,5 +342,109 @@ mod tests {
     fn expected_seq_renders_for_conflict_messages() {
         assert_eq!(ExpectedSeq::Any.to_string(), "any");
         assert_eq!(ExpectedSeq::Exact(EventSeq::new(3)).to_string(), "seq 3");
+    }
+
+    #[test]
+    fn both_forms_of_the_same_story_classify_here() {
+        assert_eq!(
+            StoryRef::classify("SH", "5"),
+            StoryRef::Here(StoryNo::new(5))
+        );
+        assert_eq!(
+            StoryRef::classify("SH", "SH-5"),
+            StoryRef::Here(StoryNo::new(5))
+        );
+    }
+
+    #[test]
+    fn the_bare_form_and_the_canonical_form_share_one_number_rule() {
+        // The contract that makes `5` and `SH-5` the same story: whatever
+        // `parse_id` accepts after the separator, the bare form accepts, and
+        // whatever it refuses, the bare form refuses.
+        for number in ["1", "5", "42", "1000000"] {
+            assert_eq!(
+                StoryRef::classify("SH", number),
+                StoryRef::classify("SH", &format!("SH-{number}")),
+                "`{number}` and `SH-{number}` must classify the same"
+            );
+        }
+        for bad in ["0", "007", "-1", "+1", "1x", "", " 1", "1 ", "01"] {
+            assert_eq!(
+                StoryRef::classify("SH", bad),
+                StoryRef::Unrecognized,
+                "`{bad}` is not a story number"
+            );
+            assert_eq!(
+                StoryRef::classify("SH", &format!("SH-{bad}")),
+                StoryRef::Unrecognized,
+                "`SH-{bad}` is not a story id either"
+            );
+        }
+    }
+
+    #[test]
+    fn a_well_formed_id_under_another_prefix_names_somewhere_else() {
+        assert_eq!(
+            StoryRef::classify("SH", "OTH-1"),
+            StoryRef::Elsewhere {
+                prefix: "OTH".to_string()
+            }
+        );
+        // The prefix travels exactly as typed, because the refusal quotes it.
+        assert_eq!(
+            StoryRef::classify("SH", "oth-1"),
+            StoryRef::Elsewhere {
+                prefix: "oth".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_foreign_prefix_with_a_bad_number_is_merely_unrecognized() {
+        // Symmetry with `SH-007`: the number rule decides first, so a token
+        // nothing could have minted is a typo rather than a claim about
+        // another project.
+        for id in ["OTH-007", "OTH-0", "OTH-x", "OTH-"] {
+            assert_eq!(
+                StoryRef::classify("SH", id),
+                StoryRef::Unrecognized,
+                "`{id}` should not name another project"
+            );
+        }
+    }
+
+    #[test]
+    fn our_own_prefix_in_the_wrong_case_is_unrecognized() {
+        // Not `Here` — `parse_id` refuses it, and the two must agree. Not
+        // `Elsewhere` — a stored prefix is uppercase, so the claimant lookup
+        // would find the selected project itself and name it as the *other*
+        // project.
+        assert_eq!(StoryRef::classify("SH", "sh-1"), StoryRef::Unrecognized);
+        assert_eq!(StoryRef::classify("SH", "Sh-1"), StoryRef::Unrecognized);
+    }
+
+    #[test]
+    fn a_token_that_is_no_kind_of_id_is_unrecognized() {
+        for token in ["nonsense", "-", "-1x", "a-b", "SH", "1-2-3", "--force"] {
+            assert_eq!(
+                StoryRef::classify("SH", token),
+                StoryRef::Unrecognized,
+                "`{token}` should be unrecognized"
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_hyphen_splits_the_token() {
+        // `1-2-3` reads as prefix `1`, which is not a legal prefix, so it is
+        // unrecognized rather than story 2 of project `1`. Pinned because the
+        // alternative — splitting on the *last* hyphen — would make a project
+        // whose prefix contains a digit ambiguous.
+        assert_eq!(StoryRef::classify("SH", "1-2-3"), StoryRef::Unrecognized);
+        assert_eq!(
+            StoryRef::classify("SH", "AB-2-3"),
+            StoryRef::Unrecognized,
+            "the remainder after the first hyphen must be a whole number"
+        );
     }
 }

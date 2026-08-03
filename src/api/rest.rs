@@ -720,8 +720,16 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
 /// calls the service and reads the view itself, rather than dispatching twice —
 /// which is what this route used to do, and what cost it two acquisitions of a
 /// lock that no longer exists.
+///
+/// Being the one route that skips [`dispatch`] makes it the one route that
+/// would also skip the story-id canonicalization every other door gets there
+/// (SH-118), so it asks for the same expansion explicitly. That call is the
+/// price of the shortcut above, and it is written here rather than hidden
+/// inside `set_fields` because the rule belongs to the *door*, not to the
+/// service.
 fn route_patch_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
+        let id = &crate::invoke::story_ids::canonicalize_one(ctx, id)?;
         let obj = parse_json_object(body)?;
         let edits = FieldEdits {
             title: get_str(&obj, "title").map(str::to_string),

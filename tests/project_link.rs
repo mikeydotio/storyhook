@@ -32,7 +32,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use storyhook_test_support::{TestEnv, scratch_dir_named};
+use storyhook_test_support::{TestEnv, scratch_dir_named, slug_at};
 
 /// The URL a fixture registers. Never fetched — every assertion here is about
 /// what the store records, and a reachable remote would make these tests
@@ -56,23 +56,6 @@ fn project(env: &TestEnv) -> (tempfile::TempDir, String) {
         .success();
     let slug = slug_at(env, dir.path());
     (dir, slug)
-}
-
-/// The slug `story project list` gives the project rooted at `root`.
-fn slug_at(env: &TestEnv, root: &Path) -> String {
-    let out = env
-        .story(root)
-        .args(["project", "list"])
-        .output()
-        .expect("running `story project list`");
-    let listing = String::from_utf8_lossy(&out.stdout);
-    let wanted = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    listing
-        .lines()
-        .find(|line| line.contains(&*wanted.to_string_lossy()))
-        .and_then(|line| line.split_whitespace().next())
-        .unwrap_or_else(|| panic!("no `project list` row for {}:\n{listing}", wanted.display()))
-        .to_string()
 }
 
 /// `story --project <slug> project <args…>`, run from `cwd`.
