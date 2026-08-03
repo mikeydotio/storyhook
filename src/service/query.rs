@@ -11,26 +11,35 @@
 //! # Ordering is a compatibility contract
 //!
 //! Every ordering in this file reproduces the legacy one exactly, **including
-//! the two known defects the golden corpus freezes**:
+//! a known defect the golden corpus freezes**:
 //!
 //! * `list`, `search`, `epic list` and `phase show` sort by story *number*;
-//!   `graph`, `handoff`, `context` and `summary`'s ready list sort
-//!   *lexicographically* (`SH-1, SH-10, SH-11, SH-2, …`), because they iterate
-//!   a map keyed by the id string.
+//!   `graph` and `handoff` sort *lexicographically* (`SH-1, SH-10, SH-11,
+//!   SH-2, …`), because they iterate a map keyed by the id string. That split
+//!   is SH-64, still open.
 //! * `handoff` iterates open stories then archived ones, each in id order,
 //!   because the legacy path concatenated a directory listing with a
 //!   `ORDER BY id ASC` query.
 //!
+//! `next`, `summary`, `report` and `context`'s ready lists are **not** part of
+//! that contract: they rank by [`domain::ready_order`](crate::domain::ready_order)
+//! (priority, then story number), a total order the legacy comparator did not
+//! have (SH-63). Reproducing a defect deliberately, as the two above still
+//! are, is different from reproducing one that has no defined answer to
+//! reproduce — two stories tying on both of the legacy keys got whichever
+//! order a `BTreeMap` happened to iterate them in, which was never a contract
+//! anyone could rely on.
+//!
 //! Reproducing a defect is deliberate. The golden corpus pins the current
 //! bytes; normalising an ordering here would move those bytes in a wave whose
 //! entire claim is that it moves none. The wave that flips the default owns
-//! deciding which of these becomes numeric.
+//! deciding which of the remaining two becomes numeric.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::GraphMode;
 use crate::domain::{
-    DependencyGraph, Priority, StorySnapshot, SuperState, compute_integrity_issues,
+    self, DependencyGraph, Priority, StorySnapshot, SuperState, compute_integrity_issues,
     compute_progress, derive_family_relationships, has_children, is_ready, last_activity_type,
     parse_duration,
 };
@@ -100,7 +109,9 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// Every story in the project, keyed by id.
     ///
     /// A `BTreeMap`, so iterating it is **lexicographic** by id — which is
-    /// where `graph`, `context`, `summary` and `doctor` get their ordering.
+    /// where `graph`, `doctor`, and every part of `context` and `summary`
+    /// *except their ready list* get their ordering. The ready list is
+    /// [`domain::ready_order`] instead (SH-63).
     pub fn story_map(&self) -> Result<BTreeMap<String, StorySnapshot>, AppError> {
         story_map(self.tx, self.project)
     }
@@ -258,10 +269,9 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// `story next` — the ready stories a worker should pick up, best first.
     ///
     /// Leaf stories only: a parent whose children are ready is not itself
-    /// work. Sorted by `priority ASC, created_at ASC` — the legacy
-    /// comparator, whose second key has one-second precision and therefore
-    /// ties. Ties fall back to the order this list arrived in, which is
-    /// lexicographic by id.
+    /// work. Sorted by [`domain::ready_order`]: priority, then story number —
+    /// a total order, so asking twice with nothing changed in between always
+    /// returns the same list (SH-63).
     pub fn next(&self, count: usize, phase: Option<&str>) -> Result<Vec<StoryView>, AppError> {
         let views = self.story_views(false)?;
         let stories = view_map(&views);
@@ -273,7 +283,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             let label = format!("phase:{phase}");
             ready.retain(|view| view.story.labels.contains(&label));
         }
-        sort_by_priority_then_age(&mut ready);
+        sort_ready(&mut ready);
         ready.truncate(count);
         Ok(ready)
     }
@@ -288,7 +298,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             .into_iter()
             .filter(|view| is_ready(&view.story, &stories))
             .collect();
-        sort_by_priority_then_age(&mut ready);
+        sort_ready(&mut ready);
         summary.ready_count = ready.len();
         ready.truncate(READY_PREVIEW);
         summary.ready_stories = ready;
@@ -337,7 +347,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             .into_iter()
             .filter(|view| ready_ids.contains(&view.story.id))
             .collect();
-        sort_by_priority_then_age(&mut ready);
+        sort_ready(&mut ready);
 
         let mut summary = data.summary;
         summary.ready_count = ready.len();
@@ -463,7 +473,7 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             .iter()
             .filter(|view| is_ready(&view.story, &stories))
             .collect();
-        ready.sort_by(|a, b| priority_then_age(&a.story, &b.story));
+        ready.sort_by(|a, b| domain::ready_order(&a.story, &b.story));
         let ready_count = ready.len();
         ready.truncate(READY_PREVIEW);
 
@@ -801,18 +811,10 @@ pub fn story_view(
 ///
 /// `SH-10` sorts after `SH-2` here and before it in a string comparison, which
 /// is the difference between a list a human reads and one they re-sort in
-/// their head.
+/// their head. [`domain::story_number`] is the same parser `ready_order` uses
+/// for its own tiebreak — one story-number parser, not two.
 pub fn sort_story_views(views: &mut [StoryView]) {
-    views.sort_by_key(|view| numeric_story_id(&view.story.id));
-}
-
-/// The number half of a story id, or `u64::MAX` for an id that has none — so
-/// an unparseable id sorts last rather than first.
-fn numeric_story_id(id: &str) -> u64 {
-    id.split('-')
-        .nth(1)
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(u64::MAX)
+    views.sort_by_key(|view| domain::story_number(&view.story.id));
 }
 
 /// A view carrying only the snapshot — what `search` returns.
@@ -840,22 +842,10 @@ fn type_label(story: &StorySnapshot) -> String {
     story.story_type.as_deref().unwrap_or("Default").to_string()
 }
 
-/// `priority ASC, created_at ASC` — the legacy work-ordering comparator.
-///
-/// Not a total order: `created_at` has second precision, so two stories
-/// created in the same second at the same priority tie, and the caller's
-/// pre-existing order decides. That nondeterminism is a known production
-/// defect, reproduced here rather than fixed because the golden corpus freezes
-/// its output.
-fn priority_then_age(a: &StorySnapshot, b: &StorySnapshot) -> std::cmp::Ordering {
-    a.priority
-        .cmp(&b.priority)
-        .then_with(|| a.created_at.cmp(&b.created_at))
-}
-
-/// [`priority_then_age`] over a list of views.
-fn sort_by_priority_then_age(views: &mut [StoryView]) {
-    views.sort_by(|a, b| priority_then_age(&a.story, &b.story));
+/// [`domain::ready_order`] over a list of views — the ready-list ordering
+/// shared by `next`, `summary`, `report` and `context`.
+fn sort_ready(views: &mut [StoryView]) {
+    views.sort_by(|a, b| domain::ready_order(&a.story, &b.story));
 }
 
 /// The counting half of `summary` and `report`, which agree on every field.

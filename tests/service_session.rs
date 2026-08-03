@@ -94,6 +94,30 @@ fn the_next_line_reports_a_priority_when_there_is_one() {
     );
 }
 
+/// The `Next:` line has to name whatever `story next` would offer first, and
+/// the two used to share a comparator by copy-paste rather than by code —
+/// `highest_priority`'s own doc comment said so. Two `high` stories tie on
+/// priority (the fixture's clock is fixed, so they tie on the old
+/// `created_at` key too), straddling the `SH-9`/`SH-10` boundary where a
+/// lexicographic fallback (`"SH-10" < "SH-9"` as strings) and a numeric one
+/// visibly disagree (SH-63).
+#[test]
+fn the_next_line_breaks_a_tie_by_story_number_not_by_id_string() {
+    let fixture = ServiceFixture::new();
+    for index in 1..=8 {
+        create(&fixture, &format!("Filler {index}"), None);
+    }
+    let lower_numbered = create(&fixture, "Urgent A", Some("high")); // SH-9
+    let _higher_numbered = create(&fixture, "Urgent B", Some("high")); // SH-10
+
+    let context = context(&fixture);
+    assert!(
+        context.contains(&format!("Next: {lower_numbered} — Urgent A (high)")),
+        "the lower-numbered tied story must win, not the one whose id string \
+         sorts first (`SH-10` < `SH-9` as text): {context}"
+    );
+}
+
 #[test]
 fn a_parent_with_children_is_never_the_next_story() {
     let fixture = ServiceFixture::new();

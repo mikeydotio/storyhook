@@ -150,12 +150,13 @@ gone: it named 20 stories and the backlog is now **51 open**, because this run
 and its neighbours filed 20 more while working (SH-133 … SH-168). Ordering by a
 list written before any of them existed was the thing to fix.
 
-**The graph has all but drained.** Two `blocked-by` edges are left with an open
-story on the far end — SH-50 ← SH-120, and SH-64 ← SH-63 — so almost everything
-below is ready and the order is a judgement rather than a topological sort.
-`story graph` is the check; re-run it rather than trusting this paragraph.
+**The graph has all but drained.** One `blocked-by` edge is left with an open
+story on the far end — SH-50 ← SH-120 — so almost everything below is ready
+and the order is a judgement rather than a topological sort. `story graph` is
+the check; re-run it rather than trusting this paragraph. (SH-64 ← SH-63 was
+the other one; SH-63 is done, below.)
 
-**Three stories are held by other sessions** and are marked ⚠ below. They are
+**Two stories are held by other sessions** and are marked ⚠ below. They are
 in-progress and were not moved by this loop: leave them alone, and skip to the
 next unheld line.
 
@@ -186,7 +187,6 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [ ] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
 - [ ] **SH-145** — the dashboard does not live-update a state change until reload
 - [ ] **SH-68** — `sync.mode = auto` is accepted and does nothing
-- ⚠ **SH-63** — `story next` is nondeterministic · *in-progress elsewhere; gates SH-64*
 
 ### Medium
 
@@ -225,13 +225,13 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [ ] **SH-127** — remove the status flash
 - [ ] **SH-128** — column sort options
 - [ ] **SH-168** — do not show the green ready status labels
-- [ ] **SH-64** — story-id ordering · *blocked by SH-63*
+- [ ] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
 
 ### What was on the old list and is now done
 
 SH-129, SH-124, SH-62, SH-125, SH-130, SH-132, SH-131, SH-115, SH-94, SH-110,
-SH-114, SH-116, SH-117, SH-152, SH-151, SH-119, SH-121, SH-163, SH-118 — 19
-stories, every one with a `## Log` entry below.
+SH-114, SH-116, SH-117, SH-152, SH-151, SH-119, SH-121, SH-163, SH-118, SH-63 —
+20 stories, every one with a `## Log` entry below.
 
 ---
 
@@ -3195,6 +3195,63 @@ where it exited 3, and `story github-sync 5` now reaches the store instead of
 printing a usage line.
 
 **Council:** yes — unanimous, round 1. `.council/sh118-bare-integer-ids/DECISION.md`.
+
+### SH-63 — done
+
+**Outcome:** merged. `story next`, `summary`, `report`, `context` and
+`session-start`'s `Next:` line rank ready work by one comparator instead of
+three copies of a variant of it, and the dashboard's Ready panel — a fourth
+copy nobody had asked about — is folded in with it.
+
+**The story's own framing was half stale, and worth restating on the story
+before building anything.** SH-63 was filed against the legacy file-per-story
+reader in W0.3, where the ready-list fallback really was nondeterministic
+run to run (~1 in 3, per its own evidence section) because the fallback was a
+directory listing. The store replaced that reader in W1: `story_map` builds a
+`BTreeMap<String, StorySnapshot>`, so the fallback became deterministic —
+lexicographic by id — without anyone deciding it should be. Two tests already
+pinned that lexicographic answer and passed. So the flake this story was
+filed against was already gone; what was left is that the tie was decided by
+an incidental property of a map rather than by a stated rule, and the rule it
+accidentally implemented was the one SH-64 exists to remove.
+
+**The store had already answered the question.** `StorySort::Priority` —
+`ORDER BY priority_rank, story_no` — is a total order and its own conformance
+test says so:
+`the_priority_order_is_total_so_identical_input_gives_identical_output`. Three
+service-layer comparators never adopted it: `query.rs::priority_then_age`
+(priority, `created_at`), `session.rs::highest_priority` (a literal copy,
+whose own doc comment predicted this fix), and
+`dashboard.rs::ready_stories` (priority *alone* — no second key at all, the
+worst of the four). `domain::ready_order` (priority, then story number, id
+string as a last-resort tiebreak) replaces all three call sites.
+`created_at` is dropped entirely rather than kept as a third key: every write
+path stamps a story's number and its `created_at` together, so the two never
+disagree in any state the system can produce, and carrying it forward would
+have been dead weight with no behaviour riding on it.
+
+**Landed as five behaviour commits plus one refactor, two-hats clean:** the
+query-layer fix and its tests; the session-service fix, confirmed red against
+the pre-fix comparator before reapplying it; the dashboard fix, same
+red-before-green discipline; the golden corpus's 1.1s tie-avoidance sleep
+deleted (its own comment named this story as the one to delete it) with the
+27-snapshot corpus unmoved under `INSTA_UPDATE=no`; a pure-move refactor
+folding `query.rs`'s private `numeric_story_id` into the promoted
+`domain::story_number` so there is one parser, not two; and a one-line
+doc-comment correction on `StorySort::Priority`, which used to read as if the
+nondeterminism it was contrasting itself against were still open.
+
+**Totality wasn't just asserted, it was property-tested.** A proptest over
+`domain::ready_order` generates an arbitrary priority assignment for five
+same-instant stories, permutes them into two different arrival orders via a
+tag-and-sort trick (no dedicated permutation strategy needed), sorts both,
+and asserts the two answers agree — the actual shape of the guarantee ("ask
+twice, get the same list"), not one fixed example of it.
+
+**SH-64 — the lexicographic/numeric id-order split — is next**, and now
+partially in scope on its own: `handoff` and `graph` still sort
+lexicographically, deliberately untouched here and pinned by their own
+still-passing tests.
 
 ### SH-143 — done
 
