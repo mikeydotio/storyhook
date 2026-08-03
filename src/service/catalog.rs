@@ -6,32 +6,32 @@
 //! `.storyhook/` had since been deleted was a case the dashboard had to survive.
 //!
 //! In the store there is no second file, and there is no registration step
-//! either. A project *is* a catalog entry and its checkouts are rows beside it,
-//! so `story project new` puts a project here by creating it and
-//! `story project delete` removes it by deleting it. What is left in this
-//! module is everything that is *about* the catalog rather than about a
-//! project's existence:
+//! either. A project *is* a catalog entry, so `story project new` puts a project
+//! here by creating it and `story project delete` removes it by deleting it.
+//! What is left in this module is everything that is *about* the catalog rather
+//! than about a project's existence:
 //!
 //! * [`CatalogService::all`] and [`CatalogService::list`] report it — with and
 //!   without the projects this machine has no checkout of,
 //! * [`CatalogService::orphaned`] and [`CatalogService::deregister_orphaned`]
-//!   are `story doctor`'s half: registrations pointing at nothing.
+//!   are `story doctor`'s half: a linked checkout that is not there any more.
 //!
-//! `relink` used to live here too, as the answer when a checkout moved rather
-//! than went away. It is gone: `story project link checkout` does the same job
-//! without needing a pointer file in the directory it is pointed at, which is
-//! precisely what a moved, renamed or freshly cloned checkout may not have.
-//! Keeping both would be two answers to one question in the module SH-119
-//! rewrites next.
+//! Two things used to live here and are gone. `relink` was the answer when a
+//! checkout moved rather than went away; `story project link checkout` does the
+//! same job without needing a pointer file in the directory it is pointed at,
+//! which is precisely what a moved, renamed or freshly cloned checkout may not
+//! have. And `adopt_legacy_registry` re-read `~/.storyhook/registry.toml` on
+//! every store open, recording each path it named against the project it
+//! belonged to — into the resolution index SH-119 deleted. With nowhere to
+//! write, it had nothing left to do; the file it read is still on disk,
+//! untouched, exactly as it always promised to leave it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::AppError;
 use crate::store::{
     PathKind, ProjectId, ProjectPathRecord, ProjectRecord, ReadOps, Store, WriteOps,
 };
-
-use super::project::{path_kind, read_pointer};
 
 /// One row of `story project list`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,112 +198,4 @@ fn entry(project: ProjectRecord, path: Option<PathBuf>) -> CatalogEntry {
         name: project.name,
         path,
     }
-}
-
-/// What adopting `~/.storyhook/registry.toml` did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RegistryAdoption {
-    /// Checkouts that resolved to a project and are now recorded against it.
-    pub adopted: Vec<PathBuf>,
-    /// Checkouts the store does not know — repositories still tracked by a
-    /// `.storyhook/` directory that nobody has run `story migrate` on.
-    pub unmigrated: Vec<PathBuf>,
-}
-
-/// Adopts the legacy dashboard registry's checkouts into the store's catalog.
-///
-/// The registry is the last piece of storyhook's global state that lives
-/// outside the store: a list of repositories the dashboard should show. In the
-/// store there is no such list — a project *is* a catalog entry — so adopting it
-/// means recording each registered path against the project it belongs to.
-///
-/// Three properties, each of them deliberate:
-///
-/// * **The file is never written and never deleted.** Nothing reads it any more
-///   — the daemon serves the store — but it is the only copy of a list a user
-///   built by hand, and a rollback has to find it exactly as it was. A
-///   `MIGRATED.txt` marker is dropped beside it saying so, because a directory
-///   full of live-looking state that nothing reads is its own kind of trap.
-/// * **Idempotent**, so it can run on every invocation without a marker file to
-///   forget to write. Recording a checkout is an upsert, and a path already
-///   recorded is left alone.
-/// * **A repository the store has never heard of is reported, not created.**
-///   Minting a project row for an unmigrated `.storyhook/` tree would produce
-///   an empty project that looks like a lost one; the honest answer is that it
-///   is waiting for `story migrate`.
-///
-/// `path` is a parameter rather than [`crate::paths::legacy_global_dir`] read
-/// here, because an in-process test cannot redirect `HOME` for itself.
-pub fn adopt_legacy_registry<S: Store>(
-    store: &S,
-    path: &Path,
-) -> Result<RegistryAdoption, AppError> {
-    /// The two fields of a `[[repo]]` table this needs. Read with its own
-    /// minimal shape rather than through `crate::registry`, which the daemon
-    /// wave deletes — adoption has to outlive the thing it adopts.
-    #[derive(serde::Deserialize)]
-    struct RegistryFile {
-        #[serde(default, rename = "repo")]
-        repos: Vec<RegisteredRepo>,
-    }
-    #[derive(serde::Deserialize)]
-    struct RegisteredRepo {
-        path: PathBuf,
-    }
-
-    let mut adoption = RegistryAdoption::default();
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return Ok(adoption);
-    };
-    // A registry this build cannot parse is not a reason to fail every command:
-    // it is a file the dashboard owns, and the store works without it.
-    let Ok(file) = toml::from_str::<RegistryFile>(&raw) else {
-        return Ok(adoption);
-    };
-
-    for repo in file.repos {
-        let canonical = repo
-            .path
-            .canonicalize()
-            .unwrap_or_else(|_| repo.path.clone());
-        let pointer = read_pointer(&canonical).unwrap_or(None);
-        let resolved = store.read(|tx| {
-            if let Some(pointer) = &pointer
-                && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
-            {
-                return Ok(Some(project.id));
-            }
-            Ok(tx.project_by_path(&canonical)?.map(|project| project.id))
-        })?;
-        match resolved {
-            Some(project) => {
-                store.write(|tx| {
-                    tx.touch_project_path(project, &canonical, path_kind(&canonical))
-                })?;
-                adoption.adopted.push(canonical);
-            }
-            None => adoption.unmigrated.push(canonical),
-        }
-    }
-    mark_retired(path);
-    Ok(adoption)
-}
-
-/// Leaves a note beside a legacy registry saying that nothing reads it.
-///
-/// Written once, never overwritten, and failure is ignored: the marker is a
-/// courtesy to whoever finds the directory, and a read-only home directory is
-/// not a reason to fail a command that has already done its work.
-fn mark_retired(registry_path: &Path) {
-    let Some(dir) = registry_path.parent() else {
-        return;
-    };
-    let marker = dir.join("MIGRATED.txt");
-    if marker.exists() {
-        return;
-    }
-    let _ = std::fs::write(
-        marker,
-        "storyhook no longer reads this directory.\n\n         Story data, the project catalog and the daemon's runtime files now live in\n         storyhook's own store — see `story help storage`. `registry.toml` has been\n         read once and its repositories recorded against the projects they belong to.\n\n         Nothing here is deleted, and nothing here is written to. You may remove this\n         directory yourself once you are satisfied you no longer want what is in it.\n",
-    );
 }
