@@ -24,19 +24,22 @@ story new "Fix login redirect" --json
 
 ## Project Setup
 
-### `story project init [PATH] [--prefix <PREFIX>] [--name <NAME>]`
+### `story project new --prefix <PREFIX> [--name <NAME>] [--attach <PATH> | --no-attach] [--no-agents-md]`
 
-Initialize a new storyhook project. `PATH` defaults to the current directory; a relative one resolves against the directory you are standing in.
+Create a new storyhook project.
 
+- **`--prefix` is required for you.** With *no* flags at a terminal the command asks six questions instead; any flag at all — or `--json`, or no terminal, which is every agent — makes it fully non-interactive, and then a missing `--prefix` is a usage error. It is minted into every story id the project ever creates and cannot be changed afterwards, so it is never defaulted.
+- **No positional.** `--attach` names the checkout and defaults to the directory you are standing in; a relative path resolves against that directory. `--no-attach` writes the store record and touches no directory at all — the shape for a project whose repository is on another machine.
 - Creates the project in the store, writes `.storyhook.toml` (commit it — a clone needs it to know which project it is), generates an `AGENTS.md`, and seeds the states every project must have: `todo` (OPEN), `in-progress` (OPEN, `role active`), `blocked` (OPEN), `done` (CLOSED)
-- Default prefix is **`SH`** — hard-coded, not derived from the directory name. Pass `--prefix` for anything else.
 - **Use when**: starting a new project or adding storyhook to an existing repo
 - **Idempotent**: run in a checkout that already belongs to a project, it re-registers the checkout and leaves the catalog and the prefix alone
-- **Do not use when**: the repository still keeps its stories in a `.storyhook/` directory — `init` refuses and points at `story migrate`, because initializing would mint an empty second project beside data you still have
+- **Do not use when**: the repository still keeps its stories in a `.storyhook/` directory — `new` refuses and points at `story migrate`, because creating one would mint an empty second project beside data you still have
 
 ```bash
-story project init                 # stories become SH-1, SH-2, ...
-story project init --prefix HP     # stories become HP-1, HP-2, ...
+story project new --prefix SH      # stories become SH-1, SH-2, ...
+story project new --prefix HP      # stories become HP-1, HP-2, ...
+story project new --prefix TH --attach ~/code/thing
+story project new --prefix OFF --no-attach --name "on another machine"
 ```
 
 ### `story project list`
@@ -57,14 +60,14 @@ Where a project's repo-side work runs. **At most one per project**, and **never*
 
 > **Naming hazard.** `story link` / `story unlink` are aliases for `story relate` / `story unrelate` and join one **story** to another. `story project link` / `unlink` are about **git**. Same word, unrelated subjects.
 
-### `story project deinit [PATH|SLUG] [--force]`
+### `story project delete [--force]`
 
-**Permanently deletes** the project, every story, every event, every checkout registration, and the files `init` generated. There is no undo.
+**Permanently deletes** the project, every story, every event, every checkout registration and every registered origin. There is no undo.
 
 - Always asks first; the confirmation is the project's slug typed in full
 - `--force` skips the question, and is **required** under `--json` or with no terminal to ask at
-- An `AGENTS.md` you have edited is kept, not deleted, and reported
-- Name a `SLUG` to reach a project whose checkout is gone
+- **No positional.** The project is named the ordinary way: `--project <slug>`, `$STORYHOOK_PROJECT`, or a working directory that already resolves — which is also how a project whose checkout is gone is reached
+- **Touches no files.** The `.storyhook.toml` and `AGENTS.md` in every checkout are left where they are; the warning lists those directories so you know which ones now claim an identity that does not exist
 
 ### `story member add "<name <email>>"` / `story member add -g <github-handle>`
 

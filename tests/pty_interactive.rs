@@ -9,9 +9,10 @@
 //! `openpty` between the test and the binary, so `IsTerminal` answers true and
 //! both branches run.
 //!
-//! The confirmation in particular has guarded every `deinit` in this
-//! repository's history without a single test ever having typed a token into
-//! it. Two of the five tests here are about that.
+//! The confirmation in particular has guarded every project destruction in this
+//! repository's history — `deinit`'s, and now `delete`'s — without a single
+//! test ever having typed a token into it. Two of the five tests here are about
+//! that.
 //!
 //! # Why this file cannot wedge the gate
 //!
@@ -209,7 +210,7 @@ fn the_typed_slug_confirmation_destroys_on_the_correct_token() {
     let dir = bare_dir(&env, "doomed");
     let slug = project_at(&env, &dir);
 
-    let mut pty = pty("confirm-yes", &env, &dir, &["project", "deinit"]);
+    let mut pty = pty("confirm-yes", &env, &dir, &["project", "delete"]);
     pty.expect(&format!("Type `{slug}` to confirm"));
     pty.send_line(&slug);
     assert!(pty.wait().success(), "{}", pty.transcript());
@@ -234,7 +235,7 @@ fn a_wrong_token_cancels_and_destroys_nothing() {
         .assert()
         .success();
 
-    let mut pty = pty("confirm-no", &env, &dir, &["project", "deinit"]);
+    let mut pty = pty("confirm-no", &env, &dir, &["project", "delete"]);
     pty.expect(&format!("Type `{slug}` to confirm"));
     pty.send_line("not-the-slug");
     pty.expect("cancelled");

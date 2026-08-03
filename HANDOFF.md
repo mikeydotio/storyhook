@@ -1,141 +1,72 @@
-# Handoff — SH-117 PR 2: the sweep, `project delete`, and the retirement
+# Handoff — SH-119: C7, the subtraction
 
-*(Supersedes the part-2 handoff. **Part 2's PR 1 is merged as #103** and the
-story is still open and still `in-progress`.)*
-
-The run itself is described by
+**SH-117 is done and merged.** The run itself is described by
 [`HARDENING_PROGRESS.md`](HARDENING_PROGRESS.md) — read its **START HERE**
-section first. That is the process; this file is only what remains.
+section first. That is the process; this file is only what the next story
+inherits.
 
-## Do not re-run the council
+## Pick up SH-119, and confirm it is ready
 
-`.council/sh117-project-verb-surface/DECISION.md` is the implementable
-document: 22 numbered decisions, a commit plan, a test plan and a disarm
-matrix. The verdict is also a comment on SH-117. Build it as written; deviate
-only with a recorded reason, as PR 1 did twice.
+`story next` should lead with **SH-119** now that SH-117 has closed. It is the
+large, load-bearing subtraction: `project_paths`, the resolution walk, and
+identity out of `.storyhook.toml`.
 
-## What is left: PR2/c11 through c14, in the council's own order
+## Four things SH-119's description asks for are already gone
 
-### c11 — `refactor(test): sweep project init to project new --prefix SH`
+SH-117 removed them because `-D warnings` would not let them survive losing
+their callers. Do not go looking:
 
-**No `src/` change may appear in this commit's diff.** That is the check D22
-makes the reviewer run, and it is why the sweep is separate: a 46-file text
-substitution and a behaviour change must not share a commit, or a bisect over
-the retirement cannot distinguish "the rename is wrong" from "the new semantics
-are wrong".
+| SH-119 says delete | actually removed in |
+|---|---|
+| `story relink` — the verb, `Invocation::Relink`, `parse_relink`, `CatalogService::relink` | SH-117 PR 2, c14 (a redirect naming `story project link checkout` is what is left) |
+| `deinit`'s repository-file cleanup — `ProjectService::repository_roots`, `agents_md_is_pristine` | SH-117 PR 2, c12 |
+| `DeinitPlan::{files, kept}` | SH-117 PR 2, c12 |
+| `src/cli.rs:133,338,705,1376` line references for `relink` | stale — the file has moved a long way since |
 
-Three ordered `re.sub` substitutions over `tests/*.rs`, and the order matters —
-each later one must not re-match what an earlier one produced:
+`projects.checkout_path` — the column SH-119's description says replaces
+`project_paths` — **already exists** (migration 0007, SH-117 PR 1) and already
+has a production reader (`story project list` prints it). What is left for
+SH-119 is deleting the table and the walk, not creating the column.
 
-```python
-# 1. a prefix is already there: only the verb changes.
-re.sub(r'("project",\s*)"init"(\s*,\s*"--prefix")', r'\1"new"\2', text)
-# 2. a bare word after the verb is the old positional path. Five sites.
-re.sub(r'"project",(\s*)"init",(\s*)("(?!--)[^"]*")',
-       r'"project",\1"new",\2"--prefix",\2"SH",\2"--attach",\2\3', text)
-# 3. everything else gains the now-required prefix.
-re.sub(r'"project",(\s*)"init"', r'"project",\1"new",\1"--prefix",\1"SH"', text)
-```
+## What SH-117 deliberately did **not** touch, and why it matters to you
 
-Plus `crates/storyhook-test-support/src/project.rs:159`, where `ProjectBuilder`
-builds `vec!["project", "init"]` and must become `new` with `self.prefix` or
-`SH` — the prefix is no longer optional. Plus
-`plugin/claude-code/tests/lib.sh:92`.
+**D21: SH-117 changed nothing about project resolution.** `resolve_project`,
+`ancestors`, `resolve_at`, `pointer_at_or_above` and every `project_paths` read
+work exactly as they did. `checkout_path` is written and read and *never*
+consulted for resolution. Two tests hold that line, and both go red if
+`link checkout` is ever re-implemented as a `project_paths` write:
+`tests/project_link.rs::linking_a_checkout_records_it_without_making_it_resolve`
+(a linked directory still refuses to resolve) and
+`tests/project_path_hygiene.rs::link_checkout_does_not_read_the_pointer_file_it_is_pointed_at`
+(a directory carrying another project's pointer still answers for *that*
+project after being linked to this one).
 
-**Measured surface:** 285 Rust occurrences of the two-word form, 240 of them the
-bare `.args(["project", "init"])`.
+That rule exists so SH-121's fixture audit stays out of SH-117. It is now
+**your** charter: SH-119 is the story that moves resolution, and SH-121 is
+blocked on you.
 
-**Excluded by name**, because their assertions invert and they land in c12/c14:
-`tests/init_command.rs` (whole file, renamed), `tests/project_command.rs`,
-`tests/project_deinit.rs`, the three `relink_*` tests in
-`tests/project_path_hygiene.rs`, one needle in `tests/project_selection.rs:118`,
-`compact_reference_contains_critical_commands`, and two entries in
-`src/cli.rs`'s `a_declared_flag_is_left_alone`. `tests/project_new.rs` and
-`tests/temp_project_refusal.rs` are already on the new verb.
+**One conformance arm is a trap for you specifically.** Two distinct projects
+may hold the same `checkout_path`, and an arm in `src/store/conformance.rs`
+asserts it. That is deliberate — a cross-project uniqueness constraint
+forecloses the two-projects-in-one-repository case SH-151 exists to resolve. If
+collapsing `project_paths` into the column tempts you to re-add the unique index
+`project_paths` had, that arm is the argument against it.
 
-**After the commit:** `grep -rn 'project", *"init' tests crates plugin` returns
-zero, and `git show --stat` contains no `src/` path.
+## Three things that bit during SH-117
 
-### c12 — `feat(cli)!: project delete replaces deinit and touches no filesystem`
-
-D6. `story project delete [--force]`, **no positional** — the target is named by
-the ordinary SH-116 selector and, when none answers, refused through
-`no_project_refusal`. It reads and writes no filesystem, which deletes
-`repository_roots` (private, one caller at `src/service/project.rs:857`, called
-at `:739`), `agents_md_is_pristine`, and `DeinitPlan::{files, kept}` — `-D
-warnings` will not let them survive losing their only caller.
-
-`forced()`'s inner match is already exhaustive, so a missing `Delete` arm is a
-compile error rather than an infinite confirmation loop. Keep the two-step round
-trip and the typed-slug token verbatim.
-
-D20's coverage must exist before it ships: (b) the checkout's `.storyhook.toml`
-and `AGENTS.md` survive a delete; (c) after a delete `project_by_remote` answers
-`None` and a second project may claim the same origin — **the only test in the
-suite that would notice `ON DELETE CASCADE` on `project_remotes` regressing**;
-(d) deleting by selector from an unrelated directory leaves that checkout's
-files intact; (e) `checkout_path` is cleared with the row.
-
-### c13 — `refactor: rename DeinitPlan to DeletePlan and friends`
-
-Pure rename, no behaviour: `ConfirmationPlan::Deinit` → `Delete`,
-`DeinitOutcome` → `DeleteOutcome`. **`ConfirmationPlan` is internally tagged on
-purpose** — the dashboard reads `err.body.plan.slug` out of a 409 — so
-`a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads` is the test
-that notices if the rename changes the wire shape.
-
-### c14 — `feat(cli)!: retire init, deinit and relink behind redirects`
-
-D10, D11, D14, D15, D16. `init` and `deinit` become redirect `AppError::Usage`
-errors naming their replacement, listed nowhere, removed at 3.0.0. `relink` —
-the verb, `Invocation::Relink`, `parse_relink` and `CatalogService::relink`
-including its pointer read — is **deleted**, with a redirect naming
-`story project link checkout`; its three tests become capability tests against
-`link checkout` rather than being removed.
-
-`POST /api/repos` becomes `ProjectAction::New`, and **`prefix` becomes
-required** — absent is a 400. `buildInitForm()` grows a required prefix input
-with a client-side derivation; `domain::prefix::validate` runs server-side, which
-is what makes the untestable JS safe to ship.
-
-D15's string sweep is an **enumerated list, not grep-and-hope**:
-`no_project_refusal`, the empty-catalog message, the unmigrated-clone message,
-`orphan_advice`, `deregistered_message`, `src/api/rest.rs:310`, `PROJECT_USAGE`,
-`HELP_TEXT`, four help topics, `compact_reference`, `README.md`, the CLI
-reference, `SKILL.md` (**which must gain `--prefix`, because an agent has no
-terminal**) and `plugin/claude-code/tests/lib.sh:92`.
-
-## Measurements you do not have to retake
-
-- **`compact_reference()`'s budget is fine.** D14's exact replacement is **six
-  characters shorter** than the two lines it replaces, so the 3000-char headroom
-  goes from 14 to 20. The sibling needle test moves from `story project init` to
-  `story project new`.
-- **The ~130 golden snapshots are not exposed**: no `.snap` names `project
-  init`, `deinit` or `relink`.
-- **No `project list` parsing helper breaks** when every fixture project gains a
-  `checkout` line: all three helpers do `lines().find(|l| l.contains(path))` and
-  the project row precedes its own checkout line, so `find` still returns the
-  row.
-- `story link` / `story unlink` are **top-level aliases for `relate` /
-  `unrelate`** and have nothing to do with projects. D16 requires a
-  `Not to be confused with:` block in `story help project`, `story help relate`
-  and the CLI reference.
-
-## Three things that bit during PR 1
-
-- **`git checkout <path>` is destructive against uncommitted work.** It cost
-  forty lines of `main.rs` that had not been committed yet. Use `git stash`, or
-  reverse the edit.
+- **A background `make test` reported "exit code 0" while `make` exited 2.**
+  The command was `(make test > log; echo "MAKE_TEST_EXIT=$?" >> log)`, so the
+  subshell's status — and therefore the harness's completion notification — was
+  the *echo's*. The `MAKE_TEST_EXIT=` line in the log is what caught it. Read
+  the log, never the notification. This is the third appearance of this trap in
+  this run.
 - **`cargo fmt` after committing leaves earlier commits failing the gate.** Run
-  `cargo fmt --all` *before* each commit, or rebuild the commits — a fix-up
-  commit leaves bisect broken.
-- **The gate is the thing that finds the defect.** PR 1's first attempt was red
-  at one test, and the test was right: `doctor --fix` was leaking a stale
-  `checkout_path`.
+  `cargo fmt --all` *before* each commit.
+- **`AppError::Validation` is HTTP 422, not 400.** `Usage` is 400. A REST test
+  asserting the wrong one fails at the gate rather than at design time.
 
 ## Gate
 
 `make test`, supervised in the background with **log growth as the heartbeat**
-and a 120-second stall bound. Eleventh consecutive story with no wedge; the
+and a 120-second stall bound. Twelfth consecutive story with no wedge; the
 streak is worth keeping. Budget ~10 minutes per run and expect to need two.

@@ -1,7 +1,7 @@
 //! The repository content storyhook scaffolds on request.
 //!
 //! Three templates, all of them files a user asks for explicitly — by running
-//! `story project init` or `story scaffold` — and none of them written by any other
+//! `story project new` or `story scaffold` — and none of them written by any other
 //! command. That distinction is the whole reason they survive a design whose
 //! headline rule is that storyhook writes nothing into a repository: a
 //! scaffolded instruction file is the output of the command, in the same sense

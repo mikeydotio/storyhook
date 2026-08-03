@@ -16,8 +16,9 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
 
         m.insert(
             "project",
-            r#"story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
-story project deinit [PATH|SLUG] [--force]
+            r#"story project new [--prefix <PREFIX>] [--name <NAME>]
+                  [--attach <PATH> | --no-attach] [--no-agents-md]
+story project delete [--force]
 story project list
 story project link origin [URL] | link checkout [PATH]
 story project unlink origin [URL] | unlink checkout
@@ -32,38 +33,52 @@ NOT TO BE CONFUSED WITH
   'story unrelate' and join one STORY to another. They have nothing to
   do with the project verbs below, which are about git.
 
-init
+new
   Creates the project in storyhook's store with the states every
   project must have (todo, in-progress, blocked, done) and default
   types, writes .storyhook.toml naming it, and generates an AGENTS.md
   if the repository has none.
+
+  With NO flags at a terminal it asks you the six questions instead.
+  Any switch at all — or --json, or no terminal — makes it fully
+  non-interactive, and then --prefix is required: it is minted into
+  every story id this project ever creates and cannot be changed
+  afterwards, so it is never defaulted for you.
 
   Commit .storyhook.toml. It is how a fresh clone — or a linked worktree
   — knows which project this checkout belongs to before it has a local
   database row to consult.
 
   Idempotent: run again and it re-registers this checkout, leaving the
-  catalog and the prefix alone. --name may be given at any time; the
-  prefix is fixed at creation, because it is baked into every story id
-  ever minted.
+  catalog and the prefix alone. --name may be given at any time.
 
-  PATH defaults to the current directory, and a relative one is resolved
-  against the directory you are standing in.
+  --attach names the checkout, and defaults to the directory you are
+  standing in; a relative path resolves against that directory.
+  --no-attach writes the store record and touches no directory at all,
+  which is the shape for a project whose repository lives on another
+  machine. There is no positional: a bare word after 'new' could be a
+  name or a path with equal plausibility.
 
   If the repository still keeps its stories in a .storyhook/ directory,
-  init refuses and points you at 'story migrate' — initializing would
+  new refuses and points you at 'story migrate' — creating one would
   mint an empty second project beside data you still have.
 
-deinit
+delete
   Permanently deletes the project, every story, every event, every
-  checkout registration, and the files init generated. There is no undo.
+  checkout registration and every registered origin. There is no undo.
 
   It always asks first, and the confirmation is the project's slug typed
   in full. --force skips the question; with --json, or with no terminal
   to ask at, --force is required rather than assumed either way.
 
-  An AGENTS.md you have edited is kept, not deleted — deinit reports it.
-  A project whose checkout is gone can be named by SLUG instead.
+  It takes no path or slug: it deletes the project this directory
+  resolves to, or the one --project names. That is how a project whose
+  checkout is gone is reached.
+
+  It touches no files. The .storyhook.toml and AGENTS.md in every
+  checkout are left exactly where they are — the warning lists those
+  directories so you know which ones are now claiming an identity that
+  does not exist.
 
 list
   Every project the store knows, including any whose checkout is not on
@@ -101,23 +116,23 @@ settings
   project-settings' for the keys and what each one does.
 
 Examples:
-  story project init                    # Default prefix "SH" → SH-1, SH-2, ...
-  story project init --prefix API       # Custom prefix → API-1, API-2, ...
-  story project init ~/code/thing       # Somewhere other than here
+  story project new                     # Asks: six questions, then creates
+  story project new --prefix API        # Fully stated → API-1, API-2, ...
+  story project new --prefix TH --attach ~/code/thing
+  story project new --prefix OFF --no-attach --name "on another machine"
   story project list
   story project link origin             # This checkout's own origin
   story project link origin git@github.com:me/thing.git
   story --project thing project link checkout ~/code/thing
   story project settings list
-  story project deinit                  # Asks before destroying anything
-  story project deinit old-thing --force
+  story project delete                  # Asks before destroying anything
+  story --project old-thing project delete --force
 
 Related:
   story help project-settings — The settings keys, in detail
   story help relate — story link/unlink, which are about STORIES
   story migrate     — Bring a .storyhook/ repository into the store
-  story relink      — Point a project at a checkout that moved
-  story member add  — Add team members after init
+  story member add  — Add team members after creating a project
   story new         — Create your first story
 "#,
         );
@@ -188,7 +203,7 @@ Examples:
   story project settings list --json     # source and value as fields
 
 Related:
-  story project      — init, deinit and list
+  story project      — init, delete and list
   story commit-sync  — What sync.auto_transition governs
   story github-sync  — What owns the github.sync document
   story set          — Change a STORY's fields, not a project's settings
@@ -691,7 +706,7 @@ Generate agent instruction files for different AI coding tools. These
 files teach agents how to use storyhook in the project.
 
 When to use:
-  After 'story project init' to set up AI agent integration. Run the scaffold
+  After 'story project new' to set up AI agent integration. Run the scaffold
   matching your agent tool.
 
 Variants:
@@ -705,7 +720,7 @@ Examples:
   story scaffold cursor-rules     # Generate .cursorrules content
 
 Related:
-  story project init — Initialize project (writes .storyhook.toml)
+  story project new  — Create a project (writes .storyhook.toml)
   story load-context — Project state for session start
 "#,
         );
@@ -971,7 +986,7 @@ Commands returning issues ("issues" field):
   story doctor                -> "issues": ["issue description", ...]
 
 Commands returning a message ("message" field):
-  story project init          -> "message": "initialized story project..."
+  story project new           -> "message": "created story project..."
   story member add            -> "message": "added member alice"
   story state add/remove      -> "message": "added state in-progress (open)"
   story export                -> "message": "<json array of stories>"
@@ -1452,7 +1467,7 @@ Examples:
 Related:
   story delete <id> "<reason>"  — Soft-delete (reversible)
   story reopen <id> [--force]   — Undelete a soft-deleted story
-  story project deinit          — Delete a whole project
+  story project delete          — Delete a whole project
 "#,
         );
 
@@ -1491,7 +1506,7 @@ Commands:
                fail with this summary if the dashboard isn't running.
 
 There is no separate registration step. A project reaches the dashboard
-by existing: 'story project init' puts it in the store, and the store is
+by existing: 'story project new' puts it in the store, and the store is
 what the dashboard reads. 'story project list' prints the same set.
 
 When to use:
@@ -1681,38 +1696,23 @@ Related:
 
         m.insert(
             "relink",
-            r#"story relink <project> <path-to-pointer-file>
+            r#"story relink is now story project link checkout
 
-Point a project at the checkout it now lives in. <project> is the slug
-`story project list` prints; <path> is the moved checkout's
-.storyhook.toml, or the directory holding it.
+Point a project at the checkout it now lives in:
 
-When to use:
-  A registration is a claim that a project can be opened at a path. When
-  a checkout MOVES, that claim is wrong rather than stale, and
-  re-running `story project init` there cannot always fix it: the store
-  may still resolve the old path, and the old path is the one that is
-  wrong.
+  story --project <SLUG> project link checkout <PATH>
 
-  When the checkout is simply GONE, deregistering is the answer instead —
-  `story doctor` reports those, and `story doctor --fix` forgets them.
-
-Examples:
-  story relink lillist ~/Code/Lillist
-  story relink lillist ~/Code/Lillist/.storyhook.toml
-
-What it refuses:
-  A pointer file naming a different project. Relinking across identities
-  would leave one checkout resolving to two projects depending on which
-  door it came in by, so the uuid in the pointer file must match the
-  project being relinked. To adopt a checkout into a project it does not
-  already belong to, run `story project init` inside it.
+`link checkout` is strictly more capable than `relink` was. `relink`
+read a .storyhook.toml in the directory it was pointed at, and refused
+if the uuid there named a different project — which meant it could not
+point a project at a checkout that had never been initialized, or one
+whose pointer file had been lost. `link checkout` records the path
+against the project you name and asks the directory for nothing.
 
 Related:
-  story project init   — Adopt a checkout the store has not seen
+  story help project   — The whole project verb group
   story project list   — Every project, and where its checkout is
   story doctor         — Report registrations pointing at nothing
-  story help storage   — Where the store and pointer files live
 "#,
         );
 
@@ -1742,7 +1742,7 @@ That matters when restoring — see below.
 
   .storyhook.toml
 
-Written by story project init and by story migrate. Commit it. It names the project's
+Written by story project new and by story migrate. Commit it. It names the project's
 uuid and prefix, so a fresh clone — or a linked git worktree — resolves the
 same project before it has anything local to consult. Resolution walks up from
 the working directory, so commands work from a subdirectory too.
@@ -1794,7 +1794,7 @@ is your rollback until you choose to delete it.
 Related:
   story migrate — Move a legacy .storyhook/ project into the store
   story doctor  — Integrity checks, and the rebuild diff
-  story project init — Create a project and write .storyhook.toml
+  story project new  — Create a project and write .storyhook.toml
 "#,
         );
 
@@ -1807,8 +1807,8 @@ pub fn compact_reference() -> &'static str {
     r#"storyhook — CLI story tracker for AI-assisted development
 
 LIFECYCLE
-  story project init [--prefix P] Initialize project (writes .storyhook.toml)
-  story project list|deinit       List projects; delete one (destructive)
+  story project new --prefix P  Create a project (asks if given no flags)
+  story project list|delete     List projects; delete one (destructive)
   story new "<title>"             Create a story, returns assigned ID
   story show <id>                 Full details for a single story
   story move <id> <state>         Transition state (e.g., todo → in-progress → done)
@@ -1977,7 +1977,7 @@ mod tests {
         // survive any future edits to the compact reference.
         let text = super::compact_reference();
         for cmd in &[
-            "story project init",
+            "story project new",
             "story new",
             "story show",
             "story move",

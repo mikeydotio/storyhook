@@ -57,7 +57,11 @@ fn via_daemon(env: &TestEnv, cwd: &std::path::Path, args: &[&str]) -> std::proce
 /// A project to run commands in.
 fn project(env: &TestEnv) -> tempfile::TempDir {
     let dir = scratch_dir();
-    let out = via_daemon(env, dir.path(), &["project", "init", "--no-agents-md"]);
+    let out = via_daemon(
+        env,
+        dir.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     assert!(out.status.success(), "initializing the fixture project");
     dir
 }
@@ -203,7 +207,7 @@ fn hooks_still_fire_through_the_daemon() {
 ///
 /// This is the one place where "the transport is invisible" needs an argument
 /// rather than an assertion of sameness. The daemon's own working directory is
-/// an accident of how it was spawned; if `story project init ./sub` resolved
+/// an accident of how it was spawned; if `story project new --attach ./sub` resolved
 /// there, a project would still be created and the command would still
 /// succeed — just somewhere nobody named. The failure has no symptom at the
 /// call site, which is exactly why it needs a test.
@@ -221,7 +225,11 @@ fn a_relative_path_is_resolved_against_the_clients_directory_over_the_daemon() {
     let started = via_daemon(&env, elsewhere.path(), &["project", "list"]);
     assert!(started.status.success(), "{started:?}");
 
-    let out = via_daemon(&env, here.path(), &["project", "init", "./sub"]);
+    let out = via_daemon(
+        &env,
+        here.path(),
+        &["project", "new", "--prefix", "SH", "--attach", "./sub"],
+    );
     assert!(out.status.success(), "{out:?}");
 
     assert!(
@@ -234,44 +242,49 @@ fn a_relative_path_is_resolved_against_the_clients_directory_over_the_daemon() {
     );
 }
 
-/// Deinit's two-step — the plan, then the forced deletion — over the wire.
+/// Delete's two-step — the plan, then the forced deletion — over the wire.
 ///
 /// This is the case the seam most needs to cover, because the confirmation
 /// happens in the *client* while the deletion happens in the daemon. Its
 /// byte-for-byte agreement with an in-process run used to be the assertion;
 /// with one transport there is nothing to agree with, and what is left is the
 /// half a snapshot cannot hold: a refusal that carries the plan, a second
-/// request the far side recognizes as forced, and files removed in a directory
-/// only the client knows about.
+/// request the far side recognizes as forced, and a project resolved from a
+/// working directory only the client knows about.
 #[test]
-fn deinit_refuses_and_then_deletes_over_the_wire() {
+fn delete_refuses_and_then_deletes_over_the_wire() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
     let dir = project(&env);
 
     // Unforced: a refusal naming --force, with nothing deleted.
-    let refusal = via_daemon(&env, dir.path(), &["project", "deinit"]);
+    let refusal = via_daemon(&env, dir.path(), &["project", "delete"]);
     assert_eq!(refusal.status.code(), Some(2), "{refusal:?}");
     assert!(String::from_utf8_lossy(&refusal.stderr).contains("--force"));
-    assert!(dir.path().join(".storyhook.toml").exists());
 
-    // Forced: the daemon removes the client's repository files too, which is the
-    // part that has no equivalent inside one process.
-    let forced = via_daemon(&env, dir.path(), &["project", "deinit", "--force"]);
+    // Forced: the daemon resolved the project from the *client's* working
+    // directory, which is the part that has no equivalent inside one process —
+    // the daemon's own cwd is wherever it was spawned and knows nothing of this
+    // checkout.
+    let forced = via_daemon(&env, dir.path(), &["project", "delete", "--force"]);
     assert_eq!(forced.status.code(), Some(0), "{forced:?}");
+    let listing = via_daemon(&env, dir.path(), &["project", "list"]);
     assert!(
-        !dir.path().join(".storyhook.toml").exists(),
-        "the daemon must remove the client's repository files, not its own \
-         working directory's"
+        !String::from_utf8_lossy(&listing.stdout).contains(&dir.path().display().to_string()),
+        "the project the client stood in is the one that went"
+    );
+    assert!(
+        dir.path().join(".storyhook.toml").exists(),
+        "and the daemon writes nothing into the client's repository"
     );
 }
 
-/// So is the purge's, and for a reason the deinit case cannot cover.
+/// So is the purge's, and for a reason the delete case cannot cover.
 ///
 /// `ConfirmationPlan` is an enum since SH-130, so the plan a purge answers with
 /// has to survive the JSON hop that `/api/v1/invoke` gives it *and* be
 /// recognised by `InvokeRequest::forced()`, which is what turns the client's
-/// answer back into a second request. A `forced()` that only knew about deinit
+/// answer back into a second request. A `forced()` that only knew about `delete`
 /// would loop forever here rather than fail: the daemon would keep answering
 /// with the plan and the client would keep asking.
 #[test]

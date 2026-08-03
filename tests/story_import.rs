@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn import_creates_stories_from_json() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -47,7 +47,7 @@ fn import_creates_stories_from_json() {
 fn import_with_priority_and_labels() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -73,7 +73,7 @@ fn import_with_priority_and_labels() {
 fn import_with_cross_references() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -115,7 +115,7 @@ fn import_with_cross_references() {
 fn import_from_file() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -134,7 +134,7 @@ fn import_from_file() {
 fn import_empty_array() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -150,7 +150,7 @@ fn import_empty_array() {
 fn import_json_output() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -169,7 +169,7 @@ fn import_json_output() {
 fn import_with_story_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -210,7 +210,7 @@ fn import_with_story_type() {
 fn import_rejects_invalid_story_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -233,7 +233,7 @@ fn import_rejects_invalid_story_type() {
 fn import_atomicity_on_type_error() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -261,7 +261,7 @@ fn import_atomicity_on_type_error() {
 fn import_accepts_valid_story_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

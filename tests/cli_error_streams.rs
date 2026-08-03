@@ -31,7 +31,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())

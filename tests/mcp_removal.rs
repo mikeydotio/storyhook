@@ -225,7 +225,7 @@ fn scaffold_claude_md_does_not_mention_mcp() {
 fn init_generated_agents_md_does_not_mention_mcp() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init", "--prefix", "TST"])
+        .args(["project", "new", "--prefix", "TST"])
         .assert()
         .success();
     let agents_md = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
@@ -247,7 +247,7 @@ fn init_generated_agents_md_does_not_mention_mcp() {
 fn session_start_system_message_does_not_mention_mcp() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     // Use a title that does NOT contain "MCP" to avoid false positives

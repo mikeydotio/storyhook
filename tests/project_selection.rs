@@ -62,7 +62,7 @@ fn nowhere() -> tempfile::TempDir {
 /// Clones `origin` into a fresh directory.
 ///
 /// The clone is what makes AC-2 testable at all. `ProjectBuilder` pushes to the
-/// bare origin **before** running `story project init`, so the pointer file is
+/// bare origin **before** running `story project new`, so the pointer file is
 /// written after the push and never travels — a clone therefore carries no
 /// `.storyhook.toml` and has no `project_paths` row, and the *only* thing that
 /// can resolve it is its origin.
@@ -115,7 +115,7 @@ fn an_unregistered_directory_refuses_and_names_both_ways_out() {
     assert_eq!(out.status.code(), Some(3), "the refusal is a not-found");
 
     let stderr = String::from_utf8_lossy(&out.stderr);
-    for needle in ["--project", "STORYHOOK_PROJECT", "story project init"] {
+    for needle in ["--project", "STORYHOOK_PROJECT", "story project new"] {
         assert!(
             stderr.contains(needle),
             "the refusal must name `{needle}`; got:\n{stderr}"

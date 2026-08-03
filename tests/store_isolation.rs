@@ -161,7 +161,7 @@ fn a_second_data_dir_is_not_served_by_the_first_ones_daemon() {
     ok(probe
         .story(&repo_a)
         .env("STORYHOOK_DATA_DIR", &store_a)
-        .args(["project", "init", "--prefix", "AAA"]));
+        .args(["project", "new", "--prefix", "AAA"]));
     ok(probe
         .story(&repo_a)
         .env("STORYHOOK_DATA_DIR", &store_a)
@@ -170,7 +170,7 @@ fn a_second_data_dir_is_not_served_by_the_first_ones_daemon() {
     ok(probe
         .story(&repo_b)
         .env("STORYHOOK_DATA_DIR", &store_b)
-        .args(["project", "init", "--prefix", "BBB"]));
+        .args(["project", "new", "--prefix", "BBB"]));
 
     assert!(
         store_b.join("store.db").exists(),
@@ -229,7 +229,7 @@ fn a_write_under_one_store_path_is_invisible_under_another() {
         "--store-path",
         &one_flag,
         "project",
-        "init",
+        "new",
         "--prefix",
         "ONE",
     ]));
@@ -241,7 +241,7 @@ fn a_write_under_one_store_path_is_invisible_under_another() {
         "--store-path",
         &two_flag,
         "project",
-        "init",
+        "new",
         "--prefix",
         "TWO",
     ]));
@@ -270,7 +270,7 @@ fn the_store_path_variable_is_honoured_and_the_flag_outranks_it() {
     ok(probe
         .story(&repo)
         .env("STORYHOOK_STORE_PATH", &by_var)
-        .args(["project", "init", "--prefix", "VAR"]));
+        .args(["project", "new", "--prefix", "VAR"]));
     assert!(
         by_var.exists(),
         "STORYHOOK_STORE_PATH must name the store file itself"
@@ -283,7 +283,7 @@ fn the_store_path_variable_is_honoured_and_the_flag_outranks_it() {
             "--store-path",
             by_flag.to_str().unwrap(),
             "project",
-            "init",
+            "new",
             "--prefix",
             "FLAG",
         ]));
@@ -330,7 +330,7 @@ fn two_spellings_of_one_store_share_one_daemon() {
         "--store-path",
         plain.to_str().unwrap(),
         "project",
-        "init",
+        "new",
         "--prefix",
         "ONE",
     ]));
@@ -427,7 +427,7 @@ fn a_store_path_run_leaves_the_ambient_store_byte_identical() {
     ok(probe
         .story(&repo)
         .env("STORYHOOK_DATA_DIR", &ambient)
-        .args(["project", "init", "--prefix", "AMB"]));
+        .args(["project", "new", "--prefix", "AMB"]));
     ok(probe
         .story(&repo)
         .env("STORYHOOK_DATA_DIR", &ambient)
@@ -442,7 +442,7 @@ fn a_store_path_run_leaves_the_ambient_store_byte_identical() {
     let before = bytes(&store);
 
     for args in [
-        vec!["project", "init", "--prefix", "NAMED"],
+        vec!["project", "new", "--prefix", "NAMED"],
         vec!["new", "A story for the named store"],
         vec!["list"],
         vec!["project", "list"],
@@ -500,7 +500,7 @@ fn store_new_creates_an_empty_store_that_commands_can_use() {
         "--store-path",
         store.to_str().unwrap(),
         "project",
-        "init",
+        "new",
         "--prefix",
         "NEW",
     ]));
@@ -597,7 +597,7 @@ fn a_daemon_at_the_legacy_portfile_is_stood_down_rather_than_duplicated() {
         cmd
     };
 
-    ok(with_ambient(&repo).args(["project", "init", "--prefix", "OLD"]));
+    ok(with_ambient(&repo).args(["project", "new", "--prefix", "OLD"]));
     let dirs = probe.daemon_dirs();
     assert_eq!(dirs.len(), 1, "one store, one daemon: {dirs:?}");
 
@@ -644,7 +644,7 @@ fn a_portfile_names_the_store_its_daemon_holds() {
         "--store-path",
         store.to_str().unwrap(),
         "project",
-        "init",
+        "new",
         "--prefix",
         "NMD",
     ]));
@@ -674,7 +674,7 @@ fn the_store_path_flag_reaches_the_daemon_family_too() {
         "--store-path",
         store.to_str().unwrap(),
         "project",
-        "init",
+        "new",
         "--prefix",
         "NMD",
     ]));
@@ -730,7 +730,7 @@ fn a_child_process_of_a_store_path_run_lands_in_the_same_store() {
 
     ok(probe
         .story(&repo)
-        .args(["--store-path", &flag, "project", "init", "--prefix", "CHD"]));
+        .args(["--store-path", &flag, "project", "new", "--prefix", "CHD"]));
 
     let pointer = repo.join(".storyhook.toml");
     let existing = std::fs::read_to_string(&pointer).expect("the project has a pointer file");

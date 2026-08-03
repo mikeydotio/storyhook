@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn handoff_captures_recently_created() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -36,7 +36,7 @@ fn handoff_captures_recently_created() {
 fn handoff_captures_closed_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -60,7 +60,7 @@ fn handoff_captures_closed_stories() {
 fn handoff_with_duration() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -80,7 +80,7 @@ fn handoff_with_duration() {
 fn handoff_invalid_duration() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -95,7 +95,7 @@ fn handoff_invalid_duration() {
 fn handoff_empty_period() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

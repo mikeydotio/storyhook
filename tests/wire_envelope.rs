@@ -28,7 +28,7 @@ use storyhook::domain::{
 };
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
-    BlockedChainView, ConfirmationPlan, DeinitPlan, GraphOverview, GraphView, PhaseView,
+    BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
     ProjectSnapshotView, PurgePlan, Response, SettingKind, SettingSource, SettingView, StaleInfo,
     StoryView, SummaryView, render_error, render_response,
 };
@@ -401,31 +401,27 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         ),
         (
             "confirmation_required",
-            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Delete(DeletePlan {
                 slug: "storyhook".to_string(),
                 name: "storyhook — the tracker".to_string(),
                 prefix: "SH".to_string(),
                 stories: 47,
                 events: 312,
-                checkouts: vec!["/Volumes/Code/storyhook".to_string()],
-                files: vec!["/Volumes/Code/storyhook/.storyhook.toml".to_string()],
-                kept: vec![(
-                    "/Volumes/Code/storyhook/AGENTS.md".to_string(),
-                    "edited since it was generated".to_string(),
-                )],
+                checkouts: vec![
+                    "/Volumes/Code/storyhook".to_string(),
+                    "/Volumes/Code/storyhook/.claude/worktrees/sh-117".to_string(),
+                ],
             }))),
         ),
         (
             "confirmation_required_empty_project",
-            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Delete(DeletePlan {
                 slug: "empty".to_string(),
                 name: "empty".to_string(),
                 prefix: "EM".to_string(),
                 stories: 0,
                 events: 0,
                 checkouts: Vec::new(),
-                files: Vec::new(),
-                kept: Vec::new(),
             }))),
         ),
         (
@@ -482,26 +478,24 @@ fn a_second_wire_hop_is_a_fixed_point() {
     }
 }
 
-/// A deinit plan's fields stay directly under `plan`, alongside the `confirm`
+/// A delete plan's fields stay directly under `plan`, alongside the `confirm`
 /// discriminant rather than nested beneath it.
 ///
-/// The dashboard reads `err.body.plan.slug`, `.stories`, `.events`, `.files`
-/// and `.kept` out of the 409 it gets from `DELETE /api/repos/{id}` and draws
+/// The dashboard reads `err.body.plan.slug`, `.stories`, `.events` and
+/// `.checkouts` out of the 409 it gets from `DELETE /api/repos/{id}` and draws
 /// its own modal from them (`src/web_dashboard.html`). `ConfirmationPlan` is an
 /// enum now, and the *externally* tagged default would have moved every one of
 /// those a level down — a browser-only breakage, invisible to a Rust round-trip
 /// test, which is exactly why this asserts on the JSON rather than on a value.
 #[test]
-fn a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
-    let response = Response::ConfirmationRequired(Box::new(ConfirmationPlan::Deinit(DeinitPlan {
+fn a_delete_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
+    let response = Response::ConfirmationRequired(Box::new(ConfirmationPlan::Delete(DeletePlan {
         slug: "storyhook".to_string(),
         name: "storyhook — the tracker".to_string(),
         prefix: "SH".to_string(),
         stories: 47,
         events: 312,
-        checkouts: Vec::new(),
-        files: vec!["/repo/.storyhook.toml".to_string()],
-        kept: Vec::new(),
+        checkouts: vec!["/repo".to_string()],
     })));
 
     let rendered = render_response(&response, true, false);
@@ -510,15 +504,14 @@ fn a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
 
     assert_eq!(document["result"], "confirmation-required");
     assert_eq!(
-        plan["confirm"], "deinit",
+        plan["confirm"], "delete",
         "the kind is stated, not inferred"
     );
     assert_eq!(plan["slug"], "storyhook");
     assert_eq!(plan["name"], "storyhook — the tracker");
     assert_eq!(plan["stories"], 47);
     assert_eq!(plan["events"], 312);
-    assert_eq!(plan["files"][0], "/repo/.storyhook.toml");
-    assert!(plan["kept"].is_array());
+    assert_eq!(plan["checkouts"][0], "/repo");
 }
 
 /// `Response`'s wire form is externally tagged, so the variant travels as the
@@ -755,18 +748,15 @@ fn invocation_corpus() -> Vec<Invocation> {
             })),
         },
         Invocation::Project {
-            action: ProjectAction::Init {
-                path: Some("../elsewhere".to_string()),
-                prefix: Some("API".to_string()),
+            action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+                attach: Attach::Path("../elsewhere".to_string()),
+                prefix: "API".to_string(),
                 name: Some("Elsewhere — renamed".to_string()),
                 no_agents_md: true,
-            },
+            })),
         },
         Invocation::Project {
-            action: ProjectAction::Deinit {
-                target: Some("some-slug".to_string()),
-                force: true,
-            },
+            action: ProjectAction::Delete { force: true },
         },
         Invocation::Project {
             action: ProjectAction::List,
@@ -1118,10 +1108,6 @@ fn invocation_corpus() -> Vec<Invocation> {
             path: None,
             dry_run: true,
         },
-        Invocation::Relink {
-            project: "example".to_string(),
-            pointer: "/some/checkout".to_string(),
-        },
         Invocation::Daemon {
             action: DaemonAction::Status,
         },
@@ -1139,7 +1125,6 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
     match invocation {
         Invocation::Help => "Help",
         Invocation::Project { .. } => "Project",
-        Invocation::Relink { .. } => "Relink",
         Invocation::New { .. } => "New",
         Invocation::MemberAdd { .. } => "MemberAdd",
         Invocation::State { .. } => "State",
@@ -1203,7 +1188,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        53,
+        52,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

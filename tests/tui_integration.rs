@@ -28,7 +28,9 @@
 
 use std::time::Instant;
 
-use storyhook::cli::{Invocation, ProjectAction, StateAction};
+use storyhook::cli::{
+    Attach, Invocation, NewProjectRequest, NewProjectSpec, ProjectAction, StateAction,
+};
 use storyhook::domain::{Priority, StateDef, SuperState};
 use storyhook::env::Environment;
 use storyhook::error::AppError;
@@ -116,12 +118,12 @@ fn init_project(prefix: &str) -> Fixture {
     run(
         &fixture,
         Invocation::Project {
-            action: ProjectAction::Init {
-                path: None,
-                prefix: Some(prefix.to_string()),
+            action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+                attach: Attach::Cwd,
+                prefix: prefix.to_string(),
                 name: None,
                 no_agents_md: true,
-            },
+            })),
         },
     )
     .unwrap();

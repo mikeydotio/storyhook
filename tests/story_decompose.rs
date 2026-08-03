@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn decompose_single_heading() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -35,7 +35,7 @@ fn decompose_single_heading() {
 fn decompose_nested_headings() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -68,7 +68,7 @@ fn decompose_nested_headings() {
 fn decompose_three_levels() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -106,7 +106,7 @@ fn decompose_three_levels() {
 fn decompose_checkboxes() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -136,7 +136,7 @@ fn decompose_checkboxes() {
 fn decompose_checked_items_skipped() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -161,7 +161,7 @@ fn decompose_checked_items_skipped() {
 fn decompose_empty_file() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -179,7 +179,7 @@ fn decompose_empty_file() {
 fn decompose_no_headings() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -198,7 +198,7 @@ fn decompose_no_headings() {
 fn decompose_dry_run() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -231,7 +231,7 @@ fn decompose_dry_run() {
 fn decompose_roundtrip() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -274,7 +274,7 @@ fn decompose_roundtrip() {
 fn decompose_stdin() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -319,7 +319,7 @@ fn decompose_dry_run_works_without_project() {
 fn decompose_yaml_file() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -366,7 +366,7 @@ fn decompose_yaml_file() {
 fn decompose_yaml_dry_run() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -401,7 +401,7 @@ fn decompose_yaml_dry_run() {
 fn decompose_markdown_with_priority() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -426,7 +426,7 @@ fn decompose_markdown_with_priority() {
 fn decompose_markdown_with_labels() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

@@ -48,7 +48,7 @@ impl HookRepo {
         repo.git(&["add", "f"]);
         repo.git(&["commit", "-qm", "init"]);
 
-        repo.story(&["project", "init"]);
+        repo.story(&["project", "new", "--prefix", "SH"]);
         repo.story(&["hooks", "install"]);
         for hook in ["post-commit", "prepare-commit-msg"] {
             assert!(

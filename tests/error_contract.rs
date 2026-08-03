@@ -54,11 +54,11 @@ struct Case {
 /// `LockTimeout` takes the store's **exclusive** write lock and holds it on
 /// purpose. Its two forms run the same closure, so one form's holder can be
 /// sitting on the lock while the other form's fixture is still being built — and
-/// `story project init` is a write. The fixture then waits out `busy_timeout` and
+/// `story project new` is a write. The fixture then waits out `busy_timeout` and
 /// dies at exit 4 during *setup*, which reads as a product failure and is not
 /// one.
 ///
-/// **That race was always here.** It never fired because `init` reached its
+/// **That race was always here.** It never fired because creation reached its
 /// transaction faster than the sibling thread reached the lock — a margin
 /// nothing declared and nothing protected. SH-116 gave `init` a `git`
 /// subprocess to run first, the margin went, and it fired on every run. Running

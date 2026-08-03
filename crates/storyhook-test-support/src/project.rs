@@ -156,16 +156,21 @@ impl<'a> ProjectBuilder<'a> {
         if self.legacy {
             crate::legacy_tree::init(&root, self.prefix.as_deref());
         } else {
-            let mut init = vec!["project", "init"];
-            if let Some(prefix) = &self.prefix {
-                init.push("--prefix");
-                init.push(prefix);
-            }
+            // `--prefix` is no longer optional, so the builder's own default
+            // is what supplies it when the caller did not. `SH` is the value
+            // `init` used to mint silently, which keeps every fixture that
+            // never named one asserting on the ids it always asserted on.
+            let new = vec![
+                "project",
+                "new",
+                "--prefix",
+                self.prefix.as_deref().unwrap_or("SH"),
+            ];
             let mut cmd = self.env.story(&root);
-            cmd.args(&init)
+            cmd.args(&new)
                 .assert()
                 .try_success()
-                .unwrap_or_else(|e| panic!("`story {}` in the fixture: {e}", init.join(" ")));
+                .unwrap_or_else(|e| panic!("`story {}` in the fixture: {e}", new.join(" ")));
         }
 
         let mut worktrees = BTreeMap::new();

@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn summary_shows_counts() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
@@ -38,7 +38,7 @@ fn summary_shows_counts() {
 fn summary_shows_priority_breakdown() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
@@ -64,7 +64,7 @@ fn summary_shows_priority_breakdown() {
 fn summary_shows_ready_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -93,7 +93,7 @@ fn summary_shows_ready_stories() {
 fn summary_json_output() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
@@ -110,7 +110,7 @@ fn summary_json_output() {
 fn summary_empty_project() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -125,7 +125,7 @@ fn summary_empty_project() {
 fn summary_shows_type_breakdown() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

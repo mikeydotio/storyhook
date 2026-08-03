@@ -104,7 +104,7 @@ fn help_all_produces_all_topics() {
 
     // Should contain content from multiple distinct topics
     assert!(
-        stdout.contains("story project init"),
+        stdout.contains("story project new"),
         "should include the project topic"
     );
     assert!(stdout.contains("story new"), "should include new topic");
@@ -171,7 +171,7 @@ fn help_with_topic_still_works() {
         .args(["help", "project"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("story project init"));
+        .stdout(predicate::str::contains("story project new"));
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn help_all_with_json_flag_produces_json() {
     // The message field should contain the full help content
     let message = parsed["message"].as_str().unwrap_or("");
     assert!(
-        message.contains("story project init"),
+        message.contains("story project new"),
         "JSON --all help message should contain the project topic"
     );
     assert!(
