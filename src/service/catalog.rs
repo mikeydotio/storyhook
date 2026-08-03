@@ -181,6 +181,144 @@ impl<'a, S: Store> CatalogService<'a, S> {
             Ok(entries)
         })?)
     }
+
+    /// Every project whose checkout knows a git origin the store does not.
+    ///
+    /// **SH-151's R4, and the reason it is binding on SH-119.** A project used
+    /// to be reachable from its own directory through the recorded-path index;
+    /// with the index deleted, what answers for a checkout carrying no pointer
+    /// file — a fresh clone, most of all — is the origin it reports, and only
+    /// if some project has registered it. Registration happens in
+    /// `story project new` and `story project link origin`, so a project that
+    /// predates those verbs has none.
+    ///
+    /// The probe is the SH-151 ownership constructor applied to each project's
+    /// recorded checkout, and only [`OriginFinding::Registrable`] is ever acted
+    /// on. Everything else is reported: an inherited origin belongs to the
+    /// repository above, a held one belongs to another project, and an
+    /// unanswerable probe is a question for the user rather than a default.
+    ///
+    /// Costs one `git` invocation per project **with a checkout that is still
+    /// on disk**, which is why it lives in `story doctor` and nowhere on the
+    /// path of an ordinary command.
+    pub fn unregistered_origins(&self) -> Result<Vec<UnregisteredOrigin>, AppError> {
+        use crate::domain::remote::RepoOrigin;
+
+        let candidates: Vec<(ProjectId, String, PathBuf)> = self.store.read(|tx| {
+            let mut candidates = Vec::new();
+            for project in tx.projects()? {
+                if !tx.project_remotes(project.id)?.is_empty() {
+                    continue;
+                }
+                let Some(checkout) = tx.checkout_path(project.id)? else {
+                    continue;
+                };
+                if !checkout.is_dir() {
+                    continue;
+                }
+                candidates.push((project.id, project.slug.clone(), checkout));
+            }
+            Ok(candidates)
+        })?;
+
+        let mut findings = Vec::new();
+        for (project, slug, checkout) in candidates {
+            // Probed outside the read, because it spawns `git`: a subprocess
+            // inside a store transaction holds a connection open for however
+            // long that process takes.
+            let finding = match super::project::origin_at(&checkout) {
+                RepoOrigin::Owned(owned) => {
+                    match self.store.read(|tx| tx.project_by_remote(owned.url()))? {
+                        Some(holder) => OriginFinding::HeldBy {
+                            origin: owned.url().clone(),
+                            holder: holder.slug,
+                        },
+                        None => OriginFinding::Registrable(owned),
+                    }
+                }
+                RepoOrigin::Inherited { origin, owner } => {
+                    OriginFinding::Inherited { origin, owner }
+                }
+                RepoOrigin::Unknown(command) => OriginFinding::Unknown(command),
+                // A checkout with no origin at all is not a finding. It is an
+                // ordinary local repository, or none, and there is nothing to
+                // register or to tell anybody about.
+                RepoOrigin::Absent => continue,
+            };
+            findings.push(UnregisteredOrigin {
+                project,
+                slug,
+                checkout,
+                finding,
+            });
+        }
+        Ok(findings)
+    }
+
+    /// Registers every origin [`unregistered_origins`](Self::unregistered_origins)
+    /// found registrable, and returns the whole set it looked at.
+    ///
+    /// Only `Registrable` is written. The three other findings come back
+    /// untouched so the caller can report them, which is R4's "reported, never
+    /// guessed at" in the shape `doctor --fix` already uses for the checkout
+    /// audit above.
+    pub fn register_found_origins(&self) -> Result<Vec<UnregisteredOrigin>, AppError> {
+        let found = self.unregistered_origins()?;
+        for finding in &found {
+            let OriginFinding::Registrable(owned) = &finding.finding else {
+                continue;
+            };
+            let now = crate::service::Clock::System.now();
+            self.store.write(|tx| {
+                super::project::register_origin(tx, finding.project, owned, &now)?;
+                Ok(())
+            })?;
+        }
+        Ok(found)
+    }
+}
+
+/// A project whose checkout knows an origin the store does not (SH-119, R4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnregisteredOrigin {
+    /// The project the finding is about.
+    pub project: ProjectId,
+    /// Its slug — what a user would name it by.
+    pub slug: String,
+    /// The checkout that was probed.
+    pub checkout: PathBuf,
+    /// What the probe found there.
+    pub finding: OriginFinding,
+}
+
+/// What probing a project's checkout for an origin found.
+///
+/// Four answers rather than two, because R4 is explicit that a project whose
+/// checkout does not own an origin must be **reported, never guessed at**. Only
+/// [`Registrable`](Self::Registrable) is acted on; the rest exist so the report
+/// can say why nothing was done.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OriginFinding {
+    /// The checkout owns an origin, and no project holds it yet.
+    Registrable(crate::domain::remote::OwnedOrigin),
+    /// The checkout reports an origin belonging to the repository above it.
+    /// Registering it here would be one repository wearing two identities.
+    Inherited {
+        /// The origin, so the report can name it.
+        origin: crate::domain::remote::RemoteUrl,
+        /// The directory entitled to it.
+        owner: PathBuf,
+    },
+    /// Another project already holds the origin this checkout owns.
+    HeldBy {
+        /// The origin.
+        origin: crate::domain::remote::RemoteUrl,
+        /// The slug of the project that holds it.
+        holder: String,
+    },
+    /// The ownership probe could not be run or could not be read, naming the
+    /// git invocation that failed.
+    Unknown(String),
 }
 
 /// One catalog row from a project record.

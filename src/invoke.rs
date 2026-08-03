@@ -507,17 +507,24 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                         message.push('\n');
                         message.push_str(&deregistered_message(&forgotten));
                     }
+                    let origins = catalog.register_found_origins()?;
+                    if !origins.is_empty() {
+                        message.push('\n');
+                        message.push_str(&registered_origins_message(&origins));
+                    }
                 }
                 Ok(Response::Message(message))
             } else {
                 match service.report()? {
                     issues if issues.is_empty() => {
-                        let orphans = if audit_catalog {
-                            catalog.orphaned()?
+                        let (orphans, origins) = if audit_catalog {
+                            (catalog.orphaned()?, catalog.unregistered_origins()?)
                         } else {
-                            Vec::new()
+                            (Vec::new(), Vec::new())
                         };
-                        Ok(Response::Issues(orphan_advice(&orphans)))
+                        let mut advice = orphan_advice(&orphans);
+                        advice.extend(origin_advice(&origins));
+                        Ok(Response::Issues(advice))
                     }
                     issues => Err(AppError::Integrity(issues.join("\n"))),
                 }
@@ -2433,5 +2440,105 @@ fn deregistered_message(forgotten: &[crate::service::OrphanedRegistration]) -> S
                   still listed by `story project list` and still on the dashboard, and \
                   `story project link checkout` puts a project back where its checkout moved to.",
     );
+    out
+}
+
+/// What `story doctor` says about a project whose checkout knows an origin the
+/// store does not (SH-119, R4).
+///
+/// Advisory, like [`orphan_advice`], and for a sharper reason: this is the
+/// state every project created before origins existed is in, so exiting
+/// non-zero would make `doctor` red on a machine where nothing is wrong. What
+/// it costs is a fresh clone of that repository failing to resolve, which is a
+/// thing to fix at leisure rather than an emergency.
+fn origin_advice(found: &[crate::service::UnregisteredOrigin]) -> Vec<String> {
+    use crate::service::OriginFinding;
+
+    if found.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = found
+        .iter()
+        .map(|item| match &item.finding {
+            OriginFinding::Registrable(owned) => format!(
+                "`{}` has no registered origin, and its checkout owns `{}` — a clone of it \
+                 cannot resolve until that is recorded",
+                item.slug,
+                owned.url().raw()
+            ),
+            OriginFinding::Inherited { origin, owner } => format!(
+                "`{}` has no registered origin. Its checkout `{}` reports `{}`, but that origin \
+                 belongs to `{}` — a project inside a repository is identified by its committed \
+                 `.storyhook.toml`, not by the repository's origin",
+                item.slug,
+                item.checkout.display(),
+                origin.raw(),
+                owner.display()
+            ),
+            OriginFinding::HeldBy { origin, holder } => format!(
+                "`{}` has no registered origin, and `{}` — the one its checkout owns — is \
+                 already registered to `{holder}`",
+                item.slug,
+                origin.raw()
+            ),
+            OriginFinding::Unknown(command) => format!(
+                "`{}` has no registered origin, and `{command}` failed in `{}`, so storyhook \
+                 cannot tell whether that checkout owns one",
+                item.slug,
+                item.checkout.display()
+            ),
+        })
+        .collect();
+    let registrable = found
+        .iter()
+        .filter(|item| matches!(item.finding, OriginFinding::Registrable(_)))
+        .count();
+    lines.push(format!(
+        "{} {} without a registered origin, {registrable} of which `story doctor --fix` can \
+         record. The rest need a decision: `story --project <slug> project link origin <url>` \
+         names one explicitly.",
+        found.len(),
+        if found.len() == 1 {
+            "project"
+        } else {
+            "projects"
+        },
+    ));
+    lines
+}
+
+/// What `story doctor --fix` reports having registered.
+fn registered_origins_message(found: &[crate::service::UnregisteredOrigin]) -> String {
+    use crate::service::OriginFinding;
+
+    let recorded: Vec<&crate::service::UnregisteredOrigin> = found
+        .iter()
+        .filter(|item| matches!(item.finding, OriginFinding::Registrable(_)))
+        .collect();
+    let mut out = format!(
+        "registered {} {}:",
+        recorded.len(),
+        if recorded.len() == 1 {
+            "origin"
+        } else {
+            "origins"
+        }
+    );
+    if recorded.is_empty() {
+        out = "registered no origins:".to_string();
+    }
+    for item in &recorded {
+        if let OriginFinding::Registrable(owned) = &item.finding {
+            out.push_str(&format!("\n  {} -> {}", item.slug, owned.url().raw()));
+        }
+    }
+    let left = found.len() - recorded.len();
+    if left > 0 {
+        out.push_str(&format!(
+            "\n\n{left} {} left alone, because storyhook will not guess at an origin a checkout \
+             does not own. `story doctor` names each of them.",
+            if left == 1 { "project" } else { "projects" }
+        ));
+    }
     out
 }

@@ -161,22 +161,13 @@ fn a_story_cannot_be_given_a_superstate_outside_the_two_that_exist() {
     rejects(&store, "UPDATE stories SET superstate = 'PENDING'", "CHECK");
 }
 
-#[test]
-fn a_checkout_path_cannot_be_claimed_by_two_projects_even_by_hand() {
-    let (_dir, store) = new_store();
-    let alpha = seed_project(&store, "alpha", "SH");
-    let beta = seed_project(&store, "beta", "SH");
-
-    let error = raw(&store)
-        .execute(
-            "INSERT INTO project_paths (project_id, path, kind, last_seen_at) \
-             VALUES (?1, ?2, 'main', '2026-01-01T00:00:00Z')",
-            rusqlite::params![beta.get(), "/checkouts/alpha"],
-        )
-        .expect_err("the unique index should have refused it");
-    assert!(error.to_string().contains("project_paths.path"), "{error}");
-    let _ = alpha;
-}
+// `a_checkout_path_cannot_be_claimed_by_two_projects_even_by_hand` used to sit
+// here, pinning `idx_project_paths_path`. Both the index and the fact it
+// asserted are gone: SH-119 deleted the resolution index, and the column that
+// replaced it deliberately has *no* cross-project uniqueness, because two
+// projects sharing one directory is a monorepo rather than an ambiguity
+// (migration 0007's header, and `two_projects_may_name_the_same_checkout` in
+// the conformance suite).
 
 // ---------------------------------------------------------------------------
 // A healthy project
