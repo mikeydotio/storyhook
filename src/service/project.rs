@@ -72,6 +72,33 @@ pub const ALLOW_TEMP_PROJECT: &str = "STORYHOOK_ALLOW_TEMP_PROJECT";
 /// writes continue. This is the only point where the mistake is still cheap:
 /// nothing has been written, and the message can name the one environment
 /// variable that fixes the caller for good.
+///
+/// **Why this still exists after the store-isolation epic.** SH-113 removed
+/// this guard's *original* premise — projects were once created only by
+/// standing in a directory, and after it, path-based creation is opt-in. It did
+/// not remove path-based creation itself: `--attach` still defaults to the
+/// client's cwd, and `import-project` and a non-dry-run `migrate` still create
+/// at a path (`project_creation_target`, `src/invoke.rs`). So `is_under_temp`
+/// still has a live input, and this is still the only thing that fires on the
+/// caller SH-122 names as the residual gap — a foreign suite that never opts
+/// into `--store-path` at all. Retiring this guard on the strength of SH-113's
+/// note would remove the one detection that exists for that caller while its
+/// premise still stands.
+///
+/// **A "state the fact, not the guess" version of the store half was tried and
+/// reverted** (SH-95): `store.is_default()` in place of `is_under_temp(store_path)`
+/// looks like an improvement — "is this the store every other command reaches
+/// for", rather than a path guess. It is not usable here for the same reason
+/// [`crate::env`]'s test-build refusal keeps its own path-based check:
+/// `is_default()` is relative to whatever `HOME` the process has, and this
+/// project's own primary test harness (`TestEnv`, in `storyhook-test-support`)
+/// deliberately builds a fake `HOME` and points every store-naming variable at
+/// *that* home's own default-shaped subdirectory, so a fixture's layout mirrors
+/// a real one while staying disposable. That makes `is_default()` true for
+/// essentially every correctly isolated fixture in the suite — indistinguishable
+/// by path alone from the real hazard, because both are answered from the same
+/// two inputs. Switching the predicate refused project creation in every test
+/// built through `TestEnv`, caught by running the suite rather than by review.
 pub fn refuse_temp_project_in_real_store(root: &Path, store_path: &Path) -> Result<(), AppError> {
     let allowed = std::env::var(ALLOW_TEMP_PROJECT).is_ok_and(|v| !v.trim().is_empty());
     refuse_temp_project(root, store_path, allowed)
@@ -91,9 +118,10 @@ fn refuse_temp_project(root: &Path, store_path: &Path, allowed: bool) -> Result<
          at `{}` is not.\n\nNothing has been written. A project created here would outlive the \
          directory it names by a long way — the directory is deleted at the end of the run, and \
          the project stays in the store forever, pointing at nothing.\n\nIf this is a test \
-         suite, give it a store of its own by exporting STORYHOOK_DATA_DIR to a directory \
-         inside the fixture; that is what makes its writes disappear with it. If you really do \
-         want a throwaway project in this store, set {ALLOW_TEMP_PROJECT}=1.",
+         suite, give it a store of its own: `story store new <path>`, then run with \
+         `--store-path <path>` (or its variable, $STORYHOOK_STORE_PATH — either outranks \
+         $STORYHOOK_DATA_DIR, which also works but loses if more than one is set). If you \
+         really do want a throwaway project in this store, set {ALLOW_TEMP_PROJECT}=1.",
         root.display(),
         store_path.display(),
     )))
@@ -1399,8 +1427,13 @@ mod temp_project_tests {
         assert_eq!(error.exit_code(), 2, "it is a usage error, not a crash");
         let message = error.to_string();
         assert!(
+            message.contains("--store-path") || message.contains("STORYHOOK_STORE_PATH"),
+            "the message must lead with a lever that actually wins the precedence contest: \
+             {message}"
+        );
+        assert!(
             message.contains("STORYHOOK_DATA_DIR"),
-            "the message must name the variable that fixes the caller: {message}"
+            "the message must still name the environment-only route: {message}"
         );
         assert!(
             message.contains(ALLOW_TEMP_PROJECT),
