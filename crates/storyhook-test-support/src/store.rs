@@ -42,9 +42,12 @@ impl Project<'_> {
 
     /// This project's row in `store`, by the identity its checkout carries.
     ///
-    /// Resolved exactly the way the CLI resolves it — the committed pointer
-    /// file first, the checkout's path second — so a fixture that stops
-    /// resolving here is a fixture the CLI has also stopped resolving.
+    /// The committed pointer file, which is what the CLI reads at the working
+    /// directory — so a fixture that stops resolving here is a fixture the CLI
+    /// has also stopped resolving *there*. It is deliberately not the whole
+    /// resolution order: the ancestor climb and the registered-origin lookup
+    /// answer for directories a `Project` fixture does not own, and a helper
+    /// that reimplemented them would be a second resolver to keep in step.
     pub fn try_project_id(&self, store: &SqliteStore) -> Option<ProjectId> {
         project_id_at(store, self.path())
     }
