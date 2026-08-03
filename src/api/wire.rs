@@ -38,6 +38,78 @@ use crate::cli::Invocation;
 use crate::error::{AppError, WireError};
 use crate::output::Response;
 
+/// How a caller named the project it wants to act on.
+///
+/// The two sources — `--project <slug>` and `$STORYHOOK_PROJECT` — are collapsed
+/// into one value **by the client**, which is the only process that can see both:
+/// a daemon's environment is its own, and `hook_depth` already travels on the
+/// wire for the same reason. Precedence is therefore applied exactly once, in
+/// [`ProjectSelector::resolve`], rather than re-decided by whoever reads it next.
+///
+/// # Why the source is carried and not just the slug
+///
+/// A slug that names no project has to be refused, and the refusal is only
+/// useful if it says *where the slug came from*. A bad `--project` is a mistake
+/// in one command. A bad `$STORYHOOK_PROJECT` is a mistake in a shell, and it
+/// will repeat on every command run there until somebody changes it — so the
+/// remedy a reader needs is different, and a bare `Option<String>` cannot tell
+/// them which one they have.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "via", rename_all = "snake_case")]
+pub enum ProjectSelector {
+    /// `--project <slug>`, about this invocation.
+    Flag {
+        /// The slug the caller typed.
+        slug: String,
+    },
+    /// `$STORYHOOK_PROJECT`, about this shell.
+    Environment {
+        /// The slug the variable held.
+        slug: String,
+    },
+}
+
+impl ProjectSelector {
+    /// The precedence rule, as a pure function: the flag beats the variable.
+    ///
+    /// Separated from `main` so it can be tested without a process. An empty
+    /// value from either source is treated as absent, for the same reason
+    /// [`crate::env`] ignores an empty path variable: an `export` unset the
+    /// careless way leaves an empty string behind, and reading that as "the
+    /// project named `""`" would refuse every command in the shell.
+    #[must_use]
+    pub fn resolve(flag: Option<&str>, environment: Option<&str>) -> Option<Self> {
+        fn named(value: Option<&str>) -> Option<&str> {
+            value.map(str::trim).filter(|slug| !slug.is_empty())
+        }
+        if let Some(slug) = named(flag) {
+            return Some(Self::Flag {
+                slug: slug.to_string(),
+            });
+        }
+        named(environment).map(|slug| Self::Environment {
+            slug: slug.to_string(),
+        })
+    }
+
+    /// The project slug this selector names.
+    #[must_use]
+    pub fn slug(&self) -> &str {
+        match self {
+            Self::Flag { slug } | Self::Environment { slug } => slug,
+        }
+    }
+
+    /// How the caller spelled it, for a refusal that has to name the source.
+    #[must_use]
+    pub fn source(&self) -> &'static str {
+        match self {
+            Self::Flag { .. } => "--project",
+            Self::Environment { .. } => "$STORYHOOK_PROJECT",
+        }
+    }
+}
+
 /// One request to `/api/v1/invoke`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireRequest {
@@ -48,9 +120,13 @@ pub struct WireRequest {
     /// A caller-generated id, echoed back, so a log on either side can be
     /// matched to one on the other.
     pub request_id: String,
-    /// The project to act on, when the client knows it. `None` means "resolve
-    /// it from `cwd`", which is what the CLI does.
-    pub project: Option<String>,
+    /// The project to act on, and how the caller named it.
+    ///
+    /// `None` means "resolve it from `cwd`". A `Some` is **binding**: the daemon
+    /// either resolves that slug or refuses, and never falls back to the
+    /// directory — see [`ProjectSelector`].
+    #[serde(default)]
+    pub project: Option<ProjectSelector>,
     /// The directory the command was run from. Root resolution, `hooks.toml`,
     /// and every git operation are relative to it.
     pub cwd: PathBuf,
@@ -103,6 +179,13 @@ impl WireRequest {
     #[must_use]
     pub fn hook_depth(mut self, hook_depth: u32) -> Self {
         self.hook_depth = hook_depth;
+        self
+    }
+
+    /// Names the project this request acts on.
+    #[must_use]
+    pub fn project(mut self, project: Option<ProjectSelector>) -> Self {
+        self.project = project;
         self
     }
 }
@@ -264,6 +347,87 @@ mod tests {
             .collect();
         assert!(!fields.contains(&"json"), "{fields:?}");
         assert!(!fields.contains(&"quiet"), "{fields:?}");
+    }
+
+    /// The precedence rule, tested without a process — which is the whole
+    /// reason it is a pure function rather than a few lines inside `main`.
+    #[test]
+    fn the_flag_beats_the_variable_and_either_beats_nothing() {
+        assert_eq!(ProjectSelector::resolve(None, None), None);
+        assert_eq!(
+            ProjectSelector::resolve(Some("a"), Some("b")),
+            Some(ProjectSelector::Flag {
+                slug: "a".to_string()
+            })
+        );
+        assert_eq!(
+            ProjectSelector::resolve(None, Some("b")),
+            Some(ProjectSelector::Environment {
+                slug: "b".to_string()
+            })
+        );
+    }
+
+    /// An `export` unset the careless way leaves an empty string behind, and
+    /// reading that as "the project named `""`" would refuse every command in
+    /// the shell — the same trap `crate::env` avoids for an empty path variable.
+    #[test]
+    fn an_empty_or_blank_value_is_absence_rather_than_a_project_named_nothing() {
+        assert_eq!(ProjectSelector::resolve(Some(""), None), None);
+        assert_eq!(ProjectSelector::resolve(Some("   "), None), None);
+        assert_eq!(ProjectSelector::resolve(None, Some("")), None);
+        // …and an empty flag must not shadow a usable variable.
+        assert_eq!(
+            ProjectSelector::resolve(Some(""), Some("b")),
+            Some(ProjectSelector::Environment {
+                slug: "b".to_string()
+            })
+        );
+    }
+
+    /// The source is what makes a refusal actionable, so it must survive the
+    /// hop. A selector that arrived as a variable and came back as a flag would
+    /// send a reader looking in the wrong place for a slug they cannot see.
+    #[test]
+    fn a_selector_keeps_its_source_across_the_wire() {
+        for selector in [
+            ProjectSelector::Flag {
+                slug: "widgets".to_string(),
+            },
+            ProjectSelector::Environment {
+                slug: "widgets".to_string(),
+            },
+        ] {
+            let request =
+                WireRequest::new(Invocation::Summary, "/tmp").project(Some(selector.clone()));
+            let json = serde_json::to_string(&request).expect("encoding");
+            let received: WireRequest = serde_json::from_str(&json).expect("decoding");
+            assert_eq!(received.project, Some(selector.clone()));
+            assert_eq!(
+                received.project.as_ref().map(ProjectSelector::source),
+                Some(selector.source())
+            );
+        }
+    }
+
+    /// A request that names no project must not grow one by default. `None` is
+    /// "resolve from the directory"; there is no default project anywhere in
+    /// this design, and a serde default that invented one would be exactly that.
+    #[test]
+    fn a_request_names_no_project_unless_the_caller_named_one() {
+        assert_eq!(WireRequest::new(Invocation::Summary, "/tmp").project, None);
+        let bare = serde_json::json!({
+            "protocol": crate::daemon::lifecycle::PROTOCOL,
+            "client_version": env!("CARGO_PKG_VERSION"),
+            "request_id": "r",
+            "cwd": "/tmp",
+            "no_hooks": false,
+            "hook_depth": 0,
+            "invocation": serde_json::to_value(Invocation::Summary).unwrap(),
+        });
+        let decoded: WireRequest =
+            serde_json::from_value(bare).expect("a request with no project field decodes");
+        assert_eq!(decoded.project, None);
     }
 
     #[test]

@@ -639,6 +639,19 @@ pub struct GlobalFlags {
     /// daemon, a git hook, a `story` a hook itself runs — agrees about which
     /// store it is in.
     pub store_path: Option<PathBuf>,
+    /// `--project <slug>`: act on this project, whatever directory this is.
+    ///
+    /// Global for a different reason than [`Self::store_path`], and the
+    /// difference is worth keeping straight. A store is a process-wide fact and
+    /// is *published* to children; a project is a fact about one invocation and
+    /// is deliberately **not**, because exporting it for every descendant would
+    /// be the "current project" state SH-116 exists to abolish.
+    ///
+    /// What makes it global is the parser: [`split_global_flags`] runs before a
+    /// verb is read, so one entry here reaches every verb at once — and, because
+    /// the token never survives to the verb's own arguments, SH-62's
+    /// fail-closed gate never has to be told about it.
+    pub project: Option<String>,
 }
 
 /// Splits the global flags out of `args`, leaving the verb and its own
@@ -702,6 +715,31 @@ pub fn split_global_flags(args: &[String]) -> Result<(GlobalFlags, Vec<String>),
                     ));
                 }
                 flags.store_path = Some(PathBuf::from(value));
+            }
+            "--project" => {
+                let Some(value) = args.get(i + 1).filter(|value| !value.is_empty()) else {
+                    return Err(AppError::Usage(
+                        "--project needs the slug of a project, for example \
+                         `--project storyhook`. `story project list` shows the slugs this \
+                         machine's store has."
+                            .to_string(),
+                    ));
+                };
+                flags.project = Some(value.clone());
+                i += 2;
+                continue;
+            }
+            other if other.starts_with("--project=") => {
+                let value = other.trim_start_matches("--project=");
+                if value.is_empty() {
+                    return Err(AppError::Usage(
+                        "--project= was given no slug. It names a project, for example \
+                         `--project=storyhook`. `story project list` shows the slugs this \
+                         machine's store has."
+                            .to_string(),
+                    ));
+                }
+                flags.project = Some(value.to_string());
             }
             _ => filtered.push(args[i].clone()),
         }

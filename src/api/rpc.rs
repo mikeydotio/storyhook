@@ -131,7 +131,8 @@ fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
             .invoke(
                 InvokeRequest::new(request.invocation.clone())
                     .no_hooks(request.no_hooks)
-                    .stdin(request.stdin.clone()),
+                    .stdin(request.stdin.clone())
+                    .project(request.project.clone()),
             )
     }))
     .unwrap_or_else(|_| {
