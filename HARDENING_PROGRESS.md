@@ -157,7 +157,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal · *`git config --get` walks up, which cost two clauses of the verdict*
 - [x] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink` · *part 1 #101, part 2 PRs #103 and this one* · **the whole surface, and the three retirements**
 - [x] **SH-152** — github-sync resolves every conflict as Skip with no terminal · *critical, data-loss; filed by SH-117's council* · **the loss was one sync later, and it destroyed the local edit**
-- [ ] **SH-151** — two projects in one repository share an origin · *gates SH-119*
+- [x] **SH-151** — two projects in one repository share an origin · *gates SH-119* · **it was a wrong answer, not a missing one**
 - [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk · *blocked by SH-151*
 - [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures
 - [ ] **SH-118** — C6 Ids: bare integers
@@ -2493,3 +2493,126 @@ fired.
 now exits 8 and emits `"result":"error"` whenever any story conflicts, even if
 forty others synced cleanly. Any script treating exit 0 as "the sync ran" was
 already wrong and now finds out.
+
+### SH-151 — done
+
+**Outcome:** merged. Only the directory holding the `.git` that records a remote
+may claim it. Two projects in one repository no longer fight over their
+repository's identity, and the repository's own top level is no longer locked
+out by its child.
+
+**The story understated the defect, and measuring first is what found it —
+again, the third time in this run.** SH-151 called today's behaviour "benign:
+`init` skips registering an origin another project already holds, so nothing is
+broken". Standing in `mono/docs/notes` — a directory belonging to no project —
+`story list` answered about `service-a`, the sibling that had grabbed the
+enclosing origin. And with the pointer files and path rows out of the picture,
+which is exactly what SH-119 does, `story list` in `mono/service-b` answered
+about **`service-a`**. Not a missing answer; a wrong one, silently.
+
+**The user's determination was binding and was given to the council as such.**
+It settles *claiming* — recurse up until a parent stops reporting the same
+origin; only that directory and none of its children may register or be
+associated with it. What the council decided is everything downstream: how
+ownership is expressed, what keeps a non-owning project resolvable once SH-119
+lands, and what `project new` and `link origin` do about it.
+
+**Council: Proposal C, 2 of 3 first preferences, no elimination round needed —
+and the fourth consecutive story where seats voted against their own proposals.**
+Round 1 split 1-0-2, with both non-authors voting for C while C's own author
+voted for A. Then **all three seats revised and none stood**, converging on one
+design; the runoff was a formality over failure semantics and scope. Audit trail
+in `.council/sh151-origin-ownership-and-resolution/`; the verdict is a comment on
+SH-151.
+
+**The chair measured three deliberation claims rather than taking them, and two
+of them moved the design** (`CHAIR-EVIDENCE.md`):
+
+1. **`GIT_DIR` poisoning is real, but the reachability two seats gave for it is
+   false.** With `GIT_DIR` naming another repository, `git config --get` answers
+   for *that* repository while `rev-parse --show-toplevel` answers for the
+   working directory — so an ownership check comparing them agrees with itself
+   and registers the wrong identity. But **no git hook sets `GIT_DIR`** on git
+   2.50.1: pre-commit, post-commit, post-checkout and pre-push all run without
+   it. The real path is `spawn_daemon`, which passes the client's whole
+   environment to a process that outlives it and then runs every probe. Filed as
+   **SH-160**; the scrub landed here anyway, because an ownership check that
+   trusts a poisoned probe is not a fix.
+2. **`git worktree list --porcelain` reports the *gitdir* inside a submodule.**
+   All three revised proposals had adopted it as the "main working tree"
+   primitive. Under it, a submodule root — which has its own `.git` and its own
+   origin — is a non-owner, and a genuine repository can never register the
+   identity it holds.
+3. **A predicate that gets all eight layouts right**, and is cheaper than the one
+   it replaced: `canonical(cwd) == canonical(rev-parse --show-toplevel)` **and**
+   `rev-parse --git-dir == rev-parse --git-common-dir`, read from one
+   invocation. The second clause *is* "cwd is the main working tree" — a linked
+   worktree holds a `.git` file while the config recording the remote belongs to
+   the main checkout's `.git` directory — so it is the structural form of the
+   determination rather than a paraphrase of it. Two subprocesses at
+   registration; **resolution pays none**.
+
+**The type is the fix, and that framing came from the council.** `RepoOrigin`
+says what an origin means *to the directory reporting it* — `Owned` /
+`Inherited { owner }` / `Unknown(reason)` / `Absent` — and only `Owned` yields
+the `OwnedOrigin` registration accepts. Before this there were four
+`link_remote` sites, three inside one `init` transaction, each independently
+deciding whether the directory it stood in was entitled to the URL it had read.
+`register_origin` is the only one now, pinned by a source grep. `Unknown` fails
+**closed**: a probe that cannot be read refuses by name rather than defaulting
+to owned, so a git too old to answer cannot silently restore this defect.
+
+**What keeps a monorepo's sub-project reachable is the committed pointer file,
+not `checkout_path`** — and that answer contradicts SH-119's written acceptance
+criterion rather than merely re-scoping it. The council said so plainly and
+recorded **R1–R4** on that story. R4 is the sharp one, and it is measured: the
+live store holds 13 projects, **zero** registered remotes and zero
+`checkout_path`s, so deleting the walk without an origin backfill leaves every
+one of them unresolvable. `checkout_path` was rejected on three grounds — it
+re-creates the rotting path index the epic exists to delete, it has no unique
+index and conformance pins that two projects may share one, and it cannot travel
+with a clone.
+
+**Two SH-116 deviations withdrawn, as the story asked.** `init` refuses a held
+origin instead of skipping (the monorepo case that forced the skip can no longer
+reach the check), and the `doctor` advisory becomes buildable — filed as
+**SH-161** rather than built, because its predicate needs a machine-wide walk the
+project-scoped, store-pure `IntegrityService` does not have.
+
+**Red→green, and the four green tests are the point.** 8 of 12 new integration
+tests failed before the change; the 4 that passed are the guards against the fix
+going too far — a submodule root still claims, a subdirectory still resolves, a
+sub-project still answers by its pointer, and the repository root can still take
+what its child used to steal. The `GIT_DIR` test failed with
+`left: ["elsewhere.git"]`, which is the poisoning reproduced end to end through
+the CLI rather than argued about.
+
+**Deviation — D3's refusal half is not built**, and this is worth keeping. The
+verdict asked `project new` to refuse when a run would leave the project
+"identified by neither an owned origin nor a pointer file". That premise is
+false today: an attaching run always writes a `project_paths` row and resolution
+still reads it. Built as written, it refused two legitimate fixtures on its first
+run — `invoker_seam.rs`'s own `pointer: false` cases. It moves to SH-119, beside
+R1, where the row goes and "neither" becomes possible. The report half — naming
+the owning directory and who holds the origin — is built.
+
+**One test premise rewritten, not relaxed.** `project_link.rs`'s SH-151 guard
+asserted the refusal contains "top level". Ownership is wider than that now: a
+linked worktree *is* a top level and still owns nothing, so the refusal names the
+owner instead, and the assertion follows the promise rather than the wording.
+
+**Two-hats note.** The four-site DRY collapse is not a refactor riding along with
+a fix — the funnel exists to take the new type, and a commit adding one without
+the other does not compile under `-D warnings`. Same judgement SH-62 recorded for
+its parser gate.
+
+**Gate:** `make test` exits 0 — **113 green test-result blocks**, 0 failures,
+plugin harness 18/0, clippy clean. **Fourteenth consecutive story with no wedge**
+(240 seconds, supervised with log growth as the heartbeat and a 120-second stall
+bound). One earlier run exited 2 in 30 seconds: `cargo fmt --check`, which the
+gate runs before the tests. Worth knowing — a fast non-zero exit from `make test`
+is usually formatting, not a failure.
+
+**Semver: minor.** No interface removed, but `story project new` in a
+subdirectory now registers no origin where it used to register one, and refuses
+a collision it used to skip.

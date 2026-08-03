@@ -181,6 +181,132 @@ impl RemoteUrl {
     }
 }
 
+/// An origin a directory is entitled to **register**, as opposed to one it
+/// merely reports.
+///
+/// The distinction cannot be made by a [`RemoteUrl`], because every directory
+/// in a repository — and every worktree of it — reports the same one. That is
+/// the whole of SH-151: `story project new` in `monorepo/service-a` used to
+/// register the *monorepo's* identity against `service-a`, permanently, because
+/// the value it held could not say where it had come from.
+///
+/// There is no public constructor from a bare [`RemoteUrl`] except
+/// [`explicit`](Self::explicit), which is audited by name. Every other one comes
+/// from [`RepoOrigin::Owned`], which only the ownership check can build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnedOrigin(RemoteUrl);
+
+impl OwnedOrigin {
+    /// A URL the user typed, at a directory that is entitled to it.
+    ///
+    /// **The single escape hatch, and the only place a caller may assert
+    /// ownership rather than compute it.** `story project link origin <url>`
+    /// needs it: the URL is an argument rather than a fact read from the
+    /// working directory, and a project whose checkout lives on another machine
+    /// must still be able to register the origin it answers to from a directory
+    /// that is no repository at all.
+    ///
+    /// The caller is responsible for having ruled out the one shape that is
+    /// never entitled — a URL that *is* the enclosing repository's origin, given
+    /// from a directory that does not own it. That is
+    /// [`RepoOrigin::forbids`](RepoOrigin::forbids), and the reason it is a
+    /// method there rather than a check here is that this constructor cannot see
+    /// the directory.
+    #[must_use]
+    pub fn explicit(url: RemoteUrl) -> Self {
+        Self(url)
+    }
+
+    /// The origin an ownership check computed an entitlement to.
+    ///
+    /// Crate-visible rather than public, so the only *published* way to assert
+    /// ownership is [`explicit`](Self::explicit) — the one a reader can grep for
+    /// and audit. Inside the crate this is what
+    /// [`RepoOrigin::Owned`] is built from.
+    #[must_use]
+    pub(crate) fn computed(url: RemoteUrl) -> Self {
+        Self(url)
+    }
+
+    /// The URL, for the store call that records it.
+    #[must_use]
+    pub fn url(&self) -> &RemoteUrl {
+        &self.0
+    }
+}
+
+/// What a directory's `origin` says about that directory's right to claim it.
+///
+/// # The rule, and why it is two conditions
+///
+/// A directory owns its origin when it is its repository's top level **and**
+/// its `--git-dir` is its `--git-common-dir`. The second condition is "this is
+/// the main working tree": a linked worktree holds a `.git` *file* and shares
+/// the main checkout's config, so the remote it reports belongs to a directory
+/// that is not it. Together they are the structural form of the rule this type
+/// exists to enforce — *only the directory holding the `.git` that records the
+/// remote may claim it* — and they are what keeps a **submodule** root an owner,
+/// since a submodule has its own `.git` and its own origin.
+///
+/// # Why `Unknown` is not `Absent`
+///
+/// Every ordinary failure to find an origin — no git, no repository, no
+/// `origin`, a URL that will not normalize — is [`Absent`](Self::Absent), which
+/// preserves the contract a resolution path depends on: every failure is the
+/// same failure. But a failure of the *ownership probe itself* is different.
+/// Reading it as "not owned" would be conservative; reading it as owned would
+/// silently restore the defect on a git too old to answer. It is neither, and
+/// registration refuses on it by name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RepoOrigin {
+    /// This directory owns the origin and may register it.
+    Owned(OwnedOrigin),
+    /// The origin belongs to `owner`; this directory only reports it because
+    /// `git config` walks up.
+    Inherited {
+        /// The origin, for a refusal that names it.
+        origin: RemoteUrl,
+        /// The directory entitled to it — the repository's main working tree.
+        owner: std::path::PathBuf,
+    },
+    /// The ownership probe could not be run or could not be read. Carries the
+    /// git invocation that failed, because the user has to be able to act on it.
+    Unknown(String),
+    /// No origin here at all, for any of the reasons that mean the same thing.
+    Absent,
+}
+
+impl RepoOrigin {
+    /// The origin this directory may register, if any.
+    #[must_use]
+    pub fn owned(&self) -> Option<&OwnedOrigin> {
+        match self {
+            Self::Owned(origin) => Some(origin),
+            _ => None,
+        }
+    }
+
+    /// Whether registering `url` **here** would be taking an origin this
+    /// directory is not entitled to.
+    ///
+    /// True only for the one shape a collision check cannot catch: the URL is
+    /// the enclosing repository's own origin and this directory does not own it.
+    /// Nobody may be holding that origin yet — which is exactly why the store's
+    /// uniqueness index stays silent, and why the first sub-directory to ask
+    /// would take it permanently and lock out every sibling.
+    ///
+    /// An unrelated URL is *not* forbidden: naming some other repository's
+    /// origin from a directory that has nothing to do with it is what
+    /// `story project link origin <url>` is for.
+    #[must_use]
+    pub fn forbids(&self, url: &RemoteUrl) -> Option<&std::path::Path> {
+        match self {
+            Self::Inherited { origin, owner } if origin == url => Some(owner),
+            _ => None,
+        }
+    }
+}
+
 impl PartialEq for RemoteUrl {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key
@@ -697,6 +823,78 @@ mod tests {
                 RemoteUrl::normalize(raw).ok().map(|r| r.key().to_string()),
                 "{raw}"
             );
+        }
+    }
+
+    /// The origin the ownership fixtures below are about.
+    const URL: &str = "git@github.com:acme/widgets.git";
+
+    fn url(raw: &str) -> RemoteUrl {
+        RemoteUrl::normalize(raw).expect("a fixture URL must normalize")
+    }
+
+    fn inherited(origin: &str, owner: &str) -> RepoOrigin {
+        RepoOrigin::Inherited {
+            origin: url(origin),
+            owner: std::path::PathBuf::from(owner),
+        }
+    }
+
+    #[test]
+    fn only_an_owned_claim_yields_something_registrable() {
+        assert!(
+            RepoOrigin::Owned(OwnedOrigin::computed(url(URL)))
+                .owned()
+                .is_some()
+        );
+        for claim in [
+            inherited(URL, "/code/mono"),
+            RepoOrigin::Unknown("git rev-parse".to_string()),
+            RepoOrigin::Absent,
+        ] {
+            assert!(
+                claim.owned().is_none(),
+                "only an owned claim may be registered: {claim:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_inherited_claim_forbids_its_own_url_and_nothing_else() {
+        let claim = inherited(URL, "/code/mono");
+        assert_eq!(
+            claim.forbids(&url(URL)),
+            Some(std::path::Path::new("/code/mono")),
+            "taking the enclosing repository's own origin is the forbidden shape"
+        );
+        assert!(
+            claim
+                .forbids(&url("git@github.com:acme/unrelated.git"))
+                .is_none(),
+            "naming some other repository's origin is what `link origin <url>` is for"
+        );
+    }
+
+    #[test]
+    fn a_forbidden_url_is_matched_by_key_not_by_spelling() {
+        // The whole point of the key: `https://github.com/acme/widgets` and
+        // `git@github.com:acme/widgets.git` are one identity, so a subdirectory
+        // cannot get around the rule by spelling the URL the other way.
+        assert!(
+            inherited(URL, "/code/mono")
+                .forbids(&url("https://github.com/acme/widgets"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn no_other_claim_forbids_anything() {
+        for claim in [
+            RepoOrigin::Owned(OwnedOrigin::computed(url(URL))),
+            RepoOrigin::Unknown("git rev-parse".to_string()),
+            RepoOrigin::Absent,
+        ] {
+            assert!(claim.forbids(&url(URL)).is_none(), "{claim:?}");
         }
     }
 }
