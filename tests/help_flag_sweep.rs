@@ -47,7 +47,7 @@ const VERBS: &[&[&str]] = &[
     &["decompose"],
     &["web"],
     &["project"],
-    &["project", "init"],
+    &["project", "new", "--prefix", "SH"],
     &["project", "list"],
     &["project", "settings"],
     &["list"],

@@ -57,7 +57,11 @@ fn via_daemon(env: &TestEnv, cwd: &std::path::Path, args: &[&str]) -> std::proce
 /// A project to run commands in.
 fn project(env: &TestEnv) -> tempfile::TempDir {
     let dir = scratch_dir();
-    let out = via_daemon(env, dir.path(), &["project", "init", "--no-agents-md"]);
+    let out = via_daemon(
+        env,
+        dir.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     assert!(out.status.success(), "initializing the fixture project");
     dir
 }
@@ -221,7 +225,11 @@ fn a_relative_path_is_resolved_against_the_clients_directory_over_the_daemon() {
     let started = via_daemon(&env, elsewhere.path(), &["project", "list"]);
     assert!(started.status.success(), "{started:?}");
 
-    let out = via_daemon(&env, here.path(), &["project", "init", "./sub"]);
+    let out = via_daemon(
+        &env,
+        here.path(),
+        &["project", "new", "--prefix", "SH", "--attach", "./sub"],
+    );
     assert!(out.status.success(), "{out:?}");
 
     assert!(

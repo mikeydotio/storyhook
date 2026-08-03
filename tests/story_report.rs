@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn report_text_matches_summary() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
@@ -38,7 +38,7 @@ fn report_text_matches_summary() {
 fn report_html_basic() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -56,7 +56,7 @@ fn report_html_basic() {
 fn report_html_contains_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -82,7 +82,7 @@ fn report_html_contains_stories() {
 fn report_html_xss_title() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -115,7 +115,7 @@ fn report_html_xss_title() {
 fn report_html_xss_comment() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -145,7 +145,7 @@ fn report_html_xss_comment() {
 fn report_html_xss_label() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -181,7 +181,7 @@ fn report_html_xss_label() {
 fn report_html_empty_project() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -198,7 +198,7 @@ fn report_html_empty_project() {
 fn report_html_shows_priority() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -232,7 +232,7 @@ fn report_html_shows_priority() {
 fn report_html_shows_type_breakdown() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

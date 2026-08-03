@@ -42,7 +42,7 @@ fn sync_git_basic() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -72,7 +72,7 @@ fn sync_git_multiple_ids() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -98,7 +98,7 @@ fn sync_git_no_matches() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -120,7 +120,7 @@ fn sync_git_idempotent() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -150,7 +150,7 @@ fn sync_git_not_a_git_repo() {
     let dir = tempdir().unwrap();
     // No git init -- just story init
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -167,7 +167,7 @@ fn sync_git_closed_story_ignored() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -195,7 +195,7 @@ fn sync_git_custom_prefix() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init", "--prefix", "API"])
+        .args(["project", "new", "--prefix", "API"])
         .assert()
         .success();
     story(dir.path())
@@ -224,7 +224,7 @@ fn sync_git_since_flag() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -248,7 +248,7 @@ fn sync_git_summary_message() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -278,7 +278,7 @@ fn sync_git_auto_transition_with_role() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -328,7 +328,7 @@ fn sync_git_no_transition_without_active_state() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -376,7 +376,7 @@ fn sync_git_no_re_transition() {
     let dir = tempdir().unwrap();
     init_git(dir.path());
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

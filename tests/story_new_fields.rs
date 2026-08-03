@@ -19,7 +19,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn new_with_description_sets_description() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -39,7 +39,7 @@ fn new_with_description_sets_description() {
 fn new_without_description_omits_description_line() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -59,7 +59,7 @@ fn new_without_description_omits_description_line() {
 fn new_with_priority_sets_priority() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -79,7 +79,7 @@ fn new_with_priority_sets_priority() {
 fn new_with_invalid_priority_is_rejected_and_creates_no_story() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -96,7 +96,7 @@ fn new_with_invalid_priority_is_rejected_and_creates_no_story() {
 fn new_with_repeated_label_flags_accumulates() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -116,7 +116,7 @@ fn new_with_repeated_label_flags_accumulates() {
 fn new_with_labels_csv_splits_and_trims() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -136,7 +136,7 @@ fn new_with_labels_csv_splits_and_trims() {
 fn new_with_assignee_sets_assignee() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -160,7 +160,7 @@ fn new_with_assignee_sets_assignee() {
 fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -177,7 +177,7 @@ fn new_with_unknown_assignee_is_rejected_and_creates_no_story() {
 fn new_with_all_fields_writes_single_enriched_story() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -224,7 +224,7 @@ fn new_with_all_fields_writes_single_enriched_story() {
 fn set_description_updates_existing_story() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -250,7 +250,7 @@ fn set_description_updates_existing_story() {
 fn set_description_last_write_wins() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -279,7 +279,7 @@ fn set_description_last_write_wins() {
 fn import_maps_description_to_description_field_not_comment() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

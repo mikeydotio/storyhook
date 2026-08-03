@@ -45,7 +45,7 @@ const URL_HTTPS: &str = "https://github.com/acme/widgets";
 fn project(env: &TestEnv) -> (tempfile::TempDir, String) {
     let dir = scratch_dir_named("link-");
     env.story(dir.path())
-        .args(["project", "init", "--no-agents-md"])
+        .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
         .assert()
         .success();
     let slug = slug_at(env, dir.path());
@@ -196,7 +196,7 @@ fn an_omitted_url_takes_this_repositorys_own_origin() {
     let env = TestEnv::isolated();
     let repo = repo_with_origin(URL);
     env.story(repo.path())
-        .args(["project", "init", "--no-agents-md"])
+        .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
         .assert()
         .success();
     let slug = slug_at(&env, repo.path());
@@ -222,7 +222,7 @@ fn an_omitted_url_refuses_inside_an_enclosing_repository() {
     let inner = repo.path().join("service-b");
     std::fs::create_dir_all(&inner).expect("creating the subdirectory");
     env.story(&inner)
-        .args(["project", "init", "--no-agents-md"])
+        .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
         .assert()
         .success();
     let slug = slug_at(&env, &inner);
@@ -266,7 +266,7 @@ fn an_omitted_url_in_a_repository_with_no_origin_lists_what_there_is() {
         &["remote", "add", "upstream", "https://example.test/o/r"],
     );
     env.story(repo.path())
-        .args(["project", "init", "--no-agents-md"])
+        .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
         .assert()
         .success();
     let slug = slug_at(&env, repo.path());

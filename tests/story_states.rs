@@ -15,7 +15,10 @@ fn story(dir: &std::path::Path) -> Command {
 }
 
 fn init(dir: &std::path::Path) {
-    story(dir).args(["project", "init"]).assert().success();
+    story(dir)
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
 }
 
 /// The catalog as `story state list` renders it.

@@ -104,7 +104,11 @@ fn a_missing_database_is_created_rather_than_reported() {
         "the fixture starts with nothing"
     );
 
-    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    let out = story_in(
+        &env,
+        cwd.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     assert!(
         out.status.success(),
         "a first run must create the store: {}",
@@ -122,7 +126,11 @@ fn a_zero_byte_database_is_treated_as_a_fresh_one() {
     let env = env_with_store_bytes(b"");
     let cwd = scratch_dir();
 
-    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    let out = story_in(
+        &env,
+        cwd.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     assert!(
         out.status.success(),
         "an empty file is an empty database: {}",
@@ -235,7 +243,11 @@ fn a_directory_where_the_database_belongs_names_the_path() {
     let cwd = scratch_dir();
     std::fs::create_dir_all(env.store_path()).expect("putting a directory in the way");
 
-    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    let out = story_in(
+        &env,
+        cwd.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     let message = failure_message(&out, "story init");
     assert!(
         message.contains(&env.store_path().display().to_string()),
@@ -267,7 +279,11 @@ fn a_truncated_database_says_it_is_damaged_and_where_the_backups_are() {
 
     let env = env_with_store_bytes(&whole[..4096]);
     let cwd = scratch_dir();
-    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    let out = story_in(
+        &env,
+        cwd.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     let message = failure_message(&out, "story init");
 
     assert_actionable_corruption(&env, &message);
@@ -279,7 +295,11 @@ fn a_truncated_database_says_it_is_damaged_and_where_the_backups_are() {
 fn a_file_that_is_not_a_database_says_so_in_the_same_words() {
     let env = env_with_store_bytes(b"this is not a database, it is a note to self\n");
     let cwd = scratch_dir();
-    let out = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    let out = story_in(
+        &env,
+        cwd.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     let message = failure_message(&out, "story init");
 
     assert_actionable_corruption(&env, &message);
@@ -399,7 +419,11 @@ fn a_clone_whose_pointer_names_an_unknown_project_adopts_that_identity() {
     std::fs::write(clone.path().join(".storyhook.toml"), committed)
         .expect("writing the committed pointer");
 
-    let out = story_in(&env, clone.path(), &["project", "init", "--no-agents-md"]);
+    let out = story_in(
+        &env,
+        clone.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     assert!(
         out.status.success(),
         "init on a clone must succeed: {}",
@@ -558,7 +582,11 @@ fn the_remedy_a_damaged_store_prints_can_actually_be_run() {
     // And the rest of the remedy then works, which is what makes step one worth
     // fixing rather than merely worth reporting.
     std::fs::remove_file(env.store_path()).expect("deleting the damaged store");
-    let after = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    let after = story_in(
+        &env,
+        cwd.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     assert!(
         after.status.success(),
         "a fresh store must open once the damaged one is gone: {}",
@@ -654,7 +682,11 @@ fn a_stale_failure_record_is_not_blamed_on_a_daemon_that_started_fine() {
     let cwd = scratch_dir();
 
     // A working store, so the daemon this test starts will succeed.
-    let init = story_in(&env, cwd.path(), &["project", "init", "--no-agents-md"]);
+    let init = story_in(
+        &env,
+        cwd.path(),
+        &["project", "new", "--prefix", "SH", "--no-agents-md"],
+    );
     assert!(
         init.status.success(),
         "the fixture needs a project: {}",

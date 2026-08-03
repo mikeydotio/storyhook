@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn context_generates_markdown() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -45,7 +45,7 @@ fn context_generates_markdown() {
 fn context_shows_blocked_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -69,7 +69,7 @@ fn context_shows_blocked_stories() {
 fn context_json_format() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "A task"]).assert().success();
@@ -86,7 +86,7 @@ fn context_json_format() {
 fn context_empty_project() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -101,7 +101,7 @@ fn context_empty_project() {
 fn context_shows_type_distribution() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -131,7 +131,7 @@ fn context_shows_type_distribution() {
 fn context_json_includes_type_distribution() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
