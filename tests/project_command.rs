@@ -83,6 +83,70 @@ fn a_relative_path_resolves_against_the_directory_the_client_ran_in() {
     env.story(&sub).arg("summary").assert().success();
 }
 
+/// Everything `story project list` printed for the project rooted at `dir`.
+fn listing(env: &TestEnv, dir: &Path) -> String {
+    let out = env
+        .story(dir)
+        .args(["project", "list"])
+        .output()
+        .expect("running `story project list`");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Attaching a checkout records it in `projects.checkout_path` as well as in
+/// the resolution index, which is what makes `project init` and the
+/// `project new --attach` that replaces it mean the same thing.
+#[test]
+fn initializing_a_project_records_the_directory_as_its_checkout() {
+    let env = TestEnv::isolated();
+    let dir = bare_dir(&env, "repo");
+
+    project(&env, &dir, &["init", "--no-agents-md"]).success();
+
+    let canonical = dir.canonicalize().expect("canonicalizing the checkout");
+    let listed = listing(&env, &dir);
+    assert!(
+        listed.contains(&format!("checkout  {}", canonical.display())),
+        "`project list` must report the checkout init attached:\n{listed}"
+    );
+}
+
+/// The gap is filled, never the occupant evicted.
+///
+/// A checkout says where a project's repo-side work runs, and moving it is
+/// `story project link checkout`'s job — the verb that reports what it
+/// displaced. Attaching a second clone must not perform that move silently, or
+/// somebody finds out weeks later that dispatch has been running in the wrong
+/// tree.
+#[test]
+fn initializing_a_second_clone_does_not_steal_the_first_ones_checkout() {
+    let env = TestEnv::isolated();
+    let first = bare_dir(&env, "first");
+    let second = bare_dir(&env, "second");
+    project(&env, &first, &["init", "--no-agents-md"]).success();
+
+    // A clone is a directory carrying the same committed pointer, which is the
+    // route `init` adopts an existing project through.
+    std::fs::copy(
+        first.join(".storyhook.toml"),
+        second.join(".storyhook.toml"),
+    )
+    .expect("copying the pointer file");
+    project(&env, &second, &["init", "--no-agents-md"]).success();
+
+    let listed = listing(&env, &first);
+    let kept = first.canonicalize().expect("canonicalizing the first");
+    let stolen = second.canonicalize().expect("canonicalizing the second");
+    assert!(
+        listed.contains(&format!("checkout  {}", kept.display())),
+        "the first checkout must survive the second clone:\n{listed}"
+    );
+    assert!(
+        !listed.contains(&format!("checkout  {}", stolen.display())),
+        "the second clone must not have taken the checkout slot:\n{listed}"
+    );
+}
+
 #[test]
 fn project_init_is_idempotent_and_does_not_rewind_the_story_counter() {
     let env = TestEnv::isolated();

@@ -221,6 +221,103 @@ mod an_explicit_path {
     }
 }
 
+/// The verb that replaces `init` inherits the guard, and the one shape that
+/// deliberately escapes it is pinned as a decision rather than left as a hole.
+///
+/// `project_creation_target` is the only route to the guard, it has one call
+/// site, and until SH-117 it matched `Init` inside a `_ => None` catch-all —
+/// so adding `New` beside it additively would have created projects unguarded
+/// with a green build *and* a green suite. That match is exhaustive now, which
+/// makes a forgotten arm a compile error; these two tests are what makes a
+/// *wrong* arm a failing test.
+mod the_new_verb {
+    use super::{
+        daemon_containment, non_temporary_data_home, store_knows_project_at, story_binary,
+    };
+    use std::path::Path;
+    use storyhook_test_support::scratch_dir;
+
+    /// Runs `story project new` in `cwd` against `data_home`, nothing
+    /// inherited — the same containment `init_project_in` uses and for the same
+    /// reason.
+    fn new_project_in(cwd: &Path, args: &[&str], data_home: &Path) -> std::process::Output {
+        let mut cmd = std::process::Command::new(story_binary());
+        cmd.current_dir(cwd)
+            .env_clear()
+            .env("HOME", cwd)
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("STORYHOOK_DATA_DIR", data_home)
+            .args(["project", "new"])
+            .args(args);
+        for (name, value) in daemon_containment() {
+            cmd.env(name, value);
+        }
+        cmd.output().expect("running the binary under test")
+    }
+
+    /// D20(f). Named from a safe working directory, so the only thing the guard
+    /// can be judging is the `--attach` target.
+    #[test]
+    fn attaching_a_temporary_target_in_a_real_store_is_refused() {
+        let safe_cwd = non_temporary_data_home("sh95-new-cwd");
+        let fixture = scratch_dir();
+        let data_home = non_temporary_data_home("sh95-new-real-store");
+
+        let out = new_project_in(
+            &safe_cwd,
+            &[
+                "--prefix",
+                "SH",
+                "--attach",
+                fixture.path().to_str().unwrap(),
+            ],
+            &data_home,
+        );
+
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "a temporary attach target is the creation, wherever it was typed; stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!store_knows_project_at(&data_home, fixture.path()));
+        assert!(!fixture.path().join(".storyhook.toml").exists());
+    }
+
+    /// D20(g). **A recorded narrowing, not an oversight.**
+    ///
+    /// `--no-attach` creates nothing at a path, so there is no path for a rule
+    /// about paths to judge. The project it writes cannot rot into a row
+    /// pointing at a deleted directory, because it points at no directory —
+    /// which is the harm SH-95 exists to prevent.
+    ///
+    /// This test exists so that the narrowing is a decision somebody made
+    /// rather than a hole somebody rediscovers as a defect. If the rule is ever
+    /// widened to cover it, this is the assertion that has to be argued with.
+    #[test]
+    fn no_attach_is_deliberately_outside_the_guard() {
+        let temp_cwd = scratch_dir();
+        let data_home = non_temporary_data_home("sh95-new-no-attach");
+
+        let out = new_project_in(
+            temp_cwd.path(),
+            &["--prefix", "SH", "--name", "detached", "--no-attach"],
+            &data_home,
+        );
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "nothing is created at a path, so the path rule has nothing to judge; stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !store_knows_project_at(&data_home, temp_cwd.path()),
+            "and the temporary directory is still not registered anywhere"
+        );
+    }
+}
+
 /// The refusal is never a wall with no way past.
 #[test]
 fn the_override_permits_a_temp_project_in_a_real_store() {
