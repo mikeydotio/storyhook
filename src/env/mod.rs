@@ -402,6 +402,30 @@ pub const fn is_test_build() -> bool {
 /// `./target/debug/story list` after a `cargo test` needs to be told that the
 /// binary in front of them is not the one they meant, because the refusal
 /// otherwise reads as storyhook being broken.
+///
+/// # Why this checks `origin()` and not [`StoreLocation::is_default`] (SH-95)
+///
+/// It looks like a hole: naming the default store explicitly — `--store-path
+/// ~/.local/share/storyhook/store.db`, or either variable pointed there — gets
+/// `origin() != XdgDefault` and is not refused. Tried the obvious fix
+/// (`store.is_default()`, "did we end up at the real store" rather than "did
+/// anything name it") and reverted it: `is_default()` is relative to whatever
+/// `HOME` this process has, and [`crate::env`]'s own primary test harness
+/// (`TestEnv`, in `storyhook-test-support`) *deliberately* builds a fake `HOME`
+/// and points every store-naming variable at that fake home's own
+/// default-shaped subdirectory — `home.join(".local/share/storyhook")` — so
+/// that a fixture behaves like a real layout while staying disposable. That
+/// makes `is_default()` true for essentially every correctly isolated fixture
+/// in the suite, indistinguishable by path alone from the real hazard. Nothing
+/// available here can tell "a fake `HOME` mirroring the default layout" apart
+/// from "the real `HOME` at the default layout", because both are answered
+/// from the same two inputs. Switching the predicate refused the harness's own
+/// conformance test (`the_harness_always_names_a_data_directory`) and, through
+/// it, every fixture built the same way — caught by running the suite, not by
+/// review. Accepted as a known, narrow gap rather than chased further: it
+/// requires an explicit override that happens to spell out the literal real
+/// default path while also running with an unmodified real `HOME`, which is a
+/// much smaller target than the "nothing named it" case this guard exists for.
 const TEST_BUILD_REFUSAL: &str = "refusing to guess where the store lives: this binary carries \
      the `fault-injection` feature, which `cargo test` enables and `cargo build` does not, so it \
      is a test build — and with nothing naming a store it would fall back to the real \

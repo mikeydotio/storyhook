@@ -264,3 +264,31 @@ Two consequences worth naming: `scripts/check-no-orphan-servers.sh` matches the 
 argv, and a flag now sits between the binary and the verb — a guard that matches nothing
 passes, so its pattern was widened. And a launchd agent for a non-default store carries
 `--store-path`, because its log path is already that store's.
+
+**7. `refuse_temp_project_in_real_store` (SH-95) was not retired, and a "state the fact"
+version of it was tried and reverted.** This design's stated premise for retiring it —
+"projects are no longer created *at a path*" — does not hold: `--attach` still defaults to
+the client's cwd, and `import-project` and a non-dry-run `migrate` still create at a path
+(`project_creation_target`, `src/invoke.rs`). The guard is also the only thing that fires
+on the caller SH-122 names as the residual gap — a foreign suite that never opts into
+`--store-path` at all — so nothing here replaces its detection.
+
+Its store-side check — `is_under_temp(store_path)`, a path guess — looked improvable by
+`store.is_default()`, a fact: "is this the store every other command reaches for" rather
+than "does this path look temporary". Tried, and reverted after running the suite rather
+than after review: `is_default()` is relative to whatever `HOME` a process has, and
+`TestEnv` (this design's own primary test harness, `storyhook-test-support`) deliberately
+builds a fake `HOME` and points every store-naming variable at *that* home's own
+default-shaped subdirectory, so a fixture's layout mirrors a real one while staying
+disposable. That makes `is_default()` true for essentially every correctly isolated
+fixture in the suite — indistinguishable by path alone from the real hazard, because both
+answers come from the same two inputs (`HOME`, and whether anything overrides it). The
+same substitution was tried on `is_test_build()`'s own refusal (`origin() == XdgDefault` →
+`is_default()`) for the identical reason and reverted for the identical one: it refused
+`the_harness_always_names_a_data_directory`, `TestEnv`'s own conformance test, and with it
+every fixture built the same way.
+
+What shipped instead: the refusal message now offers `story store new` and `--store-path`
+first, with `$STORYHOOK_DATA_DIR` named as the environment-only route that loses if a
+higher lever is also set — the same defect class as As-built item 6, one level up, in
+prose a human reads rather than in a harness a script runs.
