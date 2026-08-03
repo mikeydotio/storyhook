@@ -27,10 +27,10 @@ pub struct StoryView {
     pub progress: Option<ProgressRollup>,
 }
 
-/// What `story project deinit` would destroy, counted before anything is.
+/// What `story project delete` would destroy, counted before anything is.
 ///
 /// The payload of the only [`Response`] that is a *question* rather than an
-/// answer. An unforced deinit returns it without writing anything; it travels
+/// answer. An unforced delete returns it without writing anything; it travels
 /// to whichever process has a terminal and becomes a prompt there — or, with
 /// `--json` or no terminal, a refusal naming `--force`.
 ///
@@ -38,7 +38,12 @@ pub struct StoryView {
 /// its own warning and gates its own button from these numbers, and a
 /// pre-rendered English sentence would leave it parsing one. That both of them
 /// render *this* value is what stops the CLI and the browser from growing two
-/// different ideas of what deinit does.
+/// different ideas of what delete does.
+///
+/// It carried two more fields until SH-117 — the repository files the verb was
+/// about to remove, and the ones it had decided to keep. There are none of
+/// either now: `delete` touches no filesystem, so there is nothing to promise
+/// about one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeinitPlan {
     /// The project's slug — what the user must type to confirm.
@@ -52,16 +57,11 @@ pub struct DeinitPlan {
     /// How many events go. The irreversible number.
     pub events: usize,
     /// Every checkout the store records, whether or not it still exists.
-    pub checkouts: Vec<String>,
-    /// Repository files this deinit will delete.
-    pub files: Vec<String>,
-    /// Files it found and will **not** delete, each with the reason.
     ///
-    /// An `AGENTS.md` the user edited is what this exists for. A warning that
-    /// listed it under [`files`](Self::files) would be promising destruction it
-    /// is not going to perform; one that omitted it entirely would leave the
-    /// user to discover the leftover themselves.
-    pub kept: Vec<(String, String)>,
+    /// Listed because each is a directory that will be left carrying a
+    /// `.storyhook.toml` naming a project that no longer exists. Nothing
+    /// deletes them; saying so is the whole of what this list is for.
+    pub checkouts: Vec<String>,
 }
 
 /// What `story purge` would destroy, read before anything is.
@@ -100,11 +100,11 @@ pub struct PurgePlan {
 ///
 /// Internally tagged, so the document says which kind it is rather than
 /// leaving a reader to infer it from which fields are present. The tag is
-/// additive: a deinit plan carries every field it always did.
+/// additive: a delete plan carries every field it still has.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "confirm", rename_all = "kebab-case")]
 pub enum ConfirmationPlan {
-    /// `story project deinit` — a project and everything recorded against it.
+    /// `story project delete` — a project and everything recorded against it.
     Deinit(DeinitPlan),
     /// `story purge` — one story and everything recorded against it.
     Purge(PurgePlan),
@@ -761,10 +761,15 @@ fn render_project_settings(settings: &[SettingView]) -> String {
     entries.join("\n")
 }
 
-/// The warning a deinit prints before it asks.
+/// The warning a delete prints before it asks.
 ///
 /// Ordered by what a person needs in order to answer: what this is, what is
 /// irreversible about it, what will be left behind, and only then the question.
+///
+/// The checkout list is followed by a sentence saying the files in it are left
+/// alone. Without it the list reads exactly as it did when this verb removed
+/// them, which is the one misreading that matters here — a person scanning a
+/// destruction warning takes a list of paths as a list of casualties.
 pub fn render_deinit_plan(plan: &DeinitPlan) -> String {
     let mut body = String::new();
     body.push_str(&format!("{} — {}\n", plan.slug, plan.name));
@@ -778,11 +783,11 @@ pub fn render_deinit_plan(plan: &DeinitPlan) -> String {
     for checkout in &plan.checkouts {
         body.push_str(&format!("  checkout  {checkout}\n"));
     }
-    for file in &plan.files {
-        body.push_str(&format!("  remove    {file}\n"));
-    }
-    for (file, why) in &plan.kept {
-        body.push_str(&format!("  keep      {file} ({why})\n"));
+    if !plan.checkouts.is_empty() {
+        body.push_str(
+            "  Nothing in those directories is touched; their `.storyhook.toml` is left \
+             naming a project that will not exist.\n",
+        );
     }
     body.push_str("\nThis cannot be undone.\n");
     body

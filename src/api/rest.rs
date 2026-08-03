@@ -119,7 +119,7 @@ fn mutating(method: &Method) -> bool {
 /// Decides how to respond to a request against `store`.
 ///
 /// `/` always serves the single-page app; `/api/repos` (list/init) and
-/// `/api/repos/<id>` (deinit) operate on the project catalog; every other
+/// `/api/repos/<id>` (delete) operate on the project catalog; every other
 /// `/api/repos/<id>/...` path resolves `<id>` to that project and delegates to
 /// [`route_project`], the entire per-project API surface.
 pub fn route<S: Store>(
@@ -473,8 +473,27 @@ fn invoke_from_browser<S: Store>(
     cwd: &std::path::Path,
     invocation: Invocation,
 ) -> Result<Response, AppError> {
+    invoke_from_browser_as(store, env, cwd, invocation, None)
+}
+
+/// [`invoke_from_browser`], for a route that names its project by slug.
+///
+/// A browser has no working directory to resolve from, so a scoped verb
+/// reached from one has to carry a selector — the same
+/// [`ProjectSelector::Flag`](crate::api::wire::ProjectSelector::Flag) a
+/// `--project <slug>` on the command line produces. Routing it through the
+/// selector rather than through a target field of the action's own is what
+/// keeps SH-116's "three ways and no fourth" true of the browser too.
+fn invoke_from_browser_as<S: Store>(
+    store: &S,
+    env: &Environment,
+    cwd: &std::path::Path,
+    invocation: Invocation,
+    project: Option<crate::api::wire::ProjectSelector>,
+) -> Result<Response, AppError> {
     use crate::invoke::{InvokeRequest, Invoker as _};
-    crate::invoke::StoreInvoker::new(store, cwd, env.clone()).invoke(InvokeRequest::new(invocation))
+    crate::invoke::StoreInvoker::new(store, cwd, env.clone())
+        .invoke(InvokeRequest::new(invocation).project(project))
 }
 
 /// `DELETE /api/repos/{id}` — **permanently delete** a project and everything
@@ -495,15 +514,21 @@ fn route_deinit_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &st
             .is_some_and(|typed| typed == id);
 
         let invocation = Invocation::Project {
-            action: ProjectAction::Deinit {
-                target: Some(id.to_string()),
-                force: confirmed,
-            },
+            action: ProjectAction::Delete { force: confirmed },
         };
-        // The daemon has no working directory of the user's; a slug target does
-        // not need one, and `deinit` only touches repository files in a
-        // directory the caller named by path.
-        let response = invoke_from_browser(store, env, std::path::Path::new("/"), invocation)?;
+        // The project is named the way every other scoped verb names one — the
+        // selector — rather than by a target field the action no longer has.
+        // The daemon has no working directory of the user's and does not need
+        // one: `delete` reads no filesystem, and the slug answers on its own.
+        let response = invoke_from_browser_as(
+            store,
+            env,
+            std::path::Path::new("/"),
+            invocation,
+            Some(crate::api::wire::ProjectSelector::Flag {
+                slug: id.to_string(),
+            }),
+        )?;
         let status = match response {
             Response::ConfirmationRequired(_) => 409,
             _ => 200,

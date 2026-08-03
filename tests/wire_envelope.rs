@@ -407,12 +407,10 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 prefix: "SH".to_string(),
                 stories: 47,
                 events: 312,
-                checkouts: vec!["/Volumes/Code/storyhook".to_string()],
-                files: vec!["/Volumes/Code/storyhook/.storyhook.toml".to_string()],
-                kept: vec![(
-                    "/Volumes/Code/storyhook/AGENTS.md".to_string(),
-                    "edited since it was generated".to_string(),
-                )],
+                checkouts: vec![
+                    "/Volumes/Code/storyhook".to_string(),
+                    "/Volumes/Code/storyhook/.claude/worktrees/sh-117".to_string(),
+                ],
             }))),
         ),
         (
@@ -424,8 +422,6 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 stories: 0,
                 events: 0,
                 checkouts: Vec::new(),
-                files: Vec::new(),
-                kept: Vec::new(),
             }))),
         ),
         (
@@ -485,8 +481,8 @@ fn a_second_wire_hop_is_a_fixed_point() {
 /// A deinit plan's fields stay directly under `plan`, alongside the `confirm`
 /// discriminant rather than nested beneath it.
 ///
-/// The dashboard reads `err.body.plan.slug`, `.stories`, `.events`, `.files`
-/// and `.kept` out of the 409 it gets from `DELETE /api/repos/{id}` and draws
+/// The dashboard reads `err.body.plan.slug`, `.stories`, `.events` and
+/// `.checkouts` out of the 409 it gets from `DELETE /api/repos/{id}` and draws
 /// its own modal from them (`src/web_dashboard.html`). `ConfirmationPlan` is an
 /// enum now, and the *externally* tagged default would have moved every one of
 /// those a level down — a browser-only breakage, invisible to a Rust round-trip
@@ -499,9 +495,7 @@ fn a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
         prefix: "SH".to_string(),
         stories: 47,
         events: 312,
-        checkouts: Vec::new(),
-        files: vec!["/repo/.storyhook.toml".to_string()],
-        kept: Vec::new(),
+        checkouts: vec!["/repo".to_string()],
     })));
 
     let rendered = render_response(&response, true, false);
@@ -517,8 +511,7 @@ fn a_deinit_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
     assert_eq!(plan["name"], "storyhook — the tracker");
     assert_eq!(plan["stories"], 47);
     assert_eq!(plan["events"], 312);
-    assert_eq!(plan["files"][0], "/repo/.storyhook.toml");
-    assert!(plan["kept"].is_array());
+    assert_eq!(plan["checkouts"][0], "/repo");
 }
 
 /// `Response`'s wire form is externally tagged, so the variant travels as the
@@ -763,10 +756,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             },
         },
         Invocation::Project {
-            action: ProjectAction::Deinit {
-                target: Some("some-slug".to_string()),
-                force: true,
-            },
+            action: ProjectAction::Delete { force: true },
         },
         Invocation::Project {
             action: ProjectAction::List,

@@ -2685,12 +2685,17 @@ tbody tr:hover { background: var(--bg-sunken); }
         plan.events + (plan.events === 1 ? " event" : " events") + " will be permanently deleted."
       ])
     ];
-    (plan.files || []).forEach(function(f) {
-      lines.push(el("div", { class: "deinit-line" }, ["remove  " + f]));
+    // The checkouts are named, and then told apart from a list of casualties.
+    // Nothing under them is deleted since SH-117, and a bare list of paths in a
+    // destruction warning reads as exactly the opposite.
+    (plan.checkouts || []).forEach(function(path) {
+      lines.push(el("div", { class: "deinit-line" }, ["checkout  " + path]));
     });
-    (plan.kept || []).forEach(function(pair) {
-      lines.push(el("div", { class: "deinit-line" }, ["keep    " + pair[0] + " (" + pair[1] + ")"]));
-    });
+    if ((plan.checkouts || []).length) {
+      lines.push(el("div", { class: "deinit-line" }, [
+        "Nothing in those directories is touched; their .storyhook.toml is left naming a project that will not exist."
+      ]));
+    }
     lines.push(el("div", { class: "deinit-warning" }, ["This cannot be undone."]));
 
     var error = el("div", { class: "modal-error" }, []);

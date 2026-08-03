@@ -38,7 +38,7 @@ use crate::help_topics;
 use crate::output::{ConfirmationPlan, Response, render_html_report};
 use crate::service::transfer::ProjectExport;
 use crate::service::{
-    CatalogService, Clock, ConfigService, Ctx, DeinitOutcome, DeinitTarget, FieldEdits, GitService,
+    CatalogService, Clock, ConfigService, Ctx, DeinitOutcome, FieldEdits, GitService,
     GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
     NewStoryInput, PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService,
     ReopenOutcome, SessionService, SettingsService, StateListing, StoryService, SystemService,
@@ -143,7 +143,7 @@ impl InvokeRequest {
     pub fn forced(mut self) -> Self {
         match &mut self.invocation {
             Invocation::Project { action } => match action {
-                ProjectAction::Deinit { force, .. } => *force = true,
+                ProjectAction::Delete { force } => *force = true,
                 ProjectAction::New(_)
                 | ProjectAction::Init { .. }
                 | ProjectAction::List
@@ -372,7 +372,7 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         Invocation::Delete { id, reason } => StoryService::new(ctx)
             .delete(&id, &reason)
             .map(Response::Message),
-        // Two-step, exactly as `project deinit` is: an unforced purge answers
+        // Two-step, exactly as `project delete` is: an unforced purge answers
         // with what it would destroy and writes nothing. The client decides
         // whether to ask, because the client is the process with a terminal.
         Invocation::Purge { id, force } => {
@@ -606,6 +606,9 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         Invocation::Project {
             action: ProjectAction::Unlink(target),
         } => dispatch_project_unlink(ctx, target),
+        Invocation::Project {
+            action: ProjectAction::Delete { force },
+        } => dispatch_project_delete(ctx, force),
         Invocation::Web { .. }
         | Invocation::Daemon { .. }
         | Invocation::Store { .. }
@@ -726,18 +729,6 @@ fn dispatch_project<S: Store>(
                 })?;
             Ok(Response::Message(init_message(&outcome)))
         }
-        ProjectAction::Deinit { target, force } => {
-            let service = ProjectService::new(store, root).clock(Clock::Fixed(now.to_string()));
-            let target = deinit_target(store, root, target.as_deref())?;
-            if !force {
-                // Nothing is written. The client decides whether to ask again.
-                return Ok(Response::ConfirmationRequired(Box::new(
-                    ConfirmationPlan::Deinit(service.deinit_plan(&target)?),
-                )));
-            }
-            let outcome = service.deinit(&target)?;
-            Ok(Response::Message(deinit_message(&outcome)))
-        }
         ProjectAction::List => {
             let entries = CatalogService::new(store).all()?;
             if entries.is_empty() {
@@ -791,7 +782,31 @@ fn dispatch_project<S: Store>(
              `--project <slug>`, or run them in a checkout storyhook already resolves."
                 .to_string(),
         )),
+        ProjectAction::Delete { .. } => Err(AppError::Usage(
+            "`story project delete` needs a project: name one with `--project <slug>`, or run \
+             it in a checkout storyhook already resolves."
+                .to_string(),
+        )),
     }
+}
+
+/// `story project delete [--force]` against a resolved project.
+///
+/// The two-step is the whole of it. An unforced request answers with the plan
+/// and writes nothing; the client — the only process with a terminal — turns
+/// that into a prompt, and sends the same request back with `force` set. The
+/// invocation is otherwise untouched, so the thing destroyed is the thing the
+/// plan described.
+fn dispatch_project_delete<S: Store>(ctx: &Ctx<'_, S>, force: bool) -> Result<Response, AppError> {
+    let service =
+        ProjectService::new(ctx.store(), ctx.cwd()).clock(Clock::Fixed(ctx.now().to_string()));
+    if !force {
+        return Ok(Response::ConfirmationRequired(Box::new(
+            ConfirmationPlan::Deinit(service.deinit_plan(ctx.project())?),
+        )));
+    }
+    let outcome = service.deinit(ctx.project())?;
+    Ok(Response::Message(deinit_message(&outcome)))
 }
 
 /// `story project link origin|checkout …` against a resolved project.
@@ -899,36 +914,10 @@ fn dispatch_project_settings<S: Store>(
     Ok(Response::ProjectSettings(settings))
 }
 
-/// What `story project deinit [TARGET]` names.
-///
-/// A bare `deinit` is the working directory. A given target is a path when it
-/// resolves to one on disk and a slug otherwise — decided in that order because
-/// a directory is the thing a user is standing in, and because a slug that
-/// happens to match a directory name would otherwise silently mean the wrong
-/// project. A target that is neither is still handed on as a slug, so the
-/// failure names it rather than guessing.
-fn deinit_target<S: Store>(
-    store: &S,
-    root: &Path,
-    target: Option<&str>,
-) -> Result<DeinitTarget, AppError> {
-    let Some(target) = target else {
-        return Ok(DeinitTarget::Path(root.to_path_buf()));
-    };
-    let as_path = target_dir(root, Some(target));
-    if as_path.is_dir() {
-        return Ok(DeinitTarget::Path(as_path));
-    }
-    // Not a directory. A slug the store knows is the answer; anything else is
-    // reported as a slug so the error says what was actually typed.
-    let _ = store;
-    Ok(DeinitTarget::Slug(target.to_string()))
-}
-
-/// What a completed deinit tells the user.
+/// What a completed delete tells the user.
 fn deinit_message(outcome: &DeinitOutcome) -> String {
     let plan = &outcome.plan;
-    let mut lines = vec![format!("deinitialized {} — {}", plan.slug, plan.name)];
+    let mut lines = vec![format!("deleted {} — {}", plan.slug, plan.name)];
     lines.push(format!(
         "  deleted   {} stor{}, {} event{}",
         outcome.removed.stories,
@@ -940,11 +929,8 @@ fn deinit_message(outcome: &DeinitOutcome) -> String {
         outcome.removed.events,
         if outcome.removed.events == 1 { "" } else { "s" },
     ));
-    for file in &plan.files {
-        lines.push(format!("  removed   {file}"));
-    }
-    for (file, why) in &plan.kept {
-        lines.push(format!("  kept      {file} ({why})"));
+    for checkout in &plan.checkouts {
+        lines.push(format!("  left      {checkout}"));
     }
     lines.join("\n")
 }
@@ -2107,7 +2093,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
                     Attach::Nothing => None,
                 },
             },
-            ProjectAction::Deinit { .. }
+            ProjectAction::Delete { .. }
             | ProjectAction::List
             | ProjectAction::Link(_)
             | ProjectAction::Unlink(_)
@@ -2277,7 +2263,7 @@ fn describe_unscoped(invocation: &Invocation) -> String {
         Invocation::Project { action } => match action {
             ProjectAction::New(_) => "project new",
             ProjectAction::Init { .. } => "project init",
-            ProjectAction::Deinit { .. } => "project deinit",
+            ProjectAction::Delete { .. } => "project delete",
             ProjectAction::List => "project list",
             ProjectAction::Link(_) => "project link",
             ProjectAction::Unlink(_) => "project unlink",
@@ -2315,18 +2301,20 @@ fn is_project_less(invocation: &Invocation) -> bool {
         return true;
     }
     match invocation {
-        // `new`, `init`, `deinit` and `list` are about projects in general; the
-        // other three are about *this* one and cannot be answered without
-        // resolving it. Stated positively, so a variant added later is
-        // project-less only because somebody said so — the negated form
-        // classified every new arm as unscoped, which is how `link` would have
-        // been dispatched with no project and no way to see a selector.
+        // `new`, `init` and `list` are about projects in general; the other four
+        // are about *this* one and cannot be answered without resolving it.
+        // Stated positively, so a variant added later is project-less only
+        // because somebody said so — the negated form classified every new arm
+        // as unscoped, which is how `link` would have been dispatched with no
+        // project and no way to see a selector.
+        //
+        // `delete` moved to the scoped side in SH-117. `deinit` was unscoped
+        // because it carried its own target and resolved it itself; `delete`
+        // has no target of its own, so the ordinary selector is what names it
+        // — which is also what gives it `no_project_refusal` for free.
         Invocation::Project { action } => matches!(
             action,
-            ProjectAction::New(_)
-                | ProjectAction::Init { .. }
-                | ProjectAction::Deinit { .. }
-                | ProjectAction::List
+            ProjectAction::New(_) | ProjectAction::Init { .. } | ProjectAction::List
         ),
         Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }

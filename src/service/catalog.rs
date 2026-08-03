@@ -8,7 +8,7 @@
 //! In the store there is no second file, and there is no registration step
 //! either. A project *is* a catalog entry and its checkouts are rows beside it,
 //! so `story project init` puts a project here by creating it and
-//! `story project deinit` removes it by deleting it. What is left in this
+//! `story project delete` removes it by deleting it. What is left in this
 //! module is everything that is *about* the catalog rather than about a
 //! project's existence:
 //!

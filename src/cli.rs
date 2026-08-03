@@ -100,7 +100,7 @@ pub const HELP_TEXT: &str = r#"story - CLI-first issue tracker for AI agents
 
 Usage:
   story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
-  story project deinit [PATH|SLUG] [--force]       (delete a project and its stories)
+  story project delete [--force]                   (delete a project and its stories)
   story project list                               (every project storyhook knows)
   story project settings list|get|set|unset        (this project's settings)
   story new <title> [--state <slug>] [--type <slug>] [--description <text>]
@@ -558,14 +558,18 @@ pub enum ProjectAction {
         no_agents_md: bool,
     },
     /// Destroy a project and everything recorded against it.
-    Deinit {
-        /// A checkout path or a project slug; `None` means the working
-        /// directory.
-        ///
-        /// A slug is accepted because a project this machine has no checkout
-        /// of cannot be named by path — and that is exactly the project most
-        /// worth deleting.
-        target: Option<String>,
+    ///
+    /// **No target of its own.** Which project this is comes from the ordinary
+    /// selector — the working directory, `--project <slug>` or
+    /// `STORYHOOK_PROJECT` — so it is answered against a resolved
+    /// [`Ctx`](crate::service::Ctx) like [`Settings`](Self::Settings),
+    /// [`Link`](Self::Link) and [`Unlink`](Self::Unlink).
+    ///
+    /// `deinit` took a bare word and had to decide whether it was a path or a
+    /// slug. That guess is a fourth way of naming a project beside SH-116's
+    /// three, and it is the one that could silently name the wrong one: a slug
+    /// that happens to match a directory name resolved as the directory.
+    Delete {
         /// Authorize the destruction without being asked.
         force: bool,
     },
@@ -1174,6 +1178,18 @@ static VERB_FLAGS: &[VerbFlags] = &[
     },
     VerbFlags {
         verb: "project",
+        subcommand: Some("delete"),
+        flags: &[bare("force")],
+    },
+    // A retired verb keeps its entry, and this is the reason rather than an
+    // oversight. `deinit` is a redirect now, and SH-62's gate runs *ahead* of
+    // every parser — so without an entry declaring what it used to take,
+    // `story project deinit --force` would be answered "unknown flag `--force`"
+    // and the redirect naming `story project delete` would never fire. A
+    // redirect that only works for the flagless spelling is half a redirect.
+    // The entry goes when the redirect does, at 3.0.0.
+    VerbFlags {
+        verb: "project",
         subcommand: Some("deinit"),
         flags: &[bare("force")],
     },
@@ -1398,7 +1414,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         // tell any of them is that no such command exists.
         "init" => Err(AppError::Usage(
             "`story init` is now `story project init`.\n\nThe project verbs moved into one \
-             group: `story project init`, `story project list`, `story project deinit`."
+             group: `story project init`, `story project list`, `story project delete`."
                 .to_string(),
         )),
         "project" => parse_project(args),
@@ -1456,9 +1472,14 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 
 const PROJECT_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                              [--attach <PATH> | --no-attach] [--no-agents-md] | init [PATH] \
-                             [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md] | deinit \
-                             [PATH|SLUG] [--force] | list | link origin [URL]|checkout [PATH] | \
+                             [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md] | delete \
+                             [--force] | list | link origin [URL]|checkout [PATH] | \
                              unlink origin [URL]|checkout | settings list|get|set|unset";
+
+const PROJECT_DELETE_USAGE: &str = "usage: story project delete [--force]\n\n`story project \
+                                    delete` takes no positional argument. It destroys the \
+                                    project this directory resolves to; name a different one \
+                                    with `--project <slug>`.";
 
 const PROJECT_NEW_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                                  [--attach <PATH> | --no-attach] [--no-agents-md]\n\nRun with no \
@@ -1484,7 +1505,18 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
     match action.as_str() {
         "new" => parse_project_new(args),
         "init" => parse_project_init(args),
-        "deinit" => parse_project_deinit(args),
+        "delete" => parse_project_delete(args),
+        // A redirect, never `unknown command`. Being told where a command went
+        // is the whole difference from being told it never existed, and this
+        // one changed more than its name: it no longer touches the filesystem
+        // and it no longer takes a target of its own.
+        "deinit" => Err(AppError::Usage(
+            "`story project deinit` is now `story project delete`.\n\nIt takes no path or slug: \
+             it destroys the project this directory resolves to, or the one named by `--project \
+             <slug>`. It no longer deletes `.storyhook.toml` or `AGENTS.md` from any checkout.\n\n\
+             \x20 story project delete [--force]"
+                .to_string(),
+        )),
         "list" => Ok(Invocation::Project {
             action: ProjectAction::List,
         }),
@@ -1558,30 +1590,24 @@ fn parse_project_settings(args: &[String]) -> Result<Invocation, AppError> {
     })
 }
 
-fn parse_project_deinit(args: &[String]) -> Result<Invocation, AppError> {
-    let mut target = None;
+/// `story project delete [--force]`.
+///
+/// **No positional.** A bare word here would be a fourth way of naming a
+/// project, and the one `deinit` had was the ambiguous kind: it resolved a slug
+/// that happened to match a directory name as the directory. The refusal names
+/// `--project` instead of guessing.
+fn parse_project_delete(args: &[String]) -> Result<Invocation, AppError> {
     let mut force = false;
-    let mut index = 2;
 
-    if let Some(next) = args.get(2)
-        && !next.starts_with('-')
-    {
-        target = Some(next.clone());
-        index = 3;
-    }
-
-    while index < args.len() {
-        match args[index].as_str() {
-            "--force" | "-f" => {
-                force = true;
-                index += 1;
-            }
-            _ => return Err(AppError::Usage(PROJECT_USAGE.to_string())),
+    for arg in &args[2..] {
+        match arg.as_str() {
+            "--force" | "-f" => force = true,
+            _ => return Err(AppError::Usage(PROJECT_DELETE_USAGE.to_string())),
         }
     }
 
     Ok(Invocation::Project {
-        action: ProjectAction::Deinit { target, force },
+        action: ProjectAction::Delete { force },
     })
 }
 
