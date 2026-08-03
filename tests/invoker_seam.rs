@@ -147,18 +147,31 @@ mod resolution {
     }
 
     #[test]
-    fn the_walk_resolves_by_a_recorded_path_when_there_is_no_pointer() {
-        // Repositories migrated before the pointer existed, and the legacy web
-        // daemon's checkouts, have a path row and no committed file.
+    fn a_checkout_that_lost_its_pointer_file_refuses_rather_than_resolving() {
+        // The premise this replaces was `the_walk_resolves_by_a_recorded_path
+        // _when_there_is_no_pointer`, and it was true for as long as the store
+        // kept an index of directories. SH-119 deleted it: a recorded path is a
+        // fact about one machine, and the epic's invariant is that nothing
+        // about the filesystem is ever *required* to say which project this is.
+        //
+        // What answers for a checkout with no pointer file now is its origin,
+        // which this scratch directory does not have — so it refuses, naming
+        // both ways out.
         let (_dir, store, root, _project) = project();
         forget_the_pointer(root.path());
         let deep = root.path().join("deep/er/still");
         std::fs::create_dir_all(&deep).expect("creating a subdirectory");
-        summary(&store, &deep).expect("a recorded path is an identity too");
+
+        let error = summary(&store, &deep).expect_err("a directory is not an identity");
+        assert!(matches!(error, AppError::NotFound(_)), "{error}");
     }
 
     #[test]
-    fn a_pointer_naming_an_unknown_project_does_not_shadow_a_valid_path_row() {
+    fn a_pointer_naming_an_unknown_project_refuses_by_naming_it() {
+        // There is no path row left for a stale pointer to fall through *to*,
+        // and falling through to nothing would report "not initialized" about a
+        // checkout that states its identity in a committed file. The refusal
+        // names the project instead, which is what a fresh clone needs to hear.
         let (_dir, store, root, _project) = project();
         write_pointer(
             root.path(),
@@ -166,9 +179,10 @@ mod resolution {
         )
         .expect("writing a stale pointer");
 
-        summary(&store, root.path()).expect(
-            "a pointer the store cannot resolve must fall through to the path rather \
-             than making the directory unusable",
+        let error = summary(&store, root.path()).expect_err("the store has no such project");
+        assert!(
+            error.to_string().contains("no-such-uuid"),
+            "the refusal must name the project the checkout claims: {error}"
         );
     }
 

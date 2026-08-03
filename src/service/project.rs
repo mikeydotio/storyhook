@@ -19,10 +19,9 @@
 //! * `AGENTS.md`, generated for agent discoverability when the repository has
 //!   none — the same decision the legacy path made, replicated here.
 //! * the pointer file, the repository's copy of *which* project this checkout
-//!   belongs to. Writing it is a parameter ([`InitOptions::pointer`]) rather
-//!   than a rule, because pre-flip the legacy tree is still the identity of
-//!   record and a stray pointer file would be a second, disagreeing answer.
-//!   The wave that flips the default turns it on.
+//!   belongs to. Every attaching run writes it, or adopts the one already
+//!   there, because since SH-119 it is the only thing that identifies a
+//!   checkout: the store holds no index of directories to look one up in.
 
 use std::path::{Path, PathBuf};
 
@@ -979,10 +978,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
         // uninitialized one, and treating it as such is how a user ends up with
         // an empty project beside their real data. `story migrate` is the
         // command for it, and this says so before anything is written.
-        if existing_pointer.is_none()
-            && self.store.read(|tx| tx.project_by_path(&root))?.is_none()
-            && root.join(".storyhook/project.toml").is_file()
-        {
+        if existing_pointer.is_none() && root.join(".storyhook/project.toml").is_file() {
             return Err(unmigrated_error(&root));
         }
 
@@ -1037,16 +1033,6 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 }
                 return Ok((existing.id, false, existing.uuid, existing.prefix));
             }
-            if let Some(existing) = tx.project_by_path(&root)? {
-                tx.touch_project_path(existing.id, &root, path_kind(&root))?;
-                adopt_checkout(tx, existing.id, &root)?;
-                adopt_origin(tx, existing.id, &claim, &now)?;
-                if let Some(name) = &options.name {
-                    tx.rename_project(existing.id, name)?;
-                }
-                return Ok((existing.id, false, existing.uuid, existing.prefix));
-            }
-
             // A checkout that already carries a pointer is a *clone*, not a new
             // repository, and the identity it names is the one to create. The
             // uuid exists precisely so a project survives being copied to

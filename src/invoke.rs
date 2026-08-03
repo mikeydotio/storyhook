@@ -2090,23 +2090,22 @@ fn is_repository_top_level(dir: &Path) -> bool {
     dir.join(".git").is_dir()
 }
 
-/// The project `dir` itself identifies — its pointer file, then its recorded
-/// path.
+/// The project `dir` itself identifies — the uuid in its committed pointer file.
 ///
 /// A pointer naming a uuid the store does not hold is **not** an answer here.
-/// It falls through, so a directory that carries a stale pointer and a valid
-/// path row still resolves; whether an unresolvable pointer should be reported
-/// rather than ignored is the guard's question, not resolution's.
+/// It falls through, and the caller decides what to do about it; whether an
+/// unresolvable pointer should be reported rather than ignored is the guard's
+/// question, not resolution's.
+///
+/// This used to have a second half — the directory's row in `project_paths` —
+/// and SH-119 deleted it with the index. A recorded path is a fact about this
+/// machine; a committed uuid is a fact about the repository, and it is the one
+/// that survives a clone, a move and a rename.
 fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppError> {
-    let pointer = crate::service::project::read_pointer(dir)?;
-    Ok(store.read(|tx| {
-        if let Some(pointer) = &pointer
-            && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
-        {
-            return Ok(Some(project.id));
-        }
-        Ok(tx.project_by_path(dir)?.map(|project| project.id))
-    })?)
+    let Some(pointer) = crate::service::project::read_pointer(dir)? else {
+        return Ok(None);
+    };
+    Ok(store.read(|tx| Ok(tx.project_by_uuid(&pointer.uuid)?.map(|project| project.id)))?)
 }
 
 /// The directory a project would be brought into existence at, for the three

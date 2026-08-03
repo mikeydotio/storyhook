@@ -406,6 +406,10 @@ impl MigrationPlan {
                 created_at: self.project.created_at.clone(),
             })?;
             tx.touch_project_path(project, &root, path_kind(&root))?;
+            // The tree being migrated *is* this project's checkout, and saying
+            // so is what lets `refuse_second_migration` recognize it again
+            // after the pointer file has been deleted.
+            super::project::adopt_checkout(tx, project, &root)?;
 
             // Repairing, not refusing: a legacy tree predates the required
             // floor, and refusing to migrate one because of a state it never
@@ -459,9 +463,23 @@ impl MigrationPlan {
 ///
 /// Two questions, because there are two ways to have been migrated and either
 /// alone can be true: the checkout may carry a pointer file naming a project
-/// the store holds, or the store may already claim this path. Both are checked
-/// inside the write transaction so that two `story migrate` calls racing on one
-/// directory cannot both pass.
+/// the store holds, or a project may already record this directory as its
+/// checkout. Both are asked inside the write transaction so that two
+/// `story migrate` calls racing on one directory cannot both pass.
+///
+/// # Why the second question is not the resolution index coming back
+///
+/// It used to be `project_by_path`, and SH-119 deleted that with the index it
+/// read. `checkout_path` is a different thing wearing a similar shape: nothing
+/// *resolves* by it, so the epic's invariant — the filesystem is never required
+/// to answer which project this is — is untouched. This asks a narrower
+/// question, of one directory, in one command that runs once per repository:
+/// have I already moved this tree?
+///
+/// Without it, deleting `.storyhook.toml` and re-running `story migrate` mints
+/// a silent second copy of every story in the tree. That is the defect class
+/// this project treats as catastrophic, and a scan of the catalog is a cheap
+/// price for closing it in a command nobody runs twice on purpose.
 fn refuse_second_migration(tx: &impl ReadOps, root: &Path) -> Result<(), StoreError> {
     if let Some(pointer) = read_pointer(root).map_err(StoreError::from)?
         && let Some(existing) = tx.project_by_uuid(&pointer.uuid)?
@@ -474,7 +492,7 @@ fn refuse_second_migration(tx: &impl ReadOps, root: &Path) -> Result<(), StoreEr
         ))
         .into());
     }
-    if let Some(existing) = tx.project_by_path(root)? {
+    if let Some(existing) = project_checked_out_at(tx, root)? {
         let stories = tx.stories(existing.id, &StoryQuery::all())?.len();
         return Err(AppError::Validation(format!(
             "the store already holds project `{}` at `{}` ({stories} stories). Migrating again \
@@ -485,6 +503,24 @@ fn refuse_second_migration(tx: &impl ReadOps, root: &Path) -> Result<(), StoreEr
         .into());
     }
     Ok(())
+}
+
+/// The project that records `root` as its checkout, if one does.
+///
+/// A scan rather than a lookup, deliberately: `checkout_path` carries no index
+/// and must not gain one — migration 0007's header explains why two projects
+/// are allowed to share a directory — and this is asked once, by one command,
+/// against a catalog of tens of rows.
+fn project_checked_out_at(
+    tx: &impl ReadOps,
+    root: &Path,
+) -> Result<Option<crate::store::ProjectRecord>, StoreError> {
+    for project in tx.projects()? {
+        if tx.checkout_path(project.id)?.as_deref() == Some(root) {
+            return Ok(Some(project));
+        }
+    }
+    Ok(None)
 }
 
 /// Refuses to run from a linked git worktree.
