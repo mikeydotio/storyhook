@@ -307,8 +307,9 @@ fn pathless_refusal(slug: &str) -> AppError {
     AppError::Validation(format!(
         "`{slug}` has {NO_CHECKOUT}, so there is nowhere to run this change: a write fires the \
          project's event hooks and its git operations in its working directory. Its stories stay \
-         readable here.\n\nRun `story project init` in a checkout of it to adopt one, or \
-         `story relink {slug} <path>` if the checkout simply moved."
+         readable here.\n\nRun `story project new --prefix <PREFIX>` in a checkout of it to \
+         adopt one, or `story --project {slug} project link checkout <path>` if the checkout \
+         simply moved."
     ))
 }
 
@@ -417,13 +418,26 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
     to_json(&repos)
 }
 
-/// `POST /api/repos` — initialize a project at a path on this machine.
-/// Body: `{"path": "...", "name"?: "...", "prefix"?: "..."}`.
+/// `POST /api/repos` — create a project at a path on this machine.
+/// Body: `{"path": "...", "prefix": "...", "name"?: "..."}`.
 ///
-/// The same operation as `story project init`, reached through the same
-/// **invoker**, so the browser cannot create a project the CLI would have
-/// created differently. There is no longer a "register" that is distinct from
-/// this: a project reaches the dashboard by existing.
+/// The same operation as `story project new --attach <path>`, reached through
+/// the same **invoker**, so the browser cannot create a project the CLI would
+/// have created differently. There is no longer a "register" that is distinct
+/// from this: a project reaches the dashboard by existing.
+///
+/// # Why `prefix` is required here
+///
+/// The browser is the one caller that can never be asked. The CLI has a
+/// questionnaire for a bare `story project new`; a form has no equivalent, so a
+/// server-side default would be SH-109's silent `SH` wearing a form, in the one
+/// place nobody would ever notice it happening. Absent is a 400 naming the
+/// field, raised by the same `AppError::Usage` the CLI raises.
+///
+/// The form derives a suggestion from the last path segment client-side, and
+/// this route validates whatever arrives through `domain::prefix::validate` —
+/// which is what makes an untestable six-line JavaScript derivation safe to
+/// ship. A wrong derivation is a 400, not a stored bad value.
 ///
 /// # Why the invoker and not the dispatcher
 ///
@@ -439,16 +453,28 @@ fn route_init_repo<S: Store>(store: &S, env: &Environment, body: &str) -> Reply 
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let path = require_str(&obj, "path")?;
+        let prefix = get_str(&obj, "prefix")
+            .map(str::trim)
+            .filter(|prefix| !prefix.is_empty())
+            .ok_or_else(|| {
+                AppError::Usage(
+                    "`prefix` is required. It is minted into every story id this project ever \
+                     creates and cannot be changed afterwards, so it is not defaulted."
+                        .to_string(),
+                )
+            })?;
         let invocation = Invocation::Project {
-            action: ProjectAction::Init {
-                // Absolute, because a relative path would resolve against the
-                // daemon's own working directory and the browser has no
-                // meaningful one to offer.
-                path: Some(path.to_string()),
-                prefix: get_str(&obj, "prefix").map(str::to_string),
-                name: get_str(&obj, "name").map(str::to_string),
-                no_agents_md: false,
-            },
+            action: ProjectAction::New(crate::cli::NewProjectRequest::Stated(
+                crate::cli::NewProjectSpec {
+                    // Absolute, because a relative path would resolve against
+                    // the daemon's own working directory and the browser has no
+                    // meaningful one to offer.
+                    attach: crate::cli::Attach::Path(path.to_string()),
+                    prefix: crate::domain::prefix::validate(prefix)?,
+                    name: get_str(&obj, "name").map(str::to_string),
+                    no_agents_md: false,
+                },
+            )),
         };
         let response = invoke_from_browser(store, env, std::path::Path::new(path), invocation)?;
         Ok(json_reply(201, render_response(&response, true, false)))

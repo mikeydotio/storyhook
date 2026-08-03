@@ -1,6 +1,6 @@
 //! Bringing a project into existence.
 //!
-//! `story project init` used to be a sequence of independent filesystem writes: make
+//! `story project new` used to be a sequence of independent filesystem writes: make
 //! the directories, write `project.toml`, write `states.toml`, write
 //! `types.toml`, write `members.jsonl`, write the id counter, open the archive
 //! database. Any failure between two of them left a project that existed
@@ -53,7 +53,7 @@ pub const ALLOW_TEMP_PROJECT: &str = "STORYHOOK_ALLOW_TEMP_PROJECT";
 /// The invariant is one sentence: **a throwaway project may only be created in
 /// a throwaway store.**
 ///
-/// Before the flip, `story project init` wrote a `.storyhook/` directory into the
+/// Before the flip, `story project new` wrote a `.storyhook/` directory into the
 /// directory it was run in, so a fixture's data lived in the fixture and was
 /// deleted with it. Storage isolated itself, and no test suite driving the CLI
 /// ever had to think about it — so none of them did. One global store ended
@@ -146,7 +146,7 @@ pub(crate) fn is_under_temp(path: &Path) -> bool {
 /// keeps the design honest:
 ///
 /// * **Identity** — [`schema`](Self::schema), [`uuid`](Self::uuid) and
-///   [`prefix`](Self::prefix), written once by `story project init` so that a fresh
+///   [`prefix`](Self::prefix), written once by `story project new` so that a fresh
 ///   clone on another machine knows which project it is looking at before it
 ///   has any local database row to consult.
 /// * **Configuration** — the optional [`plugin`](Self::plugin) and
@@ -193,7 +193,7 @@ pub struct ProjectPointer {
 }
 
 impl ProjectPointer {
-    /// A pointer carrying identity and no configuration — what `story project init`
+    /// A pointer carrying identity and no configuration — what `story project new`
     /// writes.
     #[must_use]
     pub fn new(uuid: String, prefix: String) -> Self {
@@ -227,7 +227,7 @@ pub fn legacy_project_at(root: &Path) -> Option<PathBuf> {
 /// What to tell someone standing in a repository storyhook has not imported.
 ///
 /// Loud and specific, because the alternative is worse in both directions: a
-/// bare "not initialized" invites `story project init`, which would mint an *empty*
+/// bare "not initialized" invites `story project new`, which would mint an *empty*
 /// second project beside data the user still has, and a silent fallback to
 /// reading the directory is the thing this whole rearchitecture exists to
 /// stop.
@@ -409,7 +409,7 @@ fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
 /// Recorded as a deviation on the story rather than taken quietly. The
 /// after-the-fact registration verb SH-117 owns is the right place for a *loud*
 /// collision, because there the user typed the URL and is owed an answer about
-/// it; here they typed `story project init` and said nothing about origins at
+/// it; here they typed `story project new` and said nothing about origins at
 /// all.
 fn claimable(
     tx: &impl ReadOps,
@@ -430,7 +430,7 @@ fn claimable(
 /// running in the wrong tree. Attaching a *second* clone must not quietly
 /// perform that move.
 ///
-/// This is also what makes `story project init` and `story project new
+/// This is also what makes `story project new` and `story project new
 /// --attach` do the same thing, which is the premise the SH-117 fixture sweep
 /// rests on: 251 call sites can only be rewritten mechanically if the two verbs
 /// mean the same thing at every one of them.
@@ -494,8 +494,8 @@ pub fn no_project_refusal(
         "storyhook cannot tell which project this is.\n\n  directory  {}\n  origin     \
          {origin_line}\n\nName the project for one command, or for this shell:\n\n  story \
          --project <slug> <command>\n  export STORYHOOK_PROJECT=<slug>\n\nOr make this checkout \
-         answer for itself, once:\n\n  story project init\n\n`story project list` shows the \
-         slugs this machine's store has.",
+         answer for itself, once:\n\n  story project new --prefix <PREFIX>\n\n`story project \
+         list` shows the slugs this machine's store has.",
         cwd.display()
     ))
 }
@@ -593,7 +593,7 @@ pub fn write_pointer(root: &Path, pointer: &ProjectPointer) -> Result<(), AppErr
     Ok(())
 }
 
-/// What `story project init` was asked to do.
+/// What `story project new` was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitOptions {
     /// The story-id prefix, defaulting to [`DEFAULT_PREFIX`].
@@ -610,7 +610,7 @@ pub struct InitOptions {
     /// Whether the directory this service was pointed at becomes the project's
     /// checkout.
     ///
-    /// `true` is everything `story project init` has always done: the path is
+    /// `true` is everything `story project new` has always done: the path is
     /// recorded for resolution, the origin registered, the checkout adopted,
     /// and the repository-side files written. `false` — `story project new
     /// --no-attach` — writes the store record and nothing else, for the project
@@ -643,14 +643,14 @@ impl Default for InitOptions {
     }
 }
 
-/// What `story project init` did.
+/// What `story project new` did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitOutcome {
     /// The project this checkout now belongs to.
     pub project: ProjectId,
     /// Whether the project was created, as opposed to already existing.
     ///
-    /// `story project init` is idempotent — running it twice re-registers the checkout
+    /// `story project new` is idempotent — running it twice re-registers the checkout
     /// and reports success — so this distinguishes the two without changing
     /// what the user is told.
     pub created: bool,
@@ -827,7 +827,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
         })?;
 
         // Never overwritten. The file is user-authored the moment it carries a
-        // `[plugin]` or `[hooks]` table, and `story project init` is idempotent — so a
+        // `[plugin]` or `[hooks]` table, and `story project new` is idempotent — so a
         // second `init` in a repository that already has a pointer must leave
         // the user's configuration exactly where it is rather than replacing
         // the file with a freshly generated identity-only copy.

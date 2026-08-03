@@ -421,12 +421,14 @@ mod tests {
         let invoker = fixture.invoker();
         invoker
             .invoke(InvokeRequest::new(Invocation::Project {
-                action: crate::cli::ProjectAction::Init {
-                    path: None,
-                    prefix: Some(prefix.to_string()),
-                    name: None,
-                    no_agents_md: true,
-                },
+                action: crate::cli::ProjectAction::New(crate::cli::NewProjectRequest::Stated(
+                    crate::cli::NewProjectSpec {
+                        attach: crate::cli::Attach::Cwd,
+                        prefix: prefix.to_string(),
+                        name: None,
+                        no_agents_md: true,
+                    },
+                )),
             }))
             .unwrap();
         for title in titles {

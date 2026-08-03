@@ -60,7 +60,7 @@ if [ -z "${STORYHOOK_TEST_HOME:-}" ]; then
 fi
 
 # mk_story_repo — build a temp git repo with a real storyhook project
-# initialized (`story project init`), and a LOCAL bare origin so dispatch's `git
+# initialized (`story project new`), and a LOCAL bare origin so dispatch's `git
 # fetch` resolves fully offline and deterministically (no network, no
 # credential prompt). Echoes the repo path. Not placed under $TMPDIR:
 # macOS Spotlight indexes it and can stall file-intensive tests; /tmp

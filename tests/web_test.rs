@@ -114,10 +114,12 @@ impl Served {
             "2026-01-01T00:00:00Z",
             parse_invocation(&[
                 "project".to_string(),
-                "init".to_string(),
+                "new".to_string(),
+                "--prefix".to_string(),
+                "SH".to_string(),
                 "--no-agents-md".to_string(),
             ])
-            .expect("`story init` parses"),
+            .expect("`story project new` parses"),
         )
         .expect("initializing a second project");
         let project = storyhook_test_support::project_id_at(&self.store, dir.path())
@@ -163,10 +165,12 @@ fn served() -> Served {
         "2026-01-01T00:00:00Z",
         parse_invocation(&[
             "project".to_string(),
-            "init".to_string(),
+            "new".to_string(),
+            "--prefix".to_string(),
+            "SH".to_string(),
             "--no-agents-md".to_string(),
         ])
-        .expect("`story init` parses"),
+        .expect("`story project new` parses"),
     )
     .expect("initializing the fixture project");
 
@@ -2387,6 +2391,59 @@ fn web_init_creates_a_project_at_a_path() {
     assert!(names.contains(&"Another"), "{names:?}");
 }
 
+/// The browser is the one caller that can never be asked, so `prefix` is
+/// required of it and a missing one is a 400 naming the field.
+///
+/// This is the test that goes red if a default ever creeps back in — an
+/// `unwrap_or(DEFAULT_PREFIX)` on the route, or a `prefix: None` reaching the
+/// service. Every CLI fixture in the suite passes `--prefix` explicitly, so the
+/// whole Rust corpus is blind to that regression by construction; only this and
+/// its CLI sibling in `tests/project_new.rs` would notice.
+#[test]
+fn web_init_without_a_prefix_is_a_400_naming_the_field() {
+    let fixture = served();
+    let port = fixture.port;
+    let fresh = fixture.dir().join("prefixless");
+    std::fs::create_dir_all(&fresh).unwrap();
+
+    let body = serde_json::json!({"path": fresh.to_string_lossy()}).to_string();
+    let err = post_json(&format!("http://127.0.0.1:{port}/api/repos"), &body).unwrap_err();
+
+    assert_eq!(status_of(err), 400, "a missing prefix is a usage error");
+    assert!(
+        !fresh.join(".storyhook.toml").exists(),
+        "and nothing is created on the way to saying so"
+    );
+}
+
+/// A prefix the shared validator refuses is refused here too, rather than
+/// stored.
+///
+/// The dashboard derives its suggestion in six lines of JavaScript that no test
+/// in this repository can reach — there is no JS test infrastructure and the
+/// assets are embedded in the binary. This is the mitigation: whatever the
+/// browser sends goes through `domain::prefix::validate`, so a wrong derivation
+/// is a testable 400 rather than a project minting ids nobody can parse back.
+#[test]
+fn web_init_with_an_invalid_prefix_is_refused_rather_than_stored() {
+    let fixture = served();
+    let port = fixture.port;
+    let fresh = fixture.dir().join("badprefix");
+    std::fs::create_dir_all(&fresh).unwrap();
+
+    let body =
+        serde_json::json!({"path": fresh.to_string_lossy(), "prefix": "hello world"}).to_string();
+    let err = post_json(&format!("http://127.0.0.1:{port}/api/repos"), &body).unwrap_err();
+
+    // 422 rather than 400, and the difference is the point: a *missing* prefix
+    // is a malformed request (`AppError::Usage`), an *unusable* one is a
+    // well-formed request carrying a value the domain refuses
+    // (`AppError::Validation`). Both exit 2 on the CLI; HTTP can tell them
+    // apart, and the dashboard shows the server's message either way.
+    assert_eq!(status_of(err), 422);
+    assert!(!fresh.join(".storyhook.toml").exists());
+}
+
 #[test]
 fn web_init_requires_the_guard_header() {
     let fixture = served();
@@ -3307,7 +3364,8 @@ fn sse_detects_runtime_repo_registration_and_serves_it() {
 
     let mut sse = connect_sse(port);
 
-    let body = serde_json::json!({"path": dir_b.path().to_string_lossy()}).to_string();
+    let body =
+        serde_json::json!({"path": dir_b.path().to_string_lossy(), "prefix": "RB"}).to_string();
     post_json(&format!("http://127.0.0.1:{port}/api/repos"), &body)
         .expect("registering repo B at runtime must succeed");
 

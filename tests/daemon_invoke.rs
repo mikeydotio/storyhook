@@ -207,7 +207,7 @@ fn hooks_still_fire_through_the_daemon() {
 ///
 /// This is the one place where "the transport is invisible" needs an argument
 /// rather than an assertion of sameness. The daemon's own working directory is
-/// an accident of how it was spawned; if `story project init ./sub` resolved
+/// an accident of how it was spawned; if `story project new --attach ./sub` resolved
 /// there, a project would still be created and the command would still
 /// succeed — just somewhere nobody named. The failure has no symptom at the
 /// call site, which is exactly why it needs a test.

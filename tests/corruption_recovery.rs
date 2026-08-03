@@ -68,7 +68,7 @@ fn failure_message(out: &Output, what: &str) -> String {
 
 /// A project to ask the damaged-store questions from.
 ///
-/// Building it starts a daemon, because building it runs `story project init`.
+/// Building it starts a daemon, because building it runs `story project new`.
 /// Every test here that then goes on to read or write the store's *bytes* has to
 /// stand that daemon down first: a live one answers reads from memory, and its
 /// `-shm` keeps alive a write-ahead log that would otherwise be discarded. The
@@ -485,7 +485,7 @@ fn a_checkout_naming_a_project_this_store_does_not_have_says_which_one() {
         "the message must name the project the checkout claims: {message}"
     );
     assert!(
-        message.contains("story project init"),
+        message.contains("story project new"),
         "and the command that adopts it here: {message}"
     );
 }

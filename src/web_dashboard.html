@@ -2609,30 +2609,66 @@ tbody tr:hover { background: var(--bg-sunken); }
       });
   }
 
-  /** `story project init`, from the browser.
+  /** A prefix suggested from the last segment of a path.
+   *
+   * The same derivation `story project new`'s questionnaire offers, and only
+   * ever a SUGGESTION: it pre-fills a field the user can overwrite, and the
+   * server validates whatever is actually submitted through
+   * `domain::prefix::validate`. That is what makes six lines of untestable
+   * JavaScript safe to ship — a wrong derivation is a 400, not a stored bad
+   * value. */
+  function derivePrefix(path) {
+    var last = String(path || "").replace(/[\/\\]+$/, "").split(/[\/\\]/).pop() || "";
+    var parts = last.split(/[^A-Za-z0-9]+/).filter(function(p) { return p.length; });
+    var candidate = "";
+    if (parts.length >= 2) candidate = parts.slice(0, 4).map(function(p) { return p[0]; }).join("");
+    else if (parts.length === 1) candidate = parts[0].slice(0, 3);
+    candidate = candidate.toUpperCase();
+    // The same shape `domain::prefix::validate` accepts. A candidate that would
+    // be refused is no suggestion at all — `123-456` derives "14", which the
+    // server rejects — so the field is left empty and the user chooses. Empty
+    // rather than "SH", deliberately: the field is required, and pre-filling a
+    // default nobody chose is SH-109 wearing a form.
+    return /^[A-Z][A-Z0-9]{0,9}$/.test(candidate) ? candidate : "";
+  }
+
+  /** `story project new`, from the browser.
    *
    * There is no "register a repo" any more — a project reaches the dashboard
    * by existing. This creates one at a path on this machine, which is the same
-   * operation the CLI performs, through the same dispatcher. */
+   * operation the CLI performs, through the same dispatcher.
+   *
+   * The prefix is REQUIRED, and the browser is why. It is the one caller that
+   * can never be asked: the CLI has a questionnaire for a bare `story project
+   * new`, and a form has no equivalent. A server-side default here would be
+   * SH-109's silent `SH` wearing a form, in the one place nobody would notice
+   * it happening. */
   function buildInitForm() {
     var pathInput = el("input", { type: "text", placeholder: "Path to a repository on this machine" });
     var nameInput = el("input", { type: "text", placeholder: "Display name (optional)" });
-    var prefixInput = el("input", { type: "text", placeholder: "Story-id prefix (default SH)" });
+    var prefixInput = el("input", { type: "text", placeholder: "Story-id prefix (required, e.g. SH)" });
+    // Filled from the path as a suggestion, and never over something typed.
+    var prefixTouched = false;
+    prefixInput.addEventListener("input", function() { prefixTouched = true; });
+    pathInput.addEventListener("input", function() {
+      if (!prefixTouched) prefixInput.value = derivePrefix(pathInput.value);
+    });
     var error = el("div", { class: "modal-error" }, []);
     var submit = el("button", { class: "btn btn-primary", onClick: function() {
       var path = pathInput.value.trim();
       if (!path) { error.textContent = "Path is required."; return; }
-      var body = { path: path };
+      var prefix = prefixInput.value.trim();
+      if (!prefix) { error.textContent = "Story-id prefix is required. It is minted into every story id and cannot be changed afterwards."; return; }
+      var body = { path: path, prefix: prefix };
       if (nameInput.value.trim()) body.name = nameInput.value.trim();
-      if (prefixInput.value.trim()) body.prefix = prefixInput.value.trim();
       api("POST", "/api/repos", body)
         .then(function() {
-          pathInput.value = ""; nameInput.value = ""; prefixInput.value = ""; error.textContent = "";
-          toast("Project initialized", "success");
+          pathInput.value = ""; nameInput.value = ""; prefixInput.value = ""; prefixTouched = false; error.textContent = "";
+          toast("Project created", "success");
           fetchReposOnce();
         })
         .catch(function(err) { error.textContent = err.message; });
-    } }, ["Initialize"]);
+    } }, ["Create"]);
     return el("div", { class: "settings-form" }, [pathInput, nameInput, prefixInput, submit, error]);
   }
 

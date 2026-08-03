@@ -7,7 +7,7 @@
 //!
 //! In the store there is no second file, and there is no registration step
 //! either. A project *is* a catalog entry and its checkouts are rows beside it,
-//! so `story project init` puts a project here by creating it and
+//! so `story project new` puts a project here by creating it and
 //! `story project delete` removes it by deleting it. What is left in this
 //! module is everything that is *about* the catalog rather than about a
 //! project's existence:
@@ -15,9 +15,14 @@
 //! * [`CatalogService::all`] and [`CatalogService::list`] report it — with and
 //!   without the projects this machine has no checkout of,
 //! * [`CatalogService::orphaned`] and [`CatalogService::deregister_orphaned`]
-//!   are `story doctor`'s half: registrations pointing at nothing,
-//! * [`CatalogService::relink`] is the answer when a checkout moved rather than
-//!   went away.
+//!   are `story doctor`'s half: registrations pointing at nothing.
+//!
+//! `relink` used to live here too, as the answer when a checkout moved rather
+//! than went away. It is gone: `story project link checkout` does the same job
+//! without needing a pointer file in the directory it is pointed at, which is
+//! precisely what a moved, renamed or freshly cloned checkout may not have.
+//! Keeping both would be two answers to one question in the module SH-119
+//! rewrites next.
 
 use std::path::{Path, PathBuf};
 
@@ -46,7 +51,7 @@ pub struct CatalogEntry {
 pub struct OrphanedRegistration {
     /// The project the stale registration belongs to.
     pub project: ProjectId,
-    /// Its slug, which is what a user deregisters or relinks it by.
+    /// Its slug, which is what a user deregisters or re-links it by.
     pub slug: String,
     /// The path that no longer exists.
     pub path: PathBuf,
@@ -83,8 +88,8 @@ impl<'a, S: Store> CatalogService<'a, S> {
     /// external disk is not mounted, and silently forgetting a real project's
     /// only registration because a volume was unplugged would be a worse defect
     /// than the one being fixed. `story doctor --fix` is where the user says
-    /// yes, and [`relink`](Self::relink) is the answer when the checkout moved
-    /// rather than went away.
+    /// yes, and `story project link checkout` is the answer when the checkout
+    /// moved rather than went away.
     pub fn orphaned(&self) -> Result<Vec<OrphanedRegistration>, AppError> {
         Ok(self.store.read(|tx| {
             let mut orphans = Vec::new();
@@ -114,8 +119,8 @@ impl<'a, S: Store> CatalogService<'a, S> {
     /// Only the path rows go — and the recorded checkout with them, when it is
     /// the same vanished directory. The project, its stories and its identity
     /// all survive: it stays in `story project list` and on the dashboard, and
-    /// [`relink`](Self::relink) or a fresh `story project init` puts a path
-    /// back. That reversibility is what makes it safe to offer from
+    /// `story project link checkout` or a fresh `story project new` puts a
+    /// path back. That reversibility is what makes it safe to offer from
     /// `doctor --fix` rather than demanding a hand-written transaction.
     ///
     /// The checkout half is not decoration. One directory is recorded in two
@@ -134,91 +139,6 @@ impl<'a, S: Store> CatalogService<'a, S> {
             Ok(())
         })?;
         Ok(orphans)
-    }
-
-    /// Points `project` at the checkout whose pointer file is `pointer`.
-    ///
-    /// The complement of deregistration: a checkout that *moved* rather than
-    /// went away. Deregistering and re-registering would do it, but only from
-    /// inside the new location and only if the pointer file resolves — and the
-    /// case that most needs this is the one where the recorded path is wrong,
-    /// which is exactly when resolution by path cannot help.
-    ///
-    /// `pointer` may name the pointer file itself or the directory holding it,
-    /// because both are things a person reasonably types.
-    ///
-    /// The pointer file is *read*, not trusted blindly: the project it names by
-    /// uuid must be the project being relinked. Without that check this would
-    /// be a way to quietly staple one project's identity onto another
-    /// project's checkout, and the resulting store would resolve one repository
-    /// to two projects depending on which door it came in by.
-    pub fn relink(&self, project: &str, pointer: &Path) -> Result<CatalogEntry, AppError> {
-        let dir = if pointer.is_dir() {
-            pointer.to_path_buf()
-        } else {
-            pointer
-                .parent()
-                .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
-        };
-        let dir = dir
-            .canonicalize()
-            .map_err(|e| AppError::NotFound(format!("cannot read `{}`: {e}", dir.display())))?;
-
-        let found = read_pointer(&dir)?.ok_or_else(|| {
-            AppError::NotFound(format!(
-                "no `.storyhook.toml` at `{}`.\n\nrelink needs the pointer file of the checkout \
-                 the project should point at — give it the checkout directory, or the file \
-                 itself.",
-                dir.display()
-            ))
-        })?;
-
-        // Read and validate before writing. The uuid check has to raise an
-        // `AppError`, and a store write closure may only fail with a
-        // `StoreError` — but it also reads better: nothing is touched until the
-        // identity is known to match.
-        let record = self
-            .store
-            .read(|tx| tx.project_by_slug(project))?
-            .ok_or_else(|| AppError::NotFound(format!("no project `{project}`")))?;
-
-        if record.uuid != found.uuid {
-            return Err(AppError::Validation(format!(
-                "`{}` belongs to a different project.\n\nIts pointer file names uuid {}, and \
-                 `{}` is uuid {}. Relinking would leave one checkout resolving to two projects \
-                 depending on which door it came in by. If you meant to adopt this checkout, run \
-                 `story project init` in it.",
-                dir.display(),
-                found.uuid,
-                record.slug,
-                record.uuid
-            )));
-        }
-
-        // Replace rather than add. `relink` says "the project is *here* now",
-        // and leaving the old row behind would make `web list` keep showing the
-        // location the user just corrected — which is the whole complaint.
-        //
-        // Every row goes, not only the stale one: a checkout that moved takes
-        // its worktrees with it, and any that are still real re-register
-        // themselves the next time a command runs in them.
-        let id = record.id;
-        let moved = dir.clone();
-        self.store.write(|tx| {
-            for existing in tx.project_paths(id)? {
-                let path = PathBuf::from(&existing.path);
-                tx.forget_project_path(id, &path)?;
-                // The checkout follows the project rather than being left at
-                // the address it just moved out of. Conditional on the paths
-                // matching, so a checkout somebody linked elsewhere on purpose
-                // survives; `adopt_checkout` below then fills the slot only if
-                // this emptied it.
-                super::project::forget_checkout(tx, id, &path)?;
-            }
-            tx.touch_project_path(id, &moved, path_kind(&moved))?;
-            super::project::adopt_checkout(tx, id, &moved)
-        })?;
-        Ok(entry(record, Some(dir)))
     }
 
     /// Every project with a known checkout, ordered by slug.

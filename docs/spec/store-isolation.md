@@ -16,7 +16,7 @@ P=/private/tmp/sh-probe2; mkdir -p $P/state $P/repoA
 export HOME=$P XDG_STATE_HOME=$P/state STORYHOOK_DAEMON_ADDR=127.0.0.1:0 STORYHOOK_PARENT_PID=$$
 
 export STORYHOOK_DATA_DIR=$P/A
-cd $P/repoA && git init -q && story init --prefix AAA
+cd $P/repoA && git init -q && story project new --prefix AAA
 story new "CANARY belongs to store A"
 
 export STORYHOOK_DATA_DIR=$P/B     # a different store
