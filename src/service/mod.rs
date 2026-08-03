@@ -62,10 +62,7 @@ use crate::store::{
     partition_known,
 };
 
-pub use catalog::{
-    CatalogEntry, CatalogService, OrphanedRegistration, RegistryAdoption, adopt_legacy_registry,
-    preferred_checkout,
-};
+pub use catalog::{CatalogEntry, CatalogService, OrphanedRegistration, preferred_checkout};
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
 pub use git_links::{CheckoutLink, GitLinkService, OriginLink};

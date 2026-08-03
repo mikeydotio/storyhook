@@ -194,12 +194,6 @@ pub fn open_store(env: &Environment) -> Result<crate::store::SqliteStore, AppErr
     config.busy_timeout = env.busy_timeout_value();
     let store = crate::store::SqliteStore::open_with(config)?;
     store.migrate()?;
-    // A failure here is not a reason to refuse the command: the registry
-    // belongs to the dashboard, and every storyhook command works without it.
-    let _ = crate::service::adopt_legacy_registry(
-        &store,
-        &env.legacy_global_dir().join("registry.toml"),
-    );
     Ok(store)
 }
 
