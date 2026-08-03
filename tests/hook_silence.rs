@@ -24,6 +24,15 @@ use std::process::Command;
 use storyhook_test_support::{TestEnv, scratch_dir};
 use tempfile::TempDir;
 
+/// The hooks `story hooks install` manages, named here so a fourth cannot be
+/// added without this file noticing (SH-121).
+///
+/// It said `["post-commit", "prepare-commit-msg"]` until then, and the omission
+/// was not visible: `post-merge` is the one hook that fires on something other
+/// than `git commit`, so no test in this file could reach it and nothing said
+/// so. The obligation is about *hooks*, not about committing.
+const MANAGED_HOOKS: [&str; 3] = ["post-commit", "post-merge", "prepare-commit-msg"];
+
 /// A git repository with a storyhook project and the managed hooks installed,
 /// in an environment of its own.
 ///
@@ -50,7 +59,7 @@ impl HookRepo {
 
         repo.story(&["project", "new", "--prefix", "SH"]);
         repo.story(&["hooks", "install"]);
-        for hook in ["post-commit", "prepare-commit-msg"] {
+        for hook in MANAGED_HOOKS {
             assert!(
                 repo.path().join(".git/hooks").join(hook).is_file(),
                 "fixture: the managed {hook} hook must be installed"
@@ -75,6 +84,21 @@ impl HookRepo {
         cmd.env("GIT_TERMINAL_PROMPT", "0");
         cmd.args(args);
         cmd.output().expect("running git")
+    }
+
+    /// Creates a story and returns the id storyhook minted for it.
+    fn new_story(&self, title: &str) -> String {
+        let out = self
+            .env
+            .story(self.path())
+            .args(["new", title, "--json"])
+            .output()
+            .expect("running story");
+        serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .expect("`story new --json` prints JSON")["story"]["story"]["id"]
+            .as_str()
+            .expect("a minted id")
+            .to_string()
     }
 
     fn story(&self, args: &[&str]) {
@@ -150,6 +174,61 @@ fn a_commit_says_nothing_when_the_daemon_cannot_start() {
         "",
         "the hooks must say nothing at all — a person committing code did not ask \
          storyhook a question, and an error here reads as a failed commit"
+    );
+    assert_eq!(stdout.trim(), "", "and nothing on stdout either: {stdout}");
+}
+
+/// **The third hook**, and the only one that fires on something other than a
+/// commit — so nothing above could reach it.
+///
+/// `post-merge` runs `story move <id> done` for every story a merged commit
+/// claims, on `main` or `master` only. A merge is where the noise would be
+/// worst: it is often the last step of landing a branch, and a wall of
+/// store-corruption diagnosis after `git merge` reads as a merge that failed.
+///
+/// Written against the same broken store rather than a second mechanism,
+/// because it is the same obligation: what changes is which hook has to honour
+/// it.
+#[test]
+fn a_merge_says_nothing_when_the_daemon_cannot_start() {
+    let repo = HookRepo::new();
+
+    // A branch with a commit that *claims* a story, so the hook has real work
+    // to decline — SH-124's grammar means a merge of a commit naming nothing
+    // would exercise the early exit rather than the failure path.
+    let id = repo.new_story("something a merge would close");
+    repo.git(&["checkout", "-q", "-b", "topic"]);
+    std::fs::write(repo.path().join("f"), "b\n").expect("changing the tracked file");
+    repo.git(&["commit", "-qam", &format!("work\n\nCloses {id}")]);
+    repo.git(&["checkout", "-q", "main"]);
+
+    repo.break_the_store();
+    let probe = repo
+        .env
+        .story(repo.path())
+        .args(["list"])
+        .output()
+        .expect("running story");
+    assert!(
+        !probe.status.success(),
+        "the fixture needs a storyhook that cannot answer; `story list` succeeded"
+    );
+
+    // `--no-ff` so this is a real merge with an ORIG_HEAD the hook can read,
+    // rather than a fast-forward that would exercise nothing.
+    let out = repo.git(&["merge", "-q", "--no-ff", "-m", "merge topic", "topic"]);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a merge must not fail because storyhook cannot answer.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        stderr.trim(),
+        "",
+        "the post-merge hook must say nothing at all — after `git merge`, a wall of \
+         diagnosis reads as a merge that did not land"
     );
     assert_eq!(stdout.trim(), "", "and nothing on stdout either: {stdout}");
 }
