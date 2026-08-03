@@ -304,7 +304,9 @@ button { cursor: pointer; }
 .card.dragging { opacity: 0.4; transform: scale(0.97) rotate(-1deg); }
 .card.pending { opacity: 0.55; pointer-events: none; }
 .card.not-draggable { cursor: default; }
+.card-id-row { display: flex; align-items: center; gap: 0.3125rem; }
 .card-id { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); font-weight: 600; }
+.type-badge { font-size: 0.8125rem; line-height: 1; }
 .card-title { font-size: 0.8125rem; font-weight: 600; margin: 0.25rem 0 0.4375rem; line-height: 1.35; overflow-wrap: anywhere; }
 .card-meta { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
 .card-labels { display: flex; gap: 0.25rem; flex-wrap: wrap; }
@@ -604,6 +606,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 <div class="backdrop" id="drawer-backdrop" hidden></div>
 <aside class="drawer" id="drawer" aria-hidden="true">
   <div class="drawer-header">
+    <span id="drawer-type-badge"></span>
     <span class="drawer-id" id="drawer-id"></span>
     <button type="button" class="btn btn-ghost drawer-close" id="drawer-close">Close</button>
   </div>
@@ -903,6 +906,43 @@ tbody tr:hover { background: var(--bg-sunken); }
     return s ? s.super_state : "OPEN";
   }
 
+  /** The glyph for a type slug: the type's own configured `emoji`, a
+   * generic 🏷️ fallback for a configured type that has none, or "" for an
+   * untyped story (`slug` null/undefined) — untyped renders no badge at
+   * all, deliberately, since it is the most common case in practice and a
+   * badge column that means nothing for most rows would be visual noise
+   * rather than a signal. */
+  function typeGlyph(slug) {
+    if (!slug) return "";
+    var t = meta().types.filter(function(x) { return x.slug === slug; })[0];
+    if (!t) return "🏷️";
+    return t.emoji || "🏷️";
+  }
+
+  /** The `<glyph> <slug>` label pickers show; falls back to `none` for the
+   * empty/unset option — the vocabulary `story list --type none` already
+   * uses, so it reads the same everywhere rather than as "–", "Untyped" and
+   * "Default type" for one idea in three places. */
+  function typeLabel(slug) {
+    if (!slug) return "none";
+    var glyph = typeGlyph(slug);
+    return glyph ? glyph + " " + slug : slug;
+  }
+
+  /** A `.type-badge` span for `slug`, or `null` for an untyped story (no
+   * badge is rendered at all — see `typeGlyph`). `role="img"` plus
+   * `aria-label` because the glyph alone carries no accessible name; `title`
+   * gives the same information as a hover tooltip for sighted mouse users. */
+  function buildTypeBadge(slug) {
+    var glyph = typeGlyph(slug);
+    if (!glyph) return null;
+    return el(
+      "span",
+      { class: "type-badge", role: "img", title: slug, "aria-label": "Type: " + slug },
+      [glyph]
+    );
+  }
+
   function readySet() {
     var set = {};
     (state.data && state.data.ready_ids || []).forEach(function(id) { set[id] = true; });
@@ -991,6 +1031,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       if (a.priority !== b.priority) fields.push("priority");
       if (a.assignee !== b.assignee) fields.push("assignee");
       if (a.title !== b.title) fields.push("title");
+      if (a.story_type !== b.story_type) fields.push("type");
       if ((a.labels || []).join(",") !== (b.labels || []).join(",")) fields.push("labels");
       if (!!blockedOld[id] !== !!blockedNew[id]) fields.push("blocked");
       if (!!readyOld[id] !== !!readyNew[id]) fields.push("ready");
@@ -1118,8 +1159,8 @@ tbody tr:hover { background: var(--bg-sunken); }
     var m = meta();
     var assigneeOpts = m.members.map(function(mem) { return { value: mem.id, label: mem.display_name }; });
     assigneeOpts.push({ value: "__unassigned__", label: "Unassigned" });
-    var typeOpts = m.types.map(function(t) { return { value: t.slug, label: t.slug }; });
-    typeOpts.push({ value: "__untyped__", label: "Untyped" });
+    var typeOpts = m.types.map(function(t) { return { value: t.slug, label: typeLabel(t.slug) }; });
+    typeOpts.push({ value: "__untyped__", label: typeLabel(null) });
 
     buildFilterDropdown("priorities", m.priorities.map(function(p) { return { value: p, label: p }; }));
     buildFilterDropdown("assignees", assigneeOpts);
@@ -1137,7 +1178,12 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   function buildFilterDropdown(key, options) {
     var container = $(FILTER_DROPDOWNS[key].container);
-    var fingerprint = options.map(function(o) { return o.value; }).join(" ");
+    // Includes each option's label, not just its value: a type's emoji can
+    // change (`story type set <slug> --emoji <glyph>`) without its slug
+    // changing, and a fingerprint of values alone would never notice, so the
+    // dropdown would keep showing a stale glyph until the value set itself
+    // moved.
+    var fingerprint = options.map(function(o) { return o.value + ":" + o.label; }).join(" ");
     if (container.dataset.fingerprint === fingerprint) { syncFilterDropdownLabel(key); return; }
     container.dataset.fingerprint = fingerprint;
     clear(container);
@@ -1470,7 +1516,8 @@ tbody tr:hover { background: var(--bg-sunken); }
     card.style.setProperty("--card-accent", priorityColor(st.priority));
 
     clear(card);
-    card.appendChild(el("div", { class: "card-id" }, [st.id]));
+    var badge = buildTypeBadge(st.story_type);
+    card.appendChild(el("div", { class: "card-id-row" }, [badge, el("span", { class: "card-id" }, [st.id])]));
     card.appendChild(el("div", { class: "card-title" }, [st.title]));
 
     var metaRow = el("div", { class: "card-meta" }, []);
@@ -1627,7 +1674,8 @@ tbody tr:hover { background: var(--bg-sunken); }
     var st = v.story;
     var updated = (st.updated_at || "").slice(0, 10);
     clear(row);
-    row.appendChild(el("td", { class: "col-id" }, [st.id]));
+    var badge = buildTypeBadge(st.story_type);
+    row.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
     row.appendChild(el("td", {}, [st.title]));
     row.appendChild(el("td", {}, [el("span", { class: "state-pill" }, [st.state])]));
     row.appendChild(el("td", {}, [priorityDot(st.priority)]));
@@ -1728,6 +1776,10 @@ tbody tr:hover { background: var(--bg-sunken); }
     if (!st) { closeDrawer(); return; }
 
     $("drawer-id").textContent = st.id;
+    var typeBadgeMount = $("drawer-type-badge");
+    clear(typeBadgeMount);
+    var drawerBadge = buildTypeBadge(st.story_type);
+    if (drawerBadge) typeBadgeMount.appendChild(drawerBadge);
     var body = $("drawer-body");
     clear(body);
 
@@ -1799,8 +1851,8 @@ tbody tr:hover { background: var(--bg-sunken); }
     });
     grid.appendChild(el("div", { class: "field" }, [el("label", {}, ["Assignee"]), assigneeSelect]));
 
-    var typeSelect = el("select", {}, [el("option", { value: "" }, ["–"])].concat(m.types.map(function(t) {
-      var o = el("option", { value: t.slug }, [t.slug]);
+    var typeSelect = el("select", {}, [el("option", { value: "" }, [typeLabel(null)])].concat(m.types.map(function(t) {
+      var o = el("option", { value: t.slug }, [typeLabel(t.slug)]);
       if (t.slug === st.story_type) o.selected = true;
       return o;
     })));
@@ -2772,8 +2824,8 @@ tbody tr:hover { background: var(--bg-sunken); }
       $("create-state").appendChild(el("option", { value: s.slug }, [s.slug]));
     });
     clear($("create-type"));
-    $("create-type").appendChild(el("option", { value: "" }, ["Default type"]));
-    m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [t.slug])); });
+    $("create-type").appendChild(el("option", { value: "" }, [typeLabel(null)]));
+    m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [typeLabel(t.slug)])); });
     clear($("create-priority"));
     $("create-priority").appendChild(el("option", { value: "" }, ["Default priority"]));
     m.priorities.forEach(function(p) { $("create-priority").appendChild(el("option", { value: p }, [p])); });
