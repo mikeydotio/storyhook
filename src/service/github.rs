@@ -18,8 +18,10 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::cli::ConflictSide;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot};
 use crate::error::AppError;
+use crate::github::conflict::Resolution;
 use crate::github::storage::SyncStorage;
 use crate::github::sync_state::GithubSyncConfig;
 use crate::output::Response;
@@ -40,8 +42,22 @@ impl<'ctx, S: Store> GithubSyncService<'ctx, S> {
     }
 
     /// Runs a sync, optionally restricted to one story.
-    pub fn sync(&self, story_id: Option<&str>, dry_run: bool) -> Result<Response, AppError> {
-        crate::github::run_sync_with(&StoreSyncStorage::new(self.ctx), story_id, dry_run)
+    ///
+    /// `resolve` arrives as the wire's [`ConflictSide`] and is translated here,
+    /// on the gated side of the feature boundary: the request envelope has to
+    /// carry the choice in every build, while the merge engine's own
+    /// [`Resolution`] only exists when `github-sync` is compiled in.
+    pub fn sync(
+        &self,
+        story_id: Option<&str>,
+        dry_run: bool,
+        resolve: Option<ConflictSide>,
+    ) -> Result<Response, AppError> {
+        let resolve = resolve.map(|side| match side {
+            ConflictSide::Local => Resolution::KeepLocal,
+            ConflictSide::Remote => Resolution::KeepRemote,
+        });
+        crate::github::run_sync_with(&StoreSyncStorage::new(self.ctx), story_id, dry_run, resolve)
     }
 }
 

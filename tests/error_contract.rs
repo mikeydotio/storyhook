@@ -71,10 +71,16 @@ fn forms_may_run_together(variant: &str) -> bool {
 
 /// Every variant reachable through the CLI.
 ///
-/// `SyncConflict` is absent because it is **not reachable**: it is constructed
-/// nowhere in `src/`, and `web.rs` only maps it to HTTP 409. It is covered
-/// instead by [`unreachable_variants_still_hold_their_exit_codes`], and
-/// [`the_table_covers_every_variant`] is what stops it being forgotten.
+/// `SyncConflict` is absent for a reason that changed with SH-152 and is worth
+/// stating precisely. It used to be constructed nowhere at all. It is now what
+/// `github-sync` answers with when a merge conflict is left undecided — but
+/// provoking one needs a live GitHub issue that disagrees with a local story,
+/// and `GithubClient` is a concrete `ureq` struct with no seam a test can stand
+/// in front of. So it is *reachable* and not *provokable here*, which is what
+/// [`UNPROVOKABLE`] now means. Its exit code is held by
+/// [`unreachable_variants_still_hold_their_exit_codes`], its refusal text by
+/// `github::outcome_tests`, and [`the_table_covers_every_variant`] is what
+/// stops it being forgotten.
 fn cases() -> Vec<Case> {
     let mut cases = vec![
         Case {
@@ -421,9 +427,9 @@ fn every_error_variant_holds_its_contract() {
 
 /// The exit codes themselves, asserted directly on the enum.
 ///
-/// Covers `SyncConflict`, which no CLI path constructs, and gives every other
-/// variant a second, invocation-independent witness: if a refactor renumbers a
-/// code, this fails even for a variant whose trigger has moved.
+/// Covers `SyncConflict`, which no test can provoke offline, and gives every
+/// other variant a second, invocation-independent witness: if a refactor
+/// renumbers a code, this fails even for a variant whose trigger has moved.
 #[test]
 fn unreachable_variants_still_hold_their_exit_codes() {
     let expected = [
@@ -455,9 +461,11 @@ fn unreachable_variants_still_hold_their_exit_codes() {
 /// which list it belongs in.
 #[test]
 fn the_table_covers_every_variant() {
-    /// Constructed nowhere in `src/`; `web.rs` only maps it to HTTP 409. If a
-    /// CLI path ever raises it, move it into [`cases`] with a real invocation.
-    const UNREACHABLE: &[&str] = &["SyncConflict"];
+    /// Raised by `github-sync` on an undecided conflict (SH-152), but not
+    /// reproducible in this file: it needs a GitHub issue that disagrees with a
+    /// local story, and the API client has no test seam. Move it into [`cases`]
+    /// with a real invocation once one exists.
+    const UNPROVOKABLE: &[&str] = &["SyncConflict"];
     /// Compiled out with `--no-default-features`, so they cannot be required.
     const FEATURE_GATED: &[&str] = &["GithubAuth", "GithubApi"];
 
@@ -477,11 +485,11 @@ fn the_table_covers_every_variant() {
 
     for error in &all {
         let name = variant_name(error);
-        if UNREACHABLE.contains(&name) {
+        if UNPROVOKABLE.contains(&name) {
             assert!(
                 !covered.contains(&name),
-                "{name} is listed unreachable but the table provokes it — delete \
-                 it from UNREACHABLE"
+                "{name} is listed unprovokable but the table provokes it — delete \
+                 it from UNPROVOKABLE"
             );
             continue;
         }
