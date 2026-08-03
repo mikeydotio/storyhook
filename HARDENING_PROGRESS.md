@@ -172,7 +172,7 @@ The first four come first because they are the failure this file's supervision
 section was written about: a run that wedges with no failing test name costs
 more than any single story below it. SH-143 and SH-144 are that wedge, named.
 
-- [ ] **SH-143** — the daemon spawn lock blocks without a timeout · *clients queue serially behind up to 15 s each*
+- [x] **SH-143** — the daemon spawn lock blocks without a timeout · *clients queue serially behind up to 15 s each*
 - [ ] **SH-144** — `HttpInvoker::send` has no bound, so a wedged daemon holds its client forever
 - [ ] **SH-141** — an event hook's grandchild holds its stderr pipe and wedges the daemon
 - [ ] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
@@ -3252,3 +3252,130 @@ twice, get the same list"), not one fixed example of it.
 partially in scope on its own: `handoff` and `graph` still sort
 lexicographically, deliberately untouched here and pinned by their own
 still-passing tests.
+
+### SH-143 — done
+
+**Outcome:** merged. The spawn-lock wait is bounded, and a client queued behind
+another no longer repeats its work: **four concurrent clients against a wedged
+daemon fell from 20.46s to 5.10s**, and the queue is one attempt deep however
+many clients are in it.
+
+**Measured before designing, and the measurement moved the design twice.** The
+story described a queue "up to 15s each" and asked for a queue-position report.
+Two probes against the real binary and an isolated store:
+
+| scenario | before |
+|---|---|
+| 6 clients, daemon able to start | 0.20–0.22s each |
+| 4 clients, wedged daemon | 10.16s / 20.25s / 30.33s / 40.42s |
+| one client alone, wedged | 10.15s |
+| a follower's output while waiting | nothing, for 19.72s |
+
+**The healthy case was never the problem**, which is the first thing the
+measurement settled: the followers block for the length of one spawn, re-check,
+and return. Any design that slowed that down would have cost more than the
+defect. **The wedged case was strictly linear with no bound at all** — 10.08s
+per client, serialized — and `tests/concurrency_soak.rs` runs eight clients
+against a 30s deadline, so three of them in this shape already reach 30.33s.
+SH-94 attributed two of those overruns to descriptor theft; its log says it
+should not have.
+
+**Two findings the story did not have, and one of them became the fix.** A
+follower is silent for its *entire* wait, so there is no way to tell "waiting
+behind somebody" from "hung" — the distinction the story asked for was not
+imprecise, it was absent. And every follower pays full price to recompute a
+diagnosis the leader already has: client 4 waited 40.42s to be told what client
+1 was told at 10.16s. That second one is the origin, and the story had framed
+the timeout as the defect.
+
+**The council was unanimous, 3-0, and all three seats reached the same origin
+fix independently while blind.** None of them was told it. All three also
+independently rejected the story's own suggestion: `flock` reports no waiter
+count, no queue position and no ordering guarantee, so a position report cannot
+be built over this lock at all — it would take a hand-rolled ticket queue and
+its crash-cleanup failure modes. **Both non-authors voted against their own
+proposals**, for the fifth time in this run, and again on evidence rather than
+argument: seat 3's reading of `tests/cli_error_streams.rs` showed that seat 2's
+unconditional stderr notice would break a contract the suite already pins, and
+that seat 2's cited precedent (`github/mod.rs:336`) runs in the *daemon*
+process, whose stderr is the log file rather than anybody's terminal. Seat 3
+then named an internal contradiction in its own summary and voted against that
+too.
+
+**The winner won on arithmetic the other two got wrong.** Both rivals bounded
+the wait at ~25s. The structural worst case is **30s**, because the stale
+stand-down and `stand_down_legacy_daemon` are *not* mutually exclusive: a daemon
+that answers its shutdown late clears its own portfile on the way out, which
+re-opens the legacy branch's `daemon_file().exists()` guard behind it. A bound
+below the worst case aborts a spawn that was going to succeed — the exact
+failure the story warns about — so the number is **derived**, three
+`CONTROL_DEADLINE`s plus three `SPAWN_DEADLINE`s, with a unit test that fails if
+a step is added inside the critical section without a matching term.
+
+**The poll is forced, not chosen.** I verified this in the registry source
+rather than taking it from a seat: `fs4` 0.8.4 exposes exactly six locking
+primitives — `lock_shared`, `lock_exclusive`, `try_lock_shared`,
+`try_lock_exclusive`, `unlock`, `allocate` — and none is a timed acquire. A
+bounded wait can only be built from the non-blocking one.
+
+**One deviation from the verdict, and it is the graft.** D7 came from the
+*losing* proposal, endorsed in the winner's own ballot: `lifecycle.rs:440`
+discarded `request_shutdown`'s error and then waited a full `SPAWN_DEADLINE` for
+a stand-down that had been refused. The verdict said stop waiting. I kept the
+wait and report the refusal instead, for a reason I checked in `serve.rs`: a
+daemon replies to a shutdown *before* it exits, so a failed request means the
+incumbent never accepted it — but `wait_until` already short-circuits the moment
+it lets go, so the five seconds are only ever paid on a path that fails anyway,
+and paying them buys the case where a daemon *busy* rather than wedged finishes
+and exits. Skipping would convert a recoverable case into a failure to save 5s
+on a one-off path that adoption had already stopped multiplying. Recorded on
+the story.
+
+**Red verified in both directions rather than assumed**, and the first disarm
+was wrong in a way worth recording. Removing the adoption by neutering its
+`return` left the `unlock` behind it, so the disarmed build released the lock
+without returning — four clients then ran *concurrently* and the wave measured
+10.2s, which looks like a pass. The clean disarm gives **20.46s, exactly four
+serial attempts**. Restoring the blocking `flock` hangs
+`ensure_gives_up_on_a_spawn_lock_somebody_else_holds` until the harness gives up
+at 45.00s. Neither disarm touched the other's tests, and the healthy-path guard
+stays green under both — its job is to catch a fix paid for out of the common
+case.
+
+**A 32.5s measurement that was not a measurement of anything.** The four-client
+test priced one attempt at 32.5s and would have calibrated itself against a
+number six times too large. It was the *first exec of a freshly built binary* —
+macOS validates a new Mach-O — which lands entirely on whichever client runs
+first. The shell probe never saw it because its untimed setup commands had
+already paid it. Warmed outside the clock now, and the same warm-up went into
+the healthy-path guard; one attempt actually costs **5.1s**, stable across eight
+consecutive runs.
+
+**The soak's deadline is now derived from the client's bound** rather than
+hard-coded, because both were 30s and that is a race the harness is supposed to
+lose: a client that exhausts the lock bound and *correctly* errors would have
+surfaced as the anonymous stall the bound exists to retire. `SPAWN_LOCK_DEADLINE
++ 15s`. This was a chair note in `DECISION.md`, not something any seat was asked
+about — the arithmetic only appears once the verdict is real.
+
+**Also fixed, found rather than reported:** `daemon_failure()` was missing from
+both `env` tests that enumerate every file a daemon touches, so store isolation
+was one path short of the invariant it states. It joins them alongside the new
+`daemon_attempt()`.
+
+**Gate:** `make test` — the whole gate — exit 0, **114 green test-result
+blocks**, 0 failures, 0 warnings, plugin harness **20/0**, no orphan daemons.
+**No wedge** — the eleventh consecutive story without one. It went red once
+first, on `cargo fmt --check`: I had run clippy and not fmt. Folded into the
+commit that caused it rather than appended, so every commit still passes the
+gate.
+
+**Semver: patch.** A bug fix with no interface change. `SPAWN_LOCK_DEADLINE`
+becomes `pub` so the soak can import it, which is an addition.
+
+**Council:** yes — unanimous, round 1. `.council/sh143-spawn-lock-wait/DECISION.md`.
+
+**Note for SH-144**, which is next in the queue and adjacent: this story
+deliberately did not touch `HttpInvoker::send`. The two are independent — SH-143
+is the wait *before* a request exists, SH-144 is the exchange after one is sent —
+and the council was told so explicitly.

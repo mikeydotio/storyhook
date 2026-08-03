@@ -269,6 +269,23 @@ impl Environment {
         self.daemon_state_dir().join("daemon.spawn.lock")
     }
 
+    /// Where a client that held the spawn lock leaves the verdict of its
+    /// attempt, for the clients that were queued behind it.
+    ///
+    /// A **sibling** of [`Self::daemon_spawn_lock`] and never that file itself:
+    /// the `flock` lives on the inode, so publishing by `rename` over the lock
+    /// would hand the next waiter a different inode from the one the holder is
+    /// locking, and the mutual exclusion would silently stop existing.
+    ///
+    /// Distinct from [`Self::daemon_failure`], which the *daemon* writes about
+    /// itself on its way out. This one is written by a **client** about an
+    /// attempt, and the two answer different questions: "why did the daemon
+    /// stop" against "what happened when somebody last tried to start one"
+    /// (SH-143).
+    pub fn daemon_attempt(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.attempt.json")
+    }
+
     /// Where a daemon started in the background writes its diagnostics.
     pub fn daemon_log(&self) -> PathBuf {
         self.daemon_state_dir().join("daemon.log")
@@ -469,6 +486,8 @@ mod tests {
             env.daemon_file(),
             env.daemon_pidfile(),
             env.daemon_spawn_lock(),
+            env.daemon_attempt(),
+            env.daemon_failure(),
             env.daemon_log(),
         ] {
             assert_eq!(
@@ -495,6 +514,8 @@ mod tests {
             (one.daemon_file(), two.daemon_file()),
             (one.daemon_pidfile(), two.daemon_pidfile()),
             (one.daemon_spawn_lock(), two.daemon_spawn_lock()),
+            (one.daemon_attempt(), two.daemon_attempt()),
+            (one.daemon_failure(), two.daemon_failure()),
             (one.daemon_log(), two.daemon_log()),
         ] {
             assert_ne!(a, b, "{} is shared between two stores", a.display());
