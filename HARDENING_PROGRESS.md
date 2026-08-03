@@ -155,7 +155,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-110** — tailnet bind flake · *gates SH-114* · **not a flake: the dashboard advertised a probe, not its bind**
 - [x] **SH-114** — C2 Transport: daemon-only · *two PRs: the diagnostics, then the removal*
 - [x] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal · *`git config --get` walks up, which cost two clauses of the verdict*
-- [ ] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink` · *part 1 #101, part 2 PR 1 #103; PR 2 remains*
+- [x] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink` · *part 1 #101, part 2 PRs #103 and this one* · **the whole surface, and the three retirements**
 - [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk
 - [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures
 - [ ] **SH-118** — C6 Ids: bare integers
@@ -2244,3 +2244,125 @@ service functions; nothing removed, and no interface a user types changed.
 **Left for PR 2**, with `HANDOFF.md` carrying the brief: the fixture sweep
 (D22), `project delete` (D6), the `DeinitPlan` rename, and the retirement of
 `init`, `deinit` and `relink` behind redirects (D10, D11, D14, D15, D16).
+
+### SH-117 — part 2 · done · the story closes
+
+**Outcome:** merged as PR 2. `story project new|list|delete|link|unlink` is the
+whole project surface; `story init`, `story project init`, `story project
+deinit` and `story relink` are redirects naming their replacements, and
+`CatalogService::relink` is deleted. All four acceptance criteria are met.
+
+Built to the council's DECISION.md **without re-running the vote**, as the
+handoff instructed. Four commits, in the order the commit plan gave them.
+
+**c11 — the sweep, and it really was source-free.** 290 substitutions across 45
+test files, `ProjectBuilder` and the plugin harness; `git show --stat` contains
+no `src/` path and `grep -rn 'project", *"init' tests crates plugin` returns
+nothing. Three sites were edited by hand because the mechanical form is wrong
+for them: `ProjectBuilder` assembled its argv incrementally and would have
+gained a second `--prefix`; `init_project_in` appends its target with
+`cmd.arg`, which under the new grammar is a bare positional and a usage error,
+so it appends `--attach` first; and `lib.sh` is bash. **The sweep was possible
+only because D1 kept idempotence and kept the filesystem behaviour** — meaning
+is identical at every swept site, which is what makes a 45-file diff reviewable
+as a rename rather than as 290 judgement calls.
+
+**The document contradicted itself once, and the contradiction was
+load-bearing.** D6 says `delete`'s target is named by the SH-116 selector; D15
+says `delete` stays project-less. Those cannot both hold: `is_project_less`
+refuses `--project` outright, so a project-less `delete` cannot be named by the
+selector at all. Resolved in favour of **D6** — it is the specific decision, and
+the disarm matrix ("`delete` grows a required slug positional … a fourth way to
+name a project"), D20(d) (delete by selector from an unrelated directory) and
+the handoff all state the same thing. `delete` moved to the scoped side beside
+`settings`, `link` and `unlink`, and inherits `no_project_refusal` for free.
+
+**Two deviations from D13 and D15, both forced by SH-62's own gate.** The
+verdict says to remove the `init` and `deinit` entries from the flag table.
+Keeping them is what makes the redirects reachable: `reject_unknown_flags` runs
+*ahead* of every parser and fails closed, so without an entry declaring what
+each verb used to take, `story project init --prefix AB` is answered "unknown
+flag `--prefix`" and the redirect never fires. A redirect that works only for
+the flagless spelling is half a redirect.
+`a_retired_verb_redirects_even_when_its_old_flags_are_passed` is the test that
+says so. The second deviation follows from the first: `deinit`'s redirect and
+its strings landed in c12 rather than c14, because `delete` cannot *replace*
+`deinit` while `deinit` still works — the two disagree about the filesystem.
+
+**The behaviour change is one sentence, and it goes in one direction.**
+`deinit` deleted the `.storyhook.toml` and the `AGENTS.md` it had generated in
+*every* recorded checkout, including directories the caller had never named,
+justified by the plan having listed them first. `delete` leaves them alone. A
+stale pointer file is a tidiness complaint with a clear diagnosis; a deleted
+`AGENTS.md` is work gone. What survives of the old reasoning is the listing —
+the plan still names the checkouts, and now says, in the CLI warning *and* in
+the dashboard's modal, that nothing in them is touched. A bare list of paths
+under a destruction warning reads as a list of casualties, which is the one
+misreading that matters here.
+
+**The three `relink` tests became capability tests rather than being deleted**,
+which is what D10 asked for and is worth more than either alternative. Each now
+pins something `link checkout` can do that `relink` could not: it accepts a
+directory with **no pointer file** (the case `relink` refused, and the case that
+most needs it — a fresh clone, a worktree, a checkout whose pointer was never
+committed); and it does **not read** the pointer of the directory it is pointed
+at, so a checkout carrying another project's identity is linked *and still
+resolves to that other project*. That second one is D21 as a property of the
+tree: `relink` had to refuse it because it wrote a `project_paths` row, and
+`link checkout` writes a column nothing resolves by, so the same arrangement is
+merely two projects whose repo-side work runs in one tree — a monorepo, and
+SH-151's subject.
+
+**`POST /api/repos` requires `prefix`, and the browser is why.** It is the one
+caller that can never be asked: the CLI has a questionnaire for a bare
+`story project new`, a form has no equivalent, and a server-side default there
+would be SH-109's silent `SH` wearing a form in the one place nobody would
+notice. The form derives a suggestion from the last path segment client-side and
+never over something typed; the route validates whatever arrives through
+`domain::prefix::validate`. Two tests cover both halves and they matter more
+than they look — **every CLI fixture in the suite passes `--prefix` explicitly,
+so the entire Rust corpus is blind to a returning default by construction.**
+
+**Two small calls the verdict did not cover.** The browser's derivation returns
+**empty** rather than `SH` when nothing usable can be derived, and drops a
+candidate the server would refuse (`123-456` derives `14`, which is illegal):
+the field is required, so an empty one forces a choice, and pre-filling a
+default nobody chose is the defect being closed. And `AppError::Validation` is
+HTTP **422**, not 400 — a *missing* prefix is a malformed request (`Usage`,
+400), an *unusable* one is a well-formed request carrying a value the domain
+refuses. The CLI collapses both to exit 2; HTTP can tell them apart.
+
+**D14's arithmetic held exactly.** The compact reference is 2980 characters
+against a 3000-character budget — six fewer than before, which is what the
+verdict predicted the replacement would save.
+
+**The gate caught two things the author did not**, both in the same run, and
+both are the kind that a green suite hides: the REST status code above, and
+`the_invocation_corpus_covers_every_variant`, whose expected count is a literal
+that deleting `Invocation::Relink` made wrong. Third and fourth times in this
+run that the gate has been the thing that found the defect.
+
+**A process note, and it is a new dress on an old trap.** The background
+`make test` was run as `(make test > log; echo "MAKE_TEST_EXIT=$?" >> log)`, so
+the *subshell's* status — and therefore the harness's completion notification —
+was the `echo`'s. The notification said **"exit code 0" for a run that exited
+2**, twice. SH-62's and SH-130's logs record this trap fooling the human-facing
+report; this is the first time it fooled the tooling. The `MAKE_TEST_EXIT=` line
+inside the log is what caught it both times. Read the log, never the
+notification.
+
+**Gate:** `make test` exits 0 — **111 green test-result blocks**, 0 failures,
+plugin harness 18/0, clippy clean, orphan postlude green. **Twelfth consecutive
+story with no wedge.**
+
+**Semver: major** when someone bumps it. Three commands a user types are gone —
+`story init`, `story project init`, `story project deinit` and `story relink`
+all answer exit 2 — `project delete` no longer accepts the positional `deinit`
+took, `POST /api/repos` rejects a body it used to accept, and the
+`ConfirmationPlan` discriminant a 409 carries changed from `deinit` to `delete`.
+
+**Unblocks SH-119, SH-120, SH-95 and SH-109.** SH-119 inherits four deletions it
+asks for and will not find — `relink`, `CatalogService::relink`,
+`repository_roots`, `agents_md_is_pristine` — because `-D warnings` took them
+when their callers went. `HANDOFF.md` says so, and says which two tests hold
+D21's line so SH-119 knows what it is allowed to move.
