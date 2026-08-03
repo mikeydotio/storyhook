@@ -129,6 +129,15 @@ pub const MIGRATIONS: &[Migration] = &[
         // rebuilt and migration 5's warning does not apply.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 9,
+        name: "type_emoji_and_drop_task",
+        sql: include_str!("schema/0009_type_emoji_and_drop_task.sql"),
+        // `ALTER TABLE ... ADD COLUMN`, appended events, and ordinary
+        // `UPDATE`/`DELETE` statements — nothing here rebuilds a table, so
+        // migration 5's `events_reject_delete` warning does not apply.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

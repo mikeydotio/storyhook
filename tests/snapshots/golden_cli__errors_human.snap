@@ -171,7 +171,7 @@ $ story type no-such-subcommand
 exit: 2
 stdout: <empty>
 stderr: 
-error: usage: story type list | story type add <slug> [--description "<text>"] | story type remove <slug>
+error: usage: story type list | story type add <slug> [...] | story type set <slug> [...] | story type remove <slug>
 
 
 $ story state no-such-subcommand

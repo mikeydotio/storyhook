@@ -1088,3 +1088,468 @@ fn a_migrated_store_has_no_resolution_index_left() {
         "the table and its unique index must both be gone, found: {objects:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Migration 9: type emoji, and `task` is retired (SH-157)
+// ---------------------------------------------------------------------------
+
+/// A store at schema v8 — the last version before `project_types.emoji`
+/// existed — carrying one project with the full default catalog (`task`
+/// deliberately placed in the *middle* of the position order, so the
+/// migration's gap-closing renumbering has a real gap to close rather than
+/// one that already happens to be contiguous) and two stories: one typed
+/// `task`, one typed `story` and otherwise untouched.
+///
+/// `project_types` is seeded in raw SQL at the v8 shape (no `emoji` column) —
+/// the same reason `tests/store_schema_fixture.rs` seeds it that way now:
+/// `WriteOps::put_types` assumes the column this migration adds.
+fn v8_store_with_a_task_story(
+    dir: &Path,
+) -> (SqliteStore, storyhook::store::ProjectId, StoryNo, StoryNo) {
+    use storyhook::domain::{StateDef, SuperState, fold_story};
+    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+
+    let store = SqliteStore::open(dir.join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
+
+    let (project, task_story, story_story) = store
+        .write(|tx| {
+            let project = tx.create_project(&NewProject {
+                uuid: "types".into(),
+                slug: "types".into(),
+                name: "types".into(),
+                prefix: "SH".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })?;
+            tx.put_states(
+                project,
+                &[
+                    StateDef {
+                        slug: "todo".into(),
+                        super_state: SuperState::Open,
+                        role: None,
+                        description: None,
+                    },
+                    StateDef {
+                        slug: "done".into(),
+                        super_state: SuperState::Closed,
+                        role: None,
+                        description: None,
+                    },
+                ],
+            )?;
+            let state_map = tx.state_map(project)?;
+
+            let task_events = vec![
+                StoryEvent::StoryCreated {
+                    at: "2026-01-01T00:00:00Z".into(),
+                    title: "A task-typed story".into(),
+                    state: "todo".into(),
+                },
+                StoryEvent::StoryTypeSet {
+                    at: "2026-01-01T00:01:00Z".into(),
+                    story_type: "task".into(),
+                },
+            ];
+            let task_no = tx.allocate_story_no(project)?;
+            let task_head = tx.append_events(
+                project,
+                task_no,
+                ExpectedSeq::Exact(EventSeq::ZERO),
+                &task_events,
+            )?;
+            let task_snapshot = fold_story(&task_no.to_id("SH"), &task_events, &state_map).unwrap();
+            tx.put_story(project, &task_snapshot, task_head)?;
+
+            let story_events = vec![
+                StoryEvent::StoryCreated {
+                    at: "2026-01-01T00:00:10Z".into(),
+                    title: "An ordinary story".into(),
+                    state: "todo".into(),
+                },
+                StoryEvent::StoryTypeSet {
+                    at: "2026-01-01T00:01:10Z".into(),
+                    story_type: "story".into(),
+                },
+            ];
+            let story_no = tx.allocate_story_no(project)?;
+            let story_head = tx.append_events(
+                project,
+                story_no,
+                ExpectedSeq::Exact(EventSeq::ZERO),
+                &story_events,
+            )?;
+            let story_snapshot =
+                fold_story(&story_no.to_id("SH"), &story_events, &state_map).unwrap();
+            tx.put_story(project, &story_snapshot, story_head)?;
+
+            Ok((project, task_no, story_no))
+        })
+        .unwrap();
+
+    let conn = Connection::open(store.path()).unwrap();
+    for (position, slug) in [
+        (0, "story"),
+        (1, "task"),
+        (2, "epic"),
+        (3, "bug"),
+        (4, "chore"),
+    ] {
+        conn.execute(
+            "INSERT INTO project_types (project_id, position, slug, description) \
+             VALUES (?1, ?2, ?3, NULL)",
+            rusqlite::params![project.get(), position, slug],
+        )
+        .unwrap();
+    }
+
+    (store, project, task_story, story_story)
+}
+
+/// `(story_type, updated_at, head_seq)` for one story, read back through the
+/// store.
+fn story_type_updated_head(
+    store: &SqliteStore,
+    project: storyhook::store::ProjectId,
+    no: StoryNo,
+) -> (Option<String>, String, i64) {
+    use storyhook::store::ReadOps;
+    let row = store.read(|tx| tx.story(project, no)).unwrap().unwrap();
+    (row.story_type, row.updated_at, row.head_seq.get())
+}
+
+/// The events recorded for one story, in `seq` order: `(kind, story_type)`.
+///
+/// `story_type` is `None` for every event kind but `StoryTypeSet`, which is
+/// all this test file needs from the payload.
+fn events_of(
+    store: &SqliteStore,
+    project: storyhook::store::ProjectId,
+    no: StoryNo,
+) -> Vec<(String, Option<String>)> {
+    let conn = Connection::open(store.path()).unwrap();
+    conn.prepare(
+        "SELECT kind, payload FROM events WHERE project_id = ?1 AND story_no = ?2 ORDER BY seq",
+    )
+    .unwrap()
+    .query_map(rusqlite::params![project.get(), no.get()], |row| {
+        let kind: String = row.get(0)?;
+        let payload: String = row.get(1)?;
+        Ok((kind, payload))
+    })
+    .unwrap()
+    .map(|r| {
+        let (kind, payload) = r.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let story_type = value
+            .get("story_type")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        (kind, story_type)
+    })
+    .collect()
+}
+
+fn next_global_seq(store: &SqliteStore, project: storyhook::store::ProjectId) -> i64 {
+    let conn = Connection::open(store.path()).unwrap();
+    conn.query_row(
+        "SELECT next_global_seq FROM projects WHERE id = ?1",
+        rusqlite::params![project.get()],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn type_catalog(store: &SqliteStore, project: storyhook::store::ProjectId) -> Vec<(String, i64)> {
+    let conn = Connection::open(store.path()).unwrap();
+    conn.prepare("SELECT slug, position FROM project_types WHERE project_id = ?1 ORDER BY position")
+        .unwrap()
+        .query_map(rusqlite::params![project.get()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn migration_nine_retypes_task_stories_by_appending_a_real_event() {
+    let dir = scratch_dir();
+    let (store, project, task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+    let before = next_global_seq(&store, project);
+
+    store.migrate().unwrap();
+
+    let (story_type, updated_at, head_seq) = story_type_updated_head(&store, project, task_story);
+    assert_eq!(story_type.as_deref(), Some("story"));
+    assert_ne!(
+        updated_at, "2026-01-01T00:01:00Z",
+        "updated_at must move: the fold sets it from the appended event's `at`"
+    );
+    assert_eq!(
+        head_seq, 3,
+        "StoryCreated, StoryTypeSet(task), StoryTypeSet(story)"
+    );
+
+    let events = events_of(&store, project, task_story);
+    assert_eq!(
+        events,
+        vec![
+            ("StoryCreated".to_string(), None),
+            ("StoryTypeSet".to_string(), Some("task".to_string())),
+            ("StoryTypeSet".to_string(), Some("story".to_string())),
+        ],
+        "the original `task` event survives; the migration appends rather than rewrites"
+    );
+
+    assert_eq!(
+        next_global_seq(&store, project),
+        before + 1,
+        "the project's counter advances past the one event this migration appended"
+    );
+}
+
+#[test]
+fn migration_nine_leaves_a_non_task_story_completely_alone() {
+    let dir = scratch_dir();
+    let (store, project, _task_story, story_story) = v8_store_with_a_task_story(dir.path());
+    let before = story_type_updated_head(&store, project, story_story);
+
+    store.migrate().unwrap();
+
+    let after = story_type_updated_head(&store, project, story_story);
+    assert_eq!(
+        before, after,
+        "a story never typed `task` must not be touched by this migration at all"
+    );
+    assert_eq!(
+        events_of(&store, project, story_story).len(),
+        2,
+        "no event is appended to a story the migration has no reason to touch"
+    );
+}
+
+#[test]
+fn migration_nine_read_model_agrees_with_the_event_log_afterward() {
+    use storyhook::store::diff_read_model;
+
+    let dir = scratch_dir();
+    let (store, project, _task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+
+    store.migrate().unwrap();
+
+    let diff = diff_read_model(&store, project).unwrap();
+    assert!(
+        diff.is_clean(),
+        "the row the migration edited must still agree with its own event log: {}",
+        diff.describe()
+    );
+}
+
+#[test]
+fn migration_nine_drops_task_from_the_catalog_and_closes_the_position_gap() {
+    let dir = scratch_dir();
+    let (store, project, _task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+
+    store.migrate().unwrap();
+
+    let catalog = type_catalog(&store, project);
+    let slugs: Vec<&str> = catalog.iter().map(|(slug, _)| slug.as_str()).collect();
+    assert_eq!(
+        slugs,
+        vec!["story", "epic", "bug", "chore"],
+        "`task` is gone; the survivors keep their relative order"
+    );
+    let positions: Vec<i64> = catalog.iter().map(|(_, position)| *position).collect();
+    assert_eq!(
+        positions,
+        vec![0, 1, 2, 3],
+        "positions are renumbered contiguous from 0, closing the gap `task` left at 1"
+    );
+}
+
+#[test]
+fn migration_nine_backfills_emoji_for_the_four_default_slugs_only() {
+    use storyhook::store::ReadOps;
+
+    let dir = scratch_dir();
+    let (store, project, _task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+
+    store.migrate().unwrap();
+
+    let types = store.read(|tx| tx.types(project)).unwrap();
+    let emoji_of = |slug: &str| {
+        types
+            .iter()
+            .find(|t| t.slug == slug)
+            .and_then(|t| t.emoji.clone())
+    };
+    assert_eq!(emoji_of("story").as_deref(), Some("📖"));
+    assert_eq!(emoji_of("epic").as_deref(), Some("📚"));
+    assert_eq!(emoji_of("bug").as_deref(), Some("🐞"));
+    assert_eq!(emoji_of("chore").as_deref(), Some("🧺"));
+}
+
+#[test]
+fn migration_nine_does_not_invent_an_emoji_for_a_custom_type() {
+    use storyhook::store::ReadOps;
+
+    let dir = scratch_dir();
+    let (store, project, _task_story, _story_story) = v8_store_with_a_task_story(dir.path());
+    let conn = Connection::open(store.path()).unwrap();
+    conn.execute(
+        "INSERT INTO project_types (project_id, position, slug, description) \
+         VALUES (?1, 5, 'spike', NULL)",
+        rusqlite::params![project.get()],
+    )
+    .unwrap();
+    drop(conn);
+
+    store.migrate().unwrap();
+
+    let types = store.read(|tx| tx.types(project)).unwrap();
+    let spike = types.iter().find(|t| t.slug == "spike").unwrap();
+    assert_eq!(
+        spike.emoji, None,
+        "only the four named default slugs are backfilled; a custom type gets \
+         no emoji invented for it and falls back to the dashboard's generic 🏷️"
+    );
+}
+
+#[test]
+fn migration_nine_leaves_a_project_with_no_task_stories_and_no_task_type_untouched() {
+    use storyhook::domain::{StateDef, SuperState, fold_story};
+    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
+
+    let (project, no) = store
+        .write(|tx| {
+            let project = tx.create_project(&NewProject {
+                uuid: "clean".into(),
+                slug: "clean".into(),
+                name: "clean".into(),
+                prefix: "SH".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })?;
+            tx.put_states(
+                project,
+                &[
+                    StateDef {
+                        slug: "todo".into(),
+                        super_state: SuperState::Open,
+                        role: None,
+                        description: None,
+                    },
+                    StateDef {
+                        slug: "done".into(),
+                        super_state: SuperState::Closed,
+                        role: None,
+                        description: None,
+                    },
+                ],
+            )?;
+            let state_map = tx.state_map(project)?;
+            let events = vec![StoryEvent::StoryCreated {
+                at: "2026-01-01T00:00:00Z".into(),
+                title: "Never typed at all".into(),
+                state: "todo".into(),
+            }];
+            let no = tx.allocate_story_no(project)?;
+            let head =
+                tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+            let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
+            tx.put_story(project, &snapshot, head)?;
+            Ok((project, no))
+        })
+        .unwrap();
+    let before = story_type_updated_head(&store, project, no);
+    let before_global_seq = next_global_seq(&store, project);
+
+    store.migrate().unwrap();
+
+    assert_eq!(before, story_type_updated_head(&store, project, no));
+    assert_eq!(before_global_seq, next_global_seq(&store, project));
+    assert_eq!(events_of(&store, project, no).len(), 1);
+    assert!(type_catalog(&store, project).is_empty());
+}
+
+#[test]
+fn migration_nine_removes_an_unused_task_catalog_entry_without_touching_any_story() {
+    use storyhook::domain::{StateDef, SuperState, fold_story};
+    use storyhook::store::{EventSeq, ExpectedSeq, NewProject, ReadOps, WriteOps};
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
+
+    let (project, no) = store
+        .write(|tx| {
+            let project = tx.create_project(&NewProject {
+                uuid: "unused-task".into(),
+                slug: "unused-task".into(),
+                name: "unused-task".into(),
+                prefix: "SH".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })?;
+            tx.put_states(
+                project,
+                &[
+                    StateDef {
+                        slug: "todo".into(),
+                        super_state: SuperState::Open,
+                        role: None,
+                        description: None,
+                    },
+                    StateDef {
+                        slug: "done".into(),
+                        super_state: SuperState::Closed,
+                        role: None,
+                        description: None,
+                    },
+                ],
+            )?;
+            let state_map = tx.state_map(project)?;
+            let events = vec![StoryEvent::StoryCreated {
+                at: "2026-01-01T00:00:00Z".into(),
+                title: "Typed story, never task".into(),
+                state: "todo".into(),
+            }];
+            let no = tx.allocate_story_no(project)?;
+            let head =
+                tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
+            let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
+            tx.put_story(project, &snapshot, head)?;
+            Ok((project, no))
+        })
+        .unwrap();
+    let conn = Connection::open(store.path()).unwrap();
+    for (position, slug) in [(0, "story"), (1, "task")] {
+        conn.execute(
+            "INSERT INTO project_types (project_id, position, slug, description) \
+             VALUES (?1, ?2, ?3, NULL)",
+            rusqlite::params![project.get(), position, slug],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let before = story_type_updated_head(&store, project, no);
+    let before_global_seq = next_global_seq(&store, project);
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        before,
+        story_type_updated_head(&store, project, no),
+        "the catalog shrinking must not touch a story that was never typed `task`"
+    );
+    assert_eq!(before_global_seq, next_global_seq(&store, project));
+    assert_eq!(events_of(&store, project, no).len(), 1);
+    assert_eq!(
+        type_catalog(&store, project),
+        vec![("story".to_string(), 0)],
+        "only the catalog row is removed when no story used it"
+    );
+}

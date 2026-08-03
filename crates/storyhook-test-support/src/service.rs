@@ -236,10 +236,12 @@ pub fn default_types() -> Vec<TypeDef> {
         TypeDef {
             slug: "feature".into(),
             description: None,
+            emoji: None,
         },
         TypeDef {
             slug: "bug".into(),
             description: Some("Something is broken".into()),
+            emoji: None,
         },
     ]
 }

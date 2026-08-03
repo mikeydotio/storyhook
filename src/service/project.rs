@@ -1293,19 +1293,25 @@ pub fn default_states() -> Vec<StateDef> {
 }
 
 /// The type set a new project starts with. See [`default_states`].
+///
+/// `task` was a fifth default until SH-157, which removed it: no default type
+/// should exist only to be picked among near-synonyms, and every story it
+/// generalizes over is already a `story`. Retiring it is not a reservation —
+/// `story type add task` still works — so an existing project that wants it
+/// back can have it.
 #[must_use]
 pub fn default_types() -> Vec<TypeDef> {
     [
-        ("story", "A user story or feature"),
-        ("epic", "A large initiative containing child stories"),
-        ("bug", "A defect or regression"),
-        ("chore", "Maintenance or infrastructure work"),
-        ("task", "A discrete unit of work"),
+        ("story", "A user story or feature", "📖"),
+        ("epic", "A large initiative containing child stories", "📚"),
+        ("bug", "A defect or regression", "🐞"),
+        ("chore", "Maintenance or infrastructure work", "🧺"),
     ]
     .into_iter()
-    .map(|(slug, description)| TypeDef {
+    .map(|(slug, description, emoji)| TypeDef {
         slug: slug.to_string(),
         description: Some(description.to_string()),
+        emoji: Some(emoji.to_string()),
     })
     .collect()
 }

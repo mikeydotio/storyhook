@@ -100,7 +100,7 @@ source: tests/golden_cli.rs
         {
           "at": "[timestamp]",
           "kind": "StoryTypeSet",
-          "story_type": "task"
+          "story_type": "story"
         }
       ],
       "id": "SH-10"
@@ -122,7 +122,7 @@ source: tests/golden_cli.rs
         {
           "at": "[timestamp]",
           "kind": "StoryTypeSet",
-          "story_type": "task"
+          "story_type": "story"
         }
       ],
       "id": "SH-11"
@@ -288,7 +288,7 @@ source: tests/golden_cli.rs
         {
           "at": "[timestamp]",
           "kind": "StoryTypeSet",
-          "story_type": "task"
+          "story_type": "story"
         },
         {
           "at": "[timestamp]",
@@ -533,23 +533,23 @@ source: tests/golden_cli.rs
   "types": [
     {
       "description": "A user story or feature",
+      "emoji": "📖",
       "slug": "story"
     },
     {
       "description": "A large initiative containing child stories",
+      "emoji": "📚",
       "slug": "epic"
     },
     {
       "description": "A defect or regression",
+      "emoji": "🐞",
       "slug": "bug"
     },
     {
       "description": "Maintenance or infrastructure work",
+      "emoji": "🧺",
       "slug": "chore"
-    },
-    {
-      "description": "A discrete unit of work",
-      "slug": "task"
     },
     {
       "description": "A timeboxed investigation",

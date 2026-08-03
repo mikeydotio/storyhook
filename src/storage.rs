@@ -404,27 +404,36 @@ pub struct StateEdit {
     pub moved: usize,
 }
 
+// This is `storage.rs`'s own default set, frozen: a legacy `.storyhook/`
+// tree genuinely could hold a `task` type (SH-157 only retires it from
+// *new* stores), and no `emoji` column ever existed in that format's
+// `types.toml`, so every entry here carries `emoji: None`.
 fn default_types() -> Vec<TypeDef> {
     vec![
         TypeDef {
             slug: "story".to_string(),
             description: Some("A user story or feature".to_string()),
+            emoji: None,
         },
         TypeDef {
             slug: "epic".to_string(),
             description: Some("A large initiative containing child stories".to_string()),
+            emoji: None,
         },
         TypeDef {
             slug: "bug".to_string(),
             description: Some("A defect or regression".to_string()),
+            emoji: None,
         },
         TypeDef {
             slug: "chore".to_string(),
             description: Some("Maintenance or infrastructure work".to_string()),
+            emoji: None,
         },
         TypeDef {
             slug: "task".to_string(),
             description: Some("A discrete unit of work".to_string()),
+            emoji: None,
         },
     ]
 }
@@ -955,10 +964,12 @@ mod tests {
             TypeDef {
                 slug: "alpha".to_string(),
                 description: None,
+                emoji: None,
             },
             TypeDef {
                 slug: "beta".to_string(),
                 description: None,
+                emoji: None,
             },
         ];
         save_types(dir.path(), &custom).unwrap();
@@ -1009,6 +1020,7 @@ mod tests {
         let custom = vec![TypeDef {
             slug: "feature".to_string(),
             description: Some("A feature".to_string()),
+            emoji: None,
         }];
         save_types(dir.path(), &custom).unwrap();
         let types = load_types(dir.path()).unwrap();
@@ -1109,10 +1121,12 @@ mod tests {
             TypeDef {
                 slug: "story".to_string(),
                 description: Some("A user story".to_string()),
+                emoji: None,
             },
             TypeDef {
                 slug: "bug".to_string(),
                 description: None,
+                emoji: None,
             },
         ];
         let types_file = TypesFile {

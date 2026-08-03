@@ -24,9 +24,9 @@ $ story next --count 99
 SH-5 [todo] (critical) [bug] Fix the id collision across worktrees [defect]
 SH-2 [todo] (high) [story] Define the Store trait [api, backend, phase:1]
 SH-12 [todo] (high) [story] Harden concurrent writes
-SH-4 [review] (medium) [task] Write the migration runner [backend]
-SH-10 [todo] (medium) [task] Ship the CLI shim
-SH-11 [todo] (low) [task] Audit error codes
+SH-4 [review] (medium) [story] Write the migration runner [backend]
+SH-10 [todo] (medium) [story] Ship the CLI shim
+SH-11 [todo] (low) [story] Audit error codes
 SH-7 [todo] [chore] Document the data layer
 
 $ story next --phase 1

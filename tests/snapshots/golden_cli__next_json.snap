@@ -237,7 +237,7 @@ source: tests/golden_cli.rs
               }
             ],
             "state": "review",
-            "story_type": "task",
+            "story_type": "story",
             "superstate": "OPEN",
             "title": "Write the migration runner",
             "updated_at": "[timestamp]"
@@ -252,7 +252,7 @@ source: tests/golden_cli.rs
             "priority": "medium",
             "relationships": [],
             "state": "todo",
-            "story_type": "task",
+            "story_type": "story",
             "superstate": "OPEN",
             "title": "Ship the CLI shim",
             "updated_at": "[timestamp]"
@@ -267,7 +267,7 @@ source: tests/golden_cli.rs
             "priority": "low",
             "relationships": [],
             "state": "todo",
-            "story_type": "task",
+            "story_type": "story",
             "superstate": "OPEN",
             "title": "Audit error codes",
             "updated_at": "[timestamp]"

@@ -300,6 +300,7 @@ fn a_story_whose_type_left_the_catalog_is_reported() {
                 &[TypeDef {
                     slug: "feature".into(),
                     description: None,
+                    emoji: None,
                 }],
             )
         })
@@ -369,6 +370,7 @@ fn fix_exits_non_zero_when_something_is_left_unrepaired() {
                 &[TypeDef {
                     slug: "feature".into(),
                     description: None,
+                    emoji: None,
                 }],
             )
         })
