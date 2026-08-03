@@ -238,6 +238,33 @@ pub fn git(env: &TestEnv, cwd: &Path, args: &[&str]) {
     );
 }
 
+/// The slug `story project list` gives the project whose checkout is `root`.
+///
+/// Read out of the listing rather than derived from the directory name: the
+/// derivation is `ProjectService`'s business, and a test that reimplemented it
+/// would keep passing after the two came to disagree. Takes an arbitrary path
+/// rather than a [`Project`] because a fixture is not always one — a project
+/// created directly in a scratch directory, or in a subdirectory of an
+/// enclosing repository, has a slug and no `Project` around it.
+///
+/// It lived in `tests/project_link.rs` and `tests/project_selection.rs` as two
+/// copies of the same seven lines before SH-118 needed a third.
+pub fn slug_at(env: &TestEnv, root: &Path) -> String {
+    let out = env
+        .story(root)
+        .args(["project", "list"])
+        .output()
+        .expect("running `story project list`");
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let wanted = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    listing
+        .lines()
+        .find(|line| line.contains(&*wanted.to_string_lossy()))
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no `project list` row for {}:\n{listing}", wanted.display()))
+        .to_string()
+}
+
 /// A second checkout of a project's repository, cloned from its origin.
 ///
 /// Built by [`Project::second_checkout`]; see there for why this shape exists
@@ -397,6 +424,12 @@ impl<'a> Project<'a> {
         self.worktrees
             .get(name)
             .unwrap_or_else(|| panic!("no worktree named {name} in this fixture"))
+    }
+
+    /// The slug this project answers to — what `--project` and
+    /// `$STORYHOOK_PROJECT` take.
+    pub fn slug(&self) -> String {
+        slug_at(self.env, self.path())
     }
 
     /// A `story` command in this project, ready for arguments.
