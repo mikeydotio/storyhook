@@ -87,13 +87,28 @@ const ROUNDS: usize = 3;
 /// Two things can, and both are in the client. The *parent* can block in
 /// `read_to_end` on a pipe whose write end a daemon inherited by accident and
 /// holds for its whole life; that is fixed at its origin, see
-/// `tests/daemon_fd_hygiene.rs`. And `spawn_locked` takes `daemon.spawn.lock`
-/// with a blocking `flock` that has no timeout, held across
-/// `stand_down_legacy_daemon`, a five-second `wait_until` and `await_healthy` —
-/// so several clients arriving at once with no daemon running queue serially
-/// behind up to fifteen seconds each. That one is not fixed (SH-143), and it is
-/// now on *every* command's path rather than half of them.
-const DEADLINE: Duration = Duration::from_secs(30);
+/// `tests/daemon_fd_hygiene.rs`. And `spawn_locked` took `daemon.spawn.lock`
+/// with a blocking `flock` that had no timeout, so several clients arriving at
+/// once with no daemon running queued serially behind a full attempt each —
+/// measured at 10.16s, 20.25s, 30.33s and 40.42s for four. **That is fixed
+/// (SH-143):** the wait is bounded by `SPAWN_LOCK_DEADLINE`, and a client that
+/// arrives while another is attempting adopts its verdict rather than repeating
+/// it, so the queue is one attempt deep however many clients are in it.
+///
+/// # Why this is derived from the client's own bound
+///
+/// The two numbers have to stay ordered, and stating the relationship is the
+/// only way to keep them so. A client can now legitimately spend
+/// `SPAWN_LOCK_DEADLINE` waiting for the spawn lock and *then* report a proper
+/// error; if this harness gave up at the same moment, that correct failure would
+/// race a timeout and surface as the anonymous stall this bound exists to
+/// retire — the harness would win a race it is supposed to lose. The headroom is
+/// what guarantees the client's own deadline fires first and names itself.
+///
+/// The margin is generous rather than tight for the same reason the 30s was:
+/// what is being distinguished is "slow" from "never".
+const DEADLINE: Duration =
+    Duration::from_secs(storyhook::daemon::lifecycle::SPAWN_LOCK_DEADLINE.as_secs() + 15);
 
 /// Runs a command with a deadline, and fails loudly rather than hanging.
 ///
@@ -134,8 +149,10 @@ fn run_bounded(mut cmd: Command, what: &str) -> Output {
              If the label says `local`: somebody is holding the other end of this \
              thread's pipe. Run `lsof` on this test binary, then on the `story` \
              daemons, and match the pipe address; see tests/daemon_fd_hygiene.rs. \
-             If it says `daemon`: suspect the spawn lock in \
-             `daemon::lifecycle::spawn_locked`, which blocks without a timeout."
+             The spawn lock used to be the other suspect and is no longer one: \
+             it is bounded by `SPAWN_LOCK_DEADLINE`, which is strictly shorter \
+             than this deadline, so a client stuck there fails with its own \
+             message before this fires (SH-143)."
         ),
     }
 }

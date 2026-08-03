@@ -378,3 +378,252 @@ fn the_web_aliases_keep_their_output_and_announce_themselves_on_stderr() {
         .stdout(predicates::str::contains("Web UI stopped"))
         .stderr(predicates::str::contains("story daemon stop"));
 }
+
+/// A queue behind the spawn lock is one *attempt* deep, not one attempt deep
+/// per client.
+///
+/// # The defect this replaces
+///
+/// Every client that could not use the daemon took the spawn lock and ran the
+/// whole slow path — even when the client ahead of it had just run the same
+/// path against the same broken world and reached an answer. Measured before the
+/// fix, four concurrent clients against a wedged daemon returned at 10.16s,
+/// 20.25s, 30.33s and 40.42s: strictly linear, and every one of them was told
+/// what the first had already been told. `tests/concurrency_soak.rs` runs eight
+/// (SH-143).
+///
+/// # The fixture
+///
+/// A daemon that cannot be replaced and will not answer: a portfile naming a
+/// version this build is not — so `usable` is false and every client takes the
+/// slow path — beside a pidfile lock held by *this test*, so `is_live` stays
+/// true, the incumbent never stands down, and the child that gets spawned always
+/// fails to claim the pidfile. The port belongs to nothing, so the shutdown
+/// request is refused rather than hanging; the wedge under test here is the
+/// queue, not the socket.
+///
+/// # The assertion calibrates itself
+///
+/// One client is timed first, and the wave of four must land inside twice that.
+/// A hard-coded second count would be a claim about this machine; a multiple of
+/// a measurement taken moments earlier on the same machine is a claim about the
+/// shape, which is what changed. Before the fix the wave took four attempts and
+/// fails this by a wide margin.
+#[test]
+fn four_clients_behind_a_wedged_daemon_share_one_attempt() {
+    use std::sync::mpsc;
+
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let _incumbent = wedge_the_daemon(&env);
+
+    let run_one = || {
+        let dir = scratch_dir();
+        let started = Instant::now();
+        let out = env
+            .raw_story(dir.path())
+            .args(["summary"])
+            .output()
+            .expect("running a client");
+        (started.elapsed(), out)
+    };
+
+    // The first execution of a freshly built binary is not a measurement of
+    // anything this test is about: macOS validates a new Mach-O on its first
+    // exec, and that cost landed entirely on whichever client ran first —
+    // measured at 32.5s against the 5.1s an attempt actually takes. Paid here,
+    // outside the clock, so the comparison below is between two attempts rather
+    // than between a cold start and a warm one.
+    env.raw_story(scratch_dir().path())
+        .arg("--version")
+        .output()
+        .expect("warming the binary");
+
+    // One alone, to price a single attempt on this machine.
+    let (alone, out) = run_one();
+    assert!(
+        !out.status.success(),
+        "the fixture must make the attempt fail, or this measures nothing"
+    );
+
+    // Scoped threads rather than `spawn`, because `TestEnv` is deliberately not
+    // `Clone` — one environment is one store, and handing copies of it around is
+    // the mistake the type is shaped to prevent.
+    let (tx, rx) = mpsc::channel();
+    let wave = Instant::now();
+    let successes: Vec<bool> = std::thread::scope(|scope| {
+        for _ in 0..4 {
+            let tx = tx.clone();
+            let env = &env;
+            scope.spawn(move || {
+                let dir = scratch_dir();
+                let out = env
+                    .raw_story(dir.path())
+                    .args(["summary"])
+                    .output()
+                    .expect("running a client");
+                let _ = tx.send(out.status.success());
+            });
+        }
+        drop(tx);
+        rx.iter().collect()
+    });
+    let together = wave.elapsed();
+
+    assert_eq!(successes.len(), 4, "every client must have reported");
+    assert!(
+        successes.iter().all(|ok| !ok),
+        "the fixture must fail every client, or the timing proves nothing"
+    );
+    assert!(
+        together < alone * 2,
+        "four clients must share one attempt, not queue four of them: one alone \
+         took {alone:?} and four together took {together:?}"
+    );
+}
+
+/// A daemon that cannot be replaced and will not answer.
+///
+/// Three things together, and all three are needed: a portfile naming a version
+/// this build is not, so `usable` is false and every client takes the slow path;
+/// a pidfile lock held by the **test process**, so `is_live` stays true, the
+/// incumbent never stands down, and the child that gets spawned always fails to
+/// claim it; and a port nothing listens on, so the stand-down request is refused
+/// at once rather than waiting out a control deadline — the wedge under test
+/// here is the queue, not the socket.
+///
+/// The returned handle is the lock. Dropping it releases the incumbent, so a
+/// caller holds it for as long as it wants the fixture to bite.
+fn wedge_the_daemon(env: &TestEnv) -> std::fs::File {
+    use fs4::FileExt;
+
+    let environment = env.environment();
+    std::fs::create_dir_all(environment.daemon_state_dir()).expect("the daemon directory");
+
+    let pidfile = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(environment.daemon_pidfile())
+        .expect("opening the pidfile");
+    pidfile
+        .try_lock_exclusive()
+        .expect("this test must be the incumbent");
+
+    let dead_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binding");
+        listener.local_addr().expect("an address").port()
+    };
+    let wedged = DaemonInfo {
+        pid: std::process::id(),
+        port: dead_port,
+        version: "0.0.0-not-this-build".to_string(),
+        protocol: 1,
+        exe: std::path::PathBuf::from("/nowhere/story"),
+        exe_mtime: 0,
+        started_at: "2026-01-01T00:00:00Z".to_string(),
+        token: "t".to_string(),
+        store_path: environment.store_path().to_path_buf(),
+        tailnet: None,
+    };
+    std::fs::write(
+        environment.daemon_file(),
+        serde_json::to_string(&wedged).expect("serializing the portfile"),
+    )
+    .expect("writing the portfile");
+    assert!(
+        !wedged.is_this_binary(),
+        "the fixture must make every client take the slow path"
+    );
+    pidfile
+}
+
+/// The refusal that used to be thrown away.
+///
+/// `spawn_locked` asked the incumbent to stand down and discarded the answer
+/// with `let _ =`. What the user got was the *consequence* — "a storyhook daemon
+/// is already running. Run `story daemon stop` first" — which is a remedy that
+/// will itself hang against a daemon in this state, and which says nothing about
+/// why the stand-down did not work. A daemon replies to a shutdown request
+/// *before* it exits, so a request that did not come back is one the incumbent
+/// never accepted, and that is the fact worth reporting (SH-143).
+#[test]
+fn a_refused_stand_down_is_named_above_the_failure_it_causes() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let _incumbent = wedge_the_daemon(&env);
+
+    let dir = scratch_dir();
+    let out = env
+        .raw_story(dir.path())
+        .args(["summary"])
+        .output()
+        .expect("running a client");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success(), "the fixture must fail the command");
+    assert!(
+        stderr.contains("did not stand down"),
+        "the cause must be reported, not swallowed: {stderr}"
+    );
+    assert!(
+        stderr.contains("already running"),
+        "and the consequence must survive alongside it: {stderr}"
+    );
+}
+
+/// The fix must not be paid for out of the common case.
+///
+/// Every `story` command takes this path since SH-114, and the overwhelming
+/// majority of them find a daemon already running or start one in a fifth of a
+/// second — six concurrent clients against a startable daemon measured at
+/// 0.20–0.22s each before any of this changed. Polling for the lock instead of
+/// blocking on it, and consulting a verdict file on the way past, must stay
+/// invisible there. The bound is generous against a loaded four-thread suite;
+/// what it would catch is a design in which a follower waits out a deadline
+/// rather than returning as soon as the daemon exists.
+#[test]
+fn concurrent_clients_against_a_startable_daemon_stay_fast() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+
+    // Cold-start validation of a freshly built binary is not what this measures.
+    env.raw_story(scratch_dir().path())
+        .arg("--version")
+        .output()
+        .expect("warming the binary");
+
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        for _ in 0..6 {
+            let env = &env;
+            scope.spawn(move || {
+                let dir = scratch_dir();
+                // A store-wide query, so this measures reaching the daemon
+                // rather than resolving a project from a scratch directory.
+                let out = env
+                    .raw_story(dir.path())
+                    .args(["project", "list"])
+                    .output()
+                    .expect("running a client");
+                assert!(
+                    out.status.success(),
+                    "a healthy client must succeed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            });
+        }
+    });
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "six clients racing to start one daemon must not queue behind a deadline: \
+         took {elapsed:?}"
+    );
+    assert!(
+        env.daemon_is_live(),
+        "and they must have produced exactly one daemon between them"
+    );
+}
