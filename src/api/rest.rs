@@ -1127,9 +1127,9 @@ mod tests {
         );
         assert!(
             store
-                .read(|tx| tx.project_by_path(&throwaway))
+                .read(|tx| tx.projects())
                 .expect("reading the store")
-                .is_none(),
+                .is_empty(),
             "the refusal still wrote a project"
         );
         assert_eq!(

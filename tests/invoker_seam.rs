@@ -132,10 +132,14 @@ mod resolution {
             "the leaf itself identifies nothing — the answer has to come from the walk"
         );
         summary(&store, &deep).expect("the inner project answers");
-        let paths = store
-            .read(|tx| tx.project_paths(inner_id))
-            .expect("reading checkouts");
-        assert_eq!(paths.len(), 1, "resolution must not register new checkouts");
+        assert_eq!(
+            store
+                .read(|tx| tx.checkout_path(inner_id))
+                .expect("reading the linked checkout")
+                .as_deref(),
+            Some(inner_root.canonicalize().expect("canonicalizing").as_path()),
+            "resolving from a subdirectory must not re-point the project at it"
+        );
     }
 
     #[test]
@@ -927,5 +931,82 @@ fn every_interactive_prompt_is_in_the_allowlist() {
         4,
         "the allowlist changed; each entry is a filed exemption, so adding one needs a story \
          and removing one needs the defect to be gone"
+    );
+}
+
+/// The resolution index is **gone**, and no code under `src/` can reach it.
+///
+/// SH-119's first acceptance criterion, in the shape that can be enforced: "no
+/// symbol listed above remains in `src/`, and `grep project_paths src/` is
+/// empty". The literal grep cannot be empty — migration 8 is *named* for the
+/// table it drops, and several comments say what used to be where — so what is
+/// checked is the thing the criterion means: that no line of code names the
+/// deleted API. Comments are stripped before the check, which is exactly the
+/// distinction between a mention and a call.
+///
+/// Crude on purpose, and for the same reasons `the_legacy_write_path_is_gone`
+/// gives: it needs no build graph, and unlike a visibility change it cannot be
+/// satisfied by a re-export. The table itself is checked where it can be — a
+/// migrated store has no `project_paths` object at all
+/// (`tests/store_migrations.rs::a_migrated_store_has_no_resolution_index_left`).
+#[test]
+fn the_resolution_index_is_gone() {
+    use std::path::Path;
+
+    fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    /// A line with any `//` comment removed — including doc comments, which
+    /// start with the same two characters.
+    fn code(line: &str) -> &str {
+        line.split_once("//").map_or(line, |(before, _)| before)
+    }
+
+    // Every name the index was reached by. `project_paths` itself is matched as
+    // a *call* (`.project_paths(`) rather than as a word, because migration 8's
+    // `name:` and `include_str!` both spell the table it deletes.
+    const FORBIDDEN: [&str; 6] = [
+        "touch_project_path",
+        "forget_project_path",
+        "project_by_path",
+        "ProjectPathRecord",
+        "PathKind",
+        ".project_paths(",
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    assert!(
+        files.len() > 20,
+        "expected the whole tree, got {}",
+        files.len()
+    );
+
+    let mut breaches = Vec::new();
+    for (path, text) in &files {
+        for (number, line) in text.lines().enumerate() {
+            for name in FORBIDDEN {
+                if code(line).contains(name) {
+                    breaches.push(format!("{path}:{}: {name}", number + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        breaches.is_empty(),
+        "the recorded-path index is deleted (SH-119). A project is identified by the \
+         selector, its committed pointer file, or its registered origin — never by the \
+         directory a command was run in:\n  {}",
+        breaches.join("\n  ")
     );
 }

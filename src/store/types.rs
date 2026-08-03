@@ -51,17 +51,6 @@ pub struct NewProject {
     pub created_at: String,
 }
 
-/// A checkout of a project's repository.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProjectPathRecord {
-    /// Canonical absolute path of the checkout.
-    pub path: String,
-    /// Whether it is the main working tree or a linked worktree.
-    pub kind: crate::store::ids::PathKind,
-    /// RFC3339 timestamp of the last time storyhook ran there.
-    pub last_seen_at: String,
-}
-
 /// A git origin registered against a project.
 ///
 /// `normalized` is the identity key project selection matches on, produced by
@@ -94,8 +83,6 @@ pub struct DeletedProject {
     pub stories: usize,
     /// Events removed — the whole log, which is the irreversible part.
     pub events: usize,
-    /// Checkout registrations removed.
-    pub paths: usize,
     /// Origin registrations removed, freeing those identities for another
     /// project to claim.
     pub remotes: usize,

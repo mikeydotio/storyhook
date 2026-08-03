@@ -119,24 +119,28 @@ fn the_first_configured_state_is_open_so_a_new_story_has_somewhere_to_go() {
 }
 
 #[test]
-fn init_registers_the_checkout_against_the_project() {
+fn init_links_the_checkout_to_the_project() {
+    // `init_registers_the_checkout_against_the_project` used to be this test,
+    // and it asserted a row in the resolution index plus a lookup back through
+    // it. Both are gone (SH-119). What an attaching run records about the
+    // directory now is one thing — where this project's repo-side work runs —
+    // and nothing looks a project up by it.
     let fixture = Fixture::new();
     let outcome = fixture.init(&bare());
-    let paths = fixture
-        .store
-        .read(|tx| tx.project_paths(outcome.project))
-        .expect("reading paths");
-    assert_eq!(paths.len(), 1);
     assert_eq!(
-        Path::new(&paths[0].path),
-        fixture.root().canonicalize().expect("canonicalizing")
+        fixture
+            .store
+            .read(|tx| tx.checkout_path(outcome.project))
+            .expect("reading the linked checkout")
+            .as_deref(),
+        Some(
+            fixture
+                .root()
+                .canonicalize()
+                .expect("canonicalizing")
+                .as_path()
+        )
     );
-
-    let found = fixture
-        .store
-        .read(|tx| tx.project_by_path(&fixture.root().canonicalize().unwrap()))
-        .expect("looking the project up by path");
-    assert_eq!(found.map(|record| record.id), Some(outcome.project));
 }
 
 #[cfg(feature = "fault-injection")]
@@ -582,13 +586,14 @@ fn a_clone_carrying_a_pointer_is_adopted_rather_than_given_a_second_project() {
          and storing into the new"
     );
     assert!(!second.created);
-    let paths = fixture
-        .store
-        .read(|tx| tx.project_paths(first.project))
-        .expect("listing checkouts");
     assert_eq!(
-        paths.len(),
-        2,
-        "both checkouts must be known to the project"
+        fixture
+            .store
+            .read(|tx| tx.checkout_path(first.project))
+            .expect("reading the linked checkout")
+            .as_deref(),
+        Some(root.as_path()),
+        "adopting a clone must not re-point the project at it: `adopt_checkout` \
+         fills a gap and never replaces"
     );
 }

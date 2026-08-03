@@ -235,8 +235,11 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
 
     let restored: Vec<String> = store
         .read(|tx| {
+            let pointer = storyhook::service::project::read_pointer(root.path())
+                .expect("reading the pointer the restore wrote")
+                .expect("a restore leaves one");
             let project = tx
-                .project_by_path(&root.path().canonicalize().unwrap())?
+                .project_by_uuid(&pointer.uuid)?
                 .expect("the imported project");
             tx.states(project.id)
         })

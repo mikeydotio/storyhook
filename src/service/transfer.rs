@@ -33,9 +33,7 @@ use crate::store::{
     WriteOps, partition_known,
 };
 
-use super::project::{
-    DEFAULT_PREFIX, ProjectPointer, path_kind, read_pointer, unique_slug, write_pointer,
-};
+use super::project::{DEFAULT_PREFIX, ProjectPointer, read_pointer, unique_slug, write_pointer};
 use super::state_set::write_states_repairing;
 use super::{Clock, Ctx, append_and_fold, project_prefix};
 
@@ -299,7 +297,7 @@ pub fn import_project<S: Store>(
                     ))
                     .into());
                 }
-                tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                super::project::adopt_checkout(tx, existing.id, &root)?;
                 (existing.id, existing.uuid)
             }
             None => {
@@ -315,7 +313,7 @@ pub fn import_project<S: Store>(
                     prefix: prefix.clone(),
                     created_at: now.clone(),
                 })?;
-                tx.touch_project_path(project, &root, path_kind(&root))?;
+                super::project::adopt_checkout(tx, project, &root)?;
                 (project, uuid)
             }
         };

@@ -958,3 +958,133 @@ fn a_stories_rebuild_that_leaves_the_append_guard_up_fails() {
         "and it must have rolled back before touching anything"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Migration 8: the resolution index is deleted
+// ---------------------------------------------------------------------------
+
+/// A store at schema v7 — the last version that still has `project_paths` —
+/// carrying `rows` in it.
+///
+/// Raw SQL, for the reason `append_v1_events` gives: the writer that filled
+/// this table is deleted, so a fixture built through the current API could not
+/// produce the state migration 8 exists to carry forward.
+fn v7_store_with_paths(dir: &Path, rows: &[(&str, &str)]) -> SqliteStore {
+    use storyhook::store::{NewProject, WriteOps};
+
+    let store = SqliteStore::open(dir.join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..7]).unwrap();
+    let project = store
+        .write(|tx| {
+            tx.create_project(&NewProject {
+                uuid: "carried".into(),
+                slug: "carried".into(),
+                name: "carried".into(),
+                prefix: "SH".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            })
+        })
+        .unwrap();
+    let conn = Connection::open(store.path()).unwrap();
+    for (path, kind) in rows {
+        conn.execute(
+            "INSERT INTO project_paths (project_id, path, kind, last_seen_at) \
+             VALUES (?1, ?2, ?3, '2026-01-01T00:00:00Z')",
+            rusqlite::params![project.get(), path, kind],
+        )
+        .unwrap();
+    }
+    store
+}
+
+/// The recorded checkout of a project, read back through the store.
+fn checkout_of(store: &SqliteStore, slug: &str) -> Option<std::path::PathBuf> {
+    use storyhook::store::ReadOps;
+    store
+        .read(|tx| {
+            let project = tx.project_by_slug(slug)?.expect("the project");
+            tx.checkout_path(project.id)
+        })
+        .unwrap()
+}
+
+#[test]
+fn migration_eight_carries_the_main_checkout_into_the_column() {
+    let dir = scratch_dir();
+    let store = v7_store_with_paths(
+        dir.path(),
+        &[
+            ("/repos/carried", "main"),
+            ("/repos/carried/wt", "worktree"),
+        ],
+    );
+    assert_eq!(checkout_of(&store, "carried"), None, "v7 leaves it NULL");
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        checkout_of(&store, "carried").as_deref(),
+        Some(Path::new("/repos/carried")),
+        "the main working tree becomes the project's checkout"
+    );
+}
+
+#[test]
+fn migration_eight_drops_a_project_that_had_only_worktrees_rather_than_electing_one() {
+    // A linked worktree is a branch somebody is working on. It was never the
+    // right answer to "where does this project's repo-side work run", and
+    // `preferred_checkout` electing one when it sorted first is the defect this
+    // deletion closes rather than carries forward.
+    let dir = scratch_dir();
+    let store = v7_store_with_paths(dir.path(), &[("/repos/carried/wt", "worktree")]);
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        checkout_of(&store, "carried"),
+        None,
+        "a worktree must not be promoted to the project's checkout"
+    );
+}
+
+#[test]
+fn migration_eight_leaves_a_checkout_somebody_linked_on_purpose_alone() {
+    use storyhook::store::{ReadOps, WriteOps};
+
+    let dir = scratch_dir();
+    let store = v7_store_with_paths(dir.path(), &[("/repos/carried", "main")]);
+    let project = store
+        .read(|tx| Ok(tx.project_by_slug("carried")?.expect("the project").id))
+        .unwrap();
+    store
+        .write(|tx| tx.set_checkout_path(project, Some(Path::new("/somewhere/else"))))
+        .unwrap();
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        checkout_of(&store, "carried").as_deref(),
+        Some(Path::new("/somewhere/else")),
+        "`story project link checkout` outranks what the index remembered"
+    );
+}
+
+#[test]
+fn a_migrated_store_has_no_resolution_index_left() {
+    let dir = scratch_dir();
+    let store = v7_store_with_paths(dir.path(), &[("/repos/carried", "main")]);
+    store.migrate().unwrap();
+
+    let conn = Connection::open(store.path()).unwrap();
+    let objects: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE name LIKE '%project_paths%'")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        objects.is_empty(),
+        "the table and its unique index must both be gone, found: {objects:?}"
+    );
+}

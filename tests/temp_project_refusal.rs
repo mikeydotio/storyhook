@@ -99,8 +99,15 @@ fn store_knows_project_at(data_home: &Path, path: &Path) -> bool {
         return false;
     }
     let store = SqliteStore::open(db).expect("opening the store");
+    // By the identity the refused run would have written into the directory,
+    // because there is no directory index left to ask (SH-119). A refusal
+    // writes no pointer file either, so an absent one is itself the answer.
+    let Some(pointer) = storyhook::service::project::read_pointer(path).expect("reading a pointer")
+    else {
+        return false;
+    };
     store
-        .read(|tx| Ok(tx.project_by_path(path)?.is_some()))
+        .read(|tx| Ok(tx.project_by_uuid(&pointer.uuid)?.is_some()))
         .expect("reading the store")
 }
 

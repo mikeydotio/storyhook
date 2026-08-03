@@ -51,9 +51,7 @@ use crate::store::{
     StoryNo, StoryQuery, WriteOps, partition_known,
 };
 
-use super::project::{
-    ProjectPointer, path_kind, pointer_path, read_pointer, unique_slug, write_pointer,
-};
+use super::project::{ProjectPointer, pointer_path, read_pointer, unique_slug, write_pointer};
 use super::state_set::write_states_repairing;
 
 /// What a repair did to one story's history.
@@ -405,7 +403,6 @@ impl MigrationPlan {
                 // migration moves a project; it does not create one.
                 created_at: self.project.created_at.clone(),
             })?;
-            tx.touch_project_path(project, &root, path_kind(&root))?;
             // The tree being migrated *is* this project's checkout, and saying
             // so is what lets `refuse_second_migration` recognize it again
             // after the pointer file has been deleted.
