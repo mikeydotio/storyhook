@@ -49,7 +49,7 @@ mod store;
 pub use crash::{Crash, assert_no_daemon, crash_a_starting_daemon, crash_the_daemon, spawn_daemon};
 pub use env::{TestEnv, daemon_containment, story_binary};
 pub use project::{
-    Project, ProjectBuilder, SecondCheckout, assert_selection_is_not_inherited, git,
+    Project, ProjectBuilder, SecondCheckout, assert_selection_is_not_inherited, git, slug_at,
 };
 pub use pty::{EXPECT_TIMEOUT, Pty, Watchdog, watchdog};
 pub use scratch::{scratch_dir, scratch_dir_named, scratch_root};

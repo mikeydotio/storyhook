@@ -34,31 +34,9 @@
 //! `story doctor` reports it — where reporting is free — instead of the resolver
 //! paying for it on every invocation.
 
-use std::path::Path;
 use std::process::Command;
 
 use storyhook_test_support::{TestEnv, scratch_dir_named};
-
-/// The slug `story project list` gives the project rooted at `root`.
-///
-/// Read out of the listing rather than derived from the directory name: the
-/// derivation is `ProjectService`'s business, and a test that reimplemented it
-/// would keep passing after the two disagreed.
-fn slug_at(env: &TestEnv, cwd: &Path, root: &Path) -> String {
-    let out = env
-        .story(cwd)
-        .args(["project", "list"])
-        .output()
-        .expect("running `story project list`");
-    let listing = String::from_utf8_lossy(&out.stdout);
-    let wanted = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    listing
-        .lines()
-        .find(|line| line.contains(&*wanted.to_string_lossy()))
-        .and_then(|line| line.split_whitespace().next())
-        .unwrap_or_else(|| panic!("no `project list` row for {}:\n{listing}", wanted.display()))
-        .to_string()
-}
 
 /// A directory that is not a storyhook project and not a git repository.
 fn nowhere() -> tempfile::TempDir {
@@ -155,8 +133,8 @@ fn the_flag_beats_the_environment_beats_the_origin() {
     let by_flag = env.project().seed_story("flag-project").build();
 
     let clone = by_origin.second_checkout();
-    let env_slug = slug_at(&env, by_env.path(), by_env.path());
-    let flag_slug = slug_at(&env, by_flag.path(), by_flag.path());
+    let env_slug = by_env.slug();
+    let flag_slug = by_flag.slug();
 
     // Nothing named: the origin answers.
     let bare = env
@@ -268,7 +246,7 @@ fn the_environment_refusal_says_where_it_was_set() {
 fn a_project_less_command_refuses_the_flag_and_ignores_the_variable() {
     let env = TestEnv::shared();
     let project = env.project().build();
-    let slug = slug_at(env, project.path(), project.path());
+    let slug = project.slug();
 
     let flagged = project
         .story()
