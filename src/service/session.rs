@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::domain::{Priority, StorySnapshot, has_children, is_ready};
+use crate::domain::{Priority, StorySnapshot, has_children, is_ready, ready_order};
 use crate::error::AppError;
 use crate::help_topics;
 use crate::store::{ReadOps, Store, StoryQuery};
@@ -99,20 +99,12 @@ impl<'ctx, S: Store> SessionService<'ctx, S> {
     }
 }
 
-/// The most urgent ready story, ties broken by creation time.
-///
-/// Inherits the legacy comparator, second-precision ties and all: two stories
-/// created within one second of each other tie on both keys, and which one wins
-/// depends on iteration order. Reproduced rather than corrected because
-/// `story next` has the same comparator and the two must not disagree; the wave
-/// that gives it a total order fixes both.
+/// The most urgent ready story — [`domain::ready_order`](crate::domain::ready_order)'s
+/// first element, so the story this names is always the one `story next`
+/// would offer first (SH-63).
 fn highest_priority(ready: Vec<&StorySnapshot>) -> Option<&StorySnapshot> {
     let mut sorted = ready;
-    sorted.sort_by(|a, b| {
-        a.priority
-            .cmp(&b.priority)
-            .then_with(|| a.created_at.cmp(&b.created_at))
-    });
+    sorted.sort_by(|a, b| ready_order(a, b));
     sorted.into_iter().next()
 }
 
