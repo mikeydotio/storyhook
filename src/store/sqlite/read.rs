@@ -11,9 +11,9 @@
 //! silently returns another project's story.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, Row, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use crate::domain::remote::RemoteUrl;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
@@ -178,6 +178,22 @@ pub(super) fn project_remotes(
         "reading project remotes",
     )?;
     collect(rows, "reading project remotes")
+}
+
+pub(super) fn checkout_path(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Option<PathBuf>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare_cached("SELECT checkout_path FROM projects WHERE id = ?1"),
+        "preparing checkout_path",
+    )?;
+    let path: Option<Option<String>> = sql(
+        stmt.query_row(params![project.get()], |row| row.get(0))
+            .optional(),
+        "reading a project checkout",
+    )?;
+    Ok(path.flatten().map(PathBuf::from))
 }
 
 pub(super) fn projects(conn: &Connection) -> Result<Vec<ProjectRecord>, StoreError> {

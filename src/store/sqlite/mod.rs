@@ -595,6 +595,10 @@ macro_rules! impl_read_ops {
                 read::project_remotes(&self.conn, project)
             }
 
+            fn checkout_path(&self, project: ProjectId) -> Result<Option<PathBuf>, StoreError> {
+                read::checkout_path(&self.conn, project)
+            }
+
             fn states(&self, project: ProjectId) -> Result<Vec<StateDef>, StoreError> {
                 read::states(&self.conn, project)
             }
@@ -735,6 +739,14 @@ impl WriteOps for SqliteWriteTx<'_> {
         remote: &RemoteUrl,
     ) -> Result<bool, StoreError> {
         write::unlink_remote(&self.conn, project, remote)
+    }
+
+    fn set_checkout_path(
+        &mut self,
+        project: ProjectId,
+        path: Option<&Path>,
+    ) -> Result<(), StoreError> {
+        write::set_checkout_path(&self.conn, project, path)
     }
 
     fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError> {

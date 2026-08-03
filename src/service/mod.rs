@@ -31,6 +31,7 @@
 pub mod catalog;
 pub mod config;
 pub mod git;
+pub mod git_links;
 #[cfg(feature = "github-sync")]
 pub mod github;
 pub mod grouping;
@@ -66,6 +67,7 @@ pub use catalog::{
 };
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
+pub use git_links::{CheckoutLink, GitLinkService, OriginLink};
 #[cfg(feature = "github-sync")]
 pub use github::{GithubSyncService, StoreSyncStorage};
 pub use grouping::{GroupingService, PhaseCleared};

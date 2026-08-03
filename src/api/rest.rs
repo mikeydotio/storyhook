@@ -421,9 +421,20 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
 /// Body: `{"path": "...", "name"?: "...", "prefix"?: "..."}`.
 ///
 /// The same operation as `story project init`, reached through the same
-/// dispatcher, so the browser cannot create a project the CLI would have
+/// **invoker**, so the browser cannot create a project the CLI would have
 /// created differently. There is no longer a "register" that is distinct from
 /// this: a project reaches the dashboard by existing.
+///
+/// # Why the invoker and not the dispatcher
+///
+/// That paragraph was false for as long as this route called
+/// `dispatch_unscoped` directly. The guard filed after one session put 394 junk
+/// projects into a real store — a throwaway project may only be created in a
+/// throwaway store — lives in [`StoreInvoker::invoke`], above the dispatcher
+/// and below every client. The CLI reaches it because `/api/v1/invoke` goes
+/// through the invoker; this route went round it, so a form field naming `/tmp`
+/// created exactly the project the guard exists to refuse. Going through the
+/// invoker is what makes the claim above a property rather than an intention.
 fn route_init_repo<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
@@ -439,11 +450,31 @@ fn route_init_repo<S: Store>(store: &S, env: &Environment, body: &str) -> Reply 
                 no_agents_md: false,
             },
         };
-        let root = std::path::Path::new(path);
-        let response = crate::invoke::dispatch_unscoped(store, root, &env.now(), invocation)?;
+        let response = invoke_from_browser(store, env, std::path::Path::new(path), invocation)?;
         Ok(json_reply(201, render_response(&response, true, false)))
     })()
     .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// Runs `invocation` the way a `story` command runs, on the browser's behalf.
+///
+/// `cwd` is the directory the work happens *in*. A browser has none, so every
+/// caller here supplies one deliberately: the path the form named, or `/` for a
+/// request that names its project some other way.
+///
+/// **The one door for this module's catalog routes.** They used to call
+/// [`crate::invoke::dispatch_unscoped`], which is one layer too low: it is
+/// below the SH-95 creation guard, so the dashboard could create a project the
+/// CLI refuses. Naming the door once means a third catalog route added later
+/// inherits the guard instead of having to remember it.
+fn invoke_from_browser<S: Store>(
+    store: &S,
+    env: &Environment,
+    cwd: &std::path::Path,
+    invocation: Invocation,
+) -> Result<Response, AppError> {
+    use crate::invoke::{InvokeRequest, Invoker as _};
+    crate::invoke::StoreInvoker::new(store, cwd, env.clone()).invoke(InvokeRequest::new(invocation))
 }
 
 /// `DELETE /api/repos/{id}` — **permanently delete** a project and everything
@@ -472,8 +503,7 @@ fn route_deinit_repo<S: Store>(store: &S, env: &Environment, id: &str, body: &st
         // The daemon has no working directory of the user's; a slug target does
         // not need one, and `deinit` only touches repository files in a
         // directory the caller named by path.
-        let root = std::path::Path::new("/");
-        let response = crate::invoke::dispatch_unscoped(store, root, &env.now(), invocation)?;
+        let response = invoke_from_browser(store, env, std::path::Path::new("/"), invocation)?;
         let status = match response {
             Response::ConfirmationRequired(_) => 409,
             _ => 200,
@@ -982,6 +1012,81 @@ mod tests {
 
     fn ok_reply() -> Reply {
         json_reply(200, "{}")
+    }
+
+    /// A directory that is **not** under any temporary root.
+    ///
+    /// Under `target/`, inside the checkout, for the same reason
+    /// `tests/temp_project_refusal.rs` puts it there: every other scratch path
+    /// a test can reach is deliberately temporary, and "the store is a real
+    /// one" cannot be expressed with one of those.
+    fn non_temporary_dir(label: &str) -> PathBuf {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(label);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("creating a non-temporary directory");
+        dir
+    }
+
+    /// The headers a same-origin dashboard `fetch` sends, which is the only
+    /// shape [`guarded`] lets through.
+    fn dashboard_headers() -> Vec<Header> {
+        vec![
+            Header::from_bytes("X-Storyhook", "1").unwrap(),
+            Header::from_bytes("Host", "127.0.0.1:3456").unwrap(),
+            Header::from_bytes("Content-Type", "application/json").unwrap(),
+        ]
+    }
+
+    /// **The browser must not be able to create a project the CLI would
+    /// refuse** — which is what this module's own header has claimed since it
+    /// was written, and what the route did not do.
+    ///
+    /// The SH-95 guard lives in `StoreInvoker::invoke`; both `/api/repos`
+    /// handlers called `dispatch_unscoped` directly and went round it. So a
+    /// `POST` naming a path under `/tmp`, against a store that is not itself
+    /// throwaway, created exactly the project the guard exists to refuse — the
+    /// shape that put 394 junk projects into a real store, reachable from a web
+    /// form instead of from a test fixture.
+    #[test]
+    fn creating_a_project_at_a_throwaway_path_in_a_real_store_is_refused() {
+        let home = non_temporary_dir("sh117-rest-guard-home");
+        let env = Environment::at(&home);
+        let store = crate::invoke::open_store(&env).expect("opening the store");
+        let throwaway = crate::env::canonical_ish(&std::env::temp_dir())
+            .expect("canonicalizing the temporary root")
+            .join("sh117-rest-guard-project");
+        std::fs::create_dir_all(&throwaway).expect("creating the throwaway checkout");
+
+        let routed = route(
+            &store,
+            &env,
+            &Method::Post,
+            "/api/repos",
+            &dashboard_headers(),
+            &format!(
+                "{{\"path\": {}, \"prefix\": \"RG\"}}",
+                to_json(&throwaway.display().to_string()).expect("encoding the path")
+            ),
+            &[],
+        );
+
+        assert_ne!(
+            routed.reply.status, 201,
+            "the dashboard created a project at a throwaway path in a real store"
+        );
+        assert!(
+            store
+                .read(|tx| tx.project_by_path(&throwaway))
+                .expect("reading the store")
+                .is_none(),
+            "the refusal still wrote a project"
+        );
+        assert_eq!(
+            routed.changed, None,
+            "a refused create must not tell every connected browser the catalog moved"
+        );
     }
 
     #[test]
