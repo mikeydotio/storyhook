@@ -187,6 +187,12 @@ Global options:
                   Run against a named store rather than the default one. Also
                   spelled $STORYHOOK_STORE_PATH. One daemon serves one store, so
                   a command under this flag can neither read nor write any other.
+  --project <slug>
+                  Act on this project, whatever directory you are in. Also
+                  spelled $STORYHOOK_PROJECT, which the flag beats. With neither,
+                  storyhook uses the project this checkout belongs to, and
+                  refuses rather than guessing when there is none.
+                  `story project list` shows the slugs.
   -h, --help
   -V, --version   Print the installed story version
 "#;
