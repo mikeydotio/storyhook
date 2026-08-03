@@ -10,8 +10,24 @@
 -- renamed on disk — `openGrid-SCAD` for `opengrid-scad`, `Ourdio` for `ourdio`.
 --
 -- A repository's origin URL does not rot that way, so a project registers its
--- origins here and a checkout resolves by normalizing `git remote get-url
--- origin` and looking the result up.
+-- origins here and a checkout resolves by normalizing its origin and looking the
+-- result up.
+--
+-- **Corrected by SH-116, which built the resolution half.** This header
+-- originally said the origin comes from `git remote get-url origin`. It does
+-- not: it comes from `git config --get remote.origin.url`, and the difference is
+-- load-bearing rather than stylistic. `get-url` applies the caller's
+-- `url.<base>.insteadOf` rewrites, which are machine-local — the author's own
+-- machine carries a global one, so the two commands already disagree there with
+-- no `-c` flag. An identity that moves with a rewrite is not an identity: two
+-- clones of one repository would key differently on two machines whose users
+-- push over different protocols, and the failure is silent, because the checkout
+-- simply stops resolving and the refusal tells the user to register an origin
+-- they already registered. See `service::project::origin_of`.
+--
+-- `src/github/sync_state.rs` still uses `get-url`, deliberately and correctly:
+-- it is finding a GitHub API endpoint to talk to, where the rewritten url is the
+-- right answer. Different purpose, different correct command.
 --
 -- ---------------------------------------------------------------------------
 -- The shape, and which half of it is load-bearing
