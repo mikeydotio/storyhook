@@ -164,9 +164,24 @@ fn main() {
     } else {
         None
     };
+    // The two sources are collapsed here, in the only process that can see
+    // both: `$STORYHOOK_PROJECT` belongs to the caller's shell, and a daemon's
+    // environment is its own. Applying precedence once, at the one site that
+    // has both values, is what stops a second layer re-deciding it — the same
+    // reason `hook_depth` travels in the request rather than being read from
+    // the process the work happens in.
+    let selector = storyhook::api::wire::ProjectSelector::resolve(
+        flags.project.as_deref(),
+        env::var("STORYHOOK_PROJECT").ok().as_deref(),
+    );
+    // Read before the invocation is moved into the request. See
+    // `invoke::failure_is_silent`: `story session-start` answers `{}` rather
+    // than putting a diagnosis it cannot avoid into a model's context window.
+    let silent_on_failure = storyhook::invoke::failure_is_silent(&invocation);
     let request = InvokeRequest::new(invocation)
         .no_hooks(flags.no_hooks)
-        .stdin(piped);
+        .stdin(piped)
+        .project(selector);
     let depth = storyhook::event_hooks::depth_from_env();
     // **The CLI's only door.** There was a second — `--local`, which built a
     // `StoreInvoker` here and ran the work in this process — and it is gone
@@ -191,6 +206,20 @@ fn main() {
             }
             Confirmed::CannotAsk(error) => Err(error),
         },
+        other => other,
+    };
+
+    // The silence is applied *here*, around the invoker rather than inside it,
+    // and that placement is the whole of it. `HttpInvoker` must keep failing
+    // loud — SH-114 established that, and the git hooks depend on their own
+    // shell redirection rather than on the CLI going quiet. But the failure this
+    // covers is raised by `daemon::lifecycle::ensure` *before* a daemon exists
+    // to be asked, so there is no in-daemon layer that could answer it: only the
+    // client can.
+    let result = match result {
+        Err(_) if silent_on_failure => Ok(Response::RawJson(
+            storyhook::service::session::SILENT.to_string(),
+        )),
         other => other,
     };
 

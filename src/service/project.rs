@@ -243,6 +243,148 @@ pub fn unmigrated_error(tree: &Path) -> AppError {
     ))
 }
 
+/// This directory's `origin`, reduced to the key project identity is decided by.
+///
+/// # Why `git config --get`, and not `git remote get-url`
+///
+/// The two are not the same string. `get-url` applies the caller's
+/// `url.<base>.insteadOf` rewrites; `config --get` returns what the repository
+/// actually recorded. Those rewrites are **machine-local** — the author's own
+/// machine carries a global `url.https://github.com/.insteadOf =
+/// git@github.com:`, so the two already disagree there with no `-c` flag — and an
+/// identity that moves with them is not an identity: two clones of one
+/// repository would key differently on two machines whose users push over
+/// different protocols.
+///
+/// [`RemoteUrl::normalize`](crate::domain::remote::RemoteUrl::normalize) folds
+/// scheme and userinfo away, so a scheme-only rewrite happens to survive it. One
+/// touching host or path prefix would not, and the resulting failure is silent:
+/// the checkout simply stops resolving, and the refusal tells the user to
+/// register an origin they already registered.
+///
+/// Reading `.git/config` directly was rejected for the opposite reason — it
+/// re-implements git's own config resolution and misses `include.path`,
+/// conditional includes, and worktree indirection. `git` is asked, and asked the
+/// question whose answer does not move.
+///
+/// # Every failure is the same failure
+///
+/// Not a git repository, no `origin`, no `git` on `PATH`, a url that does not
+/// normalize, an origin registered to nobody — all of them answer `None`. A
+/// resolution path must not distinguish them, which is what
+/// [`normalize_for_lookup`](crate::domain::remote::RemoteUrl::normalize_for_lookup)'s
+/// own contract says; the refusal that follows names the origin it found, and
+/// that is the whole of what a reader needs.
+#[must_use]
+pub fn origin_of(cwd: &Path) -> Option<crate::domain::remote::RemoteUrl> {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    crate::domain::remote::RemoteUrl::normalize_for_lookup(raw.trim())
+}
+
+/// Whether `project` may register `remote`, or somebody else already holds it.
+///
+/// # Why `init` skips rather than refuses
+///
+/// SH-116's council ruled that a collision here should **fail** `init`, on the
+/// stated ground that it was unreachable — no project in the store had a
+/// registered origin, so nothing could regress. Building it falsified that
+/// premise immediately: `init` is what registers origins, so within a single
+/// test run many projects have one, and **five existing tests failed at once**.
+///
+/// The reason is a fact about git that the design did not account for.
+/// `git config --get remote.origin.url` **walks up**, so a directory that is not
+/// itself a repository but sits inside one reports the *enclosing* repository's
+/// origin. Two storyhook projects in one repository — a monorepo with a project
+/// per service, which storyhook supports today — therefore both resolve to the
+/// same origin, and a refusal would make the second one impossible to create.
+/// That is a working arrangement broken by a rule meant to prevent an ambiguity.
+///
+/// Skipping prevents the ambiguity just as completely, because the invariant
+/// that matters is **one origin resolves to one project**, and it is the unique
+/// index on `project_remotes.normalized` that guarantees it either way. The
+/// second project simply is not reachable *by origin* — which is honest, since
+/// its origin genuinely does not identify it — and stays reachable by
+/// `--project`, by `$STORYHOOK_PROJECT`, and by the walk until SH-119 removes
+/// it.
+///
+/// Recorded as a deviation on the story rather than taken quietly. The
+/// after-the-fact registration verb SH-117 owns is the right place for a *loud*
+/// collision, because there the user typed the URL and is owed an answer about
+/// it; here they typed `story project init` and said nothing about origins at
+/// all.
+fn claimable(
+    tx: &impl ReadOps,
+    remote: &crate::domain::remote::RemoteUrl,
+    project: ProjectId,
+) -> Result<bool, crate::store::StoreError> {
+    Ok(tx
+        .project_by_remote(remote)?
+        .is_none_or(|holder| holder.id == project))
+}
+
+/// What to tell someone whose directory names no project.
+///
+/// **The one constructor for this refusal**, which is what makes "it always
+/// names both ways out" a property rather than a habit: there is no other way to
+/// build one, so there is no site that can forget.
+///
+/// `origin` is what [`origin_of`] found, and it is reported either way — a
+/// reader who has an origin needs to know it is not registered, and a reader who
+/// has none needs to know that is why nothing was found. Reporting it costs
+/// nothing here: this is only reached once the lookup has already run.
+#[must_use]
+pub fn no_project_refusal(
+    cwd: &Path,
+    origin: Option<&crate::domain::remote::RemoteUrl>,
+) -> AppError {
+    let origin_line = match origin {
+        Some(remote) => format!("{} - not registered to any project", remote.raw()),
+        None => "(none) - this directory has no git origin".to_string(),
+    };
+    AppError::NotFound(format!(
+        "storyhook cannot tell which project this is.\n\n  directory  {}\n  origin     \
+         {origin_line}\n\nName the project for one command, or for this shell:\n\n  story \
+         --project <slug> <command>\n  export STORYHOOK_PROJECT=<slug>\n\nOr make this checkout \
+         answer for itself, once:\n\n  story project init\n\n`story project list` shows the \
+         slugs this machine's store has.",
+        cwd.display()
+    ))
+}
+
+/// What to tell someone whose selector names a project the store does not have.
+///
+/// The other single constructor, and the reason the selector carries its source
+/// rather than just a slug: a bad `--project` is a mistake in one command, and a
+/// bad `$STORYHOOK_PROJECT` is a mistake in a *shell* that will repeat on every
+/// command run there. The extra paragraph is the whole remedy for the second,
+/// and it is the fix for a measured defect — the variable used to be ignored in
+/// silence, so a typo in it meant every command quietly answered about a
+/// different project.
+#[must_use]
+pub fn unknown_project_refusal(selector: &crate::api::wire::ProjectSelector) -> AppError {
+    use crate::api::wire::ProjectSelector;
+    let tail = match selector {
+        ProjectSelector::Flag { .. } => String::new(),
+        ProjectSelector::Environment { .. } => "\n\nIt is set in this shell, so every storyhook \
+             command run here will fail this way until it is changed or unset."
+            .to_string(),
+    };
+    AppError::NotFound(format!(
+        "`{} {}` names no project this machine's store has.{tail}\n\n`story project list` shows \
+         the slugs it does have.",
+        selector.source(),
+        selector.slug()
+    ))
+}
+
 /// The repository's `[hooks]` table, if it has a readable one.
 ///
 /// Fails **open** at every step, and deliberately: a repository whose pointer
@@ -465,11 +607,28 @@ impl<'a, S: Store> ProjectService<'a, S> {
             return Err(unmigrated_error(&root));
         }
 
+        // Read *before* the transaction opens. `origin_of` spawns `git`, and a
+        // subprocess inside a `BEGIN IMMEDIATE` holds the store's only write
+        // lock for however long that process takes — which is 14 ms on a good
+        // day and unbounded on a bad one.
+        //
+        // This is where an origin enters the store at all: SH-116 resolves *by*
+        // origin, and without a registration site it would resolve by a key
+        // nothing ever writes. Registering here rather than in a new verb keeps
+        // the boundary the epic drew — `story project link origin <url>`, for
+        // adopting an origin after the fact, is SH-117's.
+        let origin = origin_of(&root);
+
         let (project, created, uuid, prefix) = self.store.write(|tx| {
             if let Some(pointer) = &existing_pointer
                 && let Some(existing) = tx.project_by_uuid(&pointer.uuid)?
             {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                if let Some(remote) = &origin
+                    && claimable(&*tx, remote, existing.id)?
+                {
+                    tx.link_remote(existing.id, remote, &now)?;
+                }
                 if let Some(name) = &options.name {
                     tx.rename_project(existing.id, name)?;
                 }
@@ -477,6 +636,11 @@ impl<'a, S: Store> ProjectService<'a, S> {
             }
             if let Some(existing) = tx.project_by_path(&root)? {
                 tx.touch_project_path(existing.id, &root, path_kind(&root))?;
+                if let Some(remote) = &origin
+                    && claimable(&*tx, remote, existing.id)?
+                {
+                    tx.link_remote(existing.id, remote, &now)?;
+                }
                 if let Some(name) = &options.name {
                     tx.rename_project(existing.id, name)?;
                 }
@@ -515,6 +679,11 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 created_at: now.clone(),
             })?;
             tx.touch_project_path(project, &root, path_kind(&root))?;
+            if let Some(remote) = &origin
+                && claimable(&*tx, remote, project)?
+            {
+                tx.link_remote(project, remote, &now)?;
+            }
             write_states(tx, project, &default_states())?;
             tx.put_types(project, &default_types())?;
             Ok((project, true, uuid, prefix))
