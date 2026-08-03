@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::domain::{Priority, StorySnapshot, SuperState};
+use crate::domain::{Priority, StorySnapshot, SuperState, ready_order};
 use crate::tui::action::{Action, View};
 use crate::tui::state::AppState;
 use crate::tui::theme::Theme;
@@ -440,13 +440,17 @@ pub fn priority_breakdown(stories: &[StorySnapshot]) -> PriorityBreakdown {
     b
 }
 
-/// Get stories that are "ready" (no awaiting), sorted by priority (most urgent first).
+/// Get stories that are "ready" (no awaiting), ranked the way `story next`
+/// ranks them: [`domain::ready_order`](crate::domain::ready_order), priority
+/// then story number. Sorting by priority alone (as this used to) has no
+/// second key at all, so two same-priority stories fell back to whatever
+/// order `stories` arrived in — the same tie SH-63 fixed on the CLI side.
 pub fn ready_stories(stories: &[StorySnapshot]) -> Vec<&StorySnapshot> {
     let mut ready: Vec<&StorySnapshot> = stories
         .iter()
         .filter(|s| s.awaiting.is_none() && s.superstate == SuperState::Open)
         .collect();
-    ready.sort_by_key(|s| s.priority.clone());
+    ready.sort_by(|a, b| ready_order(a, b));
     ready
 }
 
@@ -656,6 +660,37 @@ mod tests {
         let ready = ready_stories(&stories);
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, "SH-1");
+    }
+
+    /// Same priority, same `created_at` (every fixture snapshot shares one) —
+    /// exactly the tie a priority-only sort (this function's shape before
+    /// SH-63) has no second key for. `ready_order` breaks it by story number.
+    #[test]
+    fn ready_stories_breaks_a_priority_tie_by_story_number() {
+        let stories = vec![
+            make_snapshot(
+                "SH-10",
+                "todo",
+                "Second in number",
+                Priority::High,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+            make_snapshot(
+                "SH-9",
+                "todo",
+                "First in number",
+                Priority::High,
+                None,
+                "2026-01-01T00:00:00Z",
+            ),
+        ];
+        let ready = ready_stories(&stories);
+        assert_eq!(
+            ready.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["SH-9", "SH-10"],
+            "the lower-numbered story wins, not the input order or the id string"
+        );
     }
 
     #[test]
