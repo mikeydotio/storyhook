@@ -28,12 +28,14 @@ file and the plan above. Read the plan, then:
    changing code. Every fix ships its regression test. Two hats: a behaviour
    change and a refactor never share a commit. Doc comments on every public
    item. Warnings are errors.
-5. **Gate**: both legs must be green before you push. Never `--no-verify`,
-   never `SKIP_PREPUSH_TESTS=1`. Run them as **two separate supervised
-   commands** — `make test`, then `make test-daemon` — not as one `make gate`.
-   The daemon leg wedges when it follows the first leg on a tired machine, and
-   a single invocation gives you nothing to watch. See **Supervising background
-   work** below; this is the rule's most frequent application.
+5. **Gate**: `make test` must be green before you push. Never `--no-verify`,
+   never `SKIP_PREPUSH_TESTS=1`. **`make test-daemon` and `make gate` no longer
+   exist** — SH-114 collapsed the two transports into one, so there is one leg
+   and `make test` is the whole gate. (This step said "both legs" until SH-116
+   noticed; the two-leg wording outlived the second leg by one story.) Run it as
+   a supervised background command with a log-growth heartbeat — see
+   **Supervising background work** below; this is the rule's most frequent
+   application.
 6. **Land it** — branch off `main` in this checkout (not a worktree):
    ```
    git -c url."https://github.com/".insteadOf="git@github.com:" push origin <branch>
@@ -152,7 +154,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114* · **it was a deadlock; the deadline was right**
 - [x] **SH-110** — tailnet bind flake · *gates SH-114* · **not a flake: the dashboard advertised a probe, not its bind**
 - [x] **SH-114** — C2 Transport: daemon-only · *two PRs: the diagnostics, then the removal*
-- [ ] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal
+- [x] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal · *`git config --get` walks up, which cost two clauses of the verdict*
 - [ ] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink`
 - [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk
 - [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures
@@ -1870,3 +1872,126 @@ place instead of three.
 own paragraphs already half-satisfied: the `git commit` half of its silence
 obligation is pinned, and its "Watch out" note about `story new --typo x` was
 spent by SH-62.
+
+### SH-116 — done
+
+**Outcome:** merged as #98. Nothing about the filesystem is required to answer
+"which project is this?" any more. A project-dependent command decides by
+`--project`, then `$STORYHOOK_PROJECT`, then the working directory being a git
+repository whose origin is registered, and otherwise refuses naming both ways
+out. All five acceptance criteria are met.
+
+**The council was unanimous 3-0 in round one, and both non-authors voted against
+their own proposals** — the fifth time in this run, the fourth where both did.
+Neither was persuaded; each was refuted by a specific fact. Seat 2 by a
+correction I published *before* the ballot and had verified in the source:
+`HttpInvoker::invoke` calls `lifecycle::ensure(&self.env)?`, and the `?` returns
+before either `Transport::` arm — so the arms its own D6 proposed intercepting
+never fire for the store-corruption failure AC-4 is about. Seat 3 by its own
+proposal, whose D2 and D4 specified opposite orderings for the walk relative to
+the origin lookup; I put that contradiction on the ballot rather than resolving
+it myself.
+
+**A correction against my own evidence, also published before the vote.** My
+fixture census reported "137 `.project()` builders" as the resolution-relevant
+population. Seat 3 checked and found `.project()` names **two unrelated
+methods** — `ServiceFixture::project()` never touches CLI resolution — so I had
+overstated it by about 60%. Re-counted, the conclusion was unchanged and
+slightly stronger: every CLI-driven fixture resolves through the walk and
+**zero** have a registered origin.
+
+**The measurement that set the design.** `story list` is 11.8 ms end to end and
+one `git` subprocess is 15.5 ms, so an unconditional origin lookup is a 2.3×
+tax. That is why the walk stays *ahead* of the origin: with zero registered
+origins anywhere, consulting one first spends a subprocess to learn nothing on
+every command. Last means it is paid only by a command about to refuse, where it
+buys the refusal its `origin` line.
+
+**`git config --get remote.origin.url`, not `git remote get-url origin`** — the
+one clause no other seat engaged. The two are different strings: `get-url`
+applies `url.<base>.insteadOf`, which is machine-local, and this machine carries
+a global one, so they already disagree here with no `-c` flag. An identity that
+moves with a rewrite is not an identity, and the failure is silent — the
+checkout stops resolving and the refusal tells you to register an origin you
+already registered. Schema 0006's header said `get-url` and is corrected;
+`sync_state.rs` keeps it deliberately, because it is finding an endpoint to talk
+to, where the rewritten url is the right answer.
+
+**Then that same command taught me something the council did not know, and it
+cost two clauses.** `git config --get` **walks up the directory tree**, so a
+directory inside a repository reports the *enclosing* repository's origin —
+which means every storyhook project in one repo shares an origin.
+
+1. **D3's collision became a skip, not a refusal.** The verdict ruled `init`
+   must fail when another project holds the origin, justified explicitly as
+   "unreachable today because 0 projects have a registered origin, so nothing
+   regresses". Building it falsified that in one run — `init` is what registers
+   origins — and **five existing tests failed at once**. Worse than the tests: a
+   monorepo with a project per service, supported today, would have its second
+   project made impossible to create. The invariant that matters is untouched
+   and still structural, because the unique index on `project_remotes.normalized`
+   is what guarantees one origin resolves to one project either way.
+2. **D4's `story doctor` advisory was not built.** It would report a checkout
+   whose pointer names A while its origin is registered to B — which in a
+   monorepo is *every* subdirectory project, a correct arrangement. An advisory
+   that fires on correct configurations trains people to skip doctor's output.
+
+Both are recorded on the story, and the fact behind them is filed as **SH-151**,
+which `blocks SH-119`: benign today, a real hole once SH-119 deletes the walk
+and leaves a second project in a repo with no automatic route at all.
+
+**Red→green verified by disarming, four mechanisms, each failing exactly its own
+set** — and two of the four are only interesting because of what stayed *green*:
+disarming the silence fails the session-start test while **both `hook_silence`
+tests pass**, which is what proves the two silence layers independent rather
+than one covering the other; disarming the origin lookup fails the three origin
+tests while the pointer test passes, which is its job as the too-far guard.
+
+**Two false greens caught in my own new tests**, both before landing, and this
+is the part worth carrying forward. The `insteadOf` test set
+`url.<origin>.insteadOf = "rewritten-origin:"` — backwards, since
+`url.<base>.insteadOf <prefix>` rewrites urls *starting with* `<prefix>`. The
+rewrite never applied, so the test passed under `get-url` too and proved
+nothing. It now uses a prefix the configured url actually starts with, and
+carries a premise assertion that the two git commands genuinely disagree before
+it asserts anything about storyhook. The second: `story --project X project
+list` already failed on the unmodified binary with *unknown command
+`--project`*, exit 2 — which is what the test asserted. It now also asserts the
+stderr does **not** say "unknown command". Seven consecutive stories found the
+*suite* pinning the wrong thing; this is the first where I caught myself writing
+one.
+
+**A latent race, made deterministic and fixed at the race.** `error_contract`'s
+`LockTimeout` row ran its two output forms concurrently through the same
+closure, so one form's lock holder could sit on the store while the other form's
+fixture ran `story project init` — a write. It never fired because `init`
+reached its transaction faster than the sibling reached the lock: a margin
+nothing declared. Giving `init` a `git` subprocess removed the margin and it
+fired 3 times out of 3. Confirmed mine rather than assumed — stashed the branch,
+ran the same file on the unmodified tree, 3 of 3 green. That row runs in
+sequence now, which removes the race instead of re-widening the margin. I
+rejected the tempting fix (skip `git` when there is no `.git` entry): it would
+have hidden this *and* is wrong, because a worktree's `.git` is a file and a
+subdirectory of a repo has none.
+
+**`spawn_inventory` caught the new `git` spawn within one run of my writing it**,
+which is exactly what it is for. Classified `Reads` with the other four.
+
+**Deviation from the run's own instructions, recorded:** the log entry did not
+ride in the story's PR. I merged #98 before writing it, so this lands as its own
+PR. START HERE's step 5 also still said "both legs … `make test-daemon`", which
+SH-114 deleted a story ago; corrected in the same commit.
+
+**Gate:** `make test` — the whole gate — exit 0, **108 green test-result blocks**
+(up from 107; the new `tests/project_selection.rs`), 0 failures, 0 warnings,
+plugin harness 18/0, no orphan daemons. **Ninth consecutive story with no
+wedge.** Six gate attempts before green, and every failure was a guard working:
+`cargo fmt`, the lock race, two premise changes, and the spawn inventory.
+
+**Semver: minor.** `--project` and `ProjectSelector` are additions; the wire
+field is retyped but was never populated, and a version-skewed daemon is stood
+down rather than talked to. Worth knowing: `$STORYHOOK_PROJECT` is no longer
+ignored, and a directory resolving to nothing refuses with a longer message.
+
+**Unblocks SH-117 and SH-119**, the next two links of the critical path — and
+hands SH-119 a blocker it did not have, SH-151.
