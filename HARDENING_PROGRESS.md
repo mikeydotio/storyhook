@@ -156,7 +156,9 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-114** — C2 Transport: daemon-only · *two PRs: the diagnostics, then the removal*
 - [x] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal · *`git config --get` walks up, which cost two clauses of the verdict*
 - [x] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink` · *part 1 #101, part 2 PRs #103 and this one* · **the whole surface, and the three retirements**
-- [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk
+- [ ] **SH-152** — github-sync resolves every conflict as Skip with no terminal · *critical, data-loss; filed by SH-117's council* · **what `story next` leads with**
+- [ ] **SH-151** — two projects in one repository share an origin · *gates SH-119*
+- [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk · *blocked by SH-151*
 - [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures
 - [ ] **SH-118** — C6 Ids: bare integers
 - [ ] **SH-120** — C8 Dispatch plumbing
