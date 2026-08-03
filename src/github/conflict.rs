@@ -1,13 +1,18 @@
-use dialoguer::Select;
-
 use super::diff::{ConflictField, FieldConflict};
 
-/// How a conflict was resolved.
-#[derive(Debug, Clone)]
+/// Which side of a conflict wins.
+///
+/// **There is no `Skip`, and its absence is the fix for SH-152.** A third
+/// variant meaning "decide later" is only honest if something later decides;
+/// what happened instead was that the merge base advanced past the conflict, so
+/// the next sync saw no disagreement and let the remote value overwrite the
+/// local edit in silence. A conflict this program has not been told how to
+/// resolve is not resolved at all — it stays a [`FieldConflict`], travels back
+/// to the caller in the refusal, and waits for an answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
     KeepLocal,
     KeepRemote,
-    Skip,
 }
 
 /// A conflict together with its chosen resolution.
@@ -17,50 +22,14 @@ pub struct ResolvedConflict {
     pub resolution: Resolution,
 }
 
-/// Present conflicts to the user interactively and collect resolutions.
-///
-/// For each conflict, displays the base, local, and remote values and prompts
-/// the user to choose which side to keep (or skip for later resolution).
-pub fn resolve_conflicts_interactive(
-    story_id: &str,
-    conflicts: &[FieldConflict],
-) -> Vec<ResolvedConflict> {
-    let mut resolutions = Vec::with_capacity(conflicts.len());
-
-    for conflict in conflicts {
-        println!();
-        println!("Conflict on {}, field: {}", story_id, conflict.field);
-        println!("  Base:   \"{}\"", conflict.base_value);
-        println!("  Local:  \"{}\"", conflict.local_value);
-        println!("  Remote: \"{}\"", conflict.remote_value);
-
-        let options = &["Keep local", "Keep remote", "Skip (resolve later)"];
-        let selection = Select::new()
-            .with_prompt("How do you want to resolve this?")
-            .items(options)
-            .default(0)
-            .interact()
-            .unwrap_or(2); // default to Skip on error
-
-        let resolution = match selection {
-            0 => Resolution::KeepLocal,
-            1 => Resolution::KeepRemote,
-            _ => Resolution::Skip,
-        };
-
-        resolutions.push(ResolvedConflict {
-            field: conflict.field,
-            resolution,
-        });
-    }
-
-    resolutions
-}
-
 /// Resolve conflicts non-interactively, keeping all local or all remote.
 ///
-/// Useful for batch operations where user interaction is not available,
-/// such as `--theirs` or `--ours` style resolution.
+/// The only way a conflict is ever resolved. There used to be a second —
+/// `resolve_conflicts_interactive`, which drew a `dialoguer::Select` and, on
+/// the error a missing terminal produces, chose `Skip` for the user. Since the
+/// work runs in a daemon spawned with no stdin and its stderr on a log file,
+/// that error was not the unlikely case; it was the only case. The menu is
+/// gone, and with it the last prompt under `src/github/`.
 pub fn resolve_conflicts_batch(
     conflicts: &[FieldConflict],
     keep: Resolution,
@@ -69,7 +38,7 @@ pub fn resolve_conflicts_batch(
         .iter()
         .map(|c| ResolvedConflict {
             field: c.field,
-            resolution: keep.clone(),
+            resolution: keep,
         })
         .collect()
 }
@@ -127,14 +96,14 @@ mod tests {
         }
     }
 
+    /// There is no third answer. `batch_skip_resolves_all_as_skip` used to sit
+    /// here and prove that a conflict could be resolved as "not resolved" —
+    /// the state SH-152's data loss lived in — and it went with the variant.
     #[test]
-    fn batch_skip_resolves_all_as_skip() {
-        let conflicts = sample_conflicts();
-        let resolutions = resolve_conflicts_batch(&conflicts, Resolution::Skip);
-
-        assert_eq!(resolutions.len(), 3);
-        for r in &resolutions {
-            assert!(matches!(r.resolution, Resolution::Skip));
+    fn every_resolution_names_a_side() {
+        for resolution in [Resolution::KeepLocal, Resolution::KeepRemote] {
+            let resolutions = resolve_conflicts_batch(&sample_conflicts(), resolution);
+            assert!(resolutions.iter().all(|r| r.resolution == resolution));
         }
     }
 

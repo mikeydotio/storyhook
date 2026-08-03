@@ -511,13 +511,16 @@ Each run reports what it linked without claiming. `story project settings set sy
 story commit-sync --since 1d
 ```
 
-### `story github-sync [<id>] [--dry-run]`
+### `story github-sync [<id>] [--dry-run] [--resolve local|remote]`
 
 Bidirectional sync with GitHub Issues (three-way merge). Requires `STORYHOOK_GITHUB_TOKEN`.
+
+A field both sides changed to different values is a **conflict**, and storyhook does not decide it. Everything else in the sync still applies; the conflict is printed with all three values (base, local, remote) and the command **exits 8**. The merge base holds the disputed field, so re-running finds the same conflict rather than quietly taking GitHub's value. Answer it with `--resolve` on that one story — the flag requires an explicit `<id>`, because a whole-sync resolution would decide conflicts you have not read — or set the field to the same value on both sides and re-run.
 
 ```bash
 story github-sync --dry-run
 story github-sync SH-1
+story github-sync SH-1 --resolve remote
 ```
 
 ### `story hooks install|uninstall|list|test <event_type>`

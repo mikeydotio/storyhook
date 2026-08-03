@@ -13,8 +13,10 @@ use crate::error::AppError;
 use crate::output::Response;
 
 use self::client::GithubClient;
-use self::conflict::{Resolution, ResolvedConflict, resolve_conflicts_interactive};
-use self::diff::{ConflictField, FieldConflict, FieldUpdates, MergeResult, three_way_merge};
+use self::conflict::{Resolution, ResolvedConflict, resolve_conflicts_batch};
+use self::diff::{
+    ConflictField, FieldConflict, FieldUpdates, MergeResult, base_after_sync, three_way_merge,
+};
 use self::field_map::{
     RemoteSnapshot, format_comment_for_github, github_comment_to_story, is_sync_generated_comment,
     issue_to_remote_snapshot, story_to_create_request, updates_to_issue_request,
@@ -52,6 +54,23 @@ impl SyncReport {
         }
     }
 
+    /// What this run answers with.
+    ///
+    /// **A conflict is a failure, not a footnote to a success.** It used to be
+    /// the latter: the report named the conflicting stories inside a message
+    /// headed "GitHub sync complete." and the command exited 0, so a script
+    /// could not tell a sync that applied everything from one that applied
+    /// everything except the edits somebody actually disagreed about.
+    /// [`AppError::SyncConflict`] carries the same text out through
+    /// `render_error`, which exits 8, answers HTTP 409, and — unlike a
+    /// `Response` — cannot be erased by `--quiet`.
+    fn outcome(&self) -> Result<Response, AppError> {
+        if self.conflicts.is_empty() {
+            return Ok(Response::Message(self.to_message()));
+        }
+        Err(AppError::SyncConflict(self.to_message()))
+    }
+
     fn to_message(&self) -> String {
         let mut lines = Vec::new();
 
@@ -60,7 +79,16 @@ impl SyncReport {
             + self.created_issues.len()
             + self.created_stories.len();
 
-        if total_actions == 0 && self.conflicts.is_empty() && self.errors.is_empty() {
+        if !self.conflicts.is_empty() {
+            lines.push(format!(
+                "GitHub sync ran, and left {} undecided.",
+                count(
+                    self.conflicts.len(),
+                    "conflicting story",
+                    "conflicting stories"
+                )
+            ));
+        } else if total_actions == 0 && self.errors.is_empty() {
             lines.push("GitHub sync complete. Everything is up to date.".to_string());
         } else {
             lines.push("GitHub sync complete.".to_string());
@@ -101,14 +129,36 @@ impl SyncReport {
         }
 
         if !self.conflicts.is_empty() {
-            lines.push(format!(
-                "Unresolved conflicts on {} stories:",
-                self.conflicts.len()
-            ));
+            lines.push("Unresolved conflicts — both sides changed these:".to_string());
             for (id, fields) in &self.conflicts {
-                let field_names: Vec<&str> = fields.iter().map(|f| f.field.as_str()).collect();
-                lines.push(format!("  {id}: {}", field_names.join(", ")));
+                for conflict in fields {
+                    lines.push(format!("  {id}, {}:", conflict.field));
+                    lines.push(format!("    base:   \"{}\"", conflict.base_value));
+                    lines.push(format!("    local:  \"{}\"", conflict.local_value));
+                    lines.push(format!("    remote: \"{}\"", conflict.remote_value));
+                }
             }
+            // The values are the part a caller cannot reconstruct, and the part
+            // that used to be dropped: they were printed to a stdout the daemon
+            // sends to /dev/null, while only the field *names* travelled back.
+            let example = self
+                .conflicts
+                .first()
+                .map(|(id, _)| id.as_str())
+                .unwrap_or("<id>");
+            lines.push(String::new());
+            lines.push("Nothing was chosen for you. Decide each story with one of:".to_string());
+            lines.push(format!(
+                "  story github-sync {example} --resolve local    (keep your values, push them to GitHub)"
+            ));
+            lines.push(format!(
+                "  story github-sync {example} --resolve remote   (take GitHub's values)"
+            ));
+            lines.push(
+                "Or set the field to the value you want on both sides and re-run: a value the \
+                 two sides agree on stops being a conflict."
+                    .to_string(),
+            );
         }
 
         if !self.errors.is_empty() {
@@ -124,6 +174,11 @@ impl SyncReport {
 
         lines.join("\n")
     }
+}
+
+/// `1 conflicting story` / `3 conflicting stories`.
+fn count(n: usize, singular: &str, plural: &str) -> String {
+    format!("{n} {}", if n == 1 { singular } else { plural })
 }
 
 // ---------------------------------------------------------------------------
@@ -169,11 +224,33 @@ fn unimplemented_mode_notice(mode: &SyncMode) -> Option<String> {
 
 /// Runs GitHub sync against whatever storage `sync` names. If `story_id` is
 /// `Some`, syncs only that story; if `dry_run`, previews without writing.
+///
+/// `resolve` is the answer to every conflict this run meets, and `None` means
+/// nobody has given one. There is deliberately no way to say "guess": the work
+/// runs in a daemon that cannot ask, so an unanswered conflict comes back in a
+/// refusal rather than being decided here (SH-152).
 pub fn run_sync_with(
     sync: &dyn SyncStorage,
     story_id: Option<&str>,
     dry_run: bool,
+    resolve: Option<Resolution>,
 ) -> Result<Response, AppError> {
+    // **A blanket resolution over a whole sync is this defect wearing a flag.**
+    // `--resolve local` across every conflicting story would discard remote
+    // edits the caller has never read, in one keystroke. Naming the story is
+    // what makes it a decision about a disagreement somebody has actually seen.
+    //
+    // Asked here rather than in the parser, and before anything is loaded or
+    // fetched, because this is the one gate every door passes: the CLI, the
+    // dashboard, the TUI, and a hand-built `InvokeRequest`.
+    if resolve.is_some() && story_id.is_none() {
+        return Err(AppError::Usage(
+            "--resolve applies to one story, so name it: `story github-sync <id> --resolve \
+             local|remote`. Resolving a whole sync would decide conflicts you have not seen."
+                .to_string(),
+        ));
+    }
+
     // 1. Load sync config
     let mut config = match sync.load_config()? {
         Some(cfg) => {
@@ -234,6 +311,7 @@ pub fn run_sync_with(
             &members,
             &prefix,
             dry_run,
+            resolve,
         ) {
             Ok(result) => record_result(&mut report, &story.id, result),
             Err(e) => report.errors.push((story.id.clone(), e.to_string())),
@@ -244,7 +322,7 @@ pub fn run_sync_with(
             sync.save_config(&config)?;
         }
 
-        return Ok(Response::Message(report.to_message()));
+        return report.outcome();
     }
 
     // 5. Full sync
@@ -324,6 +402,7 @@ pub fn run_sync_with(
                 &members,
                 &prefix,
                 dry_run,
+                resolve,
             ) {
                 Ok(result) => {
                     synced_story_ids.push(story.id.clone());
@@ -399,6 +478,7 @@ pub fn run_sync_with(
                 &members,
                 &prefix,
                 dry_run,
+                resolve,
             ) {
                 Ok(result) => record_result(&mut report, &story.id, result),
                 Err(e) => report.errors.push((story.id.clone(), e.to_string())),
@@ -441,7 +521,7 @@ pub fn run_sync_with(
         sync.save_config(&config)?;
     }
 
-    Ok(Response::Message(report.to_message()))
+    report.outcome()
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +538,7 @@ fn sync_single_story(
     members: &[Member],
     prefix: &str,
     dry_run: bool,
+    resolve: Option<Resolution>,
 ) -> Result<SyncStoryResult, AppError> {
     let mapping = match find_mapping(config, &story.id) {
         Some(m) => m.clone(),
@@ -526,11 +607,13 @@ fn sync_single_story(
     let mut unresolved_conflicts: Vec<FieldConflict> = Vec::new();
 
     if has_conflicts {
-        let resolutions = resolve_conflicts_interactive(&story.id, &merge_result.conflicts);
-        for (conflict, resolved) in merge_result.conflicts.iter().zip(resolutions.iter()) {
-            match resolved.resolution {
-                Resolution::Skip => unresolved_conflicts.push(conflict.clone()),
-                _ => resolved_conflicts.push(resolved.clone()),
+        match resolve {
+            // Nobody has said which side wins, and this process has no way to
+            // ask: it is a daemon with no terminal, and the menu that used to
+            // stand here answered itself. The conflicts travel back untouched.
+            None => unresolved_conflicts.extend(merge_result.conflicts.iter().cloned()),
+            Some(keep) => {
+                resolved_conflicts = resolve_conflicts_batch(&merge_result.conflicts, keep);
             }
         }
     }
@@ -617,14 +700,18 @@ fn sync_single_story(
                     )?;
                     did_push = true;
                 }
-                Resolution::Skip => {}
             }
         }
     }
 
-    // Save base snapshot for next sync
+    // Save base snapshot for next sync — holding back whatever is still in
+    // dispute, so that an unresolved conflict cannot resolve itself as
+    // "remote wins" on the next run. See `diff::base_after_sync`.
     let updated_story = sync.story(&story.id)?;
-    sync.save_base(&story.id, &updated_story)?;
+    sync.save_base(
+        &story.id,
+        &base_after_sync(&base, &updated_story, &unresolved_conflicts),
+    )?;
 
     // Update mapping's last_synced_at
     update_mapping_timestamp(sync, config, &story.id);
@@ -1188,5 +1275,105 @@ mod mode_notice_tests {
     fn the_modes_that_work_are_silent() {
         assert!(unimplemented_mode_notice(&SyncMode::Manual).is_none());
         assert!(unimplemented_mode_notice(&SyncMode::Off).is_none());
+    }
+}
+
+/// What a run answers with when it met a conflict nobody had decided — SH-152.
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    fn conflict(field: ConflictField, local: &str, remote: &str) -> FieldConflict {
+        FieldConflict {
+            field,
+            base_value: "Base".to_string(),
+            local_value: local.to_string(),
+            remote_value: remote.to_string(),
+        }
+    }
+
+    fn report_with_a_conflict() -> SyncReport {
+        let mut report = SyncReport::new();
+        report.pulled.push("SH-9".to_string());
+        report.conflicts.push((
+            "SH-1".to_string(),
+            vec![conflict(ConflictField::Title, "Mine", "Theirs")],
+        ));
+        report
+    }
+
+    /// A sync that could not decide something is not a successful sync. Exit 8
+    /// rather than 0 is the whole of it: a script that treated the old exit 0
+    /// as "everything applied" was wrong and had no way to find out.
+    #[test]
+    fn an_undecided_conflict_is_an_error_not_a_message() {
+        let error = report_with_a_conflict()
+            .outcome()
+            .expect_err("a conflict must not answer with a success");
+        assert!(matches!(error, AppError::SyncConflict(_)), "{error}");
+        assert_eq!(error.exit_code(), 8);
+    }
+
+    /// The three values are the part a caller cannot reconstruct, and the part
+    /// that used to be printed to a stdout the daemon sends to `/dev/null`.
+    #[test]
+    fn the_refusal_carries_both_values_and_the_way_out() {
+        let AppError::SyncConflict(detail) = report_with_a_conflict()
+            .outcome()
+            .expect_err("a conflict refuses")
+        else {
+            panic!("a conflict is a SyncConflict");
+        };
+
+        assert!(detail.contains("SH-1"), "{detail}");
+        assert!(detail.contains("title"), "{detail}");
+        assert!(detail.contains("Mine"), "{detail}");
+        assert!(detail.contains("Theirs"), "{detail}");
+        assert!(detail.contains("Base"), "{detail}");
+        // What did land is still reported: a refusal that hid the rest of the
+        // run would make the user re-derive it.
+        assert!(detail.contains("SH-9"), "{detail}");
+        assert!(
+            detail.contains("story github-sync SH-1 --resolve local"),
+            "the way out has to name the story, since --resolve refuses without one:\n{detail}"
+        );
+        assert!(
+            detail.contains("story github-sync SH-1 --resolve remote"),
+            "{detail}"
+        );
+        assert!(
+            !detail.contains("sync complete"),
+            "a run that left a conflict undecided did not complete:\n{detail}"
+        );
+    }
+
+    /// Every conflicting story is named, not just the first — the example
+    /// command uses one id, but the list is the whole set.
+    #[test]
+    fn every_conflicting_story_is_named() {
+        let mut report = report_with_a_conflict();
+        report.conflicts.push((
+            "SH-2".to_string(),
+            vec![conflict(ConflictField::State, "todo", "done")],
+        ));
+
+        let AppError::SyncConflict(detail) = report.outcome().expect_err("refuses") else {
+            panic!("a conflict is a SyncConflict");
+        };
+        assert!(detail.contains("SH-1"), "{detail}");
+        assert!(detail.contains("SH-2"), "{detail}");
+        assert!(detail.contains("2 conflicting stories"), "{detail}");
+    }
+
+    /// And a run with nothing in dispute is untouched by any of this.
+    #[test]
+    fn a_run_with_no_conflicts_still_answers_with_a_message() {
+        let mut report = SyncReport::new();
+        report.pushed.push("SH-1".to_string());
+
+        let Ok(Response::Message(message)) = report.outcome() else {
+            panic!("a clean run answers with a message");
+        };
+        assert!(message.contains("GitHub sync complete."), "{message}");
     }
 }

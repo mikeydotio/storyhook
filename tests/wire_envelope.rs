@@ -18,9 +18,9 @@
 //! pins that a hop through JSON changes neither.
 
 use storyhook::cli::{
-    Attach, DaemonAction, EpicAction, GraphMode, HistoryAction, HooksAction, Invocation,
-    MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction, ProjectAction,
-    SettingsAction, StateAction, StoreAction, TypeAction, WebAction,
+    Attach, ConflictSide, DaemonAction, EpicAction, GraphMode, HistoryAction, HooksAction,
+    Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction,
+    ProjectAction, SettingsAction, StateAction, StoreAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
     Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent, StoryRelation,
@@ -1032,6 +1032,19 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::GithubSync {
             id: Some("SH-1".to_string()),
             dry_run: true,
+            resolve: Some(ConflictSide::Local),
+        },
+        // Both sides of `--resolve`, and its absence — which is not a default
+        // but the state that makes a conflicting sync refuse (SH-152).
+        Invocation::GithubSync {
+            id: Some("SH-1".to_string()),
+            dry_run: false,
+            resolve: Some(ConflictSide::Remote),
+        },
+        Invocation::GithubSync {
+            id: None,
+            dry_run: false,
+            resolve: None,
         },
         Invocation::HelpTopic {
             topic: "states".to_string(),
