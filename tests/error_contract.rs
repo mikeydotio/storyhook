@@ -44,6 +44,31 @@ struct Case {
     provoke: fn(&TestEnv, bool) -> std::process::Output,
 }
 
+/// Whether a row's two output forms may be provoked at the same time.
+///
+/// True for every row but one, and keyed on `variant` because that *is* this
+/// table's primary key: [`variant_name`] is exhaustive over `AppError` and
+/// [`the_table_covers_every_variant`] fails if a name here answers to nothing,
+/// so this cannot quietly stop matching the row it is about.
+///
+/// `LockTimeout` takes the store's **exclusive** write lock and holds it on
+/// purpose. Its two forms run the same closure, so one form's holder can be
+/// sitting on the lock while the other form's fixture is still being built — and
+/// `story project init` is a write. The fixture then waits out `busy_timeout` and
+/// dies at exit 4 during *setup*, which reads as a product failure and is not
+/// one.
+///
+/// **That race was always here.** It never fired because `init` reached its
+/// transaction faster than the sibling thread reached the lock — a margin
+/// nothing declared and nothing protected. SH-116 gave `init` a `git`
+/// subprocess to run first, the margin went, and it fired on every run. Running
+/// this row's two forms in sequence costs one extra second — the child's own
+/// `STORYHOOK_BUSY_TIMEOUT_MS` — and removes the race instead of re-widening the
+/// margin, which is the difference between a fix and a postponement.
+fn forms_may_run_together(variant: &str) -> bool {
+    variant != "LockTimeout"
+}
+
 /// Every variant reachable through the CLI.
 ///
 /// `SyncConflict` is absent because it is **not reachable**: it is constructed
@@ -266,18 +291,21 @@ fn every_error_variant_holds_its_contract() {
     let env = TestEnv::shared();
 
     for case in cases() {
-        // Both forms are provoked concurrently, on independent fixtures. It is
-        // the LockTimeout row that makes this worth doing: provoking it costs a
-        // real 5s wait, and running the two forms in sequence would spend that
-        // twice for one row.
-        let (plain, json) = std::thread::scope(|scope| {
-            let plain = scope.spawn(|| (case.provoke)(env, false));
-            let json = scope.spawn(|| (case.provoke)(env, true));
-            (
-                plain.join().expect("provoking the plain-text form"),
-                json.join().expect("provoking the --json form"),
-            )
-        });
+        // Both forms are provoked concurrently, on independent fixtures — except
+        // for the one row whose fixtures are not independent at all, because it
+        // holds the store's exclusive write lock. See `forms_may_run_together`.
+        let (plain, json) = if forms_may_run_together(case.variant) {
+            std::thread::scope(|scope| {
+                let plain = scope.spawn(|| (case.provoke)(env, false));
+                let json = scope.spawn(|| (case.provoke)(env, true));
+                (
+                    plain.join().expect("provoking the plain-text form"),
+                    json.join().expect("provoking the --json form"),
+                )
+            })
+        } else {
+            ((case.provoke)(env, false), (case.provoke)(env, true))
+        };
 
         // --- plain: `error: {message}` on stderr, nothing on stdout ---
         let stdout = String::from_utf8_lossy(&plain.stdout).into_owned();
