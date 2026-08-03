@@ -136,3 +136,36 @@ fn the_storage_topic_documents_the_whole_restore() {
         );
     }
 }
+
+/// The topic omitted `$STORYHOOK_STORE_PATH` entirely (SH-95) — the lever that
+/// *outranks* `$STORYHOOK_DATA_DIR`, which it did list. A downstream test suite
+/// isolating itself by reading this topic set the losing variable and had its
+/// writes go to whatever store `$STORYHOOK_STORE_PATH` (or `--store-path`)
+/// already named — silently, since the higher lever wins without complaint.
+/// Naming all four levers, and `story store new` as the supported way to get a
+/// scratch store, is the preventative action for that defect class.
+#[test]
+fn the_storage_topic_names_every_store_naming_lever_in_precedence_order() {
+    let topic = get_help_topic("storage").expect("the storage topic exists");
+
+    for fact in [
+        "--store-path",
+        "STORYHOOK_STORE_PATH",
+        "STORYHOOK_DATA_DIR",
+        "story store new",
+    ] {
+        assert!(
+            topic.contains(fact),
+            "the storage topic must name `{fact}` — a suite that follows this topic \
+             and sets only the variable it omits is not isolated, silently"
+        );
+    }
+
+    let store_path_at = topic.find("STORYHOOK_STORE_PATH").unwrap();
+    let data_dir_at = topic.find("STORYHOOK_DATA_DIR").unwrap();
+    assert!(
+        store_path_at < data_dir_at,
+        "STORYHOOK_STORE_PATH outranks STORYHOOK_DATA_DIR and must be named first, \
+         so the topic's order matches the precedence it documents"
+    );
+}

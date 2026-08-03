@@ -128,8 +128,13 @@ fn init_in_a_temp_dir_is_refused_when_the_store_is_not_temporary() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
+        stderr.contains("--store-path") || stderr.contains("STORYHOOK_STORE_PATH"),
+        "the message must lead with a lever that actually wins the precedence contest, not \
+         just one that could be silently overridden by a higher one: {stderr}"
+    );
+    assert!(
         stderr.contains("STORYHOOK_DATA_DIR"),
-        "the message must name the variable that fixes the caller for good: {stderr}"
+        "the message must still name the environment-only route: {stderr}"
     );
     assert!(
         stderr.contains("STORYHOOK_ALLOW_TEMP_PROJECT"),
