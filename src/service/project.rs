@@ -277,16 +277,107 @@ pub fn unmigrated_error(tree: &Path) -> AppError {
 /// that is the whole of what a reader needs.
 #[must_use]
 pub fn origin_of(cwd: &Path) -> Option<crate::domain::remote::RemoteUrl> {
+    let raw = git_output(cwd, &["config", "--get", "remote.origin.url"])?;
+    crate::domain::remote::RemoteUrl::normalize_for_lookup(&raw)
+}
+
+/// The origin `cwd`'s **own** repository records, or a refusal saying why there
+/// is none to take.
+///
+/// The single constructor for the omitted-URL form of `story project link
+/// origin`, and the whole of what "when unambiguous" means there. Two
+/// conditions, not one:
+///
+/// 1. `cwd` is a git repository's own top level, and
+/// 2. that repository records an origin that normalizes.
+///
+/// # Why the first condition exists
+///
+/// `git config --get remote.origin.url` **walks up the directory tree** (SH-151).
+/// A directory that is not itself a repository but sits inside one reports the
+/// *enclosing* repository's origin — so without this check, running `story
+/// project link origin` with no URL inside `monorepo/service-b` would silently
+/// register the monorepo's origin against `service-b`. That is not a wrong
+/// answer a user can see and undo: the unique index on
+/// `project_remotes.normalized` means one origin belongs to at most one project,
+/// so the claim is permanent and cross-project until somebody unlinks it, and
+/// every other project in that repository stops being able to register at all.
+///
+/// [`origin_of`] deliberately keeps the walk, because *resolution* asking "does
+/// any project answer for where I am standing?" is a question the enclosing
+/// repository can legitimately answer. Registration is the opposite direction
+/// and cannot.
+///
+/// # Why a refusal rather than `None`
+///
+/// [`origin_of`]'s contract is that every failure is the same failure, because a
+/// resolution path must not distinguish them. Here the user typed a command
+/// about origins and got nothing, so the reverse is true: the reason is the
+/// whole of what they need, and the refusal names the URL they can pass
+/// explicitly instead.
+pub fn origin_here(cwd: &Path) -> Result<crate::domain::remote::RemoteUrl, AppError> {
+    let toplevel = git_output(cwd, &["rev-parse", "--show-toplevel"]);
+    let Some(toplevel) = toplevel else {
+        return Err(AppError::Validation(format!(
+            "no URL was given, and `{}` is not inside a git repository.\n\nName the origin \
+             explicitly:\n\n  story project link origin <url>",
+            cwd.display()
+        )));
+    };
+
+    // Compared canonically because git answers with the real path and the
+    // caller's may reach it through a symlink — `/tmp` on macOS being the case
+    // every test on this machine goes through.
+    let here = canonical(cwd);
+    let root = canonical(Path::new(&toplevel));
+    if here != root {
+        return Err(AppError::Validation(format!(
+            "no URL was given, and `{}` is not the top level of its repository — `{}` is.\n\n\
+             `git config --get remote.origin.url` walks up, so taking the origin here would \
+             register the enclosing repository's identity against this project, and an origin \
+             belongs to at most one project.\n\nName the origin explicitly:\n\n  story project \
+             link origin <url>",
+            here.display(),
+            root.display()
+        )));
+    }
+
+    origin_of(cwd).ok_or_else(|| {
+        let remotes = git_output(cwd, &["remote", "-v"]).unwrap_or_default();
+        let seen = if remotes.trim().is_empty() {
+            "  remotes    (none)".to_string()
+        } else {
+            remotes
+                .lines()
+                .map(|line| format!("  remotes    {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        AppError::Validation(format!(
+            "no URL was given, and `{}` records no usable `remote.origin.url`.\n\n{seen}\n\n\
+             storyhook reads exactly `git config --get remote.origin.url`. Name the origin \
+             explicitly:\n\n  story project link origin <url>",
+            cwd.display()
+        ))
+    })
+}
+
+/// `git <args>` in `cwd`, or `None` if git failed for any reason at all.
+///
+/// Shared by [`origin_of`] and [`origin_here`] so there is one place that knows
+/// a missing `git`, a non-repository and a failed command are the same outcome.
+fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
         .current_dir(cwd)
-        .args(["config", "--get", "remote.origin.url"])
+        .args(args)
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    let raw = String::from_utf8(output.stdout).ok()?;
-    crate::domain::remote::RemoteUrl::normalize_for_lookup(raw.trim())
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|text| text.trim().to_string())
 }
 
 /// Whether `project` may register `remote`, or somebody else already holds it.

@@ -143,7 +143,11 @@ impl InvokeRequest {
         match &mut self.invocation {
             Invocation::Project { action } => match action {
                 ProjectAction::Deinit { force, .. } => *force = true,
-                ProjectAction::Init { .. } | ProjectAction::List | ProjectAction::Settings(_) => {}
+                ProjectAction::Init { .. }
+                | ProjectAction::List
+                | ProjectAction::Link(_)
+                | ProjectAction::Unlink(_)
+                | ProjectAction::Settings(_) => {}
             },
             Invocation::Purge { force, .. } => *force = true,
             _ => {}
@@ -589,11 +593,17 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
             let summary = decompose_summary(&batch);
             Ok(Response::Stories(batch.views, Some(summary)))
         }
-        // The one `project` arm that names a project rather than creating,
-        // destroying or enumerating them, so the only one answered here.
+        // The `project` arms that name a project rather than creating,
+        // destroying or enumerating them, so the only ones answered here.
         Invocation::Project {
             action: ProjectAction::Settings(action),
         } => dispatch_project_settings(ctx, action),
+        Invocation::Project {
+            action: ProjectAction::Link(target),
+        } => dispatch_project_link(ctx, target),
+        Invocation::Project {
+            action: ProjectAction::Unlink(target),
+        } => dispatch_project_unlink(ctx, target),
         Invocation::Web { .. }
         | Invocation::Daemon { .. }
         | Invocation::Store { .. }
@@ -699,17 +709,130 @@ fn dispatch_project<S: Store>(
                     |path| path.display().to_string(),
                 );
                 lines.push(format!("  {} — {} ({where_})", entry.id, entry.name));
+                // The two git associations, indented under the project they
+                // belong to. This is the only way to answer "did my link take?"
+                // short of opening the database — and it is what gives
+                // `checkout_path` a production reader, since its real consumer
+                // (`dispatch`) is SH-120's.
+                //
+                // The parenthesis above is the *recorded path*, which is what
+                // resolution reads; the `checkout` line below is the linked one,
+                // which nothing resolves by. They are printed separately because
+                // they are different facts, and SH-119 collapses them.
+                let (checkout, origins) = store.read(|tx| {
+                    Ok((
+                        tx.checkout_path(entry.project)?,
+                        tx.project_remotes(entry.project)?,
+                    ))
+                })?;
+                if let Some(checkout) = checkout {
+                    lines.push(format!("      checkout  {}", checkout.display()));
+                }
+                for remote in origins {
+                    lines.push(format!("      origin    {}", remote.raw));
+                }
             }
             Ok(Response::Message(lines.join("\n")))
         }
-        // Answered by `dispatch` against a resolved context, because it is the
-        // one arm of this family that names a project. Reaching it here means a
+        // Answered by `dispatch` against a resolved context, because these are
+        // the arms of this family that name a project. Reaching one here means a
         // caller went round `is_project_less`.
         ProjectAction::Settings(_) => Err(AppError::Usage(
             "`story project settings` needs a project: run it in a checkout storyhook knows, \
              or run `story project init` first."
                 .to_string(),
         )),
+        ProjectAction::Link(_) | ProjectAction::Unlink(_) => Err(AppError::Usage(
+            "`story project link` and `story project unlink` need a project: name one with \
+             `--project <slug>`, or run them in a checkout storyhook already resolves."
+                .to_string(),
+        )),
+    }
+}
+
+/// `story project link origin|checkout …` against a resolved project.
+fn dispatch_project_link<S: Store>(
+    ctx: &Ctx<'_, S>,
+    target: crate::cli::LinkTarget,
+) -> Result<Response, AppError> {
+    let service = crate::service::GitLinkService::new(ctx);
+    match target {
+        crate::cli::LinkTarget::Origin { url } => {
+            let remote = remote_argument(ctx, url.as_deref())?;
+            let link = service.link_origin(&remote)?;
+            Ok(Response::Message(format!(
+                "linked `{}` to project `{}`\ncommands run in a checkout of it now resolve \
+                 without --project",
+                link.raw, link.project
+            )))
+        }
+        crate::cli::LinkTarget::Checkout { path } => {
+            let target = target_dir(ctx.cwd(), path.as_deref());
+            let link = service.link_checkout(&target)?;
+            // The replaced path is reported rather than dropped: a silent
+            // replacement is how somebody discovers weeks later that repo-side
+            // work has been running in a tree they stopped using.
+            let replaced = link.replaced.as_ref().map_or_else(String::new, |old| {
+                format!(", replacing `{}`", old.display())
+            });
+            Ok(Response::Message(format!(
+                "linked checkout `{}` to project `{}`{replaced}\nthis is where repo-side work \
+                 runs for it; it is not used to decide which project you are in",
+                target.display(),
+                link.project
+            )))
+        }
+    }
+}
+
+/// `story project unlink origin|checkout …` against a resolved project.
+fn dispatch_project_unlink<S: Store>(
+    ctx: &Ctx<'_, S>,
+    target: crate::cli::UnlinkTarget,
+) -> Result<Response, AppError> {
+    let service = crate::service::GitLinkService::new(ctx);
+    match target {
+        crate::cli::UnlinkTarget::Origin { url } => {
+            let remote = remote_argument(ctx, url.as_deref())?;
+            let link = service.unlink_origin(&remote)?;
+            Ok(Response::Message(format!(
+                "unlinked `{}` from project `{}`\nthe project and its stories are untouched; \
+                 that origin is free for another project",
+                link.raw, link.project
+            )))
+        }
+        crate::cli::UnlinkTarget::Checkout => {
+            let link = service.unlink_checkout()?;
+            Ok(Response::Message(match &link.replaced {
+                Some(path) => format!(
+                    "unlinked checkout `{}` from project `{}`\nnothing on disk was changed",
+                    path.display(),
+                    link.project
+                ),
+                None => format!("project `{}` had no linked checkout", link.project),
+            }))
+        }
+    }
+}
+
+/// The URL a `link origin` / `unlink origin` was given, or the one this
+/// directory's own repository records.
+///
+/// The two paths differ in more than convenience. A URL the user typed is
+/// normalized and any failure names it; an omitted one goes through
+/// [`origin_here`](crate::service::project::origin_here), which additionally
+/// requires the working directory to be its repository's *top level* — see that
+/// function for why taking the enclosing repository's origin would be a
+/// permanent, cross-project mistake rather than a recoverable one.
+fn remote_argument<S: Store>(
+    ctx: &Ctx<'_, S>,
+    url: Option<&str>,
+) -> Result<crate::domain::remote::RemoteUrl, AppError> {
+    match url {
+        Some(url) => crate::domain::remote::RemoteUrl::normalize(url).map_err(|error| {
+            AppError::Validation(format!("`{url}` is not a git remote URL: {error}"))
+        }),
+        None => crate::service::project::origin_here(ctx.cwd()),
     }
 }
 
@@ -1885,7 +2008,11 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
         Invocation::ImportProject { .. } => Some(cwd.to_path_buf()),
         Invocation::Project { action } => match action {
             ProjectAction::Init { path, .. } => Some(target_dir(cwd, path.as_deref())),
-            ProjectAction::Deinit { .. } | ProjectAction::List | ProjectAction::Settings(_) => None,
+            ProjectAction::Deinit { .. }
+            | ProjectAction::List
+            | ProjectAction::Link(_)
+            | ProjectAction::Unlink(_)
+            | ProjectAction::Settings(_) => None,
         },
         Invocation::Migrate { path, dry_run } if !dry_run => Some(target_dir(cwd, path.as_deref())),
         _ => None,
@@ -2044,10 +2171,17 @@ pub fn failure_is_silent(invocation: &Invocation) -> bool {
 /// arguments.
 fn describe_unscoped(invocation: &Invocation) -> String {
     match invocation {
+        // Exhaustive rather than `_ => "project list"`: this string is what a
+        // refusal calls the command the user typed, and a catch-all here told
+        // somebody running `story project link` that `story project list` does
+        // not act on a single project.
         Invocation::Project { action } => match action {
             ProjectAction::Init { .. } => "project init",
             ProjectAction::Deinit { .. } => "project deinit",
-            _ => "project list",
+            ProjectAction::List => "project list",
+            ProjectAction::Link(_) => "project link",
+            ProjectAction::Unlink(_) => "project unlink",
+            ProjectAction::Settings(_) => "project settings",
         },
         Invocation::ImportProject { .. } => "import-project",
         Invocation::Migrate { .. } => "migrate",
@@ -2081,10 +2215,16 @@ fn is_project_less(invocation: &Invocation) -> bool {
         return true;
     }
     match invocation {
-        // `project settings` is the exception in its own family: `init`,
-        // `deinit` and `list` are about projects, while `settings` is about
-        // *this* one and cannot be answered without resolving it.
-        Invocation::Project { action } => !matches!(action, ProjectAction::Settings(_)),
+        // `init`, `deinit` and `list` are about projects in general; the other
+        // three are about *this* one and cannot be answered without resolving
+        // it. Stated positively, so a variant added later is project-less only
+        // because somebody said so — the negated form classified every new arm
+        // as unscoped, which is how `link` would have been dispatched with no
+        // project and no way to see a selector.
+        Invocation::Project { action } => matches!(
+            action,
+            ProjectAction::Init { .. } | ProjectAction::Deinit { .. } | ProjectAction::List
+        ),
         Invocation::ImportProject { .. }
         | Invocation::Migrate { .. }
         | Invocation::Plugin { .. } => true,
