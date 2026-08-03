@@ -235,7 +235,10 @@ fn story_init_still_works_and_agrees_with_project_init() {
     let old = bare_dir(&env, "old");
     let new = bare_dir(&env, "new");
 
-    env.story(&old).args(["project", "init"]).assert().success();
+    env.story(&old)
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
     project(&env, &new, &["init"]).success();
 
     for dir in [&old, &new] {

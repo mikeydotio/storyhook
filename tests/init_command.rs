@@ -29,7 +29,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn initialized() -> TempDir {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     dir
@@ -71,7 +71,7 @@ fn init_is_idempotent() {
     story(dir.path()).args(["new", "Before"]).assert().success();
 
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

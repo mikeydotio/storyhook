@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn reopen_archived_story() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -46,7 +46,7 @@ fn reopen_archived_story() {
 fn reopen_already_open_story_fails() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -65,7 +65,7 @@ fn reopen_already_open_story_fails() {
 fn reopen_nonexistent_story_fails() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -80,7 +80,7 @@ fn reopen_nonexistent_story_fails() {
 fn reopen_preserves_comments() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -107,7 +107,7 @@ fn reopen_preserves_comments() {
 fn reopen_json_output() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())

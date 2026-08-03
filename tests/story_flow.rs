@@ -12,7 +12,7 @@ fn story_new_assigns_monotonic_ids_and_show_works() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -47,7 +47,7 @@ fn comment_and_assign_append_events() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -95,7 +95,7 @@ fn awaiting_can_be_set_and_cleared() {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

@@ -352,7 +352,7 @@ mod unmigrated {
         // directory, and look like it worked.
         let project = legacy_checkout();
         project
-            .run(&["project", "init"])
+            .run(&["project", "new", "--prefix", "SH"])
             .code(3)
             .stderr(predicates::str::contains("story migrate"));
     }

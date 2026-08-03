@@ -84,12 +84,12 @@ mk_story_repo() {
     git commit -qm init
     git push -qu origin main
     git remote set-head origin main >/dev/null 2>&1 || true
-    # `story project init` writes `.storyhook.toml` and nothing else into the tree;
+    # `story project new` writes `.storyhook.toml` and nothing else into the tree;
     # the stories themselves go to the (isolated) store. Committing the
     # pointer is what a real project does, and it is what makes a linked
     # worktree of this fixture resolve the SAME project as the main checkout —
     # the property test-dispatch-cwd.sh asserts.
-    story project init --prefix TST >/dev/null 2>&1
+    story project new --prefix TST >/dev/null 2>&1
     git add .storyhook.toml
     git commit -qm 'storyhook pointer'
     git push -q origin main

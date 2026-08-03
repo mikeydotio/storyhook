@@ -19,7 +19,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn type_list_shows_default_types() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -38,7 +38,7 @@ fn type_list_shows_default_types() {
 fn type_add_and_list_shows_new_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -65,7 +65,7 @@ fn type_add_and_list_shows_new_type() {
 fn type_add_duplicate_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -80,7 +80,7 @@ fn type_add_duplicate_rejected() {
 fn type_add_none_slug_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -95,7 +95,7 @@ fn type_add_none_slug_rejected() {
 fn type_add_none_titlecase_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -110,7 +110,7 @@ fn type_add_none_titlecase_rejected() {
 fn type_add_none_uppercase_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -125,7 +125,7 @@ fn type_add_none_uppercase_rejected() {
 fn type_add_none_mixedcase_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -140,7 +140,7 @@ fn type_add_none_mixedcase_rejected() {
 fn type_add_rejects_reserved_default_slug() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -170,7 +170,7 @@ fn type_add_rejects_reserved_default_slug() {
 fn type_remove_unused_succeeds() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -190,7 +190,7 @@ fn type_remove_unused_succeeds() {
 fn type_remove_in_use_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -210,7 +210,7 @@ fn type_remove_in_use_rejected() {
 fn type_remove_nonexistent_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -229,7 +229,7 @@ fn type_remove_nonexistent_rejected() {
 fn new_with_type_creates_typed_story() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -249,7 +249,7 @@ fn new_with_type_creates_typed_story() {
 fn new_with_unknown_type_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -264,7 +264,7 @@ fn new_with_unknown_type_rejected() {
 fn set_type_changes_story_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -286,7 +286,7 @@ fn set_type_changes_story_type() {
 fn set_unknown_type_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -303,7 +303,7 @@ fn set_unknown_type_rejected() {
 fn untyped_story_shows_default_for_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -327,7 +327,7 @@ fn untyped_story_shows_default_for_type() {
 fn list_type_filter_shows_matching_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -358,7 +358,7 @@ fn list_type_filter_shows_matching_stories() {
 fn list_type_none_shows_untyped_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -384,7 +384,7 @@ fn list_type_none_shows_untyped_stories() {
 fn list_type_filter_combined_with_priority() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -431,7 +431,7 @@ fn list_type_filter_combined_with_priority() {
 fn epic_create_sets_type_to_epic() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -453,7 +453,7 @@ fn epic_create_sets_type_to_epic() {
 fn epic_add_creates_parent_child_relationship() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -489,7 +489,7 @@ fn epic_add_creates_parent_child_relationship() {
 fn epic_list_shows_only_epics_with_progress() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -527,7 +527,7 @@ fn epic_list_shows_only_epics_with_progress() {
 fn epic_show_displays_progress() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -572,7 +572,7 @@ fn epic_show_displays_progress() {
 fn epic_list_empty_when_no_epics() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -592,7 +592,7 @@ fn epic_list_empty_when_no_epics() {
 fn epic_create_rejects_when_epic_type_not_defined() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -617,7 +617,7 @@ fn epic_create_rejects_when_epic_type_not_defined() {
 fn show_displays_progress_in_human_output() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -667,7 +667,7 @@ fn show_displays_progress_in_human_output() {
 fn list_shows_type_badge_in_human_output() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -685,7 +685,7 @@ fn list_shows_type_badge_in_human_output() {
 fn list_shows_default_badge_for_untyped_story() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -703,7 +703,7 @@ fn list_shows_default_badge_for_untyped_story() {
 fn type_remove_last_type_rejected() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -731,7 +731,7 @@ fn type_remove_last_type_rejected() {
 fn json_patch_sets_story_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -758,7 +758,7 @@ fn json_patch_sets_story_type() {
 fn json_patch_rejects_invalid_story_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -778,7 +778,7 @@ fn json_patch_rejects_invalid_story_type() {
 fn json_patch_unknown_field_error_lists_story_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -802,7 +802,7 @@ fn json_patch_unknown_field_error_lists_story_type() {
 fn json_output_includes_story_type() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -822,7 +822,7 @@ fn json_output_includes_story_type() {
 fn json_output_omits_type_for_untyped_story() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -848,7 +848,7 @@ fn json_output_omits_type_for_untyped_story() {
 fn full_epic_lifecycle() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 

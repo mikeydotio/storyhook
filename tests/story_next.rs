@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn next_returns_oldest_unblocked() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -39,7 +39,7 @@ fn next_returns_oldest_unblocked() {
 fn next_respects_priority_sorting() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -71,7 +71,7 @@ fn next_respects_priority_sorting() {
 fn next_skips_awaiting_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -99,7 +99,7 @@ fn next_skips_awaiting_stories() {
 fn next_skips_dependency_blocked_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -128,7 +128,7 @@ fn next_skips_dependency_blocked_stories() {
 fn next_unblocks_after_dependency_closed() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -162,7 +162,7 @@ fn next_unblocks_after_dependency_closed() {
 fn next_count_returns_multiple() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path()).args(["new", "Task A"]).assert().success();
@@ -183,7 +183,7 @@ fn next_count_returns_multiple() {
 fn next_json_output() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -203,7 +203,7 @@ fn next_json_output() {
 fn next_empty_project() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -218,7 +218,7 @@ fn next_empty_project() {
 fn next_all_blocked_returns_no_ready() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -241,7 +241,7 @@ fn next_all_blocked_returns_no_ready() {
 fn next_skips_parent_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -270,7 +270,7 @@ fn next_skips_parent_stories() {
 fn next_returns_no_ready_when_only_parents_are_ready() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())

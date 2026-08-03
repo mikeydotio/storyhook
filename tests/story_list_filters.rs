@@ -14,7 +14,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn list_blocked_filter() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -43,7 +43,7 @@ fn list_blocked_filter() {
 fn list_ready_filter() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -72,7 +72,7 @@ fn list_ready_filter() {
 fn list_dependency_blocked() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -101,7 +101,7 @@ fn list_dependency_blocked() {
 fn list_combined_filters() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -149,7 +149,7 @@ fn list_stale_basic() {
     // --stale 0m means threshold = now, so everything with updated_at < now is stale
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -176,7 +176,7 @@ fn list_stale_no_matches() {
     // --stale 999d means threshold = now - 999 days; nothing is that old
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -197,7 +197,7 @@ fn list_stale_combined() {
     // Combine --stale with --priority
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())

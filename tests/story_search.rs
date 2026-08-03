@@ -15,7 +15,7 @@ fn story(dir: &std::path::Path) -> Command {
 fn search_by_title() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -40,7 +40,7 @@ fn search_by_title() {
 fn search_by_comment() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -63,7 +63,7 @@ fn search_by_comment() {
 fn search_by_label() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -86,7 +86,7 @@ fn search_by_label() {
 fn search_includes_archived_stories() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -109,7 +109,7 @@ fn search_includes_archived_stories() {
 fn search_case_insensitive() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -128,7 +128,7 @@ fn search_case_insensitive() {
 fn search_no_results() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())
@@ -147,7 +147,7 @@ fn search_no_results() {
 fn search_json_output() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     story(dir.path())

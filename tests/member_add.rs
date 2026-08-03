@@ -39,7 +39,7 @@ fn json(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
 fn a_member_added_by_name_and_email_can_be_assigned_work() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -65,7 +65,7 @@ fn a_member_added_by_name_and_email_can_be_assigned_work() {
 fn a_member_added_by_github_handle_gets_the_handle_as_its_id() {
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
@@ -91,7 +91,7 @@ fn assigning_to_a_member_that_was_never_added_fails() {
     // `assign` that accepted any string at all.
     let dir = tempdir().unwrap();
     story(dir.path())
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
     let id = json(dir.path(), &["new", "Unassignable"])["story"]["story"]["id"]

@@ -36,7 +36,7 @@ fn init_project(dir: &std::path::Path) {
     Command::cargo_bin("story")
         .unwrap()
         .current_dir(dir)
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 }

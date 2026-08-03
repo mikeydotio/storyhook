@@ -18,7 +18,10 @@ use storyhook_test_support::TestEnv;
 fn project_with(env: &TestEnv, name: &str, stories: usize) -> std::path::PathBuf {
     let dir = env.home().join(name);
     std::fs::create_dir_all(&dir).expect("creating the repository");
-    env.story(&dir).args(["project", "init"]).assert().success();
+    env.story(&dir)
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
     for index in 1..=stories {
         env.story(&dir)
             .args(["new", &format!("Story {index}")])
@@ -217,7 +220,10 @@ fn an_agents_md_the_user_wrote_themselves_is_kept() {
     let dir = env.home().join("repo");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("AGENTS.md"), "mine, from before\n").unwrap();
-    env.story(&dir).args(["project", "init"]).assert().success();
+    env.story(&dir)
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
 
     deinit(&env, &dir, &["--force"]);
 
@@ -368,7 +374,7 @@ fn deinit_clears_every_checkout_it_knows_about() {
     // running a command there is not enough — `init` in a checkout carrying a
     // pointer adopts it into the project the pointer names.
     env.story(&second)
-        .args(["project", "init"])
+        .args(["project", "new", "--prefix", "SH"])
         .assert()
         .success();
 
