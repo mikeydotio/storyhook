@@ -21,7 +21,7 @@
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
-use storyhook::domain::{Priority, StateDef, StoryEvent, SuperState, TypeDef, fold_story};
+use storyhook::domain::{Priority, StateDef, StoryEvent, SuperState, fold_story};
 use storyhook::store::migrate;
 use storyhook::store::{
     EventSeq, ExpectedSeq, NewProject, ReadOps, SqliteStore, Store, StoryNo, WriteOps,
@@ -93,19 +93,11 @@ fn build(path: &Path) {
                 created_at: "2026-01-01T00:00:00Z".into(),
             })?;
             tx.put_states(project, &states)?;
-            tx.put_types(
-                project,
-                &[
-                    TypeDef {
-                        slug: "feature".into(),
-                        description: Some("New capability".into()),
-                    },
-                    TypeDef {
-                        slug: "bug".into(),
-                        description: None,
-                    },
-                ],
-            )?;
+            // Types are seeded below in raw SQL, not through `tx.put_types`:
+            // that write path now assumes the `emoji` column SH-157 added in
+            // migration 9, and this fixture is pinned at v1, where
+            // `project_types` doesn't have it yet — the same reason
+            // `project_paths` is seeded in raw SQL further down.
             tx.put_member(
                 project,
                 &storyhook::domain::Member {
@@ -186,12 +178,26 @@ fn build(path: &Path) {
         })
         .unwrap();
 
+    let conn = Connection::open(path).unwrap();
+
+    // Types, in raw SQL and without an `emoji` column — see the comment where
+    // `tx.put_types` used to be called above.
+    for (position, slug, description) in
+        [(0i64, "feature", Some("New capability")), (1, "bug", None)]
+    {
+        conn.execute(
+            "INSERT INTO project_types (project_id, position, slug, description) \
+             VALUES ((SELECT id FROM projects WHERE slug = 'fixture'), ?1, ?2, ?3)",
+            rusqlite::params![position, slug, description],
+        )
+        .unwrap();
+    }
+
     // `project_paths` in raw SQL, because the writer that used to fill it is
     // deleted (SH-119) and this fixture is *v1*, where the table still exists.
     // Two rows, a main tree and a linked worktree, so that migration 8's
     // carry-over — main becomes `projects.checkout_path`, worktrees are
     // dropped — has both cases to act on when this file is migrated forward.
-    let conn = Connection::open(path).unwrap();
     for (checkout, kind) in [("/fixture/main", "main"), ("/fixture/wt-a", "worktree")] {
         conn.execute(
             "INSERT INTO project_paths (project_id, path, kind, last_seen_at) \

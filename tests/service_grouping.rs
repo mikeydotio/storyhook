@@ -224,6 +224,7 @@ fn an_epic_is_a_story_typed_epic() {
             types.push(storyhook::domain::TypeDef {
                 slug: "epic".into(),
                 description: None,
+                emoji: None,
             });
             tx.put_types(fixture.project(), &types)
         })

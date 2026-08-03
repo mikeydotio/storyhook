@@ -18,9 +18,8 @@ Stories: 14 (11 open, 3 closed)
 - bug: 1
 - chore: 3
 - epic: 1
+- normal: 7
 - spike: 2
-- story: 4
-- task: 3
 
 ## Ready to Work (8 total)
 
@@ -55,9 +54,8 @@ $ story context --format json
     "bug": 1,
     "chore": 3,
     "epic": 1,
-    "spike": 2,
-    "story": 4,
-    "task": 3
+    "normal": 7,
+    "spike": 2
   },
   "closed": 3,
   "open": 11,
@@ -114,9 +112,8 @@ Stories: 14 (11 open, 3 closed)
 - bug: 1
 - chore: 3
 - epic: 1
+- normal: 7
 - spike: 2
-- story: 4
-- task: 3
 
 ## Ready to Work (8 total)
 

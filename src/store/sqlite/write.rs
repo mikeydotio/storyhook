@@ -930,8 +930,8 @@ pub(super) fn put_types(
     )?;
     let mut stmt = sql(
         conn.prepare_cached(
-            "INSERT INTO project_types (project_id, position, slug, description) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO project_types (project_id, position, slug, description, emoji) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         ),
         "preparing a type write",
     )?;
@@ -942,6 +942,7 @@ pub(super) fn put_types(
                 i64::try_from(position).expect("a type set fits in i64"),
                 story_type.slug,
                 story_type.description,
+                story_type.emoji,
             ]),
             "writing a project type",
         )?;

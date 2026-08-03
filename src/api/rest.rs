@@ -635,7 +635,9 @@ fn meta_json<R: ReadOps>(
     let types: Vec<serde_json::Value> = tx
         .types(project)?
         .into_iter()
-        .map(|t| serde_json::json!({ "slug": t.slug, "description": t.description }))
+        .map(|t| {
+            serde_json::json!({ "slug": t.slug, "description": t.description, "emoji": t.emoji })
+        })
         .collect();
 
     let members: Vec<serde_json::Value> = tx

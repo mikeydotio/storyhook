@@ -153,7 +153,10 @@ fn default_states() -> Vec<StateDef> {
     ]
 }
 
-/// `story init`'s story types.
+/// `story init`'s story types, in the legacy `.storyhook/` format — which
+/// predates the `emoji` column (SH-157) and genuinely could hold `task`, so
+/// neither is normalized away here the way `service::project::default_types`
+/// now normalizes them for a fresh store.
 fn default_types() -> Vec<TypeDef> {
     [
         ("story", "A user story or feature"),
@@ -166,6 +169,7 @@ fn default_types() -> Vec<TypeDef> {
     .map(|(slug, description)| TypeDef {
         slug: slug.to_string(),
         description: Some(description.to_string()),
+        emoji: None,
     })
     .collect()
 }

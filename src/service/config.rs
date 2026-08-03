@@ -31,8 +31,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::MemberInput;
 use crate::domain::{
-    Member, StateChanges, StateDef, StateUsage, StoryEvent, SuperState, TypeDef,
-    validate_required_states, validate_state_defs_for_write,
+    FieldEdit, Member, StateChanges, StateDef, StateUsage, StoryEvent, SuperState, TypeChanges,
+    TypeDef, validate_required_states, validate_state_defs_for_write, validate_type_glyph,
 };
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoryQuery, WriteOps};
@@ -327,8 +327,16 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
     }
 
     /// Appends a story type.
-    pub fn add_type(&self, slug: &str, description: Option<&str>) -> Result<TypeDef, AppError> {
+    pub fn add_type(
+        &self,
+        slug: &str,
+        description: Option<&str>,
+        emoji: Option<&str>,
+    ) -> Result<TypeDef, AppError> {
         let project = self.ctx.project();
+        if let Some(glyph) = emoji {
+            validate_type_glyph(glyph)?;
+        }
         Ok(self.ctx.store().write(|tx| {
             // `none` and `default` are how the CLI *unsets* a story's type, so
             // a type by either name could be set and never cleared.
@@ -347,10 +355,52 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
             let type_def = TypeDef {
                 slug: slug.to_string(),
                 description: description.map(str::to_string),
+                emoji: emoji.map(str::to_string),
             };
             types.push(type_def.clone());
             tx.put_types(project, &types)?;
             Ok(type_def)
+        })?)
+    }
+
+    /// Applies `changes` to one type's description and/or emoji.
+    pub fn update_type(&self, slug: &str, changes: &TypeChanges) -> Result<TypeDef, AppError> {
+        let project = self.ctx.project();
+        if let FieldEdit::Set(glyph) = &changes.emoji {
+            validate_type_glyph(glyph)?;
+        }
+        Ok(self.ctx.store().write(|tx| {
+            let types = tx.types(project)?;
+            let current = types
+                .iter()
+                .find(|t| t.slug == slug)
+                .ok_or_else(|| AppError::NotFound(format!("type `{slug}` not found")))?
+                .clone();
+
+            if changes.is_empty() {
+                return Err(AppError::Usage(format!("nothing to change on type `{slug}`")).into());
+            }
+
+            let updated = TypeDef {
+                slug: current.slug.clone(),
+                description: changes
+                    .description
+                    .clone()
+                    .apply(current.description.clone()),
+                emoji: changes.emoji.clone().apply(current.emoji.clone()),
+            };
+            let next_types: Vec<TypeDef> = types
+                .iter()
+                .map(|t| {
+                    if t.slug == slug {
+                        updated.clone()
+                    } else {
+                        t.clone()
+                    }
+                })
+                .collect();
+            tx.put_types(project, &next_types)?;
+            Ok(updated)
         })?)
     }
 

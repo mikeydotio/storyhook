@@ -12,7 +12,7 @@ source: tests/golden_cli.rs
   {
     "argv": "story type list --json",
     "stdout": {
-      "message": "story — A user story or feature\nepic — A large initiative containing child stories\nbug — A defect or regression\nchore — Maintenance or infrastructure work\ntask — A discrete unit of work\nspike — A timeboxed investigation",
+      "message": "📙 normal — A user story or feature\n📚 epic — A large initiative containing child stories\n🐞 bug — A defect or regression\n🧺 chore — Maintenance or infrastructure work\nspike — A timeboxed investigation",
       "result": "ok"
     }
   }

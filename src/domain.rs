@@ -173,6 +173,24 @@ impl StateChanges {
     }
 }
 
+/// The parts of a [`TypeDef`] that can be edited in place.
+///
+/// `slug` is deliberately absent, for the same reason as [`StateChanges`]:
+/// every `StoryTypeSet` event ever written names the slug it set, so renaming
+/// one would orphan history rather than update it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TypeChanges {
+    pub description: FieldEdit<String>,
+    pub emoji: FieldEdit<String>,
+}
+
+impl TypeChanges {
+    /// Whether this would change nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.description.is_keep() && self.emoji.is_keep()
+    }
+}
+
 /// How many stories reference a state, split by where they live.
 ///
 /// Open stories can be migrated elsewhere; archived ones cannot, which is
@@ -195,6 +213,12 @@ pub struct TypeDef {
     pub slug: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// A short glyph (typically one emoji) the web dashboard renders next to
+    /// stories of this type. `None` for a type nobody has given one to yet —
+    /// the dashboard falls back to a generic tag glyph rather than treating
+    /// that the same as "untyped".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -586,6 +610,37 @@ pub fn validate_state_slug(slug: &str) -> Result<(), AppError> {
     }
     if slug.contains("--") {
         return invalid("it contains a double dash");
+    }
+    Ok(())
+}
+
+/// A type's glyph must be a short, printable, non-blank string.
+///
+/// This deliberately does not try to prove the value *is* an emoji — that
+/// needs Unicode tables this crate does not carry, and would refuse
+/// legitimate glyphs like `▲` or `§`. The bound of 12 `char`s is generous: a
+/// ZWJ family sequence (👨‍👩‍👧‍👦) is 7 `char`s, a flag tag sequence 7 more.
+/// It exists to keep the dashboard's badge from being handed a sentence.
+pub fn validate_type_glyph(glyph: &str) -> Result<(), AppError> {
+    let trimmed = glyph.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation(
+            "a type's emoji cannot be blank".to_string(),
+        ));
+    }
+    if let Some(bad) = trimmed
+        .chars()
+        .find(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err(AppError::Validation(format!(
+            "a type's emoji cannot contain `{}` (found in `{trimmed}`)",
+            bad.escape_debug()
+        )));
+    }
+    if trimmed.chars().count() > 12 {
+        return Err(AppError::Validation(format!(
+            "a type's emoji must be 12 characters or fewer, got `{trimmed}`"
+        )));
     }
     Ok(())
 }

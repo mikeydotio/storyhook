@@ -257,7 +257,8 @@ pub(super) fn state_map(
 pub(super) fn types(conn: &Connection, project: ProjectId) -> Result<Vec<TypeDef>, StoreError> {
     let mut stmt = sql(
         conn.prepare_cached(
-            "SELECT slug, description FROM project_types WHERE project_id = ?1 ORDER BY position",
+            "SELECT slug, description, emoji FROM project_types WHERE project_id = ?1 \
+             ORDER BY position",
         ),
         "preparing types",
     )?;
@@ -266,6 +267,7 @@ pub(super) fn types(conn: &Connection, project: ProjectId) -> Result<Vec<TypeDef
             Ok(TypeDef {
                 slug: row.get(0)?,
                 description: row.get(1)?,
+                emoji: row.get(2)?,
             })
         }),
         "reading types",

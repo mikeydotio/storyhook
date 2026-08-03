@@ -236,8 +236,8 @@ fn report_html_shows_type_breakdown() {
         .assert()
         .success();
 
-    // Create stories: 1 untyped (Default), 1 bug, 1 story
-    // "bug" and "story" are default types from init
+    // Create stories: 1 untyped (Default), 1 bug, 1 normal
+    // "bug" and "normal" are default types from init
     story(dir.path())
         .args(["new", "Untyped task"])
         .assert()
@@ -247,7 +247,7 @@ fn report_html_shows_type_breakdown() {
         .assert()
         .success();
     story(dir.path())
-        .args(["new", "Add feature", "--type", "story"])
+        .args(["new", "Add feature", "--type", "normal"])
         .assert()
         .success();
 
@@ -258,5 +258,5 @@ fn report_html_shows_type_breakdown() {
         .stdout(predicate::str::contains("Type Breakdown"))
         .stdout(predicate::str::contains("Default: 1"))
         .stdout(predicate::str::contains("bug: 1"))
-        .stdout(predicate::str::contains("story: 1"));
+        .stdout(predicate::str::contains("normal: 1"));
 }
