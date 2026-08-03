@@ -42,6 +42,15 @@ fn unindexed_base() -> PathBuf {
 /// A dedicated directory rather than the temp base itself, so the stale-fixture
 /// sweep has somewhere it can search exhaustively without ever looking at a
 /// path this harness did not create.
+///
+/// # It proves nothing above it claims a project (SH-121)
+///
+/// Once per test binary, and it is what makes AC-2 true of the *whole* harness
+/// rather than of the fixtures somebody remembered to check. Project resolution
+/// climbs from the working directory, so a pointer file anywhere above this
+/// root would be inherited by every fixture with none of its own — silently,
+/// and every one of them would go on passing against a tracker nobody named.
+/// The check costs three `stat` calls and turns that into a refusal to run.
 pub fn scratch_root() -> PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
@@ -51,6 +60,7 @@ pub fn scratch_root() -> PathBuf {
         });
         ensure_tmpdir_is_spotlight_exempt();
         sweep_stale_fixtures(&root);
+        crate::project::assert_selection_is_not_inherited(&root);
         root
     })
     .clone()

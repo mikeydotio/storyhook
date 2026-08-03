@@ -867,21 +867,7 @@ fn the_repairs_are_events_the_domain_understands() {
 // The command itself
 // ---------------------------------------------------------------------------
 
-/// Runs `git <args>` in `cwd` under `env`, asserting success.
-fn git(env: &storyhook_test_support::TestEnv, cwd: &std::path::Path, args: &[&str]) {
-    let mut cmd = std::process::Command::new("git");
-    cmd.current_dir(cwd);
-    env.apply(&mut cmd);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    let out = cmd.args(args).output().expect("running git");
-    assert!(
-        out.status.success(),
-        "`git {}` in {} failed: {}",
-        args.join(" "),
-        cwd.display(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
+use storyhook_test_support::git;
 
 #[test]
 fn migrating_from_a_linked_worktree_is_refused_and_the_main_checkout_is_named() {

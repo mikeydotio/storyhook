@@ -153,35 +153,95 @@ _INTEGRITY_SUMMARY=""
 # above) — this is purely about the worktree's base commit.
 REQUIRE_FRESH_BASE="${STORY_REQUIRE_FRESH_BASE:-}"
 
-# Project root every `story` call is anchored to. Set once, from repo_root(),
-# before the first story_cli use. Declared here so `set -u` is satisfied even
-# on paths that fail before it is assigned.
+# Directory the WORKTREE verbs run `story` from: the main checkout, set from
+# repo_root() by dispatch, capture and complete, which need one anyway for the
+# worktree bookkeeping they do. Empty for every other verb — those run `story`
+# where the caller stands and let it resolve. Declared here so `set -u` is
+# satisfied on paths that fail before it is assigned.
 PROJECT_DIR=""
+
+# Project named by `--project <slug>` on story.sh's own command line, forwarded
+# verbatim to every `story` call. Empty means "let the CLI decide", which is the
+# ordinary case.
+PROJECT_SLUG=""
 
 require_story() {
   command -v "$STORY" >/dev/null 2>&1 \
     || fail "story CLI not found — build/install it from mikeydotio/storyhook (see story --help)."
 }
 
-# story_cli <args...> — run the story CLI anchored at $PROJECT_DIR (SH-46).
+# story_cli <args...> — run the story CLI for the project this invocation is
+# about.
 #
-# The half of SH-46 that made this dangerous is gone. Story data lives in one
-# store outside the repository, so a `story` call from a linked worktree can no
-# longer succeed against a *different* tracker — every checkout of a repository
-# resolves to the same project. The CLI also walks up from its working
-# directory now, so a plain subdirectory resolves on its own.
+# **It no longer decides which project that is.** Deciding is the CLI's job now
+# (SH-116, SH-119, SH-151): `--project`, `$STORYHOOK_PROJECT`, the nearest
+# committed pointer file at or above the working directory, then the
+# repository's registered origin — and a refusal naming all three if none
+# answer. Every one of those is strictly better informed than a shell walk, and
+# two of them a shell cannot perform at all: only storyhook can look up a
+# registered origin.
 #
-# The wrapper still earns its place, for the one reason left: the caller may
-# not be inside the repository at all. `/story view` invoked from `$HOME`, or
-# from a sibling checkout, would resolve nothing or — worse — resolve a
-# *neighbouring* project that happens to be an ancestor. Anchoring at
-# $PROJECT_DIR makes which project these verbs act on a property of the
-# dispatch rather than of wherever the user's shell happened to be.
+# What this used to do was `cd` to repo_root() first, and that was not merely
+# redundant — it OVERRODE the answer. In a monorepo with a project at the
+# repository root and another in `service-b`, `story.sh view` run from
+# `service-b` reported `story not found` and `story.sh list` listed the ROOT
+# project's stories, silently, while the CLI standing in the same directory
+# answered correctly. SH-151 made a sub-project own its own identity; anchoring
+# threw that away again (SH-121).
 #
-# Runs in a subshell so the caller's CWD is never mutated (several later steps
-# -- gitignore hygiene, `git worktree add` -- use paths relative to it).
+# So $PROJECT_DIR is set only by the verbs that genuinely need a directory —
+# dispatch, capture, complete — and it means "the main checkout", not "the
+# project". When it is empty this runs where the caller stands.
+#
+# Runs in a subshell when it does cd, so the caller's CWD is never mutated
+# (several later steps -- gitignore hygiene, `git worktree add` -- use paths
+# relative to it).
 story_cli() {
-  ( CDPATH= cd -- "$PROJECT_DIR" && "$STORY" "$@" )
+  if [ -n "$PROJECT_SLUG" ]; then
+    set -- --project "$PROJECT_SLUG" "$@"
+  fi
+  if [ -n "$PROJECT_DIR" ]; then
+    ( CDPATH= cd -- "$PROJECT_DIR" && "$STORY" "$@" )
+  else
+    "$STORY" "$@"
+  fi
+}
+
+# _load_ready_stories — `story list --ready --json` into $_READY_JSON, or a hard
+# failure naming why it could not be asked.
+#
+# **Never a default** (SH-163). Both callers used to write
+# `|| ready_json='{"stories":[]}'`, which cannot tell "this project has nothing
+# ready" from "storyhook cannot tell which project this is" — so `story.sh list`
+# outside a repository answered `{"ok": true, "count": 0}`, "No ready stories to
+# pick up", over a CLI that had exited 3 and named three ways out. For the tool
+# whose whole job is handing an agent its next task, a refusal rendered as "there
+# is no work" is the worst shape available.
+#
+# Under `--json` the CLI reports a refusal as a document on **stdout** —
+# `{"result":"error","error":…,"exit_code":3}` — which is what cmd_view already
+# reads. Stderr is captured separately and consulted second rather than merged,
+# so a stray warning can never end up concatenated with the payload on the
+# success path, and so a failure mode that does print to stderr still produces a
+# message instead of a bare exit code.
+#
+# Sets a global rather than echoing, for the reason on _project_integrity: a
+# caller using $(...) would run `fail` in a subshell, so the process would carry
+# on with the refusal JSON captured in a variable instead of printed.
+_READY_JSON=""
+_load_ready_stories() {
+  local err rc=0 diag
+  err=$(mktemp "${TMPDIR:-/tmp}/story-ready.XXXXXX")
+  _READY_JSON=$(story_cli list --ready --json 2>"$err") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    diag=$(printf '%s' "$_READY_JSON" | jq -r '.error // empty' 2>/dev/null || printf '')
+    [ -n "$diag" ] || diag=$(jq -r '.error // empty' <"$err" 2>/dev/null || printf '')
+    [ -n "$diag" ] || diag=$(head -c 2000 <"$err")
+    rm -f "$err"
+    _READY_JSON=""
+    fail "cannot list ready stories: ${diag:-\`story list --ready\` exited $rc}"
+  fi
+  rm -f "$err"
 }
 
 # valid_story_id <id> — a story id is interpolated verbatim into worktree
@@ -198,6 +258,12 @@ valid_story_id() {
 # repo (relative, ".git", only when CWD already IS the main worktree's own
 # root), so its dirname — resolved to an absolute path via a real `cd` in a
 # subshell, never the caller's shell — is stable no matter where CWD is.
+#
+# **This answers "where does worktree bookkeeping happen?", never "which
+# project is this?"** Its three callers all create, name or remove a git
+# worktree, and the shape they need is a repository. Project selection belongs
+# to the CLI (see story_cli), which knows things a shell walk cannot — a
+# registered origin among them.
 #
 # `dir` MUST use this instead of `git rev-parse --show-toplevel`:
 # --show-toplevel is CWD-relative, so from inside one of THIS script's own
@@ -318,7 +384,10 @@ cmd_dispatch() {
   # ask. Ground-truth membership check against the CLI's own `is_ready()`,
   # via the exact command every interactive skill already relies on.
   local ready_json is_ready_flag
-  ready_json=$(story_cli list --ready --json 2>/dev/null) || ready_json='{"stories":[]}'
+  # Called plainly, NOT via $(...): _load_ready_stories may `fail`, and a
+  # command substitution would run that in a subshell.
+  _load_ready_stories
+  ready_json="$_READY_JSON"
   is_ready_flag=$(printf '%s' "$ready_json" | jq --arg id "$id" '([.stories[]?.story.id // empty] | index($id)) != null' 2>/dev/null || printf 'false')
   if [ "$is_ready_flag" != "true" ]; then
     local reason
@@ -573,23 +642,13 @@ cmd_dispatch() {
 # list row, `display` on every result) so the skill's List->Pick and
 # View + Offer flows are a direct port rather than a re-derivation.
 
-# project_root — the directory every `story` call is anchored to.
-#
-# Prefers repo_root() (the MAIN worktree), so every verb agrees on one
-# directory and `/story do`'s worktree bookkeeping and `/story view`'s reads
-# are talking about the same checkout. Falls back to walking up for the
-# committed pointer file, so the read verbs still work in a storyhook project
-# that is not a git repository at all.
-project_root() {
-  local d
-  if d=$(repo_root 2>/dev/null) && [ -n "$d" ]; then printf '%s' "$d"; return 0; fi
-  d=$(pwd -P)
-  while [ "$d" != "/" ] && [ -n "$d" ]; do
-    if [ -f "$d/.storyhook.toml" ]; then printf '%s' "$d"; return 0; fi
-    d=$(dirname "$d")
-  done
-  pwd -P
-}
+# `project_root` used to live here: repo_root(), else a walk up for the
+# committed pointer file, else the CWD. Every branch of it has been overtaken.
+# The CLI performs the pointer walk itself and knows two things this one never
+# could — `$STORYHOOK_PROJECT`, and whether a repository's origin is registered
+# — while the repo_root() branch actively overrode a monorepo sub-project's own
+# identity (SH-121). Deleted rather than narrowed: a guard that decides nothing
+# is a guard whose next reader has to work out that it decides nothing.
 
 # story_state_list — `story state list`, or empty if it cannot be asked.
 #
@@ -598,9 +657,13 @@ project_root() {
 # catalog is asked of the CLI — which was always the better source, since the
 # rendering is the contract and the file was an implementation detail.
 #
+# Through story_cli, so it obeys `--project` and the same working directory as
+# every other read; it used to call `story` directly with its own `cd`, which
+# meant a `--project` this script was given could not reach it.
+#
 # Lines look like: `in-progress (OPEN, active) — 2 open — some description`.
 story_state_list() {
-  (cd "$PROJECT_DIR" 2>/dev/null && story state list 2>/dev/null) || true
+  story_cli state list 2>/dev/null || true
 }
 
 # story_active_state — the slug meaning "claimed / being worked": the state
@@ -621,7 +684,6 @@ cmd_view() {
   [ "$#" -eq 0 ] || fail "usage: story.sh view <story-id>"
   valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  PROJECT_DIR=$(project_root)
   require_story
 
   local show_json result title state super
@@ -649,7 +711,6 @@ cmd_view() {
 
 cmd_list() {
   [ "$#" -eq 0 ] || fail "usage: story.sh list"
-  PROJECT_DIR=$(project_root)
   require_story
 
   # `story list --ready` is the ground truth the dispatch gate already uses.
@@ -660,8 +721,13 @@ cmd_list() {
   #   - parents are dropped, matching `story next`'s has_children filter,
   #     since dispatching an epic is never what the user meant.
   local ready_json active
+  # Ready stories first, and plainly: it may `fail`, so it cannot be called
+  # through $(...). Asking before `story_active_state` is deliberate — that one
+  # degrades quietly to `in-progress` when it cannot be answered, so it would
+  # otherwise hide the very refusal this has to report.
+  _load_ready_stories
+  ready_json="$_READY_JSON"
   active=$(story_active_state)
-  ready_json=$(story_cli list --ready --json 2>/dev/null) || ready_json='{"stories":[]}'
 
   printf '%s' "$ready_json" | jq --arg active "$active" '
     [ .stories[]?
@@ -716,7 +782,6 @@ cmd_create() {
     desc=$(cat "$desc_file")
   fi
 
-  PROJECT_DIR=$(project_root)
   require_story
 
   local -a args=(new "$title")
@@ -826,7 +891,6 @@ _project_integrity() {
 cmd_doctor() {
   [ "$#" -eq 0 ] || fail "usage: story.sh doctor"
 
-  PROJECT_DIR=$(project_root)
   require_story
 
   if [ -z "$DRY_RUN" ]; then
@@ -1218,6 +1282,32 @@ cmd_complete() {
 }
 
 # ---- router -----------------------------------------------------------------
+
+# `--project <slug>` is story.sh's own global option, stripped here and
+# forwarded to every `story` call by story_cli. It is what makes the read verbs
+# usable from outside a repository, which is the shape a dashboard-invoked or
+# cron-invoked caller has (SH-121, AC-3).
+#
+# Accepted before the verb only. A trailing one would have to be told apart from
+# a story title or a `create --description` value, and this parser has no
+# grammar for that; the CLI's own `--project` is still available to anyone who
+# needs it mid-command.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --project)
+      PROJECT_SLUG="${2:-}"
+      [ -n "$PROJECT_SLUG" ] || fail "--project needs a project slug — \`story project list\` shows them."
+      shift 2
+      ;;
+    --project=*)
+      PROJECT_SLUG="${1#--project=}"
+      [ -n "$PROJECT_SLUG" ] || fail "--project= was given no slug — \`story project list\` shows them."
+      shift
+      ;;
+    *) break ;;
+  esac
+done
+
 case "${1:-}" in
   dispatch) shift; cmd_dispatch "$@" ;;
   complete) shift; cmd_complete "$@" ;;

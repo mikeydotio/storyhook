@@ -114,11 +114,17 @@ stop it cannot resolve). See `bin/story.sh`'s `AUTO_PROMPT_TPL` for the exact ch
 - **`do`, `capture`, and `doctor` require tmux** (the helper hard-fails otherwise, unless
   `STORY_TARGET_SESSION` is set for a non-interactive caller); all verbs need the `story` CLI
   on `PATH`.
-- **Every verb is anchored to the main worktree.** A dispatched worktree and the main
-  checkout are one project — story data lives in a single store, not in the repository — so
-  this is now about the *directory* the helper runs `story` in rather than about which
-  tracker it reads. It keeps `view`/`list`/`complete` working when they are invoked from
-  outside the repository entirely.
+- **The CLI decides which project a verb acts on, not the helper.** `view`, `list`, `create`
+  and `doctor` run `story` where you stand and let it resolve: `--project`, then
+  `$STORYHOOK_PROJECT`, then the nearest committed `.storyhook.toml` at or above the working
+  directory, then the repository's registered origin — and a refusal naming all three if none
+  answer. A subdirectory and a dispatched worktree therefore both work. `do`, `capture` and
+  `complete` still anchor at the main worktree, because they create, name and remove git
+  worktrees; that is about a *directory*, never about which project you mean.
+- **`/story --project <slug> …` works from anywhere**, including outside a repository — the
+  shape a scheduled or dashboard-invoked caller has. It is accepted before the verb
+  (`story.sh --project acme list`) and forwarded to every `story` call. `do` still needs a
+  repository, because a worktree has to be created somewhere.
 - **GitHub-adjacent conventions from `/issue` don't apply here** — storyhook stories aren't
   GitHub issues. There's no label to apply and no `Closes #N` convention; the claim marker is
   the story's own `state`, and the handoff prompt tells the child session to reference the

@@ -10,23 +10,29 @@
 //! usage always makes the project unambiguous, and the failure mode is a
 //! refusal rather than a guess.
 //!
-//! # The legacy walk is still in the order, and that is deliberate
+//! # The pointer file is still in the order, and that is deliberate
 //!
-//! Between the environment variable and the origin lookup sits the pointer-file
-//! and recorded-path walk this design replaces. It is not deleted here — that is
-//! SH-119 — and it is not demoted below the origin lookup either, for a measured
-//! reason: **no project in the store and no fixture in this suite has a
-//! registered origin**, so consulting one first would spend a `git` subprocess
-//! (14 ms, against an 11.8 ms whole-command baseline) to learn nothing, on every
-//! command on the machine. Ordering it last means the subprocess is paid only by
-//! a command that is about to refuse anyway, where it buys the refusal its
-//! `origin` line.
+//! Between the environment variable and the origin lookup sits the committed
+//! pointer file, read at the working directory and then at each ancestor up to
+//! the repository's top level. SH-119 deleted the *recorded-path* half of that
+//! walk with the index behind it; the pointer half stayed, and it is not
+//! demoted below the origin lookup either, for a measured reason: a `git`
+//! subprocess costs 14 ms against an 11.8 ms whole-command baseline, so
+//! consulting the origin first would double every command on the machine to
+//! learn nothing in the overwhelmingly common case. Ordering it last means the
+//! subprocess is paid only by a command that is about to refuse anyway, where
+//! it buys the refusal its `origin` line.
 //!
-//! The cost of that ordering is named rather than hidden: while both exist, a
-//! pointer file outranks a registered origin when the two disagree. That state
-//! means one checkout claims two projects, which is a defect rather than a
-//! preference, so `story doctor` reports it — where reporting is free — instead
-//! of the resolver paying for it on every invocation.
+//! Overwhelmingly common is measured, not assumed. Tracing which step answered
+//! each of the 2,347 project resolutions a full gate performs: 2,224 by a
+//! pointer file in the working directory itself, 5 by a registered origin
+//! (SH-121).
+//!
+//! The cost of that ordering is named rather than hidden: a pointer file
+//! outranks a registered origin when the two disagree. That state means one
+//! checkout claims two projects, which is a defect rather than a preference, so
+//! `story doctor` reports it — where reporting is free — instead of the resolver
+//! paying for it on every invocation.
 
 use std::path::Path;
 use std::process::Command;
@@ -59,37 +65,15 @@ fn nowhere() -> tempfile::TempDir {
     scratch_dir_named("nowhere-")
 }
 
-/// Clones `origin` into a fresh directory.
-///
-/// The clone is what makes AC-2 testable at all. `ProjectBuilder` pushes to the
-/// bare origin **before** running `story project new`, so the pointer file is
-/// written after the push and never travels — a clone therefore carries no
-/// `.storyhook.toml` and has no `project_paths` row, and the *only* thing that
-/// can resolve it is its origin.
-fn clone_of(env: &TestEnv, origin: &Path) -> tempfile::TempDir {
-    let dir = scratch_dir_named("clone-");
-    let mut cmd = Command::new("git");
-    env.apply(&mut cmd);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    cmd.args([
-        "clone",
-        "-q",
-        &origin.to_string_lossy(),
-        &dir.path().to_string_lossy(),
-    ]);
-    let out = cmd.output().expect("running git clone");
-    assert!(
-        out.status.success(),
-        "cloning the fixture origin: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        !dir.path().join(".storyhook.toml").exists(),
-        "fixture: a clone must not carry a pointer file, or this test proves nothing \
-         about the origin lookup"
-    );
-    dir
-}
+// The clone is what makes AC-2 testable at all, and it is
+// `Project::second_checkout` — the harness owns it now (SH-121), because
+// `worktree_truth.rs` needs the same shape and a fixture defined twice is a
+// fixture that can come to disagree with itself. `ProjectBuilder` pushes to the
+// bare origin **before** running `story project new`, so the pointer file is
+// written after the push and never travels: a clone carries no
+// `.storyhook.toml`, nothing above it does either, and the *only* thing that can
+// resolve it is its origin. The harness asserts both of those rather than
+// leaving them to each caller.
 
 /// **AC-1.** A command in an unregistered directory refuses, and the refusal
 /// names *both* ways out.
@@ -125,8 +109,9 @@ fn an_unregistered_directory_refuses_and_names_both_ways_out() {
 
 /// **AC-2.** A checkout whose origin is registered resolves with no flag.
 ///
-/// The clone has no pointer file and no recorded path, so the walk cannot answer
-/// it. If this passes, the origin lookup is what resolved it.
+/// The clone carries no pointer file and nothing above it does either — which
+/// `second_checkout` asserts rather than assumes — so the walk cannot answer it.
+/// If this passes, the origin lookup is what resolved it.
 #[test]
 fn a_registered_origin_resolves_with_no_flag() {
     let env = TestEnv::isolated();
@@ -135,8 +120,7 @@ fn a_registered_origin_resolves_with_no_flag() {
         .with_local_origin()
         .seed_story("seeded")
         .build();
-    let origin = project.origin_path().expect("the fixture has an origin");
-    let clone = clone_of(&env, origin);
+    let clone = project.second_checkout();
 
     let out = env
         .story(clone.path())
@@ -170,8 +154,7 @@ fn the_flag_beats_the_environment_beats_the_origin() {
     let by_env = env.project().seed_story("environment-project").build();
     let by_flag = env.project().seed_story("flag-project").build();
 
-    let origin = by_origin.origin_path().expect("an origin");
-    let clone = clone_of(&env, origin);
+    let clone = by_origin.second_checkout();
     let env_slug = slug_at(&env, by_env.path(), by_env.path());
     let flag_slug = slug_at(&env, by_flag.path(), by_flag.path());
 
@@ -349,8 +332,8 @@ fn identity_ignores_a_machine_local_insteadof_rewrite() {
         .with_local_origin()
         .seed_story("still the same project")
         .build();
-    let origin = project.origin_path().expect("an origin");
-    let clone = clone_of(&env, origin);
+    let origin = project.origin_path().expect("an origin").to_path_buf();
+    let clone = project.second_checkout();
 
     // Rewrite the origin's spelling for every command run in the clone. The
     // recorded url is unchanged; only what `git remote get-url` reports moves.

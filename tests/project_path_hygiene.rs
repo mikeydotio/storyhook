@@ -28,6 +28,8 @@
 
 use std::path::{Path, PathBuf};
 
+use storyhook_test_support::assert_selection_is_not_inherited;
+
 /// A directory under `target/`, which is not a temporary directory.
 fn real_dir(label: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(label);
@@ -65,6 +67,11 @@ fn stdout(out: &std::process::Output) -> String {
 /// directory — so a command run from a bare directory under `target/` resolves
 /// storyhook's own pointer file and reports on storyhook. Every command below
 /// therefore runs from a directory with a pointer file of its own.
+///
+/// That sentence used to be the whole defence, and a convention is one forgotten
+/// `project new` from silence — the failure would be a green test asserting
+/// against the developer's own tracker. [`assert_selection_is_not_inherited`]
+/// now checks it (SH-121).
 struct Fixture {
     data_home: PathBuf,
     workdir: PathBuf,
@@ -84,6 +91,7 @@ fn fixture(label: &str) -> Fixture {
             dir.display(),
             String::from_utf8_lossy(&out.stderr)
         );
+        assert_selection_is_not_inherited(dir);
     }
     Fixture {
         data_home,
