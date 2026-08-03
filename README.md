@@ -274,6 +274,38 @@ story <id> reopen
 story <a> <relationship> <b> [--remove]
 ```
 
+### Story ids
+
+Wherever an id is expected, both forms name the same story — the canonical
+`SH-5`, and the bare number `5` on its own:
+
+```bash
+story show 5           # the same story as `story show SH-5`
+story move 5 done
+story relate 5 blocks SH-7   # mixed, and fine
+```
+
+The prefix lives only inside a canonical id. It is how an id is *rendered*, not
+how a story is *addressed*: a bare number is read against whichever project the
+command is acting on, so `5` means nothing until that is settled. Run one with
+no project and you get the same refusal every other command gives — which names
+the ways out — rather than a story that does not exist.
+
+An id carrying a **different** project's prefix is refused rather than resolved.
+`--project` decides which project you are in, and an id never overrides it:
+
+```console
+$ story --project storyhook show CAL-1
+error: story id `CAL-1` does not belong to project `storyhook`.
+
+  id     CAL-1 - prefix `CAL`, held by project `scad-caliper`
+  scope  storyhook - prefix `SH`
+
+Nothing has been read or written. Re-run it naming the story's own project:
+
+  story --project scad-caliper <command>
+```
+
 ## States
 
 - Every project state maps to exactly one superstate: `OPEN` or `CLOSED`.
