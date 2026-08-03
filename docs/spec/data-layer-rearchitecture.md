@@ -570,3 +570,45 @@ door.
 
 Design of record for the decision: `.council/sh114-daemon-only-shape/DECISION.md`, clauses
 D1–D8, unanimous.
+
+### `project_paths` was not the answer to "which project is this?" (SH-119, 2026-08-03)
+
+The schema summary above lists `project_paths` — "a project has MANY checkouts — this kills
+SH-46" — and "What dies" records `registry.rs` folding into `projects` + `project_paths`. Both
+are reversed. The table, its unique index, `PathKind`, `ProjectPathRecord`, `project_by_path`,
+`touch_project_path`, `forget_project_path` and `adopt_legacy_registry` are all deleted by
+migration 8, and the upward walk that read them reads only the committed pointer file now.
+
+**The half that was right is kept.** SH-46 was two defects wearing one number: a worktree
+resolving to a *different tracker*, and a worktree's ids colliding with its main checkout's.
+The second is killed by there being one store, which is untouched here. The first is killed by
+the pointer file being **committed** — a worktree checks out the same file, so it names the
+same project — which is a property of the repository rather than of an index this machine
+keeps.
+
+**Why the index had to go rather than merely stop being consulted.** It is a fact about one
+machine's filesystem, and the epic's stated invariant is that nothing about the filesystem is
+ever *required* to answer which project a directory belongs to. Left in place it kept two
+answers alive: a checkout could carry a pointer naming one project and a row naming another,
+and the resolver silently preferred one — SH-151's defect, which measured a real sub-project
+in a monorepo answering for its sibling.
+
+**What answers instead**, in order: `--project <slug>`, `$STORYHOOK_PROJECT`, the nearest
+committed `.storyhook.toml` at or above the working directory, and the repository's registered
+git origin. The climb stops at the first ancestor holding a `.git` **directory**, so a
+directory inside one repository never inherits an identity from outside it; a linked worktree
+holds a `.git` *file*, which is why it does not stop the climb and a worktree still resolves
+through its main checkout.
+
+**What it cost, and what pays for it.** A project with no committed pointer and no registered
+origin is unreachable from its own directory. `story doctor` reports every project whose
+checkout owns an origin nobody registered, and `--fix` records it; anything the checkout does
+not own is reported and never guessed at. That is SH-151's R4, which was recorded as a
+blocking acceptance criterion on SH-119 rather than assumed.
+
+`projects.checkout_path` (migration 7) is **not** a replacement. Nothing resolves by it, two
+projects may share one, and it answers a different question: where a project's repo-side work
+runs.
+
+Design of record for the decision: `.council/sh151-origin-ownership-and-resolution/DECISION.md`,
+clauses D2 and R1–R4.

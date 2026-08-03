@@ -86,7 +86,7 @@ pub fn default_types() -> Vec<TypeDef> {
     ]
 }
 
-/// Creates a project with the default catalog, and one registered checkout.
+/// Creates a project with the default catalog, and one linked checkout.
 pub fn seed_project(store: &SqliteStore, slug: &str, prefix: &str) -> ProjectId {
     store
         .write(|tx| {
@@ -97,11 +97,7 @@ pub fn seed_project(store: &SqliteStore, slug: &str, prefix: &str) -> ProjectId 
                 prefix: prefix.to_string(),
                 created_at: "2026-01-01T00:00:00Z".into(),
             })?;
-            tx.touch_project_path(
-                project,
-                Path::new(&format!("/checkouts/{slug}")),
-                storyhook::store::PathKind::Main,
-            )?;
+            tx.set_checkout_path(project, Some(Path::new(&format!("/checkouts/{slug}"))))?;
             tx.put_states(project, &default_states())?;
             tx.put_types(project, &default_types())?;
             Ok(project)

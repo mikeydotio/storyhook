@@ -33,7 +33,7 @@ use crate::store::{
     WriteOps, partition_known,
 };
 
-use super::project::{DEFAULT_PREFIX, path_kind, unique_slug};
+use super::project::{DEFAULT_PREFIX, ProjectPointer, read_pointer, unique_slug, write_pointer};
 use super::state_set::write_states_repairing;
 use super::{Clock, Ctx, append_and_fold, project_prefix};
 
@@ -253,6 +253,18 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
 /// that and should not want to — a restore that half-overwrites a project is
 /// how a tracker loses history. Importing into a project that already has
 /// stories is refused here, with a message that names the project.
+///
+/// # What identifies the directory afterwards
+///
+/// The committed [pointer file](crate::service::project::ProjectPointer), written
+/// by this function, exactly as `story migrate` writes one for the tree it moves.
+/// An export document carries no uuid — it is a document about stories, not about
+/// which project row they came from — so the pointer names the one minted here.
+///
+/// Without it an imported checkout would be identified by nothing at all once
+/// SH-119 deleted the recorded-path index: `story list` in the directory the
+/// restore landed in would refuse, and a second `import-project` there would mint
+/// a *second* project rather than meeting the refusal above.
 pub fn import_project<S: Store>(
     store: &S,
     root: &std::path::Path,
@@ -265,9 +277,17 @@ pub fn import_project<S: Store>(
         .clone()
         .unwrap_or_else(|| DEFAULT_PREFIX.to_string());
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // Read before the transaction opens, and written after it commits: a
+    // filesystem touch inside `BEGIN IMMEDIATE` holds the store's only write
+    // lock for as long as the disk takes.
+    let existing_pointer = read_pointer(&root)?;
 
-    store.write(|tx| {
-        let project = match tx.project_by_path(&root)? {
+    let uuid = store.write(|tx| {
+        let existing = match &existing_pointer {
+            Some(pointer) => tx.project_by_uuid(&pointer.uuid)?,
+            None => None,
+        };
+        let (project, uuid) = match existing {
             Some(existing) => {
                 if !tx.stories(existing.id, &StoryQuery::all())?.is_empty() {
                     return Err(AppError::Validation(format!(
@@ -277,23 +297,24 @@ pub fn import_project<S: Store>(
                     ))
                     .into());
                 }
-                tx.touch_project_path(existing.id, &root, path_kind(&root))?;
-                existing.id
+                super::project::adopt_checkout(tx, existing.id, &root)?;
+                (existing.id, existing.uuid)
             }
             None => {
                 let name = root
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "project".to_string());
+                let uuid = uuid::Uuid::new_v4().to_string();
                 let project = tx.create_project(&NewProject {
-                    uuid: uuid::Uuid::new_v4().to_string(),
+                    uuid: uuid.clone(),
                     slug: unique_slug(&*tx, &name)?,
                     name,
                     prefix: prefix.clone(),
                     created_at: now.clone(),
                 })?;
-                tx.touch_project_path(project, &root, path_kind(&root))?;
-                project
+                super::project::adopt_checkout(tx, project, &root)?;
+                (project, uuid)
             }
         };
 
@@ -341,8 +362,16 @@ pub fn import_project<S: Store>(
             tx.put_story(project, &snapshot, head)?;
         }
         tx.reserve_story_no(project, highest)?;
-        Ok(())
+        Ok(uuid)
     })?;
+
+    // Never overwritten, for the reason `story project new` never overwrites
+    // one: the file is the user's the moment it carries a `[plugin]` or
+    // `[hooks]` table, and the identity it already names is the one just
+    // imported into.
+    if existing_pointer.is_none() {
+        write_pointer(&root, &ProjectPointer::new(uuid, prefix.clone()))?;
+    }
 
     Ok(export.stories.len())
 }

@@ -5,21 +5,25 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
 
-/// Writes `body` — one or more `[hooks.*]` tables — into the checkout's
+/// Appends `body` — one or more `[hooks.*]` tables — to the checkout's
 /// committed pointer file.
 ///
 /// This is where event-hook configuration lives after the flip: a table in
 /// `.storyhook.toml` rather than a file inside a directory that is about to
-/// stop existing. It is read from there on both storage models, so a test
-/// written this way proves the same thing before and after.
+/// stop existing.
+///
+/// **Appended, not written over.** It used to replace the whole file with a
+/// fabricated identity, which worked only because the store also kept an index
+/// of directories to fall back on; with that index gone (SH-119) a pointer
+/// naming a project the store does not have makes the checkout unresolvable,
+/// which is the correct refusal and useless as a hook fixture. Appending is
+/// also what a user does: `story project new` writes the identity, and the
+/// `[hooks]` tables are hand-added underneath it.
 fn write_hooks(dir: &std::path::Path, body: &str) {
-    fs::write(
-        dir.join(".storyhook.toml"),
-        format!(
-            "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\n{body}"
-        ),
-    )
-    .unwrap();
+    let path = dir.join(".storyhook.toml");
+    let identity = fs::read_to_string(&path)
+        .expect("`story project new` must have written the pointer file this appends to");
+    fs::write(&path, format!("{identity}\n{body}")).unwrap();
 }
 
 /// Writes the *legacy* `.storyhook/hooks.toml`, creating its directory.
@@ -262,15 +266,13 @@ fn hooks_can_be_configured_in_the_pointer_file() {
     init_project(dir);
 
     let output_file = dir.join("hook_output.json");
-    fs::write(
-        dir.join(".storyhook.toml"),
-        format!(
-            "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\
-             \n[hooks.on_create]\ncommand = \"cat > {}\"\n",
+    write_hooks(
+        dir,
+        &format!(
+            "[hooks.on_create]\ncommand = \"cat > {}\"\n",
             output_file.display()
         ),
-    )
-    .unwrap();
+    );
 
     Command::cargo_bin("story")
         .unwrap()
@@ -300,15 +302,13 @@ fn the_pointers_hooks_table_wins_over_the_legacy_file() {
         dir,
         &format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
     );
-    fs::write(
-        dir.join(".storyhook.toml"),
-        format!(
-            "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n\
-             \n[hooks.on_create]\ncommand = \"cat > {}\"\n",
+    write_hooks(
+        dir,
+        &format!(
+            "[hooks.on_create]\ncommand = \"cat > {}\"\n",
             pointed.display()
         ),
-    )
-    .unwrap();
+    );
 
     Command::cargo_bin("story")
         .unwrap()
@@ -335,11 +335,8 @@ fn a_pointer_with_no_hooks_table_leaves_the_legacy_file_in_charge() {
         dir,
         &format!("[on_create]\ncommand = \"cat > {}\"\n", legacy.display()),
     );
-    fs::write(
-        dir.join(".storyhook.toml"),
-        "schema = 1\nuuid = \"11111111-1111-4111-8111-111111111111\"\nprefix = \"SH\"\n",
-    )
-    .unwrap();
+    // No `[hooks]` table: the pointer file `story project new` wrote carries
+    // identity and nothing else, which is exactly the premise here.
 
     Command::cargo_bin("story")
         .unwrap()

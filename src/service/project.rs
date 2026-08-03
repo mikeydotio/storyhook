@@ -19,10 +19,9 @@
 //! * `AGENTS.md`, generated for agent discoverability when the repository has
 //!   none — the same decision the legacy path made, replicated here.
 //! * the pointer file, the repository's copy of *which* project this checkout
-//!   belongs to. Writing it is a parameter ([`InitOptions::pointer`]) rather
-//!   than a rule, because pre-flip the legacy tree is still the identity of
-//!   record and a stray pointer file would be a second, disagreeing answer.
-//!   The wave that flips the default turns it on.
+//!   belongs to. Every attaching run writes it, or adopts the one already
+//!   there, because since SH-119 it is the only thing that identifies a
+//!   checkout: the store holds no index of directories to look one up in.
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +31,7 @@ use crate::domain::{StateDef, SuperState, TypeDef};
 use crate::error::AppError;
 use crate::output::DeletePlan;
 use crate::store::{
-    DeletedProject, NewProject, PathKind, ProjectId, ProjectRecord, ReadOps, Store, WriteOps,
+    DeletedProject, NewProject, ProjectId, ProjectRecord, ReadOps, Store, WriteOps,
 };
 
 use super::Clock;
@@ -673,19 +672,15 @@ pub(super) fn adopt_checkout(
 
 /// Forgets the recorded checkout, if it is the directory being forgotten.
 ///
-/// **The other half of [`adopt_checkout`], and it exists because the first half
-/// alone is a leak.** Two facts are recorded about one directory — a
-/// `project_paths` row, which resolution reads, and `checkout_path`, which says
-/// where the project's repo-side work runs — and a caller that forgets one and
-/// not the other leaves a project claiming to have a checkout at a path that no
-/// longer exists. `doctor --fix` did exactly that the first time this was run:
-/// it deregistered the orphaned registration and `story project list` went on
-/// printing the vanished directory on the line below.
+/// **The other half of [`adopt_checkout`].** A project claiming to have a
+/// checkout at a path that no longer exists is a row in `story project list`
+/// and a card on the dashboard, indistinguishable from a real repository until
+/// somebody clicks it — so `doctor --fix` clears it, through here.
 ///
 /// Conditional on the paths matching, deliberately. A project may have been
-/// pointed at some *other* checkout by `story project link checkout`, and
-/// forgetting a stale resolution row must not silently discard a link somebody
-/// made on purpose.
+/// pointed at some *other* checkout by `story project link checkout` between
+/// the report and the repair, and forgetting a stale directory must not
+/// silently discard a link somebody made on purpose.
 pub(super) fn forget_checkout(
     tx: &mut impl WriteOps,
     project: ProjectId,
@@ -848,13 +843,6 @@ pub struct InitOptions {
     /// rather than a surprising one: `--no-attach` says the project is not
     /// identified by anything on this machine.
     pub attach: bool,
-    /// Write the committed [pointer file](ProjectPointer).
-    ///
-    /// Off by default and left off by the dispatcher: until the store becomes
-    /// the identity of record, a pointer file in a repository that is still
-    /// tracked by `.storyhook/` would be a second answer to "which project is
-    /// this", and the two would disagree the moment either moved.
-    pub pointer: bool,
 }
 
 impl Default for InitOptions {
@@ -863,7 +851,6 @@ impl Default for InitOptions {
             prefix: None,
             name: None,
             agents_md: true,
-            pointer: false,
             attach: true,
         }
     }
@@ -987,10 +974,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
         // uninitialized one, and treating it as such is how a user ends up with
         // an empty project beside their real data. `story migrate` is the
         // command for it, and this says so before anything is written.
-        if existing_pointer.is_none()
-            && self.store.read(|tx| tx.project_by_path(&root))?.is_none()
-            && root.join(".storyhook/project.toml").is_file()
-        {
+        if existing_pointer.is_none() && root.join(".storyhook/project.toml").is_file() {
             return Err(unmigrated_error(&root));
         }
 
@@ -1022,22 +1006,17 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 root.display()
             )));
         }
-        // The council's D3 also asked for a refusal here — a run that leaves the
+        // SH-151's council asked for a refusal here — a run that would leave the
         // project identified by *neither* an owned origin nor a pointer file.
-        // It is not built, because that arrangement does not exist yet: an
-        // attaching run always writes a `project_paths` row, and resolution
-        // still reads it, so such a project is reachable from its own directory
-        // whatever this verb does about origins and pointers. Building the
-        // refusal against a premise that is false today would have refused two
-        // legitimate fixtures on its first run, and it would have to be re-tuned
-        // anyway. It is recorded on SH-119 instead, beside R1: the wave that
-        // deletes the path row is the wave in which "neither" becomes possible.
+        // There is nothing to refuse: an attaching run writes the pointer file
+        // below, or adopts the one already there, so "neither" is not a state
+        // this verb can produce. SH-119 deleted the switch that could produce
+        // it rather than adding a check for it.
 
         let (project, created, uuid, prefix) = self.store.write(|tx| {
             if let Some(pointer) = &existing_pointer
                 && let Some(existing) = tx.project_by_uuid(&pointer.uuid)?
             {
-                tx.touch_project_path(existing.id, &root, path_kind(&root))?;
                 adopt_checkout(tx, existing.id, &root)?;
                 adopt_origin(tx, existing.id, &claim, &now)?;
                 if let Some(name) = &options.name {
@@ -1045,16 +1024,6 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 }
                 return Ok((existing.id, false, existing.uuid, existing.prefix));
             }
-            if let Some(existing) = tx.project_by_path(&root)? {
-                tx.touch_project_path(existing.id, &root, path_kind(&root))?;
-                adopt_checkout(tx, existing.id, &root)?;
-                adopt_origin(tx, existing.id, &claim, &now)?;
-                if let Some(name) = &options.name {
-                    tx.rename_project(existing.id, name)?;
-                }
-                return Ok((existing.id, false, existing.uuid, existing.prefix));
-            }
-
             // A checkout that already carries a pointer is a *clone*, not a new
             // repository, and the identity it names is the one to create. The
             // uuid exists precisely so a project survives being copied to
@@ -1086,7 +1055,6 @@ impl<'a, S: Store> ProjectService<'a, S> {
                 prefix: prefix.clone(),
                 created_at: now.clone(),
             })?;
-            tx.touch_project_path(project, &root, path_kind(&root))?;
             adopt_checkout(tx, project, &root)?;
             adopt_origin(tx, project, &claim, &now)?;
             write_states(tx, project, &default_states())?;
@@ -1099,7 +1067,15 @@ impl<'a, S: Store> ProjectService<'a, S> {
         // second `init` in a repository that already has a pointer must leave
         // the user's configuration exactly where it is rather than replacing
         // the file with a freshly generated identity-only copy.
-        let pointer = options.pointer && existing_pointer.is_none();
+        //
+        // **Not optional (SH-119).** An attaching run either writes this file or
+        // adopts the one already here, so it cannot leave a project that no
+        // directory identifies. That used to be a switch — `InitOptions::pointer`
+        // — whose `false` was reachable from no caller in `src/` and whose only
+        // effect was to make an unreachable project expressible. SH-151's council
+        // asked for a refusal here; deleting the switch makes the state
+        // unrepresentable instead, which is the same answer in a stronger form.
+        let pointer = existing_pointer.is_none();
         if pointer {
             write_pointer(&root, &ProjectPointer::new(uuid, prefix.clone()))?;
         }
@@ -1191,20 +1167,24 @@ impl<'a, S: Store> ProjectService<'a, S> {
     /// modal are looking at the same value rather than each computing their
     /// own.
     ///
-    /// The checkouts are listed because they are the directories left carrying
-    /// a `.storyhook.toml` that names a project which will not exist —
-    /// something only the person confirming can decide what to do about. They
-    /// are not a list of files about to be destroyed: since SH-117 this verb
-    /// destroys none.
+    /// The checkout is listed because it is a directory left carrying a
+    /// `.storyhook.toml` that names a project which will not exist — something
+    /// only the person confirming can decide what to do about. It is not a list
+    /// of files about to be destroyed: since SH-117 this verb destroys none.
+    ///
+    /// One directory rather than every directory storyhook was ever run in.
+    /// The list used to come from `project_paths`, which recorded each one; the
+    /// project's linked checkout is what is left of that, and it is the one a
+    /// user would actually go and look at.
     pub fn delete_plan(&self, project: ProjectId) -> Result<DeletePlan, AppError> {
         let record = self.project_record(project)?;
         let (stories, events, checkouts) = self.store.read(|tx| {
             Ok((
                 tx.stories(project, &crate::store::StoryQuery::all())?.len(),
                 tx.event_count(project)?,
-                tx.project_paths(project)?
+                tx.checkout_path(project)?
+                    .map(|path| path.to_string_lossy().into_owned())
                     .into_iter()
-                    .map(|row| row.path)
                     .collect::<Vec<_>>(),
             ))
         })?;
@@ -1341,21 +1321,6 @@ pub fn closed_state(tx: &impl ReadOps, project: ProjectId) -> Result<String, App
         .into_iter()
         .find(|state| state.super_state == SuperState::Closed)
         .map_or_else(|| "done".to_string(), |state| state.slug))
-}
-
-/// Whether this checkout is a main working tree or a linked worktree.
-///
-/// In a linked worktree `.git` is a *file* pointing at the real git directory,
-/// not a directory of its own. Recording which kind a checkout is costs
-/// nothing here and is what lets a later wave answer "these two directories
-/// are one repository" — the question whose wrong answer minted the colliding
-/// story ids this rearchitecture exists to fix.
-pub(crate) fn path_kind(root: &Path) -> PathKind {
-    if root.join(".git").is_file() {
-        PathKind::Worktree
-    } else {
-        PathKind::Main
-    }
 }
 
 /// A checkout's canonical path, falling back to the path as given.

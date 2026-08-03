@@ -75,23 +75,20 @@ impl Project<'_> {
     }
 }
 
-/// The project a checkout at `root` belongs to, pointer file first.
+/// The project a checkout at `root` belongs to, by its committed pointer file.
 ///
 /// Free rather than a method so a test can ask the question about a directory
 /// that is not a [`Project`] fixture — a linked worktree, or a subdirectory
 /// several levels down.
+///
+/// The directory itself is not a key: SH-119 deleted the recorded-path index,
+/// so a checkout that carries no pointer file resolves to nothing here exactly
+/// as it resolves to nothing in the CLI.
 pub fn project_id_at(store: &SqliteStore, root: &Path) -> Option<ProjectId> {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let pointer: Option<ProjectPointer> = read_pointer(&canonical).expect("reading a pointer file");
+    let pointer: ProjectPointer = read_pointer(&canonical).expect("reading a pointer file")?;
     store
-        .read(|tx| {
-            if let Some(pointer) = &pointer
-                && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
-            {
-                return Ok(Some(project.id));
-            }
-            Ok(tx.project_by_path(&canonical)?.map(|project| project.id))
-        })
+        .read(|tx| Ok(tx.project_by_uuid(&pointer.uuid)?.map(|project| project.id)))
         .expect("reading the store")
 }
 
@@ -120,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn a_project_is_found_by_the_path_it_was_initialized_at() {
+    fn a_project_is_found_by_the_pointer_file_its_checkout_carries() {
         let env = TestEnv::isolated();
         let store = env.open_store();
         let root = crate::scratch::scratch_dir_named("pid-");
@@ -131,12 +128,12 @@ mod tests {
 
         assert!(
             project_id_at(&store, root.path()).is_some(),
-            "a checkout the store has a path row for must resolve"
+            "an attaching run leaves the checkout carrying its identity"
         );
     }
 
     #[test]
-    fn the_pointer_file_wins_over_the_path() {
+    fn a_checkout_answers_for_the_project_its_pointer_names_whatever_directory_it_is() {
         let env = TestEnv::isolated();
         let store = env.open_store();
         let one = crate::scratch::scratch_dir_named("pid-a-");
@@ -146,13 +143,16 @@ mod tests {
             .init(&InitOptions::default())
             .expect("initializing project a")
             .project;
-        ProjectService::new(&store, two.path())
+        let b = ProjectService::new(&store, two.path())
             .init(&InitOptions::default())
-            .expect("initializing project b");
+            .expect("initializing project b")
+            .project;
+        assert_ne!(a, b);
 
-        // `two` has a path row of its own, and a pointer file naming `a`. The
-        // pointer must win: it is the identity that travels with a repository,
-        // and a clone that was moved on disk still has to resolve.
+        // `two` was created as its own project and then given `a`'s committed
+        // identity — which is what a clone, a move, or a restored backup looks
+        // like from here. The committed uuid is the answer; the directory is
+        // not a key at all since SH-119.
         let uuid = store
             .read(|tx| Ok(tx.project(a)?.expect("project a exists").uuid))
             .expect("reading project a");
@@ -163,6 +163,24 @@ mod tests {
         .expect("writing a pointer file");
 
         assert_eq!(project_id_at(&store, two.path()), Some(a));
+    }
+
+    #[test]
+    fn a_checkout_with_no_pointer_file_resolves_to_nothing() {
+        let env = TestEnv::isolated();
+        let store = env.open_store();
+        let root = crate::scratch::scratch_dir_named("pid-c-");
+
+        ProjectService::new(&store, root.path())
+            .init(&InitOptions::default())
+            .expect("initializing a project");
+        std::fs::remove_file(root.path().join(".storyhook.toml")).expect("removing the pointer");
+
+        assert_eq!(
+            project_id_at(&store, root.path()),
+            None,
+            "the directory it was created at is not an identity"
+        );
     }
 
     #[test]

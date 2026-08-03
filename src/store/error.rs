@@ -186,8 +186,6 @@ fn constraint_detail(error: &rusqlite::Error) -> String {
             .to_string()
     } else if raw.contains("events are append-only") {
         "events are append-only".to_string()
-    } else if raw.contains("project_paths.path") {
-        "that path is already registered to a different project".to_string()
     } else if raw.contains("project_remotes.normalized") {
         // The backstop, not the ordinary message. `link_remote` reads the
         // holder first so it can name it; reaching this text means the index

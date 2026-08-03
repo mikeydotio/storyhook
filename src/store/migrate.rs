@@ -120,6 +120,15 @@ pub const MIGRATIONS: &[Migration] = &[
         // `events_reject_delete` warning does not apply here either.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 8,
+        name: "drop_project_paths",
+        sql: include_str!("schema/0008_drop_project_paths.sql"),
+        // One `UPDATE` and one `DROP TABLE` of a leaf table — nothing
+        // references `project_paths`, and no trigger names it — so nothing is
+        // rebuilt and migration 5's warning does not apply.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

@@ -6,11 +6,10 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# Check if this is a storyhook project
-if ! storyhook_pointer >/dev/null; then
-  printf '{}'
-  exit 0
-fi
+# Whether this directory is a storyhook project is storyhook's question, not a
+# shell walk's: a fresh clone with no committed pointer file resolves by its
+# registered origin. `story handoff` below is the gate — it refuses on stderr
+# and prints nothing, which is already the "say nothing" answer.
 
 # Check if a forge pipeline is active for this project. forge's own Stop
 # hook (and freshen's) already fire on every pipeline step and forge writes

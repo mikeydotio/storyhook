@@ -8,19 +8,25 @@
 
 # storyhook_pointer — the nearest ancestor's `.storyhook.toml`, if there is one.
 #
-# This is the whole of "am I in a storyhook project?" now. Story data lives in a
-# store outside the repository; what a checkout carries is a single committed
-# pointer file naming which project it belongs to. Testing for a `.storyhook/`
-# *directory*, as these hooks used to, now answers "is there residue from before
-# the cutover?" — a question with no bearing on whether the hook should run.
+# **Where the repository's configuration lives, and nothing more.** It used to
+# be the whole of "am I in a storyhook project?", and SH-119 took that job away
+# from it: a project is identified by its committed pointer file, its registered
+# git origin, or an explicit selector, and only storyhook knows which. A shell
+# walk cannot see an origin, so gating on this file would silently skip a fresh
+# clone that has no pointer yet — exactly the arrangement the new design exists
+# to support. Each hook asks storyhook instead, by running the command it was
+# going to run anyway; a directory that is no project gets a refusal, on stderr,
+# and the hook emits `{}`.
 #
-# Walking upward is not a nicety. The CLI resolves a project from any
-# subdirectory of a checkout, so a hook that looked only at `$PWD` would
-# silently no-op for an agent working two levels down — the shape of SH-46,
-# reintroduced one layer up.
+# What still reads this file is the `[plugin]` kill switch below, because that
+# genuinely is configuration about *this repository* rather than a fact about
+# which project it is.
+#
+# Walking upward is not a nicety. An agent works from subdirectories, and
+# configuration set at the repository root has to reach them.
 #
 # Returns 1 with no output when there is no pointer above the working
-# directory, which the callers read as "not a storyhook project, do nothing".
+# directory, which `read_plugin_config` reads as "use the default".
 storyhook_pointer() {
   local dir
   dir=$(pwd -P) || return 1

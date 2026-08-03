@@ -49,6 +49,24 @@ fn document(export: &ProjectExport) -> String {
     serde_json::to_string_pretty(export).expect("serializing the export")
 }
 
+/// The project a restore left at `root`, found the way the CLI finds it.
+///
+/// Through the committed pointer file rather than the directory, because that
+/// is the only thing identifying an imported checkout: the recorded-path index
+/// is gone (SH-119), and the export document carries no uuid to look up.
+fn restored_project(
+    store: &SqliteStore,
+    root: &std::path::Path,
+) -> storyhook::store::ProjectRecord {
+    let pointer = storyhook::service::project::read_pointer(root)
+        .expect("reading the pointer file")
+        .expect("a restore must leave a pointer file behind");
+    store
+        .read(|tx| tx.project_by_uuid(&pointer.uuid))
+        .expect("reading the store")
+        .expect("the pointer must name the imported project")
+}
+
 // --- export ----------------------------------------------------------------
 
 #[test]
@@ -106,10 +124,7 @@ fn a_non_default_prefix_is_carried_in_the_document() {
     exported.prefix = Some("API".to_string());
     transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
 
-    let project = store
-        .read(|tx| tx.project_by_path(&dir.path().canonicalize().unwrap()))
-        .expect("reading")
-        .expect("the imported project");
+    let project = restored_project(&store, dir.path());
     let ctx = storyhook::service::Ctx::new(
         &store,
         project.id,
@@ -393,10 +408,7 @@ fn a_project_round_trips_through_export_and_import_byte_for_byte() {
     .expect("importing");
     assert_eq!(count, 3);
 
-    let project = store
-        .read(|tx| tx.project_by_path(&dir.path().canonicalize().unwrap()))
-        .expect("reading")
-        .expect("the imported project");
+    let project = restored_project(&store, dir.path());
     let ctx = storyhook::service::Ctx::new(
         &store,
         project.id,
@@ -418,11 +430,7 @@ fn an_imported_project_continues_numbering_after_its_highest_story() {
 
     let (store, dir) = empty_store();
     transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
-    let project = store
-        .read(|tx| tx.project_by_path(&dir.path().canonicalize().unwrap()))
-        .expect("reading")
-        .expect("the imported project")
-        .id;
+    let project = restored_project(&store, dir.path()).id;
     let ctx = storyhook::service::Ctx::new(
         &store,
         project,
@@ -455,6 +463,53 @@ fn importing_into_a_project_that_already_holds_stories_is_refused() {
     assert!(
         error.to_string().contains("already holds stories"),
         "{error}"
+    );
+}
+
+#[test]
+fn a_restore_leaves_the_directory_carrying_the_project_it_restored() {
+    // The whole of what identifies an imported checkout. Nothing else does:
+    // the export document has no uuid, the directory is not a key any more,
+    // and the restore registers no origin.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Restored");
+    let exported = export(&fixture);
+
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+
+    let pointer = storyhook::service::project::read_pointer(dir.path())
+        .expect("reading the pointer file")
+        .expect("the restore must write one");
+    let project = store
+        .read(|tx| tx.project_by_uuid(&pointer.uuid))
+        .expect("reading the store")
+        .expect("the pointer must name a project this store holds");
+    assert_eq!(
+        project.prefix, "SH",
+        "the pointer carries the prefix the document was imported under"
+    );
+}
+
+#[test]
+fn a_restore_into_a_directory_that_already_names_a_project_never_mints_a_second() {
+    // The other half of the pointer: `importing_into_a_project_that_already
+    // _holds_stories_is_refused` above can only refuse because the second run
+    // recognizes the first one's directory, and the pointer file is now the
+    // only thing that lets it.
+    let fixture = ServiceFixture::new();
+    let exported = export(&fixture);
+
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported)
+        .expect("the first restore");
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported)
+        .expect("a second restore into an empty project is idempotent, not a second project");
+
+    assert_eq!(
+        store.read(|tx| tx.projects()).expect("listing").len(),
+        1,
+        "two restores into one directory must not produce two projects"
     );
 }
 
