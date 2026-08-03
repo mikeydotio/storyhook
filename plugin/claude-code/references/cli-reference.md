@@ -57,14 +57,14 @@ Where a project's repo-side work runs. **At most one per project**, and **never*
 
 > **Naming hazard.** `story link` / `story unlink` are aliases for `story relate` / `story unrelate` and join one **story** to another. `story project link` / `unlink` are about **git**. Same word, unrelated subjects.
 
-### `story project deinit [PATH|SLUG] [--force]`
+### `story project delete [--force]`
 
-**Permanently deletes** the project, every story, every event, every checkout registration, and the files `init` generated. There is no undo.
+**Permanently deletes** the project, every story, every event, every checkout registration and every registered origin. There is no undo.
 
 - Always asks first; the confirmation is the project's slug typed in full
 - `--force` skips the question, and is **required** under `--json` or with no terminal to ask at
-- An `AGENTS.md` you have edited is kept, not deleted, and reported
-- Name a `SLUG` to reach a project whose checkout is gone
+- **No positional.** The project is named the ordinary way: `--project <slug>`, `$STORYHOOK_PROJECT`, or a working directory that already resolves — which is also how a project whose checkout is gone is reached
+- **Touches no files.** The `.storyhook.toml` and `AGENTS.md` in every checkout are left where they are; the warning lists those directories so you know which ones now claim an identity that does not exist
 
 ### `story member add "<name <email>>"` / `story member add -g <github-handle>`
 

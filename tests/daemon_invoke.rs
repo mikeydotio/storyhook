@@ -242,35 +242,40 @@ fn a_relative_path_is_resolved_against_the_clients_directory_over_the_daemon() {
     );
 }
 
-/// Deinit's two-step — the plan, then the forced deletion — over the wire.
+/// Delete's two-step — the plan, then the forced deletion — over the wire.
 ///
 /// This is the case the seam most needs to cover, because the confirmation
 /// happens in the *client* while the deletion happens in the daemon. Its
 /// byte-for-byte agreement with an in-process run used to be the assertion;
 /// with one transport there is nothing to agree with, and what is left is the
 /// half a snapshot cannot hold: a refusal that carries the plan, a second
-/// request the far side recognizes as forced, and files removed in a directory
-/// only the client knows about.
+/// request the far side recognizes as forced, and a project resolved from a
+/// working directory only the client knows about.
 #[test]
-fn deinit_refuses_and_then_deletes_over_the_wire() {
+fn delete_refuses_and_then_deletes_over_the_wire() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
     let dir = project(&env);
 
     // Unforced: a refusal naming --force, with nothing deleted.
-    let refusal = via_daemon(&env, dir.path(), &["project", "deinit"]);
+    let refusal = via_daemon(&env, dir.path(), &["project", "delete"]);
     assert_eq!(refusal.status.code(), Some(2), "{refusal:?}");
     assert!(String::from_utf8_lossy(&refusal.stderr).contains("--force"));
-    assert!(dir.path().join(".storyhook.toml").exists());
 
-    // Forced: the daemon removes the client's repository files too, which is the
-    // part that has no equivalent inside one process.
-    let forced = via_daemon(&env, dir.path(), &["project", "deinit", "--force"]);
+    // Forced: the daemon resolved the project from the *client's* working
+    // directory, which is the part that has no equivalent inside one process —
+    // the daemon's own cwd is wherever it was spawned and knows nothing of this
+    // checkout.
+    let forced = via_daemon(&env, dir.path(), &["project", "delete", "--force"]);
     assert_eq!(forced.status.code(), Some(0), "{forced:?}");
+    let listing = via_daemon(&env, dir.path(), &["project", "list"]);
     assert!(
-        !dir.path().join(".storyhook.toml").exists(),
-        "the daemon must remove the client's repository files, not its own \
-         working directory's"
+        !String::from_utf8_lossy(&listing.stdout).contains(&dir.path().display().to_string()),
+        "the project the client stood in is the one that went"
+    );
+    assert!(
+        dir.path().join(".storyhook.toml").exists(),
+        "and the daemon writes nothing into the client's repository"
     );
 }
 

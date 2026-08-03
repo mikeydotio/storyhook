@@ -2402,9 +2402,9 @@ fn web_init_requires_the_guard_header() {
 ///
 /// The same two-step the terminal runs, and deliberately the same value: the
 /// browser draws its warning from the `DeinitPlan` the CLI prompts from, so the
-/// two front-ends cannot grow two different ideas of what deinit does.
+/// two front-ends cannot grow two different ideas of what delete does.
 #[test]
-fn web_deinit_without_confirmation_returns_the_plan_and_deletes_nothing() {
+fn web_delete_without_confirmation_returns_the_plan_and_deletes_nothing() {
     let fixture = served();
     fixture.seed(&["new", "Precious"]);
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
@@ -2428,7 +2428,7 @@ fn web_deinit_without_confirmation_returns_the_plan_and_deletes_nothing() {
 }
 
 #[test]
-fn web_deinit_with_the_slug_typed_back_destroys_the_project() {
+fn web_delete_with_the_slug_typed_back_destroys_the_project() {
     let fixture = served();
     fixture.seed(&["new", "Doomed"]);
     let (port, repo_id) = (fixture.port, fixture.repo_id.to_string());
@@ -2454,13 +2454,13 @@ fn web_deinit_with_the_slug_typed_back_destroys_the_project() {
         "the project is gone, not merely unlisted"
     );
     assert!(
-        !fixture.dir().join(".storyhook.toml").exists(),
-        "the repository-side pointer goes with it"
+        fixture.dir().join(".storyhook.toml").exists(),
+        "and the browser, like the CLI, writes nothing into the repository"
     );
 }
 
 #[test]
-fn web_deinit_with_the_wrong_slug_is_refused() {
+fn web_delete_with_the_wrong_slug_is_refused() {
     let fixture = served();
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 

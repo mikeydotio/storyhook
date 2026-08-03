@@ -17,7 +17,7 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
         m.insert(
             "project",
             r#"story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
-story project deinit [PATH|SLUG] [--force]
+story project delete [--force]
 story project list
 story project link origin [URL] | link checkout [PATH]
 story project unlink origin [URL] | unlink checkout
@@ -54,16 +54,22 @@ init
   init refuses and points you at 'story migrate' — initializing would
   mint an empty second project beside data you still have.
 
-deinit
+delete
   Permanently deletes the project, every story, every event, every
-  checkout registration, and the files init generated. There is no undo.
+  checkout registration and every registered origin. There is no undo.
 
   It always asks first, and the confirmation is the project's slug typed
   in full. --force skips the question; with --json, or with no terminal
   to ask at, --force is required rather than assumed either way.
 
-  An AGENTS.md you have edited is kept, not deleted — deinit reports it.
-  A project whose checkout is gone can be named by SLUG instead.
+  It takes no path or slug: it deletes the project this directory
+  resolves to, or the one --project names. That is how a project whose
+  checkout is gone is reached.
+
+  It touches no files. The .storyhook.toml and AGENTS.md in every
+  checkout are left exactly where they are — the warning lists those
+  directories so you know which ones are now claiming an identity that
+  does not exist.
 
 list
   Every project the store knows, including any whose checkout is not on
@@ -109,8 +115,8 @@ Examples:
   story project link origin git@github.com:me/thing.git
   story --project thing project link checkout ~/code/thing
   story project settings list
-  story project deinit                  # Asks before destroying anything
-  story project deinit old-thing --force
+  story project delete                  # Asks before destroying anything
+  story --project old-thing project delete --force
 
 Related:
   story help project-settings — The settings keys, in detail
@@ -188,7 +194,7 @@ Examples:
   story project settings list --json     # source and value as fields
 
 Related:
-  story project      — init, deinit and list
+  story project      — init, delete and list
   story commit-sync  — What sync.auto_transition governs
   story github-sync  — What owns the github.sync document
   story set          — Change a STORY's fields, not a project's settings
@@ -1452,7 +1458,7 @@ Examples:
 Related:
   story delete <id> "<reason>"  — Soft-delete (reversible)
   story reopen <id> [--force]   — Undelete a soft-deleted story
-  story project deinit          — Delete a whole project
+  story project delete          — Delete a whole project
 "#,
         );
 
@@ -1808,7 +1814,7 @@ pub fn compact_reference() -> &'static str {
 
 LIFECYCLE
   story project init [--prefix P] Initialize project (writes .storyhook.toml)
-  story project list|deinit       List projects; delete one (destructive)
+  story project list|delete       List projects; delete one (destructive)
   story new "<title>"             Create a story, returns assigned ID
   story show <id>                 Full details for a single story
   story move <id> <state>         Transition state (e.g., todo → in-progress → done)

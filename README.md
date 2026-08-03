@@ -230,7 +230,7 @@ story doctor
 
 ```text
 story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
-story project deinit [PATH|SLUG] [--force]
+story project delete [--force]
 story project list
 story project settings list | get <key> | set <key> <value> | unset <key>
 story new <title>
