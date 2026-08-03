@@ -200,6 +200,17 @@ pub trait ReadOps {
     /// Every git origin registered to a project, ordered by identity key.
     fn project_remotes(&self, project: ProjectId) -> Result<Vec<ProjectRemoteRecord>, StoreError>;
 
+    /// Where this project's repo-side operations run, if a checkout was linked.
+    ///
+    /// **Never an answer to "which project is this?"** — that is
+    /// [`project_by_remote`](Self::project_by_remote) and, until SH-119 removes
+    /// it, [`project_by_path`](Self::project_by_path). This is the reverse
+    /// direction and the only direction: a project names a directory, and
+    /// nothing looks a project up by it. If anything ever does, the epic's
+    /// invariant — nothing about the filesystem is ever *required* to answer
+    /// which project this is — is gone.
+    fn checkout_path(&self, project: ProjectId) -> Result<Option<PathBuf>, StoreError>;
+
     /// How many events a project holds.
     ///
     /// A count rather than `events_since(..).len()`: `story project deinit`
@@ -364,6 +375,24 @@ pub trait WriteOps: ReadOps {
     /// identity becomes available to another project immediately.
     fn unlink_remote(&mut self, project: ProjectId, remote: &RemoteUrl)
     -> Result<bool, StoreError>;
+
+    /// Sets — or with `None`, clears — where this project's repo-side work runs.
+    ///
+    /// A plain overwrite, because a project has **at most one** checkout. That
+    /// is the difference from [`touch_project_path`](Self::touch_project_path),
+    /// which accumulates rows for a resolution index that must know about every
+    /// directory; here a second call replaces the first, and there is nothing
+    /// to disambiguate on the way out.
+    ///
+    /// The path is not checked for existence, uniqueness or gitness. It is
+    /// consulted by exactly one consumer, which fails loudly on its own if the
+    /// directory is wrong, and two projects sharing one is a monorepo rather
+    /// than an ambiguity — see the migration's header.
+    fn set_checkout_path(
+        &mut self,
+        project: ProjectId,
+        path: Option<&Path>,
+    ) -> Result<(), StoreError>;
 
     /// Sets a project's display name.
     ///

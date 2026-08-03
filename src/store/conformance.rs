@@ -1266,6 +1266,109 @@ macro_rules! store_conformance_suite {
                 link_origin(f.store(), beta, "https://github.com/acme/widgets").unwrap();
             }
 
+            // ===============================================================
+            // The linked checkout — where repo-side work runs
+            //
+            // The mirror image of `project_paths`, and every assertion here is
+            // about a difference from it: at most one per project, no
+            // cross-project uniqueness, and nothing in the store looks a
+            // project up by it. See migration 0007's header.
+            // ===============================================================
+
+            #[test]
+            fn a_project_starts_with_no_linked_checkout() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                assert!(f.store().read(|tx| tx.checkout_path(project)).unwrap().is_none());
+            }
+
+            #[test]
+            fn linking_a_checkout_records_it_and_unlinking_clears_it() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let path = std::path::Path::new("/code/alpha");
+
+                f.store().write(|tx| tx.set_checkout_path(project, Some(path))).unwrap();
+                assert_eq!(
+                    f.store().read(|tx| tx.checkout_path(project)).unwrap().as_deref(),
+                    Some(path)
+                );
+
+                f.store().write(|tx| tx.set_checkout_path(project, None)).unwrap();
+                assert!(f.store().read(|tx| tx.checkout_path(project)).unwrap().is_none());
+            }
+
+            /// A project has **at most one** checkout, so a second link replaces
+            /// the first rather than accumulating beside it. This is the whole
+            /// difference from `touch_project_path`, which must accumulate
+            /// because it feeds a resolution index that has to know about every
+            /// directory.
+            #[test]
+            fn linking_a_second_checkout_replaces_the_first() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                f.store()
+                    .write(|tx| tx.set_checkout_path(project, Some(std::path::Path::new("/code/old"))))
+                    .unwrap();
+                f.store()
+                    .write(|tx| tx.set_checkout_path(project, Some(std::path::Path::new("/code/new"))))
+                    .unwrap();
+                assert_eq!(
+                    f.store().read(|tx| tx.checkout_path(project)).unwrap().as_deref(),
+                    Some(std::path::Path::new("/code/new"))
+                );
+            }
+
+            /// **Deliberately permitted**, and the reason there is no unique
+            /// index on the column. Nothing resolves a project *by* its
+            /// checkout, so two projects naming one directory is not an
+            /// ambiguity — it is a monorepo with a project per service, which
+            /// storyhook supports and SH-151 exists to finish supporting. A
+            /// constraint forbidding it would live in a migration, which is the
+            /// one artefact in SH-117 that cannot be revised later.
+            #[test]
+            fn two_projects_may_name_the_same_checkout() {
+                let f = <$fixture>::create();
+                let alpha = seed(f.store(), "alpha", "SH");
+                let beta = seed(f.store(), "beta", "SH");
+                let shared = std::path::Path::new("/code/monorepo");
+
+                f.store().write(|tx| tx.set_checkout_path(alpha, Some(shared))).unwrap();
+                f.store().write(|tx| tx.set_checkout_path(beta, Some(shared))).unwrap();
+
+                assert_eq!(
+                    f.store().read(|tx| tx.checkout_path(alpha)).unwrap().as_deref(),
+                    Some(shared)
+                );
+                assert_eq!(
+                    f.store().read(|tx| tx.checkout_path(beta)).unwrap().as_deref(),
+                    Some(shared)
+                );
+            }
+
+            /// The two associations are independent: a recorded path is not a
+            /// linked checkout and a linked checkout is not a recorded path.
+            /// Until SH-119 deletes `project_paths`, `story project new` writes
+            /// both — and a change that starts writing only one has to fail
+            /// here rather than in whichever of resolution or `dispatch` was
+            /// unlucky.
+            #[test]
+            fn a_linked_checkout_is_not_a_recorded_path() {
+                let f = <$fixture>::create();
+                let project = seed(f.store(), "alpha", "SH");
+                let path = std::path::Path::new("/code/alpha");
+                f.store().write(|tx| tx.set_checkout_path(project, Some(path))).unwrap();
+
+                assert!(
+                    f.store().read(|tx| tx.project_paths(project)).unwrap().is_empty(),
+                    "linking a checkout must not write the resolution index"
+                );
+                assert!(
+                    f.store().read(|tx| tx.project_by_path(path)).unwrap().is_none(),
+                    "nothing may resolve a project by its linked checkout"
+                );
+            }
+
             #[test]
             fn a_project_with_no_remotes_has_none() {
                 let f = <$fixture>::create();

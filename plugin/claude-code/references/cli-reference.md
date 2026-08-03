@@ -43,6 +43,20 @@ story project init --prefix HP     # stories become HP-1, HP-2, ...
 
 Every project the store knows, including any whose checkout is not on this machine — the same set the dashboard shows.
 
+### `story project link origin [URL]` / `story project unlink origin [URL]`
+
+The git origins a project answers to. A checkout of a registered origin resolves to that project with no flag and no pointer file, which is what makes a fresh clone work immediately.
+
+- One project may hold **many** origins; an origin belongs to **at most one** project. Registering one another project already holds is refused, naming that project.
+- `URL` may be omitted, and is then the origin *this directory's own repository* records. storyhook reads exactly `git config --get remote.origin.url` — which **walks up the directory tree**, so the omitted form additionally requires you to be at the repository's top level. From a subdirectory it would otherwise register the enclosing repository's identity against this project, permanently, locking out every sibling project in that repository.
+- The project is named the ordinary way: `--project <slug>`, `$STORYHOOK_PROJECT`, or a working directory that already resolves.
+
+### `story project link checkout [PATH]` / `story project unlink checkout`
+
+Where a project's repo-side work runs. **At most one per project**, and **never** consulted to decide which project you are in — linking a directory does not make commands run there resolve to that project. `PATH` defaults to the current directory; linking a second replaces the first and reports what it replaced.
+
+> **Naming hazard.** `story link` / `story unlink` are aliases for `story relate` / `story unrelate` and join one **story** to another. `story project link` / `unlink` are about **git**. Same word, unrelated subjects.
+
 ### `story project deinit [PATH|SLUG] [--force]`
 
 **Permanently deletes** the project, every story, every event, every checkout registration, and the files `init` generated. There is no undo.

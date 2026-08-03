@@ -112,6 +112,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // apply. Its own header says so where the next author will look.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 7,
+        name: "project_checkout",
+        sql: include_str!("schema/0007_project_checkout.sql"),
+        // One `ALTER TABLE … ADD COLUMN`; rebuilds nothing, so migration 5's
+        // `events_reject_delete` warning does not apply here either.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

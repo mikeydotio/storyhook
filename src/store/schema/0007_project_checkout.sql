@@ -1,0 +1,57 @@
+-- storyhook store — schema version 7: where a project's repo-side work runs.
+--
+-- One nullable column, and the whole point of it is what it is *not*.
+--
+-- `project_paths` answers "which project is this directory?" — it is the
+-- resolution index, one-to-many, with a unique index on `path` making an
+-- ambiguous answer unrepresentable. This column answers a different question
+-- entirely: **where do this project's repo-side operations execute?** Its only
+-- consumer is `dispatch` (`plugin/claude-code/bin/story.sh`), which makes a git
+-- worktree and a tmux window and is the one operation that genuinely needs a
+-- directory. Every other operation is a store call carrying an explicit project.
+--
+-- Because it is one path rather than an index, it is a column and not a table,
+-- and the plurality `project_paths` needs is exactly what this must not have:
+-- a project has at most one checkout by construction, so `unlink checkout` has
+-- nothing to disambiguate and cannot forget the wrong row.
+--
+-- ---------------------------------------------------------------------------
+-- Why there is no unique index on it
+-- ---------------------------------------------------------------------------
+--
+-- `project_paths` has one, and copying it here was proposed and rejected. A
+-- cross-project uniqueness constraint would make "two projects linked to the
+-- same directory" unrepresentable — which sounds like the same good trick
+-- `idx_project_remotes_normalized` plays, and is not, because this column is
+-- **never consulted for resolution**. Nothing looks a project up by it, so two
+-- projects sharing one is not an ambiguity; it is a monorepo with a project per
+-- service, which storyhook supports today and which SH-151 exists to finish
+-- supporting. A constraint that forecloses that arrangement would ship inside a
+-- migration, which is the one artefact in this change that cannot be revised
+-- later.
+--
+-- If a reason to constrain it appears, it can be added by a later migration.
+-- The reverse — removing a unique index from a column that has one — is a table
+-- rebuild, and a rebuild of `stories` or anything referencing it is the
+-- dangerous kind (see 0005's header on `events_reject_delete`).
+--
+-- ---------------------------------------------------------------------------
+-- What this does NOT do, and which story does it
+-- ---------------------------------------------------------------------------
+--
+-- It does not replace `project_paths`, backfill from it, or drop it. SH-119
+-- deletes that table together with the resolution walk that reads it, and it
+-- owns the data migration: an existing project's main checkout becomes this
+-- column's value, and worktree rows are dropped. Until then a project created
+-- with `story project new` records its checkout in *both* places, which is
+-- deliberate redundancy for the length of one story rather than two sources of
+-- truth left to drift — `project_paths` is what resolution still reads, and this
+-- is what `dispatch` will read (SH-120).
+--
+-- Rebuilds nothing: `ALTER TABLE … ADD COLUMN` on a table with no dependent
+-- trigger to re-parse, so foreign-key enforcement stays on and migration 5's
+-- `events_reject_delete` warning does not apply. Every existing row gets NULL,
+-- which reads as "no checkout linked" — the honest answer for a project whose
+-- checkout was never named by the verb that names one.
+
+ALTER TABLE projects ADD COLUMN checkout_path TEXT;

@@ -563,13 +563,65 @@ pub enum ProjectAction {
     },
     /// Every project the store knows, checkout or no checkout.
     List,
+    /// Attach one of this project's two optional git associations.
+    Link(LinkTarget),
+    /// Detach one.
+    Unlink(UnlinkTarget),
     /// Read and write this project's settings.
     ///
-    /// The one arm of this family that names a project rather than creating,
-    /// destroying or enumerating them — so it is the one arm answered against a
+    /// One of the arms of this family that names a project rather than
+    /// creating, destroying or enumerating them — so it is answered against a
     /// resolved [`Ctx`](crate::service::Ctx) rather than by
-    /// `dispatch_unscoped`.
+    /// `dispatch_unscoped`. [`Link`](Self::Link) and [`Unlink`](Self::Unlink)
+    /// are the others.
     Settings(SettingsAction),
+}
+
+/// What `story project link` attaches.
+///
+/// **Two associations, and the asymmetry between them is the design.** An
+/// origin is the *only* thing project selection ever consults; a checkout is
+/// never consulted for resolution at all and answers a different question —
+/// where this project's repo-side work runs. They are variants of one enum
+/// because they share a verb, not because they are alike.
+///
+/// Not shared with [`UnlinkTarget`]: `unlink checkout` takes no argument,
+/// because a project has at most one, and a single enum would have to spell
+/// that as a field the parser accepts and the dispatcher throws away.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LinkTarget {
+    /// `link origin [URL]`.
+    ///
+    /// `None` means the origin *this directory's own repository* records. See
+    /// [`origin_here`](crate::service::project::origin_here) for why "its own"
+    /// is a condition rather than a description.
+    Origin {
+        /// The URL as the user typed it, unnormalized; `None` reads it from git.
+        url: Option<String>,
+    },
+    /// `link checkout [PATH]`.
+    ///
+    /// Carried as text and left unresolved on purpose: a relative path resolves
+    /// against the *client's* working directory, and over the daemon that is
+    /// not this process's. `None` means that directory.
+    Checkout {
+        /// The directory, or `None` for the one the client ran in.
+        path: Option<String>,
+    },
+}
+
+/// What `story project unlink` detaches.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnlinkTarget {
+    /// `unlink origin [URL]`, reading the working directory's origin when the
+    /// URL is omitted, exactly as [`LinkTarget::Origin`] does.
+    Origin {
+        /// The URL as the user typed it; `None` reads it from git.
+        url: Option<String>,
+    },
+    /// `unlink checkout` — no argument, because a project has at most one and
+    /// naming it would be a second way of saying the same thing.
+    Checkout,
 }
 
 /// The `story project settings …` forms.
@@ -1037,6 +1089,20 @@ static VERB_FLAGS: &[VerbFlags] = &[
         subcommand: Some("deinit"),
         flags: &[bare("force")],
     },
+    // Declared with no flags rather than left out. Under SH-62's fail-closed
+    // rule both spellings refuse every flag-shaped token, so the behaviour is
+    // identical — but an entry says "this verb takes no flags" where an absence
+    // says nothing, and the next person to add one will look here first.
+    VerbFlags {
+        verb: "project",
+        subcommand: Some("link"),
+        flags: &[],
+    },
+    VerbFlags {
+        verb: "project",
+        subcommand: Some("unlink"),
+        flags: &[],
+    },
     VerbFlags {
         verb: "member",
         subcommand: Some("add"),
@@ -1301,8 +1367,17 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 const PROJECT_USAGE: &str = "usage: story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] \
-                             [--no-agents-md] | deinit [PATH|SLUG] [--force] | list | settings \
-                             list|get|set|unset";
+                             [--no-agents-md] | deinit [PATH|SLUG] [--force] | list | link \
+                             origin [URL]|checkout [PATH] | unlink origin [URL]|checkout | \
+                             settings list|get|set|unset";
+
+const PROJECT_LINK_USAGE: &str = "usage: story project link origin [URL] | story project link checkout [PATH]\n\nThese attach \
+     *git* associations to a project. They are unrelated to `story link`, which is an alias for \
+     `story relate` and joins one story to another.";
+
+const PROJECT_UNLINK_USAGE: &str = "usage: story project unlink origin [URL] | story project unlink checkout\n\n`unlink \
+     checkout` takes no path: a project has at most one. These are unrelated to `story unlink`, \
+     which is an alias for `story unrelate`.";
 
 const PROJECT_SETTINGS_USAGE: &str = "usage: story project settings list | get <key> | \
                                       set <key> <value> | unset <key>";
@@ -1317,9 +1392,49 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
         "list" => Ok(Invocation::Project {
             action: ProjectAction::List,
         }),
+        "link" => parse_project_link(args),
+        "unlink" => parse_project_unlink(args),
         "settings" => parse_project_settings(args),
         _ => Err(AppError::Usage(PROJECT_USAGE.to_string())),
     }
+}
+
+/// `story project link origin [URL]` / `story project link checkout [PATH]`.
+///
+/// The optional word is taken positionally rather than by flag because it *is*
+/// the object of the verb; a flag would make `link origin` read as though the
+/// URL were an option on some other operation.
+fn parse_project_link(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = || AppError::Usage(PROJECT_LINK_USAGE.to_string());
+    if args.len() > 4 {
+        return Err(usage());
+    }
+    let value = args.get(3).cloned();
+    let target = match args.get(2).ok_or_else(usage)?.as_str() {
+        "origin" => LinkTarget::Origin { url: value },
+        "checkout" => LinkTarget::Checkout { path: value },
+        _ => return Err(usage()),
+    };
+    Ok(Invocation::Project {
+        action: ProjectAction::Link(target),
+    })
+}
+
+/// `story project unlink origin [URL]` / `story project unlink checkout`.
+fn parse_project_unlink(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = || AppError::Usage(PROJECT_UNLINK_USAGE.to_string());
+    let target = match args.get(2).ok_or_else(usage)?.as_str() {
+        "origin" if args.len() <= 4 => UnlinkTarget::Origin {
+            url: args.get(3).cloned(),
+        },
+        // A path here is not ignored: a caller who typed one believes a project
+        // has several checkouts and is about to be surprised by which one went.
+        "checkout" if args.len() == 3 => UnlinkTarget::Checkout,
+        _ => return Err(usage()),
+    };
+    Ok(Invocation::Project {
+        action: ProjectAction::Unlink(target),
+    })
 }
 
 /// `story project settings <list|get|set|unset> …`.
