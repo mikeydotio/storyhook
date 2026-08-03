@@ -248,8 +248,31 @@ _load_ready_stories() {
 # paths and branch names (via resolve_wname), so it is validated at this
 # boundary: non-empty, alphanumeric plus hyphen/underscore only (storyhook's
 # own ids look like "STO-7"; this also rejects path-traversal/whitespace).
+#
+# It has always accepted a bare "5", and since SH-118 the CLI resolves one — so
+# passing shape is no longer enough. Everything downstream of the store must use
+# canonical_story_id() below.
 valid_story_id() {
   [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]
+}
+
+# canonical_story_id <show-json> <typed-id> — the id storyhook resolved the
+# typed one to.
+#
+# Since SH-118 `story show 5` succeeds, so a verb that keeps using what the user
+# typed names things storyhook does not: the ready-gate compares against
+# canonical ids and would call a ready story unready, and a worktree dispatched
+# as "5" could never be captured or completed as "SH-5", or the reverse. Every
+# name this script derives — the tmux window, the worktree directory leaf, the
+# branch — comes from the *response*, so the two forms cannot produce two
+# worktrees for one story.
+#
+# Falls back to what was typed if the response has no id, which keeps the
+# failure in the caller's own error path rather than here.
+canonical_story_id() {
+  local resolved
+  resolved=$(printf '%s' "$1" | jq -r '.story.story.id // ""' 2>/dev/null || printf '')
+  if [ -n "$resolved" ]; then printf '%s' "$resolved"; else printf '%s' "$2"; fi
 }
 
 # repo_root — echo the MAIN worktree's absolute root directory, regardless of
@@ -370,6 +393,11 @@ cmd_dispatch() {
     # .error itself is absent (e.g. the CLI emitted no JSON at all).
     fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
   fi
+  # Every name below — the tmux window, the worktree leaf, the branch — and the
+  # ready-gate's membership test are derived from $id, and the ready list holds
+  # canonical ids. A bare `5` would therefore pass this step and then be called
+  # unready. From here on, $id is what storyhook says it is.
+  id=$(canonical_story_id "$show_json" "$id")
   title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
   state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
 
@@ -692,6 +720,7 @@ cmd_view() {
   if [ "$result" != "ok" ]; then
     fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
   fi
+  id=$(canonical_story_id "$show_json" "$id")
   title=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
   state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
   super=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
@@ -839,6 +868,18 @@ cmd_capture() {
 
   local dir wname
   dir=$(repo_root) || fail "not inside a git repository."
+
+  # The one verb that otherwise reads nothing, and it still has to pay for one
+  # read: the window it is looking for was named by `dispatch` from the
+  # *canonical* id, so `story.sh capture 5` would otherwise hunt for a window
+  # that no dispatch has ever created (SH-118). Tolerant on purpose — capture's
+  # job is to find a tmux window, so a store that cannot answer leaves the id as
+  # typed and lets the "no live tmux window" message below do the reporting,
+  # rather than turning a capture into a story lookup failure.
+  PROJECT_DIR="$dir"
+  if command -v "$STORY" >/dev/null 2>&1; then
+    id=$(canonical_story_id "$(story_cli show "$id" --json 2>/dev/null || printf '')" "$id")
+  fi
   wname=$(resolve_wname "$id" "$(basename "$dir")")
 
   if [ -n "$DRY_RUN" ]; then
@@ -1082,6 +1123,10 @@ _complete_prepare() {
   if [ "$result" != "ok" ]; then
     fail "$(printf '%s' "$show_json" | jq -r --arg id "$id" '.error // ("story `" + $id + "` not found")' 2>/dev/null)"
   fi
+  # Published so the caller can adopt it: `story.sh complete 5` must close and
+  # clean up the same worktree `SH-5` names (SH-118).
+  CMP_ID=$(canonical_story_id "$show_json" "$id")
+  id="$CMP_ID"
   CMP_TITLE=$(printf '%s' "$show_json" | jq -r '.story.story.title // ""')
   CMP_STATE=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
   CMP_SUPER=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
@@ -1131,6 +1176,7 @@ cmd_complete_plan() {
   shift
   [ "$#" -eq 0 ] || fail "usage: story.sh complete plan <story-id>"
   _complete_prepare "$id"
+  id="$CMP_ID"
 
   jq -n \
     --arg id "$id" --arg title "$CMP_TITLE" --arg state "$CMP_STATE" \
@@ -1178,6 +1224,7 @@ cmd_complete_execute() {
     esac
   done
   _complete_prepare "$id"
+  id="$CMP_ID"
 
   local -a removed_wt=() removed_bl=() failed=() skipped=() commands=()
   local closed=false close_note=""
