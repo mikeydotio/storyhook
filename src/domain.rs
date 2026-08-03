@@ -1251,6 +1251,45 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnaps
     true
 }
 
+/// The order ready work is offered in: `priority ASC, then story number ASC`.
+///
+/// A **total** order: the pair (priority, number) is unique within a project,
+/// because [`story_number`] is. Two stories can never tie on both keys the way
+/// the legacy `priority ASC, created_at ASC` comparator let them — `created_at`
+/// has one-second precision, so two stories created by the same script, the
+/// same decompose run, or the same agent turn shared it, and the stable sort
+/// then answered from whatever order they happened to arrive in (SH-63).
+///
+/// `created_at` is not a fallback key here at all, not even after the number:
+/// every write path stamps the story's number and its `created_at` together
+/// (`StoryService::create`, `TransferService::import`, github-sync's
+/// `create_story`), and `migrate`/`import-project` replay both in step, so
+/// `created_at` is nondecreasing in story number in every state the system can
+/// produce — keeping it as a second key would agree with this one everywhere
+/// reachable and disagree nowhere, which is exactly what makes it dead weight.
+///
+/// Ends in the id string as a last-resort tiebreak, so the order stays total
+/// even for two ids [`story_number`] cannot parse (a hand-imported document
+/// predating the id grammar SH-117 introduced), where both sides would
+/// otherwise tie at `u64::MAX`.
+pub fn ready_order(a: &StorySnapshot, b: &StorySnapshot) -> std::cmp::Ordering {
+    a.priority
+        .cmp(&b.priority)
+        .then_with(|| story_number(&a.id).cmp(&story_number(&b.id)))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+/// The number half of a story id (`SH-10` → `10`), or [`u64::MAX`] for an id
+/// that has none — so an unparseable id sorts last in [`ready_order`] rather
+/// than first.
+#[must_use]
+pub fn story_number(id: &str) -> u64 {
+    id.split('-')
+        .nth(1)
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(u64::MAX)
+}
+
 pub fn would_create_parent_cycle(
     stories: &BTreeMap<String, StorySnapshot>,
     parent_id: &str,
@@ -2144,8 +2183,9 @@ mod tests {
         FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges, StateDef,
         StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, compute_progress,
         derive_family_relationships, fold_story, has_children, is_ready, last_activity_type,
-        validate_required_states, validate_state_defs, validate_state_defs_for_write,
-        validate_state_slug, with_required_states, would_create_parent_cycle,
+        ready_order, story_number, validate_required_states, validate_state_defs,
+        validate_state_defs_for_write, validate_state_slug, with_required_states,
+        would_create_parent_cycle,
     };
 
     #[test]
@@ -3729,6 +3769,95 @@ mod tests {
         let p = progress.unwrap();
         assert_eq!(p.children_total, 1);
     }
+
+    // --- ready_order / story_number (SH-63) -------------------------------
+
+    fn ready_snapshot(id: &str, priority: Priority, created_at: &str) -> StorySnapshot {
+        StorySnapshot {
+            id: id.to_string(),
+            title: id.to_string(),
+            created_at: created_at.to_string(),
+            updated_at: created_at.to_string(),
+            state: "todo".to_string(),
+            superstate: SuperState::Open,
+            assignee: None,
+            awaiting: None,
+            comments: Vec::new(),
+            relationships: Vec::new(),
+            priority,
+            labels: Vec::new(),
+            story_type: None,
+            description: None,
+            closed_at: None,
+            deleted: false,
+            deleted_reason: None,
+        }
+    }
+
+    fn ready_order_ids(mut stories: Vec<StorySnapshot>) -> Vec<String> {
+        stories.sort_by(ready_order);
+        stories.into_iter().map(|s| s.id).collect()
+    }
+
+    #[test]
+    fn ready_order_breaks_a_priority_tie_by_story_number() {
+        let ids = ready_order_ids(vec![
+            ready_snapshot("SH-10", Priority::High, "2026-01-01T00:00:00Z"),
+            ready_snapshot("SH-9", Priority::High, "2026-01-01T00:00:00Z"),
+        ]);
+        assert_eq!(
+            ids,
+            ["SH-9", "SH-10"],
+            "the number wins across the 9/10 boundary, not the id string"
+        );
+    }
+
+    #[test]
+    fn ready_order_ignores_created_at_entirely() {
+        // SH-1 was created LATER than SH-2 but is numbered lower. The legacy
+        // `priority, created_at` comparator would have put SH-2 first; this
+        // one does not look at `created_at` at all.
+        let ids = ready_order_ids(vec![
+            ready_snapshot("SH-2", Priority::High, "2026-01-01T00:00:00Z"),
+            ready_snapshot("SH-1", Priority::High, "2026-06-01T00:00:00Z"),
+        ]);
+        assert_eq!(ids, ["SH-1", "SH-2"], "story number decides, not age");
+    }
+
+    #[test]
+    fn ready_order_ranks_priority_above_story_number() {
+        let ids = ready_order_ids(vec![
+            ready_snapshot("SH-1", Priority::Low, "2026-01-01T00:00:00Z"),
+            ready_snapshot("SH-99", Priority::Critical, "2026-01-01T00:00:00Z"),
+        ]);
+        assert_eq!(ids, ["SH-99", "SH-1"]);
+    }
+
+    #[test]
+    fn ready_order_falls_back_to_the_id_string_when_neither_number_parses() {
+        // Both `story_number("MY-APP-3")` and `story_number("MY-APP-9")` are
+        // `u64::MAX` — the number half is "APP", not a number — so the id
+        // string is what is left to break the tie.
+        let ids = ready_order_ids(vec![
+            ready_snapshot("MY-APP-9", Priority::High, "2026-01-01T00:00:00Z"),
+            ready_snapshot("MY-APP-3", Priority::High, "2026-01-01T00:00:00Z"),
+        ]);
+        assert_eq!(ids, ["MY-APP-3", "MY-APP-9"]);
+    }
+
+    #[test]
+    fn story_number_parses_the_numeric_half() {
+        assert_eq!(story_number("SH-1"), 1);
+        assert_eq!(story_number("SH-10"), 10);
+        assert_eq!(story_number("SH-999"), 999);
+    }
+
+    #[test]
+    fn story_number_sorts_an_unparseable_id_last() {
+        assert_eq!(story_number("garbage"), u64::MAX);
+        assert_eq!(story_number("SH-abc"), u64::MAX);
+        assert_eq!(story_number(""), u64::MAX);
+    }
 }
 
 #[cfg(test)]
@@ -3800,5 +3929,95 @@ mod event_kind_tests {
         assert!(is_known_event_kind("StoryCreated"));
         assert!(!is_known_event_kind("StoryPinned"));
         assert!(!is_known_event_kind("storycreated"));
+    }
+}
+
+/// [`ready_order`] is a total order (SH-63): the whole point of dropping
+/// `created_at` is that identical input can no longer produce two different
+/// orderings depending on the order it arrived in. Property-tested rather
+/// than asserted for one arrangement, because "total order" is a claim about
+/// *every* arrangement.
+#[cfg(test)]
+mod ready_order_properties {
+    use proptest::prelude::*;
+
+    use super::{Priority, StorySnapshot, SuperState, ready_order};
+
+    /// Five fixed ids, so ties are possible (only five priority buckets
+    /// exist) but the id set itself never varies between the two orderings
+    /// being compared.
+    const IDS: [&str; 5] = ["SH-1", "SH-2", "SH-3", "SH-4", "SH-5"];
+
+    fn priority_at(index: u8) -> Priority {
+        match index % 5 {
+            0 => Priority::Critical,
+            1 => Priority::High,
+            2 => Priority::Medium,
+            3 => Priority::Low,
+            _ => Priority::None,
+        }
+    }
+
+    fn snapshot(id: &str, priority: Priority) -> StorySnapshot {
+        StorySnapshot {
+            id: id.to_string(),
+            title: id.to_string(),
+            // Every story shares one instant, so `created_at` cannot break
+            // any tie even by accident — the property has to hold on the
+            // hardest case, not an easy one.
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            state: "todo".to_string(),
+            superstate: SuperState::Open,
+            assignee: None,
+            awaiting: None,
+            comments: Vec::new(),
+            relationships: Vec::new(),
+            priority,
+            labels: Vec::new(),
+            story_type: None,
+            description: None,
+            closed_at: None,
+            deleted: false,
+            deleted_reason: None,
+        }
+    }
+
+    /// Reorders `items` by pairing each with a tag from `seed` and sorting on
+    /// the tag — a cheap way to get an arbitrary permutation out of proptest
+    /// without needing a dedicated permutation strategy. A tag collision just
+    /// means that pair keeps its relative order, which is still a valid
+    /// permutation of the whole set.
+    fn permute<T: Clone>(items: &[T], seed: &[u32]) -> Vec<T> {
+        let mut tagged: Vec<(u32, &T)> = seed.iter().copied().zip(items.iter()).collect();
+        tagged.sort_by_key(|&(tag, _)| tag);
+        tagged.into_iter().map(|(_, item)| item.clone()).collect()
+    }
+
+    proptest! {
+        /// Two different arrival orders of the same five stories sort to the
+        /// same output, however their priorities collide.
+        #[test]
+        fn sorted_output_does_not_depend_on_arrival_order(
+            priority_indices in prop::collection::vec(0u8..5, IDS.len()),
+            seed_a in prop::collection::vec(any::<u32>(), IDS.len()),
+            seed_b in prop::collection::vec(any::<u32>(), IDS.len()),
+        ) {
+            let canonical: Vec<StorySnapshot> = IDS
+                .iter()
+                .zip(priority_indices.iter())
+                .map(|(id, &index)| snapshot(id, priority_at(index)))
+                .collect();
+
+            let mut a = permute(&canonical, &seed_a);
+            let mut b = permute(&canonical, &seed_b);
+            a.sort_by(ready_order);
+            b.sort_by(ready_order);
+
+            let ids_of = |stories: &[StorySnapshot]| -> Vec<String> {
+                stories.iter().map(|s| s.id.clone()).collect()
+            };
+            prop_assert_eq!(ids_of(&a), ids_of(&b));
+        }
     }
 }
