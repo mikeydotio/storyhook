@@ -194,12 +194,6 @@ pub fn open_store(env: &Environment) -> Result<crate::store::SqliteStore, AppErr
     config.busy_timeout = env.busy_timeout_value();
     let store = crate::store::SqliteStore::open_with(config)?;
     store.migrate()?;
-    // A failure here is not a reason to refuse the command: the registry
-    // belongs to the dashboard, and every storyhook command works without it.
-    let _ = crate::service::adopt_legacy_registry(
-        &store,
-        &env.legacy_global_dir().join("registry.toml"),
-    );
     Ok(store)
 }
 
@@ -513,17 +507,24 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                         message.push('\n');
                         message.push_str(&deregistered_message(&forgotten));
                     }
+                    let origins = catalog.register_found_origins()?;
+                    if !origins.is_empty() {
+                        message.push('\n');
+                        message.push_str(&registered_origins_message(&origins));
+                    }
                 }
                 Ok(Response::Message(message))
             } else {
                 match service.report()? {
                     issues if issues.is_empty() => {
-                        let orphans = if audit_catalog {
-                            catalog.orphaned()?
+                        let (orphans, origins) = if audit_catalog {
+                            (catalog.orphaned()?, catalog.unregistered_origins()?)
                         } else {
-                            Vec::new()
+                            (Vec::new(), Vec::new())
                         };
-                        Ok(Response::Issues(orphan_advice(&orphans)))
+                        let mut advice = orphan_advice(&orphans);
+                        advice.extend(origin_advice(&origins));
+                        Ok(Response::Issues(advice))
                     }
                     issues => Err(AppError::Integrity(issues.join("\n"))),
                 }
@@ -623,12 +624,11 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
         | Invocation::HelpTopic { .. }
         | Invocation::HelpCompact
         | Invocation::HelpAll
-        | Invocation::Version => dispatch_unscoped_with(
+        | Invocation::Version => dispatch_unscoped_with_stdin(
             ctx.store(),
             ctx.cwd(),
             &ctx.now(),
             invocation,
-            true,
             ctx.stdin(),
         ),
     }
@@ -658,7 +658,6 @@ fn dispatch_project<S: Store>(
     store: &S,
     root: &Path,
     now: &str,
-    pointer: bool,
     action: ProjectAction,
 ) -> Result<Response, AppError> {
     match action {
@@ -695,7 +694,6 @@ fn dispatch_project<S: Store>(
                     prefix: Some(spec.prefix),
                     name: spec.name,
                     agents_md: !spec.no_agents_md,
-                    pointer,
                     attach,
                 })?;
             let slug = store
@@ -1234,12 +1232,7 @@ pub fn dispatch_unscoped<S: Store>(
     now: &str,
     invocation: Invocation,
 ) -> Result<Response, AppError> {
-    // The pointer file is the repository's copy of which project it is, and
-    // the store is the identity of record — so `init` writes it. The parameter
-    // survives on [`dispatch_unscoped_with`] for the legacy web daemon, whose
-    // `init` still builds a `.storyhook/` tree and must not also leave a
-    // pointer claiming a project that tree is not in.
-    dispatch_unscoped_with(store, root, now, invocation, true, None)
+    dispatch_unscoped_with_stdin(store, root, now, invocation, None)
 }
 
 /// Whether an invocation can be answered without opening a store at all.
@@ -1294,7 +1287,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
 /// must gate on [`needs_no_store`] first; an invocation that needs a store
 /// reaches the fallback arm, which is an internal error rather than a guess.
 ///
-/// [`dispatch_unscoped_with`] forwards here rather than keeping its own copies,
+/// [`dispatch_unscoped_with_stdin`] forwards here rather than keeping its own copies,
 /// so the CLI's pre-store path and the daemon's dispatcher cannot answer the
 /// same invocation differently.
 pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppError> {
@@ -1344,21 +1337,19 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
     }
 }
 
-/// [`dispatch_unscoped`], told whether `story project new` should write the pointer
-/// file.
-pub fn dispatch_unscoped_with<S: Store>(
+/// [`dispatch_unscoped`], given whatever the client read on standard input.
+pub fn dispatch_unscoped_with_stdin<S: Store>(
     store: &S,
     root: &Path,
     now: &str,
     invocation: Invocation,
-    pointer: bool,
     stdin_input: Option<&str>,
 ) -> Result<Response, AppError> {
     if needs_no_store(&invocation) {
         return dispatch_without_store(invocation);
     }
     match invocation {
-        Invocation::Project { action } => dispatch_project(store, root, now, pointer, action),
+        Invocation::Project { action } => dispatch_project(store, root, now, action),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
         // answered before it ever looked for a project — so this arm does too,
@@ -1904,22 +1895,16 @@ pub struct StoreInvoker<'a, S: Store> {
     cwd: PathBuf,
     env: Environment,
     hook_depth: u32,
-    pointer: bool,
 }
 
 impl<'a, S: Store> StoreInvoker<'a, S> {
     /// An invoker over `store`, running from `cwd` under `env`.
-    ///
-    /// Writes the pointer file on `story project new`, because for a process served
-    /// this way the store *is* where the project lives, and a checkout with no
-    /// pointer is one a fresh clone cannot identify.
     pub fn new(store: &'a S, cwd: impl Into<PathBuf>, env: Environment) -> Self {
         Self {
             store,
             cwd: cwd.into(),
             env,
             hook_depth: 0,
-            pointer: true,
         }
     }
 
@@ -1927,13 +1912,6 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     #[must_use]
     pub fn hook_depth(mut self, hook_depth: u32) -> Self {
         self.hook_depth = hook_depth;
-        self
-    }
-
-    /// Sets whether `story project new` writes the pointer file.
-    #[must_use]
-    pub fn pointer(mut self, pointer: bool) -> Self {
-        self.pointer = pointer;
         self
     }
 
@@ -2066,34 +2044,69 @@ fn unresolvable_pointer_refusal(uuid: &str) -> AppError {
     ))
 }
 
-/// A directory and every ancestor of it, nearest first.
+/// A directory and every ancestor of it, nearest first, **stopping at the
+/// repository the directory is in**.
 ///
 /// Canonicalized once at the start rather than per level: an uncanonicalized
 /// path's ancestors include `..` components that would `stat` the wrong
 /// directories, and a directory that cannot be canonicalized (it does not
 /// exist) has no meaningful ancestry to walk beyond what it was given.
+///
+/// # Why it stops (SH-119, R1)
+///
+/// Unbounded, this walks out of the repository and keeps going — so a scratch
+/// directory made under a checkout of storyhook answers as *storyhook*, because
+/// storyhook's own committed pointer file is four levels up. A repository is the
+/// unit an identity belongs to, so the repository's top level is where looking
+/// for one stops.
+///
+/// The bound is a `stat` for `.git`, not a `git` subprocess: resolution runs on
+/// almost every command, and SH-116 measured an 11.8 ms whole-command baseline
+/// against which a 14 ms `git` call is not a bound but a doubling.
 fn ancestors(cwd: &Path) -> Vec<PathBuf> {
     let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    root.ancestors().map(Path::to_path_buf).collect()
+    let mut walked = Vec::new();
+    for dir in root.ancestors() {
+        walked.push(dir.to_path_buf());
+        if is_repository_top_level(dir) {
+            break;
+        }
+    }
+    walked
 }
 
-/// The project `dir` itself identifies — its pointer file, then its recorded
-/// path.
+/// Whether `dir` is a repository's *own* top level.
+///
+/// A **directory** named `.git`, deliberately, and this is the load-bearing
+/// half of the bound. A linked worktree — and a submodule — holds a `.git`
+/// *file* pointing at a git directory that belongs to somebody else, so neither
+/// is a top level in the sense that matters here and neither stops the climb.
+///
+/// That is what keeps a worktree resolving. `git worktree add` checks out a
+/// commit, and the pointer file is written by `story project new` *after* the
+/// commit that created the repository — so a worktree's own tree very often does
+/// not carry one, and the main checkout's is the only pointer there is. Stopping
+/// at a `.git` file would strand every one of them, `dispatch` included.
+fn is_repository_top_level(dir: &Path) -> bool {
+    dir.join(".git").is_dir()
+}
+
+/// The project `dir` itself identifies — the uuid in its committed pointer file.
 ///
 /// A pointer naming a uuid the store does not hold is **not** an answer here.
-/// It falls through, so a directory that carries a stale pointer and a valid
-/// path row still resolves; whether an unresolvable pointer should be reported
-/// rather than ignored is the guard's question, not resolution's.
+/// It falls through, and the caller decides what to do about it; whether an
+/// unresolvable pointer should be reported rather than ignored is the guard's
+/// question, not resolution's.
+///
+/// This used to have a second half — the directory's row in `project_paths` —
+/// and SH-119 deleted it with the index. A recorded path is a fact about this
+/// machine; a committed uuid is a fact about the repository, and it is the one
+/// that survives a clone, a move and a rename.
 fn resolve_at<S: Store>(store: &S, dir: &Path) -> Result<Option<ProjectId>, AppError> {
-    let pointer = crate::service::project::read_pointer(dir)?;
-    Ok(store.read(|tx| {
-        if let Some(pointer) = &pointer
-            && let Some(project) = tx.project_by_uuid(&pointer.uuid)?
-        {
-            return Ok(Some(project.id));
-        }
-        Ok(tx.project_by_path(dir)?.map(|project| project.id))
-    })?)
+    let Some(pointer) = crate::service::project::read_pointer(dir)? else {
+        return Ok(None);
+    };
+    Ok(store.read(|tx| Ok(tx.project_by_uuid(&pointer.uuid)?.map(|project| project.id)))?)
 }
 
 /// The directory a project would be brought into existence at, for the three
@@ -2185,12 +2198,11 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
                     describe_unscoped(&request.invocation)
                 )));
             }
-            return dispatch_unscoped_with(
+            return dispatch_unscoped_with_stdin(
                 self.store,
                 &self.cwd,
                 &now,
                 request.invocation,
-                self.pointer,
                 request.stdin.as_deref(),
             );
         }
@@ -2208,12 +2220,11 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             // files, and the legacy path printed them with default values in a
             // directory it knew nothing about.
             if matches!(request.invocation, Invocation::Scaffold { .. }) {
-                return dispatch_unscoped_with(
+                return dispatch_unscoped_with_stdin(
                     self.store,
                     &self.cwd,
                     &now,
                     request.invocation,
-                    self.pointer,
                     request.stdin.as_deref(),
                 );
             }
@@ -2429,5 +2440,105 @@ fn deregistered_message(forgotten: &[crate::service::OrphanedRegistration]) -> S
                   still listed by `story project list` and still on the dashboard, and \
                   `story project link checkout` puts a project back where its checkout moved to.",
     );
+    out
+}
+
+/// What `story doctor` says about a project whose checkout knows an origin the
+/// store does not (SH-119, R4).
+///
+/// Advisory, like [`orphan_advice`], and for a sharper reason: this is the
+/// state every project created before origins existed is in, so exiting
+/// non-zero would make `doctor` red on a machine where nothing is wrong. What
+/// it costs is a fresh clone of that repository failing to resolve, which is a
+/// thing to fix at leisure rather than an emergency.
+fn origin_advice(found: &[crate::service::UnregisteredOrigin]) -> Vec<String> {
+    use crate::service::OriginFinding;
+
+    if found.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = found
+        .iter()
+        .map(|item| match &item.finding {
+            OriginFinding::Registrable(owned) => format!(
+                "`{}` has no registered origin, and its checkout owns `{}` — a clone of it \
+                 cannot resolve until that is recorded",
+                item.slug,
+                owned.url().raw()
+            ),
+            OriginFinding::Inherited { origin, owner } => format!(
+                "`{}` has no registered origin. Its checkout `{}` reports `{}`, but that origin \
+                 belongs to `{}` — a project inside a repository is identified by its committed \
+                 `.storyhook.toml`, not by the repository's origin",
+                item.slug,
+                item.checkout.display(),
+                origin.raw(),
+                owner.display()
+            ),
+            OriginFinding::HeldBy { origin, holder } => format!(
+                "`{}` has no registered origin, and `{}` — the one its checkout owns — is \
+                 already registered to `{holder}`",
+                item.slug,
+                origin.raw()
+            ),
+            OriginFinding::Unknown(command) => format!(
+                "`{}` has no registered origin, and `{command}` failed in `{}`, so storyhook \
+                 cannot tell whether that checkout owns one",
+                item.slug,
+                item.checkout.display()
+            ),
+        })
+        .collect();
+    let registrable = found
+        .iter()
+        .filter(|item| matches!(item.finding, OriginFinding::Registrable(_)))
+        .count();
+    lines.push(format!(
+        "{} {} without a registered origin, {registrable} of which `story doctor --fix` can \
+         record. The rest need a decision: `story --project <slug> project link origin <url>` \
+         names one explicitly.",
+        found.len(),
+        if found.len() == 1 {
+            "project"
+        } else {
+            "projects"
+        },
+    ));
+    lines
+}
+
+/// What `story doctor --fix` reports having registered.
+fn registered_origins_message(found: &[crate::service::UnregisteredOrigin]) -> String {
+    use crate::service::OriginFinding;
+
+    let recorded: Vec<&crate::service::UnregisteredOrigin> = found
+        .iter()
+        .filter(|item| matches!(item.finding, OriginFinding::Registrable(_)))
+        .collect();
+    let mut out = format!(
+        "registered {} {}:",
+        recorded.len(),
+        if recorded.len() == 1 {
+            "origin"
+        } else {
+            "origins"
+        }
+    );
+    if recorded.is_empty() {
+        out = "registered no origins:".to_string();
+    }
+    for item in &recorded {
+        if let OriginFinding::Registrable(owned) = &item.finding {
+            out.push_str(&format!("\n  {} -> {}", item.slug, owned.url().raw()));
+        }
+    }
+    let left = found.len() - recorded.len();
+    if left > 0 {
+        out.push_str(&format!(
+            "\n\n{left} {} left alone, because storyhook will not guess at an origin a checkout \
+             does not own. `story doctor` names each of them.",
+            if left == 1 { "project" } else { "projects" }
+        ));
+    }
     out
 }

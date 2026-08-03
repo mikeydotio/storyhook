@@ -1,7 +1,8 @@
-//! Registrations that point at nothing, and checkouts that moved.
+//! `story doctor`'s catalog half: what a project records about a directory, and
+//! what the directory knows that the store does not.
 //!
-//! A registration is a claim that a project can be opened at a path. Two ways
-//! it goes wrong, and they want opposite answers:
+//! A linked checkout is a claim that a project can be opened at a path. Two
+//! ways it goes wrong, and they want opposite answers:
 //!
 //! * the checkout is **gone** — the claim is stale, and `story doctor --fix`
 //!   forgets it;
@@ -10,6 +11,13 @@
 //!
 //! Both live here because the distinction is the interesting part: forgetting a
 //! project that merely moved would be data loss dressed as tidying.
+//!
+//! The third case runs the other way. A project whose checkout **owns a git
+//! origin nobody registered** is one a fresh clone cannot resolve, because
+//! since SH-119 there is no index of directories to fall back on. `doctor`
+//! reports it and `--fix` records it — but only where the checkout genuinely
+//! owns the origin, because R4 is explicit that anything else is reported and
+//! never guessed at.
 //!
 //! Everything runs against a data home under `CARGO_TARGET_TMPDIR`, which is
 //! inside the checkout rather than under any temporary directory. That is
@@ -332,5 +340,163 @@ fn link_checkout_accepts_a_directory_with_no_pointer_file() {
     assert!(
         listed.contains(&format!("checkout  {}", bare.display())),
         "and it is recorded: {listed}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The origin backfill (SH-119, R4)
+// ---------------------------------------------------------------------------
+
+/// Runs `git <args>` in `cwd`, asserting success.
+fn git(cwd: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .current_dir(cwd)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .args(args)
+        .output()
+        .expect("running git");
+    assert!(
+        out.status.success(),
+        "git {args:?} in {}: {}",
+        cwd.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A repository with an origin, and a project attached to it whose origin
+/// registration has been withdrawn.
+///
+/// The withdrawal is what makes the fixture honest. `story project new`
+/// registers an owned origin as it creates the project, so the only way to
+/// build the state the backfill exists to repair — a project whose checkout
+/// knows an origin the store does not — is to unlink it afterwards. That is
+/// exactly the shape of every project created before origins were recorded at
+/// all, which on the author's machine was all thirteen.
+fn repository_with_an_unregistered_origin(label: &str) -> (Fixture, String, String) {
+    let f = fixture(label);
+    let origin = format!("https://github.com/acme/{label}.git");
+    git(&f.checkout, &["init", "-q", "-b", "main"]);
+    git(&f.checkout, &["remote", "add", "origin", &origin]);
+
+    // `project new` ran before the repository existed, so nothing was
+    // registered; a run now would register it, which is what `--fix` must do
+    // instead. Re-running it here would defeat the test.
+    let slug = slug_for(&f, &f.checkout.display().to_string());
+    (f, slug, origin)
+}
+
+#[test]
+fn doctor_reports_a_checkout_whose_origin_nobody_registered() {
+    let (f, slug, origin) = repository_with_an_unregistered_origin("origin-report");
+
+    let out = story(&f.workdir, &f.data_home, &["doctor"]);
+    let report = stdout(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "advice, not an integrity failure"
+    );
+    assert!(
+        report.contains(&slug) && report.contains(&origin),
+        "the report must name the project and the origin it could record: {report}"
+    );
+    assert!(
+        report.contains("cannot resolve"),
+        "and say what it costs: {report}"
+    );
+}
+
+#[test]
+fn doctor_fix_registers_the_origin_and_then_has_nothing_to_say() {
+    let (f, slug, origin) = repository_with_an_unregistered_origin("origin-fix");
+
+    let fixed = story(&f.workdir, &f.data_home, &["doctor", "--fix"]);
+    assert_eq!(fixed.status.code(), Some(0));
+    assert!(
+        stdout(&fixed).contains("registered 1 origin") && stdout(&fixed).contains(&origin),
+        "it must say what it recorded: {}",
+        stdout(&fixed)
+    );
+
+    // The whole point of recording it: the directory now resolves by its
+    // origin, with no pointer file involved at all.
+    std::fs::remove_file(f.checkout.join(".storyhook.toml")).expect("removing the pointer");
+    let listed = stdout(&story(
+        &f.checkout,
+        &f.data_home,
+        &["project", "settings", "list"],
+    ));
+    assert!(
+        !listed.is_empty(),
+        "a checkout with no pointer must resolve by the origin just registered"
+    );
+
+    let again = stdout(&story(&f.workdir, &f.data_home, &["doctor"]));
+    assert!(
+        !again.contains(&slug) || !again.contains("no registered origin"),
+        "a second run has nothing left to report: {again}"
+    );
+}
+
+#[test]
+fn doctor_reports_but_never_registers_an_origin_the_checkout_does_not_own() {
+    // A project in a subdirectory of a repository. Its checkout reports the
+    // enclosing repository's origin and does not own it, so registering it
+    // would be one repository wearing two identities — the defect SH-151 was
+    // filed to close. The report says so; `--fix` leaves it alone.
+    let f = fixture("origin-inherited");
+    git(&f.checkout, &["init", "-q", "-b", "main"]);
+    git(
+        &f.checkout,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/mono.git",
+        ],
+    );
+    let service = f.checkout.join("service-a");
+    std::fs::create_dir_all(&service).expect("creating the sub-project directory");
+    let out = story(
+        &service,
+        &f.data_home,
+        &["project", "new", "--prefix", "SA"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let report = stdout(&story(&f.workdir, &f.data_home, &["doctor"]));
+    assert!(
+        report.contains("belongs to") && report.contains("service-a"),
+        "the report must name the owner rather than offering to register: {report}"
+    );
+
+    let fixed = stdout(&story(&f.workdir, &f.data_home, &["doctor", "--fix"]));
+    assert!(
+        fixed.contains("left alone"),
+        "`--fix` must say what it declined to guess at: {fixed}"
+    );
+    // The origin is recorded **once**, against the directory that owns it — the
+    // repository's own top level, whose project `--fix` was right to register.
+    // What must never happen is the sub-project taking it, which is the state
+    // that makes a clone of the monorepo answer for the wrong service.
+    let listed = stdout(&story(&f.workdir, &f.data_home, &["project", "list"]));
+    assert_eq!(
+        listed.matches("acme/mono").count(),
+        1,
+        "exactly one project may hold the repository's origin: {listed}"
+    );
+    let service_row = listed
+        .split("  service-a ")
+        .nth(1)
+        .expect("a row for the sub-project");
+    assert!(
+        !service_row.contains("\n      origin"),
+        "the sub-project must hold no origin at all: {service_row}"
     );
 }

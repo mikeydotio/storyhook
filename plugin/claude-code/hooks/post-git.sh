@@ -51,8 +51,12 @@ if [[ "$command_str" != *"git commit"* && "$command_str" != *"git merge"* && "$c
   exit 0
 fi
 
-# Check if this is a storyhook project, and whether it wants the hook
-if ! storyhook_pointer >/dev/null || ! hook_is_enabled; then
+# Whether this repository wants the hook. Whether this directory *is* a
+# storyhook project is not asked here: only storyhook can answer it — a fresh
+# clone with no pointer file resolves by its registered origin — so the gate is
+# `story commit-sync` itself, below. It refuses on stderr and prints nothing,
+# which collapses to `{}` exactly as a disabled hook does.
+if ! hook_is_enabled; then
   printf '{}'
   exit 0
 fi

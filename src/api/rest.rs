@@ -39,9 +39,7 @@ use crate::env::Environment;
 use crate::error::AppError;
 use crate::invoke::dispatch;
 use crate::output::{Response, render_response};
-use crate::service::{
-    CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService, preferred_checkout,
-};
+use crate::service::{CatalogService, ConfigService, Ctx, FieldEdits, QueryService, StoryService};
 use crate::store::{ProjectId, ReadOps, Store};
 
 const DASHBOARD_HTML: &str = include_str!("../web_dashboard.html");
@@ -335,7 +333,7 @@ fn resolve_repo<S: Store>(store: &S, slug: &str) -> Result<Option<Repo>, AppErro
         let Some(project) = tx.project_by_slug(slug)? else {
             return Ok(None);
         };
-        let checkout = preferred_checkout(tx.project_paths(project.id)?);
+        let checkout = tx.checkout_path(project.id)?;
         Ok(Some(Repo {
             project: project.id,
             checkout,
@@ -1129,9 +1127,9 @@ mod tests {
         );
         assert!(
             store
-                .read(|tx| tx.project_by_path(&throwaway))
+                .read(|tx| tx.projects())
                 .expect("reading the store")
-                .is_none(),
+                .is_empty(),
             "the refusal still wrote a project"
         );
         assert_eq!(

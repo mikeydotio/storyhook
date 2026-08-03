@@ -24,7 +24,7 @@ use rusqlite::Connection;
 use storyhook::domain::{Priority, StateDef, StoryEvent, SuperState, TypeDef, fold_story};
 use storyhook::store::migrate;
 use storyhook::store::{
-    EventSeq, ExpectedSeq, NewProject, PathKind, ReadOps, SqliteStore, Store, StoryNo, WriteOps,
+    EventSeq, ExpectedSeq, NewProject, ReadOps, SqliteStore, Store, StoryNo, WriteOps,
 };
 use storyhook_test_support::scratch_dir;
 
@@ -92,8 +92,6 @@ fn build(path: &Path) {
                 prefix: "SH".into(),
                 created_at: "2026-01-01T00:00:00Z".into(),
             })?;
-            tx.touch_project_path(project, Path::new("/fixture/main"), PathKind::Main)?;
-            tx.touch_project_path(project, Path::new("/fixture/wt-a"), PathKind::Worktree)?;
             tx.put_states(project, &states)?;
             tx.put_types(
                 project,
@@ -187,6 +185,22 @@ fn build(path: &Path) {
             Ok(())
         })
         .unwrap();
+
+    // `project_paths` in raw SQL, because the writer that used to fill it is
+    // deleted (SH-119) and this fixture is *v1*, where the table still exists.
+    // Two rows, a main tree and a linked worktree, so that migration 8's
+    // carry-over — main becomes `projects.checkout_path`, worktrees are
+    // dropped — has both cases to act on when this file is migrated forward.
+    let conn = Connection::open(path).unwrap();
+    for (checkout, kind) in [("/fixture/main", "main"), ("/fixture/wt-a", "worktree")] {
+        conn.execute(
+            "INSERT INTO project_paths (project_id, path, kind, last_seen_at) \
+             VALUES ((SELECT id FROM projects WHERE slug = 'fixture'), ?1, ?2, \
+                     '2026-01-01T00:00:00Z')",
+            rusqlite::params![checkout, kind],
+        )
+        .unwrap();
+    }
 }
 
 #[test]

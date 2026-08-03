@@ -23,9 +23,7 @@ use std::path::Path;
 use storyhook::domain::{Member, StateDef, SuperState, TypeDef};
 use storyhook::env::Environment;
 use storyhook::service::{Clock, Ctx};
-use storyhook::store::{
-    NewProject, PathKind, ProjectId, SqliteStore, Store, WriteOps, diff_read_model,
-};
+use storyhook::store::{NewProject, ProjectId, SqliteStore, Store, WriteOps, diff_read_model};
 use tempfile::TempDir;
 
 use crate::scratch::scratch_dir;
@@ -77,7 +75,7 @@ impl ServiceFixture {
                     prefix: "SH".into(),
                     created_at: FIXTURE_NOW.into(),
                 })?;
-                tx.touch_project_path(project, Path::new("/checkouts/fixture"), PathKind::Main)?;
+                tx.set_checkout_path(project, Some(Path::new("/checkouts/fixture")))?;
                 tx.put_states(project, states)?;
                 tx.put_types(project, &default_types())?;
                 Ok(project)

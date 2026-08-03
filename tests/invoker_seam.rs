@@ -65,7 +65,11 @@ mod resolution {
     use tempfile::TempDir;
 
     /// A store, and a project rooted at a scratch directory.
-    fn project(pointer: bool) -> (TempDir, SqliteStore, TempDir, ProjectId) {
+    ///
+    /// The checkout carries a pointer file, because an attaching run always
+    /// writes one (SH-119); a test whose subject is a checkout without one
+    /// removes the file itself, and says why.
+    fn project() -> (TempDir, SqliteStore, TempDir, ProjectId) {
         let dir = scratch_dir();
         let store =
             SqliteStore::open(Environment::at(dir.path()).store_path()).expect("opening the store");
@@ -74,11 +78,15 @@ mod resolution {
         let outcome = ProjectService::new(&store, root.path())
             .init(&InitOptions {
                 agents_md: false,
-                pointer,
                 ..InitOptions::default()
             })
             .expect("initializing");
         (dir, store, root, outcome.project)
+    }
+
+    /// Removes a checkout's pointer file, leaving only its recorded path row.
+    fn forget_the_pointer(root: &Path) {
+        std::fs::remove_file(root.join(".storyhook.toml")).expect("removing the pointer file");
     }
 
     /// `story summary` from `cwd`, which needs a resolved project to answer.
@@ -89,7 +97,7 @@ mod resolution {
 
     #[test]
     fn a_command_run_in_a_subdirectory_finds_the_project_above_it() {
-        let (_dir, store, root, _project) = project(true);
+        let (_dir, store, root, _project) = project();
         let deep = root.path().join("src/service/nested");
         std::fs::create_dir_all(&deep).expect("creating a subdirectory");
 
@@ -102,13 +110,12 @@ mod resolution {
 
     #[test]
     fn the_nearest_project_wins_over_an_outer_one() {
-        let (_dir, store, outer, outer_id) = project(true);
+        let (_dir, store, outer, outer_id) = project();
         let inner_root = outer.path().join("vendor/embedded");
         std::fs::create_dir_all(&inner_root).expect("creating the inner checkout");
         let inner_id = ProjectService::new(&store, &inner_root)
             .init(&InitOptions {
                 agents_md: false,
-                pointer: true,
                 ..InitOptions::default()
             })
             .expect("initializing the inner project")
@@ -125,42 +132,107 @@ mod resolution {
             "the leaf itself identifies nothing — the answer has to come from the walk"
         );
         summary(&store, &deep).expect("the inner project answers");
-        let paths = store
-            .read(|tx| tx.project_paths(inner_id))
-            .expect("reading checkouts");
-        assert_eq!(paths.len(), 1, "resolution must not register new checkouts");
+        assert_eq!(
+            store
+                .read(|tx| tx.checkout_path(inner_id))
+                .expect("reading the linked checkout")
+                .as_deref(),
+            Some(inner_root.canonicalize().expect("canonicalizing").as_path()),
+            "resolving from a subdirectory must not re-point the project at it"
+        );
     }
 
     #[test]
     fn a_directory_under_no_project_at_all_still_refuses() {
-        let (_dir, store, _root, _project) = project(true);
+        let (_dir, store, _root, _project) = project();
         let stranger = scratch_dir();
         let error = summary(&store, stranger.path()).expect_err("nothing to resolve");
         assert!(matches!(error, AppError::NotFound(_)), "{error}");
     }
 
     #[test]
-    fn the_walk_resolves_by_a_recorded_path_when_there_is_no_pointer() {
-        // Repositories migrated before the pointer existed, and the legacy web
-        // daemon's checkouts, have a path row and no committed file.
-        let (_dir, store, root, _project) = project(false);
+    fn a_checkout_that_lost_its_pointer_file_refuses_rather_than_resolving() {
+        // The premise this replaces was `the_walk_resolves_by_a_recorded_path
+        // _when_there_is_no_pointer`, and it was true for as long as the store
+        // kept an index of directories. SH-119 deleted it: a recorded path is a
+        // fact about one machine, and the epic's invariant is that nothing
+        // about the filesystem is ever *required* to say which project this is.
+        //
+        // What answers for a checkout with no pointer file now is its origin,
+        // which this scratch directory does not have — so it refuses, naming
+        // both ways out.
+        let (_dir, store, root, _project) = project();
+        forget_the_pointer(root.path());
         let deep = root.path().join("deep/er/still");
         std::fs::create_dir_all(&deep).expect("creating a subdirectory");
-        summary(&store, &deep).expect("a recorded path is an identity too");
+
+        let error = summary(&store, &deep).expect_err("a directory is not an identity");
+        assert!(matches!(error, AppError::NotFound(_)), "{error}");
     }
 
     #[test]
-    fn a_pointer_naming_an_unknown_project_does_not_shadow_a_valid_path_row() {
-        let (_dir, store, root, _project) = project(false);
+    fn a_pointer_naming_an_unknown_project_refuses_by_naming_it() {
+        // There is no path row left for a stale pointer to fall through *to*,
+        // and falling through to nothing would report "not initialized" about a
+        // checkout that states its identity in a committed file. The refusal
+        // names the project instead, which is what a fresh clone needs to hear.
+        let (_dir, store, root, _project) = project();
         write_pointer(
             root.path(),
             &ProjectPointer::new("no-such-uuid".to_string(), "SH".to_string()),
         )
         .expect("writing a stale pointer");
 
-        summary(&store, root.path()).expect(
-            "a pointer the store cannot resolve must fall through to the path rather \
-             than making the directory unusable",
+        let error = summary(&store, root.path()).expect_err("the store has no such project");
+        assert!(
+            error.to_string().contains("no-such-uuid"),
+            "the refusal must name the project the checkout claims: {error}"
+        );
+    }
+
+    #[test]
+    fn the_climb_stops_at_the_repository_it_is_standing_in() {
+        // Unbounded, this is how a scratch directory made under a checkout of
+        // storyhook answers as storyhook: the enclosing pointer file is simply
+        // the nearest one above. A repository is the unit an identity belongs
+        // to, so a directory inside a *different* repository must not inherit
+        // the one outside it.
+        let (_dir, store, outer, _project) = project();
+        let inner = outer.path().join("vendored");
+        std::fs::create_dir_all(inner.join(".git")).expect("creating a repository top level");
+        let deep = inner.join("src");
+        std::fs::create_dir_all(&deep).expect("creating a subdirectory");
+
+        let error = summary(&store, &deep).expect_err(
+            "the climb must stop at `vendored`, which identifies no project, rather \
+             than answering with the project outside it",
+        );
+        assert!(matches!(error, AppError::NotFound(_)), "{error}");
+    }
+
+    #[test]
+    fn a_linked_worktrees_git_file_does_not_stop_the_climb() {
+        // The other side of the bound, and the reason it tests for a `.git`
+        // *directory*. A linked worktree holds a `.git` file, and its tree is a
+        // commit made before `story project new` ever ran — so the main
+        // checkout's pointer is the only one there is. This is what keeps
+        // `dispatch` and `worktree_truth` resolving.
+        let (_dir, store, root, project_id) = project();
+        let worktree = root.path().join(".claude/worktrees/wt");
+        std::fs::create_dir_all(&worktree).expect("creating a worktree directory");
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: /elsewhere/.git/worktrees/wt\n",
+        )
+        .expect("writing a worktree's .git file");
+
+        let resolved =
+            summary(&store, &worktree).expect("a worktree resolves by its main checkout");
+        assert!(matches!(resolved, Response::Summary(_)), "{resolved:?}");
+        assert_eq!(
+            storyhook_test_support::project_id_at(&store, root.path()),
+            Some(project_id),
+            "and it is the main checkout's project it resolved to"
         );
     }
 
@@ -169,7 +241,7 @@ mod resolution {
         // The rearchitecture's headline property, at the level resolution owns
         // it: the pointer file is committed, so a second checkout carries it and
         // answers with the same project id.
-        let (_dir, store, root, project_id) = project(true);
+        let (_dir, store, root, project_id) = project();
         let pointer = std::fs::read_to_string(root.path().join(".storyhook.toml"))
             .expect("reading the pointer");
         let clone = scratch_dir();
@@ -859,5 +931,82 @@ fn every_interactive_prompt_is_in_the_allowlist() {
         4,
         "the allowlist changed; each entry is a filed exemption, so adding one needs a story \
          and removing one needs the defect to be gone"
+    );
+}
+
+/// The resolution index is **gone**, and no code under `src/` can reach it.
+///
+/// SH-119's first acceptance criterion, in the shape that can be enforced: "no
+/// symbol listed above remains in `src/`, and `grep project_paths src/` is
+/// empty". The literal grep cannot be empty — migration 8 is *named* for the
+/// table it drops, and several comments say what used to be where — so what is
+/// checked is the thing the criterion means: that no line of code names the
+/// deleted API. Comments are stripped before the check, which is exactly the
+/// distinction between a mention and a call.
+///
+/// Crude on purpose, and for the same reasons `the_legacy_write_path_is_gone`
+/// gives: it needs no build graph, and unlike a visibility change it cannot be
+/// satisfied by a re-export. The table itself is checked where it can be — a
+/// migrated store has no `project_paths` object at all
+/// (`tests/store_migrations.rs::a_migrated_store_has_no_resolution_index_left`).
+#[test]
+fn the_resolution_index_is_gone() {
+    use std::path::Path;
+
+    fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    /// A line with any `//` comment removed — including doc comments, which
+    /// start with the same two characters.
+    fn code(line: &str) -> &str {
+        line.split_once("//").map_or(line, |(before, _)| before)
+    }
+
+    // Every name the index was reached by. `project_paths` itself is matched as
+    // a *call* (`.project_paths(`) rather than as a word, because migration 8's
+    // `name:` and `include_str!` both spell the table it deletes.
+    const FORBIDDEN: [&str; 6] = [
+        "touch_project_path",
+        "forget_project_path",
+        "project_by_path",
+        "ProjectPathRecord",
+        "PathKind",
+        ".project_paths(",
+    ];
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    assert!(
+        files.len() > 20,
+        "expected the whole tree, got {}",
+        files.len()
+    );
+
+    let mut breaches = Vec::new();
+    for (path, text) in &files {
+        for (number, line) in text.lines().enumerate() {
+            for name in FORBIDDEN {
+                if code(line).contains(name) {
+                    breaches.push(format!("{path}:{}: {name}", number + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        breaches.is_empty(),
+        "the recorded-path index is deleted (SH-119). A project is identified by the \
+         selector, its committed pointer file, or its registered origin — never by the \
+         directory a command was run in:\n  {}",
+        breaches.join("\n  ")
     );
 }

@@ -129,11 +129,39 @@ enabled = false
   out=$(run_hook "$hook" "$repo/deep/nested")
   assert_eq "$(reached)" "yes" "$hook: an enabled project works from a subdirectory too"
 
-  # --- no pointer anywhere: not a storyhook project, so nothing runs ---
+  # --- no pointer anywhere: the shell stops deciding (SH-119) ---
+  #
+  # This used to assert the opposite, and the premise is rewritten rather than
+  # relaxed. A checkout with no committed pointer file is not "not a storyhook
+  # project": it is a fresh clone, which resolves by its registered origin —
+  # something only storyhook can look up. So the hook asks, and the command it
+  # was going to run anyway is the gate.
   rm -f "$repo/.storyhook.toml"
   out=$(run_hook "$hook" "$repo")
-  assert_eq "$(reached)" "no" "$hook: a directory with no pointer is left alone"
-  assert_eq "$out" "{}" "$hook: and it emits an empty directive"
+  assert_eq "$(reached)" "yes" \
+    "$hook: with no pointer file the hook asks storyhook rather than guessing"
+done
+
+# --- and a refusal is silent: the CLI's own answer collapses to `{}` --------
+#
+# The other half of moving the gate. `story` writes a refusal to *stderr* and
+# nothing to stdout, so a directory that is genuinely no project produces an
+# empty capture and the hook emits an empty directive — the same thing the
+# deleted shell walk produced, without the shell having to know anything.
+REFUSING_DIR=$(mktemp -d /tmp/story-test-hookrefuse.XXXXXX)
+_TMP_REPOS+=("$REFUSING_DIR")
+cat >"$REFUSING_DIR/story" <<'REFUSE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STORY_FAKE_LOG"
+printf 'error: storyhook cannot tell which project this is.\n' >&2
+exit 3
+REFUSE
+chmod +x "$REFUSING_DIR/story"
+
+for hook in post-git stop-handoff; do
+  out=$(PATH="$REFUSING_DIR:$PATH" run_hook "$hook" "$repo")
+  assert_eq "$(reached)" "yes" "$hook: the refusing CLI was reached"
+  assert_eq "$out" "{}" "$hook: a refusal emits an empty directive"
 done
 
 # --- post-git still ignores everything that is not a git write ------------
