@@ -1,148 +1,111 @@
 //! The headline regression of the data-layer rearchitecture: **two checkouts of
 //! one repository must share one truth.**
 //!
-//! Storyhook keeps its state in `.storyhook/`, a *version-controlled* directory
-//! (`src/app.rs`: "It must be committed to git so that project state travels
-//! with the repository"). That single decision is the root of SH-46's
-//! second-order failure. A git worktree is a second checkout of the same
-//! repository, so it gets its own copy of `.storyhook/` — including its own
-//! `next-id` counter and its own story files. Two checkouts are therefore two
-//! independent databases that happen to share a git history:
+//! Storyhook used to keep its state in `.storyhook/`, a *version-controlled*
+//! directory, and that single decision was the root of SH-46's second-order
+//! failure. A git worktree is a second checkout of the same repository, so it
+//! got its own copy — including its own `next-id` counter and its own story
+//! files. Two checkouts were therefore two independent databases that happened
+//! to share a git history:
 //!
-//! - a story created in one checkout does not exist in the other, and
-//! - two concurrent `story new` calls both mint the *same* id.
+//! - a story created in one checkout did not exist in the other, and
+//! - two concurrent `story new` calls both minted the *same* id.
 //!
-//! `ensure_project` (`src/storage.rs:318`) does not walk up ancestors — the
-//! project root is exactly `env::current_dir()` — so nothing rescues this at
-//! read time. `plugin/claude-code/tests/test-dispatch-cwd.sh` works around it
-//! in the dispatch layer by anchoring every `story` call at the *main* repo;
-//! that fix cannot reach a human (or agent) who simply runs `story new` while
-//! standing in a worktree.
-//!
-//! Both tests below assert the world the rearchitecture is *for*: one global
-//! store, one id space, one truth per project regardless of checkout. They were
-//! `#[ignore]`d from the day they were written — red on purpose, the program's
-//! stated exit criterion — and **the flip is what turned them green**. The
-//! attributes came off in the same wave that moved story data into the store.
-//!
-//! The assertions below are byte-identical to the ones written against the
-//! failing behaviour. Only the fixture changed, and only in the one way it had
-//! to: what a checkout commits, so that a second checkout inherits it, is the
-//! pointer file rather than a copy of the whole tracker.
-//!
-//! Captured red output, `cargo test --workspace --test worktree_truth -- --ignored`
-//! at commit `6320609`:
+//! Captured red output, `cargo test --test worktree_truth -- --ignored` at
+//! commit `6320609`, before the flip:
 //!
 //! ```text
 //! ---- two_worktrees_of_one_repo_mint_colliding_ids stdout ----
 //! assertion `left != right` failed: two checkouts of one repository must not
-//! mint the same story id; both `story new` calls returned SH-2. Each checkout
-//! carries its own committed copy of .storyhook/next-id, so each incremented a
-//! private counter.
+//! mint the same story id; both `story new` calls returned SH-2.
 //!   left: "SH-2"
 //!  right: "SH-2"
-//!
-//! ---- a_story_created_in_one_checkout_is_visible_from_the_other stdout ----
-//! assertion failed: a story created in worktree `a` must be visible from
-//! worktree `b` — they are one project. `story show SH-2` in b exited with
-//! code 3 and said: error: story `SH-2` not found
 //! ```
 //!
-//! The two ids collide at `SH-2` rather than `SH-1` because the fixture seeds
-//! one story before splitting, which proves the checkouts start from a *shared*
-//! counter and then diverge — the collision is drift, not a fixture that never
-//! agreed in the first place.
+//! # Why this file was rewritten (SH-121, C10 of the server-owned epic SH-112)
+//!
+//! The assertions below are the ones written against that failing behaviour.
+//! **The fixture is what changed, and it had to.**
+//!
+//! At the flip, the fixture kept the shape of the defect and swapped what a
+//! checkout commits: `.storyhook.toml` instead of the whole tracker. Each
+//! worktree then carried a copy of the pointer file, and resolution — which
+//! reads the pointer in the working directory first — answered from that copy.
+//! So did every other checkout in the fixture. That is a green test proving
+//! **two directories holding the same three lines of TOML agree**, which is a
+//! fact about `cp`, and it stayed green through SH-119 deleting the
+//! resolution index underneath it without ever executing the new path.
+//! `invoker_seam.rs::two_checkouts_of_one_project_resolve_to_the_same_project`
+//! already makes exactly that claim, in-process, for a tenth of the cost.
+//!
+//! Measured rather than reasoned about: a whole-suite trace of which step
+//! answered every project resolution found **892 of 963 resolved by a pointer
+//! file in the working directory itself, and 5 by a registered origin** — both
+//! of this file's worktrees among the 892.
+//!
+//! # What the fixture is now
+//!
+//! A `git clone` of the project's origin, with its worktrees inside it. Nothing
+//! in that tree carries a pointer file and nothing above it does either
+//! ([`assert_selection_is_not_inherited`] is what says so, per worktree), so
+//! **the registered origin is the only thing that can answer** — which is the
+//! mechanism the epic states: *a second checkout of the same origin is the same
+//! project, so linked worktrees resolve identically to their main tree by
+//! construction, with no runtime git walk and no worktree bookkeeping.*
+//!
+//! The clone is also the honest shape. It is what a second machine, or a second
+//! working copy, actually has: the pointer file is written by `story project
+//! new` after the push that created the origin, so it never travels.
+//!
+//! `the_origin_is_what_answers_and_nothing_else_is` is the guard that keeps this
+//! file from decaying back into the last one. It breaks the mechanism —
+//! `story project unlink origin` — and requires the answer to disappear.
 
-use std::path::Path;
-use std::process::Command;
+use std::process::Stdio;
 
-use storyhook_test_support::{Project, TestEnv};
+use storyhook_test_support::{Project, SecondCheckout, TestEnv, assert_selection_is_not_inherited};
 
-/// Builds one repository with two linked worktrees, each carrying the committed
-/// pointer file — the exact shape a real storyhook repo has when
-/// `story.sh dispatch` opens a second working session.
+/// One repository with a registered origin, and a second checkout of it
+/// carrying two linked worktrees.
 ///
-/// [`storyhook_test_support::ProjectBuilder`] leaves `.storyhook.toml`
-/// untracked, so this commits it and fast-forwards both worktrees onto that
-/// commit. That step is what makes the fixture faithful: without it the
-/// worktrees carry no pointer, and while they would still resolve the project
-/// by path, they would be doing it for a reason a fresh clone on another
-/// machine could not rely on.
-///
-/// It is also where the fixture changed at the flip, and the change is the
-/// whole point. What a checkout commits used to be `.storyhook/` — the entire
-/// tracker, counter and all — so each worktree got its *own* database. What it
-/// commits now is one file naming which project this is; the data is in one
-/// place, and the second checkout inherits an identity rather than a copy.
-fn two_checkouts_of_one_repo() -> Project<'static> {
-    let env = TestEnv::shared();
-    let project = env.project().git().worktree("a").worktree("b").build();
-
-    // A story that predates the split. Both checkouts inherit it, so any later
-    // divergence is provably drift rather than fixtures that never agreed.
+/// The seed story predates the clone, so any later divergence is provably drift
+/// rather than fixtures that never agreed — and it is why the ids below collide
+/// at `SH-2` rather than `SH-1`.
+fn two_checkouts_of_one_repository<'a>(env: &'a TestEnv) -> (Project<'a>, SecondCheckout<'a>) {
+    let project = env.project().with_local_origin().build();
     project.new_story("Created before the checkouts diverged");
-
-    git(env, project.path(), &["add", ".storyhook.toml"]);
-    git(env, project.path(), &["commit", "-qm", "track the tracker"]);
-    for name in ["a", "b"] {
-        git(
-            env,
-            project.worktree_path(name),
-            &["merge", "-q", "--ff-only", "main"],
-        );
-    }
-
-    for name in ["a", "b"] {
-        assert!(
-            project.worktree_path(name).join(".storyhook.toml").exists(),
-            "fixture: worktree `{name}` must carry the committed pointer file — \
-             without it this file tests the wrong thing"
-        );
-    }
-    project
-}
-
-/// Runs `git <args>` in `cwd` under `env`, asserting success.
-fn git(env: &TestEnv, cwd: &Path, args: &[&str]) {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(cwd);
-    env.apply(&mut cmd);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    let out = cmd.args(args).output().expect("running git");
-    assert!(
-        out.status.success(),
-        "`git {}` in {} failed: {}",
-        args.join(" "),
-        cwd.display(),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let second = project
+        .second_checkout()
+        .with_worktree("a")
+        .with_worktree("b");
+    (project, second)
 }
 
 /// Two checkouts of one repository must never mint the same story id.
 ///
 /// The name records the *defect* (that is what a future reader greps for); the
-/// assertion states the world we want. Red today: see this file's header for
-/// the captured failure.
+/// assertion states the world we want. See this file's header for the captured
+/// failure it was written against.
 #[test]
 fn two_worktrees_of_one_repo_mint_colliding_ids() {
     let env = TestEnv::shared();
-    let project = two_checkouts_of_one_repo();
+    let (_project, second) = two_checkouts_of_one_repository(env);
 
     // Both processes must be *spawned* before either is waited on, or the
     // second one reads a counter the first has already advanced and the race
     // this test exists to lose never happens.
     let a = env
-        .raw_story(project.worktree_path("a"))
+        .raw_story(second.worktree_path("a"))
         .args(["new", "Minted in worktree a", "--json"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawning `story new` in worktree a");
     let b = env
-        .raw_story(project.worktree_path("b"))
+        .raw_story(second.worktree_path("b"))
         .args(["new", "Minted in worktree b", "--json"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawning `story new` in worktree b");
 
@@ -151,9 +114,8 @@ fn two_worktrees_of_one_repo_mint_colliding_ids() {
 
     assert_ne!(
         id_a, id_b,
-        "two checkouts of one repository must not mint the same story id; both \
-         `story new` calls returned {id_a}. Each checkout carries its own committed \
-         copy of .storyhook/next-id, so each incremented a private counter."
+        "two checkouts of one repository must not mint the same story id; both `story new` \
+         calls returned {id_a}"
     );
 }
 
@@ -165,26 +127,106 @@ fn two_worktrees_of_one_repo_mint_colliding_ids() {
 #[test]
 fn a_story_created_in_one_checkout_is_visible_from_the_other() {
     let env = TestEnv::shared();
-    let project = two_checkouts_of_one_repo();
+    let (_project, second) = two_checkouts_of_one_repository(env);
 
     let created = env
-        .story(project.worktree_path("a"))
+        .story(second.worktree_path("a"))
         .args(["new", "Created in worktree a", "--json"])
         .output()
         .expect("running `story new` in worktree a");
     let id = minted_id(created, "a");
 
     let seen = env
-        .story(project.worktree_path("b"))
+        .story(second.worktree_path("b"))
         .args(["show", &id])
         .output()
         .expect("running `story show` in worktree b");
     assert!(
         seen.status.success(),
-        "a story created in worktree `a` must be visible from worktree `b` — they \
-         are one project. `story show {id}` in b exited with code {} and said: {}",
+        "a story created in worktree `a` must be visible from worktree `b` — they are one \
+         project. `story show {id}` in b exited with code {} and said: {}",
         seen.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&seen.stderr).trim()
+    );
+}
+
+/// The case SH-121 names: a linked worktree and its main tree, across two
+/// repositories on disk that share nothing but an origin URL.
+///
+/// Stronger than the pair above, and the reason it is separate: worktrees `a`
+/// and `b` are two directories inside one clone, and could conceivably agree
+/// through something local to it. The clone and the original are *different
+/// repositories*, cloned before either knew about the other's stories, and the
+/// only fact they hold in common is `remote.origin.url`.
+#[test]
+fn a_linked_worktree_answers_for_its_main_trees_project() {
+    let env = TestEnv::shared();
+    let (project, second) = two_checkouts_of_one_repository(env);
+
+    let created = env
+        .story(second.worktree_path("a"))
+        .args(["new", "Created in a worktree of the clone", "--json"])
+        .output()
+        .expect("running `story new` in the clone's worktree");
+    let id = minted_id(created, "a");
+
+    let seen = project
+        .story()
+        .args(["show", &id])
+        .output()
+        .expect("running `story show` in the original checkout");
+    assert!(
+        seen.status.success(),
+        "the original checkout must see a story its clone's worktree created — one origin is \
+         one project. `story show {id}` exited {} and said: {}",
+        seen.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&seen.stderr).trim()
+    );
+}
+
+/// **AC-1, encoded rather than performed by hand.** Break the origin
+/// registration and the answer must go away.
+///
+/// Without this, every assertion above could be satisfied by some mechanism
+/// nobody meant — a path index quietly reintroduced, a pointer file a fixture
+/// started committing — and the file would be back to proving nothing. The
+/// registration is the *only* thing removed, and the refusal it leaves behind
+/// is the one an unresolvable directory always gets.
+///
+/// Isolated rather than shared: unlinking an origin is a fact about the store
+/// that every sibling test in this binary would also see.
+#[test]
+fn the_origin_is_what_answers_and_nothing_else_is() {
+    let env = TestEnv::isolated();
+    let (project, second) = two_checkouts_of_one_repository(&env);
+    let worktree = second.worktree_path("a");
+
+    // The precondition, asserted rather than assumed: it has to answer *before*
+    // the break, or the assertion after it passes for free.
+    env.story(worktree).args(["list"]).assert().success();
+    assert_selection_is_not_inherited(worktree);
+
+    project
+        .story()
+        .args(["project", "unlink", "origin"])
+        .assert()
+        .success();
+
+    let out = env
+        .story(worktree)
+        .args(["list"])
+        .output()
+        .expect("running story");
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "with the origin unregistered the worktree must refuse, not answer. stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--project"),
+        "and the refusal must still name a way out: {stderr}"
     );
 }
 
