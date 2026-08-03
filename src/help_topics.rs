@@ -1746,11 +1746,23 @@ belongs to, and no story data at all.
 
   <data home>/store.db
 
-The data home is the first of these that is set:
+The store file is named by the first of these that is set:
 
-  $STORYHOOK_DATA_DIR        names the directory outright
+  --store-path <file>        names the store file itself
+  $STORYHOOK_STORE_PATH      same, from the environment
+  $STORYHOOK_DATA_DIR        names the directory the file sits in
   $XDG_DATA_HOME/storyhook
   ~/.local/share/storyhook   the default
+
+--store-path and $STORYHOOK_STORE_PATH outrank $STORYHOOK_DATA_DIR: if a shell
+has one of the first two exported, the third is silently ignored. One daemon
+serves one store, keyed by this path, so naming a store here is what makes a
+command unable to read or write any other.
+
+story store new <path> creates an empty store beside the default one — the
+supported way to give a test suite, or a second tracker, a store of its own.
+It refuses to create the default path; that one is made by the daemon on its
+first run, never by this verb.
 
 The store runs in write-ahead-logging mode, so it is three files in practice:
 store.db, store.db-wal and store.db-shm. All three are part of the database.
