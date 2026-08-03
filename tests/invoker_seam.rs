@@ -173,6 +173,52 @@ mod resolution {
     }
 
     #[test]
+    fn the_climb_stops_at_the_repository_it_is_standing_in() {
+        // Unbounded, this is how a scratch directory made under a checkout of
+        // storyhook answers as storyhook: the enclosing pointer file is simply
+        // the nearest one above. A repository is the unit an identity belongs
+        // to, so a directory inside a *different* repository must not inherit
+        // the one outside it.
+        let (_dir, store, outer, _project) = project();
+        let inner = outer.path().join("vendored");
+        std::fs::create_dir_all(inner.join(".git")).expect("creating a repository top level");
+        let deep = inner.join("src");
+        std::fs::create_dir_all(&deep).expect("creating a subdirectory");
+
+        let error = summary(&store, &deep).expect_err(
+            "the climb must stop at `vendored`, which identifies no project, rather \
+             than answering with the project outside it",
+        );
+        assert!(matches!(error, AppError::NotFound(_)), "{error}");
+    }
+
+    #[test]
+    fn a_linked_worktrees_git_file_does_not_stop_the_climb() {
+        // The other side of the bound, and the reason it tests for a `.git`
+        // *directory*. A linked worktree holds a `.git` file, and its tree is a
+        // commit made before `story project new` ever ran — so the main
+        // checkout's pointer is the only one there is. This is what keeps
+        // `dispatch` and `worktree_truth` resolving.
+        let (_dir, store, root, project_id) = project();
+        let worktree = root.path().join(".claude/worktrees/wt");
+        std::fs::create_dir_all(&worktree).expect("creating a worktree directory");
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: /elsewhere/.git/worktrees/wt\n",
+        )
+        .expect("writing a worktree's .git file");
+
+        let resolved =
+            summary(&store, &worktree).expect("a worktree resolves by its main checkout");
+        assert!(matches!(resolved, Response::Summary(_)), "{resolved:?}");
+        assert_eq!(
+            storyhook_test_support::project_id_at(&store, root.path()),
+            Some(project_id),
+            "and it is the main checkout's project it resolved to"
+        );
+    }
+
+    #[test]
     fn two_checkouts_of_one_project_resolve_to_the_same_project() {
         // The rearchitecture's headline property, at the level resolution owns
         // it: the pointer file is committed, so a second checkout carries it and
