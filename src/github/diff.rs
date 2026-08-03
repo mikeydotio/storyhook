@@ -216,6 +216,55 @@ pub fn three_way_merge(
     }
 }
 
+/// The merge base to record after a sync that left `unresolved` conflicts
+/// behind.
+///
+/// **A merge base is a claim about what both sides had already agreed on**, and
+/// a field still in conflict is the one thing they have not. Advancing it
+/// wholesale — which is what this replaced — makes the *next* three-way merge
+/// see a field the local side appears not to have touched and the remote side
+/// did, so the remote value arrives as an ordinary pull and overwrites the
+/// local edit, with no conflict raised and nothing said. An unresolved conflict
+/// silently resolving itself one sync later is SH-152's actual data loss.
+///
+/// Freezing the whole base instead would be worse in a quieter way:
+/// [`merge_comments`] computes new local comments as "in local, not in base",
+/// so a frozen base re-pushes every already-pushed comment on every subsequent
+/// sync. So the base advances for everything the sync settled and holds only
+/// the fields still in dispute — converged fields then merge as
+/// both-changed-and-equal and stay quiet, while a conflicted field conflicts
+/// again until somebody decides it.
+///
+/// Values are taken from `previous` rather than from [`FieldConflict`]'s own
+/// strings, which are *rendered* for display: [`merge_optional`] writes an
+/// absent value as the literal `<none>`, and a base carrying that word would
+/// have the next sync believe the story was assigned to somebody of that name.
+pub fn base_after_sync(
+    previous: &StorySnapshot,
+    synced: &StorySnapshot,
+    unresolved: &[FieldConflict],
+) -> StorySnapshot {
+    let mut base = synced.clone();
+    for conflict in unresolved {
+        match conflict.field {
+            ConflictField::Title => base.title = previous.title.clone(),
+            ConflictField::State => {
+                // The slug and its superstate are one fact, and a base holding
+                // half of each side's would describe a story that never
+                // existed.
+                base.state = previous.state.clone();
+                base.superstate = previous.superstate.clone();
+            }
+            ConflictField::Assignee => base.assignee = previous.assignee.clone(),
+            ConflictField::Priority => base.priority = previous.priority.clone(),
+            ConflictField::Awaiting => base.awaiting = previous.awaiting.clone(),
+            ConflictField::Labels => base.labels = previous.labels.clone(),
+            ConflictField::Description => base.description = previous.description.clone(),
+        }
+    }
+    base
+}
+
 /// Helper: merge a scalar (non-optional) string field.
 fn merge_scalar(
     field: ConflictField,
@@ -976,5 +1025,171 @@ mod tests {
             ..Default::default()
         };
         assert!(!updates.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // base_after_sync — SH-152
+    // -----------------------------------------------------------------------
+
+    fn comment(text: &str, at: &str) -> StoryComment {
+        StoryComment {
+            at: at.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    /// **The data loss SH-152 is actually about, and it takes two syncs to
+    /// see.**
+    ///
+    /// Sync one meets a conflict nobody resolves. If the base then advances to
+    /// the local story wholesale — which is what
+    /// `sync_single_story` did — sync two sees a field the local side did not
+    /// touch and the remote side did, files it as an ordinary pull, and
+    /// overwrites the local edit with no conflict and no mention. "Skip
+    /// (resolve later)" was really "remote wins next time, silently".
+    ///
+    /// The other two assertions are the reason the base is not simply frozen:
+    /// a field both sides converged on must still advance, and a comment
+    /// already pushed must not be pushed again.
+    #[test]
+    fn an_unresolved_conflict_holds_its_base_and_conflicts_again() {
+        let previous = make_snapshot("SH-1");
+
+        let mut local = previous.clone();
+        local.title = "Local title".to_string();
+        local.state = "done".to_string();
+        local
+            .comments
+            .push(comment("a local note", "2026-01-02T00:00:00Z"));
+
+        let mut remote = previous.clone();
+        remote.title = "Remote title".to_string();
+        remote.state = "done".to_string();
+
+        let first = three_way_merge(&previous, &local, &remote);
+        assert_eq!(first.conflicts.len(), 1, "{:?}", first.conflicts);
+        assert_eq!(first.conflicts[0].field, ConflictField::Title);
+        assert_eq!(first.new_local_comments.len(), 1);
+
+        // Nothing resolved it, so nothing was applied: the story is unchanged.
+        let saved = base_after_sync(&previous, &local, &first.conflicts);
+
+        let second = three_way_merge(&saved, &local, &remote);
+        assert_eq!(
+            second.conflicts.len(),
+            1,
+            "an unresolved conflict must survive into the next sync, not resolve itself"
+        );
+        assert_eq!(second.conflicts[0].field, ConflictField::Title);
+        assert!(
+            second.local_updates.title.is_none(),
+            "the remote title must not arrive as an ordinary pull over the local edit"
+        );
+        assert!(
+            second.local_updates.state.is_none() && second.remote_updates.state.is_none(),
+            "a field both sides converged on has to advance with the base"
+        );
+        assert!(
+            second.new_local_comments.is_empty(),
+            "a comment this sync already pushed must not be pushed a second time"
+        );
+    }
+
+    /// With nothing left in conflict the base is exactly what the sync
+    /// produced — the ordinary case, and the one the old code got right.
+    #[test]
+    fn a_sync_with_no_unresolved_conflicts_advances_the_base_whole() {
+        let previous = make_snapshot("SH-1");
+        let mut synced = previous.clone();
+        synced.title = "Agreed title".to_string();
+        synced
+            .comments
+            .push(comment("note", "2026-01-02T00:00:00Z"));
+
+        assert_eq!(base_after_sync(&previous, &synced, &[]), synced);
+    }
+
+    /// Every field a conflict can name is restored, and the check is over the
+    /// enum rather than over a list somebody has to remember to extend: a
+    /// variant added to [`ConflictField`] without a restore arm fails here.
+    #[test]
+    fn every_conflict_field_is_held_back_and_nothing_else_is() {
+        let fields = [
+            ConflictField::Title,
+            ConflictField::State,
+            ConflictField::Assignee,
+            ConflictField::Priority,
+            ConflictField::Awaiting,
+            ConflictField::Labels,
+            ConflictField::Description,
+        ];
+
+        for field in fields {
+            let previous = make_snapshot("SH-1");
+
+            // A story where every conflictable field moved, plus a comment,
+            // so that holding one field back is visible and holding two is
+            // too.
+            let mut synced = previous.clone();
+            synced.title = "Synced title".to_string();
+            synced.state = "done".to_string();
+            synced.assignee = Some("mikey".to_string());
+            synced.priority = Priority::High;
+            synced.awaiting = Some("review".to_string());
+            synced.labels = vec!["bug".to_string()];
+            synced.description = Some("Synced body".to_string());
+            synced
+                .comments
+                .push(comment("note", "2026-01-02T00:00:00Z"));
+
+            let conflict = FieldConflict {
+                field,
+                base_value: "irrelevant".to_string(),
+                local_value: "irrelevant".to_string(),
+                remote_value: "irrelevant".to_string(),
+            };
+            let saved = base_after_sync(&previous, &synced, std::slice::from_ref(&conflict));
+
+            let mut expected = synced.clone();
+            match field {
+                ConflictField::Title => expected.title = previous.title.clone(),
+                ConflictField::State => {
+                    expected.state = previous.state.clone();
+                    expected.superstate = previous.superstate.clone();
+                }
+                ConflictField::Assignee => expected.assignee = previous.assignee.clone(),
+                ConflictField::Priority => expected.priority = previous.priority.clone(),
+                ConflictField::Awaiting => expected.awaiting = previous.awaiting.clone(),
+                ConflictField::Labels => expected.labels = previous.labels.clone(),
+                ConflictField::Description => expected.description = previous.description.clone(),
+            }
+            assert_eq!(saved, expected, "restoring {field}");
+        }
+    }
+
+    /// The values come from the previous base, never from the conflict's own
+    /// strings: `merge_optional` renders an absent value as the literal
+    /// `<none>`, and a base carrying that word would make the next sync think
+    /// the user had assigned the story to somebody called `<none>`.
+    #[test]
+    fn a_held_back_field_takes_its_typed_value_not_the_rendered_one() {
+        let previous = make_snapshot("SH-1");
+        assert!(previous.assignee.is_none());
+
+        let mut synced = previous.clone();
+        synced.assignee = Some("mikey".to_string());
+
+        let saved = base_after_sync(
+            &previous,
+            &synced,
+            &[FieldConflict {
+                field: ConflictField::Assignee,
+                base_value: "<none>".to_string(),
+                local_value: "mikey".to_string(),
+                remote_value: "sam".to_string(),
+            }],
+        );
+
+        assert_eq!(saved.assignee, None);
     }
 }

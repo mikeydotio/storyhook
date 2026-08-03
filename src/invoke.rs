@@ -542,14 +542,18 @@ pub fn dispatch<S: Store>(ctx: &Ctx<'_, S>, invocation: Invocation) -> Result<Re
                 ctx.story_view(&id)
             }
         },
-        Invocation::GithubSync { id, dry_run } => {
+        Invocation::GithubSync {
+            id,
+            dry_run,
+            resolve,
+        } => {
             #[cfg(feature = "github-sync")]
             {
-                crate::service::GithubSyncService::new(ctx).sync(id.as_deref(), dry_run)
+                crate::service::GithubSyncService::new(ctx).sync(id.as_deref(), dry_run, resolve)
             }
             #[cfg(not(feature = "github-sync"))]
             {
-                let _ = (id, dry_run);
+                let _ = (id, dry_run, resolve);
                 Err(AppError::Usage(
                     "github-sync requires the `github-sync` feature. \
                      Rebuild with: cargo install storyhook --features github-sync"

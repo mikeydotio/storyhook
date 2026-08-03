@@ -661,7 +661,7 @@ fn no_client_process_probes_for_the_host_it_prints() {
 ///
 /// # Two axes, because one of them misses the worst offender
 ///
-/// A `stdin()` grep alone would pass while `src/github/conflict.rs` sat at an
+/// A `stdin()` grep alone used to pass while `src/github/conflict.rs` sat at an
 /// interactive menu: `dialoguer` reads the terminal itself and never names
 /// `std::io::stdin`. So this checks for both, and matches the *full* path
 /// `std::io::stdin` so that `Ctx::stdin()` — an accessor for input the envelope
@@ -672,8 +672,10 @@ fn no_client_process_probes_for_the_host_it_prints() {
 /// Shipping it red would have meant weakening the assertion or fixing four
 /// unrelated defects inside a story about project verbs. Shipping it populated
 /// makes each existing violation a *recorded, story-linked exemption* instead
-/// of a silent hole, and a fifth one a deliberate edit that shows up in review.
-/// Removing a violation shrinks the list, which is why the count is asserted.
+/// of a silent hole, and a new one a deliberate edit that shows up in review.
+/// Removing a violation shrinks the list, which is why the count is asserted —
+/// it has gone from five to four exactly once, when SH-152 deleted the menu in
+/// `src/github/conflict.rs`.
 ///
 /// `src/service/questionnaire.rs` is deliberately **not** here: it takes
 /// `impl BufRead` and never names stdin at all, which is the shape a prompting
@@ -705,17 +707,18 @@ fn every_interactive_prompt_is_in_the_allowlist() {
     ///   deliberate for the TUI and in-process callers.
     /// * `src/service/story.rs` — `confirm_undelete` prompts from the *service*
     ///   layer, so `story reopen` can never ask and always refuses (SH-154).
-    /// * `src/github/conflict.rs` — `.interact().unwrap_or(2)`, so with no
-    ///   terminal every sync conflict silently resolves as Skip and every
-    ///   conflicting remote edit is lost, with no message anywhere (SH-152).
-    ///   The highest-severity finding SH-117 made.
     /// * `src/github/initial.rs` — three `Select::interact()` sites with no
     ///   terminal check at all (SH-153).
-    const ALLOWED: [&str; 5] = [
+    ///
+    /// `src/github/conflict.rs` was the fourth, and is the first entry this
+    /// list has ever lost: its `.interact().unwrap_or(2)` chose Skip for the
+    /// user whenever there was no terminal, which under the daemon is always.
+    /// The menu is deleted rather than guarded — a conflict the caller has not
+    /// answered now comes back as `AppError::SyncConflict` (SH-152).
+    const ALLOWED: [&str; 4] = [
         "src/main.rs",
         "src/invoke.rs",
         "src/service/story.rs",
-        "src/github/conflict.rs",
         "src/github/initial.rs",
     ];
 
@@ -763,7 +766,7 @@ fn every_interactive_prompt_is_in_the_allowlist() {
     // it should only ever get shorter.
     assert_eq!(
         ALLOWED.len(),
-        5,
+        4,
         "the allowlist changed; each entry is a filed exemption, so adding one needs a story \
          and removing one needs the defect to be gone"
     );

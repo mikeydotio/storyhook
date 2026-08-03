@@ -149,7 +149,7 @@ Usage:
   story update [--check] [--force]                 (self-update the story binary)
   story hooks install|uninstall|list|test <event_type>
   story commit-sync [--since <duration>]
-  story github-sync [<id>] [--dry-run]
+  story github-sync [<id>] [--dry-run] [--resolve local|remote]
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
   story plugin install|uninstall <target>
@@ -406,6 +406,9 @@ pub enum Invocation {
     GithubSync {
         id: Option<String>,
         dry_run: bool,
+        /// Which side of every conflict this run meets wins, if the caller has
+        /// said. `None` is not "guess" — it is the reason the run refuses.
+        resolve: Option<ConflictSide>,
     },
     HelpTopic {
         topic: String,
@@ -700,6 +703,21 @@ pub enum SettingsAction {
         /// The dotted name.
         key: String,
     },
+}
+
+/// Which side of a github-sync conflict the caller has chosen.
+///
+/// The wire form of `github::conflict::Resolution`, and separate from it on
+/// purpose: this enum is part of the request envelope and must exist in every
+/// build, while the merge engine that acts on it lives behind the
+/// `github-sync` feature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConflictSide {
+    /// Keep what this machine has, and push it to GitHub.
+    Local,
+    /// Take what GitHub has.
+    Remote,
 }
 
 /// The `story store …` subcommands.
@@ -1081,7 +1099,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "github-sync",
         subcommand: None,
-        flags: &[bare("dry-run")],
+        flags: &[bare("dry-run"), value("resolve")],
     },
     VerbFlags {
         verb: "decompose",
@@ -2608,13 +2626,29 @@ fn parse_commit_sync(args: &[String]) -> Result<Invocation, AppError> {
 fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
     let mut id = None;
     let mut dry_run = false;
+    let mut resolve = None;
     let mut index = 1;
-    let usage = "usage: story github-sync [<id>] [--dry-run]";
+    let usage = "usage: story github-sync [<id>] [--dry-run] [--resolve local|remote]";
     while index < args.len() {
         match args[index].as_str() {
             "--dry-run" => {
                 dry_run = true;
                 index += 1;
+            }
+            "--resolve" => {
+                let side = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage(format!("--resolve needs `local` or `remote`\n{usage}"))
+                })?;
+                resolve = Some(match side.as_str() {
+                    "local" => ConflictSide::Local,
+                    "remote" => ConflictSide::Remote,
+                    other => {
+                        return Err(AppError::Usage(format!(
+                            "--resolve takes `local` or `remote`, not `{other}`\n{usage}"
+                        )));
+                    }
+                });
+                index += 2;
             }
             arg if looks_like_story_id(arg) => {
                 id = Some(arg.to_string());
@@ -2625,7 +2659,15 @@ fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
     }
-    Ok(Invocation::GithubSync { id, dry_run })
+    // `--resolve` without an `<id>` is refused, but not here: the rule lives in
+    // `github::run_sync_with`, which is the one gate every door passes through —
+    // this parser, the dashboard, the TUI and a hand-built `InvokeRequest`. A
+    // copy here would be a second place for it to drift out of.
+    Ok(Invocation::GithubSync {
+        id,
+        dry_run,
+        resolve,
+    })
 }
 
 fn parse_help(args: &[String]) -> Result<Invocation, AppError> {
@@ -3755,6 +3797,76 @@ mod tests {
         fn an_argument_in_the_subcommand_slot_falls_back_to_the_verb() {
             let flags = declared_flags(&argv(&["move", "SH-1", "done"])).expect("move declares");
             assert!(flags.iter().any(|flag| flag.name == "if-state"));
+        }
+    }
+
+    /// `story github-sync --resolve …` — SH-152's answer to a conflict.
+    mod github_sync_resolve {
+        use super::super::{ConflictSide, Invocation, parse_invocation};
+
+        fn parse(args: &[&str]) -> Result<Invocation, crate::error::AppError> {
+            parse_invocation(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+        }
+
+        #[test]
+        fn a_sync_with_no_resolution_is_the_ordinary_case() {
+            assert_eq!(
+                parse(&["github-sync"]).expect("parses"),
+                Invocation::GithubSync {
+                    id: None,
+                    dry_run: false,
+                    resolve: None,
+                }
+            );
+        }
+
+        #[test]
+        fn both_sides_parse_against_a_named_story() {
+            for (word, side) in [
+                ("local", ConflictSide::Local),
+                ("remote", ConflictSide::Remote),
+            ] {
+                assert_eq!(
+                    parse(&["github-sync", "SH-1", "--resolve", word]).expect("parses"),
+                    Invocation::GithubSync {
+                        id: Some("SH-1".to_string()),
+                        dry_run: false,
+                        resolve: Some(side),
+                    }
+                );
+            }
+        }
+
+        /// The parser's job is the *shape*. Whether a resolution without a
+        /// story is allowed is a rule about the sync, and it lives in
+        /// `github::run_sync_with` so that the dashboard and a hand-built
+        /// request meet it too — `tests/github_sync_conflicts.rs` is where the
+        /// refusal is pinned.
+        #[test]
+        fn a_resolution_without_a_story_parses_and_is_refused_deeper_down() {
+            assert_eq!(
+                parse(&["github-sync", "--resolve", "local"]).expect("parses"),
+                Invocation::GithubSync {
+                    id: None,
+                    dry_run: false,
+                    resolve: Some(ConflictSide::Local),
+                }
+            );
+        }
+
+        #[test]
+        fn a_side_that_is_not_a_side_is_refused_by_name() {
+            let error =
+                parse(&["github-sync", "SH-1", "--resolve", "theirs"]).expect_err("refuses");
+            assert!(error.to_string().contains("theirs"), "{error}");
+        }
+
+        #[test]
+        fn a_resolution_with_nothing_after_it_says_what_it_wanted() {
+            let error = parse(&["github-sync", "SH-1", "--resolve"]).expect_err("refuses");
+            let message = error.to_string();
+            assert!(message.contains("local"), "{message}");
+            assert!(message.contains("remote"), "{message}");
         }
     }
 }
