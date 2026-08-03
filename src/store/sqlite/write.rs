@@ -383,6 +383,26 @@ pub(super) fn unlink_remote(
     Ok(removed > 0)
 }
 
+/// Sets or clears `projects.checkout_path`.
+///
+/// An overwrite rather than an insert, because a project has at most one
+/// checkout — see the trait method and migration 0007's header for why that
+/// plurality is the opposite of `project_paths`'s on purpose.
+pub(super) fn set_checkout_path(
+    conn: &Connection,
+    project: ProjectId,
+    path: Option<&Path>,
+) -> Result<(), StoreError> {
+    sql(
+        conn.execute(
+            "UPDATE projects SET checkout_path = ?2 WHERE id = ?1",
+            params![project.get(), path.map(|p| p.to_string_lossy().to_string())],
+        ),
+        "recording a project checkout",
+    )?;
+    Ok(())
+}
+
 pub(super) fn forget_project_path(
     conn: &Connection,
     project: ProjectId,
