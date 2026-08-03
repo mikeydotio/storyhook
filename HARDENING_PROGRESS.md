@@ -159,7 +159,8 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-152** — github-sync resolves every conflict as Skip with no terminal · *critical, data-loss; filed by SH-117's council* · **the loss was one sync later, and it destroyed the local edit**
 - [x] **SH-151** — two projects in one repository share an origin · *gates SH-119* · **it was a wrong answer, not a missing one**
 - [x] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk · *R1–R4 accepted; six calls they did not cover* · **the fixture surface was 15 tests, and measuring it first is what made the shape obvious**
-- [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures · *unblocked by SH-119; `story next` leads with SH-95 on age, and the queue order stands*
+- [x] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures · *the file it replaces passes 2 of 2 with the origin lookup disarmed* · **`story.sh` was answering about the wrong project; SH-163 filed by the probe and closed with it**
+- [x] **SH-163** — `story.sh list` renders a refusal as "no ready stories" · *not in the projected order — filed by SH-121's own probe* · **closed inside SH-121, because AC-3 could not be met honestly while it stood**
 - [ ] **SH-118** — C6 Ids: bare integers
 - [ ] **SH-120** — C8 Dispatch plumbing
 - [ ] **SH-50** — C9 Dispatch button + authorization review
@@ -2783,3 +2784,223 @@ three ways: from the checkout root, from `src/`, and from `/private/tmp`, which
 refuses while naming the directory, the absent origin and both ways out.
 
 **Council:** not convened. R1-R4 were the input, as SH-151 instructed.
+
+### SH-121 — done
+
+**Outcome:** merged. `worktree_truth.rs` asserts the mechanism the epic is
+built on instead of a fact about `cp`; no fixture in the suite can inherit a
+project by accident; and `bin/story.sh` stops deciding which project a verb acts
+on, which it had been getting wrong. All three acceptance criteria are met, and
+**SH-163 — filed by this story's own probe — is closed with it.**
+
+**All three parts were understated by the story, and measuring first is what
+found it — the fourth time in this run.**
+
+**Part 1. The file did not merely fail to execute the new path; it never
+executed *any* repository-level path.** Risk 4 predicted that after the
+subtraction `worktree_truth.rs` "would pass without executing the new path at
+all". It was already worse than that before the subtraction: the fixture
+committed `.storyhook.toml` and fast-forwarded both worktrees onto it, so each
+worktree carried a *copy* and resolution answered from that copy, at the working
+directory, with no git involved.
+
+Instrumenting `resolve_project` to record which step answered, over a full green
+gate — **2,347 project resolutions**:
+
+| how a command in the suite selected its project | count |
+|---|---:|
+| a pointer file in the working directory itself | **2,224** |
+| `--project` | 35 |
+| nothing — refused | 34 |
+| a **registered origin** | **5** |
+| a pointer file in an **ancestor** | **4** |
+| `$STORYHOOK_PROJECT` | 1 |
+
+Both of this file's worktrees were among the 2,224. The five origin resolutions
+were three clones in `project_selection.rs` and two `repo-` fixtures in
+`project_link.rs`; the four climbs were two nested subdirectories, one monorepo
+subdirectory, and one *in-process* worktree in `invoker_seam.rs`. **No
+CLI-level test resolved from a linked worktree by anything but a pointer file at
+its own working directory.**
+
+Demonstrated rather than argued: two directories under `/private/tmp` with **no
+git repository, no worktree and no origin**, each holding a `cp` of the same
+pointer file, mint `SH-5` and `SH-6` and read each other's stories. That is both
+of the file's assertions, satisfied by `cp`.
+`invoker_seam.rs::two_checkouts_of_one_project_resolve_to_the_same_project`
+already makes that claim in-process, for a tenth of the cost.
+
+**The fixture is a clone now, and the clone is the honest shape.** The builder
+pushes to the bare origin *before* `story project new` runs, so the pointer is
+written after the push and never travels — which is exactly what a second
+machine has. Worktrees go inside the clone, in the dispatch shape, and nothing
+at or above them carries a pointer. The registered origin is the only thing that
+can answer.
+
+**AC-1 is encoded, not performed.** The story asks that the file fail "verified
+by breaking it deliberately, not by inspection".
+`the_origin_is_what_answers_and_nothing_else_is` runs `story project unlink
+origin` and requires the answer to disappear, so the file cannot decay back into
+the last one. **Verified in both directions**: with the origin lookup disarmed
+in `resolve_project`, all four new tests fail — and the file they replace passes
+**2 of 2**.
+
+**Part 2. The hazard was real, one file already knew it, and its defence was a
+sentence.** `tests/project_path_hygiene.rs` builds fixtures under
+`CARGO_TARGET_TMPDIR` — `target/`, inside this checkout, four levels under
+storyhook's own committed `.storyhook.toml` — and wrote: *"every command below
+therefore runs from a directory with a pointer file of its own."* True, and a
+convention: one forgotten `project new` and a test asserts against the
+developer's own tracker, green.
+
+`assert_selection_is_not_inherited` is that sentence as a check. The predicate
+is deliberately an **either** — carry your own pointer, or have none above you —
+because both are explicit and only the third case, inheriting one, is not.
+
+Where it runs is the part that makes AC-2 true of the whole suite rather than of
+the three families I happened to look at: **once per test binary over
+`scratch_root()`**, which every harness fixture is a child of, so no fixture can
+inherit a project from outside the harness at all; then on every second checkout
+and each of its worktrees, and on `project_path_hygiene`'s own fixtures. A test
+builds the bad shape on purpose and requires the guard to reject it: an
+assertion nobody has seen fail might be vacuous.
+
+The default fixture now *states* how it selects, rather than being assumed to:
+`the_default_fixture_selects_by_its_own_pointer_file` removes the pointer and
+requires the refusal.
+
+**The guard's first version was stricter than the rule it encodes**, found by
+re-reading it against `resolve_project` rather than by a failing test. A
+repository top level with no pointer file inherits nothing — the resolver's
+climb pushes the working directory and breaks immediately on a `.git`
+*directory*, so it resolves by its registered origin or refuses. The guard
+climbed past it and would have refused a fixture the resolver handles
+correctly. No fixture triggers it today, and the reason is worth stating: a
+second checkout is exactly that shape, and it passes only because nothing above
+the harness fixture root carries a pointer — a property of where fixtures live,
+not of the guard. Corrected, with the case as its own guard-against-the-guard.
+
+**Confirming the epic's silence obligations turned one up that was not covered.**
+The story asks for a confirmation, not a build, and the two named obligations —
+an unresolvable directory, and the daemon stopped — are pinned:
+`session_start_no_project_outputs_empty_json`,
+`hook_outputs_empty_json_when_no_storyhook_dir`,
+`session_start_is_silent_with_no_reachable_daemon`, and `hook_silence.rs`'s two.
+But `story hooks install` manages **three** hooks and `hook_silence.rs`
+exercised two, and the omission was invisible from inside it: `post-merge` is
+the only one that fires on something other than `git commit`, so no test in that
+file could reach it and nothing said so. Its fixture's list is a named constant
+now, so a fourth hook cannot be added without the file noticing.
+
+A merge is where the noise would be worst — it is often the last step of landing
+a branch, and diagnosis after `git merge` reads as a merge that did not land.
+Verified by disarming it: dropping `2>/dev/null` from the hook's `story move`
+prints ~900 bytes of daemon and store diagnosis onto the merge, and the new test
+is the only one of the three that fails.
+
+**Two stale claims found while auditing, both load-bearing prose.**
+`project_selection.rs`'s header said "no project in the store and no fixture in
+this suite has a registered origin" — true when SH-116 measured it, false since
+SH-119's backfill — and still described the recorded-path walk SH-119 deleted.
+The ordering it justifies is unchanged; its justification is now the census
+above. `try_project_id` said it resolved "the committed pointer file first, the
+checkout's path second"; the second half went with the index.
+
+**Part 3. The dead guard was not dead. It gave wrong answers.**
+`project_root()` preferred `repo_root()`, so every read verb ran `story` from
+the repository's top level whatever directory the caller stood in. In a monorepo
+with a project at the root and another in `service-b`, standing in `service-b`:
+
+| | answer |
+|---|---|
+| `story show SVCB-1` (the CLI) | correct — `service-b` |
+| `story.sh view SVCB-1` | **"story `SVCB-1` not found"** |
+| `story.sh list` | **the ROOT project's stories**, silently |
+
+SH-151 gave a sub-project ownership of its own identity. The shell threw it
+away again. `project_root()` is deleted rather than narrowed — a guard that
+decides nothing is a guard whose next reader has to work out that it decides
+nothing — and `$PROJECT_DIR` now means "the main checkout", set only by
+`dispatch`, `capture` and `complete`, which create, name and remove git
+worktrees. `repo_root()` stays with its subject stated: it answers *where does
+worktree bookkeeping happen*, never *which project is this*.
+
+**`--project <slug>` becomes story.sh's own global option**, stripped before the
+verb and forwarded to every `story` call — AC-3's "from outside a repository".
+`do` still requires a repository, because a worktree has to be created
+somewhere; giving it the project's linked checkout is **SH-120's**, and taking
+it here would have been the next story's design decision made quietly.
+
+**SH-163, filed and closed in the same PR, and that is a deliberate deviation.**
+`story.sh list` outside a repository answered `{"ok": true, "count": 0}` — "No
+ready stories to pick up" — over a CLI that had exited 3 and named three ways
+out. Both ready-gates did `|| ready_json='{"stories":[]}'`, which cannot tell
+"nothing ready" from "no project". For the tool whose whole job is handing an
+agent its next task, that is SH-152's shape exactly. It was filed rather than
+folded in silently, and fixed here because **AC-3 cannot be met honestly while
+it stands** — a test for "with `--project` it works" is worthless beside a
+"without `--project` it lies". `_load_ready_stories` sets a global rather than
+echoing, for the reason `_project_integrity` already records: a caller using
+`$(...)` would run `fail` in a subshell and carry on with the refusal captured
+in a variable instead of printed.
+
+**A correction I made to myself mid-implementation.** I first wrote the
+diagnostic capture against stderr, having misread a probe. Under `--json` the
+CLI reports a refusal as a document on **stdout** — which `cmd_view` already
+reads, so the convention was in front of me. Both streams are consulted now,
+stdout first.
+
+**Red→green verified in both directions here too.** With `story.sh` reverted,
+the monorepo, refusal and `--project` cases fail; the subdirectory, the
+repository-root-answers-for-itself, and the empty-project-still-reports-zero
+cases keep passing. Those three are the guard against the fix going too far —
+the last one in particular, because a fix that made every empty answer a failure
+would satisfy SH-163's headline and break the ordinary case.
+
+**Council:** not convened. The story settles what `worktree_truth.rs` must
+assert; the audit has one honest answer per fixture shape; and part 3 is a
+deletion the story already rules on. The two calls it did not cover — a clone
+rather than worktrees relocated outside the checkout, and leaving
+`dispatch`-from-`--project` to SH-120 — each had one defensible answer once
+measured. Recorded so that is a decision rather than an omission.
+
+**Six new Rust tests, two rewritten, one new plugin file.** Three in
+test-support (the default fixture's selection, a second checkout's shape, and
+the guard firing), two in `worktree_truth.rs` beside the two whose assertions
+are unchanged, one in `hook_silence.rs`, and `test-project-selection.sh`
+covering four scenarios.
+
+**Gate:** `make test` exits 0 — **113 green test-result blocks**, 0 failures,
+plugin harness **19/0**, clippy clean, orphan check green on both ends.
+**Sixteenth consecutive story with no wedge**, supervised with log growth as the
+heartbeat against a 120-second stall bound. One earlier run exited 1 in thirty
+seconds — `cargo fmt --check`, which SH-151's entry already warned is what a
+fast non-zero from `make test` usually means.
+
+The heartbeat did go quiet once, in the plugin harness, which prints one line
+per *file* rather than per assertion — so a slow file looks identical to a wedge
+from the log alone. `ps` showed `test-hook-kill-switch.sh` inside a live
+`story commit-sync`, which is the check SH-119's entry names as the one that
+separates the two. Worth knowing that the log-growth pulse is coarse for that
+leg specifically.
+
+**Two process notes worth carrying.**
+
+`cargo fmt` reformatted two files *after* I had committed them, which would have
+left two commits failing `cargo fmt --check` — bisectable history broken,
+silently, three commits later. Caught by running `cargo fmt --all -- --check`
+before pushing rather than by noticing. The three commits were rebuilt with
+`reset --soft` and the formatting folded in. Run the formatter before the
+commit, not after.
+
+And `git checkout <path>` used to undo a *deliberate* one-line disarm threw away
+an uncommitted fix in the same file, because the disarm and the fix were both
+working-tree changes and the command cannot tell them apart. The disarm run had
+already produced its evidence, so nothing was lost but the retyping — the lesson
+is that a disarm should be reverted by re-editing the line, or the fix committed
+first, because `checkout` restores a *file*, not a change.
+
+**Semver: minor.** No interface removed, but `story.sh` gains `--project`, and
+`story.sh list` now fails where it used to answer with an empty set — any
+caller treating that empty set as "no work" was already being misled and now
+finds out.
