@@ -155,7 +155,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-110** — tailnet bind flake · *gates SH-114* · **not a flake: the dashboard advertised a probe, not its bind**
 - [x] **SH-114** — C2 Transport: daemon-only · *two PRs: the diagnostics, then the removal*
 - [x] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal · *`git config --get` walks up, which cost two clauses of the verdict*
-- [ ] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink`
+- [ ] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink` · *part 1 #101, part 2 PR 1 #103; PR 2 remains*
 - [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk
 - [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures
 - [ ] **SH-118** — C6 Ids: bare integers
@@ -2144,3 +2144,103 @@ the first gate attempt was green.
 two `Store` methods; nothing removed, and no interface a user types changed. The
 behaviour change worth knowing is that the dashboard can no longer create a
 project at a throwaway path in a real store — which it could, until this PR.
+
+### SH-117 part 2, PR 1 of 2 — done · the story stays open
+
+**Outcome:** merged as #103. `story project new` exists, the questionnaire
+exists, and this repository can execute an interactive branch in a test for the
+first time. `init`, `deinit` and `relink` all still work; PR 2 retires them.
+
+Built to `.council/sh117-project-verb-surface/DECISION.md` without re-running
+the vote, as the handoff instructed. Part 1 landed c1–c3, c6 and c7 as #101;
+this is c4, c5, c8, c9 and c10.
+
+**The gate is what found the defect, and it was worth the ten minutes.** Making
+`init` populate `checkout_path` — see the first deviation below — exposed that
+**one directory is recorded twice** and only one of the records was ever
+forgotten. A `project_paths` row says which project a directory resolves to; a
+`checkout_path` says where that project's repo-side work runs. `doctor --fix`
+deregistered an orphaned registration and `story project list` stopped printing
+the vanished directory on one line while going on printing it on the next.
+`forget_checkout` is now the counterpart to `adopt_checkout`, and both
+`deregister_orphaned` and `relink` carry the checkout with the path row —
+conditionally, so a checkout somebody linked elsewhere on purpose survives.
+Fixed at the origin rather than at the encounter point, and swept: those are the
+only two sites that forget a path row.
+
+**Two deviations from the verdict, both recorded on the story:**
+
+1. **`init` also records `checkout_path`.** D4 asks only that `new --attach`
+   write both columns and is silent on `init`. D22's whole premise is that the
+   sweep is a text substitution because the two verbs mean the same thing at
+   every swept site — and they did not, while only one of them wrote the column.
+2. **The origin is reported, not asked about.** D2's question (4) offered to
+   register the repository's origin. It cannot be built as specified: D1's flag
+   list has no `--no-origin`, so an interactive "no" would be an operation no
+   script could perform and the two forms would stop being the same command; and
+   the note it was to print — naming the project that already holds the URL —
+   needs a store read the client has not been able to make since SH-114
+   collapsed the transports. It is a line in the summary instead.
+
+**The types carry the rules, which is this run's most reliable pattern.**
+`NewProjectSpec.prefix` is a `String`, so "created without anybody choosing a
+prefix" is unrepresentable; `Attach` is one enum rather than `Option<String>`
+beside a `no_attach: bool`, so the contradiction is refused once in the parser
+and cannot be met downstream; `NewProjectRequest::Ask` is a **wire** variant on
+purpose, because a bare `story project new` can reach the dispatcher from a
+caller that went round `main.rs`, and it is refused there rather than quietly
+defaulted. Quietly supplying a prefix nobody chose is SH-109 wearing a new verb.
+
+**Red→green verified in four directions, not asserted.** `adopt_checkout` as a
+no-op fails exactly two tests; removing only its `is_none` guard fails exactly
+the one about the second clone; `forget_checkout` as a no-op fails exactly the
+doctor and relink tests; disarming the `New` arm of `project_creation_target`
+fails the SH-95 guard test and leaves all 15 of `tests/project_new.rs` green —
+their job is the grammar, and a project created in the wrong store is still
+created correctly. The seam test was disarmed on both of its axes at once.
+
+**The PTY harness shipped, and its own conditions caught a bug in it.** `Pumped`
+had two states, so `wait()`'s drain could not tell "no bytes yet" from "the
+child has finished talking" and ran to its deadline whenever a descendant held
+the terminal open — which a `story` command that starts a daemon always leaves
+behind. Three states now; the drain is bounded by 150 ms of silence.
+
+**And a stall the harness does not own, measured rather than papered over.** A
+`story` command under a pty prints its first prompt in ~0.9 s, but roughly two
+runs in ten it takes seven to ten seconds. Reproducible in
+`tests/pty_interactive.rs` at `--test-threads=1` and in parallel; **not**
+reproducible in a probe binary running the same command (6/6 at ~1 s); every
+instrumentable sub-phase still in milliseconds on a slow run, so the time is
+inside an `expect` waiting for the child to speak. Not the daemon warm-up
+(warming first changed nothing) and not `origin_of`'s `git config` subprocess
+(stubbing it changed nothing). **Filed as SH-156**, and `EXPECT_TIMEOUT` moved
+from 10 s to 30 s with the measurements written into the constant — a deadline
+is a wedge detector, not a performance budget, and putting it above a measured
+stall keeps a real wedge caught quickly without reporting a known slow start as
+one.
+
+**A process failure of mine, recorded because it cost the questionnaire wiring.**
+I ran `git checkout src/main.rs` to undo a one-line experiment and reverted the
+file to `HEAD` — which did not yet contain `ask_about_a_new_project`, forty
+uncommitted lines written an hour earlier. Nothing was lost permanently because
+I could rewrite it from the same edits, but `git checkout <path>` is a
+*destructive* command against uncommitted work and I reached for it as though it
+were an undo. The narrow tool for the job was `git stash` — or, better,
+re-applying the one-line experiment in reverse.
+
+**The first gate attempt was red**, at one test, and that is the second time in
+this run the suite has caught something the author did not. The three commits
+were then **rebuilt** with the fix folded in rather than a fix-up commit added,
+because two of them would otherwise have failed `cargo fmt --check` and the gate
+at their own SHAs — history stays bisectable, which merge commits make permanent.
+
+**Gate:** `make test` exits 0 — **111 green test-result blocks**, 0 failures,
+plugin harness 18/0, clippy clean, orphan postlude green. **Eleventh consecutive
+story with no wedge.**
+
+**Semver: minor** when someone bumps it. A new verb, a new domain module and two
+service functions; nothing removed, and no interface a user types changed.
+
+**Left for PR 2**, with `HANDOFF.md` carrying the brief: the fixture sweep
+(D22), `project delete` (D6), the `DeinitPlan` rename, and the retirement of
+`init`, `deinit` and `relink` behind redirects (D10, D11, D14, D15, D16).
