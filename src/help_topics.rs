@@ -19,10 +19,18 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
             r#"story project init [PATH] [--prefix <PREFIX>] [--name <NAME>] [--no-agents-md]
 story project deinit [PATH|SLUG] [--force]
 story project list
+story project link origin [URL] | link checkout [PATH]
+story project unlink origin [URL] | unlink checkout
 story project settings list | get <key> | set <key> <value> | unset <key>
 
 A repository's whole lifecycle with storyhook: register one, list them,
-remove one, and change how storyhook treats this one.
+remove one, attach the git associations it answers to, and change how
+storyhook treats this one.
+
+NOT TO BE CONFUSED WITH
+  story link / story unlink  are aliases for 'story relate' /
+  'story unrelate' and join one STORY to another. They have nothing to
+  do with the project verbs below, which are about git.
 
 init
   Creates the project in storyhook's store with the states every
@@ -59,7 +67,33 @@ deinit
 
 list
   Every project the store knows, including any whose checkout is not on
-  this machine. This is the same set the dashboard shows.
+  this machine. This is the same set the dashboard shows. Under each,
+  its registered origins and its linked checkout, if it has them.
+
+link origin [URL] / unlink origin [URL]
+  The origins this project answers to. A checkout of a registered origin
+  resolves to this project with no flag, no pointer file and no recorded
+  path — which is what lets a fresh clone, on this machine or another,
+  work immediately.
+
+  One project may hold MANY origins (a repository that moved; a second
+  canonical remote), and an origin belongs to AT MOST ONE project.
+  Registering one another project holds is refused, naming that project.
+
+  URL may be omitted, and then it is the origin THIS directory's own
+  repository records — storyhook reads exactly
+  'git config --get remote.origin.url'. That command walks up the
+  directory tree, so the omitted form additionally requires you to be at
+  the repository's top level: from a subdirectory it would otherwise
+  register the enclosing repository's identity against this project,
+  permanently, and lock out every other project in that repository.
+
+link checkout [PATH] / unlink checkout
+  Where this project's repo-side work runs. AT MOST ONE per project, and
+  never consulted to decide which project you are in — linking a
+  directory does not make commands run there resolve to this project.
+  PATH defaults to the current directory; linking a second one replaces
+  the first and says so.
 
 settings
   Read and write this project's settings — the handful of per-project
@@ -71,12 +105,16 @@ Examples:
   story project init --prefix API       # Custom prefix → API-1, API-2, ...
   story project init ~/code/thing       # Somewhere other than here
   story project list
+  story project link origin             # This checkout's own origin
+  story project link origin git@github.com:me/thing.git
+  story --project thing project link checkout ~/code/thing
   story project settings list
   story project deinit                  # Asks before destroying anything
   story project deinit old-thing --force
 
 Related:
   story help project-settings — The settings keys, in detail
+  story help relate — story link/unlink, which are about STORIES
   story migrate     — Bring a .storyhook/ repository into the store
   story relink      — Point a project at a checkout that moved
   story member add  — Add team members after init
@@ -1288,10 +1326,16 @@ Examples:
   story relate SH-3 parent-of SH-4
   story relate SH-5 relates-to SH-6
 
+NOT TO BE CONFUSED WITH
+  story project link / unlink   attach a git ORIGIN or CHECKOUT to a
+  project. Same word, different subject: these relate stories, those
+  relate a project to a repository. See 'story help project'.
+
 Related:
   story unrelate <a> <rel> <b>  — Remove a relationship
   story graph                   — Visualize the dependency graph
   story graph --blocked-by <id> — Trace why a story is blocked
+  story help project            — story project link, which is about git
 "#,
         );
 
