@@ -2043,15 +2043,51 @@ fn unresolvable_pointer_refusal(uuid: &str) -> AppError {
     ))
 }
 
-/// A directory and every ancestor of it, nearest first.
+/// A directory and every ancestor of it, nearest first, **stopping at the
+/// repository the directory is in**.
 ///
 /// Canonicalized once at the start rather than per level: an uncanonicalized
 /// path's ancestors include `..` components that would `stat` the wrong
 /// directories, and a directory that cannot be canonicalized (it does not
 /// exist) has no meaningful ancestry to walk beyond what it was given.
+///
+/// # Why it stops (SH-119, R1)
+///
+/// Unbounded, this walks out of the repository and keeps going — so a scratch
+/// directory made under a checkout of storyhook answers as *storyhook*, because
+/// storyhook's own committed pointer file is four levels up. A repository is the
+/// unit an identity belongs to, so the repository's top level is where looking
+/// for one stops.
+///
+/// The bound is a `stat` for `.git`, not a `git` subprocess: resolution runs on
+/// almost every command, and SH-116 measured an 11.8 ms whole-command baseline
+/// against which a 14 ms `git` call is not a bound but a doubling.
 fn ancestors(cwd: &Path) -> Vec<PathBuf> {
     let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    root.ancestors().map(Path::to_path_buf).collect()
+    let mut walked = Vec::new();
+    for dir in root.ancestors() {
+        walked.push(dir.to_path_buf());
+        if is_repository_top_level(dir) {
+            break;
+        }
+    }
+    walked
+}
+
+/// Whether `dir` is a repository's *own* top level.
+///
+/// A **directory** named `.git`, deliberately, and this is the load-bearing
+/// half of the bound. A linked worktree — and a submodule — holds a `.git`
+/// *file* pointing at a git directory that belongs to somebody else, so neither
+/// is a top level in the sense that matters here and neither stops the climb.
+///
+/// That is what keeps a worktree resolving. `git worktree add` checks out a
+/// commit, and the pointer file is written by `story project new` *after* the
+/// commit that created the repository — so a worktree's own tree very often does
+/// not carry one, and the main checkout's is the only pointer there is. Stopping
+/// at a `.git` file would strand every one of them, `dispatch` included.
+fn is_repository_top_level(dir: &Path) -> bool {
+    dir.join(".git").is_dir()
 }
 
 /// The project `dir` itself identifies — its pointer file, then its recorded
