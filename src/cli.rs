@@ -181,6 +181,15 @@ Usage:
   story epic create "<title>"
   story epic add <epic-id> <story-id>
 
+Story ids:
+  Everywhere <id> appears above, both forms name the same story: the canonical
+  `SH-5`, and the bare number `5` on its own. The number is read against the
+  project the command is acting on, so `5` means nothing until that is settled —
+  with no project, you get the same refusal every other command gives, not a
+  missing story. An id carrying a *different* project's prefix is refused
+  outright rather than resolved: `--project` decides which project you are in,
+  and an id never overrides it.
+
 Global options:
   --json          Emit structured JSON
   --quiet         Suppress success output
