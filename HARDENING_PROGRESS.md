@@ -16,9 +16,13 @@ Every story gets a `## Log` entry below — successes, failures and skips alike.
 You have no memory of the session that began it. Everything you need is in this
 file and the plan above. Read the plan, then:
 
-1. **Pick** the first unchecked story in the Phase 2 queue. Confirm it is ready
-   (`story list --ready`). Skip **SH-112** — it is an epic and closes when its
-   children do.
+1. **Pick** the first unchecked story in the Phase 2 queue, which is ordered by
+   priority. Confirm it is ready (`story list --ready`). Skip **SH-112** — it is
+   an epic and closes when its children do — and skip every line marked **⚠**:
+   those are in-progress in *another* session, and two loops working one story
+   is how a branch gets abandoned half-built. Re-check which are ⚠ with
+   `story list --state in-progress` rather than trusting the marks, which are
+   only as fresh as the last time somebody re-swept.
 2. **Claim** it: `story move <id> in-progress`.
 3. **Read it whole**: `story show <id>`, comments included. Several stories
    carry re-spec notes that contradict their own titles (SH-42, SH-43, SH-44,
@@ -140,47 +144,94 @@ fragility is SH-63, still open.)
 
 ## Phase 2 — story queue
 
-Projected order. Re-derived from `story next` each iteration, so this list is a
-forecast and gets corrected in place as the graph moves.
+**Re-derived from `story next` on 2026-08-03, after SH-118 landed**, and
+re-ordered by priority rather than by the original forecast. The forecast is
+gone: it named 20 stories and the backlog is now **51 open**, because this run
+and its neighbours filed 20 more while working (SH-133 … SH-168). Ordering by a
+list written before any of them existed was the thing to fix.
 
-- [x] **SH-129** — project settings CLI · *gates SH-124 and SH-68; nothing can go first* · **design settled, see its council comment**
-- [x] **SH-124** — commit-sync transitions every mentioned story · *protects this loop's own queue*
-- [x] **SH-62** — positional verbs swallow unknown `--flags` · *SH-116 requires it first*
-- [x] **SH-125** — enforce the minimum state set
-- [x] **SH-130** — illegal state combinations + a supported purge · *two PRs: the schema half, then the purge*
-- [x] **SH-132** — delete the 505 fixture projects · *back up `store.db` first*
-- [x] **SH-131** — where the store-isolation invariants live · *before the epic churns `main`*
-- [x] **SH-115** — C3 Identity: remotes schema + one URL normalizer
-- [x] **SH-94** — concurrency_soak's load-sensitive 30s deadline · *gates SH-114* · **it was a deadlock; the deadline was right**
-- [x] **SH-110** — tailnet bind flake · *gates SH-114* · **not a flake: the dashboard advertised a probe, not its bind**
-- [x] **SH-114** — C2 Transport: daemon-only · *two PRs: the diagnostics, then the removal*
-- [x] **SH-116** — C4 Selection: `--project`, `STORYHOOK_PROJECT`, the refusal · *`git config --get` walks up, which cost two clauses of the verdict*
-- [x] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink` · *part 1 #101, part 2 PRs #103 and this one* · **the whole surface, and the three retirements**
-- [x] **SH-152** — github-sync resolves every conflict as Skip with no terminal · *critical, data-loss; filed by SH-117's council* · **the loss was one sync later, and it destroyed the local edit**
-- [x] **SH-151** — two projects in one repository share an origin · *gates SH-119* · **it was a wrong answer, not a missing one**
-- [x] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk · *R1–R4 accepted; six calls they did not cover* · **the fixture surface was 15 tests, and measuring it first is what made the shape obvious**
-- [x] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures · *the file it replaces passes 2 of 2 with the origin lookup disarmed* · **`story.sh` was answering about the wrong project; SH-163 filed by the probe and closed with it**
-- [x] **SH-163** — `story.sh list` renders a refusal as "no ready stories" · *not in the projected order — filed by SH-121's own probe* · **closed inside SH-121, because AC-3 could not be met honestly while it stood**
-- [x] **SH-118** — C6 Ids: bare integers · *the audit undercounted the id positions by three, and both non-authors caught it* · **and the plugin was calling a ready story unready**
-- [ ] **SH-120** — C8 Dispatch plumbing
-- [ ] **SH-50** — C9 Dispatch button + authorization review
-- [ ] **SH-95** — retire the temp-path heuristic
+**The graph has all but drained.** Two `blocked-by` edges are left with an open
+story on the far end — SH-50 ← SH-120, and SH-64 ← SH-63 — so almost everything
+below is ready and the order is a judgement rather than a topological sort.
+`story graph` is the check; re-run it rather than trusting this paragraph.
+
+**Three stories are held by other sessions** and are marked ⚠ below. They are
+in-progress and were not moved by this loop: leave them alone, and skip to the
+next unheld line.
+
+### Critical
+
+- ⚠ **SH-95** — junk projects from an unisolated script · *in-progress elsewhere*
+- **SH-112** — the server-owned epic · *closes when SH-120, SH-50 and SH-122 do; never worked directly*
+
+### High
+
+Ordered by what each one unblocks, then by what it protects, then by age.
+The first four come first because they are the failure this file's supervision
+section was written about: a run that wedges with no failing test name costs
+more than any single story below it. SH-143 and SH-144 are that wedge, named.
+
+- [ ] **SH-143** — the daemon spawn lock blocks without a timeout · *clients queue serially behind up to 15 s each*
+- [ ] **SH-144** — `HttpInvoker::send` has no bound, so a wedged daemon holds its client forever
+- [ ] **SH-141** — an event hook's grandchild holds its stderr pipe and wedges the daemon
+- [ ] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
+- [ ] **SH-120** — C8 Dispatch plumbing · *the epic's next link, and the only thing SH-50 waits on*
+- [ ] **SH-166** — `/story do` should not prefix the worktree with the repo name · *same file as SH-120; carries a handoff comment from SH-118*
+- [ ] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
+- [ ] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
+- [ ] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
+- [ ] **SH-133** — rollback drops project settings · *filed by SH-129*
+- [ ] **SH-137** — github-sync unreachable for an origin carrying userinfo
+- [ ] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
+- [ ] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
+- [ ] **SH-145** — the dashboard does not live-update a state change until reload
+- [ ] **SH-68** — `sync.mode = auto` is accepted and does nothing
+- ⚠ **SH-63** — `story next` is nondeterministic · *in-progress elsewhere; gates SH-64*
+
+### Medium
+
 - [ ] **SH-109** — prefix confirmation / `set-prefix` residual
-- [ ] **SH-63** — `story next` nondeterminism
-- [ ] **SH-64** — story-id ordering
-- [ ] **SH-67** — export drops unknown event kinds
-- [ ] **SH-68** — `sync.mode = auto` has no implementation
-- [ ] **SH-65** — dead `AppError::SyncConflict`
+- [ ] **SH-122** — C11 Residual gap · *third of the epic's three remaining children*
+- [ ] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
+- [ ] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
+- [ ] **SH-138** — rollback drops a project's registered origins
+- [ ] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
+- [ ] **SH-146** — the daemon never re-attempts its tailnet bind
+- [ ] **SH-147** — the tailnet probe runs twice on the port-fallback path
+- [ ] **SH-150** — the TUI holds its own store handle
+- [ ] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
+- [ ] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
+- [ ] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
+- [ ] **SH-164** — labels are sometimes concatenated
+- [ ] **SH-165** — an epic with in-progress children should read as in-progress
+- [ ] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118*
 - [ ] **SH-66** — `context --format json` double-encodes
-- [ ] **SH-70** — pre-#18 import `[git]` comments
-- [ ] **SH-122** — C11 Residual gap
-- [ ] **SH-126** — WebUI Blocked column
 - [ ] **SH-42** — project selector dropdown
 - [ ] **SH-43** — archive
 - [ ] **SH-49** — linked PRs
+- [ ] **SH-155** — preserve presentation/layout settings
+- [ ] **SH-162** — allow hiding columns
+- [ ] **SH-50** — C9 Dispatch button · *blocked by SH-120*
+- ⚠ **SH-157** — visually indicate story types · *in-progress elsewhere*
+
+### Low
+
+- [ ] **SH-136** — the daemon-address harness list is hand-maintained prose · *filed by SH-131*
+- [ ] **SH-139** — `RemoteUrl::normalize`'s two explicit non-decisions
+- [ ] **SH-148** — `bind_and_serve` is a `pub` entry point with no production caller
+- [ ] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
+- [ ] **SH-70** — pre-#18 import `[git]` comments
 - [ ] **SH-44** — web form defaults
 - [ ] **SH-127** — remove the status flash
 - [ ] **SH-128** — column sort options
+- [ ] **SH-168** — do not show the green ready status labels
+- [ ] **SH-64** — story-id ordering · *blocked by SH-63*
+
+### What was on the old list and is now done
+
+SH-129, SH-124, SH-62, SH-125, SH-130, SH-132, SH-131, SH-115, SH-94, SH-110,
+SH-114, SH-116, SH-117, SH-152, SH-151, SH-119, SH-121, SH-163, SH-118 — 19
+stories, every one with a `## Log` entry below.
 
 ---
 
