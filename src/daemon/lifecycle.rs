@@ -409,43 +409,228 @@ fn usable(env: &Environment) -> Option<DaemonInfo> {
     (info.is_this_binary() && info.serves(env.store_path()) && is_live(env)).then_some(info)
 }
 
-/// The slow path: hold the spawn lock, re-check, replace what is there, start a
-/// daemon, and keep holding until it answers.
-fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
-    std::fs::create_dir_all(env.daemon_state_dir())?;
+/// How long a client waits to take the daemon spawn lock.
+///
+/// **Derived, never chosen**, and `the_spawn_lock_bound_is_the_sum_of_what_it_waits_on`
+/// fails if the arithmetic below stops matching the code. The holder of this
+/// lock can legitimately spend three [`CONTROL_DEADLINE`]s inside it —
+/// [`request_shutdown`] against a stale daemon, then [`hello`] and another
+/// `request_shutdown` inside [`stand_down_legacy_daemon`] — and three
+/// [`SPAWN_DEADLINE`]s — two [`wait_until`] calls and [`await_healthy`]. A
+/// waiter that gave up before that sum could abort a spawn that was going to
+/// succeed, which is a worse defect than the one this bound exists to fix.
+///
+/// The two branches look mutually exclusive and are not: a daemon that answers
+/// its shutdown late clears its own portfile on the way out, which re-opens
+/// `stand_down_legacy_daemon`'s `daemon_file().exists()` guard behind it.
+///
+/// Public because `tests/concurrency_soak.rs` derives its own per-command
+/// deadline from this one rather than restating a number. The two have to stay
+/// ordered — a client that exhausts this bound and correctly reports so must not
+/// race the harness meant to outlive it — and an import is the only form of that
+/// promise which cannot drift.
+pub const SPAWN_LOCK_DEADLINE: Duration =
+    Duration::from_secs(3 * CONTROL_DEADLINE.as_secs() + 3 * SPAWN_DEADLINE.as_secs());
+
+/// Takes the spawn lock within [`SPAWN_LOCK_DEADLINE`], or gives up loudly.
+///
+/// **A poll rather than a block, and that is forced rather than chosen.** `fs4`
+/// offers exactly six locking primitives — `lock_shared`, `lock_exclusive`,
+/// `try_lock_shared`, `try_lock_exclusive`, `unlock` and `allocate` — and none
+/// of them is a timed acquire, so a bounded wait can only be built out of the
+/// non-blocking one. `flock(2)` would not have helped either: it reports no
+/// waiter count, no queue position and no ordering guarantee, which is why the
+/// "queue-position report" SH-143 asked for cannot be built over this lock at
+/// all (SH-143).
+///
+/// The cost is that acquisition becomes barging rather than whatever ordering
+/// the kernel was giving blocked waiters. That is affordable only because
+/// [`spawn_locked`] publishes its verdict: holds collapse to microseconds once
+/// a waiter can adopt an answer instead of recomputing it.
+fn acquire_spawn_lock(path: &Path, deadline: Duration) -> Result<File, AppError> {
     let lock = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
-        .open(env.daemon_spawn_lock())
+        .open(path)
         .map_err(|e| AppError::Storage(format!("failed to open the daemon spawn lock: {e}")))?;
-    lock.lock_exclusive()
-        .map_err(|e| AppError::Storage(format!("failed to take the daemon spawn lock: {e}")))?;
+
+    let started = Instant::now();
+    let mut announced = false;
+    loop {
+        if lock.try_lock_exclusive().is_ok() {
+            return Ok(lock);
+        }
+        let waited = started.elapsed();
+        if waited >= deadline {
+            return Err(AppError::Storage(format!(
+                "gave up after {}s waiting for the daemon spawn lock. Another storyhook \
+                 client holds {} and has not finished starting a daemon in the longest \
+                 time that can legitimately take, so it is stuck rather than slow.",
+                deadline.as_secs(),
+                path.display(),
+            )));
+        }
+        // Once, and only to a human. A wait this long is worth explaining, but
+        // `tests/cli_error_streams.rs` pins an empty stderr both for a
+        // successful command and for any command under `--json`, so anything
+        // unconditional here would break a contract the suite already holds.
+        // A pipe gets silence and the same exit code it always got.
+        if !announced && waited >= SPAWN_DEADLINE {
+            announced = true;
+            announce_waiting(path);
+        }
+        std::thread::sleep(SPAWN_POLL);
+    }
+}
+
+/// Tells a human at a terminal that this wait is a queue rather than a hang.
+fn announce_waiting(path: &Path) {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        eprintln!(
+            "storyhook: waiting for another client to finish starting the daemon ({})",
+            path.display()
+        );
+    }
+}
+
+/// The verdict of an attempt that concluded *while this client was waiting*.
+///
+/// The freshness rule is the whole safety of adopting somebody else's answer,
+/// and it is one comparison: the record has to have been written **after this
+/// client arrived**. A record older than the arrival describes a world this
+/// client has not seen and must not be believed — the daemon it failed against
+/// may since have been stopped by hand, or the binary rebuilt.
+///
+/// Modification time rather than a timestamp inside the document, because the
+/// two would be two answers to one question and only one of them is written by
+/// something other than the process being trusted.
+fn attempt_verdict(env: &Environment, arrived: std::time::SystemTime) -> Option<AppError> {
+    let path = env.daemon_attempt();
+    let finished = std::fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .ok()?;
+    if finished < arrived {
+        return None;
+    }
+    let raw = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str::<crate::error::WireError>(&raw)
+        .ok()
+        .map(|wire| {
+            AppError::from(wire).with_context(
+                "another storyhook client was already starting the daemon while this \
+                 command waited for it, and this is what happened:",
+            )
+        })
+}
+
+/// Publishes what an attempt concluded, for the clients queued behind it.
+///
+/// Written on failure and **removed on success**, because success needs no
+/// record: a waiter's own `usable` re-check finds the daemon that now exists.
+/// Leaving a spent failure behind would be a claim about a world that has since
+/// been fixed.
+///
+/// Temp-plus-rename like the portfile, so a waiter never reads half a document —
+/// and to a *sibling* path, never over `daemon.spawn.lock` itself, whose `flock`
+/// lives on the inode a rename would replace.
+///
+/// Best-effort throughout: a client that cannot write this file has still done
+/// its real job, and failing here would replace a good diagnosis with a bad one
+/// about a diagnostic.
+fn publish_attempt(env: &Environment, outcome: &Result<DaemonInfo, AppError>) {
+    let path = env.daemon_attempt();
+    let Err(failure) = outcome else {
+        let _ = std::fs::remove_file(&path);
+        return;
+    };
+    let Ok(document) = serde_json::to_string(&crate::error::WireError::from(failure)) else {
+        return;
+    };
+    let temp = path.with_extension("json.tmp");
+    if std::fs::write(&temp, document).is_ok() {
+        let _ = std::fs::rename(&temp, &path);
+    }
+}
+
+/// The slow path: hold the spawn lock, re-check, replace what is there, start a
+/// daemon, and keep holding until it answers.
+///
+/// # A waiter adopts rather than repeats
+///
+/// The queue behind this lock used to be one *attempt* deep per client: four
+/// clients arriving at once against a wedged daemon took 10.16s, 20.25s, 30.33s
+/// and 40.42s, each one paying in full to recompute a verdict the first had
+/// already reached. It is one attempt deep in total now. A client records when
+/// it arrived, and if the holder ahead of it published a verdict *after* that
+/// moment, it takes that answer instead of spending another ten seconds
+/// discovering it (SH-143).
+fn spawn_locked(env: &Environment) -> Result<DaemonInfo, AppError> {
+    std::fs::create_dir_all(env.daemon_state_dir())?;
+    // Taken before the wait, so "did this verdict arrive after I got here" is a
+    // question about the whole wait rather than about the instant it ended.
+    let arrived = std::time::SystemTime::now();
+    let lock = acquire_spawn_lock(&env.daemon_spawn_lock(), SPAWN_LOCK_DEADLINE)?;
 
     // Re-check under the lock: another client may have started one while this
     // one was waiting for the lock, and starting a second would be the whole
     // point of the lock being missed.
-    let outcome = (|| -> Result<DaemonInfo, AppError> {
-        if let Some(info) = usable(env) {
-            return Ok(info);
-        }
+    if let Some(info) = usable(env) {
+        let _ = FileExt::unlock(&lock);
+        return Ok(info);
+    }
+    // Nothing usable, and somebody just failed to make one while we waited.
+    // Returned *without* republishing: the record describes a real attempt, so
+    // an adoption must not refresh its timestamp, or a steady arrival of clients
+    // would keep handing the same stale verdict forward and nobody would ever
+    // try again.
+    if let Some(adopted) = attempt_verdict(env, arrived) {
+        let _ = FileExt::unlock(&lock);
+        return Err(adopted);
+    }
 
+    let outcome = (|| -> Result<DaemonInfo, AppError> {
         // Something is there that is not ours. Ask it to stand down before
         // taking its place: it holds the pidfile lock, and a new daemon cannot
         // start while it does.
-        if let Some(stale) = read_info(env)
+        //
+        // **A refusal here is the most actionable fact this function learns,
+        // and it used to be discarded.** A daemon answers a shutdown request
+        // *before* it exits (`serve.rs`), so a request that did not come back
+        // is one the incumbent never accepted — it is wedged, not merely slow.
+        // What arrived instead was the consequence: the child fails to claim
+        // the pidfile and reports "a storyhook daemon is already running. Run
+        // `story daemon stop` first", which is a remedy that will itself hang
+        // against a daemon in this state. Kept so the report names the cause
+        // above the consequence.
+        //
+        // The wait after it stays, deliberately, and `wait_until` short-circuits
+        // the moment the incumbent lets go — so the full five seconds are only
+        // ever paid on a path that is going to fail anyway, and paying them buys
+        // the case where a daemon busy rather than wedged finishes and exits.
+        let refusal = if let Some(stale) = read_info(env)
             && is_live(env)
         {
-            let _ = request_shutdown(&stale);
+            let refused = request_shutdown(&stale).err();
             wait_until(SPAWN_DEADLINE, || !is_live(env));
-        }
+            refused
+        } else {
+            None
+        };
 
         stand_down_legacy_daemon(env);
         let child = spawn_child(env)?;
-        await_healthy(env, child)
+        await_healthy(env, child).map_err(|failure| match refusal {
+            Some(refused) => failure.with_context(&format!(
+                "the daemon already holding this store did not stand down: {refused}"
+            )),
+            None => failure,
+        })
     })();
 
+    publish_attempt(env, &outcome);
     let _ = FileExt::unlock(&lock);
     outcome
 }
@@ -1184,6 +1369,154 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(first.len(), 32);
         assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// The bound is the sum of the waits it covers, and this is the assertion
+    /// that keeps it so.
+    ///
+    /// A step added inside the critical section without a matching term here
+    /// makes the bound smaller than the work it guards, and a client would then
+    /// abandon a spawn that was going to succeed. Counted by naming each wait
+    /// rather than by restating the number, so the failure says which one moved.
+    #[test]
+    fn the_spawn_lock_bound_is_the_sum_of_what_it_waits_on() {
+        // request_shutdown against a stale daemon, then hello and another
+        // request_shutdown inside stand_down_legacy_daemon.
+        let control_waits = 3;
+        // wait_until after each of those two shutdowns, then await_healthy.
+        let spawn_waits = 3;
+        assert_eq!(
+            SPAWN_LOCK_DEADLINE,
+            control_waits * CONTROL_DEADLINE + spawn_waits * SPAWN_DEADLINE,
+            "the spawn-lock bound must cover every wait its holder can make"
+        );
+        assert_eq!(SPAWN_LOCK_DEADLINE, Duration::from_secs(30));
+    }
+
+    /// The defect itself, at the smallest level it exists: a held lock used to
+    /// block a waiter forever.
+    #[test]
+    fn a_held_spawn_lock_is_given_up_on_rather_than_waited_out() {
+        let dir = scratch();
+        let path = dir.path().join("daemon.spawn.lock");
+        let _held = acquire_spawn_lock(&path, Duration::from_secs(5)).expect("a free lock");
+
+        let started = Instant::now();
+        let second = acquire_spawn_lock(&path, Duration::from_millis(250));
+        let waited = started.elapsed();
+
+        let error = second.expect_err("a lock somebody else holds must not be waited out");
+        assert!(
+            error.to_string().contains("spawn lock"),
+            "the failure must name what it could not take: {error}"
+        );
+        assert!(
+            waited < Duration::from_secs(2),
+            "the wait must end at its deadline, not somewhere after it: took {waited:?}"
+        );
+    }
+
+    /// The other half: the bound must not cost anything when nobody is holding
+    /// the lock, which is every ordinary command.
+    #[test]
+    fn a_free_spawn_lock_is_taken_immediately() {
+        let dir = scratch();
+        let path = dir.path().join("daemon.spawn.lock");
+
+        let started = Instant::now();
+        let lock = acquire_spawn_lock(&path, SPAWN_LOCK_DEADLINE).expect("a free lock");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "an uncontended acquire must not pay a poll interval"
+        );
+
+        // And it is released for the next one, rather than held to the end of
+        // the process by the file staying open.
+        let _ = FileExt::unlock(&lock);
+        drop(lock);
+        acquire_spawn_lock(&path, Duration::from_millis(250)).expect("the lock was released");
+    }
+
+    /// A waiter adopts a verdict that arrived *while it waited*, and refuses one
+    /// that predates it. The freshness comparison is the whole safety of
+    /// believing another process's answer.
+    #[test]
+    fn a_verdict_is_adopted_only_when_it_postdates_this_client_arriving() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the daemon directory");
+
+        let before = std::time::SystemTime::now();
+        // A moment's separation, because a filesystem timestamp is not infinitely
+        // precise and this test is about an ordering, not about a tie.
+        std::thread::sleep(Duration::from_millis(50));
+        publish_attempt(
+            &env,
+            &Err(AppError::Storage("the daemon would not start".to_string())),
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        let after = std::time::SystemTime::now();
+
+        let adopted = attempt_verdict(&env, before).expect("a verdict written after we arrived");
+        assert!(
+            adopted.to_string().contains("the daemon would not start"),
+            "the adopted answer must be the one the other client reached: {adopted}"
+        );
+        assert!(
+            adopted.to_string().contains("another storyhook client"),
+            "and it must say whose answer it is: {adopted}"
+        );
+        assert!(
+            attempt_verdict(&env, after).is_none(),
+            "a verdict older than this client describes a world it has not seen"
+        );
+    }
+
+    /// Success removes the record. A spent failure left behind is a claim about
+    /// a world that has since been fixed.
+    #[test]
+    fn a_successful_attempt_retracts_the_failure_before_it() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the daemon directory");
+        let arrived = std::time::SystemTime::now();
+        std::thread::sleep(Duration::from_millis(50));
+
+        publish_attempt(
+            &env,
+            &Err(AppError::Storage("it did not start".to_string())),
+        );
+        assert!(attempt_verdict(&env, arrived).is_some());
+
+        let info = info_for(
+            &loopback_only(4321),
+            "t".to_string(),
+            "2026-01-01T00:00:00Z",
+            env.store_path(),
+        )
+        .expect("building the info");
+        publish_attempt(&env, &Ok(info));
+
+        assert!(
+            attempt_verdict(&env, arrived).is_none(),
+            "a daemon that started must not leave the last failure standing"
+        );
+        assert!(!env.daemon_attempt().exists());
+    }
+
+    /// The record is published beside the lock and never over it: an `flock`
+    /// lives on the inode, so a rename onto the lock file would hand the next
+    /// waiter a different inode from the one the holder holds, and the mutual
+    /// exclusion would quietly stop existing.
+    #[test]
+    fn the_attempt_record_is_never_the_lock_file() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        assert_ne!(env.daemon_attempt(), env.daemon_spawn_lock());
+        assert_eq!(
+            env.daemon_attempt().parent(),
+            env.daemon_spawn_lock().parent()
+        );
     }
 
     #[test]

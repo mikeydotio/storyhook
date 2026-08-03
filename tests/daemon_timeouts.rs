@@ -183,3 +183,56 @@ fn a_refused_connection_still_fails_immediately() {
         started.elapsed()
     );
 }
+
+/// The fourth unbounded wait, and the one that was not an HTTP call at all.
+///
+/// `spawn_locked` took `daemon.spawn.lock` with `fs4`'s blocking `lock_exclusive`
+/// — a `flock` with no timeout — so a client that arrived behind a holder waited
+/// for it with no bound of any kind. Measured before the fix: four clients
+/// against a wedged daemon at 10.16s, 20.25s, 30.33s and 40.42s, strictly
+/// linear. With the lock held and never released, as here, the wait was
+/// unbounded outright and this test hung until `PATIENCE` (SH-143).
+///
+/// The lock is held by *this process*, which is the sharpest available form of
+/// the fixture: there is no holder that might finish, so anything less than a
+/// real bound fails.
+#[test]
+fn ensure_gives_up_on_a_spawn_lock_somebody_else_holds() {
+    use fs4::FileExt;
+
+    let dir = storyhook_test_support::scratch_dir();
+    let env = storyhook::env::Environment::at(dir.path());
+    std::fs::create_dir_all(env.daemon_state_dir()).expect("the daemon directory");
+
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(env.daemon_spawn_lock())
+        .expect("opening the spawn lock");
+    held.try_lock_exclusive()
+        .expect("this test must be the one holding it");
+
+    let started = Instant::now();
+    let result = within_patience("lifecycle::ensure behind a held spawn lock", move || {
+        lifecycle::ensure(&env)
+    });
+    let waited = started.elapsed();
+
+    let error = result.expect_err("a lock nobody will release cannot yield a daemon");
+    assert!(
+        error.to_string().contains("spawn lock"),
+        "the failure must name what it was waiting for rather than describing a \
+         daemon that never started: {error}"
+    );
+    // The bound is 30s and `PATIENCE` is 45s. The assertion is that the client's
+    // own deadline fired, not the harness's — which is the whole difference
+    // between a bounded wait and an unbounded one.
+    assert!(
+        waited < Duration::from_secs(40),
+        "the client's own bound must fire well inside the harness's: took {waited:?}"
+    );
+
+    let _ = FileExt::unlock(&held);
+}
