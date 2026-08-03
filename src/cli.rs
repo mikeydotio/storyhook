@@ -2860,10 +2860,24 @@ fn parse_web(args: &[String]) -> Result<Invocation, AppError> {
     }
 }
 
+/// Whether `s` is *shaped* like a story id: `PREFIX-DIGITS` (`SH-1`, `API-42`)
+/// or a bare number (`5`).
+///
+/// Shape only, and that is all it can be. Which project a prefix belongs to,
+/// and whether a number names a story that exists, need the selected project's
+/// prefix and the store — neither of which a parser has. Those are
+/// [`StoryRef::classify`](crate::store::StoryRef)'s questions, asked once the
+/// project is determined.
+///
+/// One caller: [`parse_github_sync`], which is the only parser that has to tell
+/// an id positional from a typo'd flag. It is deliberately *looser* than the id
+/// grammar — `007` and `0` pass here — because every other verb takes its
+/// positional unjudged and reports `story `007` not found` from the store. A
+/// parser that were stricter would make one verb answer a usage error where the
+/// rest answer not-found, which is exactly the inconsistency SH-118 found: this
+/// predicate required a hyphen, so `story github-sync 1` exited 2 with a usage
+/// line while `story show 1` exited 3.
 fn looks_like_story_id(s: &str) -> bool {
-    // Story IDs are PREFIX-DIGITS (e.g., SH-1, API-42).
-    // Reject bare words that are clearly not IDs so typos like
-    // unknown hyphenated commands produce a clear error.
     if let Some(pos) = s.find('-') {
         let prefix = &s[..pos];
         let suffix = &s[pos + 1..];
@@ -2872,7 +2886,7 @@ fn looks_like_story_id(s: &str) -> bool {
             && !suffix.is_empty()
             && suffix.chars().all(|c| c.is_ascii_digit())
     } else {
-        false
+        !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
     }
 }
 
@@ -3242,7 +3256,45 @@ fn join_tokens(tokens: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EpicAction, Invocation, TypeAction, parse_invocation};
+    use super::{EpicAction, Invocation, TypeAction, looks_like_story_id, parse_invocation};
+
+    /// The defect SH-118 left behind: `github-sync` was the one verb whose id
+    /// positional had to contain a hyphen, so a bare integer fell through to
+    /// the "unknown token" arm and became a *usage* error — exit 2 — while
+    /// every other verb accepted the token and answered from the store.
+    #[test]
+    fn github_sync_takes_a_bare_integer_as_its_id() {
+        let invocation = parse_invocation(&["github-sync".to_string(), "5".to_string()]).unwrap();
+        match invocation {
+            Invocation::GithubSync { id, .. } => assert_eq!(id.as_deref(), Some("5")),
+            other => panic!("expected a GithubSync invocation, got {other:?}"),
+        }
+    }
+
+    /// …and the token still has to look like an id, so a typo is still refused
+    /// rather than silently becoming one.
+    #[test]
+    fn github_sync_still_refuses_a_token_that_is_no_kind_of_id() {
+        for token in ["--dry-runn", "nonsense", "-5", "5x"] {
+            assert!(
+                parse_invocation(&["github-sync".to_string(), token.to_string()]).is_err(),
+                "`story github-sync {token}` should still be a usage error"
+            );
+        }
+    }
+
+    #[test]
+    fn the_id_shape_predicate_covers_both_forms() {
+        for id in ["SH-1", "API-42", "1", "5", "007", "0"] {
+            assert!(looks_like_story_id(id), "`{id}` is shaped like an id");
+        }
+        for not_id in ["", "-", "SH-", "-1", "SH-x", "5x", "nonsense", "--dry-run"] {
+            assert!(
+                !looks_like_story_id(not_id),
+                "`{not_id}` is not shaped like an id"
+            );
+        }
+    }
 
     #[test]
     fn routes_move_command() {
