@@ -1995,3 +1995,152 @@ ignored, and a directory resolving to nothing refuses with a longer message.
 
 **Unblocks SH-117 and SH-119**, the next two links of the critical path — and
 hands SH-119 a blocker it did not have, SH-151.
+
+### SH-117 — part 1 of 2 · the git layer verbs · the story stays open
+
+**Outcome:** merged as #101. `story project link|unlink origin|checkout` exist,
+migration 0007 adds `projects.checkout_path`, and **two guards that were not
+holding are now holding.** `project new`, the questionnaire, `delete` and the
+retirement of `init`/`deinit`/`relink` are not built; `HANDOFF.md` is the next
+context's brief and the council's 22 decisions are the input, so the vote is not
+re-run.
+
+**Why it split.** SH-117 is five verbs, a retirement, an interactive
+questionnaire with no precedent in this codebase, and a 280-site fixture sweep.
+The council's own commit plan is two PRs and fourteen commits. Part 1 is the
+half that is purely additive — `init`, `deinit` and `relink` all still work, no
+fixture moved — which is exactly what makes part 2's sweep a source-free
+`refactor(test)` commit. Splitting was the call I made; scaling the story down
+was not mine to make, so it stays open.
+
+**The council was three seats, and every one of them voted against its own
+proposal.** First time in this run all three did — the fifth, sixth and seventh
+non-author votes in nine stories. Round 1 was 2–1; in deliberation **both losing
+authors formally withdrew** in favour of the winner as amended, which collapsed
+the runoff to one candidate and meant no chair tiebreak was needed. Each seat
+was refuted by a fact it had checked, not argued down:
+
+- **Seat 1 (CLI UX)** read `touch_project_path` and found a cross-project
+  collision surfaces as an anonymous unique-index error captioned "recording a
+  project path" — the failure shape `0006`'s header designed `link_remote` to
+  avoid. It also withdrew its own requirement that `--name` be mandatory: a name
+  is reversible through `rename_project`, a prefix is minted into every id.
+- **Seat 2 (architect)** abandoned its own D3 after reading `resolve_at` and
+  finding it reads `project_by_path` — so writing `link checkout` into
+  `project_paths`, as it had proposed, would make a checkout link mutate the
+  *resolution index*, the one thing the epic says a checkout must never do.
+- **Seat 3 (QA)** won, and then killed three of its own clauses on stress-test:
+  a non-idempotent `new` (a fourth feature in a three-feature story), a partial
+  unique index on `checkout_path`, and the prefix-conflict refusal that fell
+  with them.
+
+**The two hazards the design now turns on, both found in deliberation and both
+verified by me before being acted on.**
+
+1. **`project_creation_target` was one variant away from reopening SH-95.** It
+   is the *only* route to `refuse_temp_project_in_real_store` — one call site —
+   and it matched `ProjectAction::Init` inside a `_ => None` catch-all. Every
+   version of this design adds `New` beside `Init` in an additive commit, so
+   `New` would have fallen through and created projects **unguarded, with a
+   green build and a green suite**: SH-95 reopened by the verb that replaces the
+   one it was filed against. The function's own doc comment reads *"a fourth
+   creating arm added later without a guard is exactly how SH-95 happened the
+   first time"* — which is precisely what all three proposals were about to do.
+   Both that match and `forced()`'s are exhaustive now, landed **ahead** of any
+   new variant, and they earned it within the hour: the compiler stopped the
+   build at both sites the moment `Link` and `Unlink` appeared.
+2. **`POST /api/repos` bypassed that guard already**, and nobody had reported
+   it. `rest.rs` called `dispatch_unscoped` directly while `rpc.rs` — the CLI's
+   route — goes through `StoreInvoker`, where the guard lives. A dashboard form
+   naming `/tmp` against a real store created exactly the project the CLI
+   refuses: 201, a catalog row, no diagnosis anywhere. The module header has
+   claimed the opposite invariant since it was written. Reproduced before it was
+   fixed — the test asserted 201 and no stored project, and got 201 with the
+   project stored.
+
+**A defect the seats found that this story files rather than fixes, and it is
+the most serious thing in the whole council.** `src/github/conflict.rs:43` is
+`.interact().unwrap_or(2) // default to Skip on error`. With no terminal —
+which under the daemon is **always**, since it is spawned with `Stdio::null()` —
+**every GitHub sync conflict silently resolves as Skip**. The user sees a
+successful sync and loses every conflicting remote edit, with no message
+anywhere. Filed as **SH-152**, with two siblings: three `Select::interact()`
+sites in `github/initial.rs` with no terminal check at all (**SH-153**), and
+`confirm_undelete` prompting from the *service* layer, which the daemon makes
+unreachable (**SH-154**). Out of charter for a story about project verbs; named
+individually so each is a recorded exemption rather than a silent hole.
+
+**M4 in my own brief was wrong, and the QA seat disproved it by compiling
+something.** I told the council the test harness has no PTY, so the questionnaire
+and the typed-slug delete prompt were unreachable from an integration test. Seat
+3 wrote and ran a `libc::openpty` harness on this machine — `libc` is already a
+dependency of `storyhook-test-support` and `crash.rs` already calls into it —
+and the child reported `[ -t 0 ]` true and read a line. So the never-tested
+destruction prompt is reachable for zero new dependencies. That is part 2's, with
+three conditions the council attached: `daemon_containment()` on the PTY child
+(SIGKILL does **not** kill a daemon it started), a per-file wall-clock watchdog,
+and the orphan check as the postlude.
+
+**The omitted URL is where SH-151 lives, and the rule is stated as what it is.**
+`git config --get remote.origin.url` walks up, so from a subdirectory it reports
+the *enclosing* repository's origin — and registering that claims the parent's
+identity permanently, locking out every sibling project, because an origin
+belongs to at most one project. `link origin` with no URL therefore requires the
+repository's own top level. `origin_of` keeps the walk deliberately: resolution
+asking "does any project answer for where I am standing?" is a question the
+enclosing repository may legitimately answer; registration is the opposite
+direction and may not. The docs say that rather than "when unambiguous", which
+is not a rule anybody can check.
+
+**No unique index on `checkout_path`**, which is the one clause of the winning
+proposal its own author killed. A cross-project uniqueness constraint would
+forbid two projects naming one directory — which is not an ambiguity, because
+nothing resolves a project *by* that column; it is a monorepo with a project per
+service, and SH-151 exists to finish supporting it. It would have shipped inside
+the only artefact this story cannot revise later, and removing a unique index
+afterwards is a table rebuild. A conformance arm pins the sharing as permitted
+rather than merely tolerated.
+
+**Red→green verified by disarming, each mechanism failing exactly its own test**
+— and the two that stayed green are the point: disarming the `--show-toplevel`
+guard fails only `an_omitted_url_refuses_inside_an_enclosing_repository` while
+`an_omitted_url_takes_this_repositorys_own_origin` passes, which is its job as
+the too-far guard; disarming the collision check fails only its own test and
+leaves the other eighteen alone.
+
+**A false green I caught in my own test before landing it.**
+`linking_a_checkout_records_it_without_making_it_resolve` asserted that standing
+in a linked directory still refuses — true, and true just as well of a verb that
+does nothing at all. It now asserts the link landed *first*, by reading it back
+out of `story project list`. That reader is also what gives the new column a
+production consumer while its real one waits for SH-120. Eight consecutive
+stories found the suite pinning the wrong thing; this is the second where I
+caught myself writing one.
+
+**A process note.** A `python3` heredoc doing three `str.replace` calls asserted
+its way out on the second and wrote nothing, so the first edit silently did not
+land either — and the next `cargo build` reported the *original* three errors,
+which read as "the fix did not work" rather than "the fix was never written".
+Read the script's own output before reading the compiler's.
+
+**Deviation from the council's commit plan, one, and it is a re-cut.** The
+verdict's PR 1 was ten commits ending with the questionnaire and the seam test.
+This PR is five, stopping after the link verbs and their docs. Everything in it
+is verdict-faithful; what moved is where the PR boundary falls, so that a merged
+half is a coherent, independently useful, independently revertible change rather
+than a partial questionnaire. The remaining five commits are part 2's, unchanged.
+
+**Also deviated, and recorded on the council rather than here:** round-1 dispatch
+was not parallel (blindness intact, latency lost), and `SendMessage` was not
+available to the seats, so those subagent runs had no heartbeat — a real gap
+against this run's own supervision rule, worth solving before the next council.
+
+**Gate:** `make test` — the whole gate — exit 0, **109 green test-result blocks**
+(up from 108; the new `tests/project_link.rs`), 0 failures, 0 warnings, plugin
+harness 18/0, no orphan daemons. **Tenth consecutive story with no wedge**, and
+the first gate attempt was green.
+
+**Semver: minor** when someone bumps it. Four new verbs, a schema migration and
+two `Store` methods; nothing removed, and no interface a user types changed. The
+behaviour change worth knowing is that the dashboard can no longer create a
+project at a throwaway path in a real store — which it could, until this PR.
