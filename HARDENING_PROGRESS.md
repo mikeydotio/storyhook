@@ -158,7 +158,7 @@ forecast and gets corrected in place as the graph moves.
 - [x] **SH-117** — C5 Verbs: `project new|list|delete|link|unlink` · *part 1 #101, part 2 PRs #103 and this one* · **the whole surface, and the three retirements**
 - [x] **SH-152** — github-sync resolves every conflict as Skip with no terminal · *critical, data-loss; filed by SH-117's council* · **the loss was one sync later, and it destroyed the local edit**
 - [x] **SH-151** — two projects in one repository share an origin · *gates SH-119* · **it was a wrong answer, not a missing one**
-- [ ] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk · *blocked by SH-151*
+- [x] **SH-119** — C7 Subtraction: delete `project_paths` and the resolution walk · *R1–R4 accepted; six calls they did not cover* · **the fixture surface was 15 tests, and measuring it first is what made the shape obvious**
 - [ ] **SH-121** — C10 Consequences: rewrite `worktree_truth.rs`, audit fixtures
 - [ ] **SH-118** — C6 Ids: bare integers
 - [ ] **SH-120** — C8 Dispatch plumbing
@@ -2616,3 +2616,149 @@ is usually formatting, not a failure.
 **Semver: minor.** No interface removed, but `story project new` in a
 subdirectory now registers no origin where it used to register one, and refuses
 a collision it used to skip.
+
+### SH-119 — done
+
+**Outcome:** merged. `project_paths` is gone — the table, its unique index, and
+every symbol that read or wrote it — and with it the resolution walk the
+server-owned epic exists to delete. A command finds its project by the
+`--project` selector, `$STORYHOOK_PROJECT`, the nearest committed
+`.storyhook.toml` at or above the working directory, or the repository's
+registered git origin. Nothing about the filesystem is *required* any more.
+
+**R1-R4 accepted as written; six calls they did not cover, each settled by a
+measured fact.** The design ruling is a comment on SH-119, and no council was
+convened: SH-151's verdict settles the one contested question, and none of the
+six had a second defensible side once measured.
+
+**The fixture surface was 15 tests in 4 binaries, and knowing that first is what
+made the shape of the work obvious.** Before designing anything I disabled the
+path half of `resolve_at` and of test-support's `project_id_at` and ran the
+whole suite `--no-fail-fast`: `event_hooks` (6), `story_export` (6),
+`invoker_seam` (2), the test-support lib (1). Everything else already resolved
+by pointer, because `StoreInvoker::new` hard-codes `pointer: true` and every CLI
+fixture goes through it. A subtraction that looked like a sweep was a ten-commit
+change with four small test families to rewrite.
+
+**R4's stated consequence is false on this machine, and the backfill is still
+built.** R4 says the live store's 13 projects have zero remotes and zero
+checkout_paths, so deleting the walk "leaves ALL THIRTEEN unresolvable".
+Measured: 6 of the 13 have a checkout here, **all six carry a committed
+`.storyhook.toml` whose uuid matches its project row exactly**, and the other 7
+have no directory at all, so no walk ever resolved them. R1's pointer step
+therefore resolves every project that was directory-resolvable before. What the
+backfill actually buys is a *clone* with no committed pointer — a real case, and
+why R4 stands even with its arithmetic corrected.
+
+**R1's climb bound is a `.git` DIRECTORY, and both readings were tested rather
+than argued.** R1 says "the first ancestor containing a `.git` entry" and, one
+clause later, that a worktree's `.git` is a file so a worktree "still climbs to
+its main checkout's pointer". Both are only true if a `.git` file does not stop
+the climb. Verified in both directions: with no bound at all
+`the_climb_stops_at_the_repository_it_is_standing_in` fails; with the bound on
+any `.git` entry — R1's literal wording —
+`a_linked_worktrees_git_file_does_not_stop_the_climb` fails instead. Every
+worktree fixture in the suite is created by `git worktree add ... HEAD` from a
+commit made *before* `story project new` ran, so none carries a pointer file and
+the main checkout's is the only one there is.
+
+**SH-151's D3 refusal became an invariant instead.** The council asked
+`story project new` to refuse a run that would leave the project identified by
+neither an owned origin nor a pointer file; SH-151 recorded it as unbuildable
+because an attaching run always wrote a path row. With the row gone the state
+becomes possible — but only through `InitOptions::pointer = false`, and
+**nothing in `src/` ever set it false**. It was dead configuration whose only
+effect was to make an unreachable project expressible, so it is deleted with its
+plumbing rather than checked for. Same answer, stronger form, and the one
+CLAUDE.md asks for.
+
+**Two guards were kept rather than lost with the clause that implemented them**,
+and both are the kind of thing a subtraction quietly drops:
+
+1. `story migrate`'s second refusal. Its first clause is the pointer file; its
+   second was `project_by_path`. Delete that and `rm .storyhook.toml && story
+   migrate` mints a silent second copy of every story in the tree — 61 of them
+   in the fixture that caught it. A migration now records the tree as the
+   project's checkout, and the guard asks whether any project already claims
+   this directory: a scan, in a command that runs once per repository, of a
+   column nothing resolves by.
+2. `story doctor`'s catalog audit. SH-119 lists it for deletion because it
+   "exists only to police stored paths" — and `checkout_path`, which did not
+   exist when that was written, is the stored path that survives. Deleting it
+   would leave `story project list` printing a directory that is gone with no
+   command to clean it. The subject narrows; the method stays. Recorded as a
+   deviation.
+
+**The backfill lives in `story doctor`, and its fixture is the honest one.**
+R4 required it in this wave. `doctor` reports every project whose recorded
+checkout owns an origin nobody registered; `--fix` records exactly that finding
+and reports the other three — inherited, held by another project, or a probe
+that could not be run. Building the state it repairs takes making the repository
+*after* the project, because `story project new` registers an owned origin as it
+goes. The third test is the guard against the fix going too far: a project in a
+subdirectory of a repository must be reported and never registered, and the
+assertion is that **exactly one** project ends up holding the origin — the one
+whose directory owns it. My first version of that assertion was wrong in an
+instructive way: I asserted nobody held `acme/mono`, and `--fix` had correctly
+given it to the repository-root project.
+
+**The plugin hook gate is the story call the hook makes.** A shell walk cannot
+answer "does this directory belong to a project?" any more, and the way it fails
+is the point: a fresh clone with no pointer file resolves by its registered
+origin, which only storyhook can look up, so the walk would silently no-op in
+exactly the arrangement the design enables. Verified rather than assumed:
+`story commit-sync` in a non-project exits 3 and writes **nothing** to stdout, so
+the capture is empty and the hook emits `{}` — the same answer the walk gave.
+`storyhook_pointer` stays as the locator for the `[plugin]` kill switch, which
+genuinely is repository configuration.
+
+**Migration 8 carries the main checkout and drops the worktrees**, which is
+AC-4. A checkout somebody linked on purpose outranks what the index remembered
+(the `UPDATE` only fills a NULL), and a project holding *only* worktree rows
+gets nothing — promoting one is the defect `preferred_checkout` embodied, not a
+behaviour to carry forward. Nothing is rebuilt: `project_paths` is a leaf named
+by no trigger, so migration 5's warning to its successors does not apply.
+
+**AC-1 cannot be a literal grep, so it is pinned as what it means.** `grep
+project_paths src/` can never be empty while migration 8 is *named* for the
+table it drops. `invoker_seam.rs::the_resolution_index_is_gone` greps `src/`
+with comments stripped and fails if any line of **code** names the deleted API;
+the table itself is checked where it can be — a migrated store has no
+`project_paths` object at all.
+
+**Six test premises rewritten rather than relaxed**, which is now the seventh
+consecutive story in this run where the suite documented the deleted behaviour
+as intended: the two `invoker_seam` walk tests became their own opposites, the
+two test-support lib tests say what they now prove,
+`the_pointer_file_is_written_only_when_asked_for` became "an attaching run
+always leaves the checkout carrying its identity", and
+`test-hook-kill-switch.sh`'s last case flipped from "nothing runs" to "storyhook
+is asked". Three tests were retired with their subject:
+`a_checkout_path_cannot_be_claimed_by_two_projects_even_by_hand` (the unique
+index is gone and the fact is now false by design),
+`a_project_with_a_worktree_resolves_to_its_main_checkout` (there is one checkout
+to choose from), and `a_linked_checkout_is_not_a_recorded_path` (both halves
+unstatable). Each retirement leaves a comment naming what replaced it.
+
+**Gate:** `make test` exits 0 — **113 green test-result blocks**, 0 failures,
+plugin harness 18/0, clippy clean, **no wedge** (fifteenth consecutive story).
+One attempt before it exited 1 in thirty seconds, in the preflight rather than
+the suite: orphaned daemons left by my own interrupted measurement runs, named
+by `scripts/check-no-orphan-servers.sh` and refused before a single test could
+be misled by them. That guard has now paid for itself twice in this run.
+
+**Two process notes.** The measurement run that found the 15-test surface had to
+be re-run with `--no-fail-fast`: cargo stops at the first failing *binary*, so
+the first attempt reported 6 failures in `event_hooks` and hid the other 9 in
+three binaries it never reached. And the whole-suite runs were supervised with
+log growth as the heartbeat against a 120-second stall bound; twice the log sat
+still long enough to look wedged (`semver_hook_test`, `story_types`) and both
+times `ps` showed the work running, which is the check that separates a slow
+test from a stalled one.
+
+**Semver: major.** No public Rust API is removed that a consumer could have —
+the crate is a binary — but a schema migration deletes a table, the resolution
+order changes, and a project with neither a committed pointer nor a registered
+origin stops resolving from its own directory. `story doctor` is the ramp.
+
+**Council:** not convened. R1-R4 were the input, as SH-151 instructed.
