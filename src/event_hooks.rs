@@ -364,38 +364,12 @@ pub fn fire_hook(
         }
     };
 
-    match child.wait_timeout(timeout) {
-        Ok(Some(status)) => {
-            if !status.success() {
-                match diagnostics.read_prefix(DIAGNOSTIC_PREFIX_BYTES) {
-                    Ok((bytes, len)) => {
-                        let said = String::from_utf8_lossy(&bytes).trim().to_string();
-                        if said.is_empty() {
-                            // `len` is what distinguishes the two: zero is proof
-                            // the hook said nothing, and a positive length we
-                            // could not read back is a fault of storyhook's that
-                            // must not be reported as the hook's silence.
-                            if len == 0 {
-                                eprintln!("warning: {event_name} hook exited with {status}");
-                            } else {
-                                eprintln!(
-                                    "warning: {event_name} hook exited with {status}, and wrote \
-                                     {len} bytes to stderr that storyhook could not read back"
-                                );
-                            }
-                        } else {
-                            eprintln!("warning: {event_name} hook failed: {said}");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "warning: {event_name} hook exited with {status}; its stderr could \
-                             not be read: {e}"
-                        );
-                    }
-                }
-            }
-        }
+    let outcome = match child.wait_timeout(timeout) {
+        Ok(Some(status)) if status.success() => return,
+        Ok(Some(status)) => HookOutcome::Exited {
+            status: status.to_string(),
+            said: Diagnostics::read(&diagnostics),
+        },
         Ok(None) => {
             // Kills `sh` only. Whatever it backgrounded is left alone: those
             // descendants hold nothing of storyhook's now beyond an unlinked
@@ -403,13 +377,126 @@ pub fn fire_hook(
             // for "do not wait for this".
             let _ = child.kill();
             let _ = child.wait();
-            eprintln!(
-                "warning: {event_name} hook timed out after {}s",
-                timeout.as_secs()
-            );
+            // Read *after* the kill, so the diagnostic carries everything the
+            // hook managed to say before its deadline. The old code discarded
+            // the pipe unread on this branch, which threw away the explanation
+            // for the kill on the one branch where the user most needs it.
+            HookOutcome::TimedOut {
+                after: timeout,
+                said: Diagnostics::read(&diagnostics),
+            }
         }
-        Err(e) => {
-            eprintln!("warning: {event_name} hook error: {e}");
+        Err(e) => HookOutcome::NotWaitable(e.to_string()),
+    };
+    eprintln!("warning: {event_name} hook {outcome}");
+}
+
+/// What a hook's stderr turned out to hold.
+///
+/// The length is carried rather than inferred, because it is the only thing
+/// that distinguishes "the hook said nothing" from "the hook said something
+/// storyhook failed to read back". Reporting the second as the first is how the
+/// wedge this file was rewritten for stayed invisible for so long.
+enum Diagnostics {
+    /// The hook said nothing at all — a length of zero, not an empty read.
+    Silent,
+    /// What the hook said, and the total it wrote if that is more than was read.
+    Said { text: String, truncated_from: u64 },
+    /// The hook wrote `len` bytes that could not be read back. Storyhook's
+    /// fault, and it must not be reported as the hook's silence.
+    Unreadable { len: u64, error: String },
+}
+
+impl Diagnostics {
+    fn read(file: &ScratchFile) -> Self {
+        match file.read_prefix(DIAGNOSTIC_PREFIX_BYTES) {
+            Ok((bytes, len)) => {
+                let text = String::from_utf8_lossy(&bytes).trim().to_string();
+                if text.is_empty() {
+                    if len == 0 {
+                        Self::Silent
+                    } else {
+                        Self::Unreadable {
+                            len,
+                            error: "read back empty".to_string(),
+                        }
+                    }
+                } else {
+                    Self::Said {
+                        text,
+                        truncated_from: if len > DIAGNOSTIC_PREFIX_BYTES {
+                            len
+                        } else {
+                            0
+                        },
+                    }
+                }
+            }
+            Err(e) => Self::Unreadable {
+                len: 0,
+                error: e.to_string(),
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for Diagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Silent => Ok(()),
+            Self::Said {
+                text,
+                truncated_from: 0,
+            } => write!(f, ": {text}"),
+            Self::Said {
+                text,
+                truncated_from,
+            } => write!(
+                f,
+                ": {text} (showing the first {DIAGNOSTIC_PREFIX_BYTES} of {truncated_from} bytes)"
+            ),
+            Self::Unreadable { len: 0, error } => {
+                write!(f, "; its stderr could not be read: {error}")
+            }
+            Self::Unreadable { len, error } => write!(
+                f,
+                "; it wrote {len} bytes to stderr that storyhook could not read back: {error}"
+            ),
+        }
+    }
+}
+
+/// How a hook ended, when it did not end well.
+///
+/// Private, and `fire_hook` still returns `()`. A public type here would be a
+/// new surface with seven call sites that legitimately discard it — and a `pub
+/// fn` returning a private type trips `private_interfaces`, which `-D warnings`
+/// makes a build failure, so the split is what lets this stay private at all.
+enum HookOutcome {
+    /// Ran to completion and failed. The status and what it said are reported
+    /// **together**: they used to be mutually exclusive, so a hook that
+    /// explained itself had its exit code silently discarded.
+    Exited { status: String, said: Diagnostics },
+    /// Outlived its deadline and was killed.
+    TimedOut { after: Duration, said: Diagnostics },
+    /// Storyhook could not wait for it, which is a fault of storyhook's rather
+    /// than of the hook.
+    NotWaitable(String),
+}
+
+impl std::fmt::Display for HookOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // The status is named whether or not the hook explained itself. It
+            // used to be discarded whenever stderr was non-empty, so the two
+            // most useful facts about a failure were mutually exclusive.
+            Self::Exited { status, said } => write!(f, "failed ({status}){said}"),
+            Self::TimedOut { after, said } => write!(
+                f,
+                "timed out after {}s; sh was killed and anything it backgrounded is still running{said}",
+                after.as_secs()
+            ),
+            Self::NotWaitable(error) => write!(f, "could not be waited for: {error}"),
         }
     }
 }
@@ -575,5 +662,97 @@ mod tests {
         let (bytes, len) = spool.read_prefix(4096).expect("reading back");
         assert_eq!(String::from_utf8_lossy(&bytes), "the hook is unhappy");
         assert_eq!(len, 19);
+    }
+
+    /// A failing hook reports its status **and** its words, not one or the
+    /// other.
+    ///
+    /// They were mutually exclusive: a non-empty stderr took the
+    /// `hook failed: {stderr}` branch and the exit status was dropped, so the
+    /// hooks that explained themselves were exactly the ones whose exit code
+    /// nobody saw.
+    #[test]
+    fn a_failing_hook_names_its_status_even_when_it_printed_something() {
+        let rendered = HookOutcome::Exited {
+            status: "exit status: 7".to_string(),
+            said: Diagnostics::Said {
+                text: "noisy".to_string(),
+                truncated_from: 0,
+            },
+        }
+        .to_string();
+        assert_eq!(rendered, "failed (exit status: 7): noisy");
+    }
+
+    /// A hook that failed silently still names its status, and says nothing
+    /// more.
+    #[test]
+    fn a_silent_failure_reports_only_its_status() {
+        let rendered = HookOutcome::Exited {
+            status: "exit status: 1".to_string(),
+            said: Diagnostics::Silent,
+        }
+        .to_string();
+        assert_eq!(rendered, "failed (exit status: 1)");
+    }
+
+    /// Truncation is announced with a real byte count.
+    ///
+    /// The 4 KiB cap was silent, so a reader had no way to tell a hook that
+    /// said little from one whose explanation was cut off mid-sentence.
+    #[test]
+    fn a_truncated_diagnostic_says_how_much_was_withheld() {
+        let rendered = Diagnostics::Said {
+            text: "the beginning".to_string(),
+            truncated_from: 91_234,
+        }
+        .to_string();
+        assert_eq!(
+            rendered,
+            ": the beginning (showing the first 4096 of 91234 bytes)"
+        );
+    }
+
+    /// A timeout carries what the hook managed to say before it was killed, and
+    /// says plainly that its descendants were not.
+    ///
+    /// This branch read no stderr at all before SH-141 — it discarded the pipe
+    /// unread — so the explanation for the kill was thrown away on the one
+    /// branch where a user most needs it.
+    #[test]
+    fn a_timeout_reports_what_the_hook_said_before_the_deadline() {
+        let rendered = HookOutcome::TimedOut {
+            after: Duration::from_secs(10),
+            said: Diagnostics::Said {
+                text: "halfway through".to_string(),
+                truncated_from: 0,
+            },
+        }
+        .to_string();
+        assert!(rendered.starts_with("timed out after 10s"), "{rendered}");
+        assert!(
+            rendered.contains("anything it backgrounded is still running"),
+            "the message must say what was *not* killed, because that is the \
+             promise a hook author is relying on: {rendered}"
+        );
+        assert!(rendered.ends_with(": halfway through"), "{rendered}");
+    }
+
+    /// Bytes storyhook could not read back are never reported as the hook's
+    /// silence.
+    ///
+    /// That distinction is the whole reason `read_prefix` returns the file's
+    /// true length: the two states are indistinguishable from the bytes alone,
+    /// and reporting the second as the first is the shape of failure that kept
+    /// the original wedge invisible.
+    #[test]
+    fn unreadable_diagnostics_are_not_reported_as_silence() {
+        let rendered = Diagnostics::Unreadable {
+            len: 512,
+            error: "read back empty".to_string(),
+        }
+        .to_string();
+        assert!(rendered.contains("512 bytes"), "{rendered}");
+        assert!(rendered.contains("could not read back"), "{rendered}");
     }
 }
