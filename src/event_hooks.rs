@@ -1,10 +1,133 @@
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::Deserialize;
 use wait_timeout::ChildExt;
+
+/// How much of a hook's stderr is read back for the failure diagnostic.
+const DIAGNOSTIC_PREFIX_BYTES: u64 = 4096;
+
+/// An unlinked temporary file handed to a hook in place of a pipe.
+///
+/// # Why a file rather than a pipe
+///
+/// `fire_hook` used to drive three concurrent pipes **sequentially** — write the
+/// payload to stdin, then wait, then read stderr — which is the classic pipe
+/// deadlock [`std::process::Child::wait_with_output`] exists to prevent. Two
+/// unbounded waits followed (SH-141):
+///
+/// * the payload write blocked once the pipe buffer filled, if nothing was
+///   draining it — and it ran *before* the timeout was consulted, so
+///   `timeout_seconds` was never reached at all;
+/// * the stderr read blocked waiting for an end-of-file that only arrives when
+///   the last descendant holding the write end dies.
+///
+/// Neither was bounded by anything storyhook controls. A merely *verbose* hook
+/// wedged the daemon with no misbehaviour and no descendant: measured, a hook
+/// writing 200 KiB to stderr and then reading its payload never returns, while
+/// the same hook at 32 KiB returns in 12.9 ms — the difference is one 64 KiB
+/// pipe buffer.
+///
+/// A regular file has no end-of-file rendezvous and no reader/writer handshake,
+/// so neither operation can wait on a descriptor whose holder storyhook does not
+/// control, however many descendants inherit it and however long they live. The
+/// wedge stops being *representable* rather than being bounded by a new
+/// deadline — which is why this fix carries no timeout of its own, no thread and
+/// no `unsafe`.
+///
+/// Unnamed ([`tempfile::tempfile`]) rather than named: no path ever exists, so
+/// there is nothing to clean up, nothing left behind after a panic or a SIGKILL,
+/// and nothing another process can open.
+///
+/// # The invariant this type exists to own
+///
+/// The file position. Every accessor rewinds internally and the inner
+/// [`std::fs::File`] never escapes, so the omission that would hand a hook an
+/// empty payload — or read an empty diagnostic back — cannot be written at any
+/// call site. It was the one silent-failure mode the file design would otherwise
+/// have introduced, and it would have read exactly like "the hook said nothing".
+///
+/// # Accepted limitation: no backpressure
+///
+/// A pipe's 64 KiB buffer throttled a runaway hook; a file does not. A
+/// descendant that inherits fd 2 and writes forever grows an **unlinked** file,
+/// which no `du` or `ls` can find — only `lsof +L1`. Three things answer that,
+/// and a hard cap is deliberately not one of them: `RLIMIT_FSIZE` would need
+/// `unsafe` and a `#[cfg]`, and its `SIGXFSZ` would kill the backgrounded job,
+/// breaking the promise that a hook's descendants are left alone.
+///
+/// **Redesign trigger:** the first report of a hook filling a disk, or the first
+/// need to bound a hook child's resources for any other reason. The limitation
+/// is recorded on SH-174, which already owns "hooks are unbounded inside the
+/// request handler"; bounding `timeout_seconds` there bounds this too, since the
+/// worst case is write bandwidth × `timeout_seconds`.
+struct ScratchFile(std::fs::File);
+
+impl ScratchFile {
+    /// A scratch file holding `bytes`, positioned at its start.
+    ///
+    /// The written length is verified against `bytes`, so a payload that did not
+    /// land is a loud error at the moment it happens rather than an empty
+    /// document a hook acts on with total confidence.
+    fn holding(bytes: &[u8]) -> std::io::Result<Self> {
+        let mut file = tempfile::tempfile()?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        let written = file.metadata()?.len();
+        if written != bytes.len() as u64 {
+            return Err(std::io::Error::other(format!(
+                "wrote {written} of {} payload bytes",
+                bytes.len()
+            )));
+        }
+        file.seek(SeekFrom::Start(0))?;
+        Ok(Self(file))
+    }
+
+    /// An empty scratch file for a child to write into.
+    fn empty() -> std::io::Result<Self> {
+        Ok(Self(tempfile::tempfile()?))
+    }
+
+    /// This file as a child's stdio, consuming the handle.
+    ///
+    /// Consuming on purpose: the payload is never read back, so letting the
+    /// handle survive would leave an un-rewound file nobody needs and a way to
+    /// misuse it.
+    fn into_stdio(self) -> Stdio {
+        Stdio::from(self.0)
+    }
+
+    /// A duplicate of this file for a child to write into, keeping ours.
+    ///
+    /// The duplicate shares the file *offset* with our handle, which is why
+    /// [`Self::read_prefix`] rewinds rather than assuming a position.
+    fn for_child(&self) -> std::io::Result<Stdio> {
+        Ok(Stdio::from(self.0.try_clone()?))
+    }
+
+    /// The first `max` bytes, and the file's true length.
+    ///
+    /// Loops to `max` or end-of-file: a short read is legal on a regular file
+    /// too, so a single `read` gives an arbitrary prefix rather than a
+    /// deterministic one — which is the defect the previous `read_stderr_limited`
+    /// had, independently of the wedge.
+    ///
+    /// The length is returned rather than inferred from the bytes because it is
+    /// what makes silence *provable*: `0` means the hook genuinely said nothing,
+    /// and a positive length with no bytes read is an internally inconsistent
+    /// state the caller can name instead of misreporting.
+    fn read_prefix(&self, max: u64) -> std::io::Result<(Vec<u8>, u64)> {
+        let len = self.0.metadata()?.len();
+        let mut handle = self.0.try_clone()?;
+        handle.seek(SeekFrom::Start(0))?;
+        let mut buf = Vec::new();
+        handle.take(max).read_to_end(&mut buf)?;
+        Ok((buf, len))
+    }
+}
 
 #[derive(Debug, Deserialize, Default)]
 pub struct HooksConfig {
@@ -191,11 +314,44 @@ pub fn fire_hook(
     );
     let event_name = event_type.as_str();
 
+    // Both scratch files are created before the spawn, and a failure to create
+    // either means the hook does not run. Firing anyway would hand it a
+    // valid-looking empty payload, and it would take a silently wrong action —
+    // worse than not firing and saying so.
+    let payload = match ScratchFile::holding(payload_json.as_bytes()) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("warning: {event_name} hook did not run: could not stage its payload: {e}");
+            return;
+        }
+    };
+    let diagnostics = match ScratchFile::empty() {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!(
+                "warning: {event_name} hook did not run: could not stage its diagnostics: {e}"
+            );
+            return;
+        }
+    };
+    let child_stderr = match diagnostics.for_child() {
+        Ok(stdio) => stdio,
+        Err(e) => {
+            eprintln!(
+                "warning: {event_name} hook did not run: could not stage its diagnostics: {e}"
+            );
+            return;
+        }
+    };
+
+    // The payload is delivered in full, with a real end-of-file, from the
+    // instant the hook starts — rather than written into a pipe afterwards,
+    // which is what a hook reading stdin early used to block on.
     let child = Command::new("sh")
         .args(["-c", &hook.command])
-        .stdin(Stdio::piped())
+        .stdin(payload.into_stdio())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(child_stderr)
         .current_dir(root)
         .env("STORYHOOK_HOOK_DEPTH", (depth + 1).to_string())
         .spawn();
@@ -208,46 +364,140 @@ pub fn fire_hook(
         }
     };
 
-    // Write payload to stdin
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(payload_json.as_bytes());
-        // Drop stdin to close pipe
-    }
-
-    // Wait with timeout
-    match child.wait_timeout(timeout) {
-        Ok(Some(status)) => {
-            if !status.success() {
-                let stderr = read_stderr_limited(&mut child, 4096);
-                if stderr.is_empty() {
-                    eprintln!("warning: {event_name} hook exited with {status}");
-                } else {
-                    eprintln!("warning: {event_name} hook failed: {stderr}");
-                }
-            }
-        }
+    let outcome = match child.wait_timeout(timeout) {
+        Ok(Some(status)) if status.success() => return,
+        Ok(Some(status)) => HookOutcome::Exited {
+            status: status.to_string(),
+            said: Diagnostics::read(&diagnostics),
+        },
         Ok(None) => {
+            // Kills `sh` only. Whatever it backgrounded is left alone: those
+            // descendants hold nothing of storyhook's now beyond an unlinked
+            // file nobody reads, and `cmd &` is the one idiom a hook author has
+            // for "do not wait for this".
             let _ = child.kill();
             let _ = child.wait();
-            eprintln!(
-                "warning: {event_name} hook timed out after {}s",
-                timeout.as_secs()
-            );
+            // Read *after* the kill, so the diagnostic carries everything the
+            // hook managed to say before its deadline. The old code discarded
+            // the pipe unread on this branch, which threw away the explanation
+            // for the kill on the one branch where the user most needs it.
+            HookOutcome::TimedOut {
+                after: timeout,
+                said: Diagnostics::read(&diagnostics),
+            }
         }
-        Err(e) => {
-            eprintln!("warning: {event_name} hook error: {e}");
+        Err(e) => HookOutcome::NotWaitable(e.to_string()),
+    };
+    eprintln!("warning: {event_name} hook {outcome}");
+}
+
+/// What a hook's stderr turned out to hold.
+///
+/// The length is carried rather than inferred, because it is the only thing
+/// that distinguishes "the hook said nothing" from "the hook said something
+/// storyhook failed to read back". Reporting the second as the first is how the
+/// wedge this file was rewritten for stayed invisible for so long.
+enum Diagnostics {
+    /// The hook said nothing at all — a length of zero, not an empty read.
+    Silent,
+    /// What the hook said, and the total it wrote if that is more than was read.
+    Said { text: String, truncated_from: u64 },
+    /// The hook wrote `len` bytes that could not be read back. Storyhook's
+    /// fault, and it must not be reported as the hook's silence.
+    Unreadable { len: u64, error: String },
+}
+
+impl Diagnostics {
+    fn read(file: &ScratchFile) -> Self {
+        match file.read_prefix(DIAGNOSTIC_PREFIX_BYTES) {
+            Ok((bytes, len)) => {
+                let text = String::from_utf8_lossy(&bytes).trim().to_string();
+                if text.is_empty() {
+                    if len == 0 {
+                        Self::Silent
+                    } else {
+                        Self::Unreadable {
+                            len,
+                            error: "read back empty".to_string(),
+                        }
+                    }
+                } else {
+                    Self::Said {
+                        text,
+                        truncated_from: if len > DIAGNOSTIC_PREFIX_BYTES {
+                            len
+                        } else {
+                            0
+                        },
+                    }
+                }
+            }
+            Err(e) => Self::Unreadable {
+                len: 0,
+                error: e.to_string(),
+            },
         }
     }
 }
 
-fn read_stderr_limited(child: &mut std::process::Child, max_bytes: usize) -> String {
-    use std::io::Read;
-    if let Some(mut stderr) = child.stderr.take() {
-        let mut buf = vec![0u8; max_bytes];
-        let n = stderr.read(&mut buf).unwrap_or(0);
-        String::from_utf8_lossy(&buf[..n]).trim().to_string()
-    } else {
-        String::new()
+impl std::fmt::Display for Diagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Silent => Ok(()),
+            Self::Said {
+                text,
+                truncated_from: 0,
+            } => write!(f, ": {text}"),
+            Self::Said {
+                text,
+                truncated_from,
+            } => write!(
+                f,
+                ": {text} (showing the first {DIAGNOSTIC_PREFIX_BYTES} of {truncated_from} bytes)"
+            ),
+            Self::Unreadable { len: 0, error } => {
+                write!(f, "; its stderr could not be read: {error}")
+            }
+            Self::Unreadable { len, error } => write!(
+                f,
+                "; it wrote {len} bytes to stderr that storyhook could not read back: {error}"
+            ),
+        }
+    }
+}
+
+/// How a hook ended, when it did not end well.
+///
+/// Private, and `fire_hook` still returns `()`. A public type here would be a
+/// new surface with seven call sites that legitimately discard it — and a `pub
+/// fn` returning a private type trips `private_interfaces`, which `-D warnings`
+/// makes a build failure, so the split is what lets this stay private at all.
+enum HookOutcome {
+    /// Ran to completion and failed. The status and what it said are reported
+    /// **together**: they used to be mutually exclusive, so a hook that
+    /// explained itself had its exit code silently discarded.
+    Exited { status: String, said: Diagnostics },
+    /// Outlived its deadline and was killed.
+    TimedOut { after: Duration, said: Diagnostics },
+    /// Storyhook could not wait for it, which is a fault of storyhook's rather
+    /// than of the hook.
+    NotWaitable(String),
+}
+
+impl std::fmt::Display for HookOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // The status is named whether or not the hook explained itself. It
+            // used to be discarded whenever stderr was non-empty, so the two
+            // most useful facts about a failure were mutually exclusive.
+            Self::Exited { status, said } => write!(f, "failed ({status}){said}"),
+            Self::TimedOut { after, said } => write!(
+                f,
+                "timed out after {}s; sh was killed and anything it backgrounded is still running{said}",
+                after.as_secs()
+            ),
+            Self::NotWaitable(error) => write!(f, "could not be waited for: {error}"),
+        }
     }
 }
 
@@ -322,4 +572,187 @@ pub fn test_hook(root: &Path, event_type_str: &str) -> Result<String, crate::err
     fire_hook(root, &config, event_type, &payload_str, depth_from_env());
 
     Ok(format!("fired {} hook: {}", event_type_str, hook.command))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch file has no name, which is what makes it clean up itself.
+    ///
+    /// A link count of zero *is* the property: nothing to remove on the happy
+    /// path, no residue after a panic or a SIGKILL, and no path another process
+    /// can open while the file holds a payload's `comment_text`. Asserting it
+    /// directly rather than by watching a temp directory, because a directory's
+    /// contents move for reasons unrelated to this file.
+    #[cfg(unix)]
+    #[test]
+    fn a_scratch_file_has_no_name() {
+        use std::os::unix::fs::MetadataExt;
+        let spool = ScratchFile::holding(b"payload").expect("staging a payload");
+        assert_eq!(
+            spool.0.metadata().expect("stat").nlink(),
+            0,
+            "the scratch file is linked into the filesystem, so it has a path — \
+             which brings back the cleanup, the residue after a crash, and the \
+             disclosure surface that unlinking removes"
+        );
+    }
+
+    /// A staged payload is readable from its first byte.
+    ///
+    /// The rewind is the whole invariant. Forgetting it hands a hook an
+    /// immediate end-of-file, which is indistinguishable from an empty payload
+    /// and would make the hook take a silently wrong action — so the type
+    /// rewinds internally and this proves it does.
+    #[test]
+    fn a_staged_payload_is_positioned_at_its_start() {
+        let spool = ScratchFile::holding(b"{\"event_type\":\"create\"}").expect("staging");
+        let (bytes, len) = spool.read_prefix(4096).expect("reading back");
+        assert_eq!(bytes, b"{\"event_type\":\"create\"}");
+        assert_eq!(len, 23);
+    }
+
+    /// `read_prefix` returns exactly `max` bytes and the file's *true* length.
+    ///
+    /// Both halves matter. The prefix must be deterministic, which needs a loop:
+    /// a short read is legal on a regular file too, so a single `read` gives an
+    /// arbitrary amount. And the length has to be the file's, not the prefix's,
+    /// because that is what lets a caller tell "the hook said nothing" from
+    /// "the hook said something storyhook failed to read".
+    #[test]
+    fn read_prefix_loops_to_its_limit_and_reports_the_true_length() {
+        let content = vec![b'z'; 200_000];
+        let spool = ScratchFile::holding(&content).expect("staging");
+        let (bytes, len) = spool.read_prefix(4096).expect("reading back");
+        assert_eq!(bytes.len(), 4096, "the prefix must be the full limit");
+        assert!(bytes.iter().all(|b| *b == b'z'));
+        assert_eq!(len, 200_000, "the length is the file's, not the prefix's");
+    }
+
+    /// An empty scratch file reports a zero length, which is what makes silence
+    /// provable rather than inferred.
+    #[test]
+    fn an_empty_scratch_file_proves_the_hook_said_nothing() {
+        let spool = ScratchFile::empty().expect("staging");
+        let (bytes, len) = spool.read_prefix(4096).expect("reading back");
+        assert!(bytes.is_empty());
+        assert_eq!(len, 0);
+    }
+
+    /// What a child writes is what storyhook reads back, from byte zero.
+    ///
+    /// `for_child` hands out a `try_clone`, which shares the file *offset* with
+    /// our handle — so a child that writes 100 bytes leaves the shared position
+    /// at 100. This is the case that would silently return nothing if
+    /// `read_prefix` trusted the position instead of rewinding.
+    #[test]
+    fn a_childs_writes_are_read_back_from_the_start() {
+        let spool = ScratchFile::empty().expect("staging");
+        let stdio = spool.for_child().expect("a descriptor for the child");
+        let status = Command::new("sh")
+            .args(["-c", "printf 'the hook is unhappy' >&2"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stdio)
+            .status()
+            .expect("running a child");
+        assert!(status.success());
+
+        let (bytes, len) = spool.read_prefix(4096).expect("reading back");
+        assert_eq!(String::from_utf8_lossy(&bytes), "the hook is unhappy");
+        assert_eq!(len, 19);
+    }
+
+    /// A failing hook reports its status **and** its words, not one or the
+    /// other.
+    ///
+    /// They were mutually exclusive: a non-empty stderr took the
+    /// `hook failed: {stderr}` branch and the exit status was dropped, so the
+    /// hooks that explained themselves were exactly the ones whose exit code
+    /// nobody saw.
+    #[test]
+    fn a_failing_hook_names_its_status_even_when_it_printed_something() {
+        let rendered = HookOutcome::Exited {
+            status: "exit status: 7".to_string(),
+            said: Diagnostics::Said {
+                text: "noisy".to_string(),
+                truncated_from: 0,
+            },
+        }
+        .to_string();
+        assert_eq!(rendered, "failed (exit status: 7): noisy");
+    }
+
+    /// A hook that failed silently still names its status, and says nothing
+    /// more.
+    #[test]
+    fn a_silent_failure_reports_only_its_status() {
+        let rendered = HookOutcome::Exited {
+            status: "exit status: 1".to_string(),
+            said: Diagnostics::Silent,
+        }
+        .to_string();
+        assert_eq!(rendered, "failed (exit status: 1)");
+    }
+
+    /// Truncation is announced with a real byte count.
+    ///
+    /// The 4 KiB cap was silent, so a reader had no way to tell a hook that
+    /// said little from one whose explanation was cut off mid-sentence.
+    #[test]
+    fn a_truncated_diagnostic_says_how_much_was_withheld() {
+        let rendered = Diagnostics::Said {
+            text: "the beginning".to_string(),
+            truncated_from: 91_234,
+        }
+        .to_string();
+        assert_eq!(
+            rendered,
+            ": the beginning (showing the first 4096 of 91234 bytes)"
+        );
+    }
+
+    /// A timeout carries what the hook managed to say before it was killed, and
+    /// says plainly that its descendants were not.
+    ///
+    /// This branch read no stderr at all before SH-141 — it discarded the pipe
+    /// unread — so the explanation for the kill was thrown away on the one
+    /// branch where a user most needs it.
+    #[test]
+    fn a_timeout_reports_what_the_hook_said_before_the_deadline() {
+        let rendered = HookOutcome::TimedOut {
+            after: Duration::from_secs(10),
+            said: Diagnostics::Said {
+                text: "halfway through".to_string(),
+                truncated_from: 0,
+            },
+        }
+        .to_string();
+        assert!(rendered.starts_with("timed out after 10s"), "{rendered}");
+        assert!(
+            rendered.contains("anything it backgrounded is still running"),
+            "the message must say what was *not* killed, because that is the \
+             promise a hook author is relying on: {rendered}"
+        );
+        assert!(rendered.ends_with(": halfway through"), "{rendered}");
+    }
+
+    /// Bytes storyhook could not read back are never reported as the hook's
+    /// silence.
+    ///
+    /// That distinction is the whole reason `read_prefix` returns the file's
+    /// true length: the two states are indistinguishable from the bytes alone,
+    /// and reporting the second as the first is the shape of failure that kept
+    /// the original wedge invisible.
+    #[test]
+    fn unreadable_diagnostics_are_not_reported_as_silence() {
+        let rendered = Diagnostics::Unreadable {
+            len: 512,
+            error: "read back empty".to_string(),
+        }
+        .to_string();
+        assert!(rendered.contains("512 bytes"), "{rendered}");
+        assert!(rendered.contains("could not read back"), "{rendered}");
+    }
 }
