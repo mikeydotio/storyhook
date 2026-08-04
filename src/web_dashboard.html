@@ -109,8 +109,11 @@ button { cursor: pointer; }
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.brand { display: flex; align-items: baseline; gap: 0.5rem; flex-shrink: 0; }
-.brand h1 { font-size: 1.0625rem; font-weight: 700; letter-spacing: -0.01em; }
+.brand { display: flex; align-items: center; gap: 0.625rem; flex-shrink: 0; }
+/* Uppercase, letterspaced and muted rather than the project selector's plain
+   dark text — a wordmark, not a value, so it can never be mistaken for the
+   name of the project that is actually open. */
+.brand h1 { font-size: 0.8125rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-muted); }
 .brand .subtitle { font-size: 0.8125rem; color: var(--fg-muted); }
 .search-wrap { flex: 1; max-width: 26rem; position: relative; }
 .search-wrap svg { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); opacity: 0.5; pointer-events: none; }
@@ -145,12 +148,37 @@ button { cursor: pointer; }
 .conn-dot.live { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
 .conn-dot.disconnected { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
 
-/* ---- Repo select / Home / Settings ---- */
-.repo-select {
-  padding: 0.4375rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg-raised); font-size: 0.8125rem; font-weight: 600; color: var(--fg); max-width: 12rem;
-  flex-shrink: 0;
+/* ---- Header project selector / Home / Settings ---- */
+.projsel { position: relative; flex-shrink: 0; }
+.projsel-btn {
+  display: inline-flex; align-items: center; gap: 0.375rem; max-width: 14rem;
+  padding: 0.3125rem 0.625rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-raised); font-size: 0.8125rem; font-weight: 700; color: var(--fg); transition: all 0.12s;
 }
+.projsel-btn:hover { border-color: var(--fg-faint); }
+.projsel-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.projsel-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.projsel-btn .fdd-caret { flex-shrink: 0; }
+.projsel-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.projsel-panel { min-width: 17rem; max-height: 20rem; padding: 0.25rem; }
+.projsel-item {
+  display: flex; align-items: center; gap: 0.5rem; padding: 0.4375rem 0.5rem; border-radius: 0.25rem;
+  font-size: 0.8125rem; cursor: pointer; user-select: none;
+}
+.projsel-item:hover, .projsel-item.focused { background: var(--bg-sunken); }
+.projsel-item[aria-disabled="true"] { cursor: not-allowed; opacity: 0.55; }
+.projsel-item-check { width: 0.875rem; flex-shrink: 0; color: var(--accent); visibility: hidden; }
+.projsel-item[aria-checked="true"] .projsel-item-check { visibility: visible; }
+.projsel-item-main { display: flex; flex-direction: column; gap: 0.125rem; min-width: 0; flex: 1; }
+.projsel-item-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 0.375rem; }
+.projsel-item-prefix { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-muted); font-weight: 400; }
+.projsel-item-reason { font-size: 0.75rem; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.projsel-item-stats { font-size: 0.6875rem; color: var(--fg-muted); white-space: nowrap; flex-shrink: 0; }
+.projsel-badge-ro {
+  font-size: 0.5625rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-muted);
+  border: 1px solid var(--border-strong); border-radius: 0.1875rem; padding: 0.0625rem 0.25rem; flex-shrink: 0;
+}
+.projsel-empty { padding: 0.5rem 0.625rem; font-size: 0.8125rem; color: var(--fg-muted); }
 .home, .settings { flex: 1; overflow-y: auto; padding: 1.25rem; }
 .home-summary { display: flex; gap: 1.5rem; margin-bottom: 1.25rem; }
 .home-stat { font-size: 1.5rem; font-weight: 700; }
@@ -518,7 +546,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 @media (max-width: 768px) {
   .topbar { flex-wrap: wrap; }
   .search-wrap { order: 3; max-width: none; flex-basis: 100%; }
-  .repo-select { max-width: none; }
+  .projsel-btn { max-width: none; }
   .drawer { width: 100vw; }
   .field-grid { grid-template-columns: 1fr; }
   .home-grid { grid-template-columns: 1fr; }
@@ -539,9 +567,15 @@ tbody tr:hover { background: var(--bg-sunken); }
   <header class="topbar">
     <div class="brand">
       <h1>Storyhook</h1>
+      <div class="projsel" id="projsel">
+        <button type="button" class="projsel-btn" id="projsel-btn" aria-haspopup="true" aria-expanded="false" aria-controls="projsel-menu">
+          <span class="projsel-label" id="projsel-label">Loading…</span>
+          <span class="fdd-caret">▾</span>
+        </button>
+        <div class="fdd-panel projsel-panel" id="projsel-menu" role="menu" aria-label="Switch project" hidden></div>
+      </div>
       <span class="subtitle" id="subtitle">Loading…</span>
     </div>
-    <select class="repo-select" id="repo-select"></select>
     <div class="search-wrap" id="search-wrap">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
       <input type="text" class="search-input" id="search-input" placeholder="Search stories, IDs, labels…">
@@ -842,7 +876,7 @@ tbody tr:hover { background: var(--bg-sunken); }
         state.reposFetchOk = false;
       }
       if (state.reposFetchOk) {
-        renderRepoSelect();
+        renderProjectSelector();
         if (state.screen === "home") renderHome();
         if (state.screen === "settings") renderSettings();
         // The currently-viewed repo was deregistered elsewhere (another
@@ -1059,7 +1093,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     if (isHome) renderHome();
     if (isSettings) renderSettings();
 
-    renderRepoSelect();
+    renderProjectSelector();
     updateSubtitle();
   }
 
@@ -1132,11 +1166,17 @@ tbody tr:hover { background: var(--bg-sunken); }
   /** Closes every open `.fdd-panel` popover in the app — the filter bar's,
    * the label combobox's, and the header's project selector's — since all
    * three share this one styling/close-machinery pattern and only one
-   * should ever be open at a time. */
+   * should ever be open at a time.
+   *
+   * The `aria-expanded` reset is generic on purpose: only the project
+   * selector's button sets it today, but a future popover-with-a-button
+   * gets this for free rather than needing its own copy. */
   function closeAllPopovers() {
     document.querySelectorAll(".fdd-panel").forEach(function(p) { p.hidden = true; });
-    document.querySelectorAll(".fdd-btn").forEach(function(b) { b.classList.remove("active"); });
+    document.querySelectorAll(".fdd-btn, .projsel-btn").forEach(function(b) { b.classList.remove("active"); });
+    document.querySelectorAll('[aria-expanded="true"]').forEach(function(b) { b.setAttribute("aria-expanded", "false"); });
     openFilterDropdown = null;
+    projselFocusIndex = -1;
   }
 
   function buildFilterDropdown(key, options) {
@@ -2041,24 +2081,190 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   // ============================================================
-  // SCREENS: repo select, home, settings
+  // SCREENS: header project selector, home, settings
   // ============================================================
 
-  /** Populates the topbar's native repo-select from `state.repos`. A native
-   * <select> (rather than a custom dropdown like the filter bar's) keeps
-   * this fully keyboard/accessibility-native for what is, functionally,
-   * simple navigation — pick a repo, jump to it. */
-  function renderRepoSelect() {
-    var select = $("repo-select");
-    if (!select) return;
-    clear(select);
-    select.appendChild(el("option", { value: "" }, [state.repos.length ? "Select a repo…" : "No repos registered"]));
+  /** What the header selector's button reads. The current project's
+   * `PREFIX · name` on the board screen — unambiguous, this is the project
+   * whose stories are on screen — "All projects" on Home/Settings, where
+   * there genuinely is no current project and showing one would be a lie,
+   * or "No projects yet" when the catalog is empty. */
+  function projselLabelText() {
+    if (state.screen === "repo") {
+      var current = state.repos.filter(function(r) { return r.id === state.repoId; })[0];
+      if (current) return current.prefix + " · " + current.name;
+    }
+    return state.repos.length ? "All projects" : "No projects yet";
+  }
+
+  /** The index `projselFocusItem` last moved to, so arrow keys can move
+   * relative to it rather than re-deriving position from the DOM. Reset by
+   * `closeAllPopovers()` whenever any popover (this one included) closes. */
+  var projselFocusIndex = -1;
+
+  function projselItems() {
+    return Array.prototype.slice.call($("projsel-menu").querySelectorAll(".projsel-item"));
+  }
+
+  /** Moves roving `tabindex` and focus to item `index`, wrapping at either
+   * end — the WAI-ARIA menu convention, and kinder than stopping dead at
+   * the first/last project when there are only a couple. */
+  function projselFocusItem(index) {
+    var items = projselItems();
+    if (!items.length) return;
+    if (index < 0) index = items.length - 1;
+    if (index >= items.length) index = 0;
+    items.forEach(function(item, i) {
+      item.classList.toggle("focused", i === index);
+      item.tabIndex = i === index ? 0 : -1;
+    });
+    items[index].focus();
+    projselFocusIndex = index;
+  }
+
+  /** Rebuilds the header's project-switcher popover from `state.repos`.
+   *
+   * Reuses `.fdd-panel`'s styling and `closeAllPopovers`'s document-level
+   * click/Escape handling (wired once in `bindShell()`) rather than adding
+   * a third instance of that machinery — `buildLabelCombobox`'s doc comment
+   * names the same reuse for a second instance.
+   *
+   * Built to the WAI-ARIA menu-button pattern from scratch: nothing else in
+   * this file used `role`/`aria-expanded`/`aria-haspopup` before this, since
+   * the native `<select>` this control replaces got that for free. Skips
+   * the rebuild when nothing about the catalog or the open project changed
+   * — cheap insurance against a poll or an SSE `repos-changed` tearing out
+   * an open, keyboard-focused menu out from under the user. */
+  function renderProjectSelector() {
+    var btn = $("projsel-btn");
+    var menu = $("projsel-menu");
+    if (!btn || !menu) return;
+
+    $("projsel-label").textContent = projselLabelText();
+    btn.disabled = !state.repos.length;
+
+    var fingerprint = state.repos.map(repoCardFingerprint).join("|") + "|" + state.repoId;
+    if (menu.dataset.fingerprint === fingerprint) return;
+    menu.dataset.fingerprint = fingerprint;
+
+    clear(menu);
+    if (!state.repos.length) {
+      menu.appendChild(el("div", { class: "projsel-empty" }, ["No projects yet — add one in Settings."]));
+      return;
+    }
+
     state.repos.forEach(function(r) {
-      var label = r.name + (r.read_only ? " (read-only)" : (r.available ? "" : " (unavailable)"));
-      var opt = el("option", { value: r.id }, [label]);
-      if (!canOpen(r)) opt.disabled = true;
-      if (r.id === state.repoId) opt.selected = true;
-      select.appendChild(opt);
+      var openable = canOpen(r);
+      var checked = r.id === state.repoId;
+      menu.appendChild(el("div", {
+        class: "projsel-item",
+        role: "menuitemradio",
+        "aria-checked": checked ? "true" : "false",
+        "aria-disabled": openable ? null : "true",
+        tabindex: "-1",
+        dataset: { id: r.id },
+        onClick: function() {
+          if (!openable) return;
+          closeProjectMenu(false);
+          selectRepo(r.id);
+        }
+      }, [
+        el("span", { class: "projsel-item-check" }, ["✓"]),
+        el("div", { class: "projsel-item-main" }, [
+          el("div", { class: "projsel-item-name" }, [
+            el("span", { class: "projsel-item-prefix" }, [r.prefix]),
+            r.name
+          ]),
+          openable
+            ? null
+            : el("div", { class: "projsel-item-reason" }, [r.reason || r.error || "unavailable"])
+        ]),
+        r.read_only ? el("span", { class: "projsel-badge-ro" }, ["RO"]) : null,
+        r.summary
+          ? el("span", { class: "projsel-item-stats" }, [
+              r.summary.total_open + " · " + r.summary.ready_count + " · " + r.summary.blocked_count
+            ])
+          : null
+      ]));
+    });
+  }
+
+  function openProjectMenu() {
+    var btn = $("projsel-btn");
+    var menu = $("projsel-menu");
+    if (btn.disabled || !menu.hidden) return;
+    closeAllPopovers();
+    renderProjectSelector();
+    menu.hidden = false;
+    btn.classList.add("active");
+    btn.setAttribute("aria-expanded", "true");
+    var checkedIndex = 0;
+    state.repos.forEach(function(r, i) { if (r.id === state.repoId) checkedIndex = i; });
+    projselFocusItem(checkedIndex);
+  }
+
+  /** Closes the popover via the shared `closeAllPopovers()` — which also
+   * resets `aria-expanded` and the button's active state — then optionally
+   * restores focus to the button, the WAI-ARIA-required behavior for
+   * Escape (the user is still "at" the control, just backing out of its
+   * popover) but not for Tab (the user is deliberately moving on). */
+  function closeProjectMenu(restoreFocus) {
+    var wasOpen = !$("projsel-menu").hidden;
+    closeAllPopovers();
+    if (restoreFocus && wasOpen) $("projsel-btn").focus();
+  }
+
+  /** Wires the header selector's keyboard behavior — called once at init.
+   *
+   * On the button: Enter/Space/↓ open the menu and focus the current
+   * project; ↑ opens focused on the last item. Inside the menu: ↑/↓ move
+   * with wraparound, Home/End jump to the ends, Enter/Space activate the
+   * focused item, Escape closes and returns focus to the button, Tab
+   * closes and lets focus continue moving (not prevented). */
+  function bindProjectSelector() {
+    var btn = $("projsel-btn");
+    var menu = $("projsel-menu");
+
+    btn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      if (menu.hidden) openProjectMenu(); else closeProjectMenu(false);
+    });
+    btn.addEventListener("keydown", function(e) {
+      if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openProjectMenu();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        openProjectMenu();
+        projselFocusItem(projselItems().length - 1);
+      }
+    });
+
+    menu.addEventListener("click", function(e) { e.stopPropagation(); });
+    menu.addEventListener("keydown", function(e) {
+      if (!projselItems().length) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        projselFocusItem(projselFocusIndex + 1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        projselFocusItem(projselFocusIndex - 1);
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        projselFocusItem(0);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        projselFocusItem(projselItems().length - 1);
+      } else if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        var current = projselItems()[projselFocusIndex];
+        if (current) current.click();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeProjectMenu(true);
+      } else if (e.key === "Tab") {
+        closeProjectMenu(false);
+      }
     });
   }
 
@@ -2871,9 +3077,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       btn.classList.toggle("active", btn.dataset.view === state.view);
       btn.addEventListener("click", function() { setView(btn.dataset.view); });
     });
-    $("repo-select").addEventListener("change", function() {
-      if (this.value) selectRepo(this.value);
-    });
+    bindProjectSelector();
     $("home-btn").addEventListener("click", goHome);
     $("settings-btn").addEventListener("click", goSettings);
     $("new-story-btn").addEventListener("click", openCreateModal);

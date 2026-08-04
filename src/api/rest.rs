@@ -360,8 +360,8 @@ fn reply_with<S: Store>(ctx: &Ctx<'_, S>, status: u16, invocation: Invocation) -
 const NO_CHECKOUT: &str = "no checkout on this machine";
 
 /// `GET /api/repos` — one entry per project the store knows, driving the
-/// repo-selector dropdown, the home screen's summary cards, and the settings
-/// screen's project list.
+/// header's project selector, the home screen's summary cards, and the
+/// settings screen's project list.
 ///
 /// **Every** project, not only those with a checkout. A project whose directory
 /// was deleted and then forgotten by `story doctor --fix`, or one that arrived
