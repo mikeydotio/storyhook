@@ -96,6 +96,14 @@ toml = "0.8.23"
 uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
 
+# An event hook is handed unlinked temporary files rather than pipes, so that no
+# descendant of it can hold storyhook by keeping a pipe end open (SH-141). A
+# regular file has no end-of-file rendezvous, which is what makes the wedge
+# unrepresentable instead of merely bounded. `tempfile()` is the *unnamed*
+# variant — created and immediately unlinked — so there is no path to clean up,
+# nothing left behind after a SIGKILL, and nothing another process can open.
+tempfile = { workspace = true }
+
 # Web dashboard
 tiny_http = "0.12"
 libc = "0.2"
@@ -120,5 +128,6 @@ predicates = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }
 storyhook-test-support = { path = "crates/storyhook-test-support" }
-tempfile = { workspace = true }
+# `tempfile` is a runtime dependency since SH-141; tests inherit it and do not
+# list it again.
 ureq = { workspace = true }
