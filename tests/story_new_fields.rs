@@ -132,6 +132,40 @@ fn new_with_labels_csv_splits_and_trims() {
         .stdout(predicate::str::contains("labels: bug, cli, web"));
 }
 
+/// SH-164's repro: SH-145 was filed with `--label "daemon,tailnet"` — a
+/// single `--label` value that itself carries a comma, the one shape
+/// `--label` used to pass through verbatim while every other label-bearing
+/// surface split on it. A single `--label "web,sse"` must file the same two
+/// labels a `--labels "web,sse"` or two repeated `--label` flags would.
+#[test]
+fn new_with_a_comma_inside_a_single_label_flag_still_splits() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["new", "SH-145 repro", "--label", "web,sse"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("labels: sse, web"));
+
+    // The point of splitting on the way in: the resulting labels are
+    // addressable again, which `web,sse` as one label never was.
+    story(dir.path())
+        .args(["unlabel", "SH-1", "sse"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("labels: web"))
+        .stdout(predicate::str::contains("sse").not());
+}
+
 #[test]
 fn new_with_assignee_sets_assignee() {
     let dir = tempdir().unwrap();

@@ -54,6 +54,40 @@ fn doctor_reports_a_relation_only_one_end_records() {
         .stderr(contains("missing inverse relation"));
 }
 
+/// SH-164: a label written before the write-path guard existed — `web,sse` as
+/// one label, the SH-145 shape — is unreachable through any service today, so
+/// the doctor's coverage of it is pinned the same way as the relation
+/// asymmetry above: injected straight past every service.
+#[test]
+fn doctor_reports_and_fixes_a_malformed_label() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+
+    inject_events(
+        &store,
+        id,
+        project.story_no(&store, "SH-1"),
+        &[StoryEvent::StoryLabelsSet {
+            at: AT.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    )
+    .expect("injecting a malformed label");
+
+    project
+        .run(&["doctor"])
+        .code(5)
+        .stderr(contains("malformed labels"));
+
+    project.run(&["doctor", "--fix"]).success();
+    project
+        .run(&["show", "SH-1"])
+        .success()
+        .stdout(contains("labels: sse, web"));
+}
+
 #[test]
 fn doctor_flags_a_story_type_the_catalog_does_not_define() {
     let env = TestEnv::shared();

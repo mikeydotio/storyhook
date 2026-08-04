@@ -529,6 +529,38 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
     }
 }
 
+/// The write-path guard against a label no reader can ever address again.
+///
+/// Every producer of [`StoryEvent::StoryLabelsSet`] is expected to normalize
+/// its labels through [`normalize_labels`] before appending — this exists for
+/// the producer added later that forgets. Because normalization is
+/// idempotent, a legitimately-built event can never trip it; it is meant to
+/// fail loud rather than let a comma-bearing or blank label back into the
+/// store the way SH-145 did.
+///
+/// Called from [`crate::service::append_and_fold`], the one write path every
+/// service funnels through. Two callers bypass it deliberately, because both
+/// replay a history rather than admit new input: `append_raw_events` (the
+/// legacy round-trip) and project restore from an export document. A bad
+/// label arriving through either is left for `story doctor` to find.
+pub fn validate_event_for_append(event: &StoryEvent) -> Result<(), AppError> {
+    if let StoryEvent::StoryLabelsSet { labels, .. } = event {
+        for label in labels {
+            if label.trim() != label || label.is_empty() {
+                return Err(AppError::Validation(format!(
+                    "invalid label `{label}`: a label cannot be blank or carry leading/trailing whitespace"
+                )));
+            }
+            if label.contains(',') {
+                return Err(AppError::Validation(format!(
+                    "invalid label `{label}`: a label cannot contain a comma — `,` separates labels, it cannot be part of one"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
     events
         .last()
@@ -612,6 +644,42 @@ pub fn validate_state_slug(slug: &str) -> Result<(), AppError> {
         return invalid("it contains a double dash");
     }
     Ok(())
+}
+
+/// The labels a caller's raw values denote.
+///
+/// Comma is the label delimiter on every surface that *reads* labels back:
+/// `story list --label a,b`, `story unlabel <id> a,b`, the GitHub
+/// conflict-resolution path that reconstructs a set by splitting on `", "`.
+/// This is the one place that delimiter is honored on the way *in*, so that a
+/// value like `"web,sse"` handed to any producer of
+/// [`StoryEvent::StoryLabelsSet`] becomes the two labels `web` and `sse`
+/// rather than one label that none of those readers can ever address again
+/// (SH-164 — a comma-bearing label is not malformed data, it is an
+/// unreachable one).
+///
+/// Splits every raw value on `,`, trims whitespace, drops anything left
+/// empty, and returns the deduplicated, sorted result. Idempotent by
+/// construction: normalizing an already-normalized set changes nothing, which
+/// is what lets a caller normalize the *union* of a story's existing labels
+/// with new input (as `set_labels` does) without a second pass mattering.
+pub fn normalize_labels<I, S>(raw: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let set: BTreeSet<String> = raw
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .as_ref()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect::<Vec<_>>()
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    set.into_iter().collect()
 }
 
 /// A type's glyph must be a short, printable, non-blank string.
@@ -2238,9 +2306,9 @@ mod tests {
         FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges, StateDef,
         StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, compute_progress,
         derive_family_relationships, fold_story, has_children, is_ready, last_activity_type,
-        ready_order, story_number, validate_required_states, validate_state_defs,
-        validate_state_defs_for_write, validate_state_slug, with_required_states,
-        would_create_parent_cycle,
+        normalize_labels, ready_order, story_number, validate_event_for_append,
+        validate_required_states, validate_state_defs, validate_state_defs_for_write,
+        validate_state_slug, with_required_states, would_create_parent_cycle,
     };
 
     #[test]
@@ -2294,6 +2362,69 @@ mod tests {
                 "`{bad}` should have been rejected"
             );
         }
+    }
+
+    #[test]
+    fn normalize_labels_splits_trims_dedups_and_sorts() {
+        assert_eq!(
+            normalize_labels(["web,sse", " backend ,api", "api"]),
+            vec!["api", "backend", "sse", "web"]
+        );
+    }
+
+    #[test]
+    fn normalize_labels_drops_empties() {
+        assert_eq!(normalize_labels([",", " , ", "", "solo"]), vec!["solo"]);
+        assert!(normalize_labels(Vec::<&str>::new()).is_empty());
+    }
+
+    #[test]
+    fn normalize_labels_is_idempotent() {
+        let once = normalize_labels(["web,sse", "backend"]);
+        let twice = normalize_labels(once.clone());
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn validate_event_for_append_rejects_a_comma_in_a_label() {
+        let event = StoryEvent::StoryLabelsSet {
+            at: "2026-01-01T00:00:00Z".to_string(),
+            labels: vec!["web,sse".to_string()],
+        };
+        let error = validate_event_for_append(&event).unwrap_err();
+        assert!(error.to_string().contains("comma"));
+    }
+
+    #[test]
+    fn validate_event_for_append_rejects_blank_and_untrimmed_labels() {
+        for bad in [" web", "web ", "", " "] {
+            let event = StoryEvent::StoryLabelsSet {
+                at: "2026-01-01T00:00:00Z".to_string(),
+                labels: vec![bad.to_string()],
+            };
+            assert!(
+                validate_event_for_append(&event).is_err(),
+                "`{bad}` should have been rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_event_for_append_accepts_a_normalized_label_set() {
+        let event = StoryEvent::StoryLabelsSet {
+            at: "2026-01-01T00:00:00Z".to_string(),
+            labels: normalize_labels(["web,sse", "backend"]),
+        };
+        validate_event_for_append(&event).unwrap();
+    }
+
+    #[test]
+    fn validate_event_for_append_ignores_non_label_events() {
+        let event = StoryEvent::StoryTitleSet {
+            at: "2026-01-01T00:00:00Z".to_string(),
+            title: "has, a comma".to_string(),
+        };
+        validate_event_for_append(&event).unwrap();
     }
 
     #[test]
