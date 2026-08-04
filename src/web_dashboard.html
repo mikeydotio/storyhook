@@ -1129,7 +1129,11 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   var openFilterDropdown = null;
 
-  function closeFilterDropdowns() {
+  /** Closes every open `.fdd-panel` popover in the app — the filter bar's,
+   * the label combobox's, and the header's project selector's — since all
+   * three share this one styling/close-machinery pattern and only one
+   * should ever be open at a time. */
+  function closeAllPopovers() {
     document.querySelectorAll(".fdd-panel").forEach(function(p) { p.hidden = true; });
     document.querySelectorAll(".fdd-btn").forEach(function(b) { b.classList.remove("active"); });
     openFilterDropdown = null;
@@ -1166,7 +1170,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     btn.addEventListener("click", function(e) {
       e.stopPropagation();
       var willOpen = panel.hidden;
-      closeFilterDropdowns();
+      closeAllPopovers();
       if (willOpen) {
         panel.hidden = false;
         btn.classList.add("active");
@@ -1217,8 +1221,8 @@ tbody tr:hover { background: var(--bg-sunken); }
       resetFilterDropdownUI();
       renderView();
     });
-    document.addEventListener("click", closeFilterDropdowns);
-    document.addEventListener("keydown", function(e) { if (e.key === "Escape") closeFilterDropdowns(); });
+    document.addEventListener("click", closeAllPopovers);
+    document.addEventListener("keydown", function(e) { if (e.key === "Escape") closeAllPopovers(); });
   }
 
   // ============================================================
@@ -1865,7 +1869,7 @@ tbody tr:hover { background: var(--bg-sunken); }
    * `suggestions` (the project's existing labels). Free entry is still
    * allowed — matches the free-text label convention used elsewhere in the
    * app. Reuses the filter bar's `.fdd-panel` popover styling/close
-   * machinery (`closeFilterDropdowns`, wired to a single document-level
+   * machinery (`closeAllPopovers`, wired to a single document-level
    * click listener at init) rather than adding a new one per instance. */
   function buildLabelCombobox(initialLabels, suggestions) {
     var selected = (initialLabels || []).slice();
@@ -1892,7 +1896,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     function addLabel(value) {
       var v = value.trim();
       input.value = "";
-      closeFilterDropdowns();
+      closeAllPopovers();
       if (!v || selected.indexOf(v) !== -1) return;
       selected.push(v);
       renderChips();
@@ -1903,7 +1907,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       var matches = suggestions.filter(function(s) {
         return selected.indexOf(s) === -1 && (!query || s.toLowerCase().indexOf(query) !== -1);
       });
-      closeFilterDropdowns();
+      closeAllPopovers();
       if (!matches.length) return;
       clear(panel);
       matches.forEach(function(s) {
@@ -1925,7 +1929,7 @@ tbody tr:hover { background: var(--bg-sunken); }
         selected.pop();
         renderChips();
       } else if (e.key === "Escape") {
-        closeFilterDropdowns();
+        closeAllPopovers();
       }
     });
     panel.addEventListener("click", function(e) { e.stopPropagation(); });
