@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::normalize_labels;
 use crate::error::AppError;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1813,12 +1814,7 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
                 let value = args
                     .get(index + 1)
                     .ok_or_else(|| AppError::Usage(usage.to_string()))?;
-                labels.extend(
-                    value
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty()),
-                );
+                labels.push(value.clone());
                 index += 2;
             }
             _ => {
@@ -1830,6 +1826,12 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     if title_parts.is_empty() {
         return Err(AppError::Usage(usage.to_string()));
     }
+    // `--label` and `--labels` are the same delimiter-splitting sink, whether
+    // repeated (`--label a --label b`) or comma-joined (`--labels a,b`) or a
+    // single value that itself carries a comma (`--label "a,b"`, the SH-164
+    // repro) — every raw value collected above is split on `,` here rather
+    // than only the ones that arrived via `--labels`.
+    let labels = normalize_labels(labels);
     Ok(Invocation::New {
         title: title_parts.join(" "),
         state,
@@ -3078,11 +3080,7 @@ fn parse_label(args: &[String]) -> Result<Invocation, AppError> {
             "usage: story label <id> <labels-csv>".to_string(),
         ));
     }
-    let add: Vec<String> = args[2]
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let add = normalize_labels([&args[2]]);
     Ok(Invocation::SetLabels {
         id: args[1].clone(),
         add,
@@ -3096,11 +3094,7 @@ fn parse_unlabel(args: &[String]) -> Result<Invocation, AppError> {
             "usage: story unlabel <id> <labels-csv>".to_string(),
         ));
     }
-    let remove: Vec<String> = args[2]
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let remove = normalize_labels([&args[2]]);
     Ok(Invocation::SetLabels {
         id: args[1].clone(),
         add: Vec::new(),
