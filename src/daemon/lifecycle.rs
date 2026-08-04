@@ -1152,32 +1152,58 @@ pub enum Verdict {
 /// design rather than an omission. While the record keeps changing the daemon is
 /// finishing work, so a client behind a long queue waits as long as the queue
 /// takes. That is M9's false positive deleted rather than tuned.
+/// `override_bound` is exactly what its name says: `None` means *use the
+/// deadline belonging to the command the record names*, which is the production
+/// path and the whole point of publishing the command at all. `Some` is the
+/// user's `$STORYHOOK_EXCHANGE_DEADLINE_SECS`, and it is also how a test drives
+/// a 120-second bound in 250 milliseconds.
 #[must_use]
 pub fn verdict(
     current: Option<&CurrentRequest>,
     since_change: Duration,
     total: Duration,
-    bound: ExchangeBound,
+    override_bound: Option<ExchangeBound>,
 ) -> Verdict {
-    let ExchangeBound::After(_) = bound else {
+    if let Some(ExchangeBound::Unbounded) = override_bound {
         return Verdict::Wait;
+    }
+    // The override, if there is one, replaces every deadline below — including
+    // the unpublished one, because a user who says "wait 10 minutes" means it
+    // whatever the daemon is or is not saying.
+    let deadline_of = |command: &str| match override_bound {
+        Some(ExchangeBound::After(d)) => d,
+        _ => match deadline_for(command) {
+            ExchangeBound::After(d) => d,
+            // Unreachable: `deadline_for` never answers `Unbounded`, and the
+            // type is what stops that becoming a silent forever-wait if it ever
+            // did.
+            ExchangeBound::Unbounded => SERVED_DEADLINE,
+        },
     };
+
     match current {
         // A record is present: the deadline is the one for the command it
         // names, whether or not that command is mine. A record frozen on
         // somebody else's request still means the daemon has stopped finishing
         // things, and it still blocks me.
-        Some(record) => match deadline_for(&record.command) {
-            ExchangeBound::After(deadline) if since_change >= deadline => {
-                Verdict::GiveUp(record.clone())
-            }
-            _ => Verdict::Wait,
-        },
+        Some(record) if since_change >= deadline_of(&record.command) => {
+            Verdict::GiveUp(record.clone())
+        }
+        Some(_) => Verdict::Wait,
         // No record. Either the daemon is between requests — in which case one
         // is about to appear and `since_change` keeps resetting — or it never
         // published at all, which is the branch below.
-        None if total >= UNPUBLISHED_DEADLINE => Verdict::GaveUpUnpublished,
-        None => Verdict::Wait,
+        None => {
+            let unpublished = match override_bound {
+                Some(ExchangeBound::After(d)) => d,
+                _ => UNPUBLISHED_DEADLINE,
+            };
+            if total >= unpublished {
+                Verdict::GaveUpUnpublished
+            } else {
+                Verdict::Wait
+            }
+        }
     }
 }
 
@@ -1653,6 +1679,206 @@ mod tests {
             "the spawn-lock bound must cover every wait its holder can make"
         );
         assert_eq!(SPAWN_LOCK_DEADLINE, Duration::from_secs(30));
+    }
+
+    /// A record naming `command`, otherwise uninteresting.
+    fn serving(command: &str, request_id: &str) -> CurrentRequest {
+        CurrentRequest {
+            request_id: request_id.to_string(),
+            command: command.to_string(),
+            project: None,
+            pid: 4711,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    /// The whole family, ordered, and the one rule that orders it.
+    ///
+    /// The ordering is load-bearing rather than tidy: a client must not abandon
+    /// the exchange sooner than it would have abandoned the waits that precede
+    /// it, or it gives the daemon less time to do the work than to come up.
+    #[test]
+    fn the_daemon_deadline_family_is_ordered() {
+        assert!(CONTROL_DEADLINE < SPAWN_LOCK_DEADLINE);
+        assert!(SPAWN_LOCK_DEADLINE < SERVED_DEADLINE);
+        assert!(SERVED_PATIENCE < SERVED_DEADLINE);
+        assert!(RECORD_POLL < SERVED_PATIENCE);
+        assert!(SERVED_DEADLINE < SYNC_SERVED_DEADLINE);
+
+        assert_eq!(SERVED_PATIENCE, 2 * SPAWN_DEADLINE);
+        // 120 consecutive worst-case GitHub calls, each bounded at 30s by
+        // `GithubClient`. Stated as the arithmetic rather than as 3600 so that
+        // moving the client's own bound is visible here.
+        assert_eq!(SYNC_SERVED_DEADLINE, 120 * Duration::from_secs(30));
+        assert_eq!(SERVED_DEADLINE, Duration::from_secs(120));
+    }
+
+    /// Only `github-sync` gets the long bound, and nothing is ever exempt.
+    ///
+    /// The second half is the point. An exemption was proposed and rejected
+    /// because it restores the forever-hang this work exists to remove; this
+    /// asserts no command can reach an unbounded verdict.
+    #[test]
+    fn only_github_sync_is_slow_and_nothing_is_unbounded() {
+        assert_eq!(
+            deadline_for("github-sync"),
+            ExchangeBound::After(SYNC_SERVED_DEADLINE)
+        );
+        for command in [
+            "list",
+            "new",
+            "comment",
+            "import",
+            "export",
+            "commit-sync",
+            "doctor",
+            "bulk-update",
+            "purge",
+            "graph",
+            "",
+        ] {
+            assert_eq!(
+                deadline_for(command),
+                ExchangeBound::After(SERVED_DEADLINE),
+                "`{command}` must get the ordinary bound"
+            );
+        }
+        for command in ["github-sync", "list", "anything-added-tomorrow"] {
+            assert!(
+                !matches!(deadline_for(command), ExchangeBound::Unbounded),
+                "no command may be unbounded: `{command}`"
+            );
+        }
+    }
+
+    /// **The regression that matters most**, and the one every wall-clock design
+    /// fails: a client queued behind work that is *moving* waits arbitrarily
+    /// long, because the daemon is finishing things.
+    ///
+    /// Expressed against the pure decision rather than against a clock, so the
+    /// assertion is "at any queue length" rather than "at the one length a test
+    /// had patience for".
+    #[test]
+    fn a_client_behind_moving_work_waits_however_long_it_takes() {
+        let theirs = serving("github-sync", "not-mine");
+        for hours in [1_u64, 6, 24, 24 * 365] {
+            let total = Duration::from_secs(hours * 3600);
+            assert_eq!(
+                // The record changed a moment ago, which is what "moving" means.
+                verdict(Some(&theirs), Duration::from_millis(1), total, None),
+                Verdict::Wait,
+                "a moving record must never be given up on, even after {hours}h"
+            );
+        }
+    }
+
+    /// A record that has stopped moving fires — whoever it names.
+    ///
+    /// Both halves matter. Frozen on my own request is the plain case; frozen on
+    /// somebody else's is the one a naive design gets wrong, because the daemon
+    /// has still stopped finishing things and I am still blocked behind it.
+    #[test]
+    fn a_frozen_record_is_given_up_on_whoever_it_names() {
+        let mine = serving("import", "mine");
+        assert_eq!(
+            verdict(Some(&mine), SERVED_DEADLINE, SERVED_DEADLINE, None),
+            Verdict::GiveUp(mine.clone())
+        );
+
+        let theirs = serving("comment", "somebody-else");
+        assert_eq!(
+            verdict(Some(&theirs), SERVED_DEADLINE, SERVED_DEADLINE, None),
+            Verdict::GiveUp(theirs)
+        );
+    }
+
+    /// The deadline is a property of the command *in the record*, never of the
+    /// command this client sent.
+    ///
+    /// The correction the council made to its own first answer: keying on my own
+    /// invocation would give the shortest patience to `story list`, the command
+    /// whose wait is most inflated by other people's work.
+    #[test]
+    fn the_deadline_belongs_to_the_command_in_the_record() {
+        let sync = serving("github-sync", "not-mine");
+        // Well past the ordinary bound, nowhere near the sync one.
+        assert_eq!(
+            verdict(Some(&sync), SERVED_DEADLINE, SERVED_DEADLINE, None),
+            Verdict::Wait,
+            "a frozen github-sync must get the long bound even for a client that sent `list`"
+        );
+        assert_eq!(
+            verdict(
+                Some(&sync),
+                SYNC_SERVED_DEADLINE,
+                SYNC_SERVED_DEADLINE,
+                None
+            ),
+            Verdict::GiveUp(sync)
+        );
+    }
+
+    /// A daemon that publishes nothing at all gets its own branch and its own
+    /// deadline — the only shape the unauthenticated wedge can present.
+    #[test]
+    fn a_daemon_that_publishes_nothing_is_given_up_on_separately() {
+        assert_eq!(
+            verdict(None, Duration::ZERO, UNPUBLISHED_DEADLINE, None),
+            Verdict::GaveUpUnpublished
+        );
+        assert_eq!(
+            verdict(
+                None,
+                Duration::ZERO,
+                UNPUBLISHED_DEADLINE - Duration::from_secs(1),
+                None
+            ),
+            Verdict::Wait
+        );
+    }
+
+    /// The hatch's `none`, which is the only thing in storyhook that can produce
+    /// an unbounded wait.
+    #[test]
+    fn the_override_can_switch_the_bound_off_entirely() {
+        let mine = serving("import", "mine");
+        let forever = Duration::from_secs(24 * 3600);
+        assert_eq!(
+            verdict(
+                Some(&mine),
+                forever,
+                forever,
+                Some(ExchangeBound::Unbounded)
+            ),
+            Verdict::Wait
+        );
+        assert_eq!(
+            verdict(None, forever, forever, Some(ExchangeBound::Unbounded)),
+            Verdict::Wait
+        );
+    }
+
+    /// The override replaces every deadline, including the long one and the
+    /// unpublished one — which is also what lets a test drive a 120s bound in
+    /// 250ms.
+    #[test]
+    fn the_override_replaces_every_deadline() {
+        let short = Some(ExchangeBound::After(Duration::from_millis(250)));
+        let sync = serving("github-sync", "not-mine");
+        assert_eq!(
+            verdict(
+                Some(&sync),
+                Duration::from_millis(250),
+                Duration::ZERO,
+                short
+            ),
+            Verdict::GiveUp(sync),
+            "the override must shorten even the github-sync bound"
+        );
+        assert_eq!(
+            verdict(None, Duration::ZERO, Duration::from_millis(250), short),
+            Verdict::GaveUpUnpublished
+        );
     }
 
     /// The defect itself, at the smallest level it exists: a held lock used to
