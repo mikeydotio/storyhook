@@ -105,14 +105,11 @@ new_story() {
 }
 
 # wname_for <repo-dir> <id> — the window/worktree/branch name story.sh
-# derives for <id>. Mirrors session.sh's repo_prefix + resolve_wname rather
-# than hard-coding the value, so a change to either is caught here instead of
-# silently desynchronising every complete/capture fixture.
+# derives for <id>: the bare id, unprefixed since SH-166. Takes <repo-dir>
+# for signature parity with fixtures that still need one, even though
+# session.sh's own resolve_wname no longer does.
 wname_for() {
-  local base prefix
-  base="$(basename "$1")"
-  prefix="$(printf '%s' "$base" | tr -cd '[:alnum:]' | cut -c1-3 | tr '[:upper:]' '[:lower:]')"
-  printf '%s-%s' "$prefix" "$2"
+  printf '%s' "$2"
 }
 
 # mk_dispatched <repo-dir> <id> — create the worktree + branch exactly as

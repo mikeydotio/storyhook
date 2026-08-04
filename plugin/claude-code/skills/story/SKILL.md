@@ -98,10 +98,10 @@ in `bin/story.sh`.
 On success, the helper has already: confirmed the story is ready and not already claimed,
 claimed it via storyhook's `--if-state` compare-and-swap (conflicting rather than erroring if
 another dispatch won the race), fetched `origin/<default>` and created a fresh git worktree
-(`.claude/worktrees/<repo-prefix>-<id>`, e.g. `sto-SH-45`, on branch
-`worktree-<repo-prefix>-<id>`) based on that tip, then opened a new tmux window rooted **in**
-that worktree, running `claude --permission-mode plan --model opusplan` in plan mode, prompt
-already submitted. Nothing further is needed from you.
+(`.claude/worktrees/<id>`, e.g. `SH-45`, on branch `worktree-<id>`) based on that tip, then
+opened a new tmux window rooted **in** that worktree, running
+`claude --permission-mode plan --model opusplan` in plan mode, prompt already submitted.
+Nothing further is needed from you.
 
 `--auto` changes only the handoff prompt, never the launch command — plan approval stays the
 one and only human interaction. Past that approval, the autonomous charter tells the child to
