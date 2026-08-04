@@ -332,6 +332,24 @@ impl Environment {
     /// only when it is running this very binary, so a client can only ever read
     /// a record its own build wrote. A version field here would be a second
     /// answer to a question the binary check has already settled.
+    ///
+    /// # What this record does not cover, and why that is a judgement rather
+    /// # than an oversight
+    ///
+    /// It names `/api/v1/invoke` requests only. The dashboard's REST handlers
+    /// share the same accept loop, so a client queued behind one sees **no
+    /// record** for that interval and falls into the "published nothing" branch
+    /// rather than the "queued behind named work" one.
+    ///
+    /// Judged acceptable rather than fixed: those handlers are local store
+    /// reads, measured sub-second against a store 33x the size of the real one,
+    /// and the one genuinely long-lived REST route — the `/api/events` stream —
+    /// is detached onto its own thread before the loop moves on, so it never
+    /// holds the queue at all.
+    ///
+    /// If that stops being true, the fix is to **widen this one write site**
+    /// rather than to add a second one. Two writers of one record is how the
+    /// two ends come to disagree about what it means.
     pub fn daemon_current(&self) -> PathBuf {
         self.daemon_state_dir().join("daemon.current.json")
     }
