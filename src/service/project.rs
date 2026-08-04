@@ -535,50 +535,15 @@ fn no_origin_to_take(cwd: &Path) -> AppError {
     ))
 }
 
-/// The git environment variables every probe here removes.
-///
-/// **`git config --get remote.origin.url` obeys `$GIT_DIR` over `cwd`, and
-/// `git rev-parse --show-toplevel` does not.** With one inherited, the two
-/// disagree: the origin is read from whatever repository the variable names
-/// while the top level is read from the working directory, so an ownership
-/// check comparing them agrees with itself and registers another repository's
-/// identity. Measured on git 2.50.1.
-///
-/// The reachability is not the one it looks like. No git hook sets `GIT_DIR`
-/// on that version — `pre-commit`, `post-commit`, `post-checkout` and
-/// `pre-push` all run without it. What does reach here is a daemon: it inherits
-/// the environment of whichever client started it and keeps it for its whole
-/// life, and since SH-114 the daemon is the process that runs these probes.
-/// That is SH-160, whose fix is at the spawn; this list is what makes *these*
-/// probes correct regardless of it.
-///
-/// `GIT_CONFIG_*` is deliberately **not** here: the test suite isolates git
-/// config through it, and removing it would make every fixture read the
-/// developer's real `~/.gitconfig`.
-const GIT_ENV_TO_SCRUB: [&str; 9] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-    "GIT_NAMESPACE",
-];
-
 /// `git <args>` in `cwd`, or `None` if git failed for any reason at all.
 ///
 /// Shared by [`origin_of`], [`origin_at`] and [`origin_here`] so there is one
 /// place that knows a missing `git`, a non-repository and a failed command are
-/// the same outcome — and one place that scrubs the inherited git environment
-/// (see [`GIT_ENV_TO_SCRUB`]), so a probe answers about `cwd` and nothing else.
+/// the same outcome. The environment that `git` runs with belongs to
+/// [`crate::env::git_env`], which owns the same rule for every other `git`
+/// storyhook runs.
 fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
-    let mut command = std::process::Command::new("git");
-    for name in GIT_ENV_TO_SCRUB {
-        command.env_remove(name);
-    }
-    let output = command.current_dir(cwd).args(args).output().ok()?;
+    let output = crate::env::git_env::command(cwd).args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }

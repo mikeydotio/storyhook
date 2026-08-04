@@ -90,26 +90,19 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
+    // `env::git_env::command` — the one place in `src/` that constructs a
+    // `git`. Classified with the reads it replaced: every caller uses
+    // `.output()`, which reads the child's stdout to EOF. `git` reads files,
+    // spawns nothing of its own and touches no network, so the
+    // descendant-holds-the-pipe hazard this column exists for has nothing to
+    // attach to.
+    ("src/env/git_env.rs", "\"git\"", Kind::Reads),
     // `event_hooks::fire_hook` — a user's shell command. `Waited` since SH-141:
     // it spawns, waits, and reads a *file*. The hook is handed unlinked
     // temporary files rather than pipes, so there is no pipe for a descendant to
     // hold and nothing for the caller to wait on.
     ("src/event_hooks.rs", "\"sh\"", Kind::Waited),
-    ("src/github/sync_state.rs", "\"git\"", Kind::Reads),
     ("src/plugin.rs", "\"claude\"", Kind::Reads),
-    ("src/service/git.rs", "\"git\"", Kind::Reads),
-    ("src/service/migrate.rs", "\"git\"", Kind::Reads),
-    // `service::project::origin_of` — `git config --get remote.origin.url`, the
-    // origin lookup project selection resolves by (SH-116). Classified with the
-    // other four `git` reads: `.output()` reads the child's stdout to EOF.
-    //
-    // It is the one on this list that runs on a *resolution* path rather than
-    // in answer to a command about git, so it runs more often than any of them —
-    // but only when neither the selector nor the walk has answered. `git config`
-    // reads files, spawns nothing of its own, and touches no network, so the
-    // descendant-holds-the-pipe hazard this column exists for has nothing to
-    // attach to.
-    ("src/service/project.rs", "\"git\"", Kind::Reads),
     ("src/tui/app.rs", "&editor_cmd", Kind::Waited),
     ("src/update.rs", "\"tar\"", Kind::Waited),
     ("src/update.rs", "staged", Kind::Waited),
@@ -155,6 +148,14 @@ fn programs(source: &str) -> Vec<String> {
         // first `)` closes the call. A future argument containing one would
         // show up here as a truncated entry and fail the comparison, which is
         // the right outcome: it is a site nobody has classified.
+        //
+        // **This scans raw text, comments included**, so a doc comment that
+        // spells the constructor's own token is read as a spawn site and fails
+        // this test with a paragraph of prose where a program name should be.
+        // SH-160 hit it while documenting `env::git_env`; the fix is to describe
+        // the constructor without spelling it, which is cheaper than teaching
+        // this function to parse Rust. The failure is loud and self-explaining,
+        // which is why it stays a documented gotcha rather than a parser.
         if let Some(close) = rest.find(')') {
             found.push(rest[..close].trim().to_string());
         }
