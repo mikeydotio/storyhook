@@ -526,8 +526,14 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="create-description""#));
     assert!(body.contains(r#"id="create-priority""#));
     assert!(body.contains(r#"id="create-labels-field""#));
-    // Multi-repo screens (#20): repo selector, home dashboard, settings
-    assert!(body.contains(r#"id="repo-select""#));
+    // Multi-repo screens (#20): the header's project selector (SH-42), home
+    // dashboard, settings
+    assert!(body.contains(r#"id="projsel-btn""#));
+    assert!(body.contains(r#"id="projsel-menu""#));
+    assert!(
+        !body.contains(r#"id="repo-select""#),
+        "the native <select> was replaced by the popover"
+    );
     assert!(body.contains(r#"id="home-view""#));
     assert!(body.contains(r#"id="settings-view""#));
     assert!(body.contains(r#"id="home-btn""#));
@@ -2324,6 +2330,27 @@ fn web_serve_repos_list_reports_available_repo_with_summary() {
     assert_eq!(repos[0]["id"], repo_id);
     assert_eq!(repos[0]["available"], true);
     assert_eq!(repos[0]["summary"]["total_open"], 1);
+}
+
+/// SH-42's header selector shows `PREFIX · name` for the current project, so
+/// `/api/repos` has to carry the prefix — it was already reading the record
+/// that has it, just not putting it on the wire.
+#[test]
+fn web_serve_repos_list_reports_each_projects_prefix() {
+    let fixture = served();
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let repos = json.as_array().unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0]["id"], repo_id);
+    assert_eq!(repos[0]["prefix"], "SH");
 }
 
 /// **A behaviour change, deliberate.** A registered path whose `.storyhook/`

@@ -360,8 +360,8 @@ fn reply_with<S: Store>(ctx: &Ctx<'_, S>, status: u16, invocation: Invocation) -
 const NO_CHECKOUT: &str = "no checkout on this machine";
 
 /// `GET /api/repos` — one entry per project the store knows, driving the
-/// repo-selector dropdown, the home screen's summary cards, and the settings
-/// screen's project list.
+/// header's project selector, the home screen's summary cards, and the
+/// settings screen's project list.
 ///
 /// **Every** project, not only those with a checkout. A project whose directory
 /// was deleted and then forgotten by `story doctor --fix`, or one that arrived
@@ -394,6 +394,7 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                 Ok(data) => serde_json::json!({
                     "id": entry.id,
                     "name": entry.name,
+                    "prefix": entry.prefix,
                     "path": entry.path,
                     "available": !read_only,
                     "read_only": read_only,
@@ -403,6 +404,7 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                 Err(e) => serde_json::json!({
                     "id": entry.id,
                     "name": entry.name,
+                    "prefix": entry.prefix,
                     "path": entry.path,
                     "available": false,
                     "read_only": false,

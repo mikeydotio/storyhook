@@ -1,0 +1,12 @@
+{
+  "name": "storyhook-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Browser end-to-end tests for the storyhook web dashboard. Not published; driven by scripts/run-e2e.sh against a real story daemon.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}
