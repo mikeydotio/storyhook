@@ -442,13 +442,10 @@ cmd_dispatch() {
   fi
 
   # Compute the name used for the tmux window, the worktree dir leaf, AND the
-  # worktree branch: "<repo-prefix>-<id>" (e.g. "sto-STO-7"), or the
-  # STORY_WINDOW_NAME override. repo_prefix's input need not be an
-  # "owner/repo" string (storyhook has no GitHub-owner concept) — the git
-  # toplevel directory's own basename is enough.
-  local repo_name wname wt_container worktree_path worktree_branch
-  repo_name="$(basename "$dir")"
-  wname=$(resolve_wname "$id" "$repo_name")
+  # worktree branch: the bare story id (e.g. "STO-7"), or the
+  # STORY_WINDOW_NAME override (SH-166).
+  local wname wt_container worktree_path worktree_branch
+  wname=$(resolve_wname "$id")
   wt_container="${WORKTREE_IGNORE_PATH%/}"
   worktree_path="$dir/$wt_container/$wname"
   worktree_branch="worktree-$wname"
@@ -880,7 +877,7 @@ cmd_capture() {
   if command -v "$STORY" >/dev/null 2>&1; then
     id=$(canonical_story_id "$(story_cli show "$id" --json 2>/dev/null || printf '')" "$id")
   fi
-  wname=$(resolve_wname "$id" "$(basename "$dir")")
+  wname=$(resolve_wname "$id")
 
   if [ -n "$DRY_RUN" ]; then
     jq -n --arg wname "$wname" --arg lines "$CAPTURE_LINES" '
@@ -1132,9 +1129,8 @@ _complete_prepare() {
   CMP_SUPER=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
   CMP_DONE_STATE=$(story_closed_state)
 
-  local repo_name wt_container
-  repo_name="$(basename "$CMP_DIR")"
-  CMP_WNAME=$(resolve_wname "$id" "$repo_name")
+  local wt_container
+  CMP_WNAME=$(resolve_wname "$id")
   CMP_DEFAULT=$(default_branch)
   freshen_base_ref "$CMP_DEFAULT"
 
