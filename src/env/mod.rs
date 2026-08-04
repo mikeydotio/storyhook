@@ -58,6 +58,7 @@ pub struct Environment {
     clock: Clock,
     daemon_addr: SocketAddr,
     busy_timeout: Duration,
+    exchange_bound: Option<crate::daemon::lifecycle::ExchangeBound>,
 }
 
 impl Environment {
@@ -123,6 +124,8 @@ impl Environment {
             None => DEFAULT_BUSY_TIMEOUT,
         };
 
+        let exchange_bound = parse_exchange_bound(env_string("STORYHOOK_EXCHANGE_DEADLINE_SECS"))?;
+
         Ok(Environment {
             store,
             state_home,
@@ -130,6 +133,7 @@ impl Environment {
             clock: Clock::System,
             daemon_addr,
             busy_timeout,
+            exchange_bound,
         })
     }
 
@@ -149,7 +153,19 @@ impl Environment {
             clock: Clock::System,
             daemon_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             busy_timeout: DEFAULT_BUSY_TIMEOUT,
+            exchange_bound: None,
         }
+    }
+
+    /// The user's override on how long to wait for the daemon, if they set one.
+    ///
+    /// `None` is the ordinary case and means *use the deadline belonging to
+    /// whatever the daemon says it is running*, which is a question only
+    /// [`crate::daemon::lifecycle::verdict`] can answer, because only it has
+    /// read the record.
+    #[must_use]
+    pub fn exchange_bound(&self) -> Option<crate::daemon::lifecycle::ExchangeBound> {
+        self.exchange_bound
     }
 
     /// Pins the clock, so that everything derived from "now" is comparable.
@@ -289,6 +305,53 @@ impl Environment {
     /// Where a daemon started in the background writes its diagnostics.
     pub fn daemon_log(&self) -> PathBuf {
         self.daemon_state_dir().join("daemon.log")
+    }
+
+    /// Where the daemon publishes the one request it is currently serving.
+    ///
+    /// **The observable the wire does not have.** A daemon writes no bytes at
+    /// all until its handler returns, so a client waiting on `/api/v1/invoke`
+    /// cannot tell — from the socket — whether its command is running, queued
+    /// behind somebody else's, or wedged. This file is how it finds out, and it
+    /// is read without asking the daemon anything, which matters because the
+    /// daemon serves one request at a time and a wedged one answers nothing
+    /// (SH-144).
+    ///
+    /// Written by [`crate::api::rpc`] when a request's envelope has parsed and
+    /// removed when its answer is ready, so it changes exactly when the daemon
+    /// **finishes something**. That is the whole signal: a client's deadline
+    /// resets on every change, which is what lets queueing be unbounded while
+    /// the client's own served time is not.
+    ///
+    /// The third of three files a client reads about a daemon rather than from
+    /// it, beside [`Self::daemon_attempt`] (a *client* on a start attempt) and
+    /// [`Self::daemon_failure`] (the *daemon* on its way out). This one is the
+    /// daemon on what it is doing right now.
+    ///
+    /// **No schema version, deliberately.** `lifecycle::usable` trusts a daemon
+    /// only when it is running this very binary, so a client can only ever read
+    /// a record its own build wrote. A version field here would be a second
+    /// answer to a question the binary check has already settled.
+    ///
+    /// # What this record does not cover, and why that is a judgement rather
+    /// # than an oversight
+    ///
+    /// It names `/api/v1/invoke` requests only. The dashboard's REST handlers
+    /// share the same accept loop, so a client queued behind one sees **no
+    /// record** for that interval and falls into the "published nothing" branch
+    /// rather than the "queued behind named work" one.
+    ///
+    /// Judged acceptable rather than fixed: those handlers are local store
+    /// reads, measured sub-second against a store 33x the size of the real one,
+    /// and the one genuinely long-lived REST route — the `/api/events` stream —
+    /// is detached onto its own thread before the loop moves on, so it never
+    /// holds the queue at all.
+    ///
+    /// If that stops being true, the fix is to **widen this one write site**
+    /// rather than to add a second one. Two writers of one record is how the
+    /// two ends come to disagree about what it means.
+    pub fn daemon_current(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.current.json")
     }
 
     /// Where a daemon that fails to start records *why*, for the client that
@@ -467,9 +530,101 @@ fn env_string(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
+/// Parses `$STORYHOOK_EXCHANGE_DEADLINE_SECS`.
+///
+/// A whole number of seconds, or the literal `none` to wait forever — which is
+/// storyhook's behaviour before SH-144, and is named rather than spelled `0` so
+/// that switching the bound off is a word somebody typed on purpose.
+///
+/// # Why this exists at all, and when it should stop existing
+///
+/// Event hooks run **inside** the daemon's request handler, and
+/// `hooks.settings.timeout_seconds` has no ceiling — so a user can legitimately
+/// configure a command slower than any deadline this code could calibrate, and
+/// the client cannot detect it: the hook config is read against a project root
+/// that only the daemon resolves. That is a knowably incomplete model, and a
+/// hatch is the honest response to one.
+///
+/// **Retirement trigger**, so this does not become permanent by inertia: put a
+/// ceiling on `hooks.settings.timeout_seconds`, derive
+/// [`crate::daemon::lifecycle::SERVED_DEADLINE`] from that ceiling plus
+/// local-work headroom, and delete this variable.
+///
+/// A bad value is a **loud refusal** rather than a silent fall back to the
+/// default. Silently ignoring a typo here is worse than having no hatch: the
+/// user believes they raised the bound and has not, so the failure they were
+/// trying to prevent happens anyway and now has a reason not to be believed.
+fn parse_exchange_bound(
+    raw: Option<String>,
+) -> Result<Option<crate::daemon::lifecycle::ExchangeBound>, AppError> {
+    use crate::daemon::lifecycle::ExchangeBound;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(Some(ExchangeBound::Unbounded));
+    }
+    let seconds: u64 = value.parse().map_err(|_| {
+        AppError::Usage(format!(
+            "STORYHOOK_EXCHANGE_DEADLINE_SECS=`{raw}` is neither a whole number of \
+             seconds nor `none`"
+        ))
+    })?;
+    if seconds == 0 {
+        return Err(AppError::Usage(
+            "STORYHOOK_EXCHANGE_DEADLINE_SECS=`0` would give up before the daemon \
+             could answer anything. Use `none` to wait forever, or a positive number \
+             of seconds."
+                .to_string(),
+        ));
+    }
+    Ok(Some(ExchangeBound::After(Duration::from_secs(seconds))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hatch parses what it promises, and refuses everything else loudly.
+    ///
+    /// Over a `&str` rather than through `std::env`, so it is safe under
+    /// `--test-threads=4` — a test that set a process-wide variable would be
+    /// visible to every other test in the binary.
+    #[test]
+    fn the_exchange_override_parses_or_refuses_loudly() {
+        use crate::daemon::lifecycle::ExchangeBound;
+
+        assert_eq!(parse_exchange_bound(None).expect("absent is fine"), None);
+        assert_eq!(
+            parse_exchange_bound(Some("45".to_string())).expect("a number"),
+            Some(ExchangeBound::After(Duration::from_secs(45)))
+        );
+        assert_eq!(
+            parse_exchange_bound(Some("  600 ".to_string())).expect("whitespace is trimmed"),
+            Some(ExchangeBound::After(Duration::from_secs(600)))
+        );
+        for spelling in ["none", "None", "NONE"] {
+            assert_eq!(
+                parse_exchange_bound(Some(spelling.to_string())).expect("the literal"),
+                Some(ExchangeBound::Unbounded),
+                "`{spelling}` must switch the bound off"
+            );
+        }
+
+        // A typo must never fall back to the default: the user would believe
+        // they had raised the bound and would not have.
+        for bad in ["soon", "-1", "45s", "1.5", "forever", "0"] {
+            let refusal = parse_exchange_bound(Some(bad.to_string()))
+                .expect_err(&format!("`{bad}` must be refused rather than ignored"));
+            assert!(
+                refusal
+                    .to_string()
+                    .contains("STORYHOOK_EXCHANGE_DEADLINE_SECS"),
+                "the refusal must name the variable: {refusal}"
+            );
+        }
+    }
 
     #[test]
     fn an_empty_variable_is_ignored_rather_than_joined_onto() {

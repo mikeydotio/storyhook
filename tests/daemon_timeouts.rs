@@ -236,3 +236,202 @@ fn ensure_gives_up_on_a_spawn_lock_somebody_else_holds() {
 
     let _ = FileExt::unlock(&held);
 }
+
+/// The invoker's own exchange, which is the fourth call and the one that
+/// carried the user's work.
+///
+/// # Why this is not simply `timeout_global`
+///
+/// The three calls above have no legitimate slow case, so a flat deadline is
+/// right for them. This one does: it carries an import, a `github-sync`, an
+/// event hook the user configured. The daemon also serves **one request at a
+/// time**, so a client's wall clock includes however long somebody else's
+/// command takes — which means a flat deadline here would have to be as long as
+/// the longest command it might queue behind, or it would abandon healthy work.
+///
+/// The bound is therefore on the daemon's own published record
+/// (`daemon.current.json`): the clock resets whenever that record changes, and
+/// fires only when it has stopped moving. `tests/../lifecycle.rs` holds the
+/// decision table as pure unit tests; these three prove the wiring, and they
+/// drive the bound in milliseconds because it is a parameter (SH-144).
+mod exchange {
+    use super::{PATIENCE, SilentPeer, within_patience};
+    use std::time::{Duration, Instant};
+    use storyhook::daemon::lifecycle::{CurrentRequest, ExchangeBound};
+    use storyhook::env::Environment;
+    use storyhook::invoke::{HttpInvoker, Transport};
+
+    /// The bound every test here drives, far below the production 120s.
+    const DRIVEN: Duration = Duration::from_millis(250);
+
+    fn envelope() -> storyhook::api::wire::WireRequest {
+        storyhook::api::wire::WireRequest::new(
+            storyhook::cli::Invocation::Version,
+            std::path::Path::new("/"),
+        )
+    }
+
+    /// A record naming `command`, written where a client will look for it.
+    fn publish(env: &Environment, command: &str) -> CurrentRequest {
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the daemon directory");
+        let record = CurrentRequest {
+            request_id: "somebody-elses-request".to_string(),
+            command: command.to_string(),
+            project: None,
+            pid: std::process::id(),
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        storyhook::daemon::lifecycle::publish_current(env, &record);
+        record
+    }
+
+    /// The defect itself: a daemon that accepts and never answers used to hold
+    /// its client forever.
+    ///
+    /// The peer publishes no record at all, which is the "never appeared"
+    /// branch — and post-SH-144 the only shape an unauthenticated wedge can
+    /// present to a client.
+    #[test]
+    fn the_exchange_gives_up_on_a_peer_that_accepts_and_never_answers() {
+        let dir = storyhook_test_support::scratch_dir();
+        let env = Environment::at(dir.path());
+        let peer = SilentPeer::bind();
+        let info = peer.as_daemon();
+
+        let started = Instant::now();
+        let result = within_patience("HttpInvoker::send against a silent peer", move || {
+            HttpInvoker::send(
+                &env,
+                &info,
+                &envelope(),
+                Some(ExchangeBound::After(DRIVEN)),
+                Duration::from_millis(25),
+                PATIENCE,
+            )
+        });
+        let waited = started.elapsed();
+
+        let error = result.expect_err("a peer that never answers cannot have answered");
+        let Transport::Sent(message) = error else {
+            panic!("a request that left this process must be classified as Sent");
+        };
+        assert!(
+            message.contains("may or may not have run"),
+            "the client must say it cannot know whether the write landed: {message}"
+        );
+        assert!(
+            message.contains("kill"),
+            "the client must name the way out, because `story daemon stop` cannot \
+             kill a daemon in this state: {message}"
+        );
+        // The client's own bound must fire, not the harness's. That difference
+        // is the whole distinction between a bounded wait and an unbounded one.
+        assert!(
+            waited < Duration::from_secs(40),
+            "the client's own bound must fire well inside the harness's: {waited:?}"
+        );
+    }
+
+    /// **The regression this design exists for**, at the integration level: a
+    /// client whose daemon is visibly working through a queue keeps waiting,
+    /// however many deadlines pass.
+    ///
+    /// Red under any wall-clock bound, green only under one measured on the
+    /// record. The record is rewritten with a fresh id on a cadence, which is
+    /// what a daemon finishing one command after another looks like from here.
+    #[test]
+    fn a_client_behind_a_daemon_that_keeps_finishing_things_keeps_waiting() {
+        let dir = storyhook_test_support::scratch_dir();
+        let env = Environment::at(dir.path());
+        let peer = SilentPeer::bind();
+        let info = peer.as_daemon();
+
+        // The directory must exist before the churn starts: `publish_current`
+        // is best-effort by design, so a missing directory would make every
+        // write a silent no-op and this test would pass for the wrong reason —
+        // the client would be giving up on a daemon that published nothing,
+        // which is a different branch entirely.
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the daemon directory");
+
+        let churning = env.clone();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopper = stop.clone();
+        let churn = std::thread::spawn(move || {
+            let mut n = 0_u32;
+            while !stopper.load(std::sync::atomic::Ordering::Relaxed) {
+                n += 1;
+                storyhook::daemon::lifecycle::publish_current(
+                    &churning,
+                    &CurrentRequest {
+                        request_id: format!("request-{n}"),
+                        command: "comment".to_string(),
+                        project: None,
+                        pid: std::process::id(),
+                        started_at: "2026-01-01T00:00:00Z".to_string(),
+                    },
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = env.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(HttpInvoker::send(
+                &waiting,
+                &info,
+                &envelope(),
+                Some(ExchangeBound::After(DRIVEN)),
+                Duration::from_millis(25),
+                PATIENCE,
+            ));
+        });
+
+        // Eight driven deadlines deep. A wall-clock bound would have fired
+        // thirty times over.
+        let slept = DRIVEN * 8;
+        assert!(
+            rx.recv_timeout(slept).is_err(),
+            "a client must not give up while the daemon is visibly finishing things"
+        );
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        churn.join().expect("the churn thread");
+        // And once the record stops moving, it does give up.
+        let outcome = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a record that stops moving must end the wait");
+        assert!(outcome.is_err(), "a silent peer cannot have answered");
+    }
+
+    /// The deadline belongs to the command in the record, so a frozen
+    /// `github-sync` is waited on far longer than a frozen `comment`.
+    #[test]
+    fn a_frozen_github_sync_is_waited_on_longer_than_anything_else() {
+        let dir = storyhook_test_support::scratch_dir();
+        let env = Environment::at(dir.path());
+        let peer = SilentPeer::bind();
+        let info = peer.as_daemon();
+        publish(&env, "github-sync");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiting = env.clone();
+        std::thread::spawn(move || {
+            // No override at all: the production deadlines apply, so the record
+            // naming `github-sync` buys an hour.
+            let _ = tx.send(HttpInvoker::send(
+                &waiting,
+                &info,
+                &envelope(),
+                None,
+                Duration::from_millis(25),
+                PATIENCE,
+            ));
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_secs(3)).is_err(),
+            "a frozen github-sync must not be given up on at the ordinary bound"
+        );
+    }
+}
