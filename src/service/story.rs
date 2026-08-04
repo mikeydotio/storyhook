@@ -14,7 +14,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::domain::{Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState};
+use crate::domain::{
+    Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, normalize_labels,
+};
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
 use crate::output::PurgePlan;
@@ -225,17 +227,26 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         remove: &[String],
     ) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
+        // `add`/`remove` are normalized here rather than trusted from the
+        // caller: the CLI's `story label`/`unlabel` already split on comma,
+        // but the REST `/labels` route (SH-164) hands this a raw JSON array
+        // that may not have. Removing a normalized `remove` value against the
+        // story's already-normalized stored labels is also what makes
+        // `story unlabel <id> "web,sse"` finally able to name the label
+        // SH-145 could never be unlabeled with.
+        let add = normalize_labels(add);
+        let remove = normalize_labels(remove);
         let snapshot = self.edit_open(id, |row, _states| {
             let mut labels: BTreeSet<String> = row.snapshot.labels.iter().cloned().collect();
-            for label in add {
+            for label in &add {
                 labels.insert(label.clone());
             }
-            for label in remove {
+            for label in &remove {
                 labels.remove(label);
             }
             Ok(vec![StoryEvent::StoryLabelsSet {
                 at: now.clone(),
-                labels: labels.into_iter().collect(),
+                labels: normalize_labels(labels),
             }])
         })?;
 
@@ -793,13 +804,11 @@ fn creation_events(
         });
     }
     if let Some(labels) = &input.labels {
-        let mut sorted = labels.clone();
-        sorted.sort();
-        sorted.dedup();
-        if !sorted.is_empty() {
+        let normalized = normalize_labels(labels);
+        if !normalized.is_empty() {
             events.push(StoryEvent::StoryLabelsSet {
                 at: now.to_string(),
-                labels: sorted,
+                labels: normalized,
             });
         }
     }
@@ -880,15 +889,16 @@ fn plan_field_edits(
         plan.changes.push(format!("assignee -> {lookup}"));
     }
     if let Some(csv) = &edits.labels {
-        let mut labels: BTreeSet<String> = story.labels.iter().cloned().collect();
-        labels.extend(
-            csv.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
+        let labels = normalize_labels(
+            story
+                .labels
+                .iter()
+                .cloned()
+                .chain(std::iter::once(csv.clone())),
         );
         plan.events.push(StoryEvent::StoryLabelsSet {
             at: now.to_string(),
-            labels: labels.into_iter().collect(),
+            labels,
         });
         plan.changes.push(format!("labels += {csv}"));
     }
@@ -988,10 +998,10 @@ fn apply_json_patch(
                 let items = value.as_array().ok_or_else(|| {
                     AppError::Validation("labels must be an array of strings".to_string())
                 })?;
-                let labels: Vec<String> = items
-                    .iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect();
+                // A JSON array is exactly the shape a REST caller or a
+                // decompose-generated batch hands in; neither is guaranteed
+                // to have split a comma-bearing value already (SH-164).
+                let labels = normalize_labels(items.iter().filter_map(|v| v.as_str()));
                 plan.changes
                     .push(format!("labels -> [{}]", labels.join(", ")));
                 plan.events.push(StoryEvent::StoryLabelsSet {

@@ -3668,6 +3668,97 @@ audit trail that quietly loses a document is worth less than one that says what
 happened to it. **A name is not an identity:** a `-2` suffix on a spawn result
 means somebody else holds the name you are about to type.
 
+### SH-172 — done
+
+**Outcome:** merged. Twelve stalled loopback connections — no credential
+required — no longer stop the daemon answering anything: reproduced against a
+real daemon before the fix (RED), fixed, reproduced again after (GREEN), with
+the reproduction kept as `tests/daemon_wedge.rs`.
+
+**The story asked for the mechanism to be established from evidence, and it
+was — from `tiny_http` 0.12.0's own vendored source, not from re-reading
+`serve.rs`.** `request.rs:194-213`: a body with `Content-Length <= 1024` and no
+`Expect: 100-continue` is read to completion **on the connection's own
+`tiny_http` pool thread**, before the request ever reaches this daemon's accept
+loop at all. A body over 1024 bytes gets a lazy `EqualReader` instead, streamed
+to whoever calls `as_reader()` — which is this daemon's own `read_body`, on the
+one thread that used to route every request. So the three reviewers who read
+`serve.rs:344` and expected one stalled connection to wedge the daemon were
+right about the mechanism and wrong only about *which* connections reach it:
+
+| held | `Content-Length` | reaches this daemon's own read? | wedges? |
+|---|---|---|---|
+| 1, 10 bytes sent | 1000 (≤1024) | no — buffered by `tiny_http` first | no |
+| +1, head dribbled | n/a | no — same reason | no |
+| +10, 1 byte each | 65000 (>1024) | yes | **yes** |
+
+**It is a body-size class, not a connection count**, confirmed by sweeping the
+threshold the story asked for but did not measure: one connection at
+`Content-Length: 1025` wedges the daemon solid; twenty held at exactly `1024`
+never touch it. The story's own 2-safe/12-wedged table reads as a threshold
+purely because none of its first two connections crossed 1024 bytes.
+
+**The fix is not a deadline — it is moving the block off the thread everyone
+else queues behind.** `accept_loop` used to read a request's headers, read its
+body, and route it, all inline, on the one thread every listener's requests are
+served from. It now does exactly one thing: pop a request and hand it to a
+detached `worker` thread. Peer-paced I/O (reading a head, reading a body,
+writing a reply) happens only on that worker; the new `dispatch` thread — one
+per listener, exactly as serial as the original loop — does nothing but route,
+never touches a socket, and so can never be made to wait on a peer. A stalled
+connection now ties up one worker thread, never the dispatcher every other
+client's command is queued behind.
+
+**The credential-free amplification named in the story's title gets its own,
+narrower fix.** `rpc::route`'s token/loopback check used to run *after*
+`read_body`, so an unauthenticated peer could make the daemon wait on a body it
+had no right to send. The check is extracted into `rpc::admission` — decided
+from the request head alone — and the worker calls it *before* `read_body`.
+`tests/daemon_wedge.rs::an_unauthenticated_invoke_is_refused_without_its_body`
+pins this: a 401 arrives while 64999 of a promised 65000 bytes are still
+outstanding.
+
+**One planned piece did not survive contact with `tiny_http`'s API, and the
+test written to pin it is what caught that before it shipped.** The plan called
+for `SO_RCVTIMEO`/`SO_SNDTIMEO` on every listener, inherited by every accepted
+socket, bounding a worker's worst case to 30s. Measured directly — a bare
+`TcpListener` with the option set, then `getsockopt` on the socket its own
+`accept()` returned — the option does **not** inherit on this machine. That is
+not a macOS quirk to route around: `accept(2)`'s documented inheritance list
+(`SO_DEBUG`, `SO_DONTROUTE`, `SO_KEEPALIVE`, `SO_LINGER`, `SO_OOBINLINE`,
+`SO_RCVBUF`, `SO_RCVLOWAT`, `SO_SNDBUF`, `SO_SNDLOWAT`, `TCP_MAXSEG`,
+`TCP_NODELAY`) omits `SO_RCVTIMEO`/`SO_SNDTIMEO` on Linux too — it was never a
+real guarantee anywhere, and the plan's claim to the contrary was wrong.
+`tiny_http` gives no way around it either: a `Request`'s body reader is an
+opaque `Box<dyn Read + Send + 'static>` with no accessible file descriptor, and
+`Server::from_listener` owns the whole accept-and-parse pipeline internally, so
+there is no seam to configure an individual accepted socket without
+reimplementing HTTP/1.1 head parsing ourselves. Reverted rather than shipped
+half-working: `src/daemon/socket.rs` and its call sites are gone from this
+diff. **A single stalled worker can still block forever** — bounded now to one
+thread and one fd rather than the whole daemon, which is what this story is
+about, but not bounded in time. Filed as SH-177, with the redesign trigger
+named: replace `tiny_http` with something that exposes the accepted
+connection, or add a connection cap (the fourth candidate the story itself
+named) so the thread count is bounded even though individual stalled workers
+still are not.
+
+**Gate:** `make test` — the whole gate — exit 0, **115 green test-result
+blocks**, 0 failures, 0 warnings, plugin harness **20/0**, no orphan daemons,
+no wedge.
+
+**Semver: patch.** A bug fix with no interface change — `rpc::admission` and
+the `Job`/`Verdict`/`dispatch`/`worker` split are internal to the daemon.
+
+**Council:** not convened. The mechanism was established from `tiny_http`'s own
+source and a real-daemon probe before any line changed, which is what the
+story itself asked for; the fix's scope (three candidate levels, from a
+deadline-only patch to the full accept/worker/dispatch split) was chosen
+directly with the user rather than through a council vote.
+
+**Successor:** SH-177, filed for the residual unbounded per-worker block that
+`tiny_http`'s API makes infeasible to close here.
+
 ### SH-160 — done
 
 **Outcome:** merged. A `GIT_DIR` exported in one shell no longer decides what

@@ -165,6 +165,22 @@ fn importing_descriptions_creates_one_story_each_in_order() {
     fixture.assert_no_drift();
 }
 
+/// SH-164: a bulk-import document is exactly as untrusted as a REST body —
+/// nothing guarantees its labels were split on comma before it got here.
+#[test]
+fn importing_splits_a_comma_bearing_label() {
+    let fixture = ServiceFixture::new();
+    let story = ImportStory {
+        labels: Some(vec!["a,b".to_string()]),
+        ..described("Comma in import")
+    };
+    let batch = TransferService::new(&fixture.ctx())
+        .import(&[story])
+        .expect("importing");
+    assert_eq!(batch.views[0].story.labels, ["a", "b"]);
+    fixture.assert_no_drift();
+}
+
 #[test]
 fn an_unparseable_priority_is_dropped_rather_than_rejected() {
     // `story new --priority urgent` is an error; `story import` has always

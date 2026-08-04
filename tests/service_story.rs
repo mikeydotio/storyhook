@@ -426,6 +426,31 @@ fn labels_are_added_removed_and_kept_sorted() {
     assert_eq!(after.labels, ["alpha", "mid"]);
 }
 
+/// SH-164: `set_labels` is what the REST `/labels` route calls directly with
+/// a raw JSON array — nothing upstream of it guarantees a comma-bearing value
+/// was already split, so it has to normalize `add`/`remove` itself. Also
+/// covers the self-heal: a label written before the guard existed (`web,sse`
+/// as one label, simulated here rather than through the service, which could
+/// no longer produce it) is split on its way back out by any edit that
+/// touches the set.
+#[test]
+fn set_labels_splits_a_comma_bearing_add_and_can_remove_what_it_split() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "comma in add");
+
+    let after = service
+        .set_labels(&story.id, &["web,sse".into()], &[])
+        .expect("adding a comma-bearing value");
+    assert_eq!(after.labels, ["sse", "web"]);
+
+    let after = service
+        .set_labels(&story.id, &[], &["sse,web".into()])
+        .expect("removing via a comma-bearing value");
+    assert!(after.labels.is_empty(), "{:?}", after.labels);
+}
+
 #[test]
 fn adding_a_label_twice_leaves_one() {
     let fixture = ServiceFixture::new();
@@ -1016,6 +1041,26 @@ fn the_json_patch_replaces_labels_wholesale() {
         )
         .unwrap();
     assert_eq!(snapshot(&fixture, &story.id).labels, ["new"]);
+}
+
+/// SH-164: a JSON array is exactly the shape a REST caller hands in, and
+/// nothing guarantees a comma-bearing value inside it was already split.
+#[test]
+fn the_json_patch_splits_a_comma_bearing_label() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "comma in json");
+    service
+        .set_fields(
+            &story.id,
+            &FieldEdits {
+                json: Some(r#"{"labels":["web,sse"]}"#.into()),
+                ..FieldEdits::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(snapshot(&fixture, &story.id).labels, ["sse", "web"]);
 }
 
 #[test]

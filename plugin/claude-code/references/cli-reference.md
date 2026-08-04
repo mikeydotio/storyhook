@@ -358,7 +358,7 @@ story prioritize SH-3 high
 
 ### `story label <id> <labels-csv>` / `story unlabel <id> <labels-csv>`
 
-Add or remove one or more comma-separated labels. There is no `--remove` flag on `label` — removal is the dedicated `unlabel` command.
+Add or remove one or more comma-separated labels. There is no `--remove` flag on `label` — removal is the dedicated `unlabel` command. Comma is always the label delimiter — a single label can never contain one, on this command or any other that accepts labels.
 
 ```bash
 story label SH-3 backend,auth
