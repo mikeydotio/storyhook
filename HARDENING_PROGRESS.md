@@ -174,7 +174,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 
 - [x] **SH-143** — the daemon spawn lock blocks without a timeout · *clients queue serially behind up to 15 s each*
 - [x] **SH-144** — `HttpInvoker::send` has no bound, so a wedged daemon holds its client forever
-- [ ] **SH-141** — an event hook's grandchild holds its stderr pipe and wedges the daemon
+- [x] **SH-141** — an event hook's grandchild holds its stderr pipe and wedges the daemon
 - [ ] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
 - [ ] **SH-120** — C8 Dispatch plumbing · *the epic's next link, and the only thing SH-50 waits on*
 - [ ] **SH-166** — `/story do` should not prefix the worktree with the repo name · *same file as SH-120; carries a handoff comment from SH-118*
@@ -3488,3 +3488,182 @@ notification is transport, not silence.** One seat also reports a revision that
 never arrived at all. Worth a fix in the council skill itself.
 
 **Semver: minor.** New behaviour and a new state file, no interface removed.
+
+### SH-141 — done
+
+**Outcome:** merged. An event hook is handed unlinked temporary files instead of
+pipes, so no descendant of it can hold the daemon — and neither can a hook that
+merely talks too much, which turned out to be the same defect and was not in the
+story.
+
+**The story's diagnosis was incomplete, and the council is what found it.**
+SH-141 was filed as a lifetime mismatch between a descriptor's HOLDER and its
+OWNER — a grandchild inherits a pipe and outlives the process that was handed
+it. That describes two of the three reachable wedges exactly. The third has **no
+grandchild at all**: `fire_hook` drove three concurrent pipes *sequentially* —
+write the payload to stdin, then wait, then read stderr — which is the classic
+deadlock `Child::wait_with_output` exists to prevent. A well-behaved hook that
+writes 200 KiB to stderr and then reads its input never returns, and
+`timeout_seconds` is never consulted because `wait_timeout` is never reached.
+
+| hook (5s timeout, 1 MiB payload, stock `/bin/sh`) | result |
+|---|---|
+| `head -c 204800 … >&2; cat > sink; exit 0` | **no return in 25s** |
+| `head -c 204800 … >&2; exit 0` (never reads stdin) | **no return in 25s** |
+| `head -c 32768 … >&2; cat > sink; exit 0` | 12.9 ms |
+
+The 32 KiB row is the whole finding: the mechanism is one 64 KiB pipe buffer.
+The grandchild is an instance; the sequential driver was the origin, and the
+repo's rule is to fix at the origin.
+
+**The skeptic seat raised it and flagged its own measurement as untrusted** —
+one shell, in Python, not through `fire_hook`. I re-ran it through the real
+function before putting it to the vote, which is where the second row above came
+from; the seat had not tested it. Both held. That is SH-144's lesson applied
+rather than restated: three stated diagnoses did not survive being run there,
+and the habit of running them is what kept this one honest.
+
+**My own repro was a false negative, and all three seats caught it
+independently.** `a_grandchild_holding_stdin_does_not_hold_the_caller` used
+`sleep N & exit 0` — a row my *own* measurement table listed as **safe** at
+5.7 ms. It passed against unfixed code and pinned nothing. POSIX assigns
+`/dev/null` to an asynchronous list's stdin, which is why.
+
+**And the POSIX reasoning that made me call the stdin hazard "narrow" is
+refuted.** Measured across five shells: **zsh blocks on the textbook
+`sleep 5 & exit 0` even invoked as `sh`**; `set -m` defeats the rule on bash, sh
+and ksh, because POSIX conditions it on job control being *disabled*; dash and
+ksh diverge from bash in opposite directions on the dup cases. No two shells
+agree. And `Command::new("sh")` is a **PATH lookup**, so the shell is not even a
+property of the platform. The hazard cannot be reasoned about; it has to be
+closed by construction — which is the argument that decided the mechanism.
+
+**Council: the mechanism went 3–0, and the winner was nobody's first proposal.**
+Round 1 was P2=2, P1=1, P3=0; one deliberation round; the runoff went 2–1 for
+R3 on first preferences, so IRV terminated on the first count with no chair
+tiebreak. Every seat ranked something above its own work. Neither option A
+(process group + kill) nor option C (stop piping stderr) was adopted by any seat
+in any round. Audit trail in `.council/hook-pipe-bound/`.
+
+- **The skeptic voted against its own pump**, naming the fact: *"the chair's
+  32 KiB row. I defended the pump partly on backpressure — but 32 KiB returns in
+  12.9 ms and 200 KiB wedges, which means that buffer is not protection, it is
+  the wedge mechanism itself; my one substantive advantage over the file design
+  was a restatement of the defect."* It also withdrew a claim in writing and
+  named the weakest line in its own proposal: *"I rejected D on necessity rather
+  than correctness, and necessity is not a correctness argument."*
+- **The observability seat refuted the backpressure defence I had put to it as
+  the opposing case**, rather than accepting the gift: P3 drains continuously, so
+  nothing is throttled in the foreground, and after the child is reaped the
+  "throttle" leaves a backgrounded job **blocked forever at 64 KiB — alive but
+  not working**, passing the very test that claims it was left alone.
+- **The architect withdrew P1 for P2** — *"it beats my own argument on my own
+  terms"* — and accepted the skeptic's correction that a short read is legal on a
+  regular file too, so its "deterministic first 4096 bytes" claim *"attributed to
+  the file what only the loop provides."*
+
+**The went-too-far test was green for the wrong reason, and I wrote it that
+way.** The skeptic's C3 replaced a `kill -0` liveness assertion with a marker
+file the backgrounded job must produce, because a chatty background job is alive
+at 64 KiB forever under any pipe design — the test would pass while the property
+it names is violated. I implemented it with `;` instead of `&&`, so the `touch`
+ran whatever had happened to the write before it, and the marker appeared even
+when SIGPIPE had just killed the write. It passed against the **unfixed** code.
+Caught by the disarm run, not by reading. That is a fresh instance of the exact
+fault C3 exists to correct, which is now three in this story — the seat that
+proposed C3 had also written one in the same proposal where it flagged the
+original, and said so.
+
+**A second test was flaky by construction and is gone.** `a_hook_leaves_no_file_behind`
+compared the temp directory's entry count across a fire, which races with the
+other tests in the same binary at `--test-threads=4`. The property is a **link
+count of zero**, so it is asserted directly, in a unit test, where nothing else
+can perturb it.
+
+**Red→green verified in both directions.** Disarmed, exactly five tests fail —
+the three wedges plus C3 and the temp-dir test — and the payload-integrity guard
+and the fast-return guard stay green either way, which is their job: they catch a
+fix that goes too far. Armed, all seven pass in **0.50s**, against a 30s wedge.
+
+**The diagnostic gained rather than lost**, which is why option C was rejected
+even though the observability seat's own finding made it cheaper than anyone
+assumed: the warning has **never** reached a user's terminal. Verified
+empirically — a failing hook produced zero bytes on the CLI's stderr and
+`warning: create hook failed: THE-HOOK-IS-UNHAPPY` in
+`daemons/<hash>/daemon.log`. Every `fire_hook` call site is under `src/service/`
+and since SH-114 the daemon is the only route to the store, so `eprintln!` there
+is the daemon's stderr. **No test anywhere asserted that message**, and
+`tests/hook_bounds.rs` claimed it was "pinned at the CLI level" when it was not.
+The claim is now true.
+
+Commit 2 fixed three diagnostic defects the mechanism itself created: status and
+stderr were **mutually exclusive** (a non-empty stderr discarded the exit code,
+so the hooks that explained themselves were the ones whose status nobody saw);
+the timeout branch read **no stderr at all**; and the 4 KiB cap was silent.
+
+**Accepted limitation, recorded rather than patched.** A pipe's 64 KiB buffer
+throttled a runaway hook and a file does not, and the file is unlinked so no `du`
+can attribute it. Every mitigation was examined and rejected by two seats
+independently: `RLIMIT_FSIZE` needs `unsafe` + `cfg` — the cost P3 was rejected
+for — and its SIGXFSZ would kill the backgrounded job, breaking the 3–0 decision;
+`set_len(0)` leaves a grandchild writing at its old offset so the file grows
+sparse anyway. A byte-count breadcrumb was **rejected 2–1** on a mechanism both
+non-authors found separately: it `fstat`s when the *direct child* exits, before
+the grandchild's writing starts, so it would log "hook wrote 43 bytes" and then
+the file grows to 30 GB in silence — *"silent on the case it was added for, while
+speaking confidently about a harmless one."* What shipped instead: a preventive
+line in `story help hooks`, `lsof +L1` named alongside it, the trade in
+`ScratchFile`'s docstring with its redesign trigger, and the limitation recorded
+on **SH-174** rather than as a new story — the skeptic's distinction that
+resolved a 2–1 split: *"adding a named limitation to an existing owner is not the
+same act as minting work with no repro."*
+
+**Grandchildren are left alone, 3–0 and never revisited.** No shipped storyhook
+document mentions backgrounding in either direction, and the process-group
+precedent does not transfer: `tailnet.rs`'s SAFETY argument is explicitly
+conditional on the child not yet being reaped, and this failure branch runs after
+`wait_timeout` has reaped it.
+
+**`tests/spawn_inventory.rs` reclassifies the site to `Waited`** and its `Reads`
+guidance gains a second remedy, because a process group bounds *who you can kill*
+and only files remove the wait.
+
+**Gate:** `make test` exits 0 — 115 green test-result blocks, 0 failures, plugin
+harness 20/0, clippy clean. No wedge, no restart. Run twice: **7m20s** against
+the working tree and **~24m** against the committed one, same content plus
+commit 2's unit tests, which cost milliseconds. The difference is machine
+variance, not the change — recorded because a 3x swing is exactly what would
+otherwise get mistaken for a regression next time. Log growth never paused more
+than 40s against a 120s stall bound.
+
+**One cost knowingly shipped rather than fixed:** `tests/hook_bounds.rs` leaves a
+handful of `sleep 300` processes behind, one per test, so a run's strays take
+five minutes to drain. They are inert — each holds only an unlinked file nobody
+reads — and the constant is documented where it is defined. Lowering it to 60s
+would be strictly better and was not worth a second 24-minute gate in this
+loop's budget; the next person to touch that file should just do it. Flagged by
+a council seat as a cheap improvement, not a defect.
+
+**Semver: patch.** A defect fix and better diagnostics; no interface added or
+removed, and `fire_hook` still returns `()`.
+
+**Also filed:** `story hooks test` reports the outcome nowhere — it returns
+`fired {event} hook: {command}` regardless of what happened — noted on SH-174 as
+the same surface.
+
+**Council process note, third occurrence and now diagnosed.** `SendMessage`'s
+`message` parameter is an `anyOf(string, protocol-object)`, so **any message
+whose text begins with `{` is coerced to the object branch and rejected**. A raw
+JSON payload cannot cross the tool at all. SH-130 and SH-144 both recorded seats
+"failing to deliver"; it was never a flake, and retrying verbatim never helps.
+This council routed every proposal through files.
+
+**And a chair error worth carrying.** Seat 1 was spawned as
+`seat1-architect-2`, because a *stale* agent from an earlier council still held
+the plain name. When no progress arrived I pinged `seat1-architect` — the stale
+one — which resumed from its own transcript and delivered a complete, well-argued
+proposal answering **SH-116's** question. It is kept as
+`MISROUTED-stale-seat1-answering-sh116.json` rather than deleted, because an
+audit trail that quietly loses a document is worth less than one that says what
+happened to it. **A name is not an identity:** a `-2` suffix on a spawn result
+means somebody else holds the name you are about to type.
