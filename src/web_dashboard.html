@@ -1985,12 +1985,18 @@ tbody tr:hover { background: var(--bg-sunken); }
       });
     }
 
+    // Splits on comma before adding, so pasting "web,sse" — typed in one
+    // paste rather than through the comma-commits-a-chip keydown handling
+    // below — still yields two chips rather than one label the server would
+    // reject (SH-164: a label can never contain a comma).
     function addLabel(value) {
-      var v = value.trim();
       input.value = "";
       closeAllPopovers();
-      if (!v || selected.indexOf(v) !== -1) return;
-      selected.push(v);
+      value.split(",").forEach(function(part) {
+        var v = part.trim();
+        if (!v || selected.indexOf(v) !== -1) return;
+        selected.push(v);
+      });
       renderChips();
     }
 
