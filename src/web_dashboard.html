@@ -2050,9 +2050,9 @@ tbody tr:hover { background: var(--bg-sunken); }
     clear(select);
     select.appendChild(el("option", { value: "" }, [state.repos.length ? "Select a repo…" : "No repos registered"]));
     state.repos.forEach(function(r) {
-      var label = r.name + (r.available ? "" : " (unavailable)");
+      var label = r.name + (r.read_only ? " (read-only)" : (r.available ? "" : " (unavailable)"));
       var opt = el("option", { value: r.id }, [label]);
-      if (!r.available) opt.disabled = true;
+      if (!canOpen(r)) opt.disabled = true;
       if (r.id === state.repoId) opt.selected = true;
       select.appendChild(opt);
     });
@@ -2125,7 +2125,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       return;
     }
     var totals = state.repos.reduce(function(acc, r) {
-      if (r.available && r.summary) {
+      if (canOpen(r) && r.summary) {
         acc.open += r.summary.total_open;
         acc.ready += r.summary.ready_count;
         acc.blocked += r.summary.blocked_count;
@@ -2952,13 +2952,15 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   /** Initial load: fetch the repo list once, then enter the "repo" screen
-   * for the last-viewed repo if it's still registered and available, else
-   * land on "home". */
+   * for the last-viewed repo if it's still registered and openable, else
+   * land on "home". `canOpen`, not `available`: a repo with no checkout on
+   * this machine is read-only, not gone, and reloading on it should not
+   * silently bounce to Home. */
   function bootstrap() {
     fetchReposOnce(function() {
       var saved = localStorage.getItem("storyhook.repoId");
       var match = saved && state.repos.filter(function(r) { return r.id === saved; })[0];
-      if (match && match.available) {
+      if (match && canOpen(match)) {
         selectRepo(match.id);
       } else {
         goHome();

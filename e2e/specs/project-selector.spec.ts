@@ -74,3 +74,39 @@ test("a project with no checkout on this machine is reachable from its home card
     .click();
   await expect(page.locator("#board-view")).toBeVisible();
 });
+
+// --- SH-171 regression guards ---------------------------------------------
+//
+// `canOpen()` (r.available || r.read_only) is what decides whether a home
+// card or a settings-table row can be opened; SH-171 is `renderRepoSelect()`
+// and `bootstrap()` disagreeing with it by checking bare `r.available`,
+// which is false for a read-only project (no checkout on this machine) even
+// though such a project is fully openable — just not editable.
+
+test("a project with no checkout is not disabled in the header selector", async ({
+  page,
+}) => {
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+
+  const option = page.locator("#repo-select option", {
+    hasText: "Gamma Archive",
+  });
+  await expect(option).toBeEnabled();
+
+  await page.locator("#repo-select").selectOption({ label: "Gamma Archive (read-only)" });
+  await expect(page.locator("#board-view")).toBeVisible();
+});
+
+test("reloading while a project with no checkout is open keeps it open", async ({
+  page,
+}) => {
+  await page
+    .locator(".repo-card-name", { hasText: "Gamma Archive" })
+    .click();
+  await expect(page.locator("#board-view")).toBeVisible();
+
+  await page.reload();
+
+  await expect(page.locator("#board-view")).toBeVisible();
+  await expect(page.locator("#home-view")).toBeHidden();
+});
