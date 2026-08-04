@@ -38,15 +38,15 @@ number="${id##*-}"
 out=$(dispatch_real "$repo" "$number")
 assert_eq "$(jqf "$out" .ok)" "true" "bare-id: dispatching by number succeeds"
 assert_eq "$(jqf "$out" .id)" "$id" "bare-id: the response reports the canonical id"
-assert_eq "$(jqf "$out" .window_name)" "sto-$id" "bare-id: the window is named from the canonical id"
+assert_eq "$(jqf "$out" .window_name)" "$id" "bare-id: the window is named from the canonical id"
 
 # The names on disk are the ones a later `/story do SH-N` would collide with,
 # which is the whole point of asserting them rather than trusting the JSON.
-[ -d "$repo/.claude/worktrees/sto-$id" ] \
+[ -d "$repo/.claude/worktrees/$id" ] \
   || fail_test "bare-id: worktree directory is not the one the canonical id names"
-[ -d "$repo/.claude/worktrees/sto-$number" ] \
+[ -d "$repo/.claude/worktrees/$number" ] \
   && fail_test "bare-id: a second worktree was created under the bare id"
-(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-sto-$id") \
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$id") \
   || fail_test "bare-id: worktree branch is not the one the canonical id names"
 
 claimed_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
@@ -59,7 +59,7 @@ assert_eq "$(jqf "$view_out" .id)" "$id" "bare-id: view reports the canonical id
 
 # `capture` finds the window `dispatch` created, given the other form.
 capture_out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" capture "$number" 2>&1)
-assert_eq "$(jqf "$capture_out" .window_name)" "sto-$id" \
+assert_eq "$(jqf "$capture_out" .window_name)" "$id" \
   "bare-id: capture looks for the window dispatch actually opened"
 
 # `complete plan` classifies the same worktree, so cleanup cannot miss it.
@@ -67,11 +67,11 @@ assert_eq "$(jqf "$capture_out" .window_name)" "sto-$id" \
 # the fixture root may not be spelled the way this test spelled it.
 plan_out=$(cd "$repo" && bash "$SCRIPT" complete plan "$number" 2>&1)
 assert_eq "$(jqf "$plan_out" .id)" "$id" "bare-id: complete plan reports the canonical id"
-assert_eq "$(basename "$(jqf "$plan_out" .plan.worktree.path)")" "sto-$id" \
+assert_eq "$(basename "$(jqf "$plan_out" .plan.worktree.path)")" "$id" \
   "bare-id: complete plan found the real worktree"
 assert_eq "$(jqf "$plan_out" .plan.worktree.status)" "removable" \
   "bare-id: and classified it, rather than reporting it missing"
-assert_eq "$(jqf "$plan_out" .plan.branch.name)" "worktree-sto-$id" \
+assert_eq "$(jqf "$plan_out" .plan.branch.name)" "worktree-$id" \
   "bare-id: complete plan found the real branch"
 
 finish

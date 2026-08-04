@@ -105,10 +105,19 @@ new_story() {
 }
 
 # wname_for <repo-dir> <id> — the window/worktree/branch name story.sh
-# derives for <id>. Mirrors session.sh's repo_prefix + resolve_wname rather
-# than hard-coding the value, so a change to either is caught here instead of
-# silently desynchronising every complete/capture fixture.
+# derives for <id>: the bare id, unprefixed since SH-166. Takes <repo-dir>
+# for parity with legacy_wname_for below (and so callers don't need to know
+# which of the two is prefix-sensitive) even though session.sh's own
+# resolve_wname no longer does.
 wname_for() {
+  printf '%s' "$2"
+}
+
+# legacy_wname_for <repo-dir> <id> — the PRE-SH-166 name: "<repo-prefix>-<id>".
+# Mirrors session.sh's repo_prefix + legacy_wname rather than hard-coding the
+# value, so a change to either is caught here instead of silently
+# desynchronising every legacy-adoption fixture.
+legacy_wname_for() {
   local base prefix
   base="$(basename "$1")"
   prefix="$(printf '%s' "$base" | tr -cd '[:alnum:]' | cut -c1-3 | tr '[:upper:]' '[:lower:]')"
@@ -116,10 +125,21 @@ wname_for() {
 }
 
 # mk_dispatched <repo-dir> <id> — create the worktree + branch exactly as
-# `story.sh dispatch` would, without needing tmux. Echoes the wname.
+# `story.sh dispatch` would (the CURRENT, bare-id scheme), without needing
+# tmux. Echoes the wname.
 mk_dispatched() {
   local repo="$1" id="$2" w
   w="$(wname_for "$repo" "$id")"
+  (cd "$repo" && git worktree add -q --no-track -b "worktree-$w" ".claude/worktrees/$w" HEAD) >/dev/null 2>&1
+  printf '%s' "$w"
+}
+
+# mk_dispatched_legacy <repo-dir> <id> — create the worktree + branch under
+# the PRE-SH-166 prefixed scheme, simulating a story dispatched by an old
+# binary. Echoes the legacy wname.
+mk_dispatched_legacy() {
+  local repo="$1" id="$2" w
+  w="$(legacy_wname_for "$repo" "$id")"
   (cd "$repo" && git worktree add -q --no-track -b "worktree-$w" ".claude/worktrees/$w" HEAD) >/dev/null 2>&1
   printf '%s' "$w"
 }
