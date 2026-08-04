@@ -74,6 +74,10 @@ bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh create \
   [--type <slug>] [--priority <level>] [--label <csv>]
 ```
 
+`<csv>` means comma-separated: `--label backend,api` files two labels,
+`backend` and `api`. Comma is always the label delimiter — a single label can
+never contain one.
+
 ## 7. Report
 
 Show `display` (it names the new story id).
