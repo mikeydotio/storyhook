@@ -89,14 +89,15 @@ Standing rules for every wave:
 - **A test build refuses to resolve a real data home** (`storyhook::env::is_test_build`), which
   is what makes a bare `cargo test` safe. Consequence: the binary `cargo test` leaves in
   `target/debug` will not touch a real store; `cargo build` produces one that will.
-- **Nothing in any test may bind port 3456 or outlive its run.** Five places export
+- **Nothing in any test may bind port 3456 or outlive its run.** Six places export
   `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` and `STORYHOOK_PARENT_PID`: `scripts/run-tests.sh`,
-  `scripts/capture-baseline.sh`, `TestEnv`, and *both*
+  `scripts/capture-baseline.sh`, `scripts/run-e2e.sh`, `TestEnv`, and *both*
   `plugin/claude-code/tests/{lib.sh,run-tests.sh}` — the last two because `run-tests.sh`
   sets `STORYHOOK_TEST_HOME`, which makes `lib.sh` skip its block. Nothing derives this
-  list, and it said four until SH-131 counted (SH-136). The three Rust files that
-  `env_clear()` on purpose call `storyhook_test_support::daemon_containment()` rather than
-  adding a sixth, seventh and eighth copy.
+  list, and it said four until SH-131 counted (SH-136), five until SH-42 added the
+  browser suite. The three Rust files that `env_clear()` on purpose call
+  `storyhook_test_support::daemon_containment()` rather than adding a sixth, seventh and
+  eighth copy.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
