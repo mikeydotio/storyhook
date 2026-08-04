@@ -173,7 +173,7 @@ section was written about: a run that wedges with no failing test name costs
 more than any single story below it. SH-143 and SH-144 are that wedge, named.
 
 - [x] **SH-143** — the daemon spawn lock blocks without a timeout · *clients queue serially behind up to 15 s each*
-- [ ] **SH-144** — `HttpInvoker::send` has no bound, so a wedged daemon holds its client forever
+- [x] **SH-144** — `HttpInvoker::send` has no bound, so a wedged daemon holds its client forever
 - [ ] **SH-141** — an event hook's grandchild holds its stderr pipe and wedges the daemon
 - [ ] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
 - [ ] **SH-120** — C8 Dispatch plumbing · *the epic's next link, and the only thing SH-50 waits on*
@@ -3379,3 +3379,112 @@ becomes `pub` so the soak can import it, which is an addition.
 deliberately did not touch `HttpInvoker::send`. The two are independent — SH-143
 is the wait *before* a request exists, SH-144 is the exchange after one is sent —
 and the council was told so explicitly.
+
+### SH-144 — done
+
+**Outcome:** merged. The last unbounded wait a `story` command could perform is
+bounded — and it is bounded on an observable that did not exist before, because
+the one the story asked for does not exist at all.
+
+**The story's own premise is refuted, and measuring first is what found it.**
+SH-144 asks for a *liveness* bound: "give up when no bytes have moved for N
+seconds, which cannot abandon an operation that is merely long." The daemon
+writes **zero bytes** before its handler returns, so byte-idleness is
+arithmetically identical to a completion deadline — the count is zero whether the
+work is wedged or merely long. Its second candidate is dead too: the text says a
+wedged daemon "would still answer `hello`", and `hello` sits behind the same
+one-thread queue. Nine measurements went onto the story before any design work.
+
+**The daemon is serial, and that is the fact the whole design turns on.** A 20s
+event hook inside `story comment` made `story list`, `GET /api/v1/hello` and
+`GET /api/projects` all return **together at 16.95s**. So a client's wall clock
+includes however long somebody else's command takes — and the skeptic seat drew
+the conclusion that decides the story: *the smallest deadline that never lies
+about any command is the largest legitimate deadline over all commands*, which is
+unbounded. A per-invocation deadline is therefore **incoherent rather than merely
+imperfect**, and wrong in a way that reads as reasonable, since it hands the
+shortest patience to `story list` — the command whose wait is most inflated by
+other people's work.
+
+**So the fix changes the observable rather than the number.** The daemon
+publishes `daemon.current.json` when a request's envelope parses and retracts it
+when the answer is ready; the client's clock resets whenever that record changes,
+appears or disappears, and fires only when it has stopped moving, using the
+deadline of the command the record **names**. Queued time is unbounded by
+construction. The record's contribution is **subtraction, not detection**: it
+cannot see inside one request, so it cannot separate "wedged serving mine" from
+"still working on mine", and the docstring says so rather than implying otherwise.
+
+**Council: unanimous on the runoff, and every seat voted against its own proposal
+in round 1.** Fifth occurrence in this run; it has stopped being remarkable.
+Round 1 was P3=2, P2=1, P1=0; one deliberation round; the runoff was 3-0 for
+P3-revised with all three ranking P1 last, including its author. Two moments
+worth keeping:
+
+- The **architect refuted its own central mechanism**: `exchange_bound(&Invocation)`
+  classifies the wrong invocation, so P1 bounded the commands that *suffer* the
+  queue while exempting the one that *causes* it. It had applied its own test —
+  *a liveness bound needs a signal the failure mode cannot emit* — to a timer
+  keepalive and to per-arm progress points, then concluded about a third design
+  it had not examined. An entry/exit record **passes** that test, because a
+  wedged handler never reaches its exit write.
+- The **skeptic revised by subtraction** and renamed its own constant to
+  `SERVED_DEADLINE`, conceding it is "not a staleness bound and not a liveness
+  bound" but an ordinary completion deadline measured on published boundaries.
+  Its round-1 vote against P3 was because P3 "carried machinery I could not
+  defend"; once cut, it ranked it first. That is the concession working.
+
+**Three stated diagnoses did not survive being run. That is the run's finding.**
+
+1. The story's liveness premise (above).
+2. **The council's F1 mechanism.** All three seats read `serve.rs:344` and
+   concluded one stalled connection wedges the daemon pre-authentication. It does
+   not — one and two are harmless, twelve wedge it, and `tiny_http`'s `TaskPool`
+   spawns on demand so pool exhaustion is not the answer either. Filed as
+   **SH-172** with the measurement table and the mechanism **explicitly open**,
+   and with the seat's own remaining hypothesis deliberately left out at its
+   request: "the same kind of guess that just cost me."
+3. **The council's D4, mine to catch.** All three endorsed bounding three ureq
+   phases as "free". Implemented as written it broke every command slower than
+   five seconds: ureq checks a phase's *preceding* deadlines alongside its own,
+   and `RecvResponse` names `SendRequest` and `SendBody` as predecessors, so
+   either one keeps running while the client waits for the command to finish.
+   Measured at ~5s against a peer that had already read the whole request. Only
+   `timeout_recv_body` survives; `HttpInvoker::agent`'s docstring records what was
+   tried and why it came out.
+
+**Red→green verified in both directions.** Disarming the bound fails exactly the
+two tests that name the defect and leaves both guard tests green — the refused
+connection still fast and `NotDelivered`, the frozen `github-sync` still waited
+on. Their job is to catch a fix that goes *too far*.
+
+**One test failed for the right reason and taught the lesson its own design
+warns about.** The false-positive regression failed first time because the churn
+thread wrote the record before anything created the daemon state directory — and
+`publish_current` is best-effort, so every write silently no-opped and the client
+correctly reported "published nothing". Exactly the silent-failure risk the
+observability seat had flagged in its own proposal. The fixture now creates the
+directory and says why.
+
+**33 tests**: 30 unit on the pure decision (0.32s total — the coverage that
+matters costs no wall clock, including "a client behind moving work waits however
+long it takes" asserted at 1h, 6h, 24h and a year), 3 integration against a
+silent peer, 1 against a real daemon with a sleeping hook, 1 on the hatch parser.
+The bound is a **parameter**, which is the whole answer to `concurrency_soak`'s
+45s budget: no test ever waits one out.
+
+**Also filed, as the verdict required:** SH-172 (the unauthenticated wedge,
+critical), SH-173 (serial dispatch), SH-174 (hooks inside the handler — the
+hatch's flaw, limits and retirement trigger, as CLAUDE.md's tech-debt rule
+requires). The skeptic's dissent condition was satisfied *a fortiori* by shipping
+the record rather than merely filing it; no dissent recorded.
+
+**Process note, and it is now systemic rather than a one-off.** All three council
+seats failed to deliver their final messages — idle notifications instead of
+proposals, the same transport failure SH-130 hit. The chair rerouted (one to a
+file, two to `SendMessage` text) rather than recording abstentions; two
+abstentions would have aborted the council under its own rules. **An idle
+notification is transport, not silence.** One seat also reports a revision that
+never arrived at all. Worth a fix in the council skill itself.
+
+**Semver: minor.** New behaviour and a new state file, no interface removed.

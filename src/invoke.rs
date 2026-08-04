@@ -1989,15 +1989,21 @@ fn stalled_message(
     stalled_for: std::time::Duration,
     env: &Environment,
 ) -> String {
+    // Two different facts, so two different sentences. Telling a user their own
+    // command is "either that command or behind it" is noise; telling them a
+    // stranger's command is the thing they are behind is the whole diagnosis.
     let whose = if record.request_id == mine {
-        "your command".to_string()
+        format!("your `{}`", record.command)
     } else {
-        format!("`{}`, which is not your command", record.command)
+        format!(
+            "`{}` — not your command, and storyhook runs one at a time, so yours is \
+             behind it",
+            record.command
+        )
     };
     format!(
         "the storyhook daemon has been running {whose} for {}s without finishing \
-         anything. It runs one command at a time, so yours is either that command or \
-         behind it.\n\n  the daemon    pid {}, since {}\n  its log       {}\n\n\
+         anything.\n\n  the daemon    pid {}, since {}\n  its log       {}\n\n\
          This command may or may not have run — storyhook will not repeat it, because \
          repeating a write it cannot prove failed is worse than reporting this.\n\n\
          `story daemon status` and that log answer without going through the daemon's \
