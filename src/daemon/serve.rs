@@ -26,12 +26,15 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use tiny_http::{Method, Request, Server};
+use tiny_http::{Header, Method, Request, Server};
 
-use crate::api::http::{carries_body, finish, read_body, request_path, text_reply};
+use crate::api::http::{
+    Reply, carries_body, finish, path_segments, read_body, request_path, text_reply,
+};
 use crate::api::rest::{self, Changed};
 use crate::api::rpc;
 use crate::daemon::bus::{Change, ChangeBus};
@@ -319,88 +322,207 @@ pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppErr
     ))
 }
 
+/// One accepted request, stripped of everything socket-shaped, on its way to
+/// the thread that owns the store.
+///
+/// Built by [`worker`] only after the head has cleared admission and the body
+/// has been fully read — nothing past that point ever touches the network
+/// again, which is this struct's whole reason to exist (SH-172): the thread
+/// that receives it can route purely in memory. Answered by sending exactly
+/// one [`Verdict`] back over `reply`.
+struct Job {
+    method: Method,
+    path: String,
+    headers: Vec<Header>,
+    body: String,
+    loopback: bool,
+    reply: mpsc::Sender<Verdict>,
+}
+
+/// What [`dispatch`] decided for one [`Job`].
+enum Verdict {
+    /// Answer it.
+    Reply(Reply),
+    /// Answer it, then the daemon exits. The dispatch thread never holds
+    /// `request` — [`worker`] does — so the environment needed to clear the
+    /// portfile travels inside the verdict instead of being re-read.
+    Shutdown { reply: Reply, env: Environment },
+}
+
 /// Runs the request-accept loop for one bound server.
 ///
-/// `GET /api/events` is intercepted here, before body-reading or routing, and
-/// handed off to its own thread rather than answered inline: it is a long-lived
-/// streaming connection, and this loop must move on to the next request
-/// immediately rather than block on it for as long as the browser tab stays
-/// open. `tiny_http` already reads connections into an internal queue on its own
-/// thread pool, so detaching this one request costs nothing to the ones behind
-/// it.
+/// This loop does exactly one thing: pop a request off `tiny_http`'s queue and
+/// hand it to a fresh [`worker`] thread. It is the only part of request
+/// handling that must never block, because `tiny_http`'s
+/// [`Server::incoming_requests`] is itself a single shared queue — if this
+/// loop stalled, every listener sharing it would too.
+///
+/// Everything peer-paced — reading a head, reading a body, writing a reply —
+/// happens on a worker, one per request, never here and never on
+/// [`dispatch`]. That split is the fix for SH-172: a peer that stalls mid-body
+/// now ties up one detached thread, never the thread every other client's
+/// command is queued behind.
+///
+/// **What this does not bound.** `tiny_http` exposes no way to configure an
+/// accepted socket — a request's body reader is an opaque `Box<dyn Read>`
+/// with no accessible file descriptor, and `SO_RCVTIMEO`/`SO_SNDTIMEO` set on
+/// the *listener* are not inherited by sockets `accept(2)` returns (confirmed
+/// against this daemon's own listener on both macOS and — per `accept(2)`'s
+/// documented inheritance list, which omits them — Linux; an earlier version
+/// of this fix assumed otherwise and a test written to pin that assumption is
+/// what caught it before it shipped). So a single stalled worker still blocks
+/// forever in the worst case, tying up one thread and one fd rather than the
+/// whole daemon. Bounding that is SH-177's problem, not this one's.
 fn accept_loop<S: Store>(serving: &Serving<'_, S>, server: Server, loopback: bool) {
-    for mut request in server.incoming_requests() {
-        let method = request.method().clone();
-        let path = request_path(request.url()).to_string();
+    // A rendezvous channel: a worker's `send` blocks until dispatch is ready
+    // for the next job, which is what keeps this serial exactly as the
+    // original single-threaded loop was, and keeps at most one job in flight
+    // to the store at a time.
+    let (jobs_tx, jobs_rx) = mpsc::sync_channel::<Job>(0);
+    let token: Arc<str> = Arc::from(serving.token.as_str());
 
-        // The control surface is checked before anything else: it is the one
-        // part of this daemon that is not the dashboard, and it must not be
-        // reachable through a dashboard route by accident.
-        // The body is read before routing because `/api/v1/invoke` carries
-        // one, and reading it after the route has been chosen would mean
-        // reading it twice or not at all.
-        let headers = request.headers().to_vec();
-        let body = if carries_body(&method) {
-            match read_body(&mut request) {
-                Some(b) => b,
-                None => {
-                    finish(
-                        request,
-                        text_reply(400, "request body invalid or too large"),
-                    );
-                    continue;
-                }
+    thread::scope(|scope| {
+        scope.spawn(|| dispatch(serving, jobs_rx));
+
+        for request in server.incoming_requests() {
+            let jobs_tx = jobs_tx.clone();
+            let bus = serving.bus.clone();
+            let token = Arc::clone(&token);
+            thread::spawn(move || worker(request, loopback, &token, bus, jobs_tx));
+        }
+    });
+}
+
+/// Handles one accepted connection's request — everything that touches the
+/// network — on its own detached thread, so a peer that stalls mid-head or
+/// mid-body blocks only this thread and the one file descriptor it owns.
+///
+/// Admission for the control surface (`/api/v1/*`) is decided here, from the
+/// head alone, *before* any body is read: an unauthenticated peer must never
+/// be able to make this daemon wait on a body it has no right to send in the
+/// first place (SH-172). `GET /api/events` is answered here in full too,
+/// without ever reaching [`dispatch`]: it needs nothing from the store, and it
+/// is a long-lived streaming connection that must not tie up the job channel
+/// for as long as the browser tab stays open.
+fn worker(
+    request: Request,
+    loopback: bool,
+    token: &str,
+    bus: ChangeBus,
+    jobs: mpsc::SyncSender<Job>,
+) {
+    let mut request = request;
+    let method = request.method().clone();
+    let path = request_path(request.url()).to_string();
+    let headers = request.headers().to_vec();
+
+    let segments = path_segments(&path);
+    if let Some(reply) = rpc::admission(&segments, &headers, token, loopback) {
+        finish(request, reply);
+        return;
+    }
+
+    if method == Method::Get && path == "/api/events" {
+        serve_sse(request, bus);
+        return;
+    }
+
+    let body = if carries_body(&method) {
+        match read_body(&mut request) {
+            Some(b) => b,
+            None => {
+                finish(
+                    request,
+                    text_reply(400, "request body invalid or too large"),
+                );
+                return;
             }
-        } else {
-            String::new()
-        };
+        }
+    } else {
+        String::new()
+    };
 
+    let (reply_tx, reply_rx) = mpsc::channel::<Verdict>();
+    let job = Job {
+        method,
+        path,
+        headers,
+        body,
+        loopback,
+        reply: reply_tx,
+    };
+    if jobs.send(job).is_err() {
+        // The dispatch thread is gone — the daemon is exiting. Answer rather
+        // than leaving the peer to time out against a socket that will never
+        // write anything.
+        finish(
+            request,
+            text_reply(503, "storyhook daemon is shutting down"),
+        );
+        return;
+    }
+    match reply_rx.recv() {
+        Ok(Verdict::Reply(reply)) => finish(request, reply),
+        Ok(Verdict::Shutdown { reply, env }) => {
+            finish(request, reply);
+            thread::spawn(move || {
+                thread::sleep(crate::daemon::lifecycle::DRAIN_DEADLINE);
+                crate::daemon::lifecycle::clear_info(&env);
+                std::process::exit(0);
+            });
+        }
+        Err(_) => finish(
+            request,
+            text_reply(503, "storyhook daemon is shutting down"),
+        ),
+    }
+}
+
+/// The one thread that owns the store. Every [`Job`] a [`worker`] hands off is
+/// routed here, serially — exactly as the whole accept loop used to run — but
+/// nothing peer-paced happens on this thread any more, so a slow or stalled
+/// *client* can no longer make the *dispatcher* slow for everyone else.
+fn dispatch<S: Store>(serving: &Serving<'_, S>, jobs: mpsc::Receiver<Job>) {
+    for job in jobs {
         let surface = rpc::Surface {
             store: serving.store,
             env: &serving.env,
             token: &serving.token,
             hello: &serving.hello,
         };
+        let segments = path_segments(&job.path);
         if let Some(answer) = rpc::route(
             &surface,
-            &crate::api::http::path_segments(&path),
-            &method,
-            &headers,
-            &body,
-            loopback,
+            &segments,
+            &job.method,
+            &job.headers,
+            &job.body,
+            job.loopback,
         ) {
-            match answer {
-                rpc::Answer::Reply(reply) => finish(request, reply),
+            let verdict = match answer {
+                rpc::Answer::Reply(reply) => Verdict::Reply(reply),
                 rpc::Answer::Shutdown(reply) => {
                     // Tell every connected browser to reconnect *before*
                     // answering, so a client that is about to lose its stream
-                    // knows why, then let in-flight work finish.
+                    // knows why.
                     serving.bus.publish(Change::Reload);
-                    finish(request, reply);
-                    let env = serving.env.clone();
-                    thread::spawn(move || {
-                        thread::sleep(crate::daemon::lifecycle::DRAIN_DEADLINE);
-                        crate::daemon::lifecycle::clear_info(&env);
-                        std::process::exit(0);
-                    });
+                    Verdict::Shutdown {
+                        reply,
+                        env: serving.env.clone(),
+                    }
                 }
-            }
-            continue;
-        }
-
-        if method == Method::Get && path == "/api/events" {
-            let bus = serving.bus.clone();
-            thread::spawn(move || serve_sse(request, bus));
+            };
+            let _ = job.reply.send(verdict);
             continue;
         }
 
         let routed = rest::route(
             serving.store,
             &serving.env,
-            &method,
-            &path,
-            &headers,
-            &body,
+            &job.method,
+            &job.path,
+            &job.headers,
+            &job.body,
             &serving.trusted_hosts,
         );
         // Published here, at the request boundary: the write has committed and
@@ -411,7 +533,7 @@ fn accept_loop<S: Store>(serving: &Serving<'_, S>, server: Server, loopback: boo
             Some(Changed::Catalog) => serving.bus.publish(Change::Catalog),
             None => {}
         }
-        finish(request, routed.reply);
+        let _ = job.reply.send(Verdict::Reply(routed.reply));
     }
 }
 
