@@ -526,8 +526,14 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="create-description""#));
     assert!(body.contains(r#"id="create-priority""#));
     assert!(body.contains(r#"id="create-labels-field""#));
-    // Multi-repo screens (#20): repo selector, home dashboard, settings
-    assert!(body.contains(r#"id="repo-select""#));
+    // Multi-repo screens (#20): the header's project selector (SH-42), home
+    // dashboard, settings
+    assert!(body.contains(r#"id="projsel-btn""#));
+    assert!(body.contains(r#"id="projsel-menu""#));
+    assert!(
+        !body.contains(r#"id="repo-select""#),
+        "the native <select> was replaced by the popover"
+    );
     assert!(body.contains(r#"id="home-view""#));
     assert!(body.contains(r#"id="settings-view""#));
     assert!(body.contains(r#"id="home-btn""#));
