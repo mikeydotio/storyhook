@@ -350,3 +350,78 @@ fn a_pointer_with_no_hooks_table_leaves_the_legacy_file_in_charge() {
         "the two storage models coexist until the daemon wave"
     );
 }
+
+/// A failing hook's own words reach the daemon log, even while a descendant of
+/// it still holds the stderr it was given.
+///
+/// # Why this test exists, and why it reads a log file
+///
+/// It is the went-too-far guard for SH-141. The wedge it protects against was
+/// closed by giving the hook files instead of pipes, and the cheapest wrong way
+/// to have closed it was to stop capturing hook stderr at all — which would pass
+/// every timing assertion in `tests/hook_bounds.rs` while making every failing
+/// hook silent. Nothing anywhere asserted that message before this test:
+/// `hook_failure_does_not_prevent_operation` above checks `.success()` and never
+/// looks at what was said.
+///
+/// The log rather than the terminal, because that is where the message actually
+/// goes and it always has. Every `fire_hook` call site is under `src/service/`,
+/// and since SH-114 the daemon is the only route to the store, so the
+/// `eprintln!` is the *daemon's* stderr — which `daemon::lifecycle` points at
+/// `daemon.log`. A user running `story new` sees nothing on their own terminal
+/// whether the hook succeeded or failed. Asserting on the CLI's stderr would
+/// therefore pass with the capture deleted, proving nothing.
+///
+/// The grandchild is what makes it a regression test rather than a coverage
+/// test: without it, a single blocking read returns the bytes immediately and
+/// the old code passes too.
+///
+/// The daemon is deliberately *not* stood down before the read. CLAUDE.md's rule
+/// about stopping it first concerns bytes in the **store**, which the daemon
+/// answers from its own page cache; its log is an ordinary append the daemon has
+/// already flushed, since Rust's `stderr` is unbuffered.
+#[test]
+fn a_failing_hooks_reason_reaches_the_daemon_log() {
+    let env = storyhook_test_support::TestEnv::isolated();
+    let dir = TempDir::new().unwrap();
+    let dir = dir.path();
+
+    env.story(dir)
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    // `sleep` inherits the stderr `sh` was given and outlives it, so the
+    // end-of-file the old code waited for never arrives inside this test's life.
+    write_hooks(
+        dir,
+        "[hooks.on_create]\ncommand = \"echo THE-HOOK-IS-UNHAPPY >&2; sleep 300 & exit 3\"\n",
+    );
+
+    let out = env
+        .story(dir)
+        .args(["new", "A story whose hook fails"])
+        .output()
+        .expect("running story");
+    assert!(
+        out.status.success(),
+        "a failing hook must not fail the command"
+    );
+
+    let log = env.environment().daemon_log();
+    let contents = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        contents.contains("THE-HOOK-IS-UNHAPPY"),
+        "the hook's own words are missing from {}.\n\
+         A hook that fails must still be able to say why: that is the whole \
+         reason storyhook captures its stderr, and capturing it is what SH-141 \
+         had to keep while removing the wedge.\n\
+         log contents:\n{contents}",
+        log.display()
+    );
+    assert!(
+        contents.contains("create hook failed"),
+        "the diagnostic must name the event and the failure, not just echo the \
+         hook's bytes.\nlog contents:\n{contents}"
+    );
+}
