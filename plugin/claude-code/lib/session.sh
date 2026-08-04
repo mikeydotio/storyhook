@@ -23,6 +23,15 @@
 # original over time — a future maintainer syncing a fix from one side
 # should consider porting it to the other.
 #
+# A second deliberate divergence, added for SH-166: the agentics original's
+# resolve_wname always prefixes with repo_prefix (agentics' `issue` plugin
+# names windows from bare GitHub issue numbers like "118", which genuinely
+# collide across repos sharing one tmux session). storyhook ids already
+# carry their own project prefix (SH-, LIL-, TST-, ...) and don't collide
+# that way, so this fork's resolve_wname returns the bare id instead.
+# repo_prefix and legacy_wname (below) survive only to recognize a worktree
+# a pre-SH-166 binary already created on disk.
+#
 # Sourced, not executed: this file sets no shell options of its own (no
 # `set -euo pipefail`) — it inherits whatever the sourcing caller already
 # set. bin/story.sh sources this file immediately after its own `set -euo
@@ -34,7 +43,7 @@
 # defaults) before invoking the corresponding function, or `set -u` raises
 # an unbound-variable error the first time that function runs:
 #
-#   WINDOW_NAME_TPL          resolve_wname
+#   WINDOW_NAME_TPL          resolve_wname, legacy_wname
 #   READY_PATTERN            wait_ready
 #   READY_ATTEMPTS           wait_ready
 #   READY_DELAY              wait_ready
@@ -97,23 +106,44 @@ render_template() {  # render_template <template> <id> [<name>] [<dir>]
 }
 
 # repo_prefix <name> — the first 3 alphanumerics of <name>, lowercased (e.g.
-# "storyhook" -> "sto"). The window/worktree naming stem. Tolerates a bare
-# repo name (no "owner/" prefix) — storyhook has no GitHub-owner concept.
+# "storyhook" -> "sto"). Pre-SH-166 this was the window/worktree naming stem;
+# now it feeds only legacy_wname below, to recognize a worktree a pre-SH-166
+# binary already created on disk. Tolerates a bare repo name (no "owner/"
+# prefix) — storyhook has no GitHub-owner concept.
 repo_prefix() {
   printf '%s' "${1##*/}" | tr -cd '[:alnum:]' | cut -c1-3 | tr '[:upper:]' '[:lower:]'
 }
 
-# resolve_wname <id> <repo-name> — the window/worktree name for story <id>:
-# the STORY_WINDOW_NAME override if set, else "<repo-prefix>-<id>" (e.g.
-# sto-STO-7). Shared by dispatch (to name the window/worktree it creates)
-# and any future teardown, so both agree on the name.
+# resolve_wname <id> — the window/worktree/branch name for story <id>: the
+# STORY_WINDOW_NAME override if set, else the bare id (e.g. SH-7). Shared by
+# dispatch (to name the window/worktree it creates) and any future teardown,
+# so both agree on the name. Since SH-166 this is bare — see this file's
+# header for why storyhook ids don't need the repo-prefix disambiguation
+# agentics' issue plugin does.
 resolve_wname() {
-  local n="$1" repo="$2"
+  local n="$1"
   if [ -n "$WINDOW_NAME_TPL" ]; then
     render_template "$WINDOW_NAME_TPL" "$n"
   else
-    printf '%s-%s' "$(repo_prefix "$repo")" "$n"
+    printf '%s' "$n"
   fi
+}
+
+# legacy_wname <id> <repo-name> — the PRE-SH-166 window/worktree/branch name
+# for story <id>: "<repo-prefix>-<id>" (e.g. sto-STO-7). Echoes EMPTY when
+# WINDOW_NAME_TPL is set — an explicit override was never prefixed, so there
+# is no legacy form to fall back to. Callers treat an empty result as "no
+# legacy candidate", never as a name to act on.
+#
+# Exists solely so capture/dispatch/_complete_prepare can still find a
+# worktree a pre-SH-166 binary named before this fork switched to the bare
+# id — read-only recognition, never a name this script assigns to something
+# new. Slated for removal once no <repo-prefix>-* worktree remains in any
+# repo using this plugin (tracked as a follow-up story to SH-166).
+legacy_wname() {
+  local n="$1" repo="$2"
+  [ -z "$WINDOW_NAME_TPL" ] || { printf ''; return 0; }
+  printf '%s-%s' "$(repo_prefix "$repo")" "$n"
 }
 
 # ---- git-safety helpers ------------------------------------------------------

@@ -64,6 +64,87 @@ const SPAWN_POLL: Duration = Duration::from_millis(25);
 /// How long a shutting-down daemon lets in-flight requests finish.
 pub const DRAIN_DEADLINE: Duration = Duration::from_millis(500);
 
+/// What the daemon is serving right now.
+///
+/// **The record whose motion is the client's clock.** Published when a request's
+/// envelope has parsed and removed when its answer is ready, so it changes
+/// exactly when the daemon finishes something — and a client waiting on a
+/// command it cannot see any bytes from can therefore tell "the daemon is
+/// working through a queue" from "the daemon has stopped finishing things"
+/// without asking it anything (SH-144).
+///
+/// Every field answers one question the failure message has to answer.
+/// `request_id` says *is this mine*; `command` chooses the deadline and names
+/// the work; `project` says whose; `pid` is the way out, because
+/// `story daemon stop` has no signal fallback; `started_at` says how long.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CurrentRequest {
+    /// The envelope's own id, which is how a client recognises its own request.
+    pub request_id: String,
+    /// The invocation's verb, as [`crate::invoke::invocation_name`] spells it.
+    pub command: String,
+    /// The project the command resolved to, if it named one.
+    pub project: Option<String>,
+    /// The daemon's process id — the remedy a wedged daemon leaves.
+    pub pid: u32,
+    /// When the daemon picked this request up, RFC 3339.
+    pub started_at: String,
+}
+
+/// Publishes what the daemon is serving, atomically.
+///
+/// Temp-plus-`rename` and mode 0600, the same shape as [`write_info`] and for
+/// the same reason: a client that read a half-written record would see a
+/// `request_id` that matches nothing and conclude it was queued when it is
+/// being served.
+///
+/// **Best-effort, and never fatal.** A daemon whose state directory is full or
+/// read-only must still run the command it was asked to run — failing here
+/// would replace a good answer with a bad diagnostic about a diagnostic, which
+/// is the rule [`record_startup_failure`] already states for the same reason.
+pub fn publish_current(env: &Environment, current: &CurrentRequest) {
+    let Ok(document) = serde_json::to_string(current) else {
+        return;
+    };
+    let path = env.daemon_current();
+    let temp = path.with_extension("json.tmp");
+
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let Ok(mut file) = options.open(&temp) else {
+        return;
+    };
+    if file.write_all(document.as_bytes()).is_err() {
+        return;
+    }
+    drop(file);
+    let _ = std::fs::rename(&temp, &path);
+}
+
+/// Retracts the current-request record, because the request is answered.
+///
+/// Removal is a signal in its own right: the client's clock resets on it, the
+/// same as on a change. Best-effort for the same reason as [`publish_current`].
+pub fn clear_current(env: &Environment) {
+    let _ = std::fs::remove_file(env.daemon_current());
+}
+
+/// Reads what a daemon says it is serving, or `None` if it says nothing.
+///
+/// `None` covers three states a client must not conflate with each other, and
+/// the caller distinguishes them: the daemon is between requests, the daemon
+/// never published (a state the record cannot describe — see SH-144's "the
+/// record never appears" branch), or the file is being replaced right now. The
+/// last is why a parse failure is `None` rather than an error: the write is
+/// atomic, so a torn read is not possible, but a *stale* document from an older
+/// binary is — and `usable` has already refused that daemon.
+pub fn read_current(env: &Environment) -> Option<CurrentRequest> {
+    let raw = std::fs::read_to_string(env.daemon_current()).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 /// What a running daemon publishes about itself.
 ///
 /// Every field is here to answer one question a client has before it sends
@@ -917,7 +998,214 @@ fn wait_until(deadline: Duration, ready: impl Fn() -> bool) -> bool {
 /// healthy or has stopped being a daemon, so five seconds is enormous — and the
 /// question a bound answers here is not "is it slow" but "is it ever coming
 /// back".
-const CONTROL_DEADLINE: Duration = Duration::from_secs(5);
+///
+/// Public so `the_daemon_deadline_family_is_ordered` can name it. The family it
+/// belongs to is documented on [`SERVED_DEADLINE`].
+pub const CONTROL_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How long a client waits for the daemon to finish **its own** request.
+///
+/// # This is a completion deadline, and it is not a liveness bound
+///
+/// Said plainly because the story that produced it asked for a liveness bound
+/// and one does not exist here. The daemon writes no bytes before its handler
+/// returns, so byte-idleness on the socket is *arithmetically identical* to
+/// waiting for completion — zero bytes move whether the work is wedged or merely
+/// long. What this bound changes is not the shape of the clock but **which
+/// seconds it counts**: it is measured on the daemon's own published boundaries
+/// ([`CurrentRequest`]) rather than on the client's wall clock.
+///
+/// The record's contribution is **subtraction, not detection**. An entry/exit
+/// record cannot see inside a request, so it cannot tell "wedged serving mine"
+/// from "still working on mine" — and nothing here pretends it can. What it
+/// removes is *other people's work* from your wait, which is the only thing that
+/// made a per-command number incoherent: the daemon serves one request at a
+/// time, so a naked wall-clock deadline on `story list` would have to be as long
+/// as the longest `github-sync` it might be queued behind, or it would abandon
+/// healthy work (SH-144).
+///
+/// # Where the number comes from
+///
+/// **Calibrated, not derived, and that distinction is deliberate.** Its
+/// neighbour [`SPAWN_LOCK_DEADLINE`] can say "derived, never chosen" because
+/// every wait it covers is storyhook's own bounded code. A handler runs the
+/// *user's* data through the user's event hooks, and
+/// `hooks.settings.timeout_seconds` has no ceiling, so no honest derivation
+/// exists yet. A fake one would be worse than a calibration, because it would
+/// survive a review it should not.
+///
+/// So: 120s is 26x the slowest local command ever measured here — a 8,000-story
+/// import at 4.57s, against a store 33x the size of the real one — and 12x the
+/// default event-hook timeout. A record that has not moved in two minutes is not
+/// a daemon that is busy.
+///
+/// The family, and the one rule that orders it: what the wait is *over*.
+///
+/// | constant | the wait is over | justification |
+/// |---|---|---|
+/// | [`CONTROL_DEADLINE`] 5s | a round trip carrying no work | chosen — no legitimate slow case exists |
+/// | `SPAWN_DEADLINE` 5s | a process coming up | chosen — bounded by the OS |
+/// | [`SPAWN_LOCK_DEADLINE`] 30s | storyhook's own bounded code | derived — the sum of what the holder can spend |
+/// | `SERVED_DEADLINE` 120s | the user's own data | calibrated — see above |
+pub const SERVED_DEADLINE: Duration = Duration::from_secs(120);
+
+/// The same bound, for the one command whose duration is set off this machine.
+///
+/// `github-sync` loops per story and per comment against a client that bounds
+/// each call at 30s, so its total is O(stories x comments) x 30s and cannot be
+/// calibrated from local measurement at all. 3600s is **120 consecutive
+/// worst-case calls**: a sync in which that many in a row exhaust their timeout
+/// is throttled or offline, and stopping is the right answer.
+///
+/// **A longer value, never no value.** An exemption was proposed and rejected:
+/// it would restore the forever-hang this work exists to remove — including a
+/// `github-sync` wedged in a terminal-less `Select::interact()` (SH-153), which
+/// would then never fire at all. One unbounded arm anywhere means the story has
+/// not shipped.
+pub const SYNC_SERVED_DEADLINE: Duration = Duration::from_secs(3600);
+
+/// When a client explains itself to a human who is still waiting.
+///
+/// `2 * SPAWN_DEADLINE`, and also exactly `HooksSettings::default()`'s
+/// `timeout_seconds` — the first moment a wait can no longer be accounted for by
+/// storyhook's own measured work or by one default-timeout event hook.
+pub const SERVED_PATIENCE: Duration = Duration::from_secs(2 * SPAWN_DEADLINE.as_secs());
+
+/// How often a waiting client re-reads the record.
+///
+/// Matches the two intervals the daemon already polls its own state on
+/// (`CHANGE_TOKEN_POLL`, `SHUTDOWN_CHECK`). A short command pays none of it: the
+/// polling thread defers its first read by one interval, so a command that
+/// finishes in 50ms performs no extra file reads at all.
+pub const RECORD_POLL: Duration = Duration::from_millis(250);
+
+/// How long a client waits for a daemon that publishes **nothing at all**.
+///
+/// The branch that exists because the record can be absent for a reason no
+/// record can describe: the daemon accepted the connection and never reached
+/// [`publish_current`]. Post-SH-144 this is the only shape the unauthenticated
+/// wedge can present to a client, and the reason it gets its own constant rather
+/// than sharing [`SERVED_DEADLINE`] is that its message is different — a daemon
+/// that is alive, holding its pidfile, and has not started your command.
+pub const UNPUBLISHED_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How long a client will wait for the daemon to finish one command.
+///
+/// A type rather than a bare `Duration` so that "no bound" is a value somebody
+/// chose rather than a `None` that reads as "unset". Nothing in storyhook's own
+/// code produces [`Self::Unbounded`] — every command is bounded by
+/// [`SERVED_DEADLINE`] or [`SYNC_SERVED_DEADLINE`] — so its **sole producer** is
+/// a user writing `none` in `$STORYHOOK_EXCHANGE_DEADLINE_SECS`, which is
+/// exactly the state worth making visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExchangeBound {
+    /// Give up when the record has not moved for this long.
+    After(Duration),
+    /// Wait forever, because the user asked for the pre-SH-144 behaviour.
+    Unbounded,
+}
+
+/// The bound for the command **named in the record** — never the command this
+/// client sent.
+///
+/// That distinction is the whole correction the council made to its own first
+/// answer. The daemon serves one request at a time, so the thing that decides
+/// how long a wait is legitimate is *what the daemon is doing*, not what I asked
+/// for; keying on my own invocation would give the shortest patience to
+/// `story list`, the command whose wait is most inflated by other people's work.
+///
+/// Keyed on the string, because the string is what crosses the file. It reads
+/// the vocabulary [`crate::invoke::invocation_name`] writes.
+#[must_use]
+pub fn deadline_for(command: &str) -> ExchangeBound {
+    match command {
+        "github-sync" => ExchangeBound::After(SYNC_SERVED_DEADLINE),
+        _ => ExchangeBound::After(SERVED_DEADLINE),
+    }
+}
+
+/// What a waiting client should do, given what it has seen.
+///
+/// **A pure function on purpose.** Every state this design can reach is decided
+/// here, so the coverage is a table of unit tests that cost no wall clock at
+/// all — including the one that matters most, "a client queued behind moving
+/// work waits arbitrarily long", which any wall-clock design fails and which
+/// would otherwise take a test minutes to express.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// The daemon is finishing things. Keep waiting, however long that is.
+    Wait,
+    /// The record has not moved for the deadline of the command it names.
+    GiveUp(CurrentRequest),
+    /// The daemon published nothing at all for [`UNPUBLISHED_DEADLINE`].
+    GaveUpUnpublished,
+}
+
+/// Decides whether to keep waiting.
+///
+/// `since_change` is how long the record has looked exactly as it looks now;
+/// `total` is the whole wait. The two are different clocks and only one of them
+/// is a deadline — `total` is consulted **only** when there has never been a
+/// record to time, which is the one state the record itself cannot describe.
+///
+/// Note what is missing: there is no clock on queued time, and that is the
+/// design rather than an omission. While the record keeps changing the daemon is
+/// finishing work, so a client behind a long queue waits as long as the queue
+/// takes. That is M9's false positive deleted rather than tuned.
+/// `override_bound` is exactly what its name says: `None` means *use the
+/// deadline belonging to the command the record names*, which is the production
+/// path and the whole point of publishing the command at all. `Some` is the
+/// user's `$STORYHOOK_EXCHANGE_DEADLINE_SECS`, and it is also how a test drives
+/// a 120-second bound in 250 milliseconds.
+#[must_use]
+pub fn verdict(
+    current: Option<&CurrentRequest>,
+    since_change: Duration,
+    total: Duration,
+    override_bound: Option<ExchangeBound>,
+) -> Verdict {
+    if let Some(ExchangeBound::Unbounded) = override_bound {
+        return Verdict::Wait;
+    }
+    // The override, if there is one, replaces every deadline below — including
+    // the unpublished one, because a user who says "wait 10 minutes" means it
+    // whatever the daemon is or is not saying.
+    let deadline_of = |command: &str| match override_bound {
+        Some(ExchangeBound::After(d)) => d,
+        _ => match deadline_for(command) {
+            ExchangeBound::After(d) => d,
+            // Unreachable: `deadline_for` never answers `Unbounded`, and the
+            // type is what stops that becoming a silent forever-wait if it ever
+            // did.
+            ExchangeBound::Unbounded => SERVED_DEADLINE,
+        },
+    };
+
+    match current {
+        // A record is present: the deadline is the one for the command it
+        // names, whether or not that command is mine. A record frozen on
+        // somebody else's request still means the daemon has stopped finishing
+        // things, and it still blocks me.
+        Some(record) if since_change >= deadline_of(&record.command) => {
+            Verdict::GiveUp(record.clone())
+        }
+        Some(_) => Verdict::Wait,
+        // No record. Either the daemon is between requests — in which case one
+        // is about to appear and `since_change` keeps resetting — or it never
+        // published at all, which is the branch below.
+        None => {
+            let unpublished = match override_bound {
+                Some(ExchangeBound::After(d)) => d,
+                _ => UNPUBLISHED_DEADLINE,
+            };
+            if total >= unpublished {
+                Verdict::GaveUpUnpublished
+            } else {
+                Verdict::Wait
+            }
+        }
+    }
+}
 
 /// The client storyhook talks to daemons with.
 ///
@@ -1391,6 +1679,206 @@ mod tests {
             "the spawn-lock bound must cover every wait its holder can make"
         );
         assert_eq!(SPAWN_LOCK_DEADLINE, Duration::from_secs(30));
+    }
+
+    /// A record naming `command`, otherwise uninteresting.
+    fn serving(command: &str, request_id: &str) -> CurrentRequest {
+        CurrentRequest {
+            request_id: request_id.to_string(),
+            command: command.to_string(),
+            project: None,
+            pid: 4711,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    /// The whole family, ordered, and the one rule that orders it.
+    ///
+    /// The ordering is load-bearing rather than tidy: a client must not abandon
+    /// the exchange sooner than it would have abandoned the waits that precede
+    /// it, or it gives the daemon less time to do the work than to come up.
+    #[test]
+    fn the_daemon_deadline_family_is_ordered() {
+        assert!(CONTROL_DEADLINE < SPAWN_LOCK_DEADLINE);
+        assert!(SPAWN_LOCK_DEADLINE < SERVED_DEADLINE);
+        assert!(SERVED_PATIENCE < SERVED_DEADLINE);
+        assert!(RECORD_POLL < SERVED_PATIENCE);
+        assert!(SERVED_DEADLINE < SYNC_SERVED_DEADLINE);
+
+        assert_eq!(SERVED_PATIENCE, 2 * SPAWN_DEADLINE);
+        // 120 consecutive worst-case GitHub calls, each bounded at 30s by
+        // `GithubClient`. Stated as the arithmetic rather than as 3600 so that
+        // moving the client's own bound is visible here.
+        assert_eq!(SYNC_SERVED_DEADLINE, 120 * Duration::from_secs(30));
+        assert_eq!(SERVED_DEADLINE, Duration::from_secs(120));
+    }
+
+    /// Only `github-sync` gets the long bound, and nothing is ever exempt.
+    ///
+    /// The second half is the point. An exemption was proposed and rejected
+    /// because it restores the forever-hang this work exists to remove; this
+    /// asserts no command can reach an unbounded verdict.
+    #[test]
+    fn only_github_sync_is_slow_and_nothing_is_unbounded() {
+        assert_eq!(
+            deadline_for("github-sync"),
+            ExchangeBound::After(SYNC_SERVED_DEADLINE)
+        );
+        for command in [
+            "list",
+            "new",
+            "comment",
+            "import",
+            "export",
+            "commit-sync",
+            "doctor",
+            "bulk-update",
+            "purge",
+            "graph",
+            "",
+        ] {
+            assert_eq!(
+                deadline_for(command),
+                ExchangeBound::After(SERVED_DEADLINE),
+                "`{command}` must get the ordinary bound"
+            );
+        }
+        for command in ["github-sync", "list", "anything-added-tomorrow"] {
+            assert!(
+                !matches!(deadline_for(command), ExchangeBound::Unbounded),
+                "no command may be unbounded: `{command}`"
+            );
+        }
+    }
+
+    /// **The regression that matters most**, and the one every wall-clock design
+    /// fails: a client queued behind work that is *moving* waits arbitrarily
+    /// long, because the daemon is finishing things.
+    ///
+    /// Expressed against the pure decision rather than against a clock, so the
+    /// assertion is "at any queue length" rather than "at the one length a test
+    /// had patience for".
+    #[test]
+    fn a_client_behind_moving_work_waits_however_long_it_takes() {
+        let theirs = serving("github-sync", "not-mine");
+        for hours in [1_u64, 6, 24, 24 * 365] {
+            let total = Duration::from_secs(hours * 3600);
+            assert_eq!(
+                // The record changed a moment ago, which is what "moving" means.
+                verdict(Some(&theirs), Duration::from_millis(1), total, None),
+                Verdict::Wait,
+                "a moving record must never be given up on, even after {hours}h"
+            );
+        }
+    }
+
+    /// A record that has stopped moving fires — whoever it names.
+    ///
+    /// Both halves matter. Frozen on my own request is the plain case; frozen on
+    /// somebody else's is the one a naive design gets wrong, because the daemon
+    /// has still stopped finishing things and I am still blocked behind it.
+    #[test]
+    fn a_frozen_record_is_given_up_on_whoever_it_names() {
+        let mine = serving("import", "mine");
+        assert_eq!(
+            verdict(Some(&mine), SERVED_DEADLINE, SERVED_DEADLINE, None),
+            Verdict::GiveUp(mine.clone())
+        );
+
+        let theirs = serving("comment", "somebody-else");
+        assert_eq!(
+            verdict(Some(&theirs), SERVED_DEADLINE, SERVED_DEADLINE, None),
+            Verdict::GiveUp(theirs)
+        );
+    }
+
+    /// The deadline is a property of the command *in the record*, never of the
+    /// command this client sent.
+    ///
+    /// The correction the council made to its own first answer: keying on my own
+    /// invocation would give the shortest patience to `story list`, the command
+    /// whose wait is most inflated by other people's work.
+    #[test]
+    fn the_deadline_belongs_to_the_command_in_the_record() {
+        let sync = serving("github-sync", "not-mine");
+        // Well past the ordinary bound, nowhere near the sync one.
+        assert_eq!(
+            verdict(Some(&sync), SERVED_DEADLINE, SERVED_DEADLINE, None),
+            Verdict::Wait,
+            "a frozen github-sync must get the long bound even for a client that sent `list`"
+        );
+        assert_eq!(
+            verdict(
+                Some(&sync),
+                SYNC_SERVED_DEADLINE,
+                SYNC_SERVED_DEADLINE,
+                None
+            ),
+            Verdict::GiveUp(sync)
+        );
+    }
+
+    /// A daemon that publishes nothing at all gets its own branch and its own
+    /// deadline — the only shape the unauthenticated wedge can present.
+    #[test]
+    fn a_daemon_that_publishes_nothing_is_given_up_on_separately() {
+        assert_eq!(
+            verdict(None, Duration::ZERO, UNPUBLISHED_DEADLINE, None),
+            Verdict::GaveUpUnpublished
+        );
+        assert_eq!(
+            verdict(
+                None,
+                Duration::ZERO,
+                UNPUBLISHED_DEADLINE - Duration::from_secs(1),
+                None
+            ),
+            Verdict::Wait
+        );
+    }
+
+    /// The hatch's `none`, which is the only thing in storyhook that can produce
+    /// an unbounded wait.
+    #[test]
+    fn the_override_can_switch_the_bound_off_entirely() {
+        let mine = serving("import", "mine");
+        let forever = Duration::from_secs(24 * 3600);
+        assert_eq!(
+            verdict(
+                Some(&mine),
+                forever,
+                forever,
+                Some(ExchangeBound::Unbounded)
+            ),
+            Verdict::Wait
+        );
+        assert_eq!(
+            verdict(None, forever, forever, Some(ExchangeBound::Unbounded)),
+            Verdict::Wait
+        );
+    }
+
+    /// The override replaces every deadline, including the long one and the
+    /// unpublished one — which is also what lets a test drive a 120s bound in
+    /// 250ms.
+    #[test]
+    fn the_override_replaces_every_deadline() {
+        let short = Some(ExchangeBound::After(Duration::from_millis(250)));
+        let sync = serving("github-sync", "not-mine");
+        assert_eq!(
+            verdict(
+                Some(&sync),
+                Duration::from_millis(250),
+                Duration::ZERO,
+                short
+            ),
+            Verdict::GiveUp(sync),
+            "the override must shorten even the github-sync bound"
+        );
+        assert_eq!(
+            verdict(None, Duration::ZERO, Duration::from_millis(250), short),
+            Verdict::GaveUpUnpublished
+        );
     }
 
     /// The defect itself, at the smallest level it exists: a held lock used to
