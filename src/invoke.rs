@@ -1783,36 +1783,153 @@ impl HttpInvoker {
         self
     }
 
-    /// The HTTP client this invoker uses. See [`Self::send`] for why the
-    /// timeout is on the connection rather than on the exchange.
+    /// The HTTP client this invoker uses.
+    ///
+    /// The HTTP client this invoker uses.
+    ///
+    /// Two phase bounds, and **only** two, because only two of ureq's phases can
+    /// be bounded without also bounding the command.
+    ///
+    /// `timeout_connect` is the old one: the peer is on loopback and either
+    /// accepts at once or is not there.
+    ///
+    /// `timeout_recv_body` is safe because the reply is a fully materialised
+    /// `String` before the daemon writes a byte of it, so once the head has
+    /// arrived the body is already computed and only has to cross loopback.
+    ///
+    /// # What was tried and taken back out
+    ///
+    /// `timeout_send_request` and `timeout_send_body` look equally free — the
+    /// request is capped at 64 KiB by [`crate::api::http::MAX_BODY_BYTES`] and
+    /// goes to loopback — and they are not. ureq checks a phase's *preceding*
+    /// deadlines alongside its own (`Timeout::preceeding`, `timings.rs`), and
+    /// `RecvResponse` names both of them as predecessors. So a deadline set on
+    /// either one keeps running while the client waits for the response head —
+    /// which is to say, while the daemon is doing the work. Setting
+    /// `timeout_send_request(5s)` made every command slower than five seconds
+    /// fail with `timeout: send request`, measured against a peer that had
+    /// already read the entire request.
+    ///
+    /// `timeout_global` and `timeout_recv_response` are left unset for the
+    /// reason this whole story exists: waiting for the response head *is*
+    /// waiting for the command to finish, and how long that may legitimately
+    /// take is not a property of the socket. [`Self::send`] bounds it from the
+    /// daemon's own published record instead.
     fn agent() -> ureq::Agent {
+        use std::time::Duration;
         ureq::Agent::config_builder()
-            .timeout_connect(Some(std::time::Duration::from_secs(5)))
+            .timeout_connect(Some(Duration::from_secs(5)))
+            .timeout_recv_body(Some(Duration::from_secs(30)))
             .build()
             .into()
     }
 
-    /// Posts one envelope to a daemon and reconstructs its answer.
-    fn send(
+    /// Posts one envelope to a daemon and reconstructs its answer, giving up if
+    /// the daemon stops finishing things.
+    ///
+    /// # What is bounded, and what is not
+    ///
+    /// The exchange runs on a worker thread while this one watches the daemon's
+    /// [`CurrentRequest`] record. The clock resets whenever that record changes,
+    /// appears or disappears — each of which means the daemon **finished
+    /// something** — and fires only when it has not moved for the deadline
+    /// belonging to the command the record *names*.
+    ///
+    /// So **queued time is unbounded by construction**. A client behind a long
+    /// `github-sync` waits exactly as long as that sync takes, because the
+    /// record keeps moving; it is charged only for silence. That is the whole
+    /// reason this is not the global deadline the old comment here correctly
+    /// refused: the daemon serves one request at a time, so a wall-clock bound
+    /// on `story list` would have to be as long as the longest command it might
+    /// be queued behind, or it would abandon healthy work.
+    ///
+    /// `bound` is a parameter rather than a constant so a test can drive it in
+    /// milliseconds. A suite that had to outwait 120s to prove a 120s bound
+    /// would not be run.
+    pub fn send(
+        env: &Environment,
         daemon: &crate::daemon::lifecycle::DaemonInfo,
         request: &crate::api::wire::WireRequest,
+        bound: Option<crate::daemon::lifecycle::ExchangeBound>,
+        poll: std::time::Duration,
+        patience: std::time::Duration,
     ) -> Result<Result<Response, AppError>, Transport> {
+        use crate::daemon::lifecycle::{self, Verdict};
+        use std::sync::mpsc;
+        use std::time::Instant;
+
         let url = format!("http://127.0.0.1:{}/api/v1/invoke", daemon.port);
-        // A connect timeout, and deliberately *not* a global one. This request
-        // carries the user's actual work — an import of a large document, a
-        // `github-sync` that talks to the network — so a deadline on the whole
-        // exchange would abandon operations that are merely long, and abandoning
-        // a mutation is the expensive direction: the caller is then told it may
-        // or may not have run.
-        //
-        // Connecting is different. The peer is on loopback and either accepts
-        // at once or is not there, so a connect that has not completed in five
-        // seconds is not slow, it is a socket nothing is servicing.
+        let token = daemon.token.clone();
+        let body = serde_json::to_string(request).map_err(|e| Transport::Sent(e.to_string()))?;
+
+        let (tx, rx) = mpsc::channel();
+        // Detached rather than joined: on the timeout path this thread is
+        // blocked in a read nothing here can interrupt, and leaving it is the
+        // price of reporting the failure at all. The process ends either way.
+        std::thread::spawn(move || {
+            let _ = tx.send(Self::exchange(&url, &token, &body));
+        });
+
+        let started = Instant::now();
+        let mut seen: Option<lifecycle::CurrentRequest> = None;
+        let mut changed_at = started;
+        let mut announced = false;
+
+        loop {
+            // The wait comes first, so a command that finishes inside one poll
+            // interval reads no files at all.
+            match rx.recv_timeout(poll) {
+                Ok(outcome) => return outcome,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(Transport::Sent(
+                        "the thread carrying this request to the daemon died".to_string(),
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+
+            let current = lifecycle::read_current(env);
+            if current != seen {
+                seen = current.clone();
+                changed_at = Instant::now();
+            }
+            if !announced && started.elapsed() >= patience {
+                announced = true;
+                announce_waiting_on(seen.as_ref());
+            }
+            match lifecycle::verdict(
+                seen.as_ref(),
+                changed_at.elapsed(),
+                started.elapsed(),
+                bound,
+            ) {
+                Verdict::Wait => {}
+                Verdict::GiveUp(record) => {
+                    return Err(Transport::Sent(stalled_message(
+                        &record,
+                        &request.request_id,
+                        changed_at.elapsed(),
+                        env,
+                    )));
+                }
+                Verdict::GaveUpUnpublished => {
+                    return Err(Transport::Sent(unpublished_message(daemon, env)));
+                }
+            }
+        }
+    }
+
+    /// The exchange itself, on its own thread.
+    fn exchange(
+        url: &str,
+        token: &str,
+        body: &str,
+    ) -> Result<Result<Response, AppError>, Transport> {
         let response = Self::agent()
-            .post(&url)
-            .header(crate::api::rpc::TOKEN_HEADER, &daemon.token)
+            .post(url)
+            .header(crate::api::rpc::TOKEN_HEADER, token)
             .header("Content-Type", "application/json")
-            .send(serde_json::to_string(request).map_err(|e| Transport::Sent(e.to_string()))?)
+            .send(body)
             .map_err(Transport::from)?;
         let envelope: crate::api::wire::WireResponse = response
             .into_body()
@@ -1822,9 +1939,121 @@ impl HttpInvoker {
     }
 }
 
+/// Tells a human at a terminal what the daemon is doing, once, while they wait.
+///
+/// TTY-gated for the reason `lifecycle::announce_waiting` records:
+/// `tests/cli_error_streams.rs` pins an empty stderr both for a successful
+/// command and for anything under `--json`, so an unconditional line here would
+/// break a contract the suite already holds. A pipe gets silence and the same
+/// exit code it always got.
+fn announce_waiting_on(current: Option<&crate::daemon::lifecycle::CurrentRequest>) {
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
+    match current {
+        Some(record) => eprintln!(
+            "storyhook: waiting for the daemon to finish `{}`. It runs one command at a \
+             time, so yours may be queued behind it; `story daemon status` answers \
+             without asking it.",
+            record.command
+        ),
+        None => eprintln!(
+            "storyhook: waiting for the daemon. `story daemon status` answers without \
+             asking it."
+        ),
+    }
+}
+
+/// What the user is told when the daemon stops finishing things.
+///
+/// Three rules, each of which cost this council an argument.
+///
+/// It never says "wedged" or "hung": the daemon may be healthy and slow, and the
+/// client provably cannot tell. A conditional handed to the user is allowed; a
+/// claim made on their behalf is not.
+///
+/// It names the **pid**, because `story daemon stop` posts a shutdown request
+/// bounded by `CONTROL_DEADLINE` and has no signal fallback — against a daemon
+/// in this state it fails in five seconds and kills nothing, so advice that
+/// stopped there would hand the user a step that cannot work.
+///
+/// And it **refuses the remedy its neighbour gives**. The `Transport::Sent`
+/// message below recommends `story show` or `story list`; both are invocations,
+/// both go back through the very queue that is not moving, and following the
+/// advice buys another deadline of silence per attempt. Correct for a dropped
+/// connection, actively wrong here.
+fn stalled_message(
+    record: &crate::daemon::lifecycle::CurrentRequest,
+    mine: &str,
+    stalled_for: std::time::Duration,
+    env: &Environment,
+) -> String {
+    let whose = if record.request_id == mine {
+        "your command".to_string()
+    } else {
+        format!("`{}`, which is not your command", record.command)
+    };
+    format!(
+        "the storyhook daemon has been running {whose} for {}s without finishing \
+         anything. It runs one command at a time, so yours is either that command or \
+         behind it.\n\n  the daemon    pid {}, since {}\n  its log       {}\n\n\
+         This command may or may not have run — storyhook will not repeat it, because \
+         repeating a write it cannot prove failed is worse than reporting this.\n\n\
+         `story daemon status` and that log answer without going through the daemon's \
+         queue; `story show` and `story list` do not, and would wait behind the same \
+         command. If it is stuck rather than slow, `story daemon stop` gives up after \
+         {}s without killing anything, so `kill {}` is the way out — the next `story` \
+         command starts a fresh daemon.",
+        stalled_for.as_secs(),
+        record.pid,
+        record.started_at,
+        env.daemon_log().display(),
+        crate::daemon::lifecycle::CONTROL_DEADLINE.as_secs(),
+        record.pid,
+    )
+}
+
+/// What the user is told when the daemon publishes nothing at all.
+///
+/// A state the record cannot describe, so it gets its own sentence rather than
+/// being folded into [`stalled_message`]: the daemon is alive — it holds its
+/// pidfile, which is a fact established without asking it — and has not started
+/// this command. Post-SH-144 this is the only shape the unauthenticated wedge
+/// can present to a client, and the story that owns it is linked from here.
+fn unpublished_message(daemon: &crate::daemon::lifecycle::DaemonInfo, env: &Environment) -> String {
+    format!(
+        "the storyhook daemon accepted this command but never reported starting it, \
+         and has reported nothing for {}s.\n\n  the daemon    pid {}, port {}\n  \
+         its log       {}\n\nIt holds its pidfile, so it is running; it has simply not \
+         begun your command. This command may or may not have run — storyhook will not \
+         repeat it. `story daemon status` answers without going through the daemon's \
+         queue; `kill {}` is the way out, and the next `story` command starts a fresh \
+         daemon.",
+        crate::daemon::lifecycle::UNPUBLISHED_DEADLINE.as_secs(),
+        daemon.pid,
+        daemon.port,
+        env.daemon_log().display(),
+        daemon.pid,
+    )
+}
+
 /// How far a failed request got, which is what decides whether it may be
 /// repeated.
-enum Transport {
+///
+/// Public because [`HttpInvoker::send`] is, and it is: `tests/daemon_timeouts.rs`
+/// drives the bound directly against a peer that never answers, the same way it
+/// already calls `lifecycle::hello` and `lifecycle::request_shutdown`.
+///
+/// **A timeout lands on [`Self::Sent`], and nothing about that needed changing.**
+/// `From<ureq::Error>` routes only a refused connection and an unresolvable host
+/// to [`Self::NotDelivered`]; everything else, timeouts included, is already
+/// `Sent`. The record-based bound inherits the same classification for the same
+/// reason — once the request has left this process, whether it ran is unknown —
+/// and the two obligations that follow are honoured in the message: never
+/// re-send, and never claim to know whether the write committed.
+#[derive(Debug)]
+pub enum Transport {
     /// The connection was refused, so nothing was delivered.
     NotDelivered(String),
     /// The request left this process. Whether it ran is unknown.
@@ -1851,16 +2080,33 @@ impl Invoker for HttpInvoker {
             .stdin(request.stdin)
             .project(request.project);
 
+        // Resolved once, up here, rather than inside `send`: the bound is a
+        // clock, and `main.rs` states the rule that nothing below its own line
+        // reads the environment for a path or a clock.
+        let bound = self.env.exchange_bound();
+        let poll = crate::daemon::lifecycle::RECORD_POLL;
+        let patience = crate::daemon::lifecycle::SERVED_PATIENCE;
+
         let daemon = crate::daemon::lifecycle::ensure(&self.env)?;
-        match Self::send(&daemon, &wire) {
+        match Self::send(&self.env, &daemon, &wire, bound, poll, patience) {
             Ok(result) => return result,
             Err(Transport::Sent(detail)) => {
-                return Err(AppError::Storage(format!(
-                    "the storyhook daemon stopped answering: {detail}. This command may or \
-                     may not have run — storyhook will not repeat it, because repeating a \
-                     write it cannot prove failed is worse than reporting this. Check with \
-                     `story show` or `story list`, then try again."
-                )));
+                // The detail is the whole message when the bound fired — it
+                // already carries the no-repeat clause and a remedy that works
+                // during this failure. Only a genuinely unexplained stop needs
+                // the sentence below wrapped around it.
+                return Err(AppError::Storage(
+                    if detail.contains("may or may not have run") {
+                        detail
+                    } else {
+                        format!(
+                            "the storyhook daemon stopped answering: {detail}. This command may or \
+                         may not have run — storyhook will not repeat it, because repeating a \
+                         write it cannot prove failed is worse than reporting this. Check with \
+                         `story show` or `story list`, then try again."
+                        )
+                    },
+                ));
             }
             // Refused: the daemon went away between the check and the send,
             // which is exactly what a version-skew restart looks like from
@@ -1870,7 +2116,7 @@ impl Invoker for HttpInvoker {
         }
 
         let daemon = crate::daemon::lifecycle::ensure(&self.env)?;
-        match Self::send(&daemon, &wire) {
+        match Self::send(&self.env, &daemon, &wire, bound, poll, patience) {
             Ok(result) => result,
             Err(Transport::NotDelivered(detail) | Transport::Sent(detail)) => {
                 Err(AppError::Storage(format!(

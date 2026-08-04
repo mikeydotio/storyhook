@@ -627,3 +627,74 @@ fn concurrent_clients_against_a_startable_daemon_stay_fast() {
         "and they must have produced exactly one daemon between them"
     );
 }
+
+/// The daemon says what it is serving, and stops saying it when it is done.
+///
+/// The half of SH-144 that lives in the daemon. Without this file a client has
+/// no observable at all: the daemon writes no bytes until its handler returns,
+/// and it serves one request at a time, so a second request cannot ask either.
+///
+/// The fixture is a project event hook that sleeps, which is the only way to
+/// hold a real request open long enough to look at it — and it is the same
+/// shape that measured the daemon's serial dispatch in the first place.
+#[test]
+fn a_running_command_is_published_and_retracted() {
+    use std::io::Write;
+
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("PB").build();
+    let _guard = DaemonGuard(&env);
+
+    std::fs::create_dir_all(project.path().join(".storyhook")).expect("the project directory");
+    let mut hooks = std::fs::File::create(project.path().join(".storyhook/hooks.toml"))
+        .expect("writing hooks.toml");
+    hooks
+        .write_all(b"[settings]\ntimeout_seconds = 60\n\n[on_comment]\ncommand = \"sleep 5\"\ntimeout_seconds = 60\n")
+        .expect("writing the hook");
+    drop(hooks);
+
+    env.story(project.path())
+        .args(["new", "a story"])
+        .assert()
+        .success();
+
+    // Fire a command that will sit inside its hook, and look at the record
+    // while it does.
+    let mut slow = env.raw_story(project.path());
+    let mut child = slow
+        .args(["comment", "PB-1", "trip the hook"])
+        .spawn()
+        .expect("spawning the slow command");
+
+    let environment = env.environment();
+    let mut seen = None;
+    for _ in 0..100 {
+        if let Some(record) = lifecycle::read_current(&environment) {
+            seen = Some(record);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let record = seen.expect("the daemon must publish the command it is running");
+    assert_eq!(
+        record.command, "comment",
+        "the record must name the command, which is what chooses its deadline"
+    );
+    assert!(
+        !record.request_id.is_empty(),
+        "the record must carry the request id a client recognises its own work by"
+    );
+    assert!(
+        record.pid != 0,
+        "the record must carry the pid, because it is the only remedy that works"
+    );
+
+    child.wait().expect("the slow command finishes");
+
+    // And it is retracted, which is a signal in its own right: a client's clock
+    // resets on the record disappearing exactly as on it changing.
+    wait_for("the record to be retracted", || {
+        lifecycle::read_current(&environment).is_none()
+    });
+}
