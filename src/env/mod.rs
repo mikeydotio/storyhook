@@ -17,6 +17,7 @@
 //! scratch directory and gets the same isolation an environment variable gives a
 //! child process.
 
+pub mod git_env;
 mod store_location;
 
 use std::net::SocketAddr;
