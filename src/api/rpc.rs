@@ -54,6 +54,38 @@ pub struct Surface<'a, S: Store> {
     pub hello: &'a Hello,
 }
 
+/// Whether a request under `/api/v1/*` is admitted, decided entirely from its
+/// head — no body access, so a caller can run this *before* reading one.
+///
+/// `None` means "keep going": either `segments` is not under `/api/v1/` at
+/// all, or it is and the caller is authorized. `Some` carries the refusal —
+/// 404 off-loopback (there is nothing here to be forbidden from) or 401 for a
+/// missing or wrong token.
+///
+/// This is the gate a worker calls before ever reading a request body
+/// (SH-172): a stalled, unauthenticated `POST /api/v1/invoke` is refused
+/// without the daemon waiting on a single byte of it.
+pub fn admission(
+    segments: &[&str],
+    headers: &[Header],
+    token: &str,
+    loopback: bool,
+) -> Option<Reply> {
+    let ["api", "v1", ..] = segments else {
+        return None;
+    };
+    if !loopback {
+        return Some(text_reply(404, "Not found"));
+    }
+    if !token_ok(headers, token) {
+        return Some(text_reply(
+            401,
+            "storyhook daemon: missing or invalid token",
+        ));
+    }
+    None
+}
+
 /// Routes a request under `/api/v1/`, or `None` if it is not one.
 ///
 /// `loopback` says whether the request arrived on the loopback listener. On any
@@ -69,14 +101,8 @@ pub fn route<S: Store>(
     let ["api", "v1", rest @ ..] = segments else {
         return None;
     };
-    if !loopback {
-        return Some(Answer::Reply(text_reply(404, "Not found")));
-    }
-    if !token_ok(headers, surface.token) {
-        return Some(Answer::Reply(text_reply(
-            401,
-            "storyhook daemon: missing or invalid token",
-        )));
+    if let Some(reply) = admission(segments, headers, surface.token, loopback) {
+        return Some(Answer::Reply(reply));
     }
 
     Some(match (rest, method) {
@@ -306,6 +332,21 @@ mod tests {
     fn a_path_outside_the_control_surface_is_not_routed_here() {
         assert!(routed(&["api", "repos"], &Method::Get, &with_token(), true).is_none());
         assert!(routed(&[], &Method::Get, &with_token(), true).is_none());
+    }
+
+    /// `admission` is what a worker calls before reading a body at all, so it
+    /// must let a non-control path through without an opinion — refusing here
+    /// would mean the dashboard's own routes gained a token requirement they
+    /// were never meant to have.
+    #[test]
+    fn admission_has_no_opinion_on_a_path_outside_the_control_surface() {
+        assert!(admission(&["api", "repos"], &[], "t", true).is_none());
+        assert!(admission(&[], &[], "t", true).is_none());
+    }
+
+    #[test]
+    fn admission_passes_an_authorized_control_request() {
+        assert!(admission(&["api", "v1", "hello"], &with_token(), "t", true).is_none());
     }
 
     #[test]
