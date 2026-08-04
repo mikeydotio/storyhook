@@ -102,10 +102,7 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     // temporary files rather than pipes, so there is no pipe for a descendant to
     // hold and nothing for the caller to wait on.
     ("src/event_hooks.rs", "\"sh\"", Kind::Waited),
-    ("src/github/sync_state.rs", "\"git\"", Kind::Reads),
     ("src/plugin.rs", "\"claude\"", Kind::Reads),
-    ("src/service/git.rs", "\"git\"", Kind::Reads),
-    ("src/service/migrate.rs", "\"git\"", Kind::Reads),
     ("src/tui/app.rs", "&editor_cmd", Kind::Waited),
     ("src/update.rs", "\"tar\"", Kind::Waited),
     ("src/update.rs", "staged", Kind::Waited),
@@ -151,6 +148,14 @@ fn programs(source: &str) -> Vec<String> {
         // first `)` closes the call. A future argument containing one would
         // show up here as a truncated entry and fail the comparison, which is
         // the right outcome: it is a site nobody has classified.
+        //
+        // **This scans raw text, comments included**, so a doc comment that
+        // spells the constructor's own token is read as a spawn site and fails
+        // this test with a paragraph of prose where a program name should be.
+        // SH-160 hit it while documenting `env::git_env`; the fix is to describe
+        // the constructor without spelling it, which is cheaper than teaching
+        // this function to parse Rust. The failure is loud and self-explaining,
+        // which is why it stays a documented gotcha rather than a parser.
         if let Some(close) = rest.find(')') {
             found.push(rest[..close].trim().to_string());
         }

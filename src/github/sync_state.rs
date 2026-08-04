@@ -15,7 +15,6 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -141,9 +140,8 @@ pub fn parse_github_url(url: &str) -> Option<GithubRepo> {
 /// Detect owner/repo from git remote origin URL.
 /// Handles both HTTPS and SSH formats.
 pub fn detect_github_remote(root: &Path) -> Result<Option<GithubRepo>, AppError> {
-    let output = Command::new("git")
+    let output = crate::env::git_env::command(root)
         .args(["remote", "get-url", "origin"])
-        .current_dir(root)
         .output();
 
     let output = match output {
