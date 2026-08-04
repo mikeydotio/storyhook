@@ -2297,6 +2297,27 @@ fn web_serve_repos_list_reports_available_repo_with_summary() {
     assert_eq!(repos[0]["summary"]["total_open"], 1);
 }
 
+/// SH-42's header selector shows `PREFIX · name` for the current project, so
+/// `/api/repos` has to carry the prefix — it was already reading the record
+/// that has it, just not putting it on the wire.
+#[test]
+fn web_serve_repos_list_reports_each_projects_prefix() {
+    let fixture = served();
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/api/repos"))
+        .call()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let repos = json.as_array().unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0]["id"], repo_id);
+    assert_eq!(repos[0]["prefix"], "SH");
+}
+
 /// **A behaviour change, deliberate.** A registered path whose `.storyhook/`
 /// had since been deleted was the common broken repo, and the list had to keep
 /// serving every other one around it — hence `available: false` with an
