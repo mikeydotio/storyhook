@@ -761,6 +761,19 @@ Examples:
   story hooks list                # Show event hook configuration
   story hooks test on_create      # Test the on_create hook
 
+Backgrounding work in a hook:
+  A hook may start work that outlives it, and storyhook will not kill it.
+  Redirect its output when you do:
+
+    my-slow-job >/dev/null 2>&1 &
+
+  Without the redirect the job inherits the hook's stderr and keeps it for
+  its whole life. storyhook can no longer be blocked by that — it hands a
+  hook files rather than pipes — but a job that writes forever grows a file
+  nobody reads. That file is unlinked, so it has no name and 'du' cannot
+  see it: if a disk fills with no visible cause, 'lsof +L1' lists the
+  unlinked-but-open files responsible.
+
 Related:
   story commit-sync  — Manual git sync (hooks automate this)
   [hooks] in .storyhook.toml — Event hook configuration

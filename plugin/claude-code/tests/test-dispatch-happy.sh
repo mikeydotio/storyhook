@@ -27,14 +27,14 @@ out=$(dispatch_real "$repo" "$id")
 assert_eq "$(jqf "$out" .ok)" "true" "happy: ok:true"
 assert_eq "$(jqf "$out" .claimed)" "true" "happy: claimed:true"
 assert_eq "$(jqf "$out" .state)" "in-progress" "happy: state is in-progress"
-assert_eq "$(jqf "$out" .window_name)" "sto-$id" "happy: window name uses the repo-prefix"
+assert_eq "$(jqf "$out" .window_name)" "$id" "happy: window name is the bare story id"
 assert_eq "$(jqf "$out" .readiness_confirmed)" "true" "happy: readiness confirmed via the fake tmux marker tier"
 assert_eq "$(jqf "$out" .prompt_confirmed)" "true" "happy: prompt confirmed submitted"
 assert_eq "$(jqf "$out" 'has("warning")')" "false" "happy: no warning on the clean path"
 
 # Real side effects actually happened -- not just a correct-looking JSON.
-[ -d "$repo/.claude/worktrees/sto-$id" ] || fail_test "happy: worktree directory missing"
-(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-sto-$id") \
+[ -d "$repo/.claude/worktrees/$id" ] || fail_test "happy: worktree directory missing"
+(cd "$repo" && git show-ref --verify --quiet "refs/heads/worktree-$id") \
   || fail_test "happy: worktree branch missing"
 claimed_state=$(cd "$repo" && story show "$id" --json | jq -r '.story.story.state')
 assert_eq "$claimed_state" "in-progress" "happy: story CLI itself confirms the claim"

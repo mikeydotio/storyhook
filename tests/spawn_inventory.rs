@@ -31,9 +31,11 @@
 //! rather than a judgement about the program being run.
 //!
 //! * [`Kind::Waited`] — the caller runs the child to completion without reading
-//!   a pipe from it (`.status()`, or `spawn` then `wait`). A descendant that
+//!   a **pipe** from it (`.status()`, or `spawn` then `wait`). A descendant that
 //!   inherits a descriptor cannot block the caller, because the caller is not
-//!   waiting on one.
+//!   waiting on one. The word *pipe* is load-bearing: a caller that reads a
+//!   regular file the child wrote is `Waited`, because a file has no
+//!   end-of-file rendezvous and no descendant can make the read wait.
 //! * [`Kind::Reads`] — the caller reads the child's output to end-of-file
 //!   (`.output()`, or an explicit read of a piped stream). A descendant that
 //!   inherits that pipe and outlives the child holds the caller for as long as
@@ -45,10 +47,21 @@
 //!   proves.
 //!
 //! A `Reads` site is not a defect. It is a site where the question has to be
-//! asked, and `src/event_hooks.rs` is the one where the answer is currently
-//! "nothing stops it" — filed rather than fixed here, because it has no
-//! captured reproduction yet and this repository does not fix what it has not
-//! reproduced.
+//! asked, and `src/event_hooks.rs` was the one where the answer was "nothing
+//! stops it" — filed here rather than fixed, because it had no captured
+//! reproduction and this repository does not fix what it has not reproduced.
+//!
+//! It has one now, and SH-141 closed it, which is why that row reads `Waited`.
+//! What the reproduction found is worth carrying: the wedge did **not** need a
+//! descendant. `fire_hook` drove three concurrent pipes sequentially — write
+//! stdin, then wait, then read stderr — so a merely *verbose* hook deadlocked
+//! against storyhook with nothing inherited by anyone. The lifetime mismatch
+//! this file is named for was one instance of that, not the whole of it.
+//!
+//! The remedy generalizes, and it is why the failure message below names two:
+//! a process group bounds *who you can kill*, but giving the child a file
+//! instead of a pipe removes the wait entirely, and only the second works when
+//! what the child leaves behind is not yours to kill.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -77,7 +90,11 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
-    ("src/event_hooks.rs", "\"sh\"", Kind::Reads),
+    // `event_hooks::fire_hook` — a user's shell command. `Waited` since SH-141:
+    // it spawns, waits, and reads a *file*. The hook is handed unlinked
+    // temporary files rather than pipes, so there is no pipe for a descendant to
+    // hold and nothing for the caller to wait on.
+    ("src/event_hooks.rs", "\"sh\"", Kind::Waited),
     ("src/github/sync_state.rs", "\"git\"", Kind::Reads),
     ("src/plugin.rs", "\"claude\"", Kind::Reads),
     ("src/service/git.rs", "\"git\"", Kind::Reads),
@@ -184,9 +201,12 @@ fn every_way_storyhook_starts_a_process_is_classified() {
          Decide which kind it is and add it to INVENTORY.\n\
            Waited   — run to completion, no pipe read; a descendant cannot block you.\n\
            Reads    — you read its output to EOF; a descendant that inherits that pipe\n\
-                      and outlives the child holds you for as long as it lives. Give the\n\
-                      child its own process group and kill the group, as\n\
-                      src/daemon/tailnet.rs does.\n\
+                      and outlives the child holds you for as long as it lives. Two\n\
+                      remedies, and they are not interchangeable: give the child its own\n\
+                      process group and kill the group (src/daemon/tailnet.rs), or give\n\
+                      it files instead of pipes so there is no end-of-file to wait for\n\
+                      (src/event_hooks.rs). Only the second works when what the child\n\
+                      leaves behind is not yours to kill.\n\
            Detached — it outlives you, so it must inherit nothing: see\n\
                       daemon::lifecycle::spawn_child and tests/daemon_fd_hygiene.rs.\n\
          \n\
