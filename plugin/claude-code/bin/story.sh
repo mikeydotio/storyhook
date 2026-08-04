@@ -443,9 +443,16 @@ cmd_dispatch() {
 
   # Compute the name used for the tmux window, the worktree dir leaf, AND the
   # worktree branch: the bare story id (e.g. "STO-7"), or the
-  # STORY_WINDOW_NAME override (SH-166).
-  local wname wt_container worktree_path worktree_branch
+  # STORY_WINDOW_NAME override (SH-166). Also compute the PRE-SH-166 legacy
+  # form ("<repo-prefix>-<id>", e.g. "sto-STO-7") purely to detect a
+  # worktree an old binary already dispatched under it — see the collision
+  # check below. repo_name need not be an "owner/repo" string (storyhook has
+  # no GitHub-owner concept) — the git toplevel directory's own basename is
+  # enough.
+  local repo_name wname legacy_name wt_container worktree_path worktree_branch
+  repo_name="$(basename "$dir")"
   wname=$(resolve_wname "$id")
+  legacy_name=$(legacy_wname "$id" "$repo_name")
   wt_container="${WORKTREE_IGNORE_PATH%/}"
   worktree_path="$dir/$wt_container/$wname"
   worktree_branch="worktree-$wname"
@@ -554,9 +561,20 @@ cmd_dispatch() {
     fail "cannot resolve a base commit for the new worktree (no origin/$default and HEAD has no commits).$(claim_rollback_note "$id" "$pre_claim_state")"
   fi
 
-  # Step 9: create the worktree off the resolved base commit.
+  # Step 9: create the worktree off the resolved base commit. The collision
+  # check also covers the LEGACY (pre-SH-166) name: a story dispatched by an
+  # old binary already has a worktree/branch on disk that this run would
+  # otherwise not see (it only looks for the bare-id form) and would
+  # therefore dispatch a SECOND worktree for the same story — refuse instead,
+  # same as a same-scheme collision, and name it as the legacy form so the
+  # caller knows to run against the old name (e.g. `/story complete` adopts
+  # it automatically).
   if git show-ref --verify --quiet "refs/heads/$worktree_branch" || [ -e "$worktree_path" ]; then
     fail "a worktree or branch for \`$wname\` already exists — already dispatched?$(claim_rollback_note "$id" "$pre_claim_state")"
+  fi
+  if [ -n "$legacy_name" ] \
+     && { git show-ref --verify --quiet "refs/heads/worktree-$legacy_name" || [ -e "$dir/$wt_container/$legacy_name" ]; }; then
+    fail "a worktree or branch for \`$legacy_name\` already exists (the pre-SH-166 name for $id) — already dispatched?$(claim_rollback_note "$id" "$pre_claim_state")"
   fi
   local wt_err
   if ! wt_err=$(git worktree add --no-track -b "$worktree_branch" "$worktree_path" "$base_oid" 2>&1); then
@@ -863,7 +881,7 @@ cmd_capture() {
   [ "$#" -eq 0 ] || fail "usage: story.sh capture <story-id>"
   valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  local dir wname
+  local dir wname legacy_name
   dir=$(repo_root) || fail "not inside a git repository."
 
   # The one verb that otherwise reads nothing, and it still has to pay for one
@@ -878,6 +896,7 @@ cmd_capture() {
     id=$(canonical_story_id "$(story_cli show "$id" --json 2>/dev/null || printf '')" "$id")
   fi
   wname=$(resolve_wname "$id")
+  legacy_name=$(legacy_wname "$id" "$(basename "$dir")")
 
   if [ -n "$DRY_RUN" ]; then
     jq -n --arg wname "$wname" --arg lines "$CAPTURE_LINES" '
@@ -890,16 +909,36 @@ cmd_capture() {
     return 0
   fi
 
-  local pane transcript
+  # Look for the bare-id window first; fall back to the PRE-SH-166 legacy
+  # name only if that fails, and adopt whichever name actually found a
+  # window (SH-166) -- a story dispatched by an old binary still has a
+  # live window, just not under $wname.
+  local pane transcript legacy_used=false
   pane=$(pane_for_window "$wname")
-  [ -n "$pane" ] || fail "no live tmux window named \`$wname\` — dispatch it first with \`/story do $id\`."
+  if [ -z "$pane" ] && [ -n "$legacy_name" ]; then
+    pane=$(pane_for_window "$legacy_name")
+    if [ -n "$pane" ]; then
+      wname="$legacy_name"
+      legacy_used=true
+    fi
+  fi
+  if [ -z "$pane" ]; then
+    if [ -n "$legacy_name" ]; then
+      fail "no live tmux window named \`$wname\` or \`$legacy_name\` (its pre-SH-166 name) — dispatch it first with \`/story do $id\`."
+    else
+      fail "no live tmux window named \`$wname\` — dispatch it first with \`/story do $id\`."
+    fi
+  fi
   transcript=$(capture_pane_transcript "$pane") \
     || fail "failed to capture pane \`$pane\` (window \`$wname\`)."
 
-  jq -n --arg id "$id" --arg wname "$wname" --arg pane "$pane" --arg tx "$transcript" '
+  jq -n --arg id "$id" --arg wname "$wname" --arg pane "$pane" --arg tx "$transcript" \
+    --argjson legacy "$legacy_used" '
     {
       ok: true, id: $id, window_name: $wname, pane: $pane, transcript: $tx,
-      display: ("[story] capture " + $wname + " (" + $pane + ") — recent rendered rows:\n\n" + $tx)
+      legacy_name: $legacy,
+      display: ("[story] capture " + $wname + " (" + $pane + ") — recent rendered rows:\n\n" + $tx
+                + (if $legacy then "\n\n(found under its pre-SH-166 window name)" else "" end))
     }'
 }
 
@@ -1129,12 +1168,34 @@ _complete_prepare() {
   CMP_SUPER=$(printf '%s' "$show_json" | jq -r '.story.story.superstate // ""')
   CMP_DONE_STATE=$(story_closed_state)
 
-  local wt_container
-  CMP_WNAME=$(resolve_wname "$id")
+  local repo_name wt_container wname legacy_name
+  repo_name="$(basename "$CMP_DIR")"
+  wname=$(resolve_wname "$id")
+  legacy_name=$(legacy_wname "$id" "$repo_name")
   CMP_DEFAULT=$(default_branch)
   freshen_base_ref "$CMP_DEFAULT"
 
   wt_container="${WORKTREE_IGNORE_PATH%/}"
+
+  # ADOPT THE LEGACY (pre-SH-166) NAME when the canonical bare-id name has
+  # NEITHER a worktree dir NOR a local branch, and the legacy name has AT
+  # LEAST ONE -- e.g. `story SH-42` dispatched before this fork landed.
+  # Otherwise `complete` would report the canonical name "missing"/"missing",
+  # close the story, and silently strand the real worktree/branch on disk.
+  # Checked BEFORE CMP_WT_PATH/CMP_WT_BRANCH are derived so plan and execute
+  # (both callers of this function) stay consistent with each other. A
+  # canonical worktree or branch, even a partial one, is never overridden --
+  # this is adoption of an orphan, not a preference for the old name.
+  CMP_LEGACY=false
+  CMP_WNAME="$wname"
+  if [ -n "$legacy_name" ] \
+     && ! [ -e "$CMP_DIR/$wt_container/$wname" ] \
+     && ! local_branch_exists "worktree-$wname" \
+     && { [ -e "$CMP_DIR/$wt_container/$legacy_name" ] || local_branch_exists "worktree-$legacy_name"; }; then
+    CMP_WNAME="$legacy_name"
+    CMP_LEGACY=true
+  fi
+
   CMP_WT_PATH="$CMP_DIR/$wt_container/$CMP_WNAME"
   CMP_WT_BRANCH="worktree-$CMP_WNAME"
   CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH")
@@ -1180,10 +1241,10 @@ cmd_complete_plan() {
     --arg default "$CMP_DEFAULT" --arg wtpath "$CMP_WT_PATH" \
     --arg wtstatus "$CMP_WT_STATUS" --arg branch "$CMP_WT_BRANCH" \
     --arg brstatus "$CMP_BR_STATUS" --argjson close "$CMP_NEEDS_CLOSE" \
-    --argjson actions "$CMP_ACTIONS" '
+    --argjson actions "$CMP_ACTIONS" --argjson legacy "$CMP_LEGACY" '
     {
       ok: true, id: $id, title: $title, state: $state, superstate: $super,
-      default_branch: $default,
+      default_branch: $default, legacy_name: $legacy,
       plan: {
         close: (if $close then { to: $done_state } else null end),
         worktree: { path: $wtpath, status: $wtstatus },
@@ -1203,6 +1264,7 @@ cmd_complete_plan() {
              elif $brstatus == "missing" then " -> nothing to delete"
              elif $brstatus == "unmerged" then " -> PRESERVED (not merged into " + $default + ")"
              else " -> PRESERVED (" + $brstatus + ")" end)
+        + (if $legacy then "\n  (found under its pre-SH-166 name)" else "" end)
       )
     }'
 }
@@ -1294,9 +1356,10 @@ cmd_complete_execute() {
         --argjson failed "$fail_json" --argjson skipped "$skip_json" \
         --argjson cmds "$cmds_json" --argjson closed "$closed" \
         --arg done_state "$CMP_DONE_STATE" --arg note "$close_note" \
+        --argjson legacy "$CMP_LEGACY" \
         --argjson dry "$([ -n "$DRY_RUN" ] && echo true || echo false)" '
     {
-      ok: true, id: $id, closed: $closed,
+      ok: true, id: $id, closed: $closed, legacy_name: $legacy,
       removed: { worktrees: $rwt, branches: $rbl }
     }
     + (if $closed then {closed_as: $done_state} else {} end)
@@ -1310,6 +1373,7 @@ cmd_complete_execute() {
         + ($rbl|length|tostring) + " branch(es)."
         + (if ($failed|length) > 0 then " Could not: " + ($failed|join(", ")) + "." else "" end)
         + (if ($skipped|length) > 0 then " Preserved: " + ($skipped|join(", ")) + "." else "" end)
+        + (if $legacy then " (found under its pre-SH-166 name)" else "" end)
         + $note
       ) }'
 }
