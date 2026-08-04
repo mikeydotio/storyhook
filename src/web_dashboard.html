@@ -879,10 +879,10 @@ tbody tr:hover { background: var(--bg-sunken); }
         renderProjectSelector();
         if (state.screen === "home") renderHome();
         if (state.screen === "settings") renderSettings();
-        // The currently-viewed repo was deregistered elsewhere (another
-        // tab, another client) — don't keep showing its now-orphaned data.
+        // The currently-viewed project was deleted elsewhere (another tab,
+        // another client) — don't keep showing its now-orphaned data.
         if (state.screen === "repo" && state.repoId && !state.repos.some(function(r) { return r.id === state.repoId; })) {
-          toast("This repo was deregistered", "error");
+          toast("This project was deleted", "error");
           state.repoId = null;
           goHome();
         }
@@ -1059,7 +1059,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       var total = s.total_open + s.total_closed;
       $("subtitle").textContent = total + " " + (total === 1 ? "story" : "stories") + " · " + s.ready_count + " ready · " + s.blocked_count + " blocked";
     } else if (state.screen === "home") {
-      $("subtitle").textContent = state.repos.length + " registered " + (state.repos.length === 1 ? "repo" : "repos");
+      $("subtitle").textContent = state.repos.length + " " + (state.repos.length === 1 ? "project" : "projects");
     } else if (state.settingsRepoId) {
       $("subtitle").textContent = "Settings · statuses";
     } else {
@@ -2329,8 +2329,8 @@ tbody tr:hover { background: var(--bg-sunken); }
     if (!state.repos.length) {
       clear(container);
       container.appendChild(el("div", { class: "home-empty" }, [
-        "No repos registered yet.",
-        el("button", { class: "btn btn-primary", onClick: goSettings }, ["Register a repo"])
+        "No projects yet.",
+        el("button", { class: "btn btn-primary", onClick: goSettings }, ["Add a project"])
       ]));
       return;
     }
@@ -2490,7 +2490,7 @@ tbody tr:hover { background: var(--bg-sunken); }
               ? "Configure this project's statuses"
               : (r.read_only
                   ? "This project has no checkout on this machine, so it cannot be changed here"
-                  : "This repo is unavailable"),
+                  : "This project is unavailable"),
             onClick: function() { goStatuses(r.id); }
           }, ["Statuses"])
         ]),
@@ -2559,7 +2559,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     container.dataset.built = "";
 
     container.appendChild(el("div", { class: "settings-head" }, [
-      el("button", { class: "back-link", onClick: goSettings }, ["← All repositories"]),
+      el("button", { class: "back-link", onClick: goSettings }, ["← All projects"]),
       el("h2", {}, ["Statuses · " + repoName(state.settingsRepoId)]),
       el("span", { class: "settings-hint" }, [
         "Order sets the board's columns. New stories start in the first open status."
@@ -2854,7 +2854,7 @@ tbody tr:hover { background: var(--bg-sunken); }
    * SH-109's silent `SH` wearing a form, in the one place nobody would notice
    * it happening. */
   function buildInitForm() {
-    var pathInput = el("input", { type: "text", placeholder: "Path to a repository on this machine" });
+    var pathInput = el("input", { type: "text", placeholder: "Path to this project's checkout on this machine" });
     var nameInput = el("input", { type: "text", placeholder: "Display name (optional)" });
     var prefixInput = el("input", { type: "text", placeholder: "Story-id prefix (required, e.g. SH)" });
     // Filled from the path as a suggestion, and never over something typed.
