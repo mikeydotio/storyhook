@@ -394,6 +394,7 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                 Ok(data) => serde_json::json!({
                     "id": entry.id,
                     "name": entry.name,
+                    "prefix": entry.prefix,
                     "path": entry.path,
                     "available": !read_only,
                     "read_only": read_only,
@@ -403,6 +404,7 @@ fn repos_json<S: Store>(store: &S, env: &Environment) -> Result<String, AppError
                 Err(e) => serde_json::json!({
                     "id": entry.id,
                     "name": entry.name,
+                    "prefix": entry.prefix,
                     "path": entry.path,
                     "available": false,
                     "read_only": false,
