@@ -90,6 +90,13 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
+    // `env::git_env::command` — the one place in `src/` that constructs a
+    // `git`. Classified with the reads it replaced: every caller uses
+    // `.output()`, which reads the child's stdout to EOF. `git` reads files,
+    // spawns nothing of its own and touches no network, so the
+    // descendant-holds-the-pipe hazard this column exists for has nothing to
+    // attach to.
+    ("src/env/git_env.rs", "\"git\"", Kind::Reads),
     // `event_hooks::fire_hook` — a user's shell command. `Waited` since SH-141:
     // it spawns, waits, and reads a *file*. The hook is handed unlinked
     // temporary files rather than pipes, so there is no pipe for a descendant to
@@ -99,17 +106,6 @@ const INVENTORY: &[(&str, &str, Kind)] = &[
     ("src/plugin.rs", "\"claude\"", Kind::Reads),
     ("src/service/git.rs", "\"git\"", Kind::Reads),
     ("src/service/migrate.rs", "\"git\"", Kind::Reads),
-    // `service::project::origin_of` — `git config --get remote.origin.url`, the
-    // origin lookup project selection resolves by (SH-116). Classified with the
-    // other four `git` reads: `.output()` reads the child's stdout to EOF.
-    //
-    // It is the one on this list that runs on a *resolution* path rather than
-    // in answer to a command about git, so it runs more often than any of them —
-    // but only when neither the selector nor the walk has answered. `git config`
-    // reads files, spawns nothing of its own, and touches no network, so the
-    // descendant-holds-the-pipe hazard this column exists for has nothing to
-    // attach to.
-    ("src/service/project.rs", "\"git\"", Kind::Reads),
     ("src/tui/app.rs", "&editor_cmd", Kind::Waited),
     ("src/update.rs", "\"tar\"", Kind::Waited),
     ("src/update.rs", "staged", Kind::Waited),
