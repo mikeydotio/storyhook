@@ -421,7 +421,7 @@ Behavior:
 
 ## Web dashboard
 
-`story` includes a local web dashboard for browsing and triaging stories visually, alongside the CLI. One dashboard serves **every project the store knows** — a home screen with a summary card per repo, a repo-select dropdown for fast switching, and, per repo, the same Board/List/drawer views a single-project dashboard has always had.
+`story` includes a local web dashboard for browsing and triaging stories visually, alongside the CLI. One dashboard serves **every project the store knows** — a home screen with a summary card per project, a header project selector for fast switching, and, per project, the same Board/List/drawer views a single-project dashboard has always had.
 
 There is no registration step. A project reaches the dashboard by existing: `story project new` puts it in the store, and the store is what the dashboard reads. `story project list` prints the same set.
 
@@ -431,21 +431,21 @@ story web stop                       # stop it
 story web status                     # check whether it's running
 ```
 
-`story web start` launches the dashboard on its own — it does not require running from inside a project, and it does not auto-register anything. Repos only appear once you `register` them.
+`story web start` launches the dashboard on its own — it does not require running from inside a project. There is nothing to register: every project already in the store shows up immediately, and a project created afterward (from any client) appears without restarting the dashboard.
 
 Open the URL printed on start — `http://127.0.0.1:<port>` by default, or your machine's Tailscale MagicDNS name (falling back to its tailnet IP) if Tailscale is running (see Network exposure below). The dashboard offers:
 
-- **Home** — a summary card per registered repo (open/ready/blocked counts). Click a card to open that repo. A repo whose data can't currently be loaded (moved, deleted) shows its error instead of a summary, rather than failing the whole page.
-- **Settings** — register a new repo, or deregister an existing one. Deregistering only edits the dashboard's registry; it never touches the repo's own files. **Statuses** on any repo row opens that project's state configuration: reorder (which is the board's column order), flip open/closed, set the active role and descriptions, add and remove. Reclassifying or removing a status that still holds stories asks where those stories go first; deletion is disabled, with the reason, when a status has archived history or is the last open or closed one.
+- **Home** — a summary card per project (open/ready/blocked counts). Click a card to open that project. A project whose data can't currently be loaded (its checkout moved, or some other read failure) shows its error instead of a summary, rather than failing the whole page.
+- **Settings** — create a new project, or delete an existing one. Deleting removes the project and everything recorded against it from the store; it never touches the project's own files on disk. **Statuses** on any project row opens that project's state configuration: reorder (which is the board's column order), flip open/closed, set the active role and descriptions, add and remove. Reclassifying or removing a status that still holds stories asks where those stories go first; deletion is disabled, with the reason, when a status has archived history or is the last open or closed one.
 - **Board** — a kanban view with one column per project state, in `states.toml` order. Drag a card to a different column to move the story; dropping onto a `CLOSED` state archives it in place, and it stays visible in that column rather than vanishing.
 - **List** — a filterable, sortable table view.
 - **Detail drawer** — click any card or row to view and edit a story's full detail: title, state, priority, assignee, type, labels, block/unblock, comments, and relationships, plus reopen and delete.
 - Faceted filters (priority, assignee, type, state) and free-text search, shared between both project views.
-- Live updates via 3-second polling; dark mode follows your system theme.
+- Live updates over a server-sent-events stream — every write, from any client, appears without a reload — with a slow poll as a fallback for the rare case a push is missed. Dark mode follows your system theme.
 
 It's a single self-contained page with no external dependencies (no CDN, no build step) and no mocked data — every action goes through the same validated, event-sourced write path as the CLI.
 
-The dashboard is a single background daemon shared by every project — not one per project, and the same daemon the CLI talks to. The repo list is the store's own projects table, so there is no separate registry file to fall out of step with it. The daemon's portfile, PID file and log live under `$XDG_STATE_HOME/storyhook/` (`~/.local/state/storyhook/` by default).
+The dashboard is a single background daemon shared by every project — not one per project, and the same daemon the CLI talks to. The project list it shows is the store's own projects table, so there is no separate registry file to fall out of step with it. The daemon's portfile, PID file and log live under `$XDG_STATE_HOME/storyhook/` (`~/.local/state/storyhook/` by default).
 
 > **Upgrading from a per-repo dashboard:** earlier versions ran one daemon per project, started from inside it, with its PID/lock/log under that project's own `.storyhook/`. If you have one of those still running, `story web stop` from this version won't see it — stop it manually, then start the new dashboard — it already knows every project in the store.
 
@@ -461,7 +461,7 @@ If the `web-serve` tool is present on your `PATH` (coderig/agentsmith environmen
 
 ### Security
 
-Mutating requests (registering/deregistering a repo; creating, moving, editing, or deleting a story) require:
+Mutating requests (creating or deleting a project; creating, moving, editing, or deleting a story) require:
 
 - a same-origin request — the dashboard's own page sets a custom `X-Storyhook` header that a cross-site request cannot replicate without triggering a CORS preflight the server never answers;
 - a `Host` header that resolves to `127.0.0.1`, `localhost`, `::1`, the tailnet IP this instance bound itself, or — when Tailscale MagicDNS is on — this machine's full MagicDNS name (e.g. `host.tailXXXXX.ts.net`) — this is what stops DNS-rebinding, which the header check alone can't catch. The bare short hostname (`host`, without the `.ts.net` suffix) is deliberately *not* trusted: unlike the full name, it can resolve through a DNS search domain that isn't your tailnet's, so trusting it could reopen the exact rebinding this check exists to stop.

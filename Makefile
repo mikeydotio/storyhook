@@ -11,8 +11,15 @@
 # the second one (SH-114). What it caught — a fixture that is only correct when
 # nothing else holds the store — is now caught by the only run there is, because
 # every command in it goes through a daemon.
+#
+# `scripts/run-e2e.sh` is the one leg `cargo test` cannot cover: the dashboard's
+# JavaScript has no Rust to exercise it, so it is driven in a real browser
+# instead (see `e2e/`). It fails the whole gate loudly rather than skipping if
+# its Node toolchain was never installed (`make e2e-install`) — a green `make
+# test` that quietly skipped the browser suite would say "the dashboard was
+# verified" when nothing ran, which is worse than a red one.
 
-.PHONY: test build fmt lint clippy check release-build install check-no-orphan-servers
+.PHONY: test build fmt lint clippy check release-build install check-no-orphan-servers e2e-install e2e
 
 # Where `make install` puts the binary. Mirrors install.sh's default and its
 # STORYHOOK_INSTALL_DIR override so both entry points agree; a one-off can
@@ -78,7 +85,21 @@ test: check-no-orphan-servers
 	@bash scripts/run-tests.sh -- --test-threads=4
 	cargo build
 	PATH="$(CURDIR)/target/debug:$$PATH" bash plugin/claude-code/tests/run-tests.sh
+	bash scripts/run-e2e.sh
 	@bash scripts/check-no-orphan-servers.sh postlude
+
+# Installs the e2e/ Node toolchain and Playwright's chromium browser. Not part
+# of `test` itself -- it is a one-time (per-machine, per-Playwright-version)
+# bootstrap step, not something every run should repeat -- but `test`'s e2e
+# leg fails loudly, naming this target, if it was never run.
+e2e-install:
+	cd e2e && npm ci
+	cd e2e && npx playwright install --with-deps chromium
+
+# Runs just the dashboard's browser suite, against an isolated daemon this
+# starts and stops. Pass Playwright CLI flags through, e.g. `make e2e ARGS=--headed`.
+e2e:
+	bash scripts/run-e2e.sh $(ARGS)
 
 # Fails if a test-spawned server from this worktree is still running. Never
 # looks at the installed dashboard daemon on :3456 — that one is production.
