@@ -224,7 +224,9 @@ Related:
 Create a new story with the given title. Returns the assigned ID.
 All flags are optional — everything but the title can also be set
 later via 'story set'. --label may be repeated; --labels accepts a
-comma-separated list (both may be combined).
+comma-separated list (both may be combined). Comma is always the
+label delimiter, even inside a single --label value — a label can
+never contain one.
 
 When to use:
   When you have a discrete piece of work to track. For bulk creation
@@ -1224,6 +1226,8 @@ Related:
 
 Update multiple fields on a story in a single command. Accepts any
 combination of field flags. Use --json for arbitrary key-value data.
+--labels adds to the story's existing labels; comma is always the
+delimiter, so a label can never contain one.
 
 When to use:
   When you need to update more than one field at a time, or when
@@ -1317,7 +1321,8 @@ Related:
             "label",
             r#"story label <id> <labels>
 
-Add one or more comma-separated labels to a story.
+Add one or more comma-separated labels to a story. Comma is always
+the delimiter — a single label can never contain one.
 
 When to use:
   To categorize stories for filtering and organization.
@@ -1336,7 +1341,8 @@ Related:
             "unlabel",
             r#"story unlabel <id> <labels>
 
-Remove one or more comma-separated labels from a story.
+Remove one or more comma-separated labels from a story. Comma is
+always the delimiter — a single label can never contain one.
 
 When to use:
   To remove labels that no longer apply to a story.

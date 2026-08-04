@@ -38,7 +38,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
-    StateDef, StoryEvent, StorySnapshot, inverse_relation, validate_required_states,
+    StateDef, StoryEvent, StorySnapshot, inverse_relation, normalize_labels,
+    validate_required_states,
 };
 use crate::error::AppError;
 use crate::store::{
@@ -176,6 +177,21 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                     touched.insert(relation.other_id.clone());
                 }
 
+                // A comma-bearing or blank label (SH-164) is repaired the same
+                // way a stale read-model row is: re-emit the normalized set as
+                // a fresh event. Only reachable on an open story — the loop
+                // this sits in is `open` only — so a malformed label on a
+                // closed story stays a finding `report` keeps naming, the
+                // same as any other issue a closed story cannot be repaired
+                // out of.
+                let normalized_labels = normalize_labels(&story.labels);
+                if normalized_labels != story.labels {
+                    own_events.push(StoryEvent::StoryLabelsSet {
+                        at: now.clone(),
+                        labels: normalized_labels,
+                    });
+                }
+
                 if !own_events.is_empty() {
                     let story_no = StoryNo::parse_id(&prefix, id)
                         .map_err(|error| AppError::Storage(format!("unparseable id: {error}")))?;
@@ -284,6 +300,18 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<String>, Ap
             && !types.contains(slug)
         {
             issues.push(format!("{}: unknown type `{slug}`", view.story.id));
+        }
+        // A label written before SH-164's write-path guard existed — a
+        // comma-bearing one (unsplittable and unaddressable by
+        // `story unlabel`/`list --label`) or a blank/untrimmed one.
+        // `--fix` repairs this on an open story; on a closed one it stays a
+        // finding, the same as any other issue a closed story's history
+        // cannot be appended to fix.
+        if view.story.labels != normalize_labels(&view.story.labels) {
+            issues.push(format!(
+                "{}: malformed labels {:?} — a label cannot contain a comma or be blank",
+                view.story.id, view.story.labels
+            ));
         }
     }
     Ok(issues)

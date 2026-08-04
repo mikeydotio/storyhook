@@ -22,7 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::domain::{StoryEvent, StorySnapshot, SuperState, is_ready};
+use crate::domain::{StoryEvent, StorySnapshot, SuperState, is_ready, normalize_labels};
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
 use crate::output::{PhaseView, StoryView};
@@ -263,9 +263,14 @@ impl<'ctx, S: Store> GroupingService<'ctx, S> {
             if !edit(&mut labels) {
                 return Ok(None);
             }
+            // Normalizing the whole resulting set, not just the phase label
+            // `edit` touched, is what lets this write succeed on a story
+            // whose stored labels predate SH-164's guard — it self-heals a
+            // comma-bearing label on its way back out rather than tripping
+            // the write-path guard on an edit that never asked to change it.
             let events = [StoryEvent::StoryLabelsSet {
                 at: now.clone(),
-                labels: labels.into_iter().collect(),
+                labels: normalize_labels(labels),
             }];
             let snapshot = append_and_fold(
                 tx,

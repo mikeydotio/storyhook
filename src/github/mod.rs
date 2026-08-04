@@ -8,7 +8,7 @@ pub mod storage;
 pub mod sync_state;
 pub mod types;
 
-use crate::domain::{Member, Priority, StateDef, StoryEvent, StorySnapshot};
+use crate::domain::{Member, Priority, StateDef, StoryEvent, StorySnapshot, normalize_labels};
 use crate::error::AppError;
 use crate::output::Response;
 
@@ -782,7 +782,7 @@ fn create_story_from_issue(
     if !remote_snap.labels.is_empty() {
         events.push(StoryEvent::StoryLabelsSet {
             at: now.clone(),
-            labels: remote_snap.labels.clone(),
+            labels: normalize_labels(&remote_snap.labels),
         });
     }
 
@@ -963,9 +963,13 @@ fn apply_local_updates(
     }
 
     if let Some(ref labels) = updates.labels {
+        // `updates.labels` is a merge of the remote set (already comma-free,
+        // via `render_remote_label`) and the locally-stored one — normalized
+        // again here because the local side can still carry a label written
+        // before SH-164's guard existed.
         events.push(StoryEvent::StoryLabelsSet {
             at: now.clone(),
-            labels: labels.clone(),
+            labels: normalize_labels(labels),
         });
     }
 
@@ -1035,12 +1039,7 @@ fn apply_conflict_locally(
             }
         }
         ConflictField::Labels => {
-            let labels: Vec<String> = conflict
-                .remote_value
-                .split(", ")
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-                .collect();
+            let labels = normalize_labels(conflict.remote_value.split(", "));
             StoryEvent::StoryLabelsSet { at: now, labels }
         }
         ConflictField::Description => {

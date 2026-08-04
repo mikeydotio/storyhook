@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
     ImportStory, Member, Priority, StateDef, StoryEvent, SuperState, TypeDef, fold_story,
-    relation_edges,
+    normalize_labels, relation_edges,
 };
 use crate::error::AppError;
 use crate::output::StoryView;
@@ -485,13 +485,13 @@ fn import_events(
     if let Some(labels) = &story.labels
         && !labels.is_empty()
     {
-        let mut sorted = labels.clone();
-        sorted.sort();
-        sorted.dedup();
-        events.push(StoryEvent::StoryLabelsSet {
-            at: now.to_string(),
-            labels: sorted,
-        });
+        let normalized = normalize_labels(labels);
+        if !normalized.is_empty() {
+            events.push(StoryEvent::StoryLabelsSet {
+                at: now.to_string(),
+                labels: normalized,
+            });
+        }
     }
     if let Some(lookup) = &story.assignee {
         events.push(StoryEvent::StoryAssigned {
