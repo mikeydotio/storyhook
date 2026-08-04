@@ -30,6 +30,25 @@ fn fail(error: &storyhook::error::AppError, json: bool) -> ! {
 }
 
 fn main() {
+    // First, before anything — including argument parsing, which decides
+    // nothing this depends on.
+    //
+    // A daemon outlives the client that started it and holds that client's
+    // environment for its whole life, and since SH-114 the daemon is the process
+    // that runs every git storyhook runs. One `GIT_DIR` exported in one shell
+    // therefore decided what every later command on the machine saw, in every
+    // repository (SH-160). Scrubbing here rather than at the spawn covers the
+    // launchd agent and a hand-run `story daemon --serve` as well, because all
+    // three routes come through this function — and it cleans what the daemon
+    // hands on to a user's event hooks, which no funnel inside `src/` can reach.
+    //
+    // Unconditional rather than gated to `--serve`: a client has no legitimate
+    // use for an inherited git environment either, every request already carries
+    // its own working directory, and a gate is a conditional somebody can get
+    // wrong. See `env::git_env` for the safety argument, which turns on this
+    // call site being single-threaded.
+    storyhook::env::git_env::scrub_this_process();
+
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
 
     // Global flags come off first, before anything looks at a verb, because

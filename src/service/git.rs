@@ -65,7 +65,6 @@
 //! prefix stops at the colon so that a reworded commit does not duplicate.
 
 use std::collections::BTreeSet;
-use std::process::Command;
 
 use crate::domain::{StateDef, StoryEvent, SuperState, parse_duration, scan_story_refs, short_sha};
 use crate::error::AppError;
@@ -329,9 +328,8 @@ fn already_linked(
 /// used: `commit-sync` outside a repository is a usage mistake, not a storage
 /// failure, and scripts test for it.
 fn require_git_repository(root: &std::path::Path) -> Result<(), AppError> {
-    let probed = Command::new("git")
+    let probed = crate::env::git_env::command(root)
         .args(["rev-parse", "--git-dir"])
-        .current_dir(root)
         .output();
     match probed {
         Ok(output) if output.status.success() => Ok(()),
@@ -347,9 +345,8 @@ fn require_git_repository(root: &std::path::Path) -> Result<(), AppError> {
 /// text as a commit hash, and the hash is the idempotency key.
 fn read_log(root: &std::path::Path, cutoff: &str) -> Result<Vec<Commit>, AppError> {
     let format = format!("--format=%H{FIELD_SEPARATOR}%B{RECORD_SEPARATOR}");
-    let output = Command::new("git")
+    let output = crate::env::git_env::command(root)
         .args(["log", &format, &format!("--since={cutoff}")])
-        .current_dir(root)
         .output()
         .map_err(|error| AppError::Storage(format!("failed to run git: {error}")))?;
     if !output.status.success() {

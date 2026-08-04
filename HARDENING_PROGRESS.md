@@ -175,7 +175,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-143** — the daemon spawn lock blocks without a timeout · *clients queue serially behind up to 15 s each*
 - [x] **SH-144** — `HttpInvoker::send` has no bound, so a wedged daemon holds its client forever
 - [x] **SH-141** — an event hook's grandchild holds its stderr pipe and wedges the daemon
-- [ ] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
+- [x] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
 - [ ] **SH-120** — C8 Dispatch plumbing · *the epic's next link, and the only thing SH-50 waits on*
 - [ ] **SH-166** — `/story do` should not prefix the worktree with the repo name · *same file as SH-120; carries a handoff comment from SH-118*
 - [ ] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
@@ -3758,3 +3758,119 @@ directly with the user rather than through a council vote.
 
 **Successor:** SH-177, filed for the residual unbounded per-worker block that
 `tiny_http`'s API makes infeasible to close here.
+
+### SH-160 — done
+
+**Outcome:** merged. A `GIT_DIR` exported in one shell no longer decides what
+every later `story` command on the machine sees. The scrub is unconditional at
+the top of `main`, and every `git` storyhook runs is now built by one
+constructor that clears the environment and hands back an allowlist.
+
+**The story understated its extent, and measuring first is what found it —
+again.** SH-160 reported that probes answer about the wrong repository. They do,
+but so does the *guard*, and in the same direction:
+
+| `commit-sync` run from | clean daemon | daemon started once with `GIT_DIR` |
+|---|---|---|
+| a repository | links its own `HEAD` (`9c35707`) | links `0c3e0ac`, absent from it, **and moves the story** |
+| a directory that is **not a repository** | `error: not a git repository`, exit 2 | syncs the foreign repository's commits |
+
+The second row was not in the story. `require_git_repository` asks
+`git rev-parse --git-dir`, which an inherited `GIT_DIR` answers for somewhere
+else, so a project in a plain directory with no `.git` anywhere above it acquired
+a commit link and a state transition from a repository it has no relationship
+with. A guard that becomes a write is a worse failure than a wrong answer, and
+seat 2 named it for what it is: **fail-open**.
+
+**The list was wrong as well as the location, and neither the story nor my brief
+said so.** Three channels nobody had listed, measured on git 2.50.1:
+`GIT_SHALLOW_FILE` and `GIT_GRAFT_FILE` each cut a two-commit `git log` to one —
+forging commit-sync's idempotency key *and* its transition trigger — and
+`GIT_CONFIG_PARAMETERS` replaced `remote.origin.url` outright. So SH-160 was two
+defects wearing one number: the scrub was in the wrong place **and** scrubbed the
+wrong set.
+
+**The council was unanimous on the first ballot, and it is the fifth time in this
+run that a seat voted against its own proposal on measured evidence — but this
+one is sharper, because two did.** Both denylist authors abandoned denylists, and
+neither was argued round: seat 1's list was caught incomplete **twice inside the
+round**, first missing the shallow/graft pair, then — after amending to twelve
+names — still missing `GIT_CONFIG_PARAMETERS`. Seat 1's own words: *"the
+empirical proof that a denylist over a surface that grows every git release
+cannot be kept correct by review."* Seat 3 conceded its own module location
+unprompted in the same message.
+
+**Deny at the process, allow at the command.** The two layers get opposite rules
+because they protect different things, and that split is the verdict's whole
+content. The process can only be a denylist — `event_hooks` spawns a user's shell
+command, and `web.rs` and `plugin.rs` spawn others, all of which legitimately
+inherit. A `git` can be an allowlist, so it is one: `env_clear`, then exactly ten
+names back plus `GIT_TERMINAL_PROMPT=0`.
+
+**The chair's measurements cut both ways in the same round, which is what
+separates evidence from steering.** The run that killed the denylist also
+falsified seat 2's own objection to its own proposal — `env_clear` breaking exec
+— which seat 3 then re-checked independently. Recorded because a chair who only
+circulates evidence that favours one side is running a different process than the
+one it claims.
+
+**Red→green verified in both directions, and the second disarm found a defect in
+my own work.** Disarming the process scrub fails **exactly one** test — the
+event-hook row — and leaves the other three green, which is the empirical proof
+that no call-site funnel substitutes for it. Disarming the allowlist fails
+**nothing**, which was the finding: my first allowlist test inspected
+`Command::get_envs`, and that reports only *explicit modifications*, saying
+nothing about what is inherited — so it passed with or without `env_clear()`. It
+is rewritten to read a real child's real environment through `/usr/bin/env`, and
+now fails when disarmed, naming the variable that leaked (`AI_AGENT`, from my own
+shell). **A test that cannot fail is worse than no test**, because it reads as
+coverage; the only reason this one was caught is that disarming is a step in this
+run rather than a nicety.
+
+**A carve-out justified by a false reason is a durable hazard.**
+`src/service/project.rs:555` said the test suite isolates git config through
+`GIT_CONFIG_*`. It does not: isolation comes from `HOME`/`XDG_CONFIG_HOME` in
+`ISOLATED_VARS`, and the tree's only `GIT_CONFIG_*` is one test file, on a `git`
+that test spawns itself and that storyhook's scrub can never touch. The "~45
+fixtures" figure was **mine**, from the brief, and unsupported. Deleted rather
+than moved — the next contributor to widen the carve-out would have cited it.
+
+**Two process notes.**
+
+- `make test`'s completion notification reported **"exit code 0" on a run that
+  failed**, because the shell's last command was the `echo` that records the
+  status. SH-62 and SH-130 both logged this same trap. Read the log, never the
+  notification.
+- The first gate failed on `spawn_inventory` because a **doc comment I wrote**
+  contained the literal token that test greps for, so my prose was read as a
+  spawn site. Fixed by describing the constructor without spelling it, and the
+  gotcha is now documented in that test rather than left for the next person to
+  rediscover. The second inventory failure was a stale row I had missed — the
+  test named it exactly, which is what it is for.
+
+**Also filed: SH-178** — `commit-sync` reports *"no claim word, so state
+unchanged"* for **every** reason a story did not move, and four of the five are
+not that. Measured: a commit body reading `Closes BBB-2` gets that message when
+the story is already out of the default state. Two of the reasons are the
+feature being *off* — which is precisely what SH-124 added the report to
+distinguish from *broken*, so the report currently defeats its own purpose.
+Filed rather than fixed here: different origin, and it is the report rather than
+the environment.
+
+**Gate:** `make test` green — 116 green test-result blocks, plugin harness 21/0,
+clippy clean under `-D warnings`. Supervised with a log-growth heartbeat
+throughout; no wedge. **10 new tests** — four end-to-end in
+`tests/daemon_git_env.rs` (both measured rows, a directly-spawned `--serve`
+daemon covering the launchd and hand-run routes, and the event-hook row) and six
+unit tests in `src/env/git_env.rs`.
+
+**One fixture lesson worth keeping:** two empty commits with the same message,
+author and second produce the **same sha**, so the first draft of the
+end-to-end test could not tell its two repositories apart. And
+`daemon_is_live()` is the *pidfile lock*, which a starting daemon takes before
+it publishes a portfile — waiting on it let a client race ahead, decide to spawn,
+and be refused by the lock the first daemon was already holding. Wait on the
+portfile.
+
+**Council:** yes — unanimous, round 1.
+`.council/sh160-git-env-scrub-home/DECISION.md`.

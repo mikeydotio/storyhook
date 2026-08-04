@@ -536,9 +536,8 @@ fn project_checked_out_at(
 /// plain directory is migrated on its own terms.
 pub fn refuse_in_linked_worktree(root: &Path) -> Result<(), AppError> {
     let ask = |arg: &str| -> Option<PathBuf> {
-        let output = std::process::Command::new("git")
+        let output = crate::env::git_env::command(root)
             .args(["rev-parse", arg])
-            .current_dir(root)
             .output()
             .ok()?;
         if !output.status.success() {
