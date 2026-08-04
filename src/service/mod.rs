@@ -347,6 +347,13 @@ pub(crate) fn append_and_fold(
     expected: ExpectedSeq,
     events: &[StoryEvent],
 ) -> Result<StorySnapshot, AppError> {
+    // Every producer of a `StoryLabelsSet` is expected to normalize through
+    // `domain::normalize_labels` before it gets here; this is the backstop
+    // for the one that forgets, so a comma-bearing or blank label (SH-164)
+    // cannot reach the store through this, the one path every service uses.
+    for event in events {
+        crate::domain::validate_event_for_append(event)?;
+    }
     let head = tx.append_events(project, story, expected, events)?;
     let stored = tx.events_for(project, story)?;
     let (known, _unknown) = partition_known(story, &stored);

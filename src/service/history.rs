@@ -32,7 +32,7 @@
 //! that no longer exists** — and `restore` refuses those loudly, naming the
 //! field, rather than silently leaving the story where it was.
 
-use crate::domain::{StoryEvent, StorySnapshot, fold_story};
+use crate::domain::{StoryEvent, StorySnapshot, fold_story, normalize_labels};
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ReadOps, Store, StoryNo, partition_known};
 
@@ -203,9 +203,13 @@ fn compensate(
         });
     }
     if before.labels != after.labels {
+        // Normalized rather than restored verbatim: `after` can be a snapshot
+        // folded from history that predates SH-164's guard, and undo
+        // reproducing a comma-bearing label would recreate exactly the
+        // unaddressable state the guard exists to refuse.
         events.push(StoryEvent::StoryLabelsSet {
             at: at.clone(),
-            labels: after.labels.clone(),
+            labels: normalize_labels(&after.labels),
         });
     }
     if before.assignee != after.assignee {

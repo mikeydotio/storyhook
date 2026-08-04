@@ -40,6 +40,8 @@ pub struct CatalogEntry {
     pub id: String,
     /// The project's display name.
     pub name: String,
+    /// The story-id prefix minted into every story this project creates.
+    pub prefix: String,
     /// The checkout the dashboard should open, if any is known.
     pub path: Option<PathBuf>,
 }
@@ -327,6 +329,7 @@ fn entry(project: ProjectRecord, path: Option<PathBuf>) -> CatalogEntry {
         project: project.id,
         id: project.slug,
         name: project.name,
+        prefix: project.prefix,
         path,
     }
 }

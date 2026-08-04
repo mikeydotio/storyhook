@@ -71,6 +71,45 @@ pub fn story_to_create_request(
 // 2. GithubIssue -> RemoteSnapshot
 // ---------------------------------------------------------------------------
 
+/// Renders one GitHub label's name as a storyhook label.
+///
+/// Comma is storyhook's own label delimiter (SH-164): splitting a label a
+/// user typed on GitHub, such as `"backend,urgent"`, would invent two labels
+/// that do not exist there, silently disagreeing with the system of record
+/// this sync is supposed to mirror. So a comma-bearing remote label is
+/// rejoined with `" & "` instead of split — `"a,b"` and `"a, b"` both render
+/// as `"a & b"` — which keeps the 1:1 correspondence with the GitHub label
+/// while staying a single, addressable storyhook label.
+///
+/// Returns `None` only for a label that renders to nothing once split and
+/// trimmed (a name that is comma and whitespace only) — GitHub itself refuses
+/// a blank label name, so this is unreachable in practice, but the
+/// alternative is silently reintroducing a bare comma that
+/// [`crate::domain::validate_event_for_append`] would then refuse.
+///
+/// # Known limit
+///
+/// This only guards the *import* direction. A genuine local label change on
+/// the same issue is pushed back through [`updates_to_issue_request`], which
+/// sends the merged set verbatim — so a GitHub label already named `"a,b"`
+/// would be renamed to `"a & b"` on that issue the next time anything else on
+/// the story's labels changes locally. Suppressing that needs a reverse
+/// mapping threaded from here through the diff engine's [`FieldUpdates`],
+/// which is a change to the merge types and is tracked separately rather than
+/// folded into this fix.
+fn render_remote_label(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" & "))
+    }
+}
+
 /// Extract story-relevant fields from a [`GithubIssue`].
 ///
 /// Returns a [`RemoteSnapshot`] that can be compared against local state.
@@ -93,7 +132,11 @@ pub fn issue_to_remote_snapshot(
         .and_then(|gh_user| resolve_member_id(&gh_user.login, members));
 
     // --- labels ---
-    let labels: Vec<String> = issue.labels.iter().map(|l| l.name.clone()).collect();
+    let labels: Vec<String> = issue
+        .labels
+        .iter()
+        .filter_map(|l| render_remote_label(&l.name))
+        .collect();
 
     // --- body block parsing ---
     let (body_text, story_id, priority, awaiting, non_native_relationships) =
@@ -582,6 +625,69 @@ mod tests {
             relation: "obviates".to_string(),
             other_id: "SH-15".to_string(),
         }));
+    }
+
+    // -----------------------------------------------------------------------
+    // render_remote_label — SH-164
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn render_remote_label_rejoins_a_comma_bearing_name_with_an_ampersand() {
+        assert_eq!(render_remote_label("a,b").as_deref(), Some("a & b"));
+        // Comma-space renders the same as bare comma: the delimiter is `,`,
+        // not `, ` — whitespace around it is trimmed either way.
+        assert_eq!(render_remote_label("a, b").as_deref(), Some("a & b"));
+    }
+
+    #[test]
+    fn render_remote_label_leaves_a_plain_name_unchanged() {
+        assert_eq!(render_remote_label("backend").as_deref(), Some("backend"));
+        // Already carries an ampersand, not a comma — nothing to rejoin.
+        assert_eq!(render_remote_label("a & b").as_deref(), Some("a & b"));
+    }
+
+    #[test]
+    fn render_remote_label_drops_a_name_that_is_comma_and_whitespace_only() {
+        assert_eq!(render_remote_label(","), None);
+        assert_eq!(render_remote_label(" , , "), None);
+    }
+
+    #[test]
+    fn issue_to_remote_snapshot_renders_a_comma_bearing_label_with_an_ampersand() {
+        let issue = GithubIssue {
+            number: 9,
+            title: "Comma label".to_string(),
+            body: None,
+            state: "open".to_string(),
+            state_reason: None,
+            labels: vec![
+                GithubLabel {
+                    name: "backend,urgent".to_string(),
+                    color: None,
+                },
+                GithubLabel {
+                    name: "solo".to_string(),
+                    color: None,
+                },
+            ],
+            assignees: vec![],
+            milestone: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-02T00:00:00Z".to_string(),
+            closed_at: None,
+            pull_request: None,
+            comments: 0,
+        };
+
+        let snap = issue_to_remote_snapshot(&issue, &test_states(), &test_members(), "SH");
+
+        // One GitHub label, `"backend,urgent"`, becomes one storyhook label,
+        // `"backend & urgent"` — never two. Splitting it would invent a second
+        // label GitHub does not have.
+        assert_eq!(
+            snap.labels,
+            vec!["backend & urgent".to_string(), "solo".to_string()]
+        );
     }
 
     // -----------------------------------------------------------------------

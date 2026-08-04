@@ -37,6 +37,17 @@ fn new_story(ctx: &Ctx<'_, SqliteStore>, title: &str) -> String {
         .id
 }
 
+fn labels_of(fixture: &ServiceFixture, id: &str) -> Vec<String> {
+    let no = StoryNo::parse_id("SH", id).expect("a well-formed id");
+    fixture
+        .store()
+        .read(|tx| tx.story(fixture.project(), no))
+        .expect("reading the story")
+        .expect("the story exists")
+        .snapshot
+        .labels
+}
+
 /// Appends events to **one** story and folds only that story, bypassing the
 /// services that would keep both ends of a relation in step.
 fn append_to_one_end(fixture: &ServiceFixture, id: &str, events: &[StoryEvent]) {
@@ -161,6 +172,85 @@ fn a_relation_only_one_end_claims_is_reported_and_repaired() {
         "doctor repaired supported integrity issues"
     );
     assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+}
+
+/// SH-164: a label written before the write-path guard existed — `web,sse` as
+/// one label, the SH-145 shape — cannot be produced by any service today, so
+/// it is seeded the same way the relation asymmetry above is: straight
+/// through the store's own append, bypassing every service.
+#[test]
+fn a_malformed_label_on_an_open_story_is_reported_and_repaired() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryLabelsSet {
+            at: FIXTURE_NOW.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    );
+    assert_eq!(labels_of(&fixture, &a), ["web,sse"]);
+
+    let issues = report(&fixture);
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.starts_with("SH-1: malformed labels") && issue.contains("web,sse")),
+        "{issues:?}"
+    );
+
+    assert_eq!(
+        fix(&fixture).expect("fixing"),
+        "doctor repaired supported integrity issues"
+    );
+    assert!(report(&fixture).is_empty(), "{:?}", report(&fixture));
+    // Split on the way back out, and addressable again — which `web,sse` as
+    // one label never was.
+    assert_eq!(labels_of(&fixture, &a), ["sse", "web"]);
+}
+
+/// The counterpart of [`fix_does_not_append_to_archived_stories`]: a closed
+/// story's history is closed, so a malformed label on one is a finding
+/// `--fix` cannot clear, the same as any other issue a closed story cannot be
+/// repaired out of (`fix_exits_non_zero_when_something_is_left_unrepaired`).
+#[test]
+fn a_malformed_label_on_a_closed_story_is_reported_but_not_repaired() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let a = new_story(&ctx, "A");
+    StoryService::new(&ctx)
+        .set_state(&a, "done", None, None)
+        .expect("closing");
+    drop(ctx);
+
+    append_to_one_end(
+        &fixture,
+        &a,
+        &[StoryEvent::StoryLabelsSet {
+            at: FIXTURE_NOW.to_string(),
+            labels: vec!["web,sse".to_string()],
+        }],
+    );
+
+    let issues = report(&fixture);
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.starts_with("SH-1: malformed labels")),
+        "{issues:?}"
+    );
+
+    let error = fix(&fixture).expect_err("a closed story's history cannot be appended to");
+    assert!(error.to_string().contains("malformed labels"), "{error}");
+    assert_eq!(
+        labels_of(&fixture, &a),
+        ["web,sse"],
+        "an archived story's history was appended to"
+    );
 }
 
 /// Three of the legacy doctor's findings are **unrepresentable** in the store,
