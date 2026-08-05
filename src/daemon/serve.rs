@@ -74,10 +74,16 @@ struct Serving<'a, S: Store> {
     env: Environment,
     bus: ChangeBus,
     trusted_hosts: Vec<String>,
-    /// The bearer token `/api/v1/*` requires.
+    /// The bearer token `/api/v1/*` requires — and, since SH-50,
+    /// `/api/repos/*/story/*/dispatch` too.
     token: String,
     /// This daemon's identity, answered by `/api/v1/hello`.
     hello: Hello,
+    /// Every dispatch this daemon has started, and their outcomes (SH-50).
+    /// An `Arc` because `worker` threads reach it directly — dispatch is
+    /// answered off the store thread, so it is not reached through
+    /// [`dispatch`] the way everything else in this struct is.
+    dispatch_registry: Arc<crate::api::dispatch::DispatchRegistry>,
 }
 
 /// Serves `listeners` until the process ends.
@@ -125,6 +131,7 @@ where
             pid: std::process::id(),
             started_at: env.now(),
         },
+        dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::new()),
     };
 
     // Every background thread lives inside this scope, which is what lets the
@@ -388,7 +395,21 @@ fn accept_loop<S: Store>(serving: &Serving<'_, S>, server: Server, loopback: boo
             let jobs_tx = jobs_tx.clone();
             let bus = serving.bus.clone();
             let token = Arc::clone(&token);
-            thread::spawn(move || worker(request, loopback, &token, bus, jobs_tx));
+            let trusted_hosts = serving.trusted_hosts.clone();
+            let env = serving.env.clone();
+            let dispatch_registry = Arc::clone(&serving.dispatch_registry);
+            thread::spawn(move || {
+                worker(
+                    request,
+                    loopback,
+                    &token,
+                    bus,
+                    jobs_tx,
+                    &trusted_hosts,
+                    &env,
+                    &dispatch_registry,
+                )
+            });
         }
     });
 }
@@ -404,12 +425,16 @@ fn accept_loop<S: Store>(serving: &Serving<'_, S>, server: Server, loopback: boo
 /// without ever reaching [`dispatch`]: it needs nothing from the store, and it
 /// is a long-lived streaming connection that must not tie up the job channel
 /// for as long as the browser tab stays open.
+#[allow(clippy::too_many_arguments)]
 fn worker(
     request: Request,
     loopback: bool,
     token: &str,
     bus: ChangeBus,
     jobs: mpsc::SyncSender<Job>,
+    trusted_hosts: &[String],
+    env: &Environment,
+    dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
 ) {
     let mut request = request;
     let method = request.method().clone();
@@ -424,6 +449,25 @@ fn worker(
 
     if method == Method::Get && path == "/api/events" {
         serve_sse(request, bus);
+        return;
+    }
+
+    // Answered here, off the store thread, exactly like the SSE branch
+    // above: a dispatch runs for tens of seconds and makes its own nested
+    // `story` CLI calls back into this daemon, so handling it on the
+    // single thread that owns the store (`dispatch`, below) would
+    // deadlock on the first one (SH-50).
+    if let Some(reply) = crate::api::dispatch::intercept(
+        &segments,
+        &method,
+        &headers,
+        trusted_hosts,
+        token,
+        env,
+        &bus,
+        dispatch_registry,
+    ) {
+        finish(request, reply);
         return;
     }
 

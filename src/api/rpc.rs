@@ -248,7 +248,7 @@ fn compatible(request: &WireRequest) -> Result<(), AppError> {
 /// a mismatch takes, over loopback, to recover 128 bits a byte at a time — is
 /// remote, but the defence costs one loop and the alternative is having to
 /// argue that it is remote.
-fn token_ok(headers: &[Header], expected: &str) -> bool {
+pub(crate) fn token_ok(headers: &[Header], expected: &str) -> bool {
     let Some(offered) = header_value(headers, TOKEN_HEADER) else {
         return false;
     };
