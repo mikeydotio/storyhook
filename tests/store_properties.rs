@@ -19,8 +19,8 @@ use proptest::prelude::*;
 use store_support::{append_and_fold, default_states, link_atomic, new_store, seed_project};
 use storyhook::domain::{Priority, StoryEvent, fold_story};
 use storyhook::store::{
-    EventSeq, ExpectedSeq, ProjectId, RawEvent, ReadOps, SqliteStore, Store, StoreError, StoryNo,
-    StoryQuery, WriteOps, diff_read_model,
+    EventSeq, ExpectedSeq, LinkSource, ProjectId, RawEvent, ReadOps, SqliteStore, Store,
+    StoreError, StoryNo, StoryQuery, WriteOps, diff_read_model,
 };
 
 /// 64 cases per store-backed property: enough to explore the operation space
@@ -403,6 +403,7 @@ proptest! {
                     story,
                     ExpectedSeq::Any,
                     &[RawEvent { kind: kind.clone(), at: at.clone(), payload: payload.clone() }],
+                    LinkSource::Replayed,
                 )
             })
             .unwrap();

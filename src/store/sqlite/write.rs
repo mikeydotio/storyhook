@@ -28,7 +28,7 @@ use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, ProjectId, StoryNo};
 use crate::store::sqlite::read;
 use crate::store::types::{
-    DeletedProject, NewProject, ProjectSettings, PurgedStory, RawEvent, priority_rank,
+    DeletedProject, LinkSource, NewProject, ProjectSettings, PurgedStory, RawEvent, priority_rank,
 };
 
 fn sql<T>(result: Result<T, rusqlite::Error>, context: &str) -> Result<T, StoreError> {
@@ -475,42 +475,27 @@ pub(super) fn append_events(
     expected: ExpectedSeq,
     events: &[StoryEvent],
 ) -> Result<EventSeq, StoreError> {
-    let raw = events.iter().map(encode).collect::<Result<Vec<_>, _>>()?;
+    let raw = events
+        .iter()
+        .map(RawEvent::from_event)
+        .collect::<Result<Vec<_>, _>>()?;
     append(conn, project, story, expected, &raw, LinkSource::Live)
 }
 
 /// [`append_events`], for callers holding bytes rather than a decoded event.
+///
+/// `source` is the caller's, because it is a fact about the caller — see
+/// [`LinkSource`]. `append_events` does not take one for the same reason: a
+/// decoded [`StoryEvent`] can only have come from this program, now.
 pub(super) fn append_raw_events(
     conn: &Connection,
     project: ProjectId,
     story: StoryNo,
     expected: ExpectedSeq,
     events: &[RawEvent],
+    source: LinkSource,
 ) -> Result<EventSeq, StoreError> {
-    append(conn, project, story, expected, events, LinkSource::Replayed)
-}
-
-/// Where an append's events came from, which decides how a `[git]` comment in
-/// one is read.
-///
-/// The distinction is not stylistic. A `StoryCommentAdded` reading
-/// `[git] <short>: <subject>` is a *pre*-#18 link record — and it is also
-/// exactly what a user gets if they type that text into `story comment`. Which
-/// of the two it is cannot be told from the bytes; it can be told from who is
-/// speaking.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LinkSource {
-    /// This program, now, on behalf of a command. A `[git]`-shaped comment here
-    /// is a *user's comment*, and recording it as a link would let anyone
-    /// suppress a real one by typing it — the exact hole the old string scan
-    /// had, and the reason kind #18 exists.
-    Live,
-    /// A history being replayed from somewhere else: `story migrate` reading an
-    /// unmigrated `.storyhook` tree, or an injector rebuilding one. Every
-    /// `[git]` comment in such a history was written by `commit-sync` before
-    /// kind #18 existed, so projecting them is what stops the first sync after
-    /// a migration re-linking a repository's whole log.
-    Replayed,
+    append(conn, project, story, expected, events, source)
 }
 
 fn append(
@@ -567,31 +552,6 @@ fn append(
     ))
 }
 
-/// Serializes an event and lifts its `kind` and `at` out of the payload.
-///
-/// The denormalization is what lets a storyhook that has never heard of a kind
-/// still read, report, and retain the row (SH-54): those two columns are
-/// readable without understanding the payload at all.
-fn encode(event: &StoryEvent) -> Result<RawEvent, StoreError> {
-    let value = serde_json::to_value(event)?;
-    let field = |name: &str| -> Result<String, StoreError> {
-        value
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| {
-                StoreError::Invariant(format!(
-                    "a StoryEvent serialized without a string `{name}` field"
-                ))
-            })
-    };
-    Ok(RawEvent {
-        kind: field("kind")?,
-        at: field("at")?,
-        payload: serde_json::to_string(&value)?,
-    })
-}
-
 /// Records a link record's commit hash in `story_commit_links`.
 ///
 /// The projection that makes "one link record per commit per story" a
@@ -625,8 +585,13 @@ fn encode(event: &StoryEvent) -> Result<RawEvent, StoreError> {
 /// cannot be a duplicate of anything.
 ///
 /// Works on [`RawEvent`] rather than a decoded [`StoryEvent`] so that
-/// `append_raw_events` — the path `story import-project` and `story migrate`
-/// take — projects the link too.
+/// `append_raw_events` — the path `story migrate` and `story import-project`
+/// take — projects the link too. *Which* of the two shapes it projects for them
+/// is the caller's [`LinkSource`]: `migrate` replays a legacy tree and passes
+/// `Replayed`, `import-project` restores a document through the same primitive
+/// and passes `Live`. This comment named only `Replayed` until SH-67, which is
+/// how it came to describe a behaviour `import-project` has never had (SH-70 is
+/// whether it should).
 fn project_commit_link(
     conn: &Connection,
     project: ProjectId,

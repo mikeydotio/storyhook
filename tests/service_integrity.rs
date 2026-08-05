@@ -434,6 +434,60 @@ fn a_row_that_disagrees_with_its_events_is_reported_and_repaired() {
     assert!(report(&fixture).is_empty());
 }
 
+/// SH-67: the store has always retained an event it cannot decode, and until
+/// now nothing ever said so.
+#[test]
+fn an_event_this_build_cannot_decode_is_reported_and_told_apart_from_a_torn_one() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "visited by a newer storyhook");
+    drop(ctx);
+    assert!(report(&fixture).is_empty());
+
+    storyhook::store::test_support::inject_raw_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(1),
+        &[
+            // A kind no storyhook has ever written: another build's data.
+            storyhook::store::RawEvent {
+                kind: "StoryPinned".to_string(),
+                at: "2030-01-01T00:00:00Z".to_string(),
+                payload: r#"{"kind":"StoryPinned","at":"2030-01-01T00:00:00Z"}"#.to_string(),
+            },
+            // A kind this build knows, whose payload it cannot read: damage.
+            storyhook::store::RawEvent {
+                kind: "StoryCommentAdded".to_string(),
+                at: "2030-01-01T00:00:01Z".to_string(),
+                payload: "{not json at all".to_string(),
+            },
+        ],
+    )
+    .expect("injecting");
+
+    let issues = report(&fixture);
+    assert_eq!(issues.len(), 2, "{issues:?}");
+    assert!(
+        issues[0].contains("event 2")
+            && issues[0].contains("`StoryPinned`")
+            && issues[0].contains("A newer storyhook wrote it."),
+        "an unrecognised kind is not damage, and the report must not imply it is: {issues:?}"
+    );
+    assert!(
+        issues[1].contains("event 3")
+            && issues[1].contains("`StoryCommentAdded`")
+            && !issues[1].contains("newer storyhook"),
+        "a kind this build knows and cannot read is a torn payload, and reads differently: \
+         {issues:?}"
+    );
+
+    // Neither is repairable, and `--fix` must not pretend otherwise.
+    assert!(
+        fix(&fixture).is_err(),
+        "doctor cannot invent a payload it cannot read"
+    );
+}
+
 /// `--fix` must not claim a repair it did not make.
 #[test]
 fn fix_exits_non_zero_when_something_is_left_unrepaired() {

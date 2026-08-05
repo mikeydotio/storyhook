@@ -63,7 +63,7 @@ macro_rules! store_conformance_suite {
             };
             use $crate::domain::remote::RemoteUrl;
             use $crate::store::{
-                ConformanceFixture, EventSeq, ExpectedSeq, GlobalSeq, NewProject,
+                ConformanceFixture, EventSeq, ExpectedSeq, GlobalSeq, LinkSource, NewProject,
                 ProjectId, ProjectSettings, RawEvent, ReadOps, Store, StoreError, StoredPayload,
                 StoryNo, StoryQuery, StorySort, WriteOps, partition_known,
             };
@@ -3539,7 +3539,13 @@ macro_rules! store_conformance_suite {
                 let story = new_story(f.store(), project, "First");
                 f.store()
                     .write(|tx| {
-                        tx.append_raw_events(project, story, ExpectedSeq::Any, &[teleported()])
+                        tx.append_raw_events(
+                            project,
+                            story,
+                            ExpectedSeq::Any,
+                            &[teleported()],
+                            LinkSource::Replayed,
+                        )
                     })
                     .unwrap();
 
@@ -3556,7 +3562,13 @@ macro_rules! store_conformance_suite {
                 let story = new_story(f.store(), project, "First");
                 f.store()
                     .write(|tx| {
-                        tx.append_raw_events(project, story, ExpectedSeq::Any, &[teleported()])
+                        tx.append_raw_events(
+                            project,
+                            story,
+                            ExpectedSeq::Any,
+                            &[teleported()],
+                            LinkSource::Replayed,
+                        )
                     })
                     .unwrap();
                 let events = f.store().read(|tx| tx.events_for(project, story)).unwrap();
@@ -3576,7 +3588,13 @@ macro_rules! store_conformance_suite {
                 let story = new_story(f.store(), project, "First");
                 f.store()
                     .write(|tx| {
-                        tx.append_raw_events(project, story, ExpectedSeq::Any, &[teleported()])
+                        tx.append_raw_events(
+                            project,
+                            story,
+                            ExpectedSeq::Any,
+                            &[teleported()],
+                            LinkSource::Replayed,
+                        )
                     })
                     .unwrap();
                 let events = f.store().read(|tx| tx.events_for(project, story)).unwrap();
@@ -3595,7 +3613,13 @@ macro_rules! store_conformance_suite {
                 let story = new_story(f.store(), project, "First");
                 f.store()
                     .write(|tx| {
-                        tx.append_raw_events(project, story, ExpectedSeq::Any, &[teleported()])
+                        tx.append_raw_events(
+                            project,
+                            story,
+                            ExpectedSeq::Any,
+                            &[teleported()],
+                            LinkSource::Replayed,
+                        )
                     })
                     .unwrap();
                 apply(
@@ -3622,7 +3646,13 @@ macro_rules! store_conformance_suite {
                 let story = new_story(f.store(), project, "First");
                 f.store()
                     .write(|tx| {
-                        tx.append_raw_events(project, story, ExpectedSeq::Any, &[teleported()])
+                        tx.append_raw_events(
+                            project,
+                            story,
+                            ExpectedSeq::Any,
+                            &[teleported()],
+                            LinkSource::Replayed,
+                        )
                     })
                     .unwrap();
                 assert_eq!(
@@ -3648,6 +3678,7 @@ macro_rules! store_conformance_suite {
                             story,
                             ExpectedSeq::Exact(EventSeq::ZERO),
                             &[teleported()],
+                            LinkSource::Replayed,
                         )
                     })
                     .unwrap_err();
