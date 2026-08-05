@@ -345,6 +345,18 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<String>, Ap
 /// `doctor`'s bytes for a project the legacy path already diagnosed. What is
 /// left is exactly the question the legacy doctor could not ask: does the read
 /// model still equal a fold of its own events?
+///
+/// # And the one question nothing asked at all
+///
+/// `unknown_events` was computed here and dropped on the floor until SH-67, so
+/// nothing in the product ever told a user their store held an event this build
+/// could not decode. That silence was affordable while the fold quietly skipped
+/// them and `story export` quietly dropped them: an unreported loss and an
+/// unreported retention look the same from outside. Export carries them now, so
+/// this is the only channel left — the document is the whole of `story export`'s
+/// output and has no room for a diagnostic beside it — and it is a *pull*
+/// channel by design: an unknown kind is not damage, it is a newer storyhook's
+/// data sitting patiently in a store an older one is reading.
 fn drift_issues(drift: &crate::store::ReadModelDiff) -> Vec<String> {
     let mut lines = Vec::new();
     for story in &drift.missing_rows {
@@ -361,6 +373,28 @@ fn drift_issues(drift: &crate::store::ReadModelDiff) -> Vec<String> {
             "story {}: {} is `{}` but the events say `{}`",
             divergence.story_no, divergence.field, divergence.persisted, divergence.rebuilt
         ));
+    }
+    for unknown in &drift.unknown_events {
+        // The two are different faults wearing one type. The store's decoder
+        // falls back to `Unknown` on *any* failure, so a kind this build knows
+        // and could not read is a torn payload — which is damage — while a kind
+        // it has never heard of is a newer storyhook's, which is not. A report
+        // that called both "unknown" would send a user looking for corruption
+        // that is not there, or reassure one about corruption that is.
+        if crate::domain::is_known_event_kind(&unknown.kind) {
+            lines.push(format!(
+                "story {}: event {} is a `{}` this build cannot decode — retained verbatim, but \
+                 not folded",
+                unknown.story_no, unknown.seq, unknown.kind
+            ));
+        } else {
+            lines.push(format!(
+                "story {}: event {} is of kind `{}`, which this build does not know — retained \
+                 verbatim and carried by `story export`, but not folded. A newer storyhook wrote \
+                 it.",
+                unknown.story_no, unknown.seq, unknown.kind
+            ));
+        }
     }
     lines
 }
