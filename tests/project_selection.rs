@@ -469,3 +469,89 @@ fn a_pointer_file_still_resolves_before_the_origin_is_consulted() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("resolved by pointer"));
 }
+
+/// **SH-120's revised AC3, behavioural half.** A linked checkout never decides
+/// which project a directory is.
+///
+/// The structural guard lives in `tests/checkout_path_readers.rs`, and it cannot
+/// catch this: an *already-allowlisted* function quietly repurposed into a
+/// resolver leaves the file set unchanged. Only behaviour catches that, and only
+/// in the one configuration where a resolver consulting `checkout_path` would
+/// give a *different* answer from one that does not.
+///
+/// So the fixture is built to make the two answers disagree. Project **A** owns
+/// the directory: its pointer file is there and its origin is registered to it.
+/// Project **B** is then pointed at that same directory with `project link
+/// checkout` — which the store permits, deliberately, because two projects
+/// sharing a directory is not a state the schema forbids (migration 0007's
+/// header, and `store/conformance.rs`'s `two_projects_may_share_a_checkout`).
+///
+/// A command run in that directory with no `--project` must answer **A**. A
+/// resolver that consulted `checkout_path` would answer B, or answer
+/// ambiguously; nothing else can produce A's story. That is the assertion no
+/// rename, re-export or refactor can circumvent.
+#[test]
+fn a_linked_checkout_never_decides_which_project_a_directory_is() {
+    let env = TestEnv::isolated();
+
+    let owner = env
+        .project()
+        .prefix("OWN")
+        .with_local_origin()
+        .seed_story("owned by the pointer and the origin")
+        .build();
+
+    // The interloper: a second project, with its own identity, deliberately
+    // pointed at the first one's checkout.
+    let interloper = env
+        .project()
+        .prefix("INT")
+        .seed_story("must never answer here")
+        .build();
+    let interloper_slug = interloper.slug();
+
+    let linked = env
+        .story(interloper.path())
+        .args([
+            "--project",
+            &interloper_slug,
+            "project",
+            "link",
+            "checkout",
+            &owner.path().to_string_lossy(),
+        ])
+        .output()
+        .expect("running story project link checkout");
+    assert!(
+        linked.status.success(),
+        "fixture: linking a second project's checkout at another's directory must be \
+         permitted — the schema allows it and this test is about what resolution does with \
+         it: {}",
+        String::from_utf8_lossy(&linked.stderr)
+    );
+
+    // The whole test: stand in the shared directory, name no project.
+    let out = env
+        .story(owner.path())
+        .args(["list"])
+        .output()
+        .expect("running story");
+    assert!(
+        out.status.success(),
+        "the directory resolves — it carries a pointer file: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("owned by the pointer and the origin"),
+        "the directory must resolve to the project that OWNS it, by pointer and origin. \
+         Got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("must never answer here"),
+        "a project whose `checkout_path` merely names this directory must never be resolved \
+         from it — `checkout_path` says where a project's repo-side work RUNS, never which \
+         project a directory IS (epic SH-112). Got:\n{stdout}"
+    );
+}

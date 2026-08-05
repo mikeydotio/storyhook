@@ -65,8 +65,12 @@ fi
 # credential prompt). Echoes the repo path. Not placed under $TMPDIR:
 # macOS Spotlight indexes it and can stall file-intensive tests; /tmp
 # (aka /private/tmp) is not indexed.
+#
+# Takes an optional story-id prefix (default TST), so a test needing TWO
+# projects can tell their ids apart — SH-120's dispatch-into-the-wrong-repo
+# fixtures need exactly that.
 mk_story_repo() {
-  local origdir origin repo
+  local origdir origin repo prefix="${1:-TST}"
   origdir="$(mktemp -d /tmp/story-test-origin.XXXXXX)"
   mkdir -p "$origdir/fake"
   origin="$origdir/fake/repo.git"
@@ -89,12 +93,25 @@ mk_story_repo() {
     # pointer is what a real project does, and it is what makes a linked
     # worktree of this fixture resolve the SAME project as the main checkout —
     # the property test-dispatch-cwd.sh asserts.
-    story project new --prefix TST >/dev/null 2>&1
+    story project new --prefix "$prefix" >/dev/null 2>&1
     git add .storyhook.toml
     git commit -qm 'storyhook pointer'
     git push -q origin main
   ) >/dev/null 2>&1
   printf '%s' "$repo"
+}
+
+# slug_for <dir> — the project slug `story project list` reports for the project
+# rooted at <dir>. Read out of the listing rather than derived from the
+# directory name: the derivation is the CLI's business, and a test that
+# reimplemented it would keep passing after the two disagreed.
+#
+# Lived in test-project-selection.sh until SH-120 needed it in a second file.
+slug_for() {
+  local phys
+  phys=$(cd "$1" && pwd -P)
+  (cd "$1" && story project list 2>/dev/null) \
+    | awk -v p="$phys" 'index($0, p) && $1 != "checkout" && $1 != "origin" {print $1; exit}'
 }
 
 # new_story <repo-dir> "<title>" — create a story via the real CLI in

@@ -29,6 +29,7 @@
 use std::path::PathBuf;
 
 use crate::error::AppError;
+use crate::output::ProjectView;
 use crate::store::{ProjectId, ProjectRecord, ReadOps, Store};
 
 /// One row of `story project list`.
@@ -181,6 +182,45 @@ impl<'a, S: Store> CatalogService<'a, S> {
                 entries.push(entry(project, path));
             }
             Ok(entries)
+        })?)
+    }
+
+    /// One project, in full: its identity and the two git associations it may
+    /// hold.
+    ///
+    /// **The scoped singular to [`all`](Self::all)'s plural.** `all` answers
+    /// "what projects are there"; this answers "what is *this* project", which
+    /// is the question `story project show` exists to ask and the one nothing
+    /// in the CLI could answer before SH-120.
+    ///
+    /// Three reads in one transaction, so the identity, the checkout and the
+    /// origins are all observed at the same instant. Reading them separately
+    /// would let a concurrent `link checkout` land between two of them and
+    /// produce a value describing no state the store was ever in.
+    ///
+    /// The checkout is reported exactly as recorded, **unchecked**. Whether the
+    /// directory is still on disk is [`orphaned`](Self::orphaned)'s question,
+    /// and probing it here would put a filesystem call on the path of a lookup —
+    /// and would make the answer depend on which machine asked, which is the
+    /// dependency this epic exists to remove.
+    pub fn describe(&self, project: ProjectId) -> Result<ProjectView, AppError> {
+        Ok(self.store.read(|tx| {
+            let record = tx.project(project)?.ok_or_else(|| {
+                crate::store::StoreError::from(AppError::NotFound(format!(
+                    "project `{project:?}` is not in the store"
+                )))
+            })?;
+            Ok(ProjectView {
+                slug: record.slug,
+                name: record.name,
+                prefix: record.prefix,
+                checkout: tx.checkout_path(project)?,
+                origins: tx
+                    .project_remotes(project)?
+                    .into_iter()
+                    .map(|remote| remote.raw)
+                    .collect(),
+            })
         })?)
     }
 
