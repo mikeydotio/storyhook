@@ -175,6 +175,61 @@ pub struct RawEvent {
     pub payload: String,
 }
 
+impl RawEvent {
+    /// One decoded event as bytes, with its `kind` and `at` lifted out.
+    ///
+    /// The denormalization is what lets a storyhook that has never heard of a
+    /// kind still read, report, and retain the row (SH-54): those two columns
+    /// are readable without understanding the payload at all. Deriving them
+    /// here rather than at each call site is what stops the three disagreeing.
+    ///
+    /// Fails only if a `StoryEvent` serializes without a string `kind` or `at`,
+    /// which the derive cannot produce — hence [`StoreError::Invariant`] rather
+    /// than a validation error.
+    pub fn from_event(event: &StoryEvent) -> Result<Self, StoreError> {
+        let value = serde_json::to_value(event)?;
+        let field = |name: &str| -> Result<String, StoreError> {
+            value
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    StoreError::Invariant(format!(
+                        "a StoryEvent serialized without a string `{name}` field"
+                    ))
+                })
+        };
+        Ok(Self {
+            kind: field("kind")?,
+            at: field("at")?,
+            payload: serde_json::to_string(&value)?,
+        })
+    }
+}
+
+/// Where an append's events came from, which decides how a `[git]` comment in
+/// one is read.
+///
+/// The distinction is not stylistic. A `StoryCommentAdded` reading
+/// `[git] <short>: <subject>` is a *pre*-#18 link record — and it is also
+/// exactly what a user gets if they type that text into `story comment`. Which
+/// of the two it is cannot be told from the bytes; it can be told from who is
+/// speaking, and this is how the caller says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkSource {
+    /// This program, now, on behalf of a command. A `[git]`-shaped comment here
+    /// is a *user's comment*, and recording it as a link would let anyone
+    /// suppress a real one by typing it — the exact hole the old string scan
+    /// had, and the reason kind #18 exists.
+    Live,
+    /// A history being replayed from somewhere else: `story migrate` reading an
+    /// unmigrated `.storyhook` tree, or an injector rebuilding one. Every
+    /// `[git]` comment in such a history was written by `commit-sync` before
+    /// kind #18 existed, so projecting them is what stops the first sync after
+    /// a migration re-linking a repository's whole log.
+    Replayed,
+}
+
 /// A story that carried at least one event this binary could not decode.
 ///
 /// Produced by [`partition_known`] and by the rebuild oracle, so an unknown

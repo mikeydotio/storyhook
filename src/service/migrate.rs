@@ -47,8 +47,8 @@ use crate::domain::{
 use crate::error::AppError;
 use crate::legacy::{LegacyProject, LegacyStory};
 use crate::store::{
-    EventSeq, ExpectedSeq, NewProject, ProjectSettings, RawEvent, ReadOps, Store, StoreError,
-    StoryNo, StoryQuery, WriteOps, partition_known,
+    EventSeq, ExpectedSeq, LinkSource, NewProject, ProjectSettings, RawEvent, ReadOps, Store,
+    StoreError, StoryNo, StoryQuery, WriteOps, partition_known,
 };
 
 use super::project::{ProjectPointer, pointer_path, read_pointer, unique_slug, write_pointer};
@@ -438,6 +438,11 @@ impl MigrationPlan {
                     story.story_no,
                     ExpectedSeq::Exact(EventSeq::ZERO),
                     &story.events,
+                    // A legacy tree's history, written before kind #18 existed:
+                    // its `[git]` comments are `commit-sync`'s own link records
+                    // and must project, or the first sync after a migration
+                    // re-links the repository's whole log.
+                    LinkSource::Replayed,
                 )?;
                 heads.push(head);
             }
