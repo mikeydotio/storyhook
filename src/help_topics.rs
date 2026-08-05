@@ -1784,6 +1784,13 @@ supported way to give a test suite, or a second tracker, a store of its own.
 It refuses to create the default path; that one is made by the daemon on its
 first run, never by this verb.
 
+story project new also refuses once too many projects appear in a real store
+too fast: 5 or more inside ten minutes is refused, because that rate is the
+signature of a test suite driving story without a store of its own, not a
+person or a script creating projects on purpose. It names the same levers
+above, plus STORYHOOK_ALLOW_PROJECT_BURST for the rare case where the volume
+really was on purpose.
+
 The store runs in write-ahead-logging mode, so it is three files in practice:
 store.db, store.db-wal and store.db-shm. All three are part of the database.
 That matters when restoring — see below.
