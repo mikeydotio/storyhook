@@ -38,8 +38,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
-    StateDef, StoryEvent, StorySnapshot, inverse_relation, normalize_labels,
-    validate_required_states,
+    StateDef, StoryEvent, StorySnapshot, TypeDef, inverse_relation, normalize_labels,
+    validate_required_states, validate_type_slug,
 };
 use crate::error::AppError;
 use crate::store::{
@@ -74,7 +74,8 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         // One transaction for both: a report whose catalog half and story half
         // came from different instants could name a state the other did not see.
         let mut issues = self.ctx.store().read(|tx| {
-            let mut issues = catalog_issues(&tx.states(self.project())?);
+            let mut issues =
+                catalog_issues(&tx.states(self.project())?, &tx.types(self.project())?);
             issues.extend(story_issues(tx, self.project())?);
             Ok(issues)
         })?;
@@ -266,12 +267,30 @@ impl<'a, S: Store> IntegrityService<'a, S> {
 /// One finding, not one per missing state: the remedy is the same command
 /// however many are missing, and [`validate_required_states`] already names
 /// them all in its own sentence.
-fn catalog_issues(states: &[StateDef]) -> Vec<String> {
-    validate_required_states(states)
+fn catalog_issues(states: &[StateDef], types: &[TypeDef]) -> Vec<String> {
+    let mut issues: Vec<String> = validate_required_states(states)
         .err()
         .map(|error| error.to_string())
         .into_iter()
-        .collect()
+        .collect();
+
+    // SH-134. `add_type` refuses these now, so one can only be here because an
+    // older storyhook wrote it or a document carried it in — and a document's
+    // catalog is deliberately left raw, because the only repair is a rename and
+    // every `StoryTypeSet` event names the slug it set. Reported, never fixed:
+    // the two automatic repairs available are that banned rename and retyping
+    // stories the user never mentioned, so `--fix` says what it cannot do
+    // rather than claiming a repair it did not make.
+    issues.extend(types.iter().filter_map(|story_type| {
+        validate_type_slug(&story_type.slug).err().map(|error| {
+            format!(
+                "type `{}` cannot be addressed: {error}. Retype its stories (`story set <id> \
+                 --type none`) and remove it with `story type remove -- '{}'`",
+                story_type.slug, story_type.slug
+            )
+        })
+    }));
+    issues
 }
 
 /// The legacy story-level checks, reproduced exactly.
