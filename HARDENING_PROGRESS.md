@@ -22,7 +22,11 @@ file and the plan above. Read the plan, then:
    those are in-progress in *another* session, and two loops working one story
    is how a branch gets abandoned half-built. Re-check which are ⚠ with
    `story list --state in-progress` rather than trusting the marks, which are
-   only as fresh as the last time somebody re-swept.
+   only as fresh as the last time somebody re-swept. Skip lines marked **⏸**
+   too: those are filed and ready, but a question about them has been put to
+   Mikey and not yet answered, so deciding one by council would overrule the
+   person it was asked of. Leave them until he answers, however tempting their
+   priority looks.
 2. **Claim** it: `story move <id> in-progress`.
 3. **Read it whole**: `story show <id>`, comments included. Several stories
    carry re-spec notes that contradict their own titles (SH-42, SH-43, SH-44,
@@ -178,7 +182,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-120** — C8 Dispatch plumbing · *both halves landed; SH-50 is unblocked*
 - [x] **SH-166** — `/story do` should not prefix the worktree with the repo name · *closed by another session as #119*
 - [x] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
-- [ ] **SH-182** — the SessionStart hook's 5s budget sits below the 30s spawn-lock wait its own `story` call may take · *filed by SH-140's council*
+- ⏸ **SH-182** — the SessionStart hook's 5s budget sits below the 30s spawn-lock wait its own `story` call may take · *filed by SH-140's council; **held for Mikey's design call** — do not work it autonomously*
 - [ ] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
 - [ ] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
 - [ ] **SH-133** — rollback drops project settings · *filed by SH-129*
