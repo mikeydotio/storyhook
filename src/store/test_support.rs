@@ -32,8 +32,8 @@ use rusqlite::Connection;
 
 use crate::domain::{StoryEvent, fold_story};
 use crate::store::{
-    EventSeq, ExpectedSeq, ProjectId, RawEvent, ReadOps, SqliteStore, Store, StoreError, StoryNo,
-    WriteOps, partition_known,
+    EventSeq, ExpectedSeq, LinkSource, ProjectId, RawEvent, ReadOps, SqliteStore, Store,
+    StoreError, StoryNo, WriteOps, partition_known,
 };
 
 /// Appends `events` to a story's log and re-folds its read-model row, bypassing
@@ -75,7 +75,13 @@ pub fn inject_raw_events(
     events: &[RawEvent],
 ) -> Result<EventSeq, StoreError> {
     store.write(|tx| {
-        let head = tx.append_raw_events(project, story, ExpectedSeq::Any, events)?;
+        let head = tx.append_raw_events(
+            project,
+            story,
+            ExpectedSeq::Any,
+            events,
+            LinkSource::Replayed,
+        )?;
         // A fold failure here is the point of the call, not a problem with it.
         let _ = refold(tx, project, story);
         Ok(head)

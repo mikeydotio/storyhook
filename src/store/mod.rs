@@ -86,9 +86,9 @@ pub use rebuild::{
 };
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
-    DeletedProject, FeedEvent, MigrationReport, NewProject, ProjectRecord, ProjectRemoteRecord,
-    ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent, StoredPayload, StoryQuery,
-    StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
+    DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, ProjectRecord,
+    ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
+    StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
 };
 
 /// A transactional store of projects, events, and the read model folded from
@@ -480,17 +480,25 @@ pub trait WriteOps: ReadOps {
     /// bytes rather than a decoded [`StoryEvent`].
     ///
     /// Same compare-and-swap, same sequencing; the difference is that the
-    /// payload is written exactly as given. The legacy importer needs it — a
-    /// byte-identical round trip has to preserve event kinds this binary does
-    /// not know — and it is how the unknown-kind path is tested. Prefer
-    /// `append_events` everywhere else: it derives `kind` and `at` from the
-    /// payload, so the three cannot disagree.
+    /// payload is written exactly as given. A caller that must preserve an
+    /// event kind this binary has never heard of needs it — `story migrate`,
+    /// `story import-project` and the injectors — and it is how the
+    /// unknown-kind path is tested. Prefer `append_events` when every event is
+    /// a decoded [`StoryEvent`]: it derives `kind` and `at` from the payload,
+    /// so the three cannot disagree.
+    ///
+    /// `source` says whose history this is, and it is not a formality:
+    /// [`LinkSource`] decides whether a `[git]`-shaped comment in the batch is
+    /// read as a pre-#18 commit link. It is an argument rather than a property
+    /// of the method because the distinction is a fact about the *caller*, and
+    /// a caller cannot state a fact it is never asked for.
     fn append_raw_events(
         &mut self,
         project: ProjectId,
         story: StoryNo,
         expected: ExpectedSeq,
         events: &[RawEvent],
+        source: LinkSource,
     ) -> Result<EventSeq, StoreError>;
 
     /// Writes a folded snapshot into the read model, recording the event `head`
