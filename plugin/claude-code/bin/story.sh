@@ -69,8 +69,10 @@
 #      --if-state, still rolled back on a later hard failure).
 #
 # Everything else — worktree/tmux mechanics, the two/three-tier base-
-# freshness handling, claim-rollback-on-later-failure, the CWD-vs-worktree-
-# safe repo_root() — is unchanged from the agentics original.
+# freshness handling, claim-rollback-on-later-failure — is unchanged from the
+# agentics original. repo_root() is the exception: it still answers "where does
+# worktree bookkeeping happen", but it is told which directory to answer for
+# rather than reading the caller's (SH-120).
 set -euo pipefail
 
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
@@ -153,17 +155,21 @@ _INTEGRITY_SUMMARY=""
 # above) — this is purely about the worktree's base commit.
 REQUIRE_FRESH_BASE="${STORY_REQUIRE_FRESH_BASE:-}"
 
-# Directory the WORKTREE verbs run `story` from: the main checkout, set from
-# repo_root() by dispatch, capture and complete, which need one anyway for the
-# worktree bookkeeping they do. Empty for every other verb — those run `story`
-# where the caller stands and let it resolve. Declared here so `set -u` is
-# satisfied on paths that fail before it is assigned.
-PROJECT_DIR=""
-
-# Project named by `--project <slug>` on story.sh's own command line, forwarded
-# verbatim to every `story` call. Empty means "let the CLI decide", which is the
-# ordinary case.
+# Project this invocation is about, forwarded verbatim to every `story` call.
+#
+# Seeded by `--project <slug>` on story.sh's own command line, and PINNED by
+# resolve_checkout to whatever the CLI resolved — see that function for why the
+# pin has to happen before anything changes directory. Empty means "let the CLI
+# decide", which is the ordinary case for the read verbs.
 PROJECT_SLUG=""
+
+# The project's linked checkout, and the repository root reached from it. Set by
+# resolve_checkout / enter_checkout, empty for every verb that needs no
+# directory. Declared here so `set -u` is satisfied on paths that fail before
+# they are assigned.
+CHECKOUT_PATH=""
+CHECKOUT_ERROR=""
+PROJECT_ROOT=""
 
 require_story() {
   command -v "$STORY" >/dev/null 2>&1 \
@@ -189,22 +195,17 @@ require_story() {
 # answered correctly. SH-151 made a sub-project own its own identity; anchoring
 # threw that away again (SH-121).
 #
-# So $PROJECT_DIR is set only by the verbs that genuinely need a directory —
-# dispatch, capture, complete — and it means "the main checkout", not "the
-# project". When it is empty this runs where the caller stands.
-#
-# Runs in a subshell when it does cd, so the caller's CWD is never mutated
-# (several later steps -- gitignore hygiene, `git worktree add` -- use paths
-# relative to it).
+# It no longer cds either. The three verbs that need a directory take it from
+# the project's linked checkout and enter it once, for real (enter_checkout), so
+# there is no second working directory for this function to switch between —
+# and $PROJECT_SLUG is pinned at that moment, which is what keeps every call
+# after the cd talking about the project the caller named rather than the one
+# the new directory would answer for.
 story_cli() {
   if [ -n "$PROJECT_SLUG" ]; then
     set -- --project "$PROJECT_SLUG" "$@"
   fi
-  if [ -n "$PROJECT_DIR" ]; then
-    ( CDPATH= cd -- "$PROJECT_DIR" && "$STORY" "$@" )
-  else
-    "$STORY" "$@"
-  fi
+  "$STORY" "$@"
 }
 
 # _load_ready_stories — `story list --ready --json` into $_READY_JSON, or a hard
@@ -275,12 +276,13 @@ canonical_story_id() {
   if [ -n "$resolved" ]; then printf '%s' "$resolved"; else printf '%s' "$2"; fi
 }
 
-# repo_root — echo the MAIN worktree's absolute root directory, regardless of
-# which worktree (or subdirectory of one) CWD is currently inside. `git
-# rev-parse --git-common-dir` resolves to <main>/.git from ANY worktree of the
-# repo (relative, ".git", only when CWD already IS the main worktree's own
-# root), so its dirname — resolved to an absolute path via a real `cd` in a
-# subshell, never the caller's shell — is stable no matter where CWD is.
+# repo_root <dir> — echo the MAIN worktree's absolute root directory of the
+# repository <dir> belongs to, regardless of which worktree (or subdirectory of
+# one) <dir> itself is. `git rev-parse --git-common-dir` resolves to <main>/.git
+# from ANY worktree of the repo (relative, ".git", only when <dir> already IS
+# the main worktree's own root), so its dirname — resolved to an absolute path
+# via a real `cd` in a subshell, never the caller's shell — is stable no matter
+# where <dir> sits.
 #
 # **This answers "where does worktree bookkeeping happen?", never "which
 # project is this?"** Its three callers all create, name or remove a git
@@ -288,15 +290,120 @@ canonical_story_id() {
 # to the CLI (see story_cli), which knows things a shell walk cannot — a
 # registered origin among them.
 #
-# `dir` MUST use this instead of `git rev-parse --show-toplevel`:
-# --show-toplevel is CWD-relative, so from inside one of THIS script's own
-# worktrees it would return that worktree's root, not the main repo's — a
-# `/story do` invoked from inside an existing dispatched worktree would then
-# nest its new worktree inside it, matching nothing in `git worktree list`.
+# **<dir> is REQUIRED, and deliberately has no default.** `set -u` turns a
+# caller that forgets it into a loud failure, because the default it would
+# otherwise take — the working directory — is precisely the inference SH-120
+# exists to remove.
+#
+# It MUST be used instead of `git rev-parse --show-toplevel`: --show-toplevel is
+# relative to where it runs, so from inside one of THIS script's own worktrees
+# it would return that worktree's root, not the main repo's — a `/story do`
+# invoked from inside an existing dispatched worktree would then nest its new
+# worktree inside it, matching nothing in `git worktree list`.
 repo_root() {
-  local common
-  common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
-  ( CDPATH= cd -- "$(dirname -- "$common")" && pwd -P )
+  local dir="$1" common
+  common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
+  # Two cds, not one: --git-common-dir answers relative to <dir> whenever it can
+  # (it is the bare string ".git" in a main worktree's own root), so the dirname
+  # has to be resolved from there rather than from wherever this script stands.
+  ( CDPATH= cd -- "$dir" && CDPATH= cd -- "$(dirname -- "$common")" && pwd -P )
+}
+
+# cd_resolve <base> <path> — <path> as an absolute, symlink-resolved directory,
+# interpreting a relative <path> against <base> rather than against wherever
+# this script happens to stand. Non-zero for an empty or unreachable <path>.
+cd_resolve() {
+  [ -n "$2" ] || return 1
+  ( CDPATH= cd -- "$1" && CDPATH= cd -- "$2" && pwd -P )
+}
+
+# is_linked_worktree <dir> — true when <dir> belongs to a LINKED git worktree
+# rather than to the repository's main one.
+#
+# `--git-dir` and `--git-common-dir` name the same directory everywhere in the
+# main worktree, including its subdirectories, and differ in a linked one, where
+# the former is <main>/.git/worktrees/<name>. Both are resolved through a real
+# cd so a relative answer and an absolute one compare equal.
+is_linked_worktree() {
+  local dir="$1" gitdir common
+  gitdir=$(cd_resolve "$dir" "$(git -C "$dir" rev-parse --git-dir 2>/dev/null)") || return 1
+  common=$(cd_resolve "$dir" "$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)") || return 1
+  [ "$gitdir" != "$common" ]
+}
+
+# ---- the project's checkout --------------------------------------------------
+#
+# `story project show` answers two questions in one round trip — which project
+# this invocation resolved to, and where that project's repo-side work runs —
+# and the three verbs that touch a repository need both. Asking twice is not an
+# option: the second question would be answered from a DIFFERENT working
+# directory, which in a monorepo whose sub-project owns its own identity is
+# entitled to name a different project (SH-151).
+#
+# resolve_checkout — ask, then PIN $PROJECT_SLUG to the answer. Returns 0 when a
+# checkout was recorded, 1 otherwise with $CHECKOUT_ERROR set to a refusal that
+# names the way out.
+#
+# **The pin happens even when there is no checkout**, because the slug is
+# answered either way and a caller that tolerates a missing directory (capture)
+# still needs to be talking about the right project.
+#
+# Sets globals rather than echoing, for the reason on _load_ready_stories: a
+# caller using $(...) would run `fail` in a subshell, so the script would carry
+# on with the refusal captured in a variable instead of printed.
+resolve_checkout() {
+  local show_json result
+  CHECKOUT_PATH=""
+  CHECKOUT_ERROR=""
+  show_json=$(story_cli project show --json 2>/dev/null) || true
+  result=$(printf '%s' "$show_json" | jq -r '.result // ""' 2>/dev/null || printf '')
+  if [ "$result" != "ok" ]; then
+    # Relayed VERBATIM, never a list composed here. Project selection has FOUR
+    # steps — `--project`, $STORYHOOK_PROJECT, the nearest committed pointer
+    # file, then the repository's registered origin — and a shell can perform
+    # neither of the last two. A hand-written list would be wrong today and
+    # wrong again the next time the resolver grows a step.
+    CHECKOUT_ERROR=$(printf '%s' "$show_json" \
+      | jq -r '.error // "`story project show` emitted no result"' 2>/dev/null \
+      || printf '`story project show` emitted no result')
+    return 1
+  fi
+  PROJECT_SLUG=$(printf '%s' "$show_json" | jq -r '.project.slug // ""')
+  CHECKOUT_PATH=$(printf '%s' "$show_json" | jq -r '.project.checkout // ""')
+  if [ -z "$CHECKOUT_PATH" ]; then
+    CHECKOUT_ERROR="project \`$PROJECT_SLUG\` has no checkout on this machine, so there is nowhere to run a git worktree — record one with \`story --project $PROJECT_SLUG project link checkout <path>\`. Its stories stay readable meanwhile; only the repo-side verbs need a directory."
+    return 1
+  fi
+  return 0
+}
+
+# enter_checkout — validate the resolved checkout and MOVE INTO the repository
+# it belongs to, publishing that repository's root as $PROJECT_ROOT.
+#
+# **One real cd, not `git -C` threaded through every call site.** There are
+# roughly twenty bare git invocations across this file and lib/session.sh,
+# several of them inside shared helpers whose signatures would all have to grow
+# a parameter — and no invariant would stop a twenty-first from being added
+# bare. story.sh is always executed and never sourced, so the cd cannot leak
+# into the caller's shell; repo_root() already cds for that reason.
+#
+# It enters the repository ROOT rather than the recorded path, because worktree
+# bookkeeping belongs at the top of a repository (see repo_root). A checkout
+# recorded as a subdirectory therefore still works. A checkout recorded as a
+# LINKED WORKTREE does not: resolving that one up would silently operate on a
+# different tree from the one recorded, and this codebase reports a
+# disagreement between recorded state and reality rather than correcting it.
+enter_checkout() {
+  local root
+  [ -d "$CHECKOUT_PATH" ] \
+    || fail "project \`$PROJECT_SLUG\` records its checkout at \`$CHECKOUT_PATH\`, and there is no such directory — re-record it with \`story --project $PROJECT_SLUG project link checkout <path>\` if it moved, or run \`story doctor --fix\`, which forgets the recorded path and leaves the project and its stories exactly as they are."
+  root=$(repo_root "$CHECKOUT_PATH") \
+    || fail "project \`$PROJECT_SLUG\`'s checkout \`$CHECKOUT_PATH\` is not a git repository, and this verb has to create a git worktree in it — clone it there, or re-record the checkout with \`story --project $PROJECT_SLUG project link checkout <path>\`."
+  if is_linked_worktree "$CHECKOUT_PATH"; then
+    fail "project \`$PROJECT_SLUG\`'s checkout \`$CHECKOUT_PATH\` is a linked git worktree of \`$root\`, not a checkout — worktrees created for it would land in \`$root\`, which is not the directory recorded. Record the main checkout instead: \`story --project $PROJECT_SLUG project link checkout $root\`."
+  fi
+  PROJECT_ROOT="$root"
+  CDPATH= cd -- "$root" || fail "cannot enter project \`$PROJECT_SLUG\`'s checkout \`$root\`."
 }
 
 # claim_rollback_note <id> <pre-claim-state> — cmd_dispatch's claim is a HARD
@@ -369,16 +476,17 @@ cmd_dispatch() {
     [ -n "${TMUX_PANE:-}" ] || fail "story requires \$TMUX_PANE — run Claude inside a tmux pane."
   fi
 
-  # Step 2: repo dir, anchored to the MAIN worktree via repo_root() — never
-  # CWD-relative (see that function's header).
-  local dir
-  dir=$(repo_root) || fail "not inside a git repository."
-  # Anchor every subsequent `story` call to the project root (SH-46) — see
-  # story_cli's header for why the caller's CWD is not safe to inherit.
-  PROJECT_DIR="$dir"
-
-  # Step 3: story CLI present.
+  # Step 2: story CLI present. Asked before the checkout, because the checkout
+  # is a question only the CLI can answer.
   require_story
+
+  # Step 3: the project's checkout — a LOOKUP, never an inference from the
+  # caller's working directory. Every refusal here lands BEFORE the
+  # compare-and-swap claim in step 6, so a dispatch that cannot proceed never
+  # strands a story at in-progress with no worktree to show for it.
+  resolve_checkout || fail "$CHECKOUT_ERROR"
+  enter_checkout
+  local dir="$PROJECT_ROOT"
 
   # Step 4: story exists. Every read here is REAL, even under dry-run
   # (issue.sh's own asymmetry: reads always run for real, only writes are
@@ -881,22 +989,28 @@ cmd_capture() {
   [ "$#" -eq 0 ] || fail "usage: story.sh capture <story-id>"
   valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  local dir wname legacy_name
-  dir=$(repo_root) || fail "not inside a git repository."
-
-  # The one verb that otherwise reads nothing, and it still has to pay for one
-  # read: the window it is looking for was named by `dispatch` from the
-  # *canonical* id, so `story.sh capture 5` would otherwise hunt for a window
-  # that no dispatch has ever created (SH-118). Tolerant on purpose — capture's
-  # job is to find a tmux window, so a store that cannot answer leaves the id as
-  # typed and lets the "no live tmux window" message below do the reporting,
-  # rather than turning a capture into a story lookup failure.
-  PROJECT_DIR="$dir"
+  # capture takes the resolved checkout PATH but NEITHER the cd NOR the
+  # git-repository check the other two verbs apply. It makes no git calls at
+  # all — it looks for a tmux window — and it wants the path for one thing only:
+  # legacy_wname's basename, which a directory that is gone still has.
+  #
+  # Tolerant throughout, on purpose. capture's job is to find a window, so a
+  # store that cannot answer leaves the id as typed, leaves the legacy name
+  # unguessed, and lets the "no live tmux window" message below do the
+  # reporting — rather than turning a capture into a project lookup failure.
+  # The one read it still pays for is the canonical id: the window it is hunting
+  # was named by `dispatch` from the CANONICAL id, so `story.sh capture 5` would
+  # otherwise look for a window no dispatch has ever created (SH-118).
+  local dir="" wname legacy_name=""
   if command -v "$STORY" >/dev/null 2>&1; then
+    resolve_checkout || true
+    dir="$CHECKOUT_PATH"
     id=$(canonical_story_id "$(story_cli show "$id" --json 2>/dev/null || printf '')" "$id")
   fi
   wname=$(resolve_wname "$id")
-  legacy_name=$(legacy_wname "$id" "$(basename "$dir")")
+  if [ -n "$dir" ]; then
+    legacy_name=$(legacy_wname "$id" "$(basename "$dir")")
+  fi
 
   if [ -n "$DRY_RUN" ]; then
     jq -n --arg wname "$wname" --arg lines "$CAPTURE_LINES" '
@@ -1116,17 +1230,22 @@ story_closed_state() {
   '
 }
 
-# _story_worktree_status <path> — removable|current|locked|dirty|missing.
+# _story_worktree_status <path> <caller-toplevel> — removable|current|locked|
+# dirty|missing.
 #
-# `current` uses --show-toplevel ON PURPOSE (unlike repo_root elsewhere): the
-# question here is literally "is the caller standing inside the worktree it
-# is asking us to delete", which is a CWD-relative question. A locked
-# worktree is never removed and never unlocked — Claude Code's own worktree
-# feature locks the ones it creates, and reclaiming those is not this verb's
-# business.
+# <caller-toplevel> is the repository root the CALLER was standing in, captured
+# before this verb changed directory. It is passed rather than measured here ON
+# PURPOSE: the question `current` asks is literally "is the caller standing
+# inside the worktree it is asking us to delete", which is a question about
+# where the user is, not about where this script has since gone. Measuring it
+# here would answer for the wrong directory, and `git worktree remove` would
+# then succeed while the user's shell sat in a deleted one.
+#
+# A locked worktree is never removed and never unlocked — Claude Code's own
+# worktree feature locks the ones it creates, and reclaiming those is not this
+# verb's business.
 _story_worktree_status() {
-  local target="$1" cur locked
-  cur=$(git rev-parse --show-toplevel 2>/dev/null || printf '')
+  local target="$1" cur="$2" locked
   locked=$(git worktree list --porcelain 2>/dev/null | awk -v want="$target" '
     function flush() { if (p == want) print (l ? "1" : "0") }
     /^worktree / { flush(); p = substr($0, 10); l = 0 }
@@ -1147,11 +1266,21 @@ _story_worktree_status() {
 # under dry-run, as issue.sh's cmd_complete_execute does).
 _complete_prepare() {
   local id="$1"
+  # FIRST, before this verb resolves or enters anything: the repository root
+  # the CALLER is standing in. It is the sole input to _story_worktree_status's
+  # `current` branch, and the only moment it can be read is before the working
+  # directory moves.
+  local caller_toplevel
+  caller_toplevel=$(git rev-parse --show-toplevel 2>/dev/null || printf '')
+
   valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  CMP_DIR=$(repo_root) || fail "not inside a git repository."
-  PROJECT_DIR="$CMP_DIR"
   require_story
+  # The same lookup dispatch performs, for the same reason: a worktree created
+  # under one rule and cleaned up under another is SH-166 verbatim.
+  resolve_checkout || fail "$CHECKOUT_ERROR"
+  enter_checkout
+  CMP_DIR="$PROJECT_ROOT"
 
   local show_json result
   show_json=$(story_cli show "$id" --json 2>/dev/null) || true
@@ -1198,7 +1327,7 @@ _complete_prepare() {
 
   CMP_WT_PATH="$CMP_DIR/$wt_container/$CMP_WNAME"
   CMP_WT_BRANCH="worktree-$CMP_WNAME"
-  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH")
+  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel")
 
   # Branch classification. An un-comparable branch is NEVER treated as merged
   # (branch_is_merged returns false when neither origin/<default> nor local
@@ -1211,6 +1340,18 @@ _complete_prepare() {
     CMP_BR_STATUS="deletable"
   else
     CMP_BR_STATUS="unmerged"
+  fi
+
+  # Nothing at all under the project's checkout is REPORTED, never
+  # reconstructed. There is deliberately no fallback to the caller's own
+  # repository for a worktree dispatched before `project link checkout` recorded
+  # a directory: it would only help when the caller happens to still be standing
+  # in the old one, it would put a second CWD-dependent path through the very
+  # verbs SH-120 takes off CWD, and this codebase's idiom for "recorded state
+  # and reality disagree" is to say so.
+  CMP_NOTE=""
+  if [ "$CMP_WT_STATUS" = "missing" ] && [ "$CMP_BR_STATUS" = "missing" ]; then
+    CMP_NOTE=" Nothing named \`$CMP_WNAME\` exists under $CMP_DIR — if $id was dispatched before \`project link checkout\` recorded that directory, its worktree is elsewhere and is not cleaned up here."
   fi
 
   # Closing is an action only when the story is still open AND we resolved a
@@ -1241,7 +1382,8 @@ cmd_complete_plan() {
     --arg default "$CMP_DEFAULT" --arg wtpath "$CMP_WT_PATH" \
     --arg wtstatus "$CMP_WT_STATUS" --arg branch "$CMP_WT_BRANCH" \
     --arg brstatus "$CMP_BR_STATUS" --argjson close "$CMP_NEEDS_CLOSE" \
-    --argjson actions "$CMP_ACTIONS" --argjson legacy "$CMP_LEGACY" '
+    --argjson actions "$CMP_ACTIONS" --argjson legacy "$CMP_LEGACY" \
+    --arg note "$CMP_NOTE" '
     {
       ok: true, id: $id, title: $title, state: $state, superstate: $super,
       default_branch: $default, legacy_name: $legacy,
@@ -1265,6 +1407,7 @@ cmd_complete_plan() {
              elif $brstatus == "unmerged" then " -> PRESERVED (not merged into " + $default + ")"
              else " -> PRESERVED (" + $brstatus + ")" end)
         + (if $legacy then "\n  (found under its pre-SH-166 name)" else "" end)
+        + (if $note == "" then "" else "\n " + $note end)
       )
     }'
 }
@@ -1356,7 +1499,7 @@ cmd_complete_execute() {
         --argjson failed "$fail_json" --argjson skipped "$skip_json" \
         --argjson cmds "$cmds_json" --argjson closed "$closed" \
         --arg done_state "$CMP_DONE_STATE" --arg note "$close_note" \
-        --argjson legacy "$CMP_LEGACY" \
+        --arg wtnote "$CMP_NOTE" --argjson legacy "$CMP_LEGACY" \
         --argjson dry "$([ -n "$DRY_RUN" ] && echo true || echo false)" '
     {
       ok: true, id: $id, closed: $closed, legacy_name: $legacy,
@@ -1374,7 +1517,7 @@ cmd_complete_execute() {
         + (if ($failed|length) > 0 then " Could not: " + ($failed|join(", ")) + "." else "" end)
         + (if ($skipped|length) > 0 then " Preserved: " + ($skipped|join(", ")) + "." else "" end)
         + (if $legacy then " (found under its pre-SH-166 name)" else "" end)
-        + $note
+        + $note + $wtnote
       ) }'
 }
 

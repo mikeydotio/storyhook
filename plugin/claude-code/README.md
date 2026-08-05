@@ -56,11 +56,24 @@ so expect it to drift from the originals over time.
 
 Worth knowing before changing anything here:
 
-- **`repo_root()` uses `--git-common-dir`, not `--show-toplevel`.** Run from
-  inside a dispatched worktree, `--show-toplevel` would return that worktree's
-  root and the next worktree would be nested inside it. It answers "where does
-  worktree bookkeeping happen?", never "which project is this?" — only
-  `dispatch`, `capture` and `complete` call it.
+- **The repo-side verbs take their directory from the project, not from the
+  caller.** `dispatch`, `capture` and `complete` ask `story project show` where
+  the project's checkout is, and `dispatch`/`complete` then `cd` there once, for
+  real, before any git call. That is the whole of SH-120: every git invocation in
+  `bin/story.sh` and `lib/session.sh` is bare — no `-C` — so before the `cd` each
+  one acted on whatever repository the caller happened to be standing in, and a
+  `/story do` run from the wrong checkout cut its worktree there.
+- **The slug is pinned before the `cd`, not after.** `resolve_checkout` sets
+  `$PROJECT_SLUG` from the same `project show` response that gave it the path.
+  Resolving again from the new directory would be a different question: in a
+  monorepo a sub-project owns its own identity and is entitled to answer
+  differently (SH-151).
+- **`repo_root() <dir>` uses `--git-common-dir`, not `--show-toplevel`.** Given a
+  dispatched worktree, `--show-toplevel` would return that worktree's root and
+  the next worktree would be nested inside it. It answers "where does worktree
+  bookkeeping happen?", never "which project is this?", and its `<dir>` argument
+  is required precisely because the default it would otherwise take is the
+  caller's working directory.
 - **`story_cli()` does not choose a project.** The CLI does, and it knows things
   a shell walk cannot: `$STORYHOOK_PROJECT`, and whether a repository's origin
   is registered. `story_cli` used to `cd` to `repo_root()` first, which
@@ -68,6 +81,13 @@ Worth knowing before changing anything here:
   a subdirectory, `view` from the subdirectory reported "not found" and `list`
   listed the root project's stories, silently, while the CLI standing in the
   same place answered correctly (SH-121).
+- **A checkout that cannot be used is refused before the claim.** No linked
+  checkout, a recorded path that is gone, a directory that is not a git
+  repository, or a checkout recorded as a *linked worktree* — each names the way
+  out, and each lands ahead of `dispatch`'s compare-and-swap claim so a refusal
+  never strands a story at in-progress. A worktree that is not where the checkout
+  says it should be is reported, never reconstructed from the caller's own
+  repository.
 - **`--project <slug>` is story.sh's own global option**, stripped before the
   verb and forwarded to every `story` call. It is what makes the read verbs
   usable outside a repository.
