@@ -19,7 +19,9 @@
 //! also a consistency check on whatever it exercised.
 
 use storyhook::cli::MemberInput;
-use storyhook::domain::{FieldEdit, StateChanges, StateDef, SuperState, TypeDef};
+use storyhook::domain::{
+    FieldEdit, StateChanges, StateDef, SuperState, TypeDef, validate_type_slug,
+};
 use storyhook::error::AppError;
 use storyhook::service::{
     ConfigService, Ctx, NewStoryInput, StateListing, StoryService, config::state_usage,
@@ -1190,6 +1192,34 @@ fn a_github_handle_becomes_both_the_id_and_the_handle() {
 /// pinned, though, and an unpinned guarantee is what SH-134 was. Asserting it
 /// through the type validator rather than restating the charset means the two
 /// invariants cannot drift apart: weaken either and this fails.
+/// A fixture each, because two of these inputs derive the *same* id: `!!!` and
+/// a run of spaces both fall back to `member`, so sharing one project would
+/// fail the second on uniqueness — a fact about the fixture, not about
+/// addressability, which is what this test is for.
+#[test]
+fn member_ids_always_satisfy_the_type_slug_addressability_bar() {
+    for raw in [
+        "--typo",
+        "!!!",
+        "café user",
+        "Ada Lovelace <ada@example.com>",
+        "in review",
+        "spike/two",
+        "-lead",
+        "double--dash",
+        "   ",
+    ] {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        let member = ConfigService::new(&ctx)
+            .add_member(&MemberInput::Identity(raw.to_string()))
+            .unwrap_or_else(|e| panic!("`{raw}` was refused: {e:?}"));
+        validate_type_slug(&member.id).unwrap_or_else(|e| {
+            panic!("`{raw}` derived the unaddressable id `{}`: {e}", member.id)
+        });
+    }
+}
+
 #[test]
 fn a_member_id_cannot_be_claimed_twice() {
     let fixture = ServiceFixture::new();
