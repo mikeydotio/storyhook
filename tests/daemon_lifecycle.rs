@@ -120,6 +120,47 @@ fn the_token_is_required_and_is_not_guessable_from_the_portfile_alone() {
     assert_eq!(hello_status(&info, &info.token), 200);
 }
 
+/// `story daemon token` (SH-50) — how an operator gets a copy of the bearer
+/// token into the dashboard's own token prompt without reading the 0600
+/// portfile by hand. Prints exactly what the portfile holds, and what it
+/// prints actually gates `/api/v1/*`.
+#[test]
+fn daemon_token_prints_the_portfiles_token_and_it_actually_works() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+    let info = start(&env);
+
+    env.story(dir.path())
+        .args(["daemon", "token"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(&info.token));
+
+    assert_eq!(hello_status(&info, &info.token), 200);
+}
+
+/// Refuses rather than silently starting a daemon: `token` is a question
+/// about a daemon presumably already serving the dashboard the token is for,
+/// so a caller with none running gets told to start one, not handed a token
+/// for a daemon it never asked for.
+#[test]
+fn daemon_token_refuses_when_nothing_is_running() {
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+
+    env.story(dir.path())
+        .args(["daemon", "token"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not running"));
+
+    assert!(
+        env.daemon().is_none(),
+        "`daemon token` must not have started a daemon as a side effect"
+    );
+}
+
 /// Liveness is the held lock. A portfile is a claim; the lock is the fact.
 #[test]
 fn a_running_daemon_holds_its_pidfile_and_a_stopped_one_does_not() {
