@@ -176,8 +176,8 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-144** — `HttpInvoker::send` has no bound, so a wedged daemon holds its client forever
 - [x] **SH-141** — an event hook's grandchild holds its stderr pipe and wedges the daemon
 - [x] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
-- [ ] **SH-120** — C8 Dispatch plumbing · *the epic's next link, and the only thing SH-50 waits on*
-- [ ] **SH-166** — `/story do` should not prefix the worktree with the repo name · *same file as SH-120; carries a handoff comment from SH-118*
+- [ ] **SH-120** — C8 Dispatch plumbing · *the epic's next link, and the only thing SH-50 waits on* · **part 1 landed (#125): the CLI half. The plugin half remains — see the story.**
+- [x] **SH-166** — `/story do` should not prefix the worktree with the repo name · *closed by another session as #119*
 - [ ] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
 - [ ] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
 - [ ] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
@@ -3874,3 +3874,110 @@ portfile.
 
 **Council:** yes — unanimous, round 1.
 `.council/sh160-git-env-scrub-home/DECISION.md`.
+
+### SH-120 — part 1 done · the CLI half · the story stays open
+
+**Outcome:** `story project show` exists, and AC3 is rewritten from a false claim
+into two tests. **Dispatch is untouched**, so none of SH-120's three acceptance
+criteria is met and the story goes back to `todo` with a handoff comment. Merged
+as #125.
+
+**Split on Mikey's explicit call**, offered as a choice mid-story rather than
+taken unilaterally: the plugin half rewrites the three verbs that create and
+destroy worktrees, and it is the risky half. The CLI half is a prerequisite that
+stands on its own.
+
+**The story understates its own extent, which is the finding worth carrying.**
+SH-120 says dispatch "derives its directory from the working directory". The real
+defect is that **every** git call in `story.sh` and `lib/session.sh` is bare — no
+`-C`, no subshell `cd` — so each acts on whatever repository the caller happens to
+be standing in. Changing only the `dir=` variable would leave `git worktree add`
+cutting a worktree of the **caller's** repo at a path inside the project's
+directory: strictly worse than the defect as filed. Two seats found this
+independently; the chair verified all twenty call sites.
+
+**Measured before designing.** From storyhook's own checkout, against the real
+store: `story.sh --project scad-caliper dispatch CAL-12` plans a worktree at
+`storyhook/.claude/worktrees/CAL-12` on branch `worktree-CAL-12`, while
+scad-caliper's linked checkout is elsewhere entirely. Outside any repository
+dispatch dies at `story.sh:375` before the CLI is ever consulted, so AC1 fails at
+the first branch. And 6 of 14 live projects have no linked checkout at all — the
+"no checkout" branch is the ordinary case, not an edge one.
+
+**Council: 2–1 for proposal C, and all three seats voted against their own.**
+First time in this run that every seat did. Each moved because a *measured fact*
+from another seat refuted a specific claim of theirs — the CLI seat withdrew its
+own strongest argument after checking `output.rs:508-519`, and the challenger
+conceded a genuine correctness bug in its own design (nothing pinned
+`PROJECT_SLUG` before the `cd`). `.council/sh120-dispatch-checkout-lookup/`.
+
+**Three of the chair's own briefing facts were wrong**, each caught by a seat and
+verified before admission — recorded because a brief that is trusted uncritically
+is worse than no brief:
+
+| the brief said | measured |
+|---|---|
+| resolution has 3 steps | **4** — a committed pointer file sits between `$STORYHOOK_PROJECT` and the origin, and answers 2,224 of 2,347 gate resolutions against the origin's 5 |
+| `wire_envelope.rs` forces every `Response` variant into its corpus | **it does not** — only `AppError` and `Invocation` have that guard |
+| 9 `checkout_path` readers | **11** — `git_links.rs:186,206` were miscategorised as writers; they read before writing |
+
+The epic's own prose is the stale document on the first of those, not the code.
+
+**AC3 was unsatisfiable as written and is restated, not dropped.** "A grep
+confirms no code path other than dispatch reads `checkout_path`" was already false
+before this story started. The rule pinned instead is the one SH-112 actually
+states: read only to *report* a path or to *choose a working directory*, never to
+decide which project a directory is. Two tests, because the rule has a structural
+half and a behavioural half and neither implies the other — a frozen file list
+cannot notice an allowlisted function repurposed into a resolver, and a
+behavioural probe cannot notice a new reader in a module it never exercises.
+
+**A test-infrastructure gap found on the way**, now closed: `wire_envelope.rs` had
+no `Response`-variant coverage guard, so a permanent wire variant could land with
+nothing proving it survives the daemon hop. Added and verified in both directions
+— with the two `Project` rows removed it fails naming `["project"]`.
+
+**Gate:** `make test` exits 0 — 118 green blocks, 0 failures, plugin harness 21/0,
+browser suite 9/9. Two red runs preceded it and both were the toolchain doing its
+job: `cargo fmt --check`, then a clippy `&PathBuf`-instead-of-`&Path` in my own new
+test.
+
+**Two process failures, both mine.**
+
+1. **I dispatched three council seats without the heartbeat instruction this file
+   mandates.** Two went silent for ~13 minutes and I could not tell a wedged seat
+   from a working one — the precise failure the eight-hour `make gate` wedge was
+   supposed to have taught, repeated by the author of the rule. I killed and
+   re-dispatched one seat; both originals then delivered anyway, leaving four
+   proposals for three seats. Ruling recorded in `PANEL.md`: one seat, one vote;
+   the late submission's *evidence* was admitted on its merits, its *ballot* was
+   not.
+2. **The underlying cause is a transport fault this run has now hit twice.**
+   `SendMessage` rejects a bare JSON object, and my prompt demanded "only a JSON
+   object, no prose". The seats could not deliver what I asked for. SH-130's entry
+   records the first occurrence. The chair-side fix — always fence the JSON — is
+   written into `PANEL.md` so a third occurrence has no excuse.
+
+**And one real side effect on the live machine, which I caused.** I ran
+`./target/debug/story project show --json` against the **real store** as a smoke
+test. A dev build applies pending migrations on open, and main carries migration
+`0009` (SH-157's, merged 2026-08-03 16:16) — while the installed binary dated from
+10:05 that morning, before it. Result: the store went to schema 9 and the installed
+`story` refused to start, exit 5, "written by a newer storyhook". The user's
+tracker was broken until repaired.
+
+It was latent regardless — any newer build touching that store does the same, and
+the neighbouring SH-157/SH-166 sessions were running newer builds all along — but
+running a dev binary against a live store was mine to avoid. Repaired by backing
+the store up first (`store-pre-sh120-install-20260805T013543Z.db`, `VACUUM INTO`,
+integrity ok, 14 projects / 419 stories, named so SH-135's 7-deep FIFO cannot prune
+it), then `make install`. After: 51 open, 128 closed, 14 projects, **zero**
+integrity findings. **The rule for the next context: never point a `cargo build`
+binary at the real store — use a scratch `STORYHOOK_DATA_DIR`.**
+
+**Also filed:** SH-181 — `story doctor` is red on the real store with 10 malformed
+labels, a CSV list stored as one label containing commas. Pre-existing, unrelated
+to this work, and worth its own story because a permanently-red doctor trains its
+reader to ignore the next real finding.
+
+**Council:** yes — `.council/sh120-dispatch-checkout-lookup/DECISION.md`.
