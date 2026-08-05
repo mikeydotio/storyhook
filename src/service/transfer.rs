@@ -28,9 +28,11 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::output::StoryView;
+use serde_json::value::RawValue;
+
 use crate::store::{
-    EventSeq, ExpectedSeq, NewProject, ProjectId, ReadOps, Store, StoreError, StoryNo, StoryQuery,
-    WriteOps, partition_known,
+    EventSeq, ExpectedSeq, LinkSource, NewProject, ProjectId, RawEvent, ReadOps, Store, StoreError,
+    StoredEvent, StoredPayload, StoryNo, StoryQuery, WriteOps, partition_known,
 };
 
 use super::project::{DEFAULT_PREFIX, ProjectPointer, read_pointer, unique_slug, write_pointer};
@@ -73,15 +75,151 @@ pub struct ProjectExport {
 pub struct ExportedStory {
     /// The story id, prefix included.
     pub id: String,
-    /// Every event, oldest first.
-    ///
-    /// Decoded events only: an event kind this binary does not understand is
-    /// dropped on export, which is the one lossy edge of the round trip and is
-    /// recorded as such in the flip checklist.
-    pub events: Vec<StoryEvent>,
+    /// Every event, oldest first — including the ones this binary cannot
+    /// decode.
+    pub events: Vec<ExportedEvent>,
     /// Whether the story lives in the legacy archive rather than as an open
     /// log.
     pub archived: bool,
+}
+
+/// One event inside an [`ExportedStory`]: decoded when this binary understands
+/// it, verbatim when it does not.
+///
+/// # Why this is not `Vec<StoryEvent>` any more
+///
+/// It was, and an event kind this build could not decode was dropped on the way
+/// out — silently, so an export taken by an older binary and restored later lost
+/// whatever a newer one had written (SH-67). The store has never done that:
+/// events are rows with an opaque payload and [`StoredPayload::Unknown`] retains
+/// them (SH-54). Export was the one place the care stopped.
+///
+/// # The wire form is one bare event object either way
+///
+/// A `Known` event serializes exactly as a [`StoryEvent`] always did, so a
+/// project holding no unknown kinds produces the same bytes it produced before
+/// SH-67 — which is what `golden-export.json` compares literally. An `Unknown`
+/// event serializes as its own stored payload text, byte for byte, key order
+/// included: re-serializing a parsed value would normalize the key order, and
+/// `src/legacy/events.rs` already settled that key order is part of *verbatim*.
+///
+/// Reading is the mirror and is deliberately **lax**, matching
+/// [`crate::store::StoredPayload`]'s own rule rather than the stricter one
+/// `crate::legacy::parse_event` applies to a legacy tree: whatever decodes as a
+/// `StoryEvent` is `Known`, and anything else is kept as bytes. `story export`
+/// must never fail on account of what an event contains — it is the documented
+/// backup and rollback step 2, it has no `--force`, and a refusal would turn one
+/// undecodable row into a project that cannot be backed up at all. The signal
+/// that an event was not understood belongs to `story doctor`, which reports it
+/// from the store itself.
+///
+/// The one thing a document may not hold is an event object with no string
+/// `kind` or `at`: those two are what the store denormalizes into columns, and
+/// an event storyhook cannot even index by kind and time is corrupt rather than
+/// merely unrecognised. That refusal carries the document's line and column,
+/// which is what a hand-edited file needs.
+#[derive(Clone, Debug)]
+pub enum ExportedEvent {
+    /// A kind this binary understands, decoded.
+    Known(StoryEvent),
+    /// A kind this binary does not understand, kept exactly as written.
+    Unknown(RawEvent),
+}
+
+impl ExportedEvent {
+    /// One stored event as it travels in a document.
+    ///
+    /// The store has already classified it; this does not re-litigate the
+    /// question, because a second classifier is how the two come to disagree.
+    #[must_use]
+    pub fn from_stored(event: &StoredEvent) -> Self {
+        match &event.payload {
+            StoredPayload::Known(decoded) => Self::Known(decoded.clone()),
+            StoredPayload::Unknown { kind, json } => Self::Unknown(RawEvent {
+                kind: kind.clone(),
+                at: event.at.clone(),
+                payload: json.clone(),
+            }),
+        }
+    }
+
+    /// The decoded event, or `None` when this binary does not understand it.
+    ///
+    /// The fold consumes only these: [`crate::domain::fold_story`] is defined
+    /// over `StoryEvent`, and an unknown event contributes nothing to a
+    /// snapshot by construction.
+    #[must_use]
+    pub fn known(&self) -> Option<&StoryEvent> {
+        match self {
+            Self::Known(event) => Some(event),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    /// The event as the store's raw triple, ready for `append_raw_events`.
+    fn to_raw(&self) -> Result<RawEvent, StoreError> {
+        match self {
+            Self::Known(event) => RawEvent::from_event(event),
+            Self::Unknown(raw) => Ok(raw.clone()),
+        }
+    }
+}
+
+impl serde::Serialize for ExportedEvent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Known(event) => event.serialize(serializer),
+            // `RawValue` rather than a re-serialized `Value`, so the payload's
+            // own bytes reach the document unchanged.
+            Self::Unknown(raw) => RawValue::from_string(raw.payload.clone())
+                .map_err(|error| {
+                    serde::ser::Error::custom(format!(
+                        "the stored payload of a `{}` event is not JSON and cannot be written \
+                         into an export document ({error}). The store holds a torn payload; \
+                         `story doctor` reports it.",
+                        raw.kind
+                    ))
+                })?
+                .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ExportedEvent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        // Two passes over one element, not two elements: `RawValue` keeps the
+        // original text so that a payload this binary cannot decode survives
+        // with its bytes intact. `#[serde(untagged)]` cannot do this — it
+        // buffers through serde's private `Content`, which cannot produce a
+        // `RawValue` — which is why these impls are written out.
+        let raw = Box::<RawValue>::deserialize(deserializer)?;
+        let text = raw.get();
+        if let Ok(event) = serde_json::from_str::<StoryEvent>(text) {
+            return Ok(Self::Known(event));
+        }
+
+        let fields: serde_json::Map<String, serde_json::Value> = serde_json::from_str(text)
+            .map_err(|error| D::Error::custom(format!("an event must be an object: {error}")))?;
+        let field = |name: &str| -> Result<String, D::Error> {
+            fields
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    D::Error::custom(format!(
+                        "an event this build cannot decode must still carry a string `{name}`, \
+                         which is how the store indexes one it does not understand"
+                    ))
+                })
+        };
+        Ok(Self::Unknown(RawEvent {
+            kind: field("kind")?,
+            at: field("at")?,
+            payload: text.to_string(),
+        }))
+    }
 }
 
 /// The `schema` an export document declares.
@@ -132,7 +270,9 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                 let story_no = StoryNo::parse_id(&prefix, &row.snapshot.id)
                     .map_err(|error| StoreError::Corrupt(error.to_string()))?;
                 let stored = tx.events_for(project, story_no)?;
-                let (events, _unknown) = partition_known(story_no, &stored);
+                // Every event, decoded or not. `partition_known` stood here and
+                // its second half was discarded, which is what SH-67 was.
+                let events = stored.iter().map(ExportedEvent::from_stored).collect();
                 let exported = ExportedStory {
                     id: row.snapshot.id.clone(),
                     events,
@@ -344,11 +484,24 @@ pub fn import_project<S: Store>(
                     story.id
                 ))
             })?;
-            let head = tx.append_events(
+            // One raw append per story, not one per decodable run: a restore
+            // has to write events this build cannot decode, and splitting the
+            // history at each of them would be the same call made three times.
+            // `LinkSource::Live` is what `append_events` passed here before
+            // SH-67 and is therefore this path's behaviour unchanged — whether
+            // it *should* be `Replayed` is SH-70, and is a decision this commit
+            // deliberately does not make.
+            let raw = story
+                .events
+                .iter()
+                .map(ExportedEvent::to_raw)
+                .collect::<Result<Vec<_>, _>>()?;
+            let head = tx.append_raw_events(
                 project,
                 story_no,
                 ExpectedSeq::Exact(EventSeq::ZERO),
-                &story.events,
+                &raw,
+                LinkSource::Live,
             )?;
             if story_no.get() > highest.get() {
                 highest = story_no;
