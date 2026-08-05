@@ -1,6 +1,3 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 /// Tests for the session-start.sh hook used by Claude Code.
 ///
 /// The hook at plugin/claude-code/hooks/session-start.sh reads stdin JSON
@@ -13,7 +10,7 @@
 /// using the actual `story` binary and the actual shell script.
 use assert_cmd::Command;
 use std::process;
-use tempfile::tempdir;
+use storyhook_test_support::scratch_dir;
 
 const HOOK_PATH: &str = "plugin/claude-code/hooks/session-start.sh";
 
@@ -125,7 +122,7 @@ fn hook_script_calls_story_session_start() {
 
 #[test]
 fn hook_outputs_empty_json_when_no_storyhook_dir() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     // Do NOT run story init -- no .storyhook/ directory
     let (stdout, code) = run_hook(dir.path());
     assert_eq!(code, 0, "hook should exit 0 even with no project");
@@ -142,7 +139,7 @@ fn hook_outputs_empty_json_when_no_storyhook_dir() {
 
 #[test]
 fn hook_outputs_empty_json_when_plugin_disabled() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -171,7 +168,7 @@ fn hook_outputs_empty_json_when_plugin_disabled() {
 
 #[test]
 fn hook_outputs_system_message_for_valid_project() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -201,7 +198,7 @@ fn hook_outputs_system_message_for_valid_project() {
 
 #[test]
 fn hook_system_message_contains_story_count() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -230,7 +227,7 @@ fn hook_system_message_contains_story_count() {
 
 #[test]
 fn hook_system_message_contains_next_story_info() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -263,7 +260,7 @@ fn hook_system_message_contains_next_story_info() {
 
 #[test]
 fn hook_completes_within_timeout() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -291,7 +288,7 @@ fn hook_completes_within_timeout() {
 
 #[test]
 fn hook_handles_empty_project_gracefully() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -322,7 +319,7 @@ fn hook_handles_empty_project_gracefully() {
 
 #[test]
 fn hook_output_is_strictly_valid_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -358,7 +355,7 @@ fn hook_output_is_strictly_valid_json() {
 fn hook_system_message_contains_cli_reference() {
     // The context should inject a concise CLI reference so the LLM knows how
     // to use storyhook commands.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -385,7 +382,7 @@ fn hook_system_message_contains_cli_reference() {
 fn hook_system_message_contains_project_state() {
     // The context should include project state info (not just a one-line
     // status, but enough for the LLM to orient).
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -422,7 +419,7 @@ fn hook_system_message_contains_project_state() {
 
 #[test]
 fn hook_handles_special_characters_in_story_title() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -446,7 +443,7 @@ fn hook_handles_special_characters_in_story_title() {
 
 #[test]
 fn hook_handles_unicode_in_story_title() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
