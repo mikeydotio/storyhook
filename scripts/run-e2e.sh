@@ -47,6 +47,22 @@ unset STORYHOOK_STORE_PATH
 export STORYHOOK_DAEMON_ADDR="127.0.0.1:0"
 export STORYHOOK_PARENT_PID="$$"
 
+# --- Dispatch (SH-50): the daemon invokes this repo's own plugin script,
+# against the fake tmux the plugin test harness already uses — no real tmux
+# server, no real claude, no network. Exported before `daemon start` below so
+# the daemon (and, through it, every dispatch child it spawns) inherits every
+# one of these; the readiness/confirm delays are zeroed the same way
+# test-dispatch-happy.sh zeroes them, since the fake tmux's default capture
+# fixture confirms readiness on the first poll and there is nothing to wait
+# out.
+export STORYHOOK_DISPATCH_SCRIPT="$repo_root/plugin/claude-code/bin/story.sh"
+export PATH="$repo_root/plugin/claude-code/tests/fakes:$PATH"
+export FAKE_TMUX_STATE="$data_root/faketmux"
+export STORY_READY_DELAY=0
+export STORY_READY_FALLBACK_DELAY=0
+export STORY_CONFIRM_DELAY=0
+export STORY_PASTE_SETTLE_DELAY=0
+
 case "$STORYHOOK_DATA_DIR" in
   /private/tmp/*) ;;
   *)
@@ -72,18 +88,49 @@ seed_dir="$data_root/seed"
 mkdir -p "$seed_dir/alpha" "$seed_dir/beta"
 
 echo "run-e2e.sh: seeding projects…" >&2
+
+# A real git repo, not just a directory: neither project-selector.spec.ts
+# nor the pre-SH-50 suite needed one (a checkout is only a recorded path
+# until something reads it as a repository), but dispatch's worktree
+# creation does -- confirmed the hard way when AA-1's checkout wasn't one
+# and story.sh refused with exactly that message. No origin is configured;
+# story.sh's own base-resolution tolerates that (falls back to HEAD), so
+# this is the minimum dispatch actually needs.
+init_git_repo() {
+  git init -q -b main
+  git config user.email "e2e@storyhook.test"
+  git config user.name "storyhook e2e"
+  echo "# $(basename "$PWD")" >README.md
+  git add README.md
+  git commit -q -m "init"
+}
+
 (
   cd "$seed_dir/alpha"
+  init_git_repo
   "$story_bin" project new --prefix AA --name "Alpha Project" --no-agents-md >/dev/null
-  "$story_bin" new "Wire up the auth flow" >/dev/null
+  "$story_bin" new "Wire up the auth flow" --json | jq -r '.story.story.id' >"$data_root/alpha-story-id"
   "$story_bin" new "Fix the flaky upload test" >/dev/null
 )
+alpha_story_id="$(cat "$data_root/alpha-story-id")"
 (
   cd "$seed_dir/beta"
+  init_git_repo
   "$story_bin" project new --prefix BB --name "Beta Project" --no-agents-md >/dev/null
   "$story_bin" new "Draft the release notes" >/dev/null
 )
-"$story_bin" project new --prefix GA --name "Gamma Archive" --no-attach --no-agents-md >/dev/null
+# Gamma needs at least one story too (SH-50's AC1 spec opens it to confirm
+# Dispatch is absent) even though it has no checkout to run `new` from —
+# `project new`'s own message names the slug it assigned, which is read back
+# rather than assumed, the same reasoning lib.sh's `slug_for` documents for
+# the plugin harness.
+gamma_message="$("$story_bin" project new --prefix GA --name "Gamma Archive" --no-attach --no-agents-md --json | jq -r '.message')"
+gamma_slug="$(printf '%s' "$gamma_message" | sed -n 's/.*`\([a-z0-9-]*\)`.*/\1/p' | head -n1)"
+if [ -z "$gamma_slug" ]; then
+  echo "run-e2e.sh: could not read Gamma Archive's slug from: $gamma_message" >&2
+  exit 1
+fi
+"$story_bin" --project "$gamma_slug" new "Archived idea" >/dev/null
 
 # --- Start the daemon and discover the port it actually bound. `daemon
 # start` blocks until the daemon reports ready (or times out), but its
@@ -117,6 +164,15 @@ until curl -sf -o /dev/null "$base_url/api/repos"; do
   sleep 0.2
 done
 echo "run-e2e.sh: dashboard live at $base_url" >&2
+
+# --- Dispatch (SH-50): the token the dashboard's token modal needs, and
+# where AA's dispatch is expected to land, for the spec's own assertions.
+# `daemon token` prints the token on its own first line, then a rotation
+# note on a second -- `head -n1` is the token alone.
+export DASHBOARD_DISPATCH_TOKEN
+DASHBOARD_DISPATCH_TOKEN="$("$story_bin" daemon token | head -n1)"
+export DASHBOARD_ALPHA_STORY_ID="$alpha_story_id"
+export DASHBOARD_ALPHA_CHECKOUT="$seed_dir/alpha"
 
 # --- Run the suite.
 #
