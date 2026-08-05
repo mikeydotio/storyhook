@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
@@ -195,6 +197,44 @@ pub struct ProjectSnapshotView {
     pub stories: Vec<StorySnapshot>,
 }
 
+/// Which project a command resolved to, and where its repo-side work runs.
+///
+/// **The answer to a question nothing else could ask.** `story project list`
+/// enumerates every project as a block of prose; it cannot say which one *you*
+/// are, and it is dispatched without a [`Ctx`](crate::service::Ctx) so it cannot
+/// honour `--project` either. This is the scoped singular.
+///
+/// Its consumer is `plugin/claude-code/bin/story.sh`, which needs the slug and
+/// the directory **in one round trip** — the slug so it can pin `--project`
+/// before it changes directory, and the directory so it can go there. Splitting
+/// them across two calls would mean re-resolving after the `cd`, from a working
+/// directory that is entitled to answer differently.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectView {
+    /// The handle `--project` takes.
+    pub slug: String,
+    /// The display name.
+    pub name: String,
+    /// The story-id prefix, minted into every id this project will ever have.
+    pub prefix: String,
+    /// Where this project's repo-side operations execute, if it has a checkout
+    /// on this machine.
+    ///
+    /// **Never `skip_serializing_if`.** A script must be able to tell `null` —
+    /// "this project has no checkout here", the ordinary state of six of the
+    /// fourteen projects in the author's own store — from the field having been
+    /// renamed out from under it. Those two want opposite reactions, and a
+    /// missing key cannot distinguish them.
+    ///
+    /// Reported exactly as recorded, unchecked: whether the directory is still
+    /// there is `story doctor`'s question, and answering it here would put a
+    /// filesystem probe on the path of a command that is meant to be a lookup.
+    pub checkout: Option<PathBuf>,
+    /// The origins registered to this project — the only thing project
+    /// selection ever consults.
+    pub origins: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseView {
     pub phase: String,
@@ -341,6 +381,12 @@ pub enum Response {
     /// the prompt render in the process that has a terminal — over the daemon
     /// the service runs somewhere with no way to reach the user at all.
     ConfirmationRequired(Box<ConfirmationPlan>),
+    /// Which project this command resolved to, and where its work runs.
+    ///
+    /// Boxed like [`Story`](Self::Story) and [`Summary`](Self::Summary): a
+    /// single object rather than a collection, and the enum's other variants
+    /// should not all pay for its size.
+    Project(Box<ProjectView>),
 }
 
 #[derive(Serialize)]
@@ -362,6 +408,8 @@ struct JsonEnvelope<'a> {
     phases: Option<&'a [PhaseView]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     settings: Option<&'a [SettingView]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<&'a ProjectView>,
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
     warnings: &'a [String],
     #[serde(default, skip_serializing_if = "<[_]>::is_empty")]
@@ -424,6 +472,7 @@ fn render_json(response: &Response) -> String {
             issues: None,
             phases: None,
             settings: None,
+            project: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -437,6 +486,7 @@ fn render_json(response: &Response) -> String {
             issues: None,
             phases: None,
             settings: None,
+            project: None,
             warnings: &view.warnings,
             flagged_reasons: &view.flagged_reasons,
         }),
@@ -450,6 +500,7 @@ fn render_json(response: &Response) -> String {
             issues: None,
             phases: None,
             settings: None,
+            project: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -463,6 +514,7 @@ fn render_json(response: &Response) -> String {
             issues: None,
             phases: None,
             settings: None,
+            project: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -476,6 +528,7 @@ fn render_json(response: &Response) -> String {
             issues: None,
             phases: None,
             settings: None,
+            project: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -489,6 +542,7 @@ fn render_json(response: &Response) -> String {
             issues: Some(issues),
             phases: None,
             settings: None,
+            project: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -502,6 +556,7 @@ fn render_json(response: &Response) -> String {
             issues: None,
             phases: Some(phase_views),
             settings: None,
+            project: None,
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -515,6 +570,21 @@ fn render_json(response: &Response) -> String {
             issues: None,
             phases: None,
             settings: Some(settings),
+            project: None,
+            warnings: &[],
+            flagged_reasons: &[],
+        }),
+        Response::Project(view) => serde_json::to_string_pretty(&JsonEnvelope {
+            result: "ok",
+            message: None,
+            story: None,
+            stories: None,
+            summary: None,
+            graph: None,
+            issues: None,
+            phases: None,
+            settings: None,
+            project: Some(view.as_ref()),
             warnings: &[],
             flagged_reasons: &[],
         }),
@@ -668,9 +738,49 @@ fn render_human(response: &Response) -> String {
                 serde_json::to_string_pretty(events).unwrap_or_default()
             )
         }
+        Response::Project(view) => render_project(view),
         Response::ConfirmationRequired(plan) => render_confirmation_plan(plan),
     }
 }
+
+/// `story project show`, for a person.
+///
+/// Not the same text as the JSON, unlike [`Response::ProjectSnapshot`] — a
+/// snapshot is a machine's value and a human asking for one is asking the wrong
+/// command, where this one answers a question a person genuinely asks: *which
+/// project am I in, and where does its work run?*
+///
+/// The checkout line is [`checkout_line`], shared with `story project list`, so
+/// the two cannot come to describe the same fact differently.
+fn render_project(view: &ProjectView) -> String {
+    let mut out = format!(
+        "{} — {} ({})\n  checkout  {}\n",
+        view.slug,
+        view.name,
+        view.prefix,
+        checkout_line(view.checkout.as_deref())
+    );
+    for origin in &view.origins {
+        out.push_str(&format!("  origin    {origin}\n"));
+    }
+    out
+}
+
+/// How a checkout is described, present or absent.
+///
+/// **One function, two call sites** — `story project show` and `story project
+/// list` — because "no checkout on this machine" is a phrase a user learns
+/// once, and two spellings of it would read as two different states.
+#[must_use]
+pub fn checkout_line(checkout: Option<&std::path::Path>) -> String {
+    checkout.map_or_else(
+        || NO_CHECKOUT.to_string(),
+        |path| path.display().to_string(),
+    )
+}
+
+/// What a project with no checkout on this machine is called, everywhere.
+pub const NO_CHECKOUT: &str = "no checkout on this machine";
 
 /// The warning a destructive command prints before it asks.
 ///

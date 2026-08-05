@@ -569,6 +569,25 @@ pub enum ProjectAction {
     },
     /// Every project the store knows, checkout or no checkout.
     List,
+    /// This project: which one the ordinary selector resolved, and where its
+    /// repo-side work runs.
+    ///
+    /// **The scoped singular to [`List`](Self::List)'s plural**, and the only
+    /// machine-readable answer to "which project am I?" — a question nothing
+    /// else in the CLI could answer, because `list` enumerates *every* project
+    /// and is dispatched without a [`Ctx`](crate::service::Ctx) at all.
+    ///
+    /// Spelled `show` rather than `current` deliberately: there is no
+    /// current-project state and no default (`tests/project_selection.rs`), so
+    /// a verb whose name asserted stored state would be misread forever. It
+    /// mirrors `story show <id>`, which is the scoped singular for a story.
+    ///
+    /// **It reports; it never judges.** A project with no linked checkout
+    /// answers with `checkout: null` and exit 0, because this is the command
+    /// someone runs to find out *why* a dispatch refused, and a diagnostic that
+    /// refuses in the state being diagnosed is useless. The refusal belongs to
+    /// the consumer that actually needs a directory — `story.sh dispatch`.
+    Show,
     /// Attach one of this project's two optional git associations.
     Link(LinkTarget),
     /// Detach one.
@@ -1217,6 +1236,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[],
     },
     VerbFlags {
+        verb: "project",
+        subcommand: Some("show"),
+        flags: &[],
+    },
+    VerbFlags {
         verb: "member",
         subcommand: Some("add"),
         flags: &[value("github")],
@@ -1503,8 +1527,12 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 
 const PROJECT_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                              [--attach <PATH> | --no-attach] [--no-agents-md] | delete \
-                             [--force] | list | link origin [URL]|checkout [PATH] | \
+                             [--force] | show | list | link origin [URL]|checkout [PATH] | \
                              unlink origin [URL]|checkout | settings list|get|set|unset";
+
+const PROJECT_SHOW_USAGE: &str = "usage: story project show\n\n`story project show` takes no \
+                                  argument. It reports the project this directory resolves \
+                                  to — name a different one with `--project <slug>`.";
 
 const PROJECT_DELETE_USAGE: &str = "usage: story project delete [--force]\n\n`story project \
                                     delete` takes no positional argument. It destroys the \
@@ -1563,6 +1591,14 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
         "list" => Ok(Invocation::Project {
             action: ProjectAction::List,
         }),
+        // Length-checked, unlike `list` above: a trailing word here would most
+        // likely be somebody reaching for a target this verb deliberately does
+        // not take, and swallowing it silently would answer about a different
+        // project than the one they named.
+        "show" if args.len() == 2 => Ok(Invocation::Project {
+            action: ProjectAction::Show,
+        }),
+        "show" => Err(AppError::Usage(PROJECT_SHOW_USAGE.to_string())),
         "link" => parse_project_link(args),
         "unlink" => parse_project_unlink(args),
         "settings" => parse_project_settings(args),

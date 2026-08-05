@@ -148,6 +148,7 @@ impl InvokeRequest {
                 ProjectAction::Delete { force } => *force = true,
                 ProjectAction::New(_)
                 | ProjectAction::List
+                | ProjectAction::Show
                 | ProjectAction::Link(_)
                 | ProjectAction::Unlink(_)
                 | ProjectAction::Settings(_) => {}
@@ -629,6 +630,9 @@ pub fn dispatch<S: Store>(
         Invocation::Project {
             action: ProjectAction::Delete { force },
         } => dispatch_project_delete(ctx, force),
+        Invocation::Project {
+            action: ProjectAction::Show,
+        } => dispatch_project_show(ctx),
         Invocation::Web { .. }
         | Invocation::Daemon { .. }
         | Invocation::Store { .. }
@@ -727,16 +731,13 @@ fn dispatch_project<S: Store>(
             }
             let mut lines = vec![format!("{} project(s):", entries.len())];
             for entry in &entries {
-                let where_ = entry.path.as_ref().map_or_else(
-                    || "no checkout on this machine".to_string(),
-                    |path| path.display().to_string(),
-                );
+                let where_ = crate::output::checkout_line(entry.path.as_deref());
                 lines.push(format!("  {} — {} ({where_})", entry.id, entry.name));
                 // The two git associations, indented under the project they
                 // belong to. This is the only way to answer "did my link take?"
-                // short of opening the database — and it is what gives
-                // `checkout_path` a production reader, since its real consumer
-                // (`dispatch`) is SH-120's.
+                // about *every* project at once — `story project show` answers it
+                // about the one you are in, and is what `story.sh dispatch`
+                // reads (SH-120).
                 //
                 // The parenthesis above is the *recorded path*, which is what
                 // resolution reads; the `checkout` line below is the linked one,
@@ -768,6 +769,12 @@ fn dispatch_project<S: Store>(
         ProjectAction::Link(_) | ProjectAction::Unlink(_) => Err(AppError::Usage(
             "`story project link` and `story project unlink` need a project: name one with \
              `--project <slug>`, or run them in a checkout storyhook already resolves."
+                .to_string(),
+        )),
+        ProjectAction::Show => Err(AppError::Usage(
+            "`story project show` needs a project: name one with `--project <slug>`, or run it \
+             in a checkout storyhook already resolves. `story project list` shows every project \
+             the store knows."
                 .to_string(),
         )),
         ProjectAction::Delete { .. } => Err(AppError::Usage(
@@ -914,6 +921,21 @@ fn remote_argument<S: Store>(
 fn normalized_remote(url: &str) -> Result<crate::domain::remote::RemoteUrl, AppError> {
     crate::domain::remote::RemoteUrl::normalize(url)
         .map_err(|error| AppError::Validation(format!("`{url}` is not a git remote URL: {error}")))
+}
+
+/// `story project show` — which project this is, and where its work runs.
+///
+/// Answered against a resolved [`Ctx`], so it obeys the ordinary selector:
+/// `--project`, `$STORYHOOK_PROJECT`, the committed pointer file, then the
+/// registered origin. That is the whole point of it — a caller that needs a
+/// project's directory must learn the *slug it resolved to* in the same breath,
+/// or it has to resolve twice and the second answer may differ from the first.
+///
+/// Its consumer is `plugin/claude-code/bin/story.sh`, whose `dispatch` verb is
+/// the one operation in storyhook that genuinely needs a directory.
+fn dispatch_project_show<S: Store>(ctx: &Ctx<'_, S>) -> Result<Response, AppError> {
+    let view = CatalogService::new(ctx.store()).describe(ctx.project())?;
+    Ok(Response::Project(Box::new(view)))
 }
 
 /// The `story project settings …` forms.
@@ -2469,6 +2491,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
             },
             ProjectAction::Delete { .. }
             | ProjectAction::List
+            | ProjectAction::Show
             | ProjectAction::Link(_)
             | ProjectAction::Unlink(_)
             | ProjectAction::Settings(_) => None,
@@ -2631,6 +2654,7 @@ fn describe_unscoped(invocation: &Invocation) -> String {
             ProjectAction::New(_) => "project new",
             ProjectAction::Delete { .. } => "project delete",
             ProjectAction::List => "project list",
+            ProjectAction::Show => "project show",
             ProjectAction::Link(_) => "project link",
             ProjectAction::Unlink(_) => "project unlink",
             ProjectAction::Settings(_) => "project settings",
