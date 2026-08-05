@@ -349,7 +349,7 @@ It does **not** hold:
 | `project.toml`'s `sync.auto_transition` and `doctor.stale_threshold` | the pre-flip `project.toml` in git history; `story migrate` printed both values in its report |
 | `project.toml`'s `created_at` | same; `import-project` stamps the restore instant instead |
 | The `next-id` counter's *burned* numbers | `import-project` derives `max(story id) + 1`, so numbers minted and never used are reclaimed. Harmless unless something external quotes them. |
-| Event kinds a newer storyhook wrote | `ProjectExport` carries decoded `StoryEvent`s only, so `partition_known` drops them on export. Nothing writes such kinds today; if one ever does, the round trip stops being lossless and this table is where that is recorded. |
+| Event kinds a newer storyhook wrote | **The document carries them since SH-67** — verbatim, key order included — so `store → export → import-project → store` is lossless for them. What cannot carry them is the last leg, `import-project → a legacy tree`: every line of a `.jsonl` log is parsed as a `StoryEvent`, so the tree has no way to hold one, and the reverted binary this hands the data back to is older still. `storage::import_project` drops them and **returns what it dropped** — story, position and kind — so a rollback that loses an event says which. `story doctor` names them in the store beforehand. |
 
 The first three are why **`.storyhook/` stays in the repository until W7** even
 though nothing reads it after the flip. It is not dead weight — it is the only
