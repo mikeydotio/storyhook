@@ -65,6 +65,15 @@ out=$(dispatch_dry "$nowhere" --project "$slug_a" dispatch "$id")
 assert_eq "$(jqf "$out" .ok)" "true" "outside: dispatch works from outside any repository"
 assert_eq "$(jqf "$out" .dir)" "$a_phys" "outside: dir is A's checkout"
 
+# The criterion as written, not a plan of it. The dry run above stops before any
+# git work, so on its own it proves only that the LOOKUP answers from outside a
+# repository; this one performs the worktree creation as well.
+real_id=$(new_story "$repo_a" "Really dispatched from nowhere")
+out=$(dispatch_real "$nowhere" --project "$slug_a" dispatch "$real_id")
+assert_eq "$(jqf "$out" .ok)" "true" "outside: a REAL dispatch from outside any repository succeeds"
+[ -d "$repo_a/.claude/worktrees/$real_id" ] \
+  || fail_test "outside: the real dispatch created its worktree in A"
+
 # --- the probe: the git calls themselves run in A --------------------------
 #
 # Pre-create the branch dispatch would cut, in A and nowhere else. The collision
