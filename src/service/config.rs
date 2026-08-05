@@ -33,6 +33,7 @@ use crate::cli::MemberInput;
 use crate::domain::{
     FieldEdit, Member, StateChanges, StateDef, StateUsage, StoryEvent, SuperState, TypeChanges,
     TypeDef, validate_required_states, validate_state_defs_for_write, validate_type_glyph,
+    validate_type_slug,
 };
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoryQuery, WriteOps};
@@ -326,7 +327,15 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
         Ok(self.ctx.store().read(|tx| tx.types(project))?)
     }
 
-    /// Appends a story type.
+    /// Appends a story type, refusing a slug nothing could address.
+    ///
+    /// Only the incoming slug is checked, never the resulting set — and that is
+    /// deliberate (SH-134). A catalog written before this rule existed can hold
+    /// slugs it refuses; re-validating the whole set would mean such a project
+    /// could never add a valid type until it was clean, and the symmetrical
+    /// rule on [`remove_type`](Self::remove_type) would mean it could never
+    /// become clean. Both refusals would police damage by preventing its
+    /// repair.
     pub fn add_type(
         &self,
         slug: &str,
@@ -348,6 +357,10 @@ impl<'ctx, S: Store> ConfigService<'ctx, S> {
                     .into());
                 }
             }
+            // Reserved before shape, and not as a style call: `NONE` breaks
+            // both rules, and only the reserved message tells the user that
+            // fixing the casing will not help.
+            validate_type_slug(slug)?;
             let mut types = tx.types(project)?;
             if types.iter().any(|t| t.slug == slug) {
                 return Err(AppError::Validation(format!("type `{slug}` already exists")).into());

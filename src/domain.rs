@@ -646,6 +646,53 @@ pub fn validate_state_slug(slug: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// A story type's slug must be lowercase alphanumerics in dash-separated words.
+///
+/// The same rule as [`validate_state_slug`], for the same reason: a type slug
+/// is an address, not a label. It is typed as a CLI argument (`story new t
+/// --type <slug>`, `story type remove <slug>`) and rendered into the
+/// dashboard's type picker, so a slug carrying a space, a slash, or a capital
+/// cannot reliably be named by the things that have to name it.
+///
+/// # Why this is a domain invariant rather than a parser rule
+///
+/// SH-62 taught the CLI to refuse a flag-shaped token, which stopped
+/// `story type add --typo` — but only that spelling of it. `story type add --
+/// --typo` is a legitimate use of the argument terminator and delivers the same
+/// string as data, and `in review` is unaddressable for exactly this reason
+/// while not being flag-shaped at all. A parser cannot stand in for a rule
+/// about what a slug *is*, so the rule lives here and every surface reaching
+/// [`crate::service::ConfigService::add_type`] inherits it.
+///
+/// Deliberately **not** applied to a slug arriving in an export document or a
+/// legacy tree (SH-134's D3): repairing one means renaming it, and every
+/// `StoryTypeSet` event names the slug it set, so a rename strands the stories
+/// carrying it. Such a slug is reported by `story doctor` instead.
+pub fn validate_type_slug(slug: &str) -> Result<(), AppError> {
+    let invalid = |reason: &str| {
+        Err(AppError::Validation(format!(
+            "invalid type slug `{slug}`: {reason} (use lowercase letters, digits, and single dashes, e.g. `feature-request`)"
+        )))
+    };
+
+    if slug.is_empty() {
+        return invalid("it is empty");
+    }
+    if let Some(bad) = slug
+        .chars()
+        .find(|ch| !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && *ch != '-')
+    {
+        return invalid(&format!("`{bad}` is not allowed"));
+    }
+    if slug.starts_with('-') || slug.ends_with('-') {
+        return invalid("it starts or ends with a dash");
+    }
+    if slug.contains("--") {
+        return invalid("it contains a double dash");
+    }
+    Ok(())
+}
+
 /// The labels a caller's raw values denote.
 ///
 /// Comma is the label delimiter on every surface that *reads* labels back:
@@ -2308,7 +2355,7 @@ mod tests {
         derive_family_relationships, fold_story, has_children, is_ready, last_activity_type,
         normalize_labels, ready_order, story_number, validate_event_for_append,
         validate_required_states, validate_state_defs, validate_state_defs_for_write,
-        validate_state_slug, with_required_states, would_create_parent_cycle,
+        validate_state_slug, validate_type_slug, with_required_states, would_create_parent_cycle,
     };
 
     #[test]
@@ -2362,6 +2409,51 @@ mod tests {
                 "`{bad}` should have been rejected"
             );
         }
+    }
+
+    #[test]
+    fn validate_type_slug_accepts_dash_separated_lowercase() {
+        for good in ["bug", "feature-request", "wave-2", "x"] {
+            validate_type_slug(good).unwrap_or_else(|e| panic!("`{good}` rejected: {e}"));
+        }
+    }
+
+    /// The eight shapes SH-134 measured `story type add` accepting, plus the
+    /// underscore its state-slug counterpart also refuses.
+    ///
+    /// Each breaks either the CLI (`story new t --type <slug>`) or a URL path
+    /// segment, for the same reason a state slug of the same shape does. The
+    /// empty string is listed first because it is the one that got past every
+    /// other check: nothing to type, and unremovable once a story carries it.
+    #[test]
+    fn validate_type_slug_rejects_unaddressable_slugs() {
+        for bad in [
+            "",
+            "in review",
+            "a b",
+            "Bug",
+            "spike/two",
+            "in_review",
+            "-lead",
+            "trailing-",
+            "double--dash",
+            "café",
+            "--typo",
+        ] {
+            let error = validate_type_slug(bad).unwrap_err();
+            assert!(
+                error.to_string().contains("invalid type slug"),
+                "`{bad}` should have been rejected"
+            );
+        }
+    }
+
+    /// The empty slug earns its own sentence rather than being reported as a
+    /// bad character, because it contains no character to name.
+    #[test]
+    fn an_empty_type_slug_says_so_rather_than_naming_a_character() {
+        let error = validate_type_slug("").unwrap_err().to_string();
+        assert!(error.contains("it is empty"), "{error}");
     }
 
     #[test]
