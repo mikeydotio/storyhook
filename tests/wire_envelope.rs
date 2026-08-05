@@ -188,6 +188,32 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         ),
         ("message_empty", Response::Message(String::new())),
         (
+            "project_full",
+            Response::Project(Box::new(storyhook::output::ProjectView {
+                slug: "storyhook".to_string(),
+                name: "storyhook".to_string(),
+                prefix: "SH".to_string(),
+                checkout: Some(std::path::PathBuf::from(
+                    "/Volumes/Code/mikeyward/storyhook",
+                )),
+                origins: vec!["git@github.com:mikeydotio/storyhook.git".to_string()],
+            })),
+        ),
+        // The shape six of the fourteen projects in the author's own store are
+        // in, and the one a `skip_serializing_if` on `checkout` would silently
+        // break: the field must travel as `null`, never vanish, or a script
+        // cannot tell "no checkout here" from "the field was renamed".
+        (
+            "project_no_checkout",
+            Response::Project(Box::new(storyhook::output::ProjectView {
+                slug: "blink".to_string(),
+                name: "blink".to_string(),
+                prefix: "BLK".to_string(),
+                checkout: None,
+                origins: Vec::new(),
+            })),
+        ),
+        (
             "story_minimal",
             Response::Story(Box::new(view(snapshot("SH-1", "A story")))),
         ),
@@ -514,6 +540,75 @@ fn a_delete_confirmation_keeps_the_flat_shape_the_dashboard_reads() {
     assert_eq!(plan["checkouts"][0], "/repo");
 }
 
+/// Every `Response` variant has a corpus row.
+///
+/// **This guard did not exist until SH-120, and its absence is why it exists.**
+/// `AppError` has `the_error_corpus_covers_every_variant` and `Invocation` has
+/// `the_invocation_corpus_covers_every_variant`; `Response` had neither, and
+/// `response_variants_travel_as_snake_case_keys` hand-lists its variants, so it
+/// would not notice a new one. A permanent wire variant could therefore land
+/// with nothing proving it survives the daemon hop — which is exactly what
+/// `Response::Project` was about to do.
+///
+/// The match is what makes this exhaustive rather than a count that drifts: a
+/// new variant fails to compile here until somebody names it, and naming it is
+/// the moment they are asked for a corpus row.
+#[test]
+fn the_response_corpus_covers_every_variant() {
+    fn variant_of(response: &Response) -> &'static str {
+        match response {
+            Response::Message(_) => "message",
+            Response::Story(_) => "story",
+            Response::Stories(..) => "stories",
+            Response::Summary(_) => "summary",
+            Response::Graph(_) => "graph",
+            Response::Issues(_) => "issues",
+            Response::PhaseList(_) => "phase_list",
+            Response::ProjectSettings(_) => "project_settings",
+            Response::RawJson(_) => "raw_json",
+            Response::ProjectSnapshot(_) => "project_snapshot",
+            Response::StoryHistory(_) => "story_history",
+            Response::ConfirmationRequired(_) => "confirmation_required",
+            Response::Project(_) => "project",
+        }
+    }
+
+    const EVERY_VARIANT: [&str; 13] = [
+        "message",
+        "story",
+        "stories",
+        "summary",
+        "graph",
+        "issues",
+        "phase_list",
+        "project_settings",
+        "raw_json",
+        "project_snapshot",
+        "story_history",
+        "confirmation_required",
+        "project",
+    ];
+
+    let mut covered: Vec<&str> = response_corpus()
+        .iter()
+        .map(|(_, response)| variant_of(response))
+        .collect();
+    covered.sort_unstable();
+    covered.dedup();
+
+    let missing: Vec<&&str> = EVERY_VARIANT
+        .iter()
+        .filter(|name| !covered.contains(name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these Response variants have no row in `response_corpus`: {missing:?}\n\n\
+         A permanent wire variant with no corpus row is one nothing proves survives the \
+         daemon hop. Add a row — and if the variant has a nullable field, add one row for \
+         each side of it."
+    );
+}
+
 /// `Response`'s wire form is externally tagged, so the variant travels as the
 /// single top-level key. Pinned because a receiver that has to *guess* the
 /// variant from the payload's shape is the failure mode this envelope exists
@@ -531,6 +626,7 @@ fn response_variants_travel_as_snake_case_keys() {
         ("project_settings", "project_settings"),
         ("raw_json", "raw_json"),
         ("confirmation_required", "confirmation_required"),
+        ("project_full", "project"),
     ];
     let corpus = response_corpus();
     for (label, key) in expected {
