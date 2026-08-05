@@ -2512,6 +2512,27 @@ fn target_dir(cwd: &Path, path: Option<&str>) -> PathBuf {
     path.map_or_else(|| cwd.to_path_buf(), |path| resolve_against(cwd, path))
 }
 
+/// Whether `invocation` creates one project, interactively named or not.
+///
+/// Narrower than [`project_creation_target`] on purpose: `ImportProject` and a
+/// non-dry-run `Migrate` are bulk verbs a person or a script chose
+/// deliberately by typing that command, so they stay under the path-based
+/// SH-95 guard alone and are exempt from the SH-122 burst gate below — the
+/// gate exists for the caller who never chose to create anything explicitly
+/// enough to name a path or a batch. `ProjectAction::New` is the only
+/// remaining route to `create_project`, and every one of its variants counts,
+/// including `Attach::Nothing`: that request still creates a project, it just
+/// creates one with no checkout, which is exactly the shape a test suite's
+/// fixture takes.
+fn creates_a_project(invocation: &Invocation) -> bool {
+    matches!(
+        invocation,
+        Invocation::Project {
+            action: ProjectAction::New(_)
+        }
+    )
+}
+
 impl<S: Store> Invoker for StoreInvoker<'_, S> {
     fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
         let now = self.env.now();
@@ -2521,6 +2542,18 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             crate::service::project::refuse_temp_project_in_real_store(
                 &target,
                 self.env.store_path(),
+            )?;
+        }
+        // Same moment, a second question: not "is this path throwaway" but
+        // "how many, how fast" — the signature that survives even when the
+        // first guard has nothing to judge (SH-122). The read is gated behind
+        // `creates_a_project` so no other command pays for the query.
+        if creates_a_project(&request.invocation) {
+            let projects = self.store.read(|tx| tx.projects())?;
+            crate::service::project::refuse_project_burst_in_real_store(
+                self.env.store_path(),
+                &projects,
+                &now,
             )?;
         }
         if is_project_less(&request.invocation) {
@@ -2881,4 +2914,70 @@ fn registered_origins_message(found: &[crate::service::UnregisteredOrigin]) -> S
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod creates_a_project_tests {
+    use super::*;
+    use crate::cli::NewProjectSpec;
+
+    fn stated(attach: Attach) -> Invocation {
+        Invocation::Project {
+            action: ProjectAction::New(NewProjectRequest::Stated(NewProjectSpec {
+                attach,
+                prefix: "SH".to_string(),
+                name: None,
+                no_agents_md: false,
+            })),
+        }
+    }
+
+    #[test]
+    fn every_new_project_variant_counts_including_no_checkout() {
+        for invocation in [
+            stated(Attach::Cwd),
+            stated(Attach::Path("/some/path".to_string())),
+            stated(Attach::Nothing),
+            Invocation::Project {
+                action: ProjectAction::New(NewProjectRequest::Ask),
+            },
+        ] {
+            assert!(
+                creates_a_project(&invocation),
+                "{invocation:?} must be gated by the burst check"
+            );
+        }
+    }
+
+    /// Bulk verbs a person or a script chose deliberately by typing that
+    /// command — including every other `ProjectAction` — stay exempt from the
+    /// SH-122 burst gate. They remain under the path-based SH-95 guard, which
+    /// `project_creation_target` still routes them through.
+    #[test]
+    fn bulk_verbs_and_every_other_project_action_are_exempt() {
+        for invocation in [
+            Invocation::ImportProject {
+                file: "export.json".to_string(),
+            },
+            Invocation::Migrate {
+                path: None,
+                dry_run: false,
+            },
+            Invocation::Migrate {
+                path: None,
+                dry_run: true,
+            },
+            Invocation::Project {
+                action: ProjectAction::List,
+            },
+            Invocation::Project {
+                action: ProjectAction::Show,
+            },
+        ] {
+            assert!(
+                !creates_a_project(&invocation),
+                "{invocation:?} must not be gated by the burst check"
+            );
+        }
+    }
 }
