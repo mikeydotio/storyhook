@@ -533,6 +533,14 @@ a backstop for a suite that built a fixture but forgot to name a store at all.
 It is not a substitute for isolating deliberately: it only catches the shape
 above, not every way a command can reach the wrong store.
 
+It also refuses once too many projects appear in a real store too fast: 5 or
+more inside ten minutes stops at the 5th, whether or not any of them named a
+temporary path — a suite that forgets isolation entirely, or that builds
+fixtures somewhere other than `$TMPDIR`, gets a loud stop after 4 junk
+projects instead of a silent one after hundreds.
+`STORYHOOK_ALLOW_PROJECT_BURST=1` overrides it for the rare case where the
+volume really was on purpose.
+
 ## AI agent integration
 
 Three commands support AI coding agent workflows:

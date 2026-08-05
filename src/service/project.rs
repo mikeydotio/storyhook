@@ -165,6 +165,106 @@ pub(crate) fn is_under_temp(path: &Path) -> bool {
     })
 }
 
+/// The number of projects a store that is not throwaway may accumulate within
+/// [`PROJECT_BURST_WINDOW_MINUTES`] before the next one is refused (SH-122).
+///
+/// [`refuse_temp_project_in_real_store`] judges a *path* — the directory a
+/// project is about to be created at — so it only ever fires when that path
+/// exists and is temporary. Two callers give it nothing to judge: `--no-attach`
+/// creates no path at all, and a CI fixture directory that is not under a temp
+/// root (a `$PWD/fixtures` checkout, say) is not temporary by that guard's own
+/// rule even though it is exactly as throwaway. Both are live blind spots
+/// today: the suite that caused SH-95's incident was rewritten from
+/// `story init` (a drive-by side effect of standing in a directory) to
+/// `story project new --prefix X` (a switch, at every one of its 164 fixture
+/// sites) — the exact rename the epic's acceptance of this gap assumed would
+/// not happen.
+///
+/// Counting closes both blind spots without asking who is calling, which
+/// matters because storyhook's callers — scripts, a human at a terminal, a
+/// human over SSH, an agent — are all first-class and none of that population
+/// can be told apart by shape. A person or a script that means to create a
+/// project creates one. A test suite creates one per test case, and did so at
+/// roughly 15 a minute on 2026-07-30. Four is enough headroom for genuine bulk
+/// work — onboarding a handful of repositories by hand — and far below that
+/// rate, so the refusal lands at the 5th project rather than the 394th.
+pub const PROJECT_BURST_LIMIT: usize = 4;
+
+/// The window [`PROJECT_BURST_LIMIT`] is measured over, in minutes.
+pub const PROJECT_BURST_WINDOW_MINUTES: i64 = 10;
+
+/// Set to a non-empty value to permit creating more than
+/// [`PROJECT_BURST_LIMIT`] projects in a real store within
+/// [`PROJECT_BURST_WINDOW_MINUTES`]. See [`refuse_project_burst_in_real_store`].
+pub const ALLOW_PROJECT_BURST: &str = "STORYHOOK_ALLOW_PROJECT_BURST";
+
+/// Refuses to create another project in a store that is not throwaway once too
+/// many have appeared inside the window (SH-122).
+///
+/// See [`PROJECT_BURST_LIMIT`] for why volume, rather than a path, is the
+/// signature this guard checks.
+pub fn refuse_project_burst_in_real_store(
+    store_path: &Path,
+    projects: &[ProjectRecord],
+    now: &str,
+) -> Result<(), AppError> {
+    let allowed = std::env::var(ALLOW_PROJECT_BURST).is_ok_and(|v| !v.trim().is_empty());
+    refuse_project_burst(is_under_temp(store_path), projects, now, allowed)
+}
+
+/// The decision behind [`refuse_project_burst_in_real_store`], with the
+/// environment and the store lifted out.
+///
+/// Separated the same way [`refuse_temp_project`] is: so it can be tested
+/// without mutating process environment or depending on which store is open,
+/// which two tests running in parallel cannot do safely.
+fn refuse_project_burst(
+    store_is_temp: bool,
+    projects: &[ProjectRecord],
+    now: &str,
+    allowed: bool,
+) -> Result<(), AppError> {
+    if allowed || store_is_temp {
+        return Ok(());
+    }
+    // The clock's own stamp failing to parse is not this guard's problem to
+    // block on: fail open rather than refuse every project creation on a
+    // formatting regression somewhere upstream.
+    let Ok(now) =
+        chrono::DateTime::parse_from_rfc3339(now).map(|at| at.with_timezone(&chrono::Utc))
+    else {
+        return Ok(());
+    };
+    let window = chrono::Duration::try_minutes(PROJECT_BURST_WINDOW_MINUTES).unwrap_or_default();
+    let window_start = now - window;
+    // A project row whose `created_at` does not parse is skipped rather than
+    // counted — the same fail-open reasoning as the clock above, applied per
+    // row so one corrupt timestamp cannot either mask a real burst or block
+    // every creation on its own.
+    let recent = projects
+        .iter()
+        .filter_map(|project| {
+            chrono::DateTime::parse_from_rfc3339(&project.created_at)
+                .ok()
+                .map(|at| at.with_timezone(&chrono::Utc))
+        })
+        .filter(|created| *created >= window_start)
+        .count();
+    if recent < PROJECT_BURST_LIMIT {
+        return Ok(());
+    }
+    Err(AppError::Validation(format!(
+        "refusing to create another project here: {recent} have already been created in this \
+         store in the last {PROJECT_BURST_WINDOW_MINUTES} minutes.\n\nNothing has been written. \
+         That rate is the signature of a test suite driving `story` without a store of its own, \
+         not a person or a script creating projects on purpose.\n\nIf this is a test suite, give \
+         it a store of its own: `story store new <path>`, then run with `--store-path <path>` \
+         (or its variable, $STORYHOOK_STORE_PATH — either outranks $STORYHOOK_DATA_DIR, which \
+         also works but loses if more than one is set). If you really do mean to create this \
+         many projects here, set {ALLOW_PROJECT_BURST}=1."
+    )))
+}
+
 /// The repository-side file naming the project a checkout belongs to, and
 /// carrying the repository's own storyhook configuration.
 ///
@@ -1493,5 +1593,120 @@ mod temp_project_tests {
             !is_under_temp(Path::new("/Volumes/Code/mikeyward/storyhook")),
             "a real checkout must not be mistaken for a temporary directory"
         );
+    }
+}
+
+#[cfg(test)]
+mod project_burst_tests {
+    use super::*;
+    use crate::store::ProjectId;
+
+    const NOW: &str = "2026-08-05T12:00:00Z";
+
+    /// A minimal `ProjectRecord` created `minutes_ago` minutes before [`NOW`].
+    fn project_created(minutes_ago: i64) -> ProjectRecord {
+        let now = chrono::DateTime::parse_from_rfc3339(NOW).unwrap();
+        let at = now - chrono::Duration::try_minutes(minutes_ago).unwrap();
+        ProjectRecord {
+            id: ProjectId::new(1),
+            uuid: "00000000-0000-0000-0000-000000000000".to_string(),
+            slug: "p".to_string(),
+            name: "p".to_string(),
+            prefix: "SH".to_string(),
+            created_at: at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            next_story_no: 1,
+            next_global_seq: 1,
+        }
+    }
+
+    /// Three already existing is the tightest case this project's own suite
+    /// must remain able to build — genuine bulk work, not a burst — one short
+    /// of where the gate fires.
+    #[test]
+    fn three_recent_projects_are_allowed() {
+        let projects: Vec<_> = (0..3).map(project_created).collect();
+        assert!(refuse_project_burst(false, &projects, NOW, false).is_ok());
+    }
+
+    /// The fifth is where 2026-07-30 should have stopped: four already exist,
+    /// so this attempt — which would create the fifth — is refused.
+    #[test]
+    fn a_fifth_project_is_refused_when_four_already_exist() {
+        let projects: Vec<_> = (0..4).map(project_created).collect();
+        let error = refuse_project_burst(false, &projects, NOW, false)
+            .expect_err("the fifth project in the window must be refused");
+        assert_eq!(error.exit_code(), 2, "it is a usage error, not a crash");
+        let message = error.to_string();
+        assert!(
+            message.contains("--store-path") || message.contains("STORYHOOK_STORE_PATH"),
+            "the message must lead with a lever that actually wins the precedence contest: \
+             {message}"
+        );
+        assert!(
+            message.contains(ALLOW_PROJECT_BURST),
+            "the message must name the override: {message}"
+        );
+    }
+
+    /// A store under a temp directory is exactly what this project's own
+    /// suite runs bursts of projects against; the guard must not fire there.
+    #[test]
+    fn a_throwaway_store_is_exempt() {
+        let projects: Vec<_> = (0..10).map(project_created).collect();
+        assert!(refuse_project_burst(true, &projects, NOW, false).is_ok());
+    }
+
+    /// A deliberate override is honoured, so the refusal can never become a
+    /// wall someone has no way past.
+    #[test]
+    fn the_override_permits_what_would_otherwise_be_refused() {
+        let projects: Vec<_> = (0..10).map(project_created).collect();
+        assert!(refuse_project_burst(false, &projects, NOW, true).is_ok());
+    }
+
+    /// A project created outside the window does not count toward the burst,
+    /// however many of them there are.
+    #[test]
+    fn projects_outside_the_window_do_not_count() {
+        let projects: Vec<_> = (0..10)
+            .map(|_| project_created(PROJECT_BURST_WINDOW_MINUTES + 1))
+            .collect();
+        assert!(refuse_project_burst(false, &projects, NOW, false).is_ok());
+    }
+
+    /// A project exactly at the window boundary counts — the window is
+    /// inclusive of its start, matching the `>=` in the implementation.
+    #[test]
+    fn a_project_at_the_window_boundary_counts() {
+        let mut projects: Vec<_> = (0..3).map(project_created).collect();
+        projects.push(project_created(PROJECT_BURST_WINDOW_MINUTES));
+        let error = refuse_project_burst(false, &projects, NOW, false)
+            .expect_err("a project exactly at the window edge must still count");
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    /// An unparseable `created_at` on one row does not block creation — the
+    /// row is skipped rather than treated as "definitely recent".
+    #[test]
+    fn an_unparseable_timestamp_does_not_block_creation() {
+        // Three valid rows, under the limit on their own — plus a fourth,
+        // corrupt row. If the corrupt row were miscounted as recent this
+        // would hit the limit and refuse; skipping it must leave this OK.
+        let mut projects: Vec<_> = (0..3).map(project_created).collect();
+        projects.push(ProjectRecord {
+            created_at: "not-a-timestamp".to_string(),
+            ..project_created(0)
+        });
+        assert!(
+            refuse_project_burst(false, &projects, NOW, false).is_ok(),
+            "a corrupt row must be skipped, not counted"
+        );
+    }
+
+    /// An unparseable "now" fails open rather than refusing every creation.
+    #[test]
+    fn an_unparseable_now_fails_open() {
+        let projects: Vec<_> = (0..10).map(project_created).collect();
+        assert!(refuse_project_burst(false, &projects, "not-a-timestamp", false).is_ok());
     }
 }
