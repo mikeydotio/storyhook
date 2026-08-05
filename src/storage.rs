@@ -48,7 +48,7 @@ use crate::domain::{
     validate_state_defs, validate_state_defs_for_write,
 };
 use crate::error::AppError;
-use crate::service::transfer::{ExportedStory, ProjectExport};
+use crate::service::transfer::{ExportedEvent, ExportedStory, ProjectExport};
 
 #[derive(Clone, Debug)]
 pub struct ProjectPaths {
@@ -778,7 +778,13 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
                 .and_then(|stem| stem.to_str())
                 .ok_or_else(|| AppError::Storage("invalid story filename".to_string()))?
                 .to_string();
-            let events = read_story_events(&path)?;
+            // A legacy log holds only kinds this build understands, because
+            // `read_story_events` parses each line as a `StoryEvent` — so every
+            // event out of a tree is `Known` by construction.
+            let events = read_story_events(&path)?
+                .into_iter()
+                .map(ExportedEvent::Known)
+                .collect();
             stories.push(ExportedStory {
                 id,
                 events,
@@ -799,7 +805,7 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
         let events: Vec<StoryEvent> = serde_json::from_str(&events_json)?;
         stories.push(ExportedStory {
             id,
-            events,
+            events: events.into_iter().map(ExportedEvent::Known).collect(),
             archived: true,
         });
     }
@@ -814,7 +820,57 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
     })
 }
 
-pub fn import_project(root: &Path, export: &ProjectExport) -> Result<(), AppError> {
+/// An event a rollback could not carry into the legacy tree, and where it was.
+///
+/// A legacy tree cannot hold an event this build does not understand: every
+/// line of a `.jsonl` log is parsed as a `StoryEvent` by [`read_story_events`]
+/// and an archived story is folded on the way in, so a tree carrying one would
+/// be unreadable by `storage.rs` itself — and by the reverted binary a rollback
+/// exists to hand the data back to, which is older still. Dropping it is
+/// therefore not a choice this module makes but a property of the format it
+/// writes; what it *does* choose is to say so.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UncarriedEvent {
+    /// The story it belonged to.
+    pub story: String,
+    /// Its position in that story's history, counting from one.
+    pub position: usize,
+    /// Its `kind` discriminant.
+    pub kind: String,
+}
+
+/// Materializes an export document as a legacy tree — the rollback path.
+///
+/// Returns every event it could not carry; see [`UncarriedEvent`]. The list is
+/// empty for a document produced by a build that understood everything in it,
+/// which is every document taken before a storyhook that writes a kind this one
+/// has never heard of.
+///
+/// The whole document is classified **before** anything is written, because
+/// this function writes story by story with `fs::write` and holds no
+/// transaction: a refusal discovered halfway would leave a half-built tree on
+/// disk, which is worse than either outcome it is choosing between.
+pub fn import_project(
+    root: &Path,
+    export: &ProjectExport,
+) -> Result<Vec<UncarriedEvent>, AppError> {
+    let mut carried: Vec<Vec<StoryEvent>> = Vec::with_capacity(export.stories.len());
+    let mut uncarried = Vec::new();
+    for story in &export.stories {
+        let mut events = Vec::with_capacity(story.events.len());
+        for (index, event) in story.events.iter().enumerate() {
+            match event {
+                ExportedEvent::Known(decoded) => events.push(decoded.clone()),
+                ExportedEvent::Unknown(raw) => uncarried.push(UncarriedEvent {
+                    story: story.id.clone(),
+                    position: index + 1,
+                    kind: raw.kind.clone(),
+                }),
+            }
+        }
+        carried.push(events);
+    }
+
     let paths = ProjectPaths::new(root);
     fs::create_dir_all(paths.open_stories_dir())?;
     fs::create_dir_all(paths.open_indexes_dir())?;
@@ -845,7 +901,7 @@ pub fn import_project(root: &Path, export: &ProjectExport) -> Result<(), AppErro
     let mut max_id: u64 = 0;
     let state_map = load_state_map(root)?;
 
-    for story in &export.stories {
+    for (story, events) in export.stories.iter().zip(&carried) {
         // Track max ID for next-id counter
         if let Some(num) = story
             .id
@@ -858,7 +914,7 @@ pub fn import_project(root: &Path, export: &ProjectExport) -> Result<(), AppErro
         }
 
         if story.archived {
-            let snapshot = fold_story(&story.id, &story.events, &state_map)?;
+            let snapshot = fold_story(&story.id, events, &state_map)?;
             let closed_at = snapshot.closed_at.clone().unwrap_or_else(now);
             let mut connection = open_archive_connection(root)?;
             let transaction = connection.transaction()?;
@@ -867,19 +923,19 @@ pub fn import_project(root: &Path, export: &ProjectExport) -> Result<(), AppErro
                 params![
                     snapshot.id,
                     serde_json::to_string(&snapshot)?,
-                    serde_json::to_string(&story.events)?,
+                    serde_json::to_string(events)?,
                     closed_at,
                     snapshot.state,
                 ],
             )?;
             transaction.commit()?;
         } else {
-            rewrite_story_events(root, &story.id, &story.events)?;
+            rewrite_story_events(root, &story.id, events)?;
         }
     }
 
     fs::write(paths.next_id_file(), format!("{}\n", max_id + 1))?;
-    Ok(())
+    Ok(uncarried)
 }
 
 fn open_archive_connection(root: &Path) -> Result<Connection, AppError> {

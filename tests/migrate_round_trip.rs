@@ -67,10 +67,20 @@ fn export(store: &SqliteStore) -> ProjectExport {
 }
 
 /// Materializes `document` as a legacy tree in a fresh directory.
+///
+/// Asserts that nothing was left behind on the way: the fixtures below hold no
+/// event kind this build cannot decode, so an `UncarriedEvent` here would mean
+/// the loop had quietly become lossy. The one test that *does* build such a
+/// store calls `storage::import_project` itself and reads the list.
 fn rebuild_legacy_tree(document: &ProjectExport) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = storyhook_test_support::scratch_dir_named("rollback-");
     let root = dir.path().to_path_buf();
-    storage::import_project(&root, document).expect("the legacy importer must accept the document");
+    let uncarried = storage::import_project(&root, document)
+        .expect("the legacy importer must accept the document");
+    assert!(
+        uncarried.is_empty(),
+        "a tree rebuilt from a fully-decodable document must carry every event: {uncarried:?}"
+    );
     (dir, root)
 }
 
@@ -141,6 +151,52 @@ fn assert_round_trips(root: &Path, expected_stories: usize) {
         "the rebuilt tree's counter ({}) must be past its highest story ({highest})",
         next_id.trim()
     );
+}
+
+#[test]
+fn an_event_the_reverted_binary_could_not_read_is_dropped_by_name() {
+    // The one edge of the two-way door that is genuinely one-way, and SH-67 is
+    // where it stopped being silent. A legacy tree cannot hold an event kind
+    // this build does not understand — `read_story_events` parses every line as
+    // a `StoryEvent`, and the reverted binary a rollback hands the data back to
+    // is older still — so `storage::import_project` drops it. What it must not
+    // do is drop it quietly: the return value names what did not come back, and
+    // the tree it does write is whole.
+    let (_tree, root) = custom_config_tree();
+    let (_store_dir, store, _report) = migrate(&root);
+    let project = store
+        .read(|tx| Ok(tx.projects()?.first().expect("one project").id))
+        .expect("reading");
+    storyhook::store::test_support::inject_raw_events(
+        &store,
+        project,
+        storyhook::store::StoryNo::new(1),
+        &[storyhook::store::RawEvent {
+            kind: "ADA-Pinned".to_string(),
+            at: "2030-01-01T00:00:00Z".to_string(),
+            payload: r#"{"kind":"ADA-Pinned","at":"2030-01-01T00:00:00Z","by":"ada"}"#.to_string(),
+        }],
+    )
+    .expect("injecting an event from the future");
+
+    let document = export(&store);
+    let dir = storyhook_test_support::scratch_dir_named("rollback-lossy-");
+    let uncarried =
+        storage::import_project(dir.path(), &document).expect("the rollback must still happen");
+
+    assert_eq!(uncarried.len(), 1, "{uncarried:?}");
+    assert_eq!(uncarried[0].kind, "ADA-Pinned");
+    assert_eq!(uncarried[0].story, "ADA-1");
+    assert!(
+        uncarried[0].position > 1,
+        "the position must locate it inside the history, not merely count it"
+    );
+
+    // And the tree is otherwise complete: every story is there, and the one
+    // that lost an event still folds.
+    let snapshots = legacy_snapshots(dir.path());
+    assert_eq!(snapshots.len(), store_snapshots(&store).len());
+    assert!(snapshots.contains_key("ADA-1"));
 }
 
 #[test]
@@ -218,33 +274,41 @@ fn the_real_trees_export_equals_the_golden_document_modulo_the_repairs() {
     let mut accounted = 0_usize;
     for (ours, golden) in ours.stories.iter().zip(&golden.stories) {
         assert_eq!(ours.archived, golden.archived, "{} archived flag", ours.id);
-        let mut theirs = golden.events.iter();
-        for event in &ours.events {
-            if theirs.clone().next() == Some(event) {
+        // Compared as JSON rather than by `PartialEq`: since SH-67 an exported
+        // event is a `Known`/`Unknown` union whose whole contract is its wire
+        // form, so the wire form is what a golden comparison should assert.
+        let json = |event: &storyhook::service::transfer::ExportedEvent| {
+            serde_json::to_value(event).expect("an exported event serializes")
+        };
+        let mut theirs = golden.events.iter().map(json).peekable();
+        for event in ours.events.iter().map(json) {
+            if theirs.peek() == Some(&event) {
                 theirs.next();
                 continue;
             }
             let named = report.repairs.iter().any(|repair| {
                 repair.story == ours.id
-                    && serde_json::to_value(event).ok()
-                        == serde_json::to_value(
-                            &storyhook::domain::StoryEvent::StoryRelationshipAdded {
+                    && serde_json::to_value(
+                        &storyhook::domain::StoryEvent::StoryRelationshipAdded {
+                            at: repair.at.clone(),
+                            other_id: repair.other.clone(),
+                            relation: repair.relation.clone(),
+                        },
+                    )
+                    .ok()
+                    .as_ref()
+                        == Some(&event)
+                    || repair.story == ours.id
+                        && serde_json::to_value(
+                            &storyhook::domain::StoryEvent::StoryRelationshipRemoved {
                                 at: repair.at.clone(),
                                 other_id: repair.other.clone(),
                                 relation: repair.relation.clone(),
                             },
                         )
                         .ok()
-                    || repair.story == ours.id
-                        && serde_json::to_value(event).ok()
-                            == serde_json::to_value(
-                                &storyhook::domain::StoryEvent::StoryRelationshipRemoved {
-                                    at: repair.at.clone(),
-                                    other_id: repair.other.clone(),
-                                    relation: repair.relation.clone(),
-                                },
-                            )
-                            .ok()
+                        .as_ref()
+                            == Some(&event)
             });
             if named {
                 accounted += 1;
