@@ -1024,6 +1024,7 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
         DaemonAction::Status => crate::daemon::commands::status(&env).map(Response::Message),
         DaemonAction::Install => crate::daemon::commands::install(&env).map(Response::Message),
         DaemonAction::Uninstall => crate::daemon::commands::uninstall(&env).map(Response::Message),
+        DaemonAction::Token => crate::daemon::commands::token(&env).map(Response::Message),
         DaemonAction::Serve { .. } => Err(AppError::Usage(
             "`story daemon --serve` is handled before dispatch".to_string(),
         )),
