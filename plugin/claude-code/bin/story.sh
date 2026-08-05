@@ -275,12 +275,13 @@ canonical_story_id() {
   if [ -n "$resolved" ]; then printf '%s' "$resolved"; else printf '%s' "$2"; fi
 }
 
-# repo_root — echo the MAIN worktree's absolute root directory, regardless of
-# which worktree (or subdirectory of one) CWD is currently inside. `git
-# rev-parse --git-common-dir` resolves to <main>/.git from ANY worktree of the
-# repo (relative, ".git", only when CWD already IS the main worktree's own
-# root), so its dirname — resolved to an absolute path via a real `cd` in a
-# subshell, never the caller's shell — is stable no matter where CWD is.
+# repo_root <dir> — echo the MAIN worktree's absolute root directory of the
+# repository <dir> belongs to, regardless of which worktree (or subdirectory of
+# one) <dir> itself is. `git rev-parse --git-common-dir` resolves to <main>/.git
+# from ANY worktree of the repo (relative, ".git", only when <dir> already IS
+# the main worktree's own root), so its dirname — resolved to an absolute path
+# via a real `cd` in a subshell, never the caller's shell — is stable no matter
+# where <dir> sits.
 #
 # **This answers "where does worktree bookkeeping happen?", never "which
 # project is this?"** Its three callers all create, name or remove a git
@@ -288,15 +289,23 @@ canonical_story_id() {
 # to the CLI (see story_cli), which knows things a shell walk cannot — a
 # registered origin among them.
 #
-# `dir` MUST use this instead of `git rev-parse --show-toplevel`:
-# --show-toplevel is CWD-relative, so from inside one of THIS script's own
-# worktrees it would return that worktree's root, not the main repo's — a
-# `/story do` invoked from inside an existing dispatched worktree would then
-# nest its new worktree inside it, matching nothing in `git worktree list`.
+# **<dir> is REQUIRED, and deliberately has no default.** `set -u` turns a
+# caller that forgets it into a loud failure, because the default it would
+# otherwise take — the working directory — is precisely the inference SH-120
+# exists to remove.
+#
+# It MUST be used instead of `git rev-parse --show-toplevel`: --show-toplevel is
+# relative to where it runs, so from inside one of THIS script's own worktrees
+# it would return that worktree's root, not the main repo's — a `/story do`
+# invoked from inside an existing dispatched worktree would then nest its new
+# worktree inside it, matching nothing in `git worktree list`.
 repo_root() {
-  local common
-  common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
-  ( CDPATH= cd -- "$(dirname -- "$common")" && pwd -P )
+  local dir="$1" common
+  common=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
+  # Two cds, not one: --git-common-dir answers relative to <dir> whenever it can
+  # (it is the bare string ".git" in a main worktree's own root), so the dirname
+  # has to be resolved from there rather than from wherever this script stands.
+  ( CDPATH= cd -- "$dir" && CDPATH= cd -- "$(dirname -- "$common")" && pwd -P )
 }
 
 # claim_rollback_note <id> <pre-claim-state> — cmd_dispatch's claim is a HARD
@@ -372,7 +381,7 @@ cmd_dispatch() {
   # Step 2: repo dir, anchored to the MAIN worktree via repo_root() — never
   # CWD-relative (see that function's header).
   local dir
-  dir=$(repo_root) || fail "not inside a git repository."
+  dir=$(repo_root ".") || fail "not inside a git repository."
   # Anchor every subsequent `story` call to the project root (SH-46) — see
   # story_cli's header for why the caller's CWD is not safe to inherit.
   PROJECT_DIR="$dir"
@@ -882,7 +891,7 @@ cmd_capture() {
   valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
   local dir wname legacy_name
-  dir=$(repo_root) || fail "not inside a git repository."
+  dir=$(repo_root ".") || fail "not inside a git repository."
 
   # The one verb that otherwise reads nothing, and it still has to pay for one
   # read: the window it is looking for was named by `dispatch` from the
@@ -1116,17 +1125,22 @@ story_closed_state() {
   '
 }
 
-# _story_worktree_status <path> — removable|current|locked|dirty|missing.
+# _story_worktree_status <path> <caller-toplevel> — removable|current|locked|
+# dirty|missing.
 #
-# `current` uses --show-toplevel ON PURPOSE (unlike repo_root elsewhere): the
-# question here is literally "is the caller standing inside the worktree it
-# is asking us to delete", which is a CWD-relative question. A locked
-# worktree is never removed and never unlocked — Claude Code's own worktree
-# feature locks the ones it creates, and reclaiming those is not this verb's
-# business.
+# <caller-toplevel> is the repository root the CALLER was standing in, captured
+# before this verb changed directory. It is passed rather than measured here ON
+# PURPOSE: the question `current` asks is literally "is the caller standing
+# inside the worktree it is asking us to delete", which is a question about
+# where the user is, not about where this script has since gone. Measuring it
+# here would answer for the wrong directory, and `git worktree remove` would
+# then succeed while the user's shell sat in a deleted one.
+#
+# A locked worktree is never removed and never unlocked — Claude Code's own
+# worktree feature locks the ones it creates, and reclaiming those is not this
+# verb's business.
 _story_worktree_status() {
-  local target="$1" cur locked
-  cur=$(git rev-parse --show-toplevel 2>/dev/null || printf '')
+  local target="$1" cur="$2" locked
   locked=$(git worktree list --porcelain 2>/dev/null | awk -v want="$target" '
     function flush() { if (p == want) print (l ? "1" : "0") }
     /^worktree / { flush(); p = substr($0, 10); l = 0 }
@@ -1147,9 +1161,16 @@ _story_worktree_status() {
 # under dry-run, as issue.sh's cmd_complete_execute does).
 _complete_prepare() {
   local id="$1"
+  # FIRST, before this verb resolves or enters anything: the repository root
+  # the CALLER is standing in. It is the sole input to _story_worktree_status's
+  # `current` branch, and the only moment it can be read is before the working
+  # directory moves.
+  local caller_toplevel
+  caller_toplevel=$(git rev-parse --show-toplevel 2>/dev/null || printf '')
+
   valid_story_id "$id" || fail "story id must be alphanumeric (hyphens/underscores allowed) (got: $id)."
 
-  CMP_DIR=$(repo_root) || fail "not inside a git repository."
+  CMP_DIR=$(repo_root ".") || fail "not inside a git repository."
   PROJECT_DIR="$CMP_DIR"
   require_story
 
@@ -1198,7 +1219,7 @@ _complete_prepare() {
 
   CMP_WT_PATH="$CMP_DIR/$wt_container/$CMP_WNAME"
   CMP_WT_BRANCH="worktree-$CMP_WNAME"
-  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH")
+  CMP_WT_STATUS=$(_story_worktree_status "$CMP_WT_PATH" "$caller_toplevel")
 
   # Branch classification. An un-comparable branch is NEVER treated as merged
   # (branch_is_merged returns false when neither origin/<default> nor local
