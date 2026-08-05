@@ -123,12 +123,15 @@ stop it cannot resolve). See `bin/story.sh`'s `AUTO_PROMPT_TPL` for the exact ch
   `$STORYHOOK_PROJECT`, then the nearest committed `.storyhook.toml` at or above the working
   directory, then the repository's registered origin — and a refusal naming all three if none
   answer. A subdirectory and a dispatched worktree therefore both work. `do`, `capture` and
-  `complete` still anchor at the main worktree, because they create, name and remove git
-  worktrees; that is about a *directory*, never about which project you mean.
+  `complete` need a *directory* as well, and they look it up rather than infer it: `story
+  project show` reports the project's linked checkout, and `do` and `complete` move into it
+  before touching git. Where you are standing decides which project you mean; it never decides
+  where the worktree lands (SH-120).
 - **`/story --project <slug> …` works from anywhere**, including outside a repository — the
   shape a scheduled or dashboard-invoked caller has. It is accepted before the verb
-  (`story.sh --project acme list`) and forwarded to every `story` call. `do` still needs a
-  repository, because a worktree has to be created somewhere.
+  (`story.sh --project acme list`) and forwarded to every `story` call. `do` works from
+  anywhere too, as long as the project *has* a checkout: run `story --project <slug> project
+  link checkout <path>` once to record one, and every refusal that needs it says so.
 - **GitHub-adjacent conventions from `/issue` don't apply here** — storyhook stories aren't
   GitHub issues. There's no label to apply and no `Closes #N` convention; the claim marker is
   the story's own `state`, and the handoff prompt tells the child session to reference the

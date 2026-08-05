@@ -15,9 +15,26 @@ set -euo pipefail
 
 real="${STORY_REAL_BIN:?STORY_REAL_BIN must point at the real story binary}"
 
-if [ "${1:-}" = "move" ] && [ "${2:-}" = "${STORY_CONFLICT_ID:-}" ] \
-  && [ "${3:-}" = "in-progress" ] && [ "${4:-}" = "--if-state" ] \
-  && [ "${5:-}" = "${STORY_CONFLICT_EXPECTED:-}" ]; then
+# is_claim_call <argv...> — true for the ONE call this fake answers itself.
+#
+# Since SH-120 story.sh pins `--project <slug>` ahead of every verb, so the
+# global flags are skipped before the positional match. Skipped rather than
+# matched loosely: this fake must intercept exactly one call and proxy every
+# other, and a substring match would start catching neighbours.
+is_claim_call() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --project) shift 2 || return 1 ;;
+    --project=*) shift ;;
+    *) break ;;
+    esac
+  done
+  [ "${1:-}" = "move" ] && [ "${2:-}" = "${STORY_CONFLICT_ID:-}" ] \
+    && [ "${3:-}" = "in-progress" ] && [ "${4:-}" = "--if-state" ] \
+    && [ "${5:-}" = "${STORY_CONFLICT_EXPECTED:-}" ]
+}
+
+if is_claim_call "$@"; then
   printf '{"result":"conflict","expected":"%s","actual":"in-progress","error":"state conflict: expected `%s`, was `in-progress`","exit_code":9}\n' \
     "$STORY_CONFLICT_EXPECTED" "$STORY_CONFLICT_EXPECTED"
   exit 9

@@ -176,7 +176,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-144** — `HttpInvoker::send` has no bound, so a wedged daemon holds its client forever
 - [x] **SH-141** — an event hook's grandchild holds its stderr pipe and wedges the daemon
 - [x] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
-- [ ] **SH-120** — C8 Dispatch plumbing · *the epic's next link, and the only thing SH-50 waits on* · **part 1 landed (#125): the CLI half. The plugin half remains — see the story.**
+- [x] **SH-120** — C8 Dispatch plumbing · *both halves landed; SH-50 is unblocked*
 - [x] **SH-166** — `/story do` should not prefix the worktree with the repo name · *closed by another session as #119*
 - [ ] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
 - [ ] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
@@ -3981,3 +3981,84 @@ to this work, and worth its own story because a permanently-red doctor trains it
 reader to ignore the next real finding.
 
 **Council:** yes — `.council/sh120-dispatch-checkout-lookup/DECISION.md`.
+
+### SH-120 — part 2 · the plugin half · the story closes
+
+**Outcome:** `dispatch`, `capture` and `complete` take their directory from the
+project's linked checkout. All three acceptance criteria are met and SH-120
+closes, which unblocks SH-50 and leaves the epic SH-112 waiting on SH-122 alone.
+
+**Built to the council verdict on the story, without re-running the vote.** All
+six remaining items were implemented as written: `repo_root`'s required
+argument, one helper in the order refusals → pin → cd → publish, all three verbs
+moving together, the caller's toplevel captured first, refusals above the
+compare-and-swap claim with `claim_rollback_note` untouched, and no CWD fallback.
+
+**The story understated its own extent, and part 1 had already found why.** The
+filed defect is "dispatch derives its directory from the working directory". The
+real one is that *every* git call in `story.sh` and `lib/session.sh` was bare —
+no `-C`, no subshell `cd`. Changing only the reported `dir` would have left `git
+worktree add` cutting a worktree of the caller's repo at a path inside the
+project's directory: strictly worse than the defect as filed.
+
+**So the fixture asserts the paths AND probes the calls behind them**, and the
+probe is the part worth keeping. It pre-creates the colliding branch in project
+A alone and requires dispatch's bare `git show-ref` collision guard to see it
+from B. A fix that corrected the reported path while leaving the git calls
+unscoped passes every path assertion in the file and fails that one.
+
+**One real cd, not `git -C` threaded through the call sites.** Roughly twenty
+bare invocations across two files, several inside shared helpers whose
+signatures would all have to grow a parameter, and no invariant would stop a
+twenty-first being added bare. `story.sh` is always executed and never sourced,
+so the cd cannot leak; `repo_root` already cds for that reason.
+
+**The pin is a correctness requirement, not tidiness.** `resolve_checkout` sets
+`$PROJECT_SLUG` from the same `project show` response that gave it the path,
+before anything moves. Resolving again from the new directory would be a
+different question — a monorepo's sub-project owns its own identity and is
+entitled to answer differently (SH-151). The pin happens even when there is *no*
+checkout, which is what lets `capture` stay tolerant and still talk about the
+right project.
+
+**Four refusals, all above the claim.** No linked checkout; a recorded path that
+is gone (naming what `doctor --fix` would cost — it forgets the link, and the
+project and its stories survive); a directory that is not a git repository —
+which `link checkout` permits deliberately, on the stated ground that "the one
+consumer fails loudly on its own", and this is that failure; and a checkout
+recorded as a **linked worktree**, refused rather than silently resolved up to
+the main repo. An unresolvable project relays the CLI's own refusal verbatim,
+because selection has four steps and a list composed in bash would be wrong
+today and wrong again later.
+
+**Red→green verified in both directions rather than assumed.** Disarming the
+checkout lookup fails 13 assertions in the new fixture **and nothing else in the
+harness** — which is itself the finding: every other fixture runs from the very
+checkout it is about, so the pre-existing suite could not have caught this at
+all. Disarming the caller's-toplevel capture fails two files, the new one and
+`test-complete-plan.sh`, so that half is separately load-bearing and was already
+pinned. Neither disarm was assumed; both were run.
+
+**The fixture was wrong before the code was, once.** `fakes/story-conflict/story`
+matched its one intercepted call by argv position, and the pinned `--project`
+now precedes the verb — so the fake proxied the claim through to the real binary
+and the conflict never fired. It skips the global flags rather than matching
+loosely: this fake must intercept exactly one call and proxy every other, and a
+substring match would start catching neighbours.
+
+**Measured against the real store, read-only, with the installed binary** — not
+a `cargo build` one, which is the rule part 1's entry ends with. 14 projects; 8
+have a linked checkout and **every one is its repository's main worktree at the
+top level**, so no live project changes behaviour and none meets the new
+linked-worktree refusal. The other 6 — `blink`, `duckduckgo-apple`, `keymux`,
+`memlayer`, `opengrid-scad`, `ourdio` — have no *recorded* checkout, and all six
+**do have a directory on this machine**, each a main-worktree git repository at
+its top level. So the gap the council flagged as unsettled is a recording gap
+rather than an absence, and the rollout is six one-line `project link checkout`
+commands rather than a story. Left for Mikey, as part 1's comment recorded.
+
+**Gate:** `make test` exits 0 — 118 green blocks, 0 failures, plugin harness
+22/22, browser suite 9/9. Supervised with a log-growth heartbeat on a 120-second
+stall bound. **No wedge.**
+
+**Council:** not re-run. The verdict on the story was the input, as instructed.
