@@ -696,12 +696,14 @@ fn resolve_dispatch_script_from(configured: Option<String>) -> Result<PathBuf, S
 /// a reinstall of the same scope is recorded (append, never replace-in-place).
 fn installed_plugin_script() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    let raw = std::fs::read_to_string(
-        PathBuf::from(home).join(".claude/plugins/installed_plugins.json"),
-    )
-    .ok()?;
+    let raw =
+        std::fs::read_to_string(PathBuf::from(home).join(".claude/plugins/installed_plugins.json"))
+            .ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let entries = manifest.get("plugins")?.get("story@storyhook")?.as_array()?;
+    let entries = manifest
+        .get("plugins")?
+        .get("story@storyhook")?
+        .as_array()?;
     let install_path = entries.last()?.get("installPath")?.as_str()?;
     let script = PathBuf::from(install_path).join("bin/story.sh");
     script.is_file().then_some(script)
@@ -774,10 +776,19 @@ mod tests {
         let registry = Arc::new(DispatchRegistry::new());
         let bus = ChangeBus::new();
         let env = env();
-        let segments = ["api", "repos", "proj", "story", "SH-1", "dispatch", "h", "extra"];
+        let segments = [
+            "api", "repos", "proj", "story", "SH-1", "dispatch", "h", "extra",
+        ];
         assert!(
             intercept(
-                &segments, &Method::Get, &[], &[], "tok", &env, &bus, &registry,
+                &segments,
+                &Method::Get,
+                &[],
+                &[],
+                "tok",
+                &env,
+                &bus,
+                &registry,
             )
             .is_none()
         );
@@ -898,7 +909,10 @@ mod tests {
             &registry,
         )
         .unwrap();
-        assert_eq!(reply.status, 401, "must not leak 404-vs-401 to an unauthenticated caller");
+        assert_eq!(
+            reply.status, 401,
+            "must not leak 404-vs-401 to an unauthenticated caller"
+        );
     }
 
     #[test]
@@ -1016,10 +1030,12 @@ mod tests {
         let registry = DispatchRegistry::new();
         let mut handles = Vec::new();
         for n in 0..(RETAIN_FINISHED + 3) {
-            let handle = match registry.try_start(&format!("proj-{n}"), &format!("SH-{n}"), "t".to_string()) {
-                StartOutcome::Started(h) => h,
-                other => panic!("expected Started: {other:?}"),
-            };
+            let handle =
+                match registry.try_start(&format!("proj-{n}"), &format!("SH-{n}"), "t".to_string())
+                {
+                    StartOutcome::Started(h) => h,
+                    other => panic!("expected Started: {other:?}"),
+                };
             registry.finish(
                 &handle,
                 &format!("SH-{n}"),
@@ -1042,10 +1058,8 @@ mod tests {
 
     #[test]
     fn classify_reports_ok_for_a_successful_result() {
-        let (state, payload, error) = classify(
-            capture_of(r#"{"ok":true,"id":"SH-1"}"#),
-            capture_of(""),
-        );
+        let (state, payload, error) =
+            classify(capture_of(r#"{"ok":true,"id":"SH-1"}"#), capture_of(""));
         assert_eq!(state, DispatchState::Ok);
         assert_eq!(payload.unwrap()["id"], "SH-1");
         assert!(error.is_none());
@@ -1083,17 +1097,20 @@ mod tests {
     fn capture_of(content: &str) -> std::fs::File {
         use std::io::Write;
         let mut file = tempfile::tempfile().expect("a scratch file");
-        file.write_all(content.as_bytes()).expect("writing fixture content");
+        file.write_all(content.as_bytes())
+            .expect("writing fixture content");
         file
     }
 
     #[test]
     fn resolve_dispatch_script_honours_the_env_override() {
         let script = tempfile::NamedTempFile::new().expect("a scratch file");
-        let resolved = resolve_dispatch_script_from(Some(
-            script.path().to_string_lossy().into_owned(),
-        ));
-        assert_eq!(resolved.expect("the override names a real file"), script.path());
+        let resolved =
+            resolve_dispatch_script_from(Some(script.path().to_string_lossy().into_owned()));
+        assert_eq!(
+            resolved.expect("the override names a real file"),
+            script.path()
+        );
     }
 
     #[test]

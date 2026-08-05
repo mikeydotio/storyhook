@@ -368,7 +368,9 @@ fn the_project_and_story_reach_the_script_verbatim() {
         .to_string();
 
     let record = poll_until_finished(&info, &info.token, "scad-caliper", "CAL-12", &handle);
-    let argv = record["payload"]["argv"].as_str().expect("argv echoed back");
+    let argv = record["payload"]["argv"]
+        .as_str()
+        .expect("argv echoed back");
     assert!(argv.contains("--project scad-caliper"));
     assert!(argv.contains("dispatch CAL-12"));
 }
