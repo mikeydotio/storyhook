@@ -17,6 +17,25 @@
 #                        below). DEFAULT (knob unset) is the legacy
 #                        "  ? for shortcuts" line, so every pre-#67 test that
 #                        relies on it keeps passing unchanged.
+#   has-session       -> exit 0 iff `-t <name>` is in the virtual session set
+#                        (SH-50 — story.sh's STORY_CREATE_SESSION path).
+#   new-session       -> `-d -s <name> [-c <dir>]`. Adds <name> to the virtual
+#                        session set and bumps $STATE/new_session_calls, so a
+#                        test can assert whether creation actually ran (SH-50).
+#                        Fails (exit 1) when $FAKE_TMUX_FAIL_NEW_SESSION=1, to
+#                        drive story.sh's rollback-on-session-failure path.
+#
+# SESSION MODEL (SH-50) — a virtual set of "existing" session names lives in
+# $STATE/sessions, one per line. Seed it with $FAKE_TMUX_SESSIONS
+# (newline-separated) to simulate sessions that pre-date the dispatch; with it
+# unset, no session exists until `new-session` creates one. This is the ONLY
+# state `new-window` does not reset, because a session is meant to outlive the
+# one dispatch that opened a window in it — exactly like a real tmux server.
+#
+# Every `new-window` invocation's raw argv is appended to
+# $STATE/new_window_args.log (one line per call) so a test can confirm which
+# session (if any) a window actually opened in, via the `-t <name>:` prefix
+# story.sh passes.
 #
 # STATEFUL MODEL (issue #82) — the fake now models the Claude Code input box so a
 # test can observe both RECEIPT (the paste landed in the box) and SUBMISSION (the
@@ -92,6 +111,18 @@ mkdir -p "$STATE" 2>/dev/null || true
 NL='
 '   # a single literal newline, for splitting -l keystroke text on line breaks
 
+# Seed the virtual session set exactly once per $STATE (SH-50): a session,
+# unlike everything `new-window` resets, is meant to survive across the
+# calls one dispatch makes, so this must not re-seed (and thereby erase a
+# session `new-session` already created) on every invocation.
+# $FAKE_TMUX_SESSIONS is space- or newline-separated.
+if [ -n "${FAKE_TMUX_SESSIONS:-}" ] && [ ! -f "$STATE/sessions" ]; then
+  : > "$STATE/sessions" 2>/dev/null || true
+  for _seed_session in $FAKE_TMUX_SESSIONS; do
+    printf '%s\n' "$_seed_session" >> "$STATE/sessions" 2>/dev/null || true
+  done
+fi
+
 # _submit_box — model ONE Enter against the virtual input box, matching the real
 # TUI. The FIRST submit after launch clears the launch command line and flips
 # $STATE/launched; every later submit is a PROMPT submit, which honours the
@@ -148,12 +179,55 @@ case "${1:-}" in
     # clears the buffer store + submit bookkeeping (issue #87) so a reused $STATE
     # dir (e.g. the shared /tmp/issue-faketmux the readiness cases use) can't read
     # stale state.
+    shift || true
+    printf '%s\n' "$*" >> "$STATE/new_window_args.log" 2>/dev/null || true
     rm -f "$STATE/input" "$STATE/launched" "$STATE/absorb" "$STATE/pastes.log" \
           "$STATE/submitted" "$STATE/prompt_submits" 2>/dev/null || true
     rm -f "$STATE"/buf-* 2>/dev/null || true
     printf '%s' "${FAKE_TMUX_ENTER_ABSORB:-0}" > "$STATE/absorb" 2>/dev/null || true
     printf '0' > "$STATE/prompt_submits" 2>/dev/null || true
     printf '%%1\n'
+    ;;
+  has-session)
+    # `-t <name>` — SH-50: exit 0 iff <name> is in the virtual session set.
+    # Bypasses the trailing `exit 0` below on purpose; this is the one
+    # subcommand story.sh branches on the exit code of.
+    shift || true
+    tname=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -t) shift || true; tname="${1-}" ;;
+      esac
+      shift || true
+    done
+    if grep -qxF "$tname" "$STATE/sessions" 2>/dev/null; then
+      exit 0
+    else
+      exit 1
+    fi
+    ;;
+  new-session)
+    # `-d -s <name> [-c <dir>]` — SH-50. Records the call count (so a test can
+    # assert whether creation ran at all) and adds <name> to the session set,
+    # unless $FAKE_TMUX_FAIL_NEW_SESSION=1 asks this to fail instead, which
+    # drives story.sh's rollback-on-session-failure path. Also bypasses the
+    # trailing `exit 0` — story.sh branches on this exit code too.
+    shift || true
+    sname=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -s) shift || true; sname="${1-}" ;;
+        -c) shift || true ;;   # drop the start directory; not modeled
+      esac
+      shift || true
+    done
+    if [ "${FAKE_TMUX_FAIL_NEW_SESSION:-}" = "1" ]; then
+      exit 1
+    fi
+    ns_n="$(cat "$STATE/new_session_calls" 2>/dev/null || printf '0')"
+    printf '%s' "$((ns_n + 1))" > "$STATE/new_session_calls" 2>/dev/null || true
+    printf '%s\n' "$sname" >> "$STATE/sessions" 2>/dev/null || true
+    exit 0
     ;;
   display-message)   printf '@1\n' ;;
   set-window-option) : ;;

@@ -8,7 +8,7 @@
 //! * [`backup`] — the daily verified snapshot of the store.
 //! * [`bus`] — the change feed every `/api/events` client subscribes to, fed by
 //!   the request boundary and by a `PRAGMA data_version` poller.
-//! * [`commands`] — `story daemon start|stop|status|install|uninstall`.
+//! * [`commands`] — `story daemon start|stop|status|install|uninstall|token`.
 //! * [`lifecycle`] — the portfile, the pidfile lock, and auto-spawn.
 //! * [`serve`] — the listeners and the accept loop.
 //! * [`tailnet`] — this machine's Tailscale identity: the interface the

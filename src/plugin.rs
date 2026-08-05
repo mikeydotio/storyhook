@@ -33,7 +33,7 @@ fn claude_plugins_dir() -> Result<PathBuf, AppError> {
 ///
 /// When present, the local repo is used as the marketplace source so contributors
 /// install their working copy instead of the published GitHub version.
-fn dev_repo_root() -> Option<PathBuf> {
+pub(crate) fn dev_repo_root() -> Option<PathBuf> {
     let has_marketplace = |dir: &Path| dir.join(".claude-plugin").join("marketplace.json").exists();
 
     // Current working directory (the common dev case: running from the repo).
