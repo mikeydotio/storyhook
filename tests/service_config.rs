@@ -19,12 +19,14 @@
 //! also a consistency check on whatever it exercised.
 
 use storyhook::cli::MemberInput;
-use storyhook::domain::{FieldEdit, StateChanges, StateDef, SuperState};
+use storyhook::domain::{
+    FieldEdit, StateChanges, StateDef, SuperState, TypeDef, validate_type_slug,
+};
 use storyhook::error::AppError;
 use storyhook::service::{
     ConfigService, Ctx, NewStoryInput, StateListing, StoryService, config::state_usage,
 };
-use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo};
+use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, WriteOps};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture, default_states};
 
 // --- helpers ---------------------------------------------------------------
@@ -955,6 +957,114 @@ fn the_slugs_that_mean_no_type_are_reserved() {
     }
 }
 
+/// SH-134: a type slug is an address, so `add_type` refuses one nothing can
+/// address — the same rule `add_state` has always applied to a state slug.
+///
+/// These are the eight shapes measured reaching the store before the fix. The
+/// last one is the reason SH-62's flag gate could not stand in for this check:
+/// `story type add -- --typo` is a legitimate use of the argument terminator,
+/// so the token arrives at the service as ordinary data and only a domain
+/// invariant can refuse it.
+#[test]
+fn add_type_rejects_unaddressable_slugs() {
+    let fixture = ServiceFixture::new();
+    for bad in [
+        "",
+        "in review",
+        "a b",
+        "Bug",
+        "spike/two",
+        "-lead",
+        "double--dash",
+        "café",
+        "--typo",
+    ] {
+        let error = ConfigService::new(&fixture.ctx())
+            .add_type(bad, None, None)
+            .unwrap_err();
+        assert!(
+            message(error).contains("invalid type slug"),
+            "`{bad}` was accepted"
+        );
+    }
+
+    let types = ConfigService::new(&fixture.ctx())
+        .list_types()
+        .expect("listing");
+    assert_eq!(
+        types.iter().map(|t| t.slug.as_str()).collect::<Vec<_>>(),
+        ["feature", "bug"],
+        "a refused slug must leave the catalog exactly as it was"
+    );
+}
+
+/// The guard against the fix going too far: a well-formed slug still works.
+#[test]
+fn add_type_still_accepts_a_well_formed_slug() {
+    let fixture = ServiceFixture::new();
+    let added = ConfigService::new(&fixture.ctx())
+        .add_type("feature-request", None, None)
+        .expect("adding a well-formed type");
+    assert_eq!(added.slug, "feature-request");
+}
+
+/// SH-134's lock-out hazard, pinned in both directions.
+///
+/// A project can only carry an unaddressable type slug if it predates this
+/// rule, so the fixture writes two of them through the store rather than
+/// through the service that now refuses them. Neither the cleanup path nor the
+/// growth path may consult the rest of the catalog: validating the *resulting
+/// set* on removal would mean neither junk slug could ever be removed (taking
+/// one away still leaves the other), and validating it on addition would stop
+/// the project adding any new type at all until it was clean. Both are worse
+/// than the damage they would be policing.
+#[test]
+fn a_catalog_holding_junk_slugs_can_still_be_cleaned_up_and_grown() {
+    let fixture = ServiceFixture::new();
+    let project = fixture.project();
+    fixture
+        .store()
+        .write(|tx| {
+            tx.put_types(
+                project,
+                &[
+                    TypeDef {
+                        slug: "feature".into(),
+                        description: None,
+                        emoji: None,
+                    },
+                    TypeDef {
+                        slug: "in review".into(),
+                        description: None,
+                        emoji: None,
+                    },
+                    TypeDef {
+                        slug: "café".into(),
+                        description: None,
+                        emoji: None,
+                    },
+                ],
+            )
+        })
+        .expect("seeding a catalog written before the rule existed");
+
+    let ctx = fixture.ctx();
+    ConfigService::new(&ctx)
+        .remove_type("in review")
+        .expect("removing one junk slug while another remains");
+    ConfigService::new(&ctx)
+        .add_type("spike", None, None)
+        .expect("adding a valid type while junk remains");
+
+    let remaining: Vec<String> = ConfigService::new(&ctx)
+        .list_types()
+        .expect("listing")
+        .into_iter()
+        .map(|t| t.slug)
+        .collect();
+    assert_eq!(remaining, ["feature", "café", "spike"]);
+}
+
 #[test]
 fn a_duplicate_type_slug_is_rejected() {
     let fixture = ServiceFixture::new();
@@ -1072,6 +1182,42 @@ fn a_github_handle_becomes_both_the_id_and_the_handle() {
         .expect("adding a member");
     assert_eq!(member.id, "mikeyward");
     assert_eq!(member.github.as_deref(), Some("mikeyward"));
+}
+
+/// SH-134 asked whether `member add` needs the shape guard `add_type` now has.
+///
+/// It does not, and this is why: a member id is *derived* by `slugify` rather
+/// than stored as typed, so it is addressable by construction — where a type
+/// slug was stored verbatim, which is the whole defect. The guarantee was never
+/// pinned, though, and an unpinned guarantee is what SH-134 was. Asserting it
+/// through the type validator rather than restating the charset means the two
+/// invariants cannot drift apart: weaken either and this fails.
+/// A fixture each, because two of these inputs derive the *same* id: `!!!` and
+/// a run of spaces both fall back to `member`, so sharing one project would
+/// fail the second on uniqueness — a fact about the fixture, not about
+/// addressability, which is what this test is for.
+#[test]
+fn member_ids_always_satisfy_the_type_slug_addressability_bar() {
+    for raw in [
+        "--typo",
+        "!!!",
+        "café user",
+        "Ada Lovelace <ada@example.com>",
+        "in review",
+        "spike/two",
+        "-lead",
+        "double--dash",
+        "   ",
+    ] {
+        let fixture = ServiceFixture::new();
+        let ctx = fixture.ctx();
+        let member = ConfigService::new(&ctx)
+            .add_member(&MemberInput::Identity(raw.to_string()))
+            .unwrap_or_else(|e| panic!("`{raw}` was refused: {e:?}"));
+        validate_type_slug(&member.id).unwrap_or_else(|e| {
+            panic!("`{raw}` derived the unaddressable id `{}`: {e}", member.id)
+        });
+    }
 }
 
 #[test]

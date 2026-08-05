@@ -1393,6 +1393,33 @@ fn slugify(value: &str) -> String {
 }
 
 #[cfg(test)]
+mod default_catalog_tests {
+    use super::*;
+    use crate::domain::{validate_state_slug, validate_type_slug};
+
+    /// The catalog every new project starts with must satisfy the rules
+    /// `story type add` and `story state add` apply to a catalog edit.
+    ///
+    /// SH-134 left `default_types()` out of the runtime check on purpose — it
+    /// is a compile-time constant, and validating it on every project creation
+    /// would be paying at run time for something a test settles once. This is
+    /// that test: change a default to something unaddressable and it fails
+    /// here rather than in a user's store.
+    #[test]
+    fn the_default_catalog_is_addressable() {
+        for story_type in default_types() {
+            validate_type_slug(&story_type.slug).unwrap_or_else(|e| {
+                panic!("default type `{}` is unaddressable: {e}", story_type.slug)
+            });
+        }
+        for state in default_states() {
+            validate_state_slug(&state.slug)
+                .unwrap_or_else(|e| panic!("default state `{}` is unaddressable: {e}", state.slug));
+        }
+    }
+}
+
+#[cfg(test)]
 mod temp_project_tests {
     use super::*;
     use std::path::Path;

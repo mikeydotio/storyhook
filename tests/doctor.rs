@@ -18,8 +18,9 @@
 
 use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
-use storyhook::domain::StoryEvent;
+use storyhook::domain::{StoryEvent, TypeDef};
 use storyhook::store::test_support::inject_events;
+use storyhook::store::{ReadOps, Store, WriteOps};
 use storyhook_test_support::TestEnv;
 
 /// `at` for injected events: fixed, so a rendering never depends on the clock.
@@ -110,6 +111,55 @@ fn doctor_flags_a_story_type_the_catalog_does_not_define() {
         .run(&["doctor"])
         .code(5)
         .stderr(contains("unknown type `nonexistent-type`"));
+}
+
+/// SH-134: a type slug nothing can address is reported, and never repaired.
+///
+/// `add_type` refuses these now, so a catalog can only hold one if it was
+/// written by an older storyhook or arrived in a document — which SH-134 left
+/// raw on purpose, making this finding the only way such a slug is ever
+/// noticed. The fixture writes it the way those paths do: through the store,
+/// past the service that now refuses it.
+///
+/// `--fix` must not touch it. The only two automatic repairs available are
+/// renaming the type — which `TypeChanges` bans outright, because every
+/// `StoryTypeSet` event names the slug it set and a rename orphans them — and
+/// retyping stories the user never asked about. So the finding survives the
+/// repair and the command still fails, which is the doctor's existing habit of
+/// saying what it cannot fix rather than claiming a repair it did not make.
+#[test]
+fn doctor_reports_an_unaddressable_type_slug_and_cannot_fix_it() {
+    let env = TestEnv::shared();
+    let project = env.project().seed_story("A").build();
+    let store = project.open_store();
+    let id = project.project_id(&store);
+
+    let mut types = store.read(|tx| tx.types(id)).expect("reading the catalog");
+    types.push(TypeDef {
+        slug: "in review".to_string(),
+        description: None,
+        emoji: None,
+    });
+    store
+        .write(|tx| tx.put_types(id, &types))
+        .expect("seeding a catalog written before the rule existed");
+
+    project
+        .run(&["doctor"])
+        .code(5)
+        .stderr(contains("type `in review` cannot be addressed"));
+
+    // The repair runs, changes nothing about this, and reports it again.
+    project
+        .run(&["doctor", "--fix"])
+        .code(5)
+        .stderr(contains("type `in review` cannot be addressed"));
+
+    let after = store.read(|tx| tx.types(id)).expect("reading the catalog");
+    assert!(
+        after.iter().any(|t| t.slug == "in review"),
+        "`--fix` must not delete a type the user may still want to rename"
+    );
 }
 
 #[test]
