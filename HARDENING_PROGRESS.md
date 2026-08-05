@@ -183,7 +183,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-166** — `/story do` should not prefix the worktree with the repo name · *closed by another session as #119*
 - [x] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
 - ⏸ **SH-182** — the SessionStart hook's 5s budget sits below the 30s spawn-lock wait its own `story` call may take · *filed by SH-140's council; **held for Mikey's design call** — do not work it autonomously*
-- [ ] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
+- [x] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
 - [ ] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
 - [ ] **SH-133** — rollback drops project settings · *filed by SH-129*
 - [ ] **SH-137** — github-sync unreachable for an origin carrying userinfo
@@ -230,6 +230,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [ ] **SH-128** — column sort options
 - [ ] **SH-168** — do not show the green ready status labels
 - [ ] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
+- [ ] **SH-183** — `story migrate` refuses a bad state slug but accepts a bad type slug · *filed by SH-134's chair, correcting a claim in that council's own verdict*
 
 ### What was on the old list and is now done
 
@@ -4188,3 +4189,119 @@ stall bound. **No wedge.** Read out of the log rather than from `$?`, which is
 the trap two earlier entries in this file were caught by.
 
 **Council:** yes — `.council/sh140-wall-clock-assertions/`.
+
+### SH-134 — done
+
+**Outcome:** `story type add` refuses a slug nothing can address, `story doctor`
+reports one already stored, and the two rules a fix like this can break — a
+project's ability to clean up its own junk, and its ability to grow past it —
+are both pinned by a test that would fail if either were taken away.
+
+**The story understated its own extent, and measuring first is what found it.**
+SH-134 reported `story type add --typo`. Running the real binary against an
+isolated scratch store showed **eight** shapes accepted and stored permanently:
+`""`, `in review`, `a b`, `Bug`, `spike/two`, `-lead`, `double--dash` and `café`.
+The empty one is the worst and was not in the story at all — a story can be
+given it (`story new t --type ""`), after which `story type remove` refuses
+while that story exists, so the nameless type becomes permanent. This is the
+third consecutive story in this run where the filed extent was narrower than the
+measured one.
+
+**And the story's central premise was wrong.** It says the defect "is no longer
+reachable via `story type add`" because SH-62's flag gate refuses that
+invocation. `story type add -- --typo` **succeeds**: `--` is a legitimate
+argument terminator and hands the token to the service as ordinary data. So the
+CLI route was never closed. That is not a criticism of SH-62 — its own log
+predicted this, in the sentence saying a parser refusal "can only stop one
+caller from tripping" a missing domain invariant. The prediction was right and
+the story that inherited it had already forgotten.
+
+**Council: unanimous, round 1, and both non-authors voted against their own
+proposals.** Fifth time in this run, and again because a checked fact beat an
+argument rather than the reverse.
+
+- **Seat 1 (data engineer)** proposed refusing an import document outright, then
+  voted against itself on finding that the import path does not shape-validate
+  *states* either — making refusal-for-types an asymmetry rather than a
+  correction. It also accepted the sharper objection: refusing pushes a stuck
+  user into hand-editing a document's `types` array, where they can orphan a
+  story's `story_type` inside that same document — a second bug introduced while
+  fixing the first.
+- **Seat 2 (architect)** proposed the same placement as the winner but with no
+  regression pin, and voted against itself on the grounds that the missing pin
+  was a real gap — while independently verifying the winner's check-order claim
+  against `tests/service_config.rs:943-954`.
+- The decisive placement fact came from seat 2 and was verified here before the
+  ballot went out: **`service/state_set.rs` is not a shape funnel.** It enforces
+  the required-state floor and never calls `validate_state_slug`; state *shape*
+  is validated at the `config.rs` call sites. So the obvious symmetry — "states
+  have a funnel, types should too" — was an argument from a resemblance that
+  does not exist, and a `write_types` module would have been a passthrough with
+  no branching logic to arbitrate.
+
+**The lock-out is the finding worth keeping.** Whole-set validation is what
+`add_state` does, and copying it here would have been the obvious move and the
+wrong one, in *both* directions: validating the resulting set on **remove** means
+a project holding two junk slugs can remove neither (taking one away still
+leaves the other), and validating it on **add** means such a project can never
+add a valid type either. One refusal blocks the cleanup, the other blocks the
+growth, and together they would police damage by preventing its repair.
+`a_catalog_holding_junk_slugs_can_still_be_cleaned_up_and_grown` seeds two junk
+slugs through the store and asserts both operations still work.
+
+**Red→green verified in both directions rather than assumed.** Disarming the
+`add_type` check fails exactly one test — `add_type_rejects_unaddressable_slugs`
+— and leaves the lock-out test, the member pin, the call-site pin, the doctor
+test and the golden CLI corpus green, which is their job: they guard against the
+fix going *too far*. Disarming the doctor finding fails exactly one other test.
+Neither disarm touched the other's tests, which is what says the two halves are
+separately load-bearing.
+
+**What was deliberately not built.** A slug arriving in an export document or a
+legacy tree is still written raw. Repairing one means **renaming** it, and
+`TypeChanges`' own doc comment already bans that in as many words — every
+`StoryTypeSet` event names the slug it set, so a rename orphans history rather
+than updating it. Refusing the document was proposed and rejected: it would
+hard-fail `story migrate` (mandatory onboarding) and `import-project` (a user
+restoring their own backup) for a project whose junk predates the fix, with no
+in-tool remedy. The doctor finding exists precisely because that door stays
+open, and it is report-only for the same reason `--fix` has always declined an
+asymmetric relation: the only automatic actions available are the banned rename
+and retyping stories the user never mentioned.
+
+**`member add` needed no fix, and the test says why.** Measured: `--typo` →
+`typo`, `!!!` → `member`, `café user` → `caf-user`. A member id is *derived* by
+`slugify` rather than stored as typed — which is the whole difference from a
+type slug — so it is addressable by construction. The guarantee had never been
+pinned, though, and an unpinned guarantee is exactly what SH-134 turned out to
+be, so it is now asserted *through* `validate_type_slug` rather than by
+restating the character rule: weaken either and the test fails.
+
+**The reserved-before-shape order is not a style call.** It is forced by a green
+test: `the_slugs_that_mean_no_type_are_reserved` asserts `NONE` and `Default`
+produce the *reserved* message, and only that message tells a user that fixing
+the casing will not help. Seat 3 found this; seat 2 verified it independently.
+
+**Filed: SH-183**, and it is a correction to the winning proposal rather than a
+follow-on. The verdict's D3 rests partly on "the import path does not
+shape-validate states either" — true of `transfer.rs`, **false** of
+`migrate.rs`, whose `MigrationPlan::build` runs `validate_state_defs_for_write`
+over a legacy tree. So `story migrate` now refuses a tree whose *state* slug is
+malformed while accepting one whose *type* slug is malformed, at the same call
+site. Verified after the vote closed. It changes no seat's reasoning and the
+chair does not vote, so it is a story rather than scope smuggled into this one.
+
+**Three commits, two hats:** the fix (validator, wiring, refusal, lock-out and
+call-site tests), a test-only commit for the member pin, and the doctor finding.
+Each verified to stand alone — the fix commit's `service_config.rs` does not
+name the import the test-only commit adds, and the test-only commit touches no
+production file.
+
+**Gate:** `make test` exits 0 — **119 green blocks, 0 failures**, plugin harness
+22/22, browser suite 9/9. Supervised with a log-growth heartbeat on a 120-second
+stall bound; **no wedge**. One flat window of ~56 seconds was checked rather than
+assumed — the log resumed growing, so it was between-suite quiet rather than a
+stall. Read out of the log rather than from `$?`, the trap two earlier entries
+here were caught by.
+
+**Council:** yes — `.council/sh134-type-slug-invariant/`.
