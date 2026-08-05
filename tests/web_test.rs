@@ -526,6 +526,12 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="create-description""#));
     assert!(body.contains(r#"id="create-priority""#));
     assert!(body.contains(r#"id="create-labels-field""#));
+    // Dispatch's token modal (SH-50) -- the Dispatch button itself is built
+    // by JS only for an open story in a project with a checkout, so it
+    // never appears in this static markup; the modal it opens does.
+    assert!(body.contains(r#"id="token-modal""#));
+    assert!(body.contains(r#"id="token-input""#));
+    assert!(body.contains(r#"id="token-submit""#));
     // Multi-repo screens (#20): the header's project selector (SH-42), home
     // dashboard, settings
     assert!(body.contains(r#"id="projsel-btn""#));

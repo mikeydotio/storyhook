@@ -468,6 +468,8 @@ tbody tr:hover { background: var(--bg-sunken); }
 .modal-body .field label { display: block; margin-bottom: 0.25rem; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem 1.25rem; }
 .modal-error { font-size: 0.75rem; color: var(--danger); }
+.modal-body p { font-size: 0.8125rem; color: var(--fg-muted); margin: 0; }
+.modal-body code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
 
 /* ---- Toasts ---- */
 .toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: 22rem; }
@@ -668,6 +670,22 @@ tbody tr:hover { background: var(--bg-sunken); }
   </div>
 </div>
 
+<div class="backdrop" id="token-modal-backdrop" hidden></div>
+<div class="modal" id="token-modal" aria-hidden="true">
+  <div class="modal-header">Daemon token required</div>
+  <div class="modal-body">
+    <p>Dispatching from the dashboard requires the storyhook daemon's bearer token. Run
+      <code>story daemon token</code> on the machine running the daemon and paste it below.</p>
+    <div class="field"><label for="token-input">Token</label>
+      <input type="text" id="token-input" autocomplete="off" spellcheck="false"></div>
+    <div class="modal-error" id="token-error"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="token-cancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="token-submit">Save</button>
+  </div>
+</div>
+
 <div class="toast-stack" id="toast-stack"></div>
 
 <script>
@@ -723,7 +741,12 @@ tbody tr:hover { background: var(--bg-sunken); }
     drawerDetail: null,
     pending: {},
     lastFetchAt: 0,
-    fetchOk: false
+    fetchOk: false,
+    // Story id -> {handle, timer} for a dispatch this tab is polling (SH-50).
+    // Keyed per-story rather than one global slot, matching the daemon's own
+    // support for several concurrent dispatches; a dispatch keeps polling
+    // (and still toasts on completion) even after its drawer closes.
+    dispatches: {}
   };
 
   /** Set by `fetchData()` (from `diffSnapshots`) whenever fresh data arrives
@@ -800,14 +823,22 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   /** Issues a guarded mutation request. Always sets the CSRF header and JSON
    * content type; resolves with the parsed body on 2xx, rejects with
-   * {status, message} otherwise. */
-  function api(method, path, body) {
+   * {status, message} otherwise. `opts.headers` adds extra headers (the
+   * dispatch endpoint's bearer token, SH-50); `opts.timeoutMs` overrides the
+   * default 10s. */
+  function api(method, path, body, opts) {
+    opts = opts || {};
     return new Promise(function(resolve, reject) {
       var xhr = new XMLHttpRequest();
       xhr.open(method, path, true);
       xhr.setRequestHeader("X-Storyhook", "1");
       xhr.setRequestHeader("Content-Type", "application/json");
-      xhr.timeout = 10000;
+      if (opts.headers) {
+        Object.keys(opts.headers).forEach(function(name) {
+          xhr.setRequestHeader(name, opts.headers[name]);
+        });
+      }
+      xhr.timeout = opts.timeoutMs || 10000;
       xhr.onreadystatechange = function() {
         if (xhr.readyState !== 4) return;
         var parsed = null;
@@ -914,6 +945,181 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   function toastError(err) {
     toast(typeof err === "string" ? err : (err && err.message) || "Something went wrong", "error");
+  }
+
+  // ============================================================
+  // DISPATCH (SH-50)
+  // ============================================================
+  //
+  // POST .../story/<id>/dispatch returns a handle immediately (the daemon
+  // runs the real dispatch script off its own request thread); this polls
+  // GET .../story/<id>/dispatch/<handle> every DISPATCH_POLL_MS until its
+  // state leaves "running". Every call carries the daemon's bearer token
+  // from sessionStorage -- the ordinary X-Storyhook/Host guard alone is not
+  // authentication (see docs/spec/dashboard-dispatch.md), so this endpoint
+  // additionally requires it, on every listener including loopback.
+
+  var DISPATCH_TOKEN_KEY = "storyhookDispatchToken";
+  var DISPATCH_POLL_MS = 5000;
+  var DISPATCH_MAX_POLLS = 40; // ~200s -- comfortably past the daemon's own 180s dispatch timeout
+
+  function getDispatchToken() {
+    try { return sessionStorage.getItem(DISPATCH_TOKEN_KEY) || ""; }
+    catch (e) { return ""; } // storage disabled (private mode, locked-down policy)
+  }
+  function setDispatchToken(token) {
+    try { sessionStorage.setItem(DISPATCH_TOKEN_KEY, token); }
+    catch (e) { /* nothing to do -- the token modal will just reappear next time */ }
+  }
+  function clearDispatchToken() {
+    try { sessionStorage.removeItem(DISPATCH_TOKEN_KEY); }
+    catch (e) { /* ignore */ }
+  }
+
+  /** Whether the project currently open has a checkout on this machine --
+   * the same `path` field the home cards and settings table already use to
+   * decide read-only vs. writable (AC1: no checkout, no Dispatch button). */
+  function currentRepoHasCheckout() {
+    var repo = state.repos.filter(function(r) { return r.id === state.repoId; })[0];
+    return !!(repo && repo.path);
+  }
+
+  /** The drawer footer's Dispatch button, or its disabled "Dispatching…"
+   * state while `st.id` has an entry in `state.dispatches`. */
+  function dispatchButton(st) {
+    var inFlight = !!state.dispatches[st.id];
+    return el("button", {
+      class: "btn btn-primary",
+      disabled: inFlight,
+      onClick: function() { startDispatch(st.id); }
+    }, [inFlight ? "Dispatching…" : "Dispatch"]);
+  }
+
+  /** Starts (or, without a saved token yet, prompts for one and then
+   * starts) a dispatch for `storyId`. Keyed per-story in `state.dispatches`
+   * rather than one global slot, so dispatching a second story while the
+   * first is still running is just another entry, matching the daemon's
+   * own support for several concurrent dispatches. */
+  function startDispatch(storyId) {
+    var token = getDispatchToken();
+    if (!token) {
+      openTokenModal(function() { startDispatch(storyId); });
+      return;
+    }
+    state.dispatches[storyId] = { handle: null, timer: null };
+    if (state.drawerId === storyId) renderDrawer();
+    api("POST", apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch", null,
+        { headers: { "X-Storyhook-Token": token } })
+      .then(function(resp) {
+        var entry = state.dispatches[storyId];
+        if (!entry) return; // superseded somehow -- nothing left to do
+        entry.handle = resp.dispatch && resp.dispatch.handle;
+        pollDispatch(storyId, entry.handle, 0);
+      })
+      .catch(function(err) {
+        delete state.dispatches[storyId];
+        if (state.drawerId === storyId) renderDrawer();
+        if (err.status === 401) {
+          clearDispatchToken();
+          toast("The daemon rejected that token -- enter it again.", "error");
+          openTokenModal(function() { startDispatch(storyId); });
+        } else {
+          toastError(err);
+        }
+      });
+  }
+
+  /** One poll of `handle`'s outcome. Guards every step on `state.dispatches`
+   * still holding the same handle for `storyId`, so a stray in-flight
+   * response from a poll this function itself superseded (there is none
+   * today -- one poll is always in flight per story -- but a defensive
+   * check here costs nothing) can never resurrect a finished entry. */
+  function pollDispatch(storyId, handle, attempt) {
+    var entry = state.dispatches[storyId];
+    if (!entry || entry.handle !== handle) return;
+    var token = getDispatchToken();
+    var url = apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch/" + encodeURIComponent(handle);
+    api("GET", url, null, { headers: { "X-Storyhook-Token": token } })
+      .then(function(resp) {
+        var current = state.dispatches[storyId];
+        if (!current || current.handle !== handle) return;
+        var record = resp.dispatch || {};
+        if (record.state === "running") {
+          if (attempt + 1 >= DISPATCH_MAX_POLLS) {
+            finishDispatch(storyId, "error",
+              "Dispatching " + storyId + " is taking longer than expected -- check the dashboard " +
+              "or `story show " + storyId + "` shortly.");
+            return;
+          }
+          current.timer = setTimeout(function() { pollDispatch(storyId, handle, attempt + 1); }, DISPATCH_POLL_MS);
+          return;
+        }
+        var display = (record.payload && record.payload.display) || record.error || "Dispatch finished.";
+        finishDispatch(storyId, record.state === "ok" ? "success" : "error", display);
+      })
+      .catch(function(err) {
+        var current = state.dispatches[storyId];
+        if (!current || current.handle !== handle) return;
+        if (err.status === 401) {
+          clearDispatchToken();
+          finishDispatch(storyId, "error",
+            "The daemon rejected its own token mid-dispatch -- try dispatching " + storyId + " again.");
+          return;
+        }
+        // A transient poll failure (a network blip) retries rather than
+        // giving up on a dispatch that is very possibly still running.
+        if (attempt + 1 >= DISPATCH_MAX_POLLS) {
+          finishDispatch(storyId, "error", "Lost track of the dispatch: " + err.message);
+          return;
+        }
+        current.timer = setTimeout(function() { pollDispatch(storyId, handle, attempt + 1); }, DISPATCH_POLL_MS);
+      });
+  }
+
+  /** Clears `storyId`'s entry, toasts the outcome, and resyncs -- a
+   * dispatch that succeeded moved the story to in-progress, and one worth
+   * knowing about even if its drawer is no longer open. */
+  function finishDispatch(storyId, variant, message) {
+    delete state.dispatches[storyId];
+    toast(message, variant);
+    if (state.drawerId === storyId) renderDrawer();
+    fetchData();
+  }
+
+  // ---- Token modal ----
+
+  /** The dispatch attempt to retry once a token is saved, or null when the
+   * modal is closed with nothing pending. */
+  var tokenModalCallback = null;
+
+  function openTokenModal(onSaved) {
+    tokenModalCallback = onSaved || null;
+    $("token-input").value = "";
+    $("token-error").textContent = "";
+    $("token-modal-backdrop").hidden = false;
+    requestAnimationFrame(function() {
+      $("token-modal-backdrop").classList.add("open");
+      $("token-modal").classList.add("open");
+      $("token-modal").setAttribute("aria-hidden", "false");
+      $("token-input").focus();
+    });
+  }
+
+  function closeTokenModal() {
+    $("token-modal-backdrop").classList.remove("open");
+    $("token-modal").classList.remove("open");
+    $("token-modal").setAttribute("aria-hidden", "true");
+    setTimeout(function() { $("token-modal-backdrop").hidden = true; }, 150);
+    tokenModalCallback = null;
+  }
+
+  function submitTokenModal() {
+    var value = $("token-input").value.trim();
+    if (!value) { $("token-error").textContent = "The daemon token is required."; return; }
+    setDispatchToken(value);
+    var callback = tokenModalCallback;
+    closeTokenModal();
+    if (callback) callback();
   }
 
   // ============================================================
@@ -2095,6 +2301,13 @@ tbody tr:hover { background: var(--bg-sunken); }
     footer.appendChild(el("button", { class: "btn btn-danger", style: "margin-left:auto", onClick: function() {
       renderDeleteConfirm(st);
     } }, ["Delete"]));
+    // SH-50: only for an open story in a project with a checkout on this
+    // machine -- the same lookup that grays out writes elsewhere for a
+    // checkout-less project, since a dispatch is exactly the kind of write
+    // that has nowhere to go without one.
+    if (!isClosed && currentRepoHasCheckout()) {
+      footer.appendChild(dispatchButton(st));
+    }
   }
 
   function renderDeleteConfirm(st) {
@@ -3144,10 +3357,14 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("create-submit").addEventListener("click", submitCreate);
     $("create-title").addEventListener("keydown", function(e) { if (e.key === "Enter") submitCreate(); });
     $("create-description").addEventListener("input", function() { autoGrowTextarea(this); });
+    $("token-cancel").addEventListener("click", closeTokenModal);
+    $("token-modal-backdrop").addEventListener("click", closeTokenModal);
+    $("token-submit").addEventListener("click", submitTokenModal);
+    $("token-input").addEventListener("keydown", function(e) { if (e.key === "Enter") submitTokenModal(); });
     $("drawer-close").addEventListener("click", closeDrawer);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {
-      if (e.key === "Escape") { closeDrawer(); closeCreateModal(); }
+      if (e.key === "Escape") { closeDrawer(); closeCreateModal(); closeTokenModal(); }
     });
   }
 
