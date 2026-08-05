@@ -162,7 +162,6 @@ next unheld line.
 
 ### Critical
 
-- ⚠ **SH-95** — junk projects from an unisolated script · *in-progress elsewhere*
 - **SH-112** — the server-owned epic · *closes when SH-120, SH-50 and SH-122 do; never worked directly*
 
 ### High
@@ -178,7 +177,8 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-160** — the daemon inherits its first client's git environment · *one exported `GIT_DIR` poisons every project probe on the machine*
 - [x] **SH-120** — C8 Dispatch plumbing · *both halves landed; SH-50 is unblocked*
 - [x] **SH-166** — `/story do` should not prefix the worktree with the repo name · *closed by another session as #119*
-- [ ] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
+- [x] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
+- [ ] **SH-182** — the SessionStart hook's 5s budget sits below the 30s spawn-lock wait its own `story` call may take · *filed by SH-140's council*
 - [ ] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
 - [ ] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
 - [ ] **SH-133** — rollback drops project settings · *filed by SH-129*
@@ -4062,3 +4062,125 @@ commands rather than a story. Left for Mikey, as part 1's comment recorded.
 stall bound. **No wedge.**
 
 **Council:** not re-run. The verdict on the story was the input, as instructed.
+
+### SH-140 — done
+
+**Outcome:** all six wall-clock sites decided, one per site, as the story asked.
+Two bounds deleted, one replaced by a deterministic assertion, two re-expressed,
+one left alone — and **the site that was left alone turned out to be the only
+one that had ever caught anything, so its bug got fixed instead of its number.**
+
+**Measurement came first, and it corrected four of the story's own premises.**
+Temporary instrumentation at each site, run idle, in-gate, and under two
+falsification probes, then reverted.
+
+| site | bound | idle | in-gate | at load avg 21.8–26.9 | worst margin |
+|---|---|---|---|---|---|
+| `tui_integration:1009` build_visible_rows | 50 ms | 18–24 µs | 20 µs | 16–26 µs | **1,900×** |
+| `tui_integration:995` DataStore::load | 500 ms | 952–1003 µs | 977 µs | 1026–1212 µs | 410× |
+| `session_start_hook:282` | 5 s | 18–20 ms | 38 ms | 56–59 ms | 85× |
+| `session_start:585` | 2 s | 8–9 ms | 8 ms | 13–26 ms | 77× |
+| `server.rs:228` wait_for_addr (141 calls) | 5 s | 0–4 ms | 0 ms ×138, 1 ms ×2, 2 ms ×1 | — | ~2,500× |
+| `tui/event.rs:206` | 5 s | 252–259 ms | 254 ms | 250–255 ms | **19.6×** |
+
+1. **The gate does not run at core-count parallelism.** The story says
+   `run-tests.sh` passes no `--test-threads`; true of the script, but the gate is
+   `make test`, which passes `--test-threads=4`.
+2. **The margins are the largest in the suite, not the tightest.** 50ms is the
+   smallest *number* and nowhere near the smallest *margin*. `concurrency_soak`'s
+   `DEADLINE` — the exemplar the story holds up as correct — calls itself
+   "generous by two orders of magnitude" (~80×). Four of the six are more
+   generous than that.
+3. **The story's named hazard is refuted.** It calls the two `tui_integration`
+   sites "the hazard". Saturating 10 cores with 24 spin loops did not move them
+   *at all*. They are the least contention-sensitive of the six.
+4. **The finding that was not in the story**, and it is structural: two bounds
+   sit *below* a legitimate internal wait. `SPAWN_LOCK_DEADLINE` is 30s and since
+   SH-114 every `story` command may spend it, so `session_start`'s 2s and the
+   hook's 5s can both fail with no defect present.
+
+**Then the council refuted my headline in turn, and it was right to.** Spin loops
+generate no I/O, no page-cache pressure and no `mds_stores` backlog — so they
+cannot produce the mechanism my own brief named as the true cause. "CPU
+contention is not the mechanism" survives; "the hazard is refuted" does not, for
+the four sites that touch the filesystem. Recorded here because the audit trail
+would otherwise flatter me.
+
+**Worse: I diagnosed an I/O pathology and never checked the patients for it.**
+Three of the files under review opened with `#![allow(clippy::disallowed_methods)]`
+and a `TODO(rearch)`, then called `tempfile::tempdir()` **43 times** — the
+Spotlight-indexed directory `clippy.toml` bans repo-wide because of SH-53.
+**Four of the six sites were sitting in the exact directory the repo forbids for
+causing the stalls I was blaming.** Found by two seats independently. The
+migration to `scratch_dir()` is its own behaviour-preserving commit and is
+probably the cheapest real improvement in the story.
+
+**The council: P3 wins 2–3 votes, both from non-authors, fourth time in this run
+that seats voted against their own proposals on verified facts.** P1 and P2 both
+proposed to *raise* site D's bound — 10s and 10.5s, on careful derivations. P3
+declined to touch the number and read the code underneath, finding that
+`spawn_change_thread` took its `change_token` baseline **inside** the spawned
+thread. A write committing before that thread is scheduled is folded into the
+baseline, and `PRAGMA data_version` reports only what happened since the last
+read on that connection — so no `DataChanged` is *ever* sent. The wait did not
+expire because 5s was too short; it expired because the event was impossible.
+
+Both other seats verified it and switched. Seat 1: the raises "enlarge a window
+that is not the problem and would close SH-140 with the only live defect
+intact." Seat 2 traced it into production. **It is a user-facing bug**: a TUI
+whose store is written by another checkout during start-up shows stale data
+until the next write or a manual `r`.
+
+**Reproduced before fixing, and the repro matched the recorded failure exactly.**
+A 300ms sleep at the top of the closure failed the test every run — same panic,
+same site, same full 5.03s wait as SH-94's comment of 2026-08-02 records. With
+the baseline moved to the caller's thread, *the same sleep passes*. A delayed
+thread start can no longer lose the event.
+
+**Three seats' ballots, one uncollected, and no vote fabricated.** Seat 3's vote
+was interrupted; P3 held 2 of 3 already and wins under every completion, so the
+record says uncollected rather than assumed, and deliberation was skipped
+because the condition it exists to produce had already been reached.
+
+**The winner was overruled on three sites by the seats that voted for it**, and
+I verified each against the code rather than taking the vote's word:
+
+- **A1** takes P2's counting `Invoker`, not P3's `2 * CHANGE_POLL`. `DataStore`
+  already promises "in one invocation"; asserting it needs no clock. **Verified
+  in both directions: one extra round trip fails it, where 500ms tolerated a
+  500× increase.**
+- **A2** is deleted on the *type system*, not on margin. `DataStore` carries no
+  connection, no `Invoker` and no path, so the per-row store read P3 wanted the
+  bound to catch **cannot be written without a type change the compiler forces**.
+- **E** gets a local constant, not an import of `SPAWN_DEADLINE` — that bounds a
+  daemon coming up, this waits on a socket bind, and the import would assert a
+  relationship that does not exist.
+
+**Site E was left at 5s because it has fired twice and been right twice** — once
+on a server that had bound nothing (SH-110), once on the FSEvents pathology. Its
+defect was the message, which named the duration instead of the condition, and
+so reported a broken machine as a mass of unexplained server failures. One
+string, read at ~141 call sites per run.
+
+**Site C's 5s turned out not to be a test's number at all.** All three seats
+found it independently: `hooks.json` ships `"timeout": 5` for that exact script.
+It is now read out of the manifest rather than restated, located by command
+rather than position — verified by setting the manifest to 0 and watching the
+bound follow.
+
+**Filed: SH-182**, the production ordering violation this story surfaced and
+could not fix — the hook is allowed 5s, the `story session-start` inside it is
+allowed 30, and Claude Code kills the hook, silently. Raising the declared
+timeout to 30s would be worse than the bug, so the remedy is a product design
+decision rather than a test change.
+
+**Not authored here:** the `SH-95` line vanished from this file's queue mid-session,
+from outside this session (a live `micro` window is open on the repo). Verified
+correct — SH-95 is `done` — and kept rather than reverted.
+
+**Gate:** `make test` exits 0 — **118 green blocks, 0 failures**, plugin harness
+22/22, browser suite 9/9. Supervised with a log-growth heartbeat on a 120-second
+stall bound. **No wedge.** Read out of the log rather than from `$?`, which is
+the trap two earlier entries in this file were caught by.
+
+**Council:** yes — `.council/sh140-wall-clock-assertions/`.

@@ -1,6 +1,3 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 /// Tests for the session-start.sh hook used by Claude Code.
 ///
 /// The hook at plugin/claude-code/hooks/session-start.sh reads stdin JSON
@@ -13,9 +10,13 @@
 /// using the actual `story` binary and the actual shell script.
 use assert_cmd::Command;
 use std::process;
-use tempfile::tempdir;
+use storyhook_test_support::scratch_dir;
 
 const HOOK_PATH: &str = "plugin/claude-code/hooks/session-start.sh";
+
+/// The plugin manifest declaring what Claude Code runs, and how long it may
+/// take. The source of truth for this file's one wall-clock bound.
+const HOOKS_MANIFEST: &str = "plugin/claude-code/hooks/hooks.json";
 
 /// Get the absolute path to the hook script from the project root.
 fn hook_script() -> std::path::PathBuf {
@@ -125,7 +126,7 @@ fn hook_script_calls_story_session_start() {
 
 #[test]
 fn hook_outputs_empty_json_when_no_storyhook_dir() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     // Do NOT run story init -- no .storyhook/ directory
     let (stdout, code) = run_hook(dir.path());
     assert_eq!(code, 0, "hook should exit 0 even with no project");
@@ -142,7 +143,7 @@ fn hook_outputs_empty_json_when_no_storyhook_dir() {
 
 #[test]
 fn hook_outputs_empty_json_when_plugin_disabled() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -171,7 +172,7 @@ fn hook_outputs_empty_json_when_plugin_disabled() {
 
 #[test]
 fn hook_outputs_system_message_for_valid_project() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -201,7 +202,7 @@ fn hook_outputs_system_message_for_valid_project() {
 
 #[test]
 fn hook_system_message_contains_story_count() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -230,7 +231,7 @@ fn hook_system_message_contains_story_count() {
 
 #[test]
 fn hook_system_message_contains_next_story_info() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -258,12 +259,66 @@ fn hook_system_message_contains_next_story_info() {
 }
 
 // ============================================================
-// Timing: hook should complete within 5 seconds
+// Timing: the hook fits the budget the plugin declares for it
 // ============================================================
 
+/// The timeout Claude Code gives the SessionStart hook, read out of the
+/// manifest that ships it.
+///
+/// **Read rather than restated (SH-140).** The 5 in this test was previously a
+/// literal, which made it look like a speed budget somebody chose. It is not:
+/// it is `plugin/claude-code/hooks/hooks.json`'s own `"timeout"`, and Claude
+/// Code kills the hook at it. Reading the manifest keeps the assertion tracking
+/// the contract if the declared value ever moves, and fails loudly rather than
+/// silently guarding nothing if the manifest stops declaring one.
+///
+/// The entry is located by its command rather than by position, so a manifest
+/// that gains another SessionStart hook cannot quietly hand this test somebody
+/// else's budget.
+fn declared_session_start_timeout() -> std::time::Duration {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let raw = std::fs::read_to_string(manifest_dir.join(HOOKS_MANIFEST))
+        .expect("the plugin's hooks manifest must be readable");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("the plugin's hooks manifest must be JSON");
+
+    let seconds = parsed["hooks"]["SessionStart"]
+        .as_array()
+        .expect("hooks.json must declare SessionStart matchers")
+        .iter()
+        .flat_map(|matcher| {
+            matcher["hooks"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+        })
+        .find(|hook| {
+            hook["command"]
+                .as_str()
+                .is_some_and(|command| command.contains("session-start.sh"))
+        })
+        .and_then(|hook| hook["timeout"].as_u64())
+        .expect("the SessionStart entry running session-start.sh must declare a timeout");
+
+    std::time::Duration::from_secs(seconds)
+}
+
+/// The hook finishes inside the budget its own manifest gives it.
+///
+/// Exceeding this is not slowness, it is a functional failure: Claude Code
+/// kills the hook at the deadline and the session starts with no storyhook
+/// context at all — silently, because the script sends its errors to
+/// `/dev/null`. That is why the bound stays where two of the six others were
+/// deleted (SH-140): the number is the product's, not the test's.
+///
+/// Measured at 18-59ms against the declared 5s. If this ever fires, suspect the
+/// machine before the hook: the command inside may wait up to
+/// `SPAWN_LOCK_DEADLINE` (30s) for the daemon spawn lock, which is longer than
+/// the hook is allowed to live — an ordering violation in the *product* that is
+/// filed separately and cannot be fixed from here.
 #[test]
-fn hook_completes_within_timeout() {
-    let dir = tempdir().unwrap();
+fn hook_completes_within_the_timeout_its_manifest_declares() {
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -273,15 +328,18 @@ fn hook_completes_within_timeout() {
         .assert()
         .success();
 
+    let budget = declared_session_start_timeout();
     let start = std::time::Instant::now();
     let (_, code) = run_hook(dir.path());
     let elapsed = start.elapsed();
 
     assert_eq!(code, 0);
     assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "hook should complete within 5 seconds, took {:?}",
-        elapsed
+        elapsed < budget,
+        "the SessionStart hook took {elapsed:?}, against the {budget:?} that \
+         {HOOKS_MANIFEST} gives it. Claude Code kills the hook at that deadline, \
+         so this is not a slow session start, it is one with no storyhook \
+         context at all"
     );
 }
 
@@ -291,7 +349,7 @@ fn hook_completes_within_timeout() {
 
 #[test]
 fn hook_handles_empty_project_gracefully() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -322,7 +380,7 @@ fn hook_handles_empty_project_gracefully() {
 
 #[test]
 fn hook_output_is_strictly_valid_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -358,7 +416,7 @@ fn hook_output_is_strictly_valid_json() {
 fn hook_system_message_contains_cli_reference() {
     // The context should inject a concise CLI reference so the LLM knows how
     // to use storyhook commands.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -385,7 +443,7 @@ fn hook_system_message_contains_cli_reference() {
 fn hook_system_message_contains_project_state() {
     // The context should include project state info (not just a one-line
     // status, but enough for the LLM to orient).
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -422,7 +480,7 @@ fn hook_system_message_contains_project_state() {
 
 #[test]
 fn hook_handles_special_characters_in_story_title() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -446,7 +504,7 @@ fn hook_handles_special_characters_in_story_title() {
 
 #[test]
 fn hook_handles_unicode_in_story_title() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()

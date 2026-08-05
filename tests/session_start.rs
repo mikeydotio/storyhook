@@ -1,6 +1,3 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 /// Tests for the `story session-start` CLI command.
 ///
 /// This command is designed for use by editor plugins and shell hooks.
@@ -11,7 +8,7 @@
 /// into the model's context (it is NOT rendered to the user, unlike the
 /// previously-used `systemMessage` field).
 use assert_cmd::Command;
-use tempfile::tempdir;
+use storyhook_test_support::scratch_dir;
 
 fn story(dir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("story").unwrap();
@@ -56,7 +53,7 @@ fn has_session_context(parsed: &serde_json::Value) -> bool {
 
 #[test]
 fn session_start_no_project_outputs_empty_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .arg("session-start")
         .output()
@@ -76,7 +73,7 @@ fn session_start_no_project_outputs_empty_json() {
 
 #[test]
 fn session_start_plugin_disabled_outputs_empty_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -105,7 +102,7 @@ fn session_start_plugin_disabled_outputs_empty_json() {
 
 #[test]
 fn session_start_plugin_disabled_string_value_outputs_empty_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -134,7 +131,7 @@ fn session_start_plugin_disabled_string_value_outputs_empty_json() {
 
 #[test]
 fn session_start_valid_project_outputs_system_message() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -175,7 +172,7 @@ fn session_start_valid_project_outputs_system_message() {
 
 #[test]
 fn session_start_uses_additional_context_not_system_message() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -226,7 +223,7 @@ fn session_start_uses_additional_context_not_system_message() {
 
 #[test]
 fn session_start_contains_cli_reference() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -275,7 +272,7 @@ fn session_start_contains_cli_reference() {
 
 #[test]
 fn session_start_contains_project_state() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -321,7 +318,7 @@ fn session_start_contains_project_state() {
 
 #[test]
 fn session_start_contains_next_story_info() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -354,7 +351,7 @@ fn session_start_contains_next_story_info() {
 
 #[test]
 fn session_start_empty_project_zero_stories() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -390,7 +387,7 @@ fn session_start_empty_project_zero_stories() {
 
 #[test]
 fn session_start_special_characters_in_title() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -427,7 +424,7 @@ fn session_start_special_characters_in_title() {
 
 #[test]
 fn session_start_unicode_in_story_title() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -453,7 +450,7 @@ fn session_start_unicode_in_story_title() {
 
 #[test]
 fn session_start_newline_in_story_title() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -485,7 +482,7 @@ fn session_start_newline_in_story_title() {
 
 #[test]
 fn session_start_output_is_valid_json_object() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -520,7 +517,7 @@ fn session_start_output_is_valid_json_object() {
 
 #[test]
 fn session_start_system_message_under_4000_chars() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -558,12 +555,27 @@ fn session_start_system_message_under_4000_chars() {
 }
 
 // ============================================================
-// Performance: completes within 2 seconds
+// Exits zero for an ordinary project
 // ============================================================
 
+/// **This test used to hold a two-second stopwatch, and it is gone (SH-140).**
+///
+/// The command measured 8-9ms, so the bound was 230x the true figure and could
+/// not see a regression. What it *could* see was a wait that is legitimate:
+/// since SH-114 the invoker is the CLI's only door, so every `story` command
+/// may take the daemon spawn lock, and `SPAWN_LOCK_DEADLINE` permits 30 seconds
+/// there — fifteen times this bound — before the client gives up and says so in
+/// its own words. A harness that stops first replaces a named failure with an
+/// anonymous one, which is the case `SPAWN_LOCK_DEADLINE`'s own doc warns
+/// against: "a client that exhausts this bound and correctly reports so must
+/// not race the harness meant to outlive it".
+///
+/// So the only honest wall-clock figure here is one *longer* than the client's,
+/// and at that length it asserts nothing the client does not already assert
+/// with a better message. The exit status is what this test is for.
 #[test]
-fn session_start_completes_within_two_seconds() {
-    let dir = tempdir().unwrap();
+fn session_start_exits_zero_for_a_project_with_one_story() {
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -573,19 +585,12 @@ fn session_start_completes_within_two_seconds() {
         .assert()
         .success();
 
-    let start = std::time::Instant::now();
     let output = story(dir.path())
         .arg("session-start")
         .output()
         .expect("failed to run story session-start");
-    let elapsed = start.elapsed();
 
     assert!(output.status.success());
-    assert!(
-        elapsed < std::time::Duration::from_secs(2),
-        "session-start should complete within 2 seconds, took {:?}",
-        elapsed
-    );
 }
 
 // ============================================================
@@ -594,7 +599,7 @@ fn session_start_completes_within_two_seconds() {
 
 #[test]
 fn session_start_ignores_json_flag() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -646,7 +651,7 @@ fn session_start_ignores_json_flag() {
 
 #[test]
 fn session_start_no_project_with_json_flag() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     let output = story(dir.path())
         .args(["--json", "session-start"])
         .output()
@@ -666,7 +671,7 @@ fn session_start_no_project_with_json_flag() {
 
 #[test]
 fn session_start_next_story_shows_priority() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -773,7 +778,7 @@ fn session_start_survives_a_pointer_naming_a_project_that_is_not_there() {
 /// now we use proper TOML parsing so any valid whitespace works.
 #[test]
 fn session_start_plugin_config_extra_whitespace_bug_documented() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -803,7 +808,7 @@ fn session_start_plugin_config_extra_whitespace_bug_documented() {
 
 #[test]
 fn session_start_plugin_config_enabled_true_produces_system_message() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -838,7 +843,7 @@ fn session_start_plugin_config_enabled_true_produces_system_message() {
 
 #[test]
 fn session_start_plugin_config_malformed_still_works() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -875,7 +880,7 @@ fn session_start_plugin_config_malformed_still_works() {
 
 #[test]
 fn session_start_plugin_config_no_space_enabled_equals_false() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -901,7 +906,7 @@ fn session_start_plugin_config_no_space_enabled_equals_false() {
 
 #[test]
 fn session_start_plugin_config_comments_and_extra_keys() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -935,7 +940,7 @@ fn session_start_plugin_config_comments_and_extra_keys() {
 
 #[test]
 fn session_start_plugin_config_nested_table() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -967,7 +972,7 @@ fn session_start_plugin_config_nested_table() {
 
 #[test]
 fn session_start_no_plugin_config_file_produces_system_message() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -1007,7 +1012,7 @@ fn session_start_output_is_one_of_two_valid_shapes() {
     // The contract: output is either exactly `{}` or a SessionStart envelope
     // `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"..."}}`.
     // No top-level `systemMessage` key should ever be present.
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -1049,7 +1054,7 @@ fn session_start_output_is_one_of_two_valid_shapes() {
 
 #[test]
 fn session_start_stderr_is_empty() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -1078,7 +1083,7 @@ fn session_start_stderr_is_empty() {
 
 #[test]
 fn session_start_utf8_safe_truncation_with_multibyte_titles() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
@@ -1135,7 +1140,7 @@ fn session_start_utf8_safe_truncation_with_multibyte_titles() {
 
 #[test]
 fn session_start_quiet_flag_still_outputs_json() {
-    let dir = tempdir().unwrap();
+    let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
         .assert()
