@@ -87,6 +87,16 @@ enum Kind {
 /// classification for "git, run from this module" has not changed. A new
 /// program, or a new file, does.
 const INVENTORY: &[(&str, &str, Kind)] = &[
+    // `api::dispatch::run_child` — the dashboard's dispatch endpoint (SH-50)
+    // spawning `story.sh dispatch`. `Waited`, on the `event_hooks.rs` model
+    // it was deliberately built to match: stdout/stderr are unlinked
+    // `tempfile()` files, not pipes, so there is no end-of-file for a
+    // surviving descendant to withhold. `wait_timeout` bounds the wait
+    // itself, and the child's own process group (killed whole on timeout)
+    // is what stands in for `tailnet.rs`'s reap-and-kill, since a dispatch
+    // that overruns must not leave a `git fetch`/`tmux`/`claude` probe
+    // running behind it.
+    ("src/api/dispatch.rs", "\"bash\"", Kind::Waited),
     ("src/daemon/commands.rs", "\"launchctl\"", Kind::Reads),
     ("src/daemon/lifecycle.rs", "exe", Kind::Detached),
     ("src/daemon/tailnet.rs", "\"tailscale\"", Kind::Reads),
