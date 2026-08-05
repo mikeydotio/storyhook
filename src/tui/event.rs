@@ -121,13 +121,32 @@ impl EventSource {
         tx: Sender<Event>,
         stop: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
-        let path = env.store_path().to_path_buf();
+        use crate::store::Store as _;
+
+        // **Both the open and the baseline read happen here, on the caller's
+        // thread, and that placement is the whole point.**
+        //
+        // They used to happen inside the spawned closure, which lost writes
+        // (SH-140). `thread::spawn` returns before the closure runs, so a write
+        // committed in the gap was already counted when the baseline was
+        // finally taken — and `PRAGMA data_version` only ever reports what has
+        // happened *since the last read on this connection*. The comparison
+        // below then never differed again, so the change was not reported late,
+        // it could not be reported at all. Taking the baseline before returning
+        // makes the write strictly later than the baseline for every caller.
+        //
+        // The store is moved rather than reopened because the token is
+        // per-connection: a baseline read on one connection says nothing about
+        // another's, so the connection that reads the baseline has to be the
+        // one that goes on polling.
+        let opened = crate::store::SqliteStore::open(env.store_path()).ok();
+        let baseline = opened.as_ref().and_then(|store| store.change_token().ok());
+
         thread::spawn(move || {
-            use crate::store::Store as _;
-            let Ok(store) = crate::store::SqliteStore::open(path) else {
+            let Some(store) = opened else {
                 return;
             };
-            let mut last = store.change_token().ok();
+            let mut last = baseline;
             while !stop.load(Ordering::Relaxed) {
                 thread::sleep(CHANGE_POLL);
                 let Ok(token) = store.change_token() else {
@@ -175,6 +194,21 @@ mod tests {
 
     /// The property the whole thread exists for: a write made by something else
     /// wakes the interface.
+    ///
+    /// **This test is also the regression test for SH-140, and what it pins is
+    /// its own determinism.** The write below is ordered after
+    /// `spawn_change_thread` returns and nothing else synchronises the two, so
+    /// the test only passes reliably if the baseline was taken *before* that
+    /// return. While the baseline was read inside the spawned closure, a write
+    /// landing in the gap was folded into it and no change could ever be
+    /// reported — the wait did not expire because five seconds was too short, it
+    /// expired because the event was impossible. That is why this failed once
+    /// under `--test-threads=4`, passed alone in 0.28s, and never reproduced.
+    ///
+    /// The red was demonstrated rather than argued: a 300ms sleep at the top of
+    /// the closure made it fail every run, with the same panic and the same full
+    /// five-second wait as the recorded failure, and the same sleep passes with
+    /// the baseline moved. A delayed thread start can no longer lose the event.
     #[test]
     fn a_write_from_elsewhere_reports_a_change() {
         let dir = scratch();
@@ -207,6 +241,51 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("a change must be reported");
         assert!(matches!(event, Event::DataChanged));
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    /// The other side of the boundary: a write that had already landed when the
+    /// watcher started is history, not news.
+    ///
+    /// This exists to constrain the fix above, not the original defect. Moving
+    /// the baseline earlier fixes SH-140; so does deleting the baseline and
+    /// starting from `None`, and that "fix" would report a change on the very
+    /// first poll of every TUI launch — a reload a quarter second after start-up
+    /// that nobody asked for, on a store nobody has touched. The two changes are
+    /// indistinguishable to `a_write_from_elsewhere_reports_a_change` and
+    /// opposite here.
+    #[test]
+    fn a_write_that_landed_before_the_watcher_started_is_not_replayed() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        let store = crate::store::SqliteStore::open(env.store_path()).expect("opening the store");
+        store.migrate().expect("migrating");
+
+        // Committed on another connection, exactly as the reported case is, but
+        // *before* the watcher exists to have an opinion about it.
+        let other = crate::store::SqliteStore::open(env.store_path()).expect("a second handle");
+        other
+            .write(|tx| {
+                tx.create_project(&crate::store::NewProject {
+                    uuid: "already-there-uuid".into(),
+                    slug: "already-there".into(),
+                    name: "already-there".into(),
+                    prefix: "SH".into(),
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                })?;
+                Ok(())
+            })
+            .expect("writing before the watcher starts");
+
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let _handle = EventSource::spawn_change_thread(&env, tx, Arc::clone(&stop));
+
+        assert!(
+            rx.recv_timeout(CHANGE_POLL * 3).is_err(),
+            "the write predates the watcher, so it is already in the baseline \
+             and must not be reported as a change"
+        );
         stop.store(true, Ordering::Relaxed);
     }
 
