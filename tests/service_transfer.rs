@@ -12,7 +12,7 @@ use storyhook::invoke::dispatch;
 use storyhook::output::Response;
 use storyhook::service::transfer::ProjectExport;
 use storyhook::service::{Clock, NewStoryInput, StoryService, TransferService, transfer};
-use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, StoryQuery};
+use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, StoryQuery, WriteOps};
 use storyhook_test_support::{ServiceFixture, scratch_dir};
 
 /// A description with nothing but a title.
@@ -147,6 +147,206 @@ fn an_empty_project_exports_an_empty_story_list() {
     let export = export(&fixture);
     assert!(export.stories.is_empty());
     assert!(export.members.is_empty());
+}
+
+// --- an event kind this build does not understand (SH-67) -------------------
+
+/// A payload no storyhook has ever written, with its keys deliberately out of
+/// alphabetical order so that a re-serialization would be visible.
+const FROM_THE_FUTURE: &str =
+    r#"{"kind":"StoryPinned","at":"2030-01-01T00:00:00Z","z":1,"by":"ada"}"#;
+
+/// Appends `FROM_THE_FUTURE` to story 1 as its second event, then repairs the
+/// read model the raw append deliberately leaves behind.
+fn pin_from_the_future(fixture: &ServiceFixture) {
+    fixture
+        .store()
+        .write(|tx| {
+            tx.append_raw_events(
+                fixture.project(),
+                StoryNo::new(1),
+                storyhook::store::ExpectedSeq::Any,
+                &[storyhook::store::RawEvent {
+                    kind: "StoryPinned".to_string(),
+                    at: "2030-01-01T00:00:00Z".to_string(),
+                    payload: FROM_THE_FUTURE.to_string(),
+                }],
+                storyhook::store::LinkSource::Replayed,
+            )?;
+            Ok(())
+        })
+        .expect("writing an event from the future");
+    // A raw append leaves the read model's head behind by design; the fixture's
+    // drift guard on the way out would otherwise fail for a reason no test here
+    // is about.
+    storyhook::store::repair_read_model(fixture.store(), fixture.project())
+        .expect("repairing the read model");
+}
+
+/// Every event of story 1 in `store`, as `(seq, kind, payload)`.
+///
+/// Deliberately not `global_seq`: that is a project-wide feed position
+/// allocated fresh on every import and was never preserved by anything.
+fn triples(
+    store: &SqliteStore,
+    project: storyhook::store::ProjectId,
+) -> Vec<(i64, String, String)> {
+    store
+        .read(|tx| tx.events_for(project, StoryNo::new(1)))
+        .expect("reading events")
+        .into_iter()
+        .map(|event| {
+            let payload = match &event.payload {
+                storyhook::store::StoredPayload::Known(decoded) => {
+                    serde_json::to_string(decoded).expect("a known event serializes")
+                }
+                storyhook::store::StoredPayload::Unknown { json, .. } => json.clone(),
+            };
+            (event.seq.get(), event.kind.clone(), payload)
+        })
+        .collect()
+}
+
+#[test]
+fn an_event_kind_this_build_cannot_decode_is_exported_verbatim() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Pinned by a newer storyhook");
+    pin_from_the_future(&fixture);
+
+    let json = document(&export(&fixture));
+    assert!(
+        json.contains(FROM_THE_FUTURE),
+        "the payload must reach the document byte for byte — key order included, and not even \
+         re-indented by the pretty-printer, because it is written as raw JSON rather than as a \
+         re-serialized value: {json}"
+    );
+
+    // And in position, rather than appended somewhere the fold happened to put
+    // it: the document carries order, so a slot that moved is data that moved.
+    let parsed: serde_json::Value = serde_json::from_str(&json).expect("re-parsing");
+    assert_eq!(
+        parsed["stories"][0]["events"][1],
+        serde_json::from_str::<serde_json::Value>(FROM_THE_FUTURE).unwrap(),
+        "the unknown event must be the second event of the story it belongs to"
+    );
+}
+
+#[test]
+fn a_restored_document_holds_the_same_events_at_the_same_positions() {
+    let fixture = ServiceFixture::new();
+    let id = create(&fixture, "Pinned by a newer storyhook");
+    // The unknown lands at position 2 of 4: before SH-67 it was dropped, which
+    // renumbered every event after it as well as losing that one.
+    pin_from_the_future(&fixture);
+    StoryService::new(&fixture.ctx())
+        .comment(&id, "After the future.")
+        .expect("commenting");
+    StoryService::new(&fixture.ctx())
+        .set_state(&id, "done", None, None)
+        .expect("closing");
+
+    let before = triples(fixture.store(), fixture.project());
+    assert_eq!(
+        before
+            .iter()
+            .map(|(_, kind, _)| kind.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "StoryCreated",
+            "StoryPinned",
+            "StoryCommentAdded",
+            "StoryStateChanged",
+            "StoryClosedAndArchived",
+        ],
+        "the unknown event sits in the middle of the history, not at an edge"
+    );
+
+    let exported = export(&fixture);
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    let after = triples(&store, restored_project(&store, dir.path()).id);
+
+    assert_eq!(
+        after, before,
+        "a restore must reproduce every event at its own sequence number"
+    );
+}
+
+#[test]
+fn a_document_carrying_an_unknown_kind_re_exports_byte_for_byte() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Pinned by a newer storyhook");
+    pin_from_the_future(&fixture);
+
+    let first = document(&export(&fixture));
+    let (store, dir) = empty_store();
+    transfer::import_project(
+        &store,
+        dir.path(),
+        &Clock::Fixed("2026-01-01T00:00:00Z".to_string()),
+        &serde_json::from_str(&first).expect("parsing the document"),
+    )
+    .expect("importing");
+    let project = restored_project(&store, dir.path()).id;
+    let ctx = storyhook::service::Ctx::new(
+        &store,
+        project,
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
+    let second = document(&TransferService::new(&ctx).export().expect("re-exporting"));
+
+    assert_eq!(
+        first, second,
+        "the two-way door must hold for a document this build cannot fully read"
+    );
+}
+
+#[test]
+fn an_event_the_store_cannot_index_is_refused_by_the_document_reader() {
+    for (element, missing) in [
+        (r#"{"at":"2030-01-01T00:00:00Z","note":"x"}"#, "kind"),
+        (r#"{"kind":"StoryPinned","note":"x"}"#, "at"),
+        (r#"{"kind":42,"at":"2030-01-01T00:00:00Z"}"#, "kind"),
+    ] {
+        let json = format!(
+            r#"{{"schema":1,"prefix":null,"states":[],"types":[],"members":[],
+                "stories":[{{"id":"SH-1","events":[{element}],"archived":false}}]}}"#
+        );
+        let error = serde_json::from_str::<ProjectExport>(&json)
+            .expect_err("an event storyhook cannot index by kind and time is corrupt, not unknown");
+        assert!(
+            error.to_string().contains(missing),
+            "a refusal must name the field that is missing: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_restore_still_does_not_claim_a_git_comment_as_a_link() {
+    // SH-67 moved `import-project` onto `append_raw_events`, which is also the
+    // path `story migrate` takes — and migrate's appends *do* project a pre-#18
+    // `[git]` comment into a commit link. The link source is now an argument,
+    // and this restore passes `Live`, so the behaviour is exactly what it was.
+    // Whether a restore *should* replay those links is SH-70, and this test is
+    // what would fail if SH-67 had answered it by accident.
+    let fixture = ServiceFixture::new();
+    let id = create(&fixture, "Synced before kind #18");
+    StoryService::new(&fixture.ctx())
+        .comment(&id, "[git] a04a8c4: an old link record")
+        .expect("commenting");
+
+    let exported = export(&fixture);
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    let project = restored_project(&store, dir.path()).id;
+
+    assert!(
+        !store
+            .read(|tx| tx.commit_linked(project, StoryNo::new(1), "a04a8c4"))
+            .expect("reading the link table"),
+        "a `[git]` comment restored through import-project is prose, not a link record"
+    );
 }
 
 // --- the batch importer -----------------------------------------------------
@@ -544,11 +744,13 @@ fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
         .stories
         .push(storyhook::service::transfer::ExportedStory {
             id: "ZZ-1".to_string(),
-            events: vec![storyhook::domain::StoryEvent::StoryCreated {
-                at: "2026-01-01T00:00:00Z".to_string(),
-                title: "Foreign".to_string(),
-                state: "todo".to_string(),
-            }],
+            events: vec![storyhook::service::transfer::ExportedEvent::Known(
+                storyhook::domain::StoryEvent::StoryCreated {
+                    at: "2026-01-01T00:00:00Z".to_string(),
+                    title: "Foreign".to_string(),
+                    state: "todo".to_string(),
+                },
+            )],
             archived: false,
         });
 

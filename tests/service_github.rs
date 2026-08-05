@@ -316,6 +316,7 @@ fn a_backup_preserves_an_event_kind_this_binary_does_not_understand() {
                     payload: r#"{"kind":"StoryTeleported","at":"2030-01-01T00:00:00Z"}"#
                         .to_string(),
                 }],
+                storyhook::store::LinkSource::Replayed,
             )?;
             Ok(())
         })
