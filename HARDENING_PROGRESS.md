@@ -184,7 +184,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
 - ⏸ **SH-182** — the SessionStart hook's 5s budget sits below the 30s spawn-lock wait its own `story` call may take · *filed by SH-140's council; **held for Mikey's design call** — do not work it autonomously*
 - [x] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
-- [ ] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
+- [x] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
 - [ ] **SH-133** — rollback drops project settings · *filed by SH-129*
 - [ ] **SH-137** — github-sync unreachable for an origin carrying userinfo
 - [ ] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
@@ -4305,3 +4305,123 @@ stall. Read out of the log rather than from `$?`, the trap two earlier entries
 here were caught by.
 
 **Council:** yes — `.council/sh134-type-slug-invariant/`.
+
+### SH-67 — done
+
+**Outcome:** an export document carries an event kind this build cannot decode —
+verbatim, key order included — so `store → export → import-project → store` is
+lossless for it. `story doctor` names such events, and tells a newer
+storyhook's data apart from a torn payload. The one leg that still cannot carry
+them, `import-project` into a legacy tree, drops them **by name**.
+
+**The council reversed itself, and that is the entry's finding.** Every seat's
+round-1 proposal refused something at export time: seat 3's went furthest, gating
+the export site so a known kind that would not decode was refused while the store
+was still intact, and it won the round-1 vote 2–1. In deliberation seat 3
+**withdrew its own gate** and the runoff was unanimous for the withdrawal —
+including from the two seats that had voted *for* the stricter version an hour
+earlier.
+
+What turned it is a chain of citations, not an argument:
+
+| Claim | Checked against | Result |
+|---|---|---|
+| `story export` is the documented backup | `src/help_topics.rs:874` | holds |
+| …and rollback step 2 | `docs/rearch/flip-checklist.md:310` | holds |
+| the `store.db` copy is an equal alternative | `flip-checklist.md:326-340` | **fails** — scoped to "Only if the store itself is unreadable", exists only post-migration, and ends "Then continue at step 2" — back into the export that refused |
+
+The rule the panel settled on is **refuse only where a remedy exists**. An
+export-site refusal turns one undecodable row into a project that cannot be
+backed up at all, with no `--force`; an import-side refusal always leaves the
+newer binary able to read the document. Seat 2, whose own counter-citation this
+was, verified it and ranked the withdrawal first.
+
+**A second reversal came free.** Every round-1 proposal preserved
+`LinkSource::Live` for known events by splitting each story's history into
+consecutive same-variant runs — seat 1 called the run boundary its own proposal's
+biggest risk. Seat 3 then noticed that `append_events` *is* `map(encode)` then
+`append(.., Live)` (`src/store/sqlite/write.rs:478-479`), so lifting `LinkSource`
+into `append_raw_events`' signature lets `import_project` issue **one** raw
+append per story at `Live` — provably today's behaviour, with the delicate part
+deleted rather than tested.
+
+**The lying doc comment was real and is not this story's to fix.**
+`project_commit_link`'s comment asserted that `story import-project` takes the
+`Replayed` path; it takes `append_events`, and has since it was written. That is
+SH-70, already filed. Making the link source an argument reduces SH-70 to a
+one-word diff at a named call site — and a regression test
+(`a_restore_still_does_not_claim_a_git_comment_as_a_link`) now fails if a future
+change answers SH-70 by accident, which is exactly how the false comment came
+about in the first place.
+
+**`#[serde(untagged)]` cannot express this**, which is why `ExportedEvent`'s
+impls are hand-written: untagged buffers through serde's private `Content`, which
+cannot produce a `RawValue`. Without `RawValue` an unknown payload would be
+re-serialized and its key order normalized, and `src/legacy/events.rs` had
+already settled that key order is part of *verbatim*.
+
+**Reading a document is deliberately lax, and the store is why.**
+`src/store/sqlite/read.rs:342-349` falls back to `StoredPayload::Unknown` on
+*any* decode failure, so `Unknown` has never meant "unknown kind" — it means "did
+not decode". A stricter document reader would therefore refuse documents this
+same binary's exporter produced. The one refusal kept is an event with no string
+`kind` or `at`: those are what the store indexes an unrecognised event *by*, so
+an event lacking them is corrupt rather than merely unknown.
+
+**The rollback leg is genuinely one-way, and now says so.** A legacy tree parses
+every log line as a `StoryEvent` (`src/storage.rs:614-626`), so it cannot hold an
+unknown event, and the reverted binary a rollback hands data back to is older
+still. `storage::import_project` classifies the **whole document before touching
+disk** — it writes story by story with `fs::write` and holds no transaction, so a
+refusal discovered halfway would leave a half-built tree — then drops the
+unknowns and returns story, position and kind for each.
+
+**`story doctor` was computing the answer and throwing it away.**
+`ReadModelDiff::unknown_events` has always been filled and `drift_issues` never
+read it. That silence was affordable while the fold skipped such events and
+export dropped them: an unreported loss and an unreported retention look
+identical from outside. Export carries them now, and `story export` answers with
+`RawJson` — the document is the whole of stdout, with no room for a diagnostic
+beside it — so doctor is the only channel left.
+
+**Seq numbering was the loss nobody had counted.** Before this, a story whose
+second event was unknown re-imported as 1,2 — the slot vanished *and* every later
+event was renumbered down by one. The regression test asserts
+`(seq, kind, payload)` triples with the unknown at position 2 of 5, and
+deliberately not `global_seq`, which is a project-wide feed position reallocated
+on every import and never was preserved.
+
+**Four commits, two hats:** the store refactor (`LinkSource` becomes an argument,
+`encode` becomes `RawEvent::from_event`, every existing caller passes `Replayed`
+— bit-identical), the fix, the doctor report, and the docs. The golden corpus
+does not move: a project with no unknown kinds serializes exactly the bytes it
+did before.
+
+**Filed: SH-184 and SH-185**, both named by the council as siblings it declined
+to fix here. SH-184 is `export` refusing the *whole project* when one story id
+will not parse — the same wrong blast radius, one level up. SH-185 is doctor's
+wider unknown-event UX: severity, exit code, `--fix`, JSON shape.
+
+**Gate:** `make test` exits 0 — **119 green blocks, 2598 tests, 0 failures**,
+plugin harness 22/22, browser suite 9/9. Supervised with a log-growth heartbeat
+on a 120-second stall bound; **no wedge**, every 60-second sample showed growth.
+Read out of the log's own `EXIT=` line rather than from `$?`.
+
+The first attempt failed on `cargo fmt --check` alone. Rather than a fifth
+`style:` commit, the four were unwound with `git reset --mixed` and re-laid over
+formatted content — `git commit --amend` is unreliable in this repo, and the
+alternative left each commit `fmt`-clean on its own, which is what bisectability
+needs.
+
+**Red→green verified in both directions rather than assumed.** Disarming the
+export carry — putting `partition_known` back — fails exactly three tests and
+leaves `service_integrity`'s twelve green. Disarming the doctor's four lines
+fails exactly one and leaves `service_transfer`'s thirty green. Neither disarm
+touches the other's tests, which is what says the two halves are separately
+load-bearing. One detail worth keeping:
+`a_document_carrying_an_unknown_kind_re_exports_byte_for_byte` **survives** the
+export disarm — both laps drop the event, so the two documents still match — so
+a byte-for-byte round-trip assertion could never have caught this bug. That is
+why the `(seq, kind, payload)` triple test exists beside it.
+
+**Council:** yes — `.council/sh-67-export-drops-unknown-event-kinds/`.
