@@ -357,3 +357,172 @@ fn the_relink_redirect_names_the_selector_the_new_grammar_needs() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--project"), "{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// `story project show` — SH-120
+// ---------------------------------------------------------------------------
+
+/// The verb answers with the *resolved* project's identity and checkout.
+///
+/// The scoped singular to `project list`'s plural, and the only machine-readable
+/// answer to "which project am I?" — a question nothing in the CLI could answer
+/// before SH-120, because `list` enumerates every project and is dispatched
+/// without a `Ctx` at all.
+#[test]
+fn project_show_reports_the_resolved_project_and_its_checkout() {
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("SHW").build();
+
+    let out = project
+        .story()
+        .args(["project", "show", "--json"])
+        .output()
+        .expect("running story project show");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("project show must emit JSON");
+    assert_eq!(doc["result"], "ok");
+    assert_eq!(doc["project"]["prefix"], "SHW");
+    assert_eq!(
+        doc["project"]["checkout"],
+        serde_json::Value::String(project.path().to_string_lossy().into_owned()),
+        "the checkout is the directory `project new` attached"
+    );
+    assert!(
+        doc["project"]["slug"].is_string(),
+        "the slug is what `--project` takes, so it must be reported: {doc}"
+    );
+}
+
+/// A project with no linked checkout **succeeds**, reporting `null`.
+///
+/// Deliberately not a refusal. This is the command someone runs to find out
+/// *why* a dispatch refused, and a diagnostic that refuses in the state being
+/// diagnosed is useless. Six of the fourteen projects in the author's own store
+/// are in this state — it is the ordinary case, not an edge one.
+#[test]
+fn project_show_reports_a_project_with_no_checkout_as_null() {
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("NCO").build();
+    let slug = project.slug();
+
+    let unlinked = project
+        .story()
+        .args(["project", "unlink", "checkout"])
+        .output()
+        .expect("running project unlink checkout");
+    assert!(
+        unlinked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unlinked.stderr)
+    );
+
+    let out = env
+        .story(project.path())
+        .args(["--project", &slug, "project", "show", "--json"])
+        .output()
+        .expect("running story project show");
+    assert!(
+        out.status.success(),
+        "a project with no checkout must still be describable, and exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("project show must emit JSON");
+    assert_eq!(doc["result"], "ok");
+    assert!(
+        doc["project"]["checkout"].is_null(),
+        "an absent checkout travels as null: {doc}"
+    );
+    // The field must be PRESENT and null, never omitted: a script cannot tell a
+    // missing key from a renamed one, and those two want opposite reactions.
+    assert!(
+        doc["project"]
+            .as_object()
+            .is_some_and(|o| o.contains_key("checkout")),
+        "`checkout` must be present as null rather than skipped: {doc}"
+    );
+}
+
+/// It honours `--project` over the directory it is run in.
+///
+/// This is the property `story.sh dispatch` depends on: it must be able to ask
+/// about a project other than the one whose checkout it happens to be standing
+/// in, and get that project's directory back rather than its own.
+#[test]
+fn project_show_honours_the_project_flag_over_the_working_directory() {
+    let env = TestEnv::isolated();
+    let here = env.project().prefix("HRE").build();
+    let elsewhere = env.project().prefix("ELS").build();
+    let elsewhere_slug = elsewhere.slug();
+
+    let out = env
+        .story(here.path())
+        .args(["--project", &elsewhere_slug, "project", "show", "--json"])
+        .output()
+        .expect("running story project show");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let doc: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("project show must emit JSON");
+    assert_eq!(doc["project"]["prefix"], "ELS", "the NAMED project answers");
+    assert_eq!(
+        doc["project"]["checkout"],
+        serde_json::Value::String(elsewhere.path().to_string_lossy().into_owned()),
+        "and its checkout is the named project's, not the caller's directory — the whole \
+         reason dispatch can be trusted to cut a worktree in the right repository: {doc}"
+    );
+}
+
+/// Outside any project it refuses the way everything else does.
+#[test]
+fn project_show_outside_any_project_refuses_with_the_ordinary_selector_message() {
+    let env = TestEnv::isolated();
+    let dir = bare_dir(&env, "not-a-project");
+
+    let out = env
+        .story(&dir)
+        .args(["project", "show"])
+        .output()
+        .expect("running story project show");
+    assert!(!out.status.success(), "an unresolvable directory refuses");
+    assert_eq!(out.status.code(), Some(3), "and it is a not-found");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for needle in ["--project", "STORYHOOK_PROJECT"] {
+        assert!(
+            stderr.contains(needle),
+            "the refusal is the ordinary selector one, naming `{needle}`: {stderr}"
+        );
+    }
+}
+
+/// It takes no argument, and says so rather than answering about something else.
+#[test]
+fn project_show_refuses_a_trailing_word() {
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("TRW").build();
+
+    let out = project
+        .story()
+        .args(["project", "show", "some-other-project"])
+        .output()
+        .expect("running story project show with an extra word");
+    assert!(
+        !out.status.success(),
+        "a trailing word is most likely somebody naming a target this verb does not take; \
+         swallowing it would answer about a different project than they asked for"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--project"), "{stderr}");
+}

@@ -19,6 +19,7 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
             r#"story project new [--prefix <PREFIX>] [--name <NAME>]
                   [--attach <PATH> | --no-attach] [--no-agents-md]
 story project delete [--force]
+story project show
 story project list
 story project link origin [URL] | link checkout [PATH]
 story project unlink origin [URL] | unlink checkout
@@ -1857,7 +1858,7 @@ pub fn compact_reference() -> &'static str {
 
 LIFECYCLE
   story project new --prefix P  Create a project (asks if given no flags)
-  story project list|delete     List projects; delete one (destructive)
+  story project show|list|delete Show this one; list all; delete one
   story new "<title>"             Create a story, returns assigned ID
   story show <id>                 Full details for a single story
   story move <id> <state>         Transition state (e.g., todo → in-progress → done)

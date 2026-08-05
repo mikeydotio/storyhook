@@ -357,7 +357,11 @@ fn reply_with<S: Store>(ctx: &Ctx<'_, S>, status: u16, invocation: Invocation) -
 // --- The project catalog: /api/repos ---
 
 /// What a repo with no checkout on this machine is told, and tells.
-const NO_CHECKOUT: &str = "no checkout on this machine";
+///
+/// Re-exported from [`crate::output`] rather than spelled again: the CLI's
+/// `project show` and `project list` say the same words, and a user who learns
+/// the phrase once should not meet a second spelling of it in the dashboard.
+use crate::output::NO_CHECKOUT;
 
 /// `GET /api/repos` — one entry per project the store knows, driving the
 /// header's project selector, the home screen's summary cards, and the
