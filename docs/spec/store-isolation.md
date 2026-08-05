@@ -292,3 +292,32 @@ What shipped instead: the refusal message now offers `story store new` and `--st
 first, with `$STORYHOOK_DATA_DIR` named as the environment-only route that loses if a
 higher lever is also set — the same defect class as As-built item 6, one level up, in
 prose a human reads rather than in a harness a script runs.
+
+**8. SH-122 shipped a guardrail rather than remaining a measurement.** The story's
+acceptance criterion asked for evidence before reopening — a second incident, or a count
+of junk projects in the real store. The census came back clean (14 projects, 0 junk,
+2026-08-05), but the epic's own argument for accepting the gap did not survive checking:
+it held that `story project new` "is explicit and interactive unless given switches", so
+the drive-by path SH-95 exploited no longer exists. The neighbouring repository whose
+suite caused SH-95's incident ported all 164 of its fixture sites from `story init` to
+`story project new --prefix XX --no-attach` — switches, no questions asked, mechanically
+following the rename. Its own isolation wrapper additionally names `STORYHOOK_INVOKER=local`
+"the load-bearing one"; SH-114 deleted the local invoker, so that wrapper isolates today
+only by accident of item 6 above, and it does not neutralize `$STORYHOOK_STORE_PATH` the
+way item 6 requires every harness to.
+
+`refuse_temp_project_in_real_store` judges a path, so it has two blind spots: `--no-attach`
+creates nothing at a path to judge, and a fixture directory that is not itself under a temp
+root (a CI workspace outside `$TMPDIR`) is not temporary by that guard's rule even though it
+is exactly as throwaway. `refuse_project_burst_in_real_store` (`src/service/project.rs`)
+asks a question neither blind spot changes: how many projects, how fast. A person or a
+script that means to create a project creates one; the suite that caused SH-95 ran at
+roughly 15 a minute. The gate refuses the 5th project created in a store that is not
+throwaway within a ten-minute window, named by `STORYHOOK_ALLOW_PROJECT_BURST` when the
+volume is deliberate. It reads `ReadOps::projects()` and is gated behind
+`invoke::creates_a_project`, so `import-project` and a non-dry-run `migrate` — bulk verbs a
+person or a script chose deliberately by typing that command — stay under the path-based
+guard alone, matching the same carve-out `project_creation_target` already draws.
+
+No schema migration, no wire change: `ProjectRecord::created_at` already carried what the
+gate needs.
