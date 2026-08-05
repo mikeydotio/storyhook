@@ -548,6 +548,10 @@ checkout, and a major version bump. None of it happens from this worktree.
   checklist's D2 table says so. **Needs a story.** The migration itself is not
   affected: it writes raw events, and `an_unknown_event_kind_is_imported_
   verbatim_and_named_in_the_report` pins that.
+  *Filed as SH-67 in W7's defect ledger and closed after the program: the
+  document carries such events verbatim now, and only the last leg —
+  `import-project` to a legacy tree, which cannot represent one — still drops
+  them, by name. D2 has been rewritten.*
 - **W3: the legacy archive database cannot be opened read-only the ordinary
   way.** `archive.db` is in WAL mode (header bytes 18/19 are `2`), and a
   `SQLITE_OPEN_READONLY` connection to a WAL database needs to create the
