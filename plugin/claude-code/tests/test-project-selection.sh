@@ -23,16 +23,7 @@
 # be tested at all.
 source "$(dirname "$0")/lib.sh"
 
-# slug_for <dir> — the project slug `story project list` reports for the project
-# rooted at <dir>. Read out of the listing rather than derived from the
-# directory name: the derivation is the CLI's business, and a test that
-# reimplemented it would keep passing after the two disagreed.
-slug_for() {
-  local phys
-  phys=$(cd "$1" && pwd -P)
-  (cd "$1" && story project list 2>/dev/null) \
-    | awk -v p="$phys" 'index($0, p) && $1 != "checkout" && $1 != "origin" {print $1; exit}'
-}
+# `slug_for` moved to lib.sh in SH-120, which needed it in a second file.
 
 # --- 1. a plain subdirectory ------------------------------------------------
 repo=$(mk_story_repo)
