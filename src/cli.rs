@@ -533,6 +533,10 @@ pub enum DaemonAction {
     Install,
     /// Remove that agent.
     Uninstall,
+    /// Print the running daemon's bearer token (SH-50) — the value a caller
+    /// puts in `X-Storyhook-Token` to reach `/api/v1/*` or the dashboard's
+    /// dispatch endpoint from off-loopback.
+    Token,
 }
 
 /// The `story project …` subcommands — a repository's whole lifecycle.
@@ -2853,7 +2857,8 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story daemon start [--port <PORT>] | stop | status | install | uninstall";
+    let usage =
+        "usage: story daemon start [--port <PORT>] | stop | status | install | uninstall | token";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -2871,6 +2876,7 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
         "status" => DaemonAction::Status,
         "install" => DaemonAction::Install,
         "uninstall" => DaemonAction::Uninstall,
+        "token" => DaemonAction::Token,
         _ => return Err(AppError::Usage(usage.to_string())),
     };
     Ok(Invocation::Daemon { action })

@@ -117,6 +117,11 @@ WINDOW_NAME_TPL="${STORY_WINDOW_NAME:-}"
 FOREGROUND="${STORY_FOREGROUND:-}"
 # Target tmux session for the dispatch window (non-interactive-caller seam).
 TARGET_SESSION="${STORY_TARGET_SESSION:-}"
+# Create TARGET_SESSION if it doesn't already exist (SH-50 — the dashboard
+# daemon has no tmux session of its own to arrange ahead of time). Off by
+# default: an interactive caller, or a non-interactive one with a
+# pre-arranged session, must see no behavior change.
+CREATE_SESSION="${STORY_CREATE_SESSION:-}"
 # Per-story git-worktree hygiene AND the worktree container itself.
 WORKTREE_IGNORE_PATH="${STORY_WORKTREE_IGNORE_PATH:-.claude/worktrees/}"
 WORKTREE_IGNORE_COMMENT="# story per-story git worktrees (ephemeral — never commit)"
@@ -689,6 +694,26 @@ cmd_dispatch() {
     fail "failed to create worktree at $worktree_path: $(printf '%s' "$wt_err" | tail -n 2)$(claim_rollback_note "$id" "$pre_claim_state")"
   fi
 
+  # Step 9b: ensure the target session exists (SH-50, opt-in via
+  # STORY_CREATE_SESSION — see that var's definition above). A caller that
+  # names a session without asking for creation gets today's behavior
+  # unchanged: `tmux new-window -t <name>:` itself refuses if the session
+  # isn't there, and step 10 below reports that the ordinary way. A creation
+  # failure here rolls back the worktree/branch and the claim exactly like a
+  # failed `new-window` does, so a session that couldn't be made never leaves
+  # a worktree with nothing to show for it.
+  local session_created=false
+  if [ -n "$TARGET_SESSION" ] && [ -n "$CREATE_SESSION" ] \
+     && ! tmux has-session -t "$TARGET_SESSION" 2>/dev/null; then
+    if ! tmux new-session -d -s "$TARGET_SESSION" -c "$dir" 2>/dev/null; then
+      git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+      git worktree prune >/dev/null 2>&1 || true
+      git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+      fail "failed to create tmux session \`$TARGET_SESSION\`.$(claim_rollback_note "$id" "$pre_claim_state")"
+    fi
+    session_created=true
+  fi
+
   # Step 10: open the window (rooted IN the new worktree). A failure here
   # rolls back the just-created worktree/branch and the claim so a failed
   # dispatch leaves no litter.
@@ -770,7 +795,8 @@ cmd_dispatch() {
     --argjson auto "$([ -n "$auto" ] && echo true || echo false)" \
     --arg warning "$warning" --arg tail "$tail_evidence" --arg display "$display" \
     --arg default "$default" --arg base_oid "$base_oid" --argjson base_fresh "$base_fresh" \
-    --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" '
+    --arg wtbranch "$worktree_branch" --arg wtpath "$worktree_path" \
+    --arg session "$TARGET_SESSION" --argjson session_created "$session_created" '
     {
       ok: true,
       id: $id, title: $title,
@@ -784,6 +810,7 @@ cmd_dispatch() {
     }
     + (if $warning == "" then {} else {warning: $warning} end)
     + (if $tail == "" then {} else {pane_tail: $tail} end)
+    + (if $session == "" then {} else {session: $session, session_created: $session_created} end)
     + {display: $display}'
 }
 

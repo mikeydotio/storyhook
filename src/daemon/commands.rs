@@ -97,6 +97,37 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
     }
 }
 
+/// Prints the running daemon's bearer token.
+///
+/// The token gates every `/api/v1/*` request (`src/api/rpc.rs`) and, since
+/// SH-50, the dashboard's dispatch endpoint too — this is how an operator
+/// gets a copy into the dashboard's token prompt, or a phone reaching the
+/// dashboard over Tailscale, without reading the 0600 portfile by hand.
+///
+/// Refuses rather than starting a daemon: unlike `start`, this is a question
+/// about a daemon presumably already serving the dashboard the token is for,
+/// and silently starting a second one under a caller who only wanted to read
+/// a value would be a surprising side effect for what looks like a query —
+/// the same reasoning `status` already follows.
+pub fn token(env: &Environment) -> Result<String, AppError> {
+    if !lifecycle::is_live(env) {
+        return Err(AppError::Usage(format!(
+            "storyhook daemon is not running — start one with `story daemon start` first.\n\n{}",
+            lifecycle::describe_paths(env)
+        )));
+    }
+    match lifecycle::read_info(env) {
+        Some(info) => Ok(format!(
+            "{}\nRotates every time the daemon restarts — fetch a fresh one after \
+             a `story daemon stop`/`start`.",
+            info.token
+        )),
+        None => Err(AppError::Storage(
+            "a storyhook daemon holds the pidfile but published no portfile".to_string(),
+        )),
+    }
+}
+
 /// Where the launchd agent's plist goes.
 fn agent_path(env: &Environment) -> PathBuf {
     env.home()
