@@ -1,6 +1,3 @@
-// TODO(rearch): migrate to storyhook_test_support::scratch_dir — see clippy.toml.
-#![allow(clippy::disallowed_methods)]
-
 //! Integration tests for the TUI data path.
 //!
 //! These tests exercise DataStore + AppState + Board + Action dispatch
@@ -103,8 +100,8 @@ fn add_state(fixture: &Fixture, slug: &str) {
 
 /// Helper: a store and a checkout with a project in it.
 fn init_project(prefix: &str) -> Fixture {
-    let data = tempfile::tempdir().unwrap();
-    let repo = tempfile::tempdir().unwrap();
+    let data = storyhook_test_support::scratch_dir();
+    let repo = storyhook_test_support::scratch_dir();
     let env = Environment::at(data.path());
     let store = SqliteStore::open(env.store_path()).unwrap();
     store.migrate().unwrap();
