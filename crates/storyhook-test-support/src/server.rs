@@ -214,6 +214,29 @@ impl Drop for ChildGuard {
     }
 }
 
+/// How long a listener has to begin accepting before it is called absent.
+///
+/// **Chosen, not derived or calibrated** — in the sense
+/// `src/daemon/lifecycle.rs` uses those words for the production deadlines.
+/// The wait is over a process binding a loopback socket plus a one-time
+/// filesystem-watcher registration, and no legitimate slow case exists: across
+/// a full run its ~141 calls land at 0ms all but three times, worst 4ms.
+///
+/// Deliberately *not* an import of the daemon's `SPAWN_DEADLINE`, despite the
+/// equal value. That one bounds a daemon coming up; this waits on a test HTTP
+/// server binding a socket. An import would assert a relationship that does not
+/// exist, and the two would then be wrong together (SH-140).
+///
+/// The value is not the interesting part and has never needed to move — both
+/// times this fired, it was right. What was wrong was the message, which named
+/// the duration instead of the condition, and so reported an FSEvents pathology
+/// as a mass of unexplained server failures.
+const ACCEPT_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How often the deadline above is retried. Short enough that a ready listener
+/// is noticed at once, long enough not to spin.
+const ACCEPT_POLL: Duration = Duration::from_millis(50);
+
 /// Blocks until `127.0.0.1:port` accepts connections.
 pub fn wait_for_server(port: u16) {
     wait_for_addr(&format!("127.0.0.1:{port}"));
@@ -231,10 +254,18 @@ pub fn wait_for_addr(addr: &str) {
         if TcpStream::connect(addr).is_ok() {
             return;
         }
-        if start.elapsed() > Duration::from_secs(5) {
-            panic!("{addr} did not start accepting connections within 5 seconds");
+        if start.elapsed() > ACCEPT_DEADLINE {
+            panic!(
+                "{addr} never began accepting connections. This is a 'never', not a 'slow': \
+                 the bound is {ACCEPT_DEADLINE:?} against an observed 0-4ms across ~141 calls \
+                 per run, and raising it cannot help, because both things that have ever \
+                 caused it are unbounded. It has fired twice and been right twice — once on a \
+                 server that had genuinely bound nothing (SH-110), and once on a machine whose \
+                 FSEventStreamStart was serialized behind a huge target/debug/deps. Check \
+                 `ls target/debug/deps | wc -l` (see Cargo.toml) before suspecting this test."
+            );
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(ACCEPT_POLL);
     }
 }
 
