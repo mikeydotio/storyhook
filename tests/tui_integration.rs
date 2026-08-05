@@ -944,11 +944,42 @@ fn state_removal_during_runtime_is_survivable_and_reported() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Performance Check (Task 6.3)
+// Load shape at 100 stories
 // ═══════════════════════════════════════════════════════════════════════
 
+/// An [`Invoker`] that counts what passes through it and forwards the rest.
+///
+/// The seam is the only place a round trip to the store can be observed from
+/// outside, which is what makes "one invocation" assertable rather than merely
+/// documented.
+struct CountingInvoker<'a> {
+    inner: StoreInvoker<'a, SqliteStore>,
+    calls: std::cell::Cell<usize>,
+}
+
+impl Invoker for CountingInvoker<'_> {
+    fn invoke(&self, request: InvokeRequest) -> Result<Response, AppError> {
+        self.calls.set(self.calls.get() + 1);
+        self.inner.invoke(request)
+    }
+}
+
+/// `DataStore::load` reaches the store **once**, however many stories it holds.
+///
+/// **This replaced a stopwatch, and the replacement is the point (SH-140).**
+/// The assertion here used to be `elapsed < 500ms` over the same fixture. That
+/// number was 500x the measured 1.0ms, so the regression it existed to catch —
+/// a query per story, or per event — could grow the work a hundredfold and
+/// still pass. It could only fail for a reason that has nothing to do with the
+/// code: this fixture is a real SQLite database, and a stalled filesystem
+/// blows any wall-clock figure while the load itself is unchanged.
+///
+/// So the promise is asserted where it is actually made. `DataStore`'s own doc
+/// says it loads "in one invocation", and that is a property of the seam rather
+/// than of the machine: it is exact, it is the same on every host, and an N+1
+/// fails it at the first extra round trip instead of the hundredth.
 #[test]
-fn datastore_load_100_stories_under_500ms() {
+fn loading_a_hundred_stories_is_one_invocation() {
     let fixture = init_project("PF");
 
     // Create 100 stories with varying attributes
@@ -984,30 +1015,45 @@ fn datastore_load_100_stories_under_500ms() {
         }
     }
 
-    // Measure load time
-    let start = Instant::now();
-    let store = load(&fixture).unwrap();
-    let elapsed = start.elapsed();
+    let counting = CountingInvoker {
+        inner: fixture.invoker(),
+        calls: std::cell::Cell::new(0),
+    };
+    let store = DataStore::load(&counting).expect("loading the project");
 
     assert_eq!(store.story_count(), 100);
-    assert!(
-        elapsed.as_millis() < 500,
-        "DataStore::load for 100 stories took {}ms, should be under 500ms",
-        elapsed.as_millis()
+    assert_eq!(
+        counting.calls.get(),
+        1,
+        "loading 100 stories took {} round trips to the store; `DataStore` \
+         promises one, and anything per-story is the N+1 this guards",
+        counting.calls.get()
     );
 
-    // Also verify board building is fast
+    // Row building is a fold over what that one load returned. It used to carry
+    // a 50ms budget, deleted with the one above: `AppState` holds a `DataStore`,
+    // which is a plain in-memory snapshot with no connection, no `Invoker` and
+    // no path, so row building *cannot* reach the store — the regression a
+    // timing bound would be watching for is one the types already refuse. What
+    // is worth asserting is that every story survives the fold exactly once.
     let state = AppState::new(store);
     let board = Board::new();
-    let start = Instant::now();
     let rows = board.build_visible_rows(&state);
-    let elapsed = start.elapsed();
 
-    assert!(rows.len() > 100); // 100 stories + section headers
-    assert!(
-        elapsed.as_millis() < 50,
-        "build_visible_rows for 100 stories took {}ms, should be under 50ms",
-        elapsed.as_millis()
+    let story_rows = rows
+        .iter()
+        .filter(|row| matches!(row, RowItem::StoryRow { .. }))
+        .count();
+    let headers = rows
+        .iter()
+        .filter(|row| matches!(row, RowItem::SectionHeader { .. }))
+        .count();
+    assert_eq!(story_rows, 100, "every story must appear exactly once");
+    assert!(headers > 0, "the board must draw its section headers");
+    assert_eq!(
+        rows.len(),
+        story_rows + headers,
+        "the board must draw nothing it cannot account for"
     );
 }
 
