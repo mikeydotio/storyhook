@@ -555,11 +555,26 @@ fn session_start_system_message_under_4000_chars() {
 }
 
 // ============================================================
-// Performance: completes within 2 seconds
+// Exits zero for an ordinary project
 // ============================================================
 
+/// **This test used to hold a two-second stopwatch, and it is gone (SH-140).**
+///
+/// The command measured 8-9ms, so the bound was 230x the true figure and could
+/// not see a regression. What it *could* see was a wait that is legitimate:
+/// since SH-114 the invoker is the CLI's only door, so every `story` command
+/// may take the daemon spawn lock, and `SPAWN_LOCK_DEADLINE` permits 30 seconds
+/// there — fifteen times this bound — before the client gives up and says so in
+/// its own words. A harness that stops first replaces a named failure with an
+/// anonymous one, which is the case `SPAWN_LOCK_DEADLINE`'s own doc warns
+/// against: "a client that exhausts this bound and correctly reports so must
+/// not race the harness meant to outlive it".
+///
+/// So the only honest wall-clock figure here is one *longer* than the client's,
+/// and at that length it asserts nothing the client does not already assert
+/// with a better message. The exit status is what this test is for.
 #[test]
-fn session_start_completes_within_two_seconds() {
+fn session_start_exits_zero_for_a_project_with_one_story() {
     let dir = scratch_dir();
     story(dir.path())
         .args(["project", "new", "--prefix", "SH"])
@@ -570,19 +585,12 @@ fn session_start_completes_within_two_seconds() {
         .assert()
         .success();
 
-    let start = std::time::Instant::now();
     let output = story(dir.path())
         .arg("session-start")
         .output()
         .expect("failed to run story session-start");
-    let elapsed = start.elapsed();
 
     assert!(output.status.success());
-    assert!(
-        elapsed < std::time::Duration::from_secs(2),
-        "session-start should complete within 2 seconds, took {:?}",
-        elapsed
-    );
 }
 
 // ============================================================
