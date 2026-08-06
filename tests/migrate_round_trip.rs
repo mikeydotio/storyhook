@@ -19,28 +19,33 @@
 //!
 //! # What the round trip does *not* carry, and why that is written here
 //!
-//! An export document holds states, types, members and stories. It does not
-//! hold `project.toml`'s `sync`/`doctor` settings, its `created_at`, or the
-//! `next-id` counter — those ride beside the envelope during a migration and
-//! have nowhere to sit on the way back. Widening the document would move bytes
-//! in a format `golden-export.json` compares literally, so the gap is recorded
-//! rather than closed. It is one of the reasons `.storyhook/` stays in the
-//! repository until W7: the real rollback is the directory that was never
-//! touched, and this round trip is the guarantee for everything created *after*
-//! the flip.
+//! An export document holds states, types, members, stories and the project's
+//! settings. It does **not** hold `project.toml`'s `created_at`, the `next-id`
+//! counter's burned numbers, `projects.uuid`, or the registered origins — those
+//! ride beside the envelope during a migration and have nowhere to sit on the
+//! way back.
 //!
-//! **That gap stopped being benign in SH-129, and is now SH-133.** It was
-//! harmless for as long as `story migrate` was the only writer of
-//! `project_settings`: a value in the store had come *from* a legacy tree, so
-//! the tree it would roll back to already held it. `story project settings`
-//! makes those columns live user data with no legacy origin, and a rollback now
-//! silently restores `sync.auto_transition` to its default — resuming automatic
-//! transitions for a user who deliberately turned them off. SH-129 deliberately
-//! did **not** widen the document to close it: the fix belongs in its own
-//! change, and moving bytes in `golden-export.json` alongside a feature would
-//! mix two hats. Closing SH-133 means adding the settings to `ProjectExport`,
-//! to `storage::import_project` (`src/storage.rs`, where they are hard-coded to
-//! `None`), and to the assertion below.
+//! **Settings were on that list until SH-133, and the reason given for it was
+//! false.** The note here said widening the document would move bytes in a
+//! format `golden-export.json` compares literally. It does not compare
+//! literally: `the_real_trees_export_equals_the_golden_document_modulo_the_repairs`
+//! parses that file into a `ProjectExport` and asserts field by field, so a
+//! field that is absent when unset moves nothing at all and the golden document
+//! needed no regeneration. What *was* true is that the gap was benign while
+//! `story migrate` was the only writer of those columns — a value in the store
+//! had come from a tree, so the tree it would roll back to already held it.
+//! SH-129 shipped `story project settings`, the columns became live user data,
+//! and a rollback started silently restoring `sync.auto_transition` to its
+//! default — which is `true`, so the one setting whose purpose is stopping
+//! `commit-sync` came back switched on.
+//!
+//! `github.sync` is the one thing the document deliberately does not carry even
+//! though it could. `src/service/transfer.rs`'s `ExportedSettings` says why: a
+//! partial carry is worse than none, because the per-story `github_bases` merge
+//! bases have no home in a legacy tree, and restoring mappings without them
+//! makes the next sync treat local as base and file every stale remote value as
+//! an ordinary pull. `story doctor` names that omission on a project it applies
+//! to.
 
 mod legacy_support;
 

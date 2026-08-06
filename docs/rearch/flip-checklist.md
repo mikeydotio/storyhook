@@ -341,19 +341,22 @@ applies.
 
 ### What a rollback does *not* carry, and what to do about it
 
-An export document holds schema, prefix, states, types, members and stories.
-It does **not** hold:
+An export document holds schema, prefix, states, types, members, stories and the
+project's settings. It does **not** hold:
 
 | Lost on the way back | Where to get it |
 |---|---|
-| `project.toml`'s `sync.auto_transition` and `doctor.stale_threshold` | the pre-flip `project.toml` in git history; `story migrate` printed both values in its report |
-| `project.toml`'s `created_at` | same; `import-project` stamps the restore instant instead |
+| github-sync's configuration and issue mappings | **Deliberately uncarried, and `story doctor` says so on a project that has it.** Not because the document could not hold the blob, but because the per-story `github_bases` merge bases have no home in a legacy tree: restore mappings without them and the next sync treats local as base, so every field edited since the last sync reads as unchanged and the stale remote value is filed as an ordinary pull, at exit 0. The blob also pins `github.owner`/`github.repo`, which only the setup wizard re-derives. Re-run `story github-sync`. |
+| `project.toml`'s `created_at` | the pre-flip `project.toml` in git history; `import-project` stamps the restore instant instead |
 | The `next-id` counter's *burned* numbers | `import-project` derives `max(story id) + 1`, so numbers minted and never used are reclaimed. Harmless unless something external quotes them. |
 | Event kinds a newer storyhook wrote | **The document carries them since SH-67** — verbatim, key order included — so `store → export → import-project → store` is lossless for them. What cannot carry them is the last leg, `import-project → a legacy tree`: every line of a `.jsonl` log is parsed as a `StoryEvent`, so the tree has no way to hold one, and the reverted binary this hands the data back to is older still. `storage::import_project` drops them and **returns what it dropped** — story, position and kind — so a rollback that loses an event says which. `story doctor` names them in the store beforehand. |
 
-The first three are why **`.storyhook/` stays in the repository until W7** even
-though nothing reads it after the flip. It is not dead weight — it is the only
-copy of the three fields the envelope cannot carry.
+`created_at` and the burned counter numbers are why **`.storyhook/` stayed in
+the repository until W7** even though nothing read it after the flip: it was the
+only copy of what the envelope could not carry. `sync.auto_transition` and
+`doctor.stale_threshold` were on that list until SH-133, which put them in the
+envelope; github-sync is the one entry that is a decision rather than a
+limitation.
 
 ---
 

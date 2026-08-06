@@ -692,8 +692,9 @@ fn a_projects_settings_travel_with_it() {
     assert_eq!(settings.doctor_stale_threshold.as_deref(), Some("21d"));
     assert!(
         report.render().contains("sync.auto_transition = false"),
-        "settings ride beside the export envelope rather than inside it, so the report is where \
-         an operator learns a rollback will not carry them: {}",
+        "the report is the migration's inventory of what the tree turned out to be configured \
+         with. It read as a rollback warning until SH-133, when the envelope started carrying \
+         these settings itself: {}",
         report.render()
     );
 }
