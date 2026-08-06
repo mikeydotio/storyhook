@@ -117,21 +117,34 @@ pub fn parse_github_url(url: &str) -> Option<GithubRepo> {
         });
     }
 
-    // HTTPS format: https://github.com/owner/repo[.git]
-    if let Some(rest) = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))
+    // HTTPS format: https://[userinfo@]github.com/owner/repo[.git]
+    if let Some(after_scheme) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
     {
-        let rest = rest.strip_suffix(".git").unwrap_or(rest);
-        let rest = rest.strip_suffix('/').unwrap_or(rest);
-        let (owner, repo) = rest.split_once('/')?;
-        if owner.is_empty() || repo.is_empty() {
-            return None;
+        // Userinfo sits in the authority, which ends at the first `/`, and runs
+        // through the last `@` inside it. It is a credential hint git carries
+        // in the url rather than part of the repository's identity, so it is
+        // dropped before the host is matched — matching the host with the
+        // userinfo still attached is what made github-sync unreachable for a
+        // repository whose origin carries one (SH-137).
+        let authority_end = after_scheme.find('/').unwrap_or(after_scheme.len());
+        let host_start = after_scheme[..authority_end]
+            .rfind('@')
+            .map_or(0, |at| at + 1);
+
+        if let Some(rest) = after_scheme[host_start..].strip_prefix("github.com/") {
+            let rest = rest.strip_suffix(".git").unwrap_or(rest);
+            let rest = rest.strip_suffix('/').unwrap_or(rest);
+            let (owner, repo) = rest.split_once('/')?;
+            if owner.is_empty() || repo.is_empty() {
+                return None;
+            }
+            return Some(GithubRepo {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+            });
         }
-        return Some(GithubRepo {
-            owner: owner.to_string(),
-            repo: repo.to_string(),
-        });
     }
 
     None
@@ -316,6 +329,17 @@ mod tests {
         let r = parse_github_url("git@github.com:acme/widgets").unwrap();
         assert_eq!(r.owner, "acme");
         assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_https_url_with_userinfo() {
+        // The exact form two real repositories on the author's machine use.
+        // Userinfo is a credential hint git carries in the url, not part of the
+        // repository's identity, so it must not decide whether a remote is
+        // GitHub — it used to, and github-sync was unreachable for both (SH-137).
+        let r = parse_github_url("https://wookiee@github.com/mikeyward/keymux.git").unwrap();
+        assert_eq!(r.owner, "mikeyward");
+        assert_eq!(r.repo, "keymux");
     }
 
     #[test]
