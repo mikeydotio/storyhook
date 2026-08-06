@@ -52,7 +52,7 @@ use storyhook::domain::StorySnapshot;
 use storyhook::service::transfer::ProjectExport;
 use storyhook::service::{Clock, Ctx, TransferService};
 use storyhook::storage;
-use storyhook::store::{ReadOps, SqliteStore, Store as _};
+use storyhook::store::{ReadOps, SqliteStore, Store as _, WriteOps as _};
 
 /// The store's project as an export document.
 fn export(store: &SqliteStore) -> ProjectExport {
@@ -256,6 +256,79 @@ fn a_projects_settings_survive_the_round_trip() {
         .expect("the rebuilt tree must carry the settings");
     assert_eq!(settings.auto_transition(), Some(false));
     assert_eq!(settings.stale_threshold(), Some("21d"));
+}
+
+/// **The preventative, not the instance.** SH-133 was one setting that could not
+/// reach a rollback; a fourth setting added later could be another, and nobody
+/// would find out until somebody's rollback ate it.
+///
+/// So the coverage is derived from `settings::registry()` rather than listed
+/// here: every key the registry says a user may write is written, and the whole
+/// loop — store → document → legacy tree → store — must give it back. A new
+/// settable key inherits this check with no production code depending on the
+/// registry and no list here to remember to update.
+///
+/// **`github.sync` is excluded by `settable()` itself**, which is the honest
+/// spelling of "the document does not carry it": it is `managed_by: "story
+/// github-sync"` and no user writes it. If a later story ever makes that key
+/// settable, this test goes red on a change that looks unrelated — and that is
+/// the *correct* failure, because carrying the blob without the `github_bases`
+/// merge bases the legacy tree cannot hold is worse than not carrying it at all.
+/// Read `ExportedSettings`' own note before deleting this.
+#[test]
+fn every_settable_setting_survives_the_whole_loop() {
+    use storyhook::output::SettingKind;
+    use storyhook::service::settings;
+
+    let (_tree, root) = custom_config_tree();
+    let (_store_dir, store, _report) = migrate(&root);
+    let project = store
+        .read(|tx| Ok(tx.projects()?.first().expect("one project").id))
+        .expect("reading");
+
+    let mut written = 0;
+    store
+        .write(|tx| {
+            let mut row = tx.settings(project)?;
+            for spec in settings::registry() {
+                if !spec.settable() {
+                    continue;
+                }
+                match spec.kind() {
+                    SettingKind::Boolean => row.sync_auto_transition = Some(false),
+                    SettingKind::Duration => {
+                        row.doctor_stale_threshold = Some("30d".to_string());
+                    }
+                    // A settable document would have no home in `project.toml`,
+                    // which is the whole reason `github.sync` is not settable.
+                    SettingKind::Document => panic!(
+                        "`{}` is settable and is a document: the rollback leg has nowhere to \
+                         put it, so either it must stop being settable or this loop must grow \
+                         a home for it — see `ExportedSettings`",
+                        spec.key()
+                    ),
+                }
+                written += 1;
+            }
+            tx.put_settings(project, &row)
+        })
+        .expect("writing every settable setting");
+    assert!(written > 0, "the registry must have settable keys to check");
+
+    let document = export(&store);
+    let (_dir, rebuilt) = rebuild_legacy_tree(&document);
+    let carried = storage::export_project(&rebuilt)
+        .expect("re-exporting the rebuilt tree")
+        .settings
+        .expect("a tree rebuilt from a document with settings must carry them");
+
+    assert_eq!(carried.auto_transition(), Some(false));
+    assert_eq!(carried.stale_threshold(), Some("30d"));
+    assert_eq!(
+        carried,
+        document.settings.expect("the document carried settings"),
+        "every settable setting must survive the whole loop, not merely some of them"
+    );
 }
 
 #[test]
