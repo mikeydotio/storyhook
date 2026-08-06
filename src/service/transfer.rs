@@ -65,8 +65,106 @@ pub struct ProjectExport {
     pub types: Vec<TypeDef>,
     /// The project's members.
     pub members: Vec<Member>,
+    /// The settings a user wrote, absent when they wrote none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ExportedSettings>,
     /// Every story, open ones first.
     pub stories: Vec<ExportedStory>,
+}
+
+/// The project settings an export document carries.
+///
+/// # Why this is not `store::ProjectSettings`
+///
+/// Two reasons, and the second is the load-bearing one. Deriving `Serialize` on
+/// the store row would freeze its *column names* as this document's public
+/// contract and enrol every future column into the wire format by default —
+/// `store/types.rs` owns no wire format, which is the rule SH-67 settled one
+/// story earlier. And the store row has a third field, `github_sync`, that this
+/// document deliberately does not carry: a separate type makes that
+/// **unrepresentable** rather than a `skip_serializing_if` somebody could
+/// remove without noticing what it was holding back.
+///
+/// The shape is the legacy `project.toml`'s, because the document's job is to be
+/// the contract between the two storage layouts and the layout it must survive
+/// into spells them this way.
+///
+/// # Why `github.sync` does not travel
+///
+/// Not because the document could not hold it — it is a serde struct and could.
+/// Because a **partial** carry is worse than none. `load_config` decides whether
+/// a project is configured by whether this blob is present, and never looks at
+/// the per-story `github_bases` merge-base table, which the legacy leg has
+/// nowhere to write: `src/legacy/` and `src/storage.rs` hold no github knowledge
+/// at all. Restore the blob without the bases and the next sync's
+/// `load_base(..).unwrap_or_else(|| story.clone())` treats *local as base*, so
+/// every field the user edited since the last sync reads as unchanged and the
+/// stale remote value is filed as an ordinary pull — silently, at exit 0. The
+/// blob also carries `github.owner`/`github.repo`, which only the setup wizard
+/// re-derives, so a document restored into a fork would push to the original
+/// repository.
+///
+/// What a backup therefore does not carry is named by `story doctor` rather than
+/// left to be discovered at the next sync.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExportedSettings {
+    /// The `[sync]` table, absent when nothing in it is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<ExportedSyncSettings>,
+    /// The `[doctor]` table, absent when nothing in it is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doctor: Option<ExportedDoctorSettings>,
+}
+
+/// The `[sync]` table of an [`ExportedSettings`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExportedSyncSettings {
+    /// Whether `commit-sync` moves stories automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_transition: Option<bool>,
+}
+
+/// The `[doctor]` table of an [`ExportedSettings`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExportedDoctorSettings {
+    /// How old a story may be before `story doctor` calls it stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_threshold: Option<String>,
+}
+
+impl ExportedSettings {
+    /// The carried settings of a project that has some, and `None` for one that
+    /// has none.
+    ///
+    /// **"Nothing is set" has exactly one encoding, and that is the point.** An
+    /// emitted empty table and an absent one are the same fact, and if the two
+    /// exporters disagreed about which to write, `a_round_trip_survives_a_second
+    /// _lap` would byte-compare `{}` against nothing and fail. Every producer
+    /// goes through here so neither can drift.
+    #[must_use]
+    pub fn new(auto_transition: Option<bool>, stale_threshold: Option<String>) -> Option<Self> {
+        let sync = auto_transition.map(|auto_transition| ExportedSyncSettings {
+            auto_transition: Some(auto_transition),
+        });
+        let doctor = stale_threshold.map(|stale_threshold| ExportedDoctorSettings {
+            stale_threshold: Some(stale_threshold),
+        });
+        (sync.is_some() || doctor.is_some()).then_some(Self { sync, doctor })
+    }
+
+    /// `sync.auto_transition`, however deeply the document nests it.
+    #[must_use]
+    pub fn auto_transition(&self) -> Option<bool> {
+        self.sync.as_ref().and_then(|sync| sync.auto_transition)
+    }
+
+    /// `doctor.stale_threshold`, however deeply the document nests it.
+    #[must_use]
+    pub fn stale_threshold(&self) -> Option<&str> {
+        self.doctor
+            .as_ref()
+            .and_then(|doctor| doctor.stale_threshold.as_deref())
+    }
 }
 
 /// One story inside a [`ProjectExport`]: its whole event history, not a
@@ -288,12 +386,20 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
             archived.sort_by(|a, b| a.id.cmp(&b.id));
             open.append(&mut archived);
 
+            let stored = tx.settings(project)?;
             Ok(ProjectExport {
                 schema: EXPORT_SCHEMA,
                 prefix: exported_prefix(&prefix),
                 states: tx.states(project)?,
                 types: tx.types(project)?,
                 members: tx.members(project)?,
+                // `github_sync` is deliberately not among them — see
+                // [`ExportedSettings`], which says why a partial carry is worse
+                // than none.
+                settings: ExportedSettings::new(
+                    stored.sync_auto_transition,
+                    stored.doctor_stale_threshold,
+                ),
                 stories: open,
             })
         })?)
@@ -468,6 +574,7 @@ pub fn import_project<S: Store>(
         for member in &export.members {
             tx.put_member(project, member)?;
         }
+        apply_settings(tx, project, export.settings.as_ref())?;
 
         let states = slug_map(&tx.states(project)?);
         let mut highest = StoryNo::new(0);
@@ -545,6 +652,39 @@ fn exported_prefix(prefix: &str) -> Option<String> {
 }
 
 /// A slug-keyed view of an ordered state list.
+/// Applies a document's settings to the project it is being restored into,
+/// leaving every column the document does not carry alone.
+///
+/// **Read, modify, write — not a fresh row.** [`WriteOps::put_settings`] writes
+/// every column, and `import-project` can be restoring *into a project that
+/// already exists*: that branch adopts a checkout whose row may already hold a
+/// configured `github_sync`, and handing `put_settings` a value built only from
+/// the document would blank it. That is the SH-49 shape — a read-modify-write
+/// round trip through a value that does not know about a field destroying the
+/// field — and it is the reason `store::ProjectSettings` is columns rather than a
+/// blob in the first place.
+///
+/// A document with no settings writes nothing at all, rather than writing
+/// emptiness: restoring a backup taken before this existed must not clear the
+/// settings of the project it lands in.
+fn apply_settings(
+    tx: &mut impl WriteOps,
+    project: ProjectId,
+    settings: Option<&ExportedSettings>,
+) -> Result<(), StoreError> {
+    let Some(settings) = settings else {
+        return Ok(());
+    };
+    let mut row = tx.settings(project)?;
+    if let Some(auto_transition) = settings.auto_transition() {
+        row.sync_auto_transition = Some(auto_transition);
+    }
+    if let Some(threshold) = settings.stale_threshold() {
+        row.doctor_stale_threshold = Some(threshold.to_string());
+    }
+    tx.put_settings(project, &row)
+}
+
 fn slug_map(states: &[StateDef]) -> BTreeMap<String, StateDef> {
     states
         .iter()

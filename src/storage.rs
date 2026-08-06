@@ -813,6 +813,10 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
     Ok(ProjectExport {
         schema: project.schema,
         prefix: project.prefix,
+        // Not read here yet: this exporter is the *legacy* leg, and carrying
+        // settings across it is the next commit. `None` is accurate rather than
+        // provisional — nothing below has looked at `[sync]` or `[doctor]`.
+        settings: None,
         states,
         types,
         members,
