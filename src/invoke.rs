@@ -541,6 +541,7 @@ pub fn dispatch<S: Store>(
                         };
                         let mut advice = orphan_advice(&orphans);
                         advice.extend(origin_advice(&origins));
+                        advice.extend(backup_advice(ctx)?);
                         Ok(Response::Issues(advice))
                     }
                     issues => Err(AppError::Integrity(issues.join("\n"))),
@@ -2814,6 +2815,42 @@ fn deregistered_message(forgotten: &[crate::service::OrphanedRegistration]) -> S
                   `story project link checkout` puts a project back where its checkout moved to.",
     );
     out
+}
+
+/// What `story doctor` says about a project whose github-sync configuration an
+/// export document does not carry (SH-133).
+///
+/// **This is the only channel there is.** `story export` answers with
+/// [`Response::RawJson`], which is the whole of standard output with no envelope
+/// around it and nowhere for a warning to ride; and since SH-114 the command
+/// runs inside the daemon, so an `eprintln!` reaches the daemon's log rather
+/// than the person running the backup. SH-67 met the same wall for an event kind
+/// it could not decode and answered it the same way — the store is where the
+/// fact lives, so the command that reads the store is where it is reported.
+///
+/// Advisory, like [`origin_advice`], and for the same reason: nothing is broken.
+/// The project works, the backup is a good backup of everything else, and a
+/// non-zero exit would make `doctor` red for every github-synced project on the
+/// machine forever.
+///
+/// It reads *presence* only. That keeps it working under
+/// `--no-default-features`, where the type describing the document's shape does
+/// not exist at all.
+fn backup_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppError> {
+    let configured = ctx
+        .store()
+        .read(|tx| Ok(tx.settings(ctx.project())?.github_sync.is_some()))?;
+    if !configured {
+        return Ok(Vec::new());
+    }
+    Ok(vec![
+        "github-sync is configured, and `story export` does not carry it. A restored backup \
+         has this project's stories, states, members and settings, but not its issue \
+         mappings or their merge bases — so the first `story github-sync` after a restore \
+         starts from initial setup. Nothing is wrong with this project; this is what a \
+         backup of it does not include."
+            .to_string(),
+    ])
 }
 
 /// What `story doctor` says about a project whose checkout knows an origin the

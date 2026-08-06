@@ -97,6 +97,25 @@ fn fix(fixture: &ServiceFixture) -> Result<String, AppError> {
     IntegrityService::new(&fixture.ctx()).fix()
 }
 
+/// The advisories `story doctor` prints when it finds no integrity fault.
+///
+/// Through `dispatch` rather than the service, because advice is assembled in
+/// the arm rather than by `IntegrityService` — deliberately, since exiting
+/// non-zero is what `report()`'s non-empty return means and advice must not do
+/// that. A fixture store lives under a temp directory, so the catalog
+/// advisories are skipped and what is left is the project's own.
+fn advisories(fixture: &ServiceFixture) -> Vec<String> {
+    match storyhook::invoke::dispatch(
+        &fixture.ctx(),
+        storyhook::cli::Invocation::Doctor { fix: false },
+    )
+    .expect("doctor must not fail on a healthy project")
+    {
+        storyhook::output::Response::Issues(advice) => advice,
+        other => panic!("`story doctor` must answer with Issues, got {other:?}"),
+    }
+}
+
 // --- a healthy project -----------------------------------------------------
 
 #[test]
@@ -485,6 +504,45 @@ fn an_event_this_build_cannot_decode_is_reported_and_told_apart_from_a_torn_one(
     assert!(
         fix(&fixture).is_err(),
         "doctor cannot invent a payload it cannot read"
+    );
+}
+
+/// SH-133: a backup does not carry github-sync, and `story doctor` is the only
+/// place that can say so.
+#[test]
+fn a_github_synced_project_is_told_what_its_backup_leaves_behind() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "synced");
+    drop(ctx);
+    assert!(
+        report(&fixture).is_empty(),
+        "a project with no github-sync has nothing to be told"
+    );
+
+    fixture
+        .store()
+        .write(|tx| {
+            let mut row = tx.settings(fixture.project())?;
+            row.github_sync = Some(serde_json::json!({"owner": "ada", "repo": "engine"}));
+            tx.put_settings(fixture.project(), &row)
+        })
+        .expect("configuring github-sync");
+
+    let advice = advisories(&fixture);
+    assert_eq!(advice.len(), 1, "{advice:?}");
+    assert!(
+        advice[0].contains("github-sync is configured")
+            && advice[0].contains("story export")
+            && advice[0].contains("Nothing is wrong with this project"),
+        "the notice must say what is missing and that nothing is broken: {advice:?}"
+    );
+
+    // Advisory, not a finding: `doctor` on a github-synced project must not
+    // exit non-zero forever after.
+    assert!(
+        report(&fixture).is_empty(),
+        "a backup's scope is not an integrity fault"
     );
 }
 
