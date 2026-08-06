@@ -185,7 +185,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - ⏸ **SH-182** — the SessionStart hook's 5s budget sits below the 30s spawn-lock wait its own `story` call may take · *filed by SH-140's council; **held for Mikey's design call** — do not work it autonomously*
 - [x] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
 - [x] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
-- [ ] **SH-133** — rollback drops project settings · *filed by SH-129*
+- [x] **SH-133** — rollback drops project settings · *filed by SH-129*
 - [ ] **SH-137** — github-sync unreachable for an origin carrying userinfo
 - [ ] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
 - [ ] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
@@ -4425,3 +4425,135 @@ a byte-for-byte round-trip assertion could never have caught this bug. That is
 why the `(seq, kind, payload)` triple test exists beside it.
 
 **Council:** yes — `.council/sh-67-export-drops-unknown-event-kinds/`.
+
+### SH-133 — done
+
+**Outcome:** an export document carries a project's settings, both legs of the
+round trip carry them back, and `story doctor` names the one thing a backup
+deliberately leaves behind. `sync.auto_transition = false` survives a restore
+instead of coming back as `true`.
+
+**The story's premise was false, and its acceptance criteria rested on it.** It
+says `golden-export.json` "is compared literally", and AC #3 required
+regenerating it in its own reviewed commit. It is not compared literally:
+`the_real_trees_export_equals_the_golden_document_modulo_the_repairs` **parses**
+it into a `ProjectExport` and asserts schema, states, types, members, story ids,
+prefix and every event. A field that is absent when unset moves nothing it looks
+at, so no regeneration was needed and none happened. **Fifth consecutive story in
+this run whose filed premise had to be corrected before the work could start.**
+
+The same false reason was written in four other places — `MigrationPlan`'s note,
+`MigrationReport::settings`' field comment, `migrate_round_trip.rs`'s header and
+the assertion message in `a_projects_settings_travel_with_it` — which is how it
+survived: it was true-sounding, repeated, and never checked. All five now say
+what was actually true, which is that the gap was benign while `story migrate`
+was the only writer of those columns, and stopped being so when SH-129 shipped a
+CLI for them.
+
+**The story named the wrong leg.** It is titled "rollback drops project
+settings" and points at `storage::import_project`'s hard-coded `sync: None,
+doctor: None`. That is real, but `service::transfer::import_project` — the
+store-side restore that `story import-project` actually runs, and the document's
+*primary* use now that `story export > backup.json` is the documented backup —
+called `put_settings` **nowhere at all**. So `store → document → store` dropped
+the settings too. The filed leg was the encounter point; this was the origin.
+Both are fixed, in that order.
+
+**The council reversed itself twice, and the second reversal is the entry's
+finding.** Round 1 split 0-2-1 on whether `github.sync` should travel, with both
+non-authors voting against their own proposals and *crossing* — the architect
+adopted the skeptic's position while the skeptic abandoned it. They then
+disagreed on a fact, and deliberation settled it in the code:
+
+| State | What actually happens |
+|---|---|
+| blob absent | `mod.rs:255-270`'s only `None` arm is `run_initial_setup(sync)?`, whose `Select::interact()` cannot complete off a tty — so the push phase is **unreachable**, and the duplicate-issue harm the carry was meant to prevent cannot occur |
+| blob present, mappings empty | no wizard runs, the push phase *is* reached unguarded — one duplicate issue per open story. **No proposal may carry the config while dropping the mappings** |
+| blob carried, `github_bases` absent | `load_base(..).unwrap_or_else(\|\| story.clone())` makes base = local, `merge_scalar` sees `local_changed = false` on every field, and each stale remote value is filed as an ordinary pull at exit 0 |
+
+Both seats then flipped again, to *not* carrying it, and the runoff was unanimous.
+The trigger rate is what decided it: the export **is** the local state, so every
+edit since the last sync is in the snapshot and none of it is in the lost base.
+The silent overwrite is not an edge case — it fires on essentially every edited
+field on the first post-restore sync.
+
+**Two premises died in the audit trail rather than in the code.** Seat 2's
+justification — "the document cannot represent the `github_bases` table" — was
+called false by seat 3 and withdrawn by seat 2 itself in the runoff:
+`ProjectExport` is an ordinary serde struct and could hold them. The real reasons
+are that the *legacy leg* has nowhere to write them and that a partial carry is
+worse than none. Seat 3 likewise recorded that its own round-1 vote "reached the
+right answer through a wrong fact" and asked that the reason not be cited. Both
+corrections are in `DECISION.md` rather than smoothed away, because this run has
+already shipped one story on a premise that turned out false.
+
+**The notice could not go where it belonged.** `story export` answers with
+`RawJson` — the document is the whole of stdout, with no envelope and no
+`warnings` field — and since SH-114 the command runs in the daemon, where
+`eprintln!` reaches a log nobody reads. Exactly the wall SH-67 hit one story ago,
+and the same answer: `story doctor`. Specifically its **advisory** list, beside
+`origin_advice`, and explicitly *not* `IntegrityService::report()`, whose
+non-empty return is exit 5 and would leave `doctor` red on every github-synced
+project on the machine forever.
+
+**Neither byte gate would have caught the fix being absent.**
+`a_round_trip_survives_a_second_lap` runs on `custom_config_tree`, whose
+`project.toml` comes from `storage::init_project` with neither table, and
+`export_import_export_is_byte_identical` never sets a setting — so with
+settings encoded as absent-when-unset, **both stay green whether or not the legs
+carry anything**. The fixture had to be widened or the fix would have looked done
+and been entirely unverified. Not by adding the tables to `custom_config_tree`
+itself: `service_migrate.rs` already appends the same two to that fixture, and a
+duplicate TOML table is a parse error. That landmine was found by the council, not
+by the compiler.
+
+**The write is read-modify-write, and that is not stylistic.** `put_settings`
+writes every column, and a restore can *adopt* a project that already exists,
+whose row may already hold a configured `github_sync`. Building the row from the
+document alone would blank it — the SH-49 shape one layer up, and the reason
+`ProjectSettings` is columns rather than a blob in the first place.
+`a_restore_does_not_blank_a_setting_the_document_does_not_carry` drives the real
+two-import path rather than a test-only shim.
+
+**The preventative kills the class, not the instance.**
+`every_settable_setting_survives_the_whole_loop` derives its coverage from
+`settings::registry()`: every key the registry calls settable is written and must
+survive store → document → legacy tree → store. A fourth settable key inherits
+the check with no production code depending on the registry. `github.sync` is
+excluded by `settable()` itself — the honest spelling of "the document does not
+carry it" — and a settable *document* trips a panic naming the problem, because
+`project.toml` has nowhere to put one.
+
+**Red→green verified in both directions.** Disarming the store-leg write fails
+exactly three tests; disarming the legacy writer fails exactly one, the new
+round-trip case. Neither disarm touches the other's tests.
+
+**Filed: SH-189, SH-190, SH-191.** SH-189 is github-sync backup completeness —
+carry the blob *with* its bases, re-derive owner/repo from the destination
+checkout, and decide what a mapped-but-baseless story should do; **blocked by
+SH-153**, not incidentally, because with the blob absent `story github-sync` is
+inoperable over the daemon until that lands. SH-190 is a restored project being
+unreachable from its own checkout — uuid re-minted, pointer never overwritten,
+`project_remotes` uncarried. SH-191 is the wizard's import branch possibly missing
+the storyhook-block guard its sibling branch has. The last two are unreproduced by
+design: they were found by reading, and the repo's rule is to reproduce before
+fixing.
+
+**Five commits, two hats:** the document plus the store leg, the legacy leg, the
+doctor advisory, the registry-derived preventative, and the documentation whose
+reason had been false since W3.
+
+**Gate:** `make test` exits 0 — **120 green blocks, 2620 tests, 0 failures**,
+plugin harness 22/22, browser suite 9/9. Supervised with a log-growth heartbeat
+on a 120-second stall bound; **no wedge**. `hook_silence` again printed its own
+"running for over 60 seconds" notices, which is precisely the case that bound was
+chosen to tolerate rather than cry wolf at. Read out of the log's `EXIT=` line
+rather than from `$?`.
+
+**Three disarms, three disjoint failure sets.** Reverting the store-leg write
+fails exactly three tests; reverting the legacy writer fails exactly one, the new
+round-trip case; removing the doctor advisory fails exactly one other. No disarm
+touches another's tests, which is what says the three halves are separately
+load-bearing rather than one fix tested three ways.
+
+**Council:** yes — `.council/sh-133-rollback-drops-project-settings/`.
