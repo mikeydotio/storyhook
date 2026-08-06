@@ -17,10 +17,12 @@
 //!
 //! Registration and lookup must normalize *identically*, forever. Two functions
 //! that drift is the entire defect this design exists to prevent — and the drift
-//! is not hypothetical: [`crate::github::sync_state::parse_github_url`] parses
-//! remote URLs for a different purpose and matches three literal prefixes, so it
-//! already fails on `https://user@github.com/owner/repo.git`, a form two real
-//! repositories on that same machine use.
+//! is not hypothetical. [`crate::github::sync_state::parse_github_url`] parses
+//! remote URLs for a different purpose, and because it matched three literal
+//! prefixes it refused `https://user@github.com/owner/repo.git` — a form two
+//! real repositories on that same machine use — while this module accepted it.
+//! One of the two was wrong for a year, and it was not the one with the tests
+//! for it (SH-137).
 //!
 //! So [`RemoteUrl`] has no public fields and no constructor other than
 //! [`RemoteUrl::normalize`] and the lookup-shaped wrapper around it. A caller
@@ -538,7 +540,7 @@ mod tests {
     #[test]
     fn userinfo_is_dropped_from_the_key() {
         // The exact form two real repositories on the author's machine use, and
-        // the one `github::sync_state::parse_github_url` fails on today.
+        // the one `github::sync_state::parse_github_url` refused until SH-137.
         assert_eq!(
             key("https://wookiee@github.com/mikeyward/keymux.git"),
             key("https://github.com/mikeyward/keymux")
