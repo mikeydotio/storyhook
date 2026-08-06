@@ -149,6 +149,146 @@ fn an_empty_project_exports_an_empty_story_list() {
     assert!(export.members.is_empty());
 }
 
+// --- a project's settings (SH-133) ------------------------------------------
+
+/// Writes both settings a user can write, straight into the store.
+fn set_settings(fixture: &ServiceFixture, auto_transition: bool, threshold: &str) {
+    fixture
+        .store()
+        .write(|tx| {
+            let mut row = tx.settings(fixture.project())?;
+            row.sync_auto_transition = Some(auto_transition);
+            row.doctor_stale_threshold = Some(threshold.to_string());
+            tx.put_settings(fixture.project(), &row)
+        })
+        .expect("writing settings");
+}
+
+/// One project's settings as `(auto_transition, stale_threshold, has_github_sync)`.
+fn settings_of(
+    store: &SqliteStore,
+    project: storyhook::store::ProjectId,
+) -> (Option<bool>, Option<String>, bool) {
+    let row = store
+        .read(|tx| tx.settings(project))
+        .expect("reading settings");
+    (
+        row.sync_auto_transition,
+        row.doctor_stale_threshold,
+        row.github_sync.is_some(),
+    )
+}
+
+#[test]
+fn a_restore_keeps_the_settings_the_document_carries() {
+    // The defect, at the level it actually bites: `sync.auto_transition` is read
+    // as `.unwrap_or(true)`, so a restore that drops the column does not merely
+    // forget a preference — it turns automatic transitions back **on** for the
+    // user who deliberately turned them off.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "One");
+    set_settings(&fixture, false, "21d");
+
+    let exported = export(&fixture);
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+
+    let (auto, threshold, _) = settings_of(&store, restored_project(&store, dir.path()).id);
+    assert_eq!(
+        auto,
+        Some(false),
+        "the one setting whose purpose is stopping commit-sync must not come back unset"
+    );
+    assert_eq!(threshold.as_deref(), Some("21d"));
+}
+
+#[test]
+fn a_project_with_no_settings_writes_no_settings_key_at_all() {
+    // "Nothing is set" must have exactly one encoding, or the two exporters can
+    // disagree by a byte and the second lap of the round trip fails on a
+    // difference that is not one.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "One");
+
+    let json = document(&export(&fixture));
+    assert!(
+        !json.contains("\"settings\""),
+        "an unset table is an absent one, never an emitted `{{}}`: {json}"
+    );
+    let parsed: ProjectExport = serde_json::from_str(&json).expect("re-parsing");
+    assert!(parsed.settings.is_none());
+}
+
+#[test]
+fn one_setting_travels_without_dragging_the_other_along() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "One");
+    fixture
+        .store()
+        .write(|tx| {
+            let mut row = tx.settings(fixture.project())?;
+            row.sync_auto_transition = Some(false);
+            tx.put_settings(fixture.project(), &row)
+        })
+        .expect("writing one setting");
+
+    let exported = export(&fixture);
+    let settings = exported.settings.as_ref().expect("a settings table");
+    assert_eq!(settings.auto_transition(), Some(false));
+    assert_eq!(
+        settings.stale_threshold(),
+        None,
+        "an unset sibling must not be invented as a default"
+    );
+
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    let (auto, threshold, _) = settings_of(&store, restored_project(&store, dir.path()).id);
+    assert_eq!(auto, Some(false));
+    assert_eq!(threshold, None);
+}
+
+#[test]
+fn a_restore_does_not_blank_a_setting_the_document_does_not_carry() {
+    // `put_settings` writes every column, and a restore can land in a project
+    // that already exists — the adopt-a-checkout branch. Building a fresh row
+    // from the document and writing it would blank `github_sync`, which the
+    // document deliberately never carries: the SH-49 shape, one layer up.
+    // An empty document first, so the directory holds a project that a second
+    // restore will *adopt* rather than create — the branch this is about. A
+    // restore into a project that already holds stories is refused outright, so
+    // the adopt branch is only ever reached with an empty one.
+    let empty = ServiceFixture::new();
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &export(&empty))
+        .expect("creating the project to be adopted");
+    let project = restored_project(&store, dir.path()).id;
+
+    // It acquires a github-sync document, the way a real one would by running
+    // `story github-sync`.
+    store
+        .write(|tx| {
+            let mut row = tx.settings(project)?;
+            row.github_sync = Some(serde_json::json!({"owner": "ada", "repo": "engine"}));
+            tx.put_settings(project, &row)
+        })
+        .expect("configuring github-sync");
+
+    // Now restore a document that carries the two settings it does carry.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "One");
+    set_settings(&fixture, false, "21d");
+    transfer::import_project(&store, dir.path(), &Clock::System, &export(&fixture))
+        .expect("restoring over the adopted project");
+
+    let (auto, _, has_github) = settings_of(&store, project);
+    assert_eq!(auto, Some(false));
+    assert!(
+        has_github,
+        "a column the document does not carry must survive a restore that writes the ones it does"
+    );
+}
+
 // --- an event kind this build does not understand (SH-67) -------------------
 
 /// A payload no storyhook has ever written, with its keys deliberately out of
@@ -738,6 +878,7 @@ fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
         states: storyhook_test_support::default_states(),
         types: storyhook_test_support::default_types(),
         members: Vec::new(),
+        settings: None,
         stories: Vec::new(),
     };
     export

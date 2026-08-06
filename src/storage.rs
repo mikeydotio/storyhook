@@ -48,7 +48,7 @@ use crate::domain::{
     validate_state_defs, validate_state_defs_for_write,
 };
 use crate::error::AppError;
-use crate::service::transfer::{ExportedEvent, ExportedStory, ProjectExport};
+use crate::service::transfer::{ExportedEvent, ExportedSettings, ExportedStory, ProjectExport};
 
 #[derive(Clone, Debug)]
 pub struct ProjectPaths {
@@ -813,6 +813,17 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
     Ok(ProjectExport {
         schema: project.schema,
         prefix: project.prefix,
+        // Through the document's own constructor rather than built here, so
+        // that "nothing is set" gets the same encoding from both exporters. An
+        // emitted empty table and an absent one are the same fact, and
+        // `a_round_trip_survives_a_second_lap` byte-compares the two documents.
+        settings: ExportedSettings::new(
+            project.sync.as_ref().and_then(|sync| sync.auto_transition),
+            project
+                .doctor
+                .as_ref()
+                .and_then(|doctor| doctor.stale_threshold.clone()),
+        ),
         states,
         types,
         members,
@@ -876,12 +887,26 @@ pub fn import_project(
     fs::create_dir_all(paths.open_indexes_dir())?;
     fs::create_dir_all(paths.archive_dir())?;
 
+    // The settings the document carries reach the tree's `project.toml`, which
+    // is the only place a reverted binary would look for them. `None` stood
+    // here until SH-133, so a rollback silently restored `sync.auto_transition`
+    // to its default — and that default is `true`, so the setting whose purpose
+    // is stopping `commit-sync` came back switched on.
+    let settings = export.settings.as_ref();
     let project = ProjectFile {
         schema: export.schema,
         created_at: now(),
         prefix: export.prefix.clone(),
-        sync: None,
-        doctor: None,
+        sync: settings
+            .and_then(ExportedSettings::auto_transition)
+            .map(|auto_transition| SyncConfig {
+                auto_transition: Some(auto_transition),
+            }),
+        doctor: settings
+            .and_then(ExportedSettings::stale_threshold)
+            .map(|stale_threshold| DoctorConfig {
+                stale_threshold: Some(stale_threshold.to_string()),
+            }),
     };
     fs::write(paths.project_file(), toml::to_string_pretty(&project)?)?;
 
