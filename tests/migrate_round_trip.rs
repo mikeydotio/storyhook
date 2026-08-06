@@ -130,6 +130,16 @@ fn assert_round_trips(root: &Path, expected_stories: usize) {
             ))
         })
         .expect("reading");
+    // Settings, which the envelope carried nowhere until SH-133. Read back
+    // through the legacy exporter rather than by parsing `project.toml` here,
+    // because that is the reader a reverted binary's equivalent would be.
+    assert_eq!(
+        storage::export_project(&rebuilt)
+            .expect("re-exporting the rebuilt tree")
+            .settings,
+        document.settings,
+        "the settings a user wrote must reach the tree a rollback hands back"
+    );
     assert_eq!(storage::load_states(&rebuilt).expect("states"), states);
     assert_eq!(storage::load_types(&rebuilt).expect("types"), types);
     assert_eq!(storage::load_members(&rebuilt).expect("members"), members);
@@ -212,6 +222,40 @@ fn the_custom_config_tree_round_trips_through_the_store_and_back() {
     // state, a custom type, two members, an archived story and a deleted one.
     let (_tree, root) = custom_config_tree();
     assert_round_trips(&root, 4);
+}
+
+#[test]
+fn a_projects_settings_survive_the_round_trip() {
+    // Without this, nothing in the loop would notice: `custom_config_tree`'s
+    // `project.toml` comes from `storage::init_project` with no `[sync]` and no
+    // `[doctor]`, so with settings encoded as "absent when unset" the whole
+    // round trip stays green whether or not the legs carry them. The fixture
+    // has to hold a value for the assertions to mean anything.
+    //
+    // Appended here rather than added to `custom_config_tree` itself:
+    // `tests/service_migrate.rs::a_projects_settings_travel_with_it` appends
+    // the same two tables to that fixture, and a duplicate table is a TOML
+    // parse error.
+    let (_tree, root) = custom_config_tree();
+    let project_file = root.join(".storyhook/project.toml");
+    let mut toml = std::fs::read_to_string(&project_file).expect("reading project.toml");
+    toml.push_str("\n[sync]\nauto_transition = false\n\n[doctor]\nstale_threshold = \"21d\"\n");
+    std::fs::write(&project_file, toml).expect("writing project.toml");
+
+    assert_round_trips(&root, 4);
+
+    // And the value itself, named — `sync.auto_transition` is read as
+    // `.unwrap_or(true)`, so losing it does not forget a preference, it inverts
+    // one.
+    let (_store_dir, store, _report) = migrate(&root);
+    let document = export(&store);
+    let (_dir, rebuilt) = rebuild_legacy_tree(&document);
+    let settings = storage::export_project(&rebuilt)
+        .expect("re-exporting")
+        .settings
+        .expect("the rebuilt tree must carry the settings");
+    assert_eq!(settings.auto_transition(), Some(false));
+    assert_eq!(settings.stale_threshold(), Some("21d"));
 }
 
 #[test]
