@@ -161,8 +161,14 @@ pub struct MigrationReport {
     pub repairs: Vec<Repair>,
     /// Every event kind this binary does not understand, retained anyway.
     pub unknown_events: Vec<RetainedUnknown>,
-    /// Settings that travelled outside the export envelope — see
-    /// [`MigrationPlan`]'s note on what a rollback does and does not carry.
+    /// The settings this migration found in the tree and carried into the
+    /// store, as `key = value` lines.
+    ///
+    /// An **inventory**, not a warning. It read as a warning until SH-133,
+    /// because the export envelope had nowhere for these and the report was the
+    /// only place an operator would learn a rollback would drop them. The
+    /// envelope carries them now; what the line still does is tell an operator
+    /// what the tree turned out to be configured with.
     pub settings: Vec<String>,
 }
 
@@ -250,16 +256,20 @@ impl MigrationReport {
 ///
 /// # What travels, and what a rollback therefore does not carry
 ///
-/// A [`ProjectExport`](crate::storage::ProjectExport) holds states, types,
-/// members and stories. A *tree* also holds `project.toml`'s `created_at` and
-/// its `sync`/`doctor` settings, and `next-id`. Those three ride alongside the
-/// envelope rather than inside it, because widening the export document would
-/// move bytes in a format the golden corpus compares literally. The
-/// consequence is worth stating where a reader will find it: a rollback that
-/// goes back through `story export` + `story import-project` restores the
-/// stories and the catalog and **not** the settings — which is one of the
-/// reasons `.storyhook/` stays in the repository until W7 rather than being
-/// deleted at the flip.
+/// A [`ProjectExport`](crate::service::transfer::ProjectExport) holds states,
+/// types, members, stories and — since SH-133 — the project's settings. A *tree*
+/// also holds `project.toml`'s `created_at` and `next-id`, which ride alongside
+/// the envelope rather than inside it and are what a rollback still does not
+/// restore, along with `projects.uuid` and the registered origins.
+///
+/// Settings used to be on that list, and the reason given was that widening the
+/// document would move bytes in a format the golden corpus compared literally.
+/// That reason was never true: `golden-export.json` is *parsed* into a
+/// `ProjectExport` and compared field by field, so a field absent when unset
+/// moves nothing. What was true is that the gap was benign while `story migrate`
+/// was the only writer of those columns — a value in the store had come *from* a
+/// tree, so the tree it would roll back to already held it. SH-129 shipped
+/// `story project settings` and the gap started losing decisions somebody made.
 #[derive(Debug)]
 pub struct MigrationPlan {
     project: LegacyProject,

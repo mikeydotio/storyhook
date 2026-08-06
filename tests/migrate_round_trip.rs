@@ -19,28 +19,33 @@
 //!
 //! # What the round trip does *not* carry, and why that is written here
 //!
-//! An export document holds states, types, members and stories. It does not
-//! hold `project.toml`'s `sync`/`doctor` settings, its `created_at`, or the
-//! `next-id` counter — those ride beside the envelope during a migration and
-//! have nowhere to sit on the way back. Widening the document would move bytes
-//! in a format `golden-export.json` compares literally, so the gap is recorded
-//! rather than closed. It is one of the reasons `.storyhook/` stays in the
-//! repository until W7: the real rollback is the directory that was never
-//! touched, and this round trip is the guarantee for everything created *after*
-//! the flip.
+//! An export document holds states, types, members, stories and the project's
+//! settings. It does **not** hold `project.toml`'s `created_at`, the `next-id`
+//! counter's burned numbers, `projects.uuid`, or the registered origins — those
+//! ride beside the envelope during a migration and have nowhere to sit on the
+//! way back.
 //!
-//! **That gap stopped being benign in SH-129, and is now SH-133.** It was
-//! harmless for as long as `story migrate` was the only writer of
-//! `project_settings`: a value in the store had come *from* a legacy tree, so
-//! the tree it would roll back to already held it. `story project settings`
-//! makes those columns live user data with no legacy origin, and a rollback now
-//! silently restores `sync.auto_transition` to its default — resuming automatic
-//! transitions for a user who deliberately turned them off. SH-129 deliberately
-//! did **not** widen the document to close it: the fix belongs in its own
-//! change, and moving bytes in `golden-export.json` alongside a feature would
-//! mix two hats. Closing SH-133 means adding the settings to `ProjectExport`,
-//! to `storage::import_project` (`src/storage.rs`, where they are hard-coded to
-//! `None`), and to the assertion below.
+//! **Settings were on that list until SH-133, and the reason given for it was
+//! false.** The note here said widening the document would move bytes in a
+//! format `golden-export.json` compares literally. It does not compare
+//! literally: `the_real_trees_export_equals_the_golden_document_modulo_the_repairs`
+//! parses that file into a `ProjectExport` and asserts field by field, so a
+//! field that is absent when unset moves nothing at all and the golden document
+//! needed no regeneration. What *was* true is that the gap was benign while
+//! `story migrate` was the only writer of those columns — a value in the store
+//! had come from a tree, so the tree it would roll back to already held it.
+//! SH-129 shipped `story project settings`, the columns became live user data,
+//! and a rollback started silently restoring `sync.auto_transition` to its
+//! default — which is `true`, so the one setting whose purpose is stopping
+//! `commit-sync` came back switched on.
+//!
+//! `github.sync` is the one thing the document deliberately does not carry even
+//! though it could. `src/service/transfer.rs`'s `ExportedSettings` says why: a
+//! partial carry is worse than none, because the per-story `github_bases` merge
+//! bases have no home in a legacy tree, and restoring mappings without them
+//! makes the next sync treat local as base and file every stale remote value as
+//! an ordinary pull. `story doctor` names that omission on a project it applies
+//! to.
 
 mod legacy_support;
 
@@ -52,7 +57,7 @@ use storyhook::domain::StorySnapshot;
 use storyhook::service::transfer::ProjectExport;
 use storyhook::service::{Clock, Ctx, TransferService};
 use storyhook::storage;
-use storyhook::store::{ReadOps, SqliteStore, Store as _};
+use storyhook::store::{ReadOps, SqliteStore, Store as _, WriteOps as _};
 
 /// The store's project as an export document.
 fn export(store: &SqliteStore) -> ProjectExport {
@@ -130,6 +135,16 @@ fn assert_round_trips(root: &Path, expected_stories: usize) {
             ))
         })
         .expect("reading");
+    // Settings, which the envelope carried nowhere until SH-133. Read back
+    // through the legacy exporter rather than by parsing `project.toml` here,
+    // because that is the reader a reverted binary's equivalent would be.
+    assert_eq!(
+        storage::export_project(&rebuilt)
+            .expect("re-exporting the rebuilt tree")
+            .settings,
+        document.settings,
+        "the settings a user wrote must reach the tree a rollback hands back"
+    );
     assert_eq!(storage::load_states(&rebuilt).expect("states"), states);
     assert_eq!(storage::load_types(&rebuilt).expect("types"), types);
     assert_eq!(storage::load_members(&rebuilt).expect("members"), members);
@@ -212,6 +227,113 @@ fn the_custom_config_tree_round_trips_through_the_store_and_back() {
     // state, a custom type, two members, an archived story and a deleted one.
     let (_tree, root) = custom_config_tree();
     assert_round_trips(&root, 4);
+}
+
+#[test]
+fn a_projects_settings_survive_the_round_trip() {
+    // Without this, nothing in the loop would notice: `custom_config_tree`'s
+    // `project.toml` comes from `storage::init_project` with no `[sync]` and no
+    // `[doctor]`, so with settings encoded as "absent when unset" the whole
+    // round trip stays green whether or not the legs carry them. The fixture
+    // has to hold a value for the assertions to mean anything.
+    //
+    // Appended here rather than added to `custom_config_tree` itself:
+    // `tests/service_migrate.rs::a_projects_settings_travel_with_it` appends
+    // the same two tables to that fixture, and a duplicate table is a TOML
+    // parse error.
+    let (_tree, root) = custom_config_tree();
+    let project_file = root.join(".storyhook/project.toml");
+    let mut toml = std::fs::read_to_string(&project_file).expect("reading project.toml");
+    toml.push_str("\n[sync]\nauto_transition = false\n\n[doctor]\nstale_threshold = \"21d\"\n");
+    std::fs::write(&project_file, toml).expect("writing project.toml");
+
+    assert_round_trips(&root, 4);
+
+    // And the value itself, named — `sync.auto_transition` is read as
+    // `.unwrap_or(true)`, so losing it does not forget a preference, it inverts
+    // one.
+    let (_store_dir, store, _report) = migrate(&root);
+    let document = export(&store);
+    let (_dir, rebuilt) = rebuild_legacy_tree(&document);
+    let settings = storage::export_project(&rebuilt)
+        .expect("re-exporting")
+        .settings
+        .expect("the rebuilt tree must carry the settings");
+    assert_eq!(settings.auto_transition(), Some(false));
+    assert_eq!(settings.stale_threshold(), Some("21d"));
+}
+
+/// **The preventative, not the instance.** SH-133 was one setting that could not
+/// reach a rollback; a fourth setting added later could be another, and nobody
+/// would find out until somebody's rollback ate it.
+///
+/// So the coverage is derived from `settings::registry()` rather than listed
+/// here: every key the registry says a user may write is written, and the whole
+/// loop — store → document → legacy tree → store — must give it back. A new
+/// settable key inherits this check with no production code depending on the
+/// registry and no list here to remember to update.
+///
+/// **`github.sync` is excluded by `settable()` itself**, which is the honest
+/// spelling of "the document does not carry it": it is `managed_by: "story
+/// github-sync"` and no user writes it. If a later story ever makes that key
+/// settable, this test goes red on a change that looks unrelated — and that is
+/// the *correct* failure, because carrying the blob without the `github_bases`
+/// merge bases the legacy tree cannot hold is worse than not carrying it at all.
+/// Read `ExportedSettings`' own note before deleting this.
+#[test]
+fn every_settable_setting_survives_the_whole_loop() {
+    use storyhook::output::SettingKind;
+    use storyhook::service::settings;
+
+    let (_tree, root) = custom_config_tree();
+    let (_store_dir, store, _report) = migrate(&root);
+    let project = store
+        .read(|tx| Ok(tx.projects()?.first().expect("one project").id))
+        .expect("reading");
+
+    let mut written = 0;
+    store
+        .write(|tx| {
+            let mut row = tx.settings(project)?;
+            for spec in settings::registry() {
+                if !spec.settable() {
+                    continue;
+                }
+                match spec.kind() {
+                    SettingKind::Boolean => row.sync_auto_transition = Some(false),
+                    SettingKind::Duration => {
+                        row.doctor_stale_threshold = Some("30d".to_string());
+                    }
+                    // A settable document would have no home in `project.toml`,
+                    // which is the whole reason `github.sync` is not settable.
+                    SettingKind::Document => panic!(
+                        "`{}` is settable and is a document: the rollback leg has nowhere to \
+                         put it, so either it must stop being settable or this loop must grow \
+                         a home for it — see `ExportedSettings`",
+                        spec.key()
+                    ),
+                }
+                written += 1;
+            }
+            tx.put_settings(project, &row)
+        })
+        .expect("writing every settable setting");
+    assert!(written > 0, "the registry must have settable keys to check");
+
+    let document = export(&store);
+    let (_dir, rebuilt) = rebuild_legacy_tree(&document);
+    let carried = storage::export_project(&rebuilt)
+        .expect("re-exporting the rebuilt tree")
+        .settings
+        .expect("a tree rebuilt from a document with settings must carry them");
+
+    assert_eq!(carried.auto_transition(), Some(false));
+    assert_eq!(carried.stale_threshold(), Some("30d"));
+    assert_eq!(
+        carried,
+        document.settings.expect("the document carried settings"),
+        "every settable setting must survive the whole loop, not merely some of them"
+    );
 }
 
 #[test]
