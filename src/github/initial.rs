@@ -53,6 +53,11 @@ pub enum InitialSetupOutcome {
     Plan(Box<SetupPlan>),
     /// The caller supplied answers; setup ran and saved.
     Configured {
+        /// **Not yet saved.** The caller — `run_sync_with` — decides whether
+        /// to persist this, alongside every other write a dry run must not
+        /// make. A version of this function once saved unconditionally here,
+        /// which meant `story github-sync --dry-run --strategy … --mode …`
+        /// wrote configuration to an unconfigured project despite `--dry-run`.
         config: GithubSyncConfig,
         /// Ambiguous match-by-title pairs that were found and left unlinked —
         /// empty unless [`InitialStrategy::MatchTitles`] was chosen. Carried
@@ -88,14 +93,17 @@ fn plan_or_answers(
     }
 }
 
-/// Runs (or plans) the initial sync setup.
+/// Computes (or plans) the initial sync setup. Never writes.
 ///
 /// Called when `story github-sync` is run for the first time (no github-sync
 /// configuration exists). Steps 1-3 — remote detection, token validation,
 /// scanning both sides — are reads and always run, because the counts they
 /// produce are what the plan reports. `answers` decides what happens after:
-/// `None` returns [`InitialSetupOutcome::Plan`] and writes nothing;
-/// `Some` applies them and saves.
+/// `None` returns [`InitialSetupOutcome::Plan`]; `Some` computes the config
+/// that setup would produce and returns it inside
+/// [`InitialSetupOutcome::Configured`] — unsaved. Persisting it, if at all, is
+/// `run_sync_with`'s call: it is the one place that knows whether this run is
+/// a dry run.
 pub fn run_initial_setup(
     sync: &dyn SyncStorage,
     token: Option<&GithubToken>,
@@ -173,8 +181,10 @@ pub fn run_initial_setup(
         mappings,
     };
 
-    sync.save_config(&config)?;
-
+    // Not saved here. `run_sync_with` decides whether to persist, alongside
+    // every other write this file makes, all gated on the same `dry_run` — see
+    // its own doc comment for why the write used to live here instead (SH-153,
+    // the dry-run fix).
     Ok(InitialSetupOutcome::Configured { config, notes })
 }
 
