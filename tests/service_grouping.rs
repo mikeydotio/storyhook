@@ -190,6 +190,31 @@ fn a_phase_rollup_sorts_every_story_into_exactly_one_bucket() {
     assert_eq!(phase.story_ids.len(), 5);
 }
 
+/// Regression test for SH-126 (council verdict,
+/// `.council/sh126-blocked-column-membership/DECISION.md`): a story parked
+/// in the literal `blocked` state, with no unmet `blocked-by` edge and no
+/// `awaiting` reason, used to fall through to the `in_progress` bucket here
+/// — `rollup` buckets a story as *blocked* purely via `!is_ready(...)`, and
+/// `is_ready` never inspected `story.state`. The sibling defect predates
+/// SH-126 and is fixed for free by the same `is_ready` correction.
+#[test]
+fn a_story_in_the_blocked_state_rolls_up_as_blocked_even_with_no_unmet_dependency() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = GroupingService::new(&ctx);
+    let id = new_story(&ctx, "manually blocked");
+    service.assign_phase(&id, "1").expect("assigning");
+    StoryService::new(&ctx)
+        .set_state(&id, "blocked", None, None)
+        .expect("blocking");
+
+    let phases = service.phases().expect("listing");
+    let phase = &phases[0];
+    assert_eq!(phase.blocked, 1, "a state=blocked story must roll up as blocked");
+    assert_eq!(phase.in_progress, 0);
+    assert_eq!(phase.todo, 0);
+}
+
 #[test]
 fn a_phases_stories_come_back_in_story_number_order() {
     let fixture = ServiceFixture::new();
