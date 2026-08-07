@@ -21,7 +21,7 @@ use self::field_map::{
     RemoteSnapshot, format_comment_for_github, github_comment_to_story, is_sync_generated_comment,
     issue_to_remote_snapshot, story_to_create_request, updates_to_issue_request,
 };
-use self::initial::{require_github_token, run_initial_setup};
+use self::initial::{InitialSetupOutcome, SetupAnswers, require_github_token, run_initial_setup};
 use self::storage::SyncStorage;
 use self::sync_state::{
     GithubSyncConfig, StoryIssueMapping, SyncMode, find_mapping, find_mapping_by_issue,
@@ -39,6 +39,11 @@ struct SyncReport {
     conflicts: Vec<(String, Vec<FieldConflict>)>,
     errors: Vec<(String, String)>,
     skipped: usize,
+    /// Ambiguous match-by-title pairs from initial setup, found and left
+    /// unlinked. Carried here rather than printed, because this run may be
+    /// happening in the daemon, where `eprintln!` reaches a log nobody reads
+    /// (SH-153's D3).
+    setup_notes: Vec<String>,
 }
 
 impl SyncReport {
@@ -51,6 +56,7 @@ impl SyncReport {
             conflicts: Vec::new(),
             errors: Vec::new(),
             skipped: 0,
+            setup_notes: Vec::new(),
         }
     }
 
@@ -92,6 +98,17 @@ impl SyncReport {
             lines.push("GitHub sync complete. Everything is up to date.".to_string());
         } else {
             lines.push("GitHub sync complete.".to_string());
+        }
+
+        if !self.setup_notes.is_empty() {
+            lines.push(
+                "Initial setup: some titles matched more than one candidate and were \
+                         left unlinked:"
+                    .to_string(),
+            );
+            for note in &self.setup_notes {
+                lines.push(format!("  {note}"));
+            }
         }
 
         if !self.pushed.is_empty() {
@@ -229,12 +246,21 @@ fn unimplemented_mode_notice(mode: &SyncMode) -> Option<String> {
 /// nobody has given one. There is deliberately no way to say "guess": the work
 /// runs in a daemon that cannot ask, so an unanswered conflict comes back in a
 /// refusal rather than being decided here (SH-152).
+///
+/// `strategy` and `mode` answer the initial-setup questions on an unconfigured
+/// project, in advance — SH-153's D2. `None, None` on an unconfigured project
+/// returns [`Response::SetupRequired`] rather than asking, because this may be
+/// running in a daemon with no terminal to ask at; either value alone, or both
+/// on a project that is already configured, is a refusal.
+#[allow(clippy::too_many_arguments)]
 pub fn run_sync_with(
     sync: &dyn SyncStorage,
     token: Option<&crate::domain::secret::GithubToken>,
     story_id: Option<&str>,
     dry_run: bool,
     resolve: Option<Resolution>,
+    strategy: Option<initial::InitialStrategy>,
+    mode: Option<SyncMode>,
 ) -> Result<Response, AppError> {
     // **A blanket resolution over a whole sync is this defect wearing a flag.**
     // `--resolve local` across every conflicting story would discard remote
@@ -252,9 +278,30 @@ pub fn run_sync_with(
         ));
     }
 
+    // `--strategy` and `--mode` answer one question together, for the same
+    // reason `--resolve` is checked here rather than in the parser: this is
+    // the one gate every door passes.
+    if strategy.is_some() != mode.is_some() {
+        return Err(AppError::Usage(
+            "--strategy and --mode answer the same question during initial setup and must be \
+             given together, or not at all: `story github-sync --strategy <strategy> --mode \
+             <mode>`"
+                .to_string(),
+        ));
+    }
+
+    let mut setup_notes = Vec::new();
+
     // 1. Load sync config
     let mut config = match sync.load_config()? {
         Some(cfg) => {
+            if strategy.is_some() || mode.is_some() {
+                return Err(AppError::Usage(
+                    "--strategy and --mode only apply to a project's first github-sync, and \
+                     this project is already configured. Remove the flags and re-run."
+                        .to_string(),
+                ));
+            }
             if cfg.sync.mode == SyncMode::Off {
                 return Err(AppError::Usage(
                     "GitHub sync is disabled for this project (sync mode `off`). Re-run \
@@ -267,7 +314,18 @@ pub fn run_sync_with(
             }
             cfg
         }
-        None => run_initial_setup(sync, token)?,
+        None => {
+            let answers = strategy
+                .zip(mode)
+                .map(|(strategy, mode)| SetupAnswers { strategy, mode });
+            match run_initial_setup(sync, token, answers)? {
+                InitialSetupOutcome::Plan(plan) => return Ok(Response::SetupRequired(plan)),
+                InitialSetupOutcome::Configured { config, notes } => {
+                    setup_notes = notes;
+                    config
+                }
+            }
+        }
     };
 
     // If initial setup returned Off mode, bail
@@ -292,6 +350,7 @@ pub fn run_sync_with(
     let open_stories = sync.open_stories()?;
 
     let mut report = SyncReport::new();
+    report.setup_notes = setup_notes;
 
     if dry_run {
         eprintln!("Dry-run mode: no changes will be written.\n");

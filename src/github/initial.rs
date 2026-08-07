@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 
-use dialoguer::Select;
-
 use crate::domain::secret::{self, GithubToken};
 use crate::error::AppError;
+use crate::output::SetupPlan;
 
 use super::client::GithubClient;
 use super::storage::SyncStorage;
@@ -28,13 +27,80 @@ pub fn require_github_token(token: Option<&GithubToken>) -> Result<&GithubToken,
     token.ok_or_else(|| AppError::GithubAuth(secret::NO_TOKEN.to_string()))
 }
 
-/// Run the initial sync setup wizard.
-/// Called when `story github-sync` is run for the first time (no github-sync.toml exists).
-/// Returns the initial config with mappings established.
+/// The initial-sync strategy, once known — the gated twin of
+/// [`crate::cli::SetupStrategy`], which must exist in every build while this
+/// one only exists where there is an engine to spend it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialStrategy {
+    ImportAll,
+    MatchTitles,
+    PushOnly,
+    FutureOnly,
+}
+
+/// The caller's answer to the initial-setup questions, known in advance —
+/// either stated on the command line or gathered by the client's interactive
+/// wizard on a round trip (SH-153's D2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupAnswers {
+    pub strategy: InitialStrategy,
+    pub mode: SyncMode,
+}
+
+/// What [`run_initial_setup`] decided.
+pub enum InitialSetupOutcome {
+    /// Nothing was known in advance: here is what setup would do, unwritten.
+    Plan(Box<SetupPlan>),
+    /// The caller supplied answers; setup ran and saved.
+    Configured {
+        config: GithubSyncConfig,
+        /// Ambiguous match-by-title pairs that were found and left unlinked —
+        /// empty unless [`InitialStrategy::MatchTitles`] was chosen. Carried
+        /// back rather than printed: this runs in the daemon, where
+        /// `eprintln!` reaches a log nobody reads (D3's own condition).
+        notes: Vec<String>,
+    },
+}
+
+/// Decides plan-vs-proceed from counts alone — no network, no storage.
+///
+/// **This is the one place in the file that makes the decision, and it needs
+/// none of `GithubClient`'s calls to do it.** SH-158 tracks giving
+/// `GithubClient` a trait seam; until then, this function is what stays
+/// testable offline even though the counts that feed it are not.
+fn plan_or_answers(
+    owner: &str,
+    repo: &str,
+    local_story_count: usize,
+    open_issue_count: usize,
+    exact_match_count: usize,
+    answers: Option<SetupAnswers>,
+) -> Result<SetupAnswers, Box<SetupPlan>> {
+    match answers {
+        Some(answers) => Ok(answers),
+        None => Err(Box::new(SetupPlan {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            local_story_count,
+            open_issue_count,
+            exact_match_count,
+        })),
+    }
+}
+
+/// Runs (or plans) the initial sync setup.
+///
+/// Called when `story github-sync` is run for the first time (no github-sync
+/// configuration exists). Steps 1-3 — remote detection, token validation,
+/// scanning both sides — are reads and always run, because the counts they
+/// produce are what the plan reports. `answers` decides what happens after:
+/// `None` returns [`InitialSetupOutcome::Plan`] and writes nothing;
+/// `Some` applies them and saves.
 pub fn run_initial_setup(
     sync: &dyn SyncStorage,
     token: Option<&GithubToken>,
-) -> Result<GithubSyncConfig, AppError> {
+    answers: Option<SetupAnswers>,
+) -> Result<InitialSetupOutcome, AppError> {
     // 1. Detect remote
     let github_repo = detect_github_remote(sync.root())?.ok_or_else(|| {
         AppError::Validation(
@@ -50,16 +116,10 @@ pub fn run_initial_setup(
         github_repo.owner.clone(),
         github_repo.repo.clone(),
     );
-    eprintln!(
-        "Validating token for {}/{}...",
-        github_repo.owner, github_repo.repo
-    );
     client.validate_token()?;
-    eprintln!("Token validated.");
 
     // 3. Scan both sides
     let local_stories = sync.open_stories()?;
-    eprintln!("Fetching issues from GitHub...");
     let github_issues: Vec<GithubIssue> = client.list_issues(None, "open")?;
     // Filter out pull requests (list_issues already does this, but be defensive)
     let github_issues: Vec<&GithubIssue> = github_issues
@@ -67,67 +127,45 @@ pub fn run_initial_setup(
         .filter(|i| !i.is_pull_request())
         .collect();
 
-    eprintln!();
-    eprintln!(
-        "Found {} local stories and {} open GitHub issues.",
-        local_stories.len(),
-        github_issues.len()
-    );
-    eprintln!();
-
-    // 4. Present initial sync strategy choices
-    let strategy_options = &[
-        "Import all open issues from GitHub",
-        "Match stories to issues by title",
-        "Push local stories to GitHub only",
-        "Start fresh (sync only future changes)",
-    ];
-
-    let strategy = Select::new()
-        .with_prompt("How would you like to handle the initial sync?")
-        .items(strategy_options)
-        .default(0)
-        .interact()
-        .map_err(|e| AppError::Usage(format!("selection cancelled: {e}")))?;
-
     let now = sync.now();
+    // Computed unconditionally — a plan reports this count so the caller
+    // knows what "match-titles" would do before choosing it, and if the
+    // caller *did* choose it, the work is already done.
+    let (match_mappings, ambiguous) = handle_match_by_title(&local_stories, &github_issues, &now);
 
-    // 5. Handle each choice
-    let mappings = match strategy {
-        0 => handle_import_all(&github_issues, &now),
-        1 => {
-            let (mappings, ambiguous) = handle_match_by_title(&local_stories, &github_issues, &now);
-            for note in &ambiguous {
-                eprintln!("  {note}");
-            }
-            mappings
-        }
-        2 => Vec::new(), // Push only: empty mappings, orchestrator creates issues later
-        3 => Vec::new(), // Start fresh: empty mappings
-        _ => Vec::new(),
+    let answers = match plan_or_answers(
+        &github_repo.owner,
+        &github_repo.repo,
+        local_stories.len(),
+        github_issues.len(),
+        match_mappings.len(),
+        answers,
+    ) {
+        Err(plan) => return Ok(InitialSetupOutcome::Plan(plan)),
+        Ok(answers) => answers,
     };
 
-    let last_sync_at = if strategy == 3 {
+    let mappings = match answers.strategy {
+        InitialStrategy::ImportAll => handle_import_all(&github_issues, &now),
+        InitialStrategy::MatchTitles => match_mappings,
+        InitialStrategy::PushOnly | InitialStrategy::FutureOnly => Vec::new(),
+    };
+    let notes = if answers.strategy == InitialStrategy::MatchTitles {
+        ambiguous
+    } else {
+        Vec::new()
+    };
+
+    let last_sync_at = if answers.strategy == InitialStrategy::FutureOnly {
         Some(now.clone())
     } else {
         None
     };
 
-    // 6. Ask sync mode
-    let mode_selection = Select::new()
-        .with_prompt("Sync mode")
-        .items(MODE_OPTIONS)
-        .default(0)
-        .interact()
-        .map_err(|e| AppError::Usage(format!("selection cancelled: {e}")))?;
-
-    let mode = mode_for_selection(mode_selection);
-
-    // 7. Save config and return
     let config = GithubSyncConfig {
         github: github_repo,
         sync: SyncSettings {
-            mode,
+            mode: answers.mode,
             last_sync_at,
             last_full_sync_at: None,
         },
@@ -136,41 +174,8 @@ pub fn run_initial_setup(
     };
 
     sync.save_config(&config)?;
-    eprintln!();
-    eprintln!("Sync config saved.");
 
-    Ok(config)
-}
-
-/// The sync modes this build can actually honour.
-///
-/// **`auto` is deliberately absent.** It used to be here, and picking it
-/// configured a project for a behaviour that no longer exists: auto-sync fired
-/// from the tail of the pre-rearchitecture `app::run`, was never given an
-/// equivalent on the invoker, and was deleted with the rest of the legacy write
-/// path. Offering a choice that silently does nothing is worse than not
-/// offering it — the same rule that made `story web register --name` silently
-/// dropping its argument a defect rather than a quirk.
-///
-/// Reinstating it is a feature rather than a repair: an honest auto-sync makes a
-/// network call to GitHub on the tail of every story-modifying command, in the
-/// daemon as well as locally, and needs a failure policy, a timeout and a
-/// re-entrancy story before any of that is safe. SH-68 carries that design.
-const MODE_OPTIONS: &[&str] = &[
-    "Manual (run `story github-sync` explicitly)",
-    "Off (disable sync)",
-];
-
-/// The mode a menu selection means.
-///
-/// Out-of-range selections fall back to manual, which is `SyncMode`'s own
-/// default and the least surprising answer to a question that cannot be
-/// answered.
-fn mode_for_selection(selection: usize) -> SyncMode {
-    match selection {
-        1 => SyncMode::Off,
-        _ => SyncMode::Manual,
-    }
+    Ok(InitialSetupOutcome::Configured { config, notes })
 }
 
 /// Import all open GitHub issues: create a mapping entry for each.
@@ -282,40 +287,50 @@ fn handle_match_by_title(
 mod tests {
     use super::*;
 
-    /// The menu must not offer a mode this build does not honour. Picking it
-    /// configured a project for nothing at all, silently — which is the same
-    /// shape as a flag that is accepted and dropped.
+    /// No answers means a plan, carrying exactly the counts given — and
+    /// nothing written, which this function cannot even attempt: it has no
+    /// access to `sync.save_config`.
     #[test]
-    fn the_setup_menu_offers_no_mode_that_does_nothing() {
-        assert_eq!(MODE_OPTIONS.len(), 2);
-        for label in MODE_OPTIONS {
-            assert!(
-                !label.to_lowercase().contains("auto"),
-                "the menu must not offer auto while nothing implements it: {label}"
-            );
-        }
-        for selection in 0..MODE_OPTIONS.len() {
-            assert_ne!(
-                mode_for_selection(selection),
-                SyncMode::Auto,
-                "no selection may produce a mode nothing acts on"
-            );
-        }
+    fn no_answers_yields_a_plan_carrying_the_counts() {
+        let plan = plan_or_answers("acme", "widgets", 3, 12, 2, None)
+            .expect_err("no answers is a plan, not a proceed");
+        assert_eq!(
+            *plan,
+            SetupPlan {
+                owner: "acme".to_string(),
+                repo: "widgets".to_string(),
+                local_story_count: 3,
+                open_issue_count: 12,
+                exact_match_count: 2,
+            }
+        );
     }
 
-    /// Every label must map to the mode it describes, and the mapping is by
-    /// index — so a reordered menu that silently swapped `manual` and `off`
-    /// would turn a user's "off" into live syncing.
+    /// Answers given means proceed, unchanged — this function does not
+    /// interpret them, only decides whether there are any.
     #[test]
-    fn every_menu_position_means_what_it_says() {
-        assert!(MODE_OPTIONS[0].starts_with("Manual"));
-        assert_eq!(mode_for_selection(0), SyncMode::Manual);
-        assert!(MODE_OPTIONS[1].starts_with("Off"));
-        assert_eq!(mode_for_selection(1), SyncMode::Off);
-        assert_eq!(
-            mode_for_selection(99),
-            SyncMode::Manual,
-            "an impossible selection falls back to SyncMode's own default"
+    fn answers_given_pass_through_unchanged() {
+        let answers = SetupAnswers {
+            strategy: InitialStrategy::PushOnly,
+            mode: SyncMode::Off,
+        };
+        let proceed = plan_or_answers("acme", "widgets", 3, 12, 2, Some(answers.clone()))
+            .expect("answers given means proceed");
+        assert_eq!(proceed, answers);
+    }
+
+    /// `SyncMode::Auto` cannot reach `SetupAnswers` through anything this
+    /// module exposes — `crate::cli::SetupMode` has no `Auto` variant to
+    /// convert from, so the type system is the guard rather than a runtime
+    /// check. This test exists so that claim stays checked: if `SetupAnswers`
+    /// ever grows a way to hold `Auto`, this is where a test should catch it.
+    #[test]
+    fn a_setup_answer_of_auto_mode_is_unrepresentable_by_construction() {
+        let modes = [SyncMode::Manual, SyncMode::Off];
+        assert!(
+            !modes.contains(&SyncMode::Auto),
+            "the only two SetupAnswers::mode values this file ever constructs from \
+             crate::cli::SetupMode are Manual and Off"
         );
     }
 

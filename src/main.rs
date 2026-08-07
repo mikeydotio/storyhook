@@ -275,6 +275,16 @@ fn main() {
             }
             Confirmed::CannotAsk(error) => Err(error),
         },
+        // A first-time `story github-sync` answers with what it found rather
+        // than running it (SH-153's D2) — the same model as
+        // `ConfirmationRequired` above. Always a refusal rather than
+        // `render_response`'s normal success rendering: under `--json` a
+        // scripted caller must not read `"result": "ok"` for a run that
+        // configured nothing, and that rule does not depend on whether a
+        // terminal is asking.
+        Ok(Response::SetupRequired(plan)) => Err(storyhook::error::AppError::Validation(
+            storyhook::output::render_setup_plan(&plan),
+        )),
         other => other,
     };
 

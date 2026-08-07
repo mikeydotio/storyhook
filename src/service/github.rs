@@ -47,6 +47,9 @@ impl<'ctx, S: Store> GithubSyncService<'ctx, S> {
     /// on the gated side of the feature boundary: the request envelope has to
     /// carry the choice in every build, while the merge engine's own
     /// [`Resolution`] only exists when `github-sync` is compiled in.
+    /// `strategy`/`mode` are translated the same way, from
+    /// [`crate::cli::SetupStrategy`]/[`crate::cli::SetupMode`] to their gated
+    /// twins — see [`crate::github::initial::InitialStrategy`].
     /// The credential comes from the request envelope rather than from this
     /// process's environment (SH-153): the daemon's environment is whichever
     /// client's shell happened to start it, so reading it here answered the
@@ -56,10 +59,30 @@ impl<'ctx, S: Store> GithubSyncService<'ctx, S> {
         story_id: Option<&str>,
         dry_run: bool,
         resolve: Option<ConflictSide>,
+        strategy: Option<crate::cli::SetupStrategy>,
+        mode: Option<crate::cli::SetupMode>,
     ) -> Result<Response, AppError> {
         let resolve = resolve.map(|side| match side {
             ConflictSide::Local => Resolution::KeepLocal,
             ConflictSide::Remote => Resolution::KeepRemote,
+        });
+        let strategy = strategy.map(|strategy| match strategy {
+            crate::cli::SetupStrategy::ImportAll => {
+                crate::github::initial::InitialStrategy::ImportAll
+            }
+            crate::cli::SetupStrategy::MatchTitles => {
+                crate::github::initial::InitialStrategy::MatchTitles
+            }
+            crate::cli::SetupStrategy::PushOnly => {
+                crate::github::initial::InitialStrategy::PushOnly
+            }
+            crate::cli::SetupStrategy::FutureOnly => {
+                crate::github::initial::InitialStrategy::FutureOnly
+            }
+        });
+        let mode = mode.map(|mode| match mode {
+            crate::cli::SetupMode::Manual => crate::github::sync_state::SyncMode::Manual,
+            crate::cli::SetupMode::Off => crate::github::sync_state::SyncMode::Off,
         });
         crate::github::run_sync_with(
             &StoreSyncStorage::new(self.ctx),
@@ -67,6 +90,8 @@ impl<'ctx, S: Store> GithubSyncService<'ctx, S> {
             story_id,
             dry_run,
             resolve,
+            strategy,
+            mode,
         )
     }
 }

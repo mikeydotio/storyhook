@@ -589,14 +589,22 @@ pub fn dispatch<S: Store>(
             id,
             dry_run,
             resolve,
+            strategy,
+            mode,
         } => {
             #[cfg(feature = "github-sync")]
             {
-                crate::service::GithubSyncService::new(ctx).sync(id.as_deref(), dry_run, resolve)
+                crate::service::GithubSyncService::new(ctx).sync(
+                    id.as_deref(),
+                    dry_run,
+                    resolve,
+                    strategy,
+                    mode,
+                )
             }
             #[cfg(not(feature = "github-sync"))]
             {
-                let _ = (id, dry_run, resolve);
+                let _ = (id, dry_run, resolve, strategy, mode);
                 Err(AppError::Usage(
                     "github-sync requires the `github-sync` feature. \
                      Rebuild with: cargo install storyhook --features github-sync"
@@ -3131,6 +3139,8 @@ mod creates_a_project_tests {
             id: None,
             dry_run: false,
             resolve: None,
+            strategy: None,
+            mode: None,
         }));
         for invocation in [
             Invocation::Summary,
