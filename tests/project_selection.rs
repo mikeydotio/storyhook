@@ -376,19 +376,28 @@ fn identity_ignores_a_machine_local_insteadof_rewrite() {
     );
 }
 
-/// **AC-4.** `story session-start` says `{}` when no daemon can be reached.
+/// **AC-4.** `story session-start` never puts a raw diagnosis into a model's
+/// context when no daemon can be reached — exit 0, nothing on stderr, and a
+/// payload that is either `{}` or the SH-182 recovery envelope, never the
+/// ~1.2 kB of store-corruption detail `story list` gets for the identical
+/// failure.
 ///
-/// The half of the silence obligation that was not met. In an unresolvable
-/// *directory* session-start has always answered `{}` — that answer is composed
-/// inside the daemon. With a store no daemon can open there is no daemon to
-/// compose it, and the measured behaviour was exit 5 with ~1.2 kB of
-/// store-corruption diagnosis on stderr, going straight into a model's context
-/// window.
+/// **Which of the two depends on whether this checkout claims a project**,
+/// and that split is SH-182's, not this test's original shape. Before it,
+/// session-start was silent for *every* failure it could not avoid,
+/// corrupted store included — indistinguishable from "no storyhook project
+/// here" even when a pointer file said otherwise. `session::unavailable` is
+/// deliberately cause-agnostic instead: a store no daemon can open gets the
+/// same recovery line as an expired `--deadline` or spawn-lock contention,
+/// because the remedy is the same for all three — retry from a command with
+/// no external clock over it, or ask why. A directory with no pointer file
+/// still gets bare `{}`, unchanged, because nothing here claims a project to
+/// be unable to load.
 ///
 /// Isolated rather than shared, because it breaks the store — a fact about a
 /// file every other test in a shared environment would also see.
 #[test]
-fn session_start_is_silent_with_no_reachable_daemon() {
+fn session_start_reports_no_reachable_daemon_without_a_raw_diagnosis() {
     let env = TestEnv::isolated();
     let project = env.project().build();
 
@@ -426,14 +435,27 @@ fn session_start_is_silent_with_no_reachable_daemon() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
-        "{}",
-        "its payload is its gate: `{{}}` is the answer, not a diagnosis"
-    );
-    assert_eq!(
         String::from_utf8_lossy(&out.stderr).trim(),
         "",
-        "and nothing on stderr either — this output goes into a model's context"
+        "nothing on stderr — this output goes into a model's context"
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let parsed: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("must be valid JSON: {e}: {stdout}"));
+    let message = parsed["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("this fixture's project has a pointer file, so it must get the recovery envelope, not bare {{}}: {stdout}"));
+    assert!(
+        message.contains("story load-context"),
+        "a diagnosis this raw must not reach the model verbatim, but a checkout that \
+         claims a project must still be told to retry: {message}"
+    );
+    assert!(
+        !message.to_lowercase().contains("not a database")
+            && !message.to_lowercase().contains("sqlite"),
+        "the recovery line must stay cause-agnostic, not leak the store's own \
+         corruption detail: {message}"
     );
 }
 
