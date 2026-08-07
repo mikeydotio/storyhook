@@ -18,6 +18,15 @@
 //! child process.
 
 pub mod git_env;
+
+/// The credentials this process takes out of its own environment so that
+/// nothing it spawns can inherit one.
+///
+/// Sibling of [`git_env`] and the same shape of problem: a daemon holds its
+/// spawner's environment for life. A credential makes it sharper, because the
+/// daemon hands that environment on to a user's hook script, the dashboard's
+/// dispatch child and `claude`.
+pub mod secrets;
 mod store_location;
 
 use std::net::SocketAddr;

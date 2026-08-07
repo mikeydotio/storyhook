@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use dialoguer::Select;
 
+use crate::domain::secret::{self, GithubToken};
 use crate::error::AppError;
 
 use super::client::GithubClient;
@@ -11,22 +12,29 @@ use super::sync_state::{
 };
 use super::types::GithubIssue;
 
-/// Read the GitHub token from environment variable.
-pub fn get_github_token() -> Result<String, AppError> {
-    std::env::var("STORYHOOK_GITHUB_TOKEN").map_err(|_| {
-        AppError::GithubAuth(
-            "STORYHOOK_GITHUB_TOKEN environment variable is not set.\n\
-             Create a GitHub Personal Access Token at https://github.com/settings/tokens\n\
-             and export it: export STORYHOOK_GITHUB_TOKEN=ghp_..."
-                .to_string(),
-        )
-    })
+/// The caller's GitHub credential, or the refusal that names what to do.
+///
+/// **This used to be a `std::env::var` read, and that was the defect** (SH-153).
+/// Since SH-114 this code runs inside the daemon, whose environment is a
+/// snapshot of whichever client happened to start it — so a caller who exported
+/// a token was told it was unset, and a caller who had not exported one silently
+/// spent the token of whoever had. The credential is read by the client now and
+/// travels in the request envelope; this function is only the refusal.
+///
+/// # Errors
+///
+/// [`AppError::GithubAuth`] when the caller supplied no credential.
+pub fn require_github_token(token: Option<&GithubToken>) -> Result<&GithubToken, AppError> {
+    token.ok_or_else(|| AppError::GithubAuth(secret::NO_TOKEN.to_string()))
 }
 
 /// Run the initial sync setup wizard.
 /// Called when `story github-sync` is run for the first time (no github-sync.toml exists).
 /// Returns the initial config with mappings established.
-pub fn run_initial_setup(sync: &dyn SyncStorage) -> Result<GithubSyncConfig, AppError> {
+pub fn run_initial_setup(
+    sync: &dyn SyncStorage,
+    token: Option<&GithubToken>,
+) -> Result<GithubSyncConfig, AppError> {
     // 1. Detect remote
     let github_repo = detect_github_remote(sync.root())?.ok_or_else(|| {
         AppError::Validation(
@@ -36,8 +44,12 @@ pub fn run_initial_setup(sync: &dyn SyncStorage) -> Result<GithubSyncConfig, App
     })?;
 
     // 2. Validate token
-    let token = get_github_token()?;
-    let client = GithubClient::new(token, github_repo.owner.clone(), github_repo.repo.clone());
+    let token = require_github_token(token)?;
+    let client = GithubClient::new(
+        token.expose().to_string(),
+        github_repo.owner.clone(),
+        github_repo.repo.clone(),
+    );
     eprintln!(
         "Validating token for {}/{}...",
         github_repo.owner, github_repo.repo

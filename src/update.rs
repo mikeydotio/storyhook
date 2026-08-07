@@ -94,19 +94,19 @@ fn build_agent() -> Agent {
 
 /// Query GitHub for the latest release tag (e.g. `"v0.14.0"`).
 ///
-/// `STORYHOOK_GITHUB_TOKEN`, if set, is sent only to raise the anonymous rate
-/// limit — it is never required for public release metadata.
+/// Unauthenticated, on purpose: this endpoint is public release metadata, not
+/// anything a credential should be spent on. It used to attach
+/// `STORYHOOK_GITHUB_TOKEN` to raise the anonymous rate limit, but that ran
+/// inside the daemon and spent whichever client's token the daemon happened to
+/// have inherited — a credential leak this update check has no business
+/// causing (SH-153). Deleted outright rather than re-plumbed through the
+/// envelope: `story update` has no need of a GitHub identity at all.
 fn fetch_latest_tag(agent: &Agent) -> Result<String, AppError> {
-    let mut req = agent
+    let req = agent
         .get(API_LATEST)
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "storyhook")
         .header("X-GitHub-Api-Version", "2022-11-28");
-    if let Ok(token) = std::env::var("STORYHOOK_GITHUB_TOKEN")
-        && !token.is_empty()
-    {
-        req = req.header("Authorization", &format!("Bearer {token}"));
-    }
 
     let mut resp = req
         .call()

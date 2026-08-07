@@ -18,6 +18,14 @@ pub mod remote;
 /// it by name.
 pub mod prefix;
 
+/// Credentials the request envelope carries, and the rule that stops them
+/// printing themselves.
+///
+/// Here rather than under `github` because `src/github` is gated on the
+/// `github-sync` feature while the envelope carries the field in every build —
+/// the same reason [`ConflictSide`](crate::cli::ConflictSide) lives in `cli`.
+pub mod secret;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportStory {
     pub title: String,

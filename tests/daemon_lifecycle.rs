@@ -739,3 +739,34 @@ fn a_running_command_is_published_and_retracted() {
         lifecycle::read_current(&environment).is_none()
     });
 }
+
+/// **The daemon log is 0600, the same as every other daemon file that
+/// matters.**
+///
+/// It carries the daemon's whole stderr for its whole life, and since SH-153
+/// that can include a GitHub token surfaced in a diagnostic — an
+/// `eprintln!` this process never audited for what it prints, because nothing
+/// in it expects to be handling a secret. `publish_current` and the pidfile
+/// were already 0600; the log was `File::create`'s 0644 until this test
+/// pinned the fix.
+#[cfg(unix)]
+#[test]
+fn the_daemon_log_is_not_world_or_group_readable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    start(&env);
+
+    let log = env.environment().daemon_log();
+    let mode = std::fs::metadata(&log)
+        .expect("the daemon must have created its log")
+        .permissions()
+        .mode();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "the daemon log must be 0600, not {:o}",
+        mode & 0o777
+    );
+}

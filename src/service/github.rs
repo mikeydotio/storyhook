@@ -47,6 +47,10 @@ impl<'ctx, S: Store> GithubSyncService<'ctx, S> {
     /// on the gated side of the feature boundary: the request envelope has to
     /// carry the choice in every build, while the merge engine's own
     /// [`Resolution`] only exists when `github-sync` is compiled in.
+    /// The credential comes from the request envelope rather than from this
+    /// process's environment (SH-153): the daemon's environment is whichever
+    /// client's shell happened to start it, so reading it here answered the
+    /// wrong person's question — and lent one caller's token to the next.
     pub fn sync(
         &self,
         story_id: Option<&str>,
@@ -57,7 +61,13 @@ impl<'ctx, S: Store> GithubSyncService<'ctx, S> {
             ConflictSide::Local => Resolution::KeepLocal,
             ConflictSide::Remote => Resolution::KeepRemote,
         });
-        crate::github::run_sync_with(&StoreSyncStorage::new(self.ctx), story_id, dry_run, resolve)
+        crate::github::run_sync_with(
+            &StoreSyncStorage::new(self.ctx),
+            self.ctx.github_token(),
+            story_id,
+            dry_run,
+            resolve,
+        )
     }
 }
 

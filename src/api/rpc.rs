@@ -186,7 +186,8 @@ fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
                 InvokeRequest::new(request.invocation.clone())
                     .no_hooks(request.no_hooks)
                     .stdin(request.stdin.clone())
-                    .project(request.project.clone()),
+                    .project(request.project.clone())
+                    .github_token(request.github_token.clone()),
             )
     }))
     .unwrap_or_else(|_| {
@@ -256,7 +257,11 @@ pub(crate) fn token_ok(headers: &[Header], expected: &str) -> bool {
 }
 
 /// Byte equality that takes the same time whatever the inputs are.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+///
+/// `pub(crate)` for one other caller — `GithubToken`'s `PartialEq`
+/// (`domain::secret`), which compares a credential and should not grow a second
+/// copy of this loop to do it.
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
