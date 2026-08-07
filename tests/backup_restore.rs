@@ -83,7 +83,7 @@ fn quiesce(env: &TestEnv) {
 /// are about the files.
 fn snapshot_now(store: &SqliteStore, env: &TestEnv) -> std::path::PathBuf {
     store
-        .snapshot(&backups_dir(env))
+        .snapshot(&backups_dir(env), "snapshot")
         .expect("taking a snapshot")
 }
 
@@ -325,7 +325,7 @@ fn rotation_keeps_seven_snapshots_and_every_one_of_them_is_a_database() {
         project.new_story(&format!("story {round}"));
         // `run_if_due` would decline every one of these: the previous snapshot
         // is seconds old, and the schedule is not what this test is about.
-        store.snapshot(&dir).expect("taking a snapshot");
+        store.snapshot(&dir, "snapshot").expect("taking a snapshot");
     }
     assert_eq!(
         backup::snapshots(&dir).len(),
@@ -488,7 +488,7 @@ fn taking_a_snapshot_does_not_disturb_the_store() {
         .read(|tx| Ok(tx.stories(pid, &StoryQuery::all())?.len()))
         .expect("counting");
     store
-        .snapshot(&backups_dir(&env))
+        .snapshot(&backups_dir(&env), "snapshot")
         .expect("taking a snapshot");
     assert_eq!(
         store
