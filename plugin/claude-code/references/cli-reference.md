@@ -512,16 +512,27 @@ Each run reports what it linked without claiming. `story project settings set sy
 story commit-sync --since 1d
 ```
 
-### `story github-sync [<id>] [--dry-run] [--resolve local|remote]`
+### `story github-sync [<id>] [--dry-run] [--resolve local|remote] [--strategy <s>] [--mode <m>]`
 
 Bidirectional sync with GitHub Issues (three-way merge). Requires `STORYHOOK_GITHUB_TOKEN`.
 
 A field both sides changed to different values is a **conflict**, and storyhook does not decide it. Everything else in the sync still applies; the conflict is printed with all three values (base, local, remote) and the command **exits 8**. The merge base holds the disputed field, so re-running finds the same conflict rather than quietly taking GitHub's value. Answer it with `--resolve` on that one story — the flag requires an explicit `<id>`, because a whole-sync resolution would decide conflicts you have not read — or set the field to the same value on both sides and re-run.
 
+**First sync on a project** is asked how to handle it — interactively, or non-interactively (a script, `--json`) told up front with `--strategy` and `--mode` together:
+
+```bash
+story github-sync --strategy future-only --mode manual
+```
+
+`--strategy` is `import-all` / `match-titles` / `push-only` / `future-only`. `--mode` is `manual` (the default) or `off`; `auto` is refused by name — storyhook implements no sync-on-every-change mode.
+
+**Changing the mode later**, on a project that is already configured: `--mode` alone (no `--strategy`, no `<id>`) changes the stored mode instead of syncing — the way to turn a disabled (`off`) project back on, or to repair one still carrying `auto` from before the rearchitecture, which this build refuses to run under and reports rather than silently ignoring. Needs no GitHub token.
+
 ```bash
 story github-sync --dry-run
 story github-sync SH-1
 story github-sync SH-1 --resolve remote
+story github-sync --mode manual   # turn sync back on / repair a stuck mode
 ```
 
 ### `story hooks install|uninstall|list|test <event_type>`
