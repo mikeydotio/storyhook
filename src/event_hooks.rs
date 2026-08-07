@@ -249,6 +249,40 @@ pub fn load_hooks_config(root: &Path) -> Option<HooksConfig> {
     }
 }
 
+/// The largest timeout configured for any hook at `root`'s project, or `None`
+/// if it has no hooks configured at all.
+///
+/// Used to widen a served-command deadline (SH-173): a command's own
+/// completion time is bounded above by *some* configured hook's timeout —
+/// `hook_depth` caps nesting at one, so at most one hook fires inside a
+/// single served request — so a deadline that ignores hook configuration
+/// entirely is what turns a legitimately slow hook into an abandoned
+/// command. Deliberately the *largest* configured value rather than the one
+/// hook the command would actually fire: resolving that precisely would mean
+/// rebuilding the CLI-command-to-hook-event mapping a second time on the
+/// daemon's cold, request-only path, for a number that is already a
+/// generous upper bound either way.
+#[must_use]
+pub fn max_configured_timeout(root: &Path) -> Option<Duration> {
+    let config = load_hooks_config(root)?;
+    let default = config.settings.timeout_seconds;
+    let slots: [Option<&HookDef>; 7] = [
+        config.on_create.as_ref(),
+        config.on_state_change.as_ref(),
+        config.on_close.as_ref(),
+        config.on_comment.as_ref(),
+        config.on_priority_change.as_ref(),
+        config.on_label_change.as_ref(),
+        config.on_relationship_change.as_ref(),
+    ];
+    slots
+        .into_iter()
+        .flatten()
+        .map(|hook| hook.timeout_seconds.unwrap_or(default))
+        .max()
+        .map(Duration::from_secs)
+}
+
 fn resolve_hook(config: &HooksConfig, event_type: HookEventType) -> Option<&HookDef> {
     match event_type {
         HookEventType::Create => config.on_create.as_ref(),

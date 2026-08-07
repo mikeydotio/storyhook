@@ -710,7 +710,7 @@ fn a_running_command_is_published_and_retracted() {
     let environment = env.environment();
     let mut seen = None;
     for _ in 0..100 {
-        if let Some(record) = lifecycle::read_current(&environment) {
+        if let Some(record) = lifecycle::read_inflight(&environment).into_iter().next() {
             seen = Some(record);
             break;
         }
@@ -736,7 +736,7 @@ fn a_running_command_is_published_and_retracted() {
     // And it is retracted, which is a signal in its own right: a client's clock
     // resets on the record disappearing exactly as on it changing.
     wait_for("the record to be retracted", || {
-        lifecycle::read_current(&environment).is_none()
+        lifecycle::read_inflight(&environment).is_empty()
     });
 }
 
@@ -755,18 +755,19 @@ fn a_record_a_killed_daemon_left_behind_does_not_survive_the_next_ones_start() {
     let environment = env.environment();
 
     std::fs::create_dir_all(environment.daemon_state_dir()).expect("the daemon's state directory");
-    lifecycle::publish_current(
+    lifecycle::publish_inflight(
         &environment,
-        &lifecycle::CurrentRequest {
+        &[lifecycle::CurrentRequest {
             request_id: "stale-from-a-killed-daemon".to_string(),
             command: "github-sync".to_string(),
             project: Some("stale-project".to_string()),
             pid: 1,
             started_at: "2020-01-01T00:00:00Z".to_string(),
-        },
+            served_deadline_secs: lifecycle::SYNC_SERVED_DEADLINE.as_secs(),
+        }],
     );
     assert!(
-        lifecycle::read_current(&environment).is_some(),
+        !lifecycle::read_inflight(&environment).is_empty(),
         "the fixture must actually plant a stale record before starting a daemon"
     );
 
@@ -774,7 +775,7 @@ fn a_record_a_killed_daemon_left_behind_does_not_survive_the_next_ones_start() {
 
     wait_for(
         "the stale record to be cleared by the new daemon's own start",
-        || lifecycle::read_current(&environment).is_none(),
+        || lifecycle::read_inflight(&environment).is_empty(),
     );
 }
 
@@ -784,7 +785,7 @@ fn a_record_a_killed_daemon_left_behind_does_not_survive_the_next_ones_start() {
 /// It carries the daemon's whole stderr for its whole life, and since SH-153
 /// that can include a GitHub token surfaced in a diagnostic — an
 /// `eprintln!` this process never audited for what it prints, because nothing
-/// in it expects to be handling a secret. `publish_current` and the pidfile
+/// in it expects to be handling a secret. `publish_inflight` and the pidfile
 /// were already 0600; the log was `File::create`'s 0644 until this test
 /// pinned the fix.
 #[cfg(unix)]

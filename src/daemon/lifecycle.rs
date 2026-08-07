@@ -64,19 +64,20 @@ const SPAWN_POLL: Duration = Duration::from_millis(25);
 /// How long a shutting-down daemon lets in-flight requests finish.
 pub const DRAIN_DEADLINE: Duration = Duration::from_millis(500);
 
-/// What the daemon is serving right now.
+/// One request the daemon is serving right now.
 ///
-/// **The record whose motion is the client's clock.** Published when a request's
-/// envelope has parsed and removed when its answer is ready, so it changes
-/// exactly when the daemon finishes something — and a client waiting on a
-/// command it cannot see any bytes from can therefore tell "the daemon is
-/// working through a queue" from "the daemon has stopped finishing things"
-/// without asking it anything (SH-144).
+/// **The record whose motion is the client's clock.** Published when a
+/// request's envelope has parsed and removed when its answer is ready, so the
+/// set it belongs to changes exactly when the daemon finishes something — and
+/// a client waiting on a command it cannot see any bytes from can therefore
+/// tell "the daemon is working through a queue" from "the daemon has stopped
+/// finishing things" without asking it anything (SH-144).
 ///
 /// Every field answers one question the failure message has to answer.
-/// `request_id` says *is this mine*; `command` chooses the deadline and names
-/// the work; `project` says whose; `pid` is the way out, because
-/// `story daemon stop` has no signal fallback; `started_at` says how long.
+/// `request_id` says *is this mine*; `command` names the work;
+/// `served_deadline_secs` says how long this daemon commits to spending on
+/// it; `project` says whose; `pid` is the way out, because `story daemon
+/// stop` has no signal fallback; `started_at` says how long.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CurrentRequest {
     /// The envelope's own id, which is how a client recognises its own request.
@@ -89,12 +90,26 @@ pub struct CurrentRequest {
     pub pid: u32,
     /// When the daemon picked this request up, RFC 3339.
     pub started_at: String,
+    /// How long this daemon commits to spending on this command before a
+    /// client gives up on it — its own, if it is theirs, or the most patient
+    /// deadline in the set, if they are only queued behind it. Computed once,
+    /// by [`served_deadline`], at the moment this record is named: only the
+    /// daemon knows the command's own `cwd`, and therefore its project's hook
+    /// configuration, so only the daemon can derive this honestly (SH-173). A
+    /// client reads it rather than recomputing a guess, which is what makes
+    /// the number the same whether the record is theirs or somebody else's.
+    pub served_deadline_secs: u64,
 }
 
-/// Publishes what the daemon is serving, atomically.
+/// Writes the file a daemon's clients read, from `entries` in the order
+/// given — a JSON array, removed when empty and never written as `[]`, so
+/// "absent" keeps meaning "nothing in flight" exactly as when this file held
+/// at most one bare object. Public so a test fixture can plant a record
+/// directly, the way a direct call to the single-object writer this replaced
+/// used to.
 ///
 /// Temp-plus-`rename` and mode 0600, the same shape as [`write_info`] and for
-/// the same reason: a client that read a half-written record would see a
+/// the same reason: a client that read a half-written file would see a
 /// `request_id` that matches nothing and conclude it was queued when it is
 /// being served.
 ///
@@ -102,11 +117,15 @@ pub struct CurrentRequest {
 /// read-only must still run the command it was asked to run — failing here
 /// would replace a good answer with a bad diagnostic about a diagnostic, which
 /// is the rule [`record_startup_failure`] already states for the same reason.
-pub fn publish_current(env: &Environment, current: &CurrentRequest) {
-    let Ok(document) = serde_json::to_string(current) else {
+pub fn publish_inflight(env: &Environment, entries: &[CurrentRequest]) {
+    let path = env.daemon_current();
+    if entries.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let Ok(document) = serde_json::to_string(entries) else {
         return;
     };
-    let path = env.daemon_current();
     let temp = path.with_extension("json.tmp");
 
     let mut options = OpenOptions::new();
@@ -123,44 +142,32 @@ pub fn publish_current(env: &Environment, current: &CurrentRequest) {
     let _ = std::fs::rename(&temp, &path);
 }
 
-/// Retracts the current-request record, because the request is answered.
+/// Reads everything a daemon says it is serving, in arrival order.
 ///
-/// Removal is a signal in its own right: the client's clock resets on it, the
-/// same as on a change. Best-effort for the same reason as [`publish_current`].
-pub fn clear_current(env: &Environment) {
-    let _ = std::fs::remove_file(env.daemon_current());
-}
-
-/// Reads what a daemon says it is serving, or `None` if it says nothing.
-///
-/// `None` covers three states a client must not conflate with each other, and
-/// the caller distinguishes them: the daemon is between requests, the daemon
-/// never published (a state the record cannot describe — see SH-144's "the
-/// record never appears" branch), or the file is being replaced right now. The
-/// last is why a parse failure is `None` rather than an error: the write is
-/// atomic, so a torn read is not possible, but a *stale* document from an older
-/// binary is — and `usable` has already refused that daemon.
-pub fn read_current(env: &Environment) -> Option<CurrentRequest> {
-    let raw = std::fs::read_to_string(env.daemon_current()).ok()?;
-    serde_json::from_str(&raw).ok()
+/// Empty covers three states a caller must not conflate, exactly as an
+/// absent record used to (SH-144): the daemon is between requests, it never
+/// published at all (see SH-144's "the record never appears" branch), or the
+/// file is being replaced right now. The last is why a parse failure reads
+/// as empty rather than as an error: the write is atomic, so a torn read is
+/// not possible, but a *stale* document from an older binary's format is —
+/// and `usable` has already refused that daemon before this is ever called.
+#[must_use]
+pub fn read_inflight(env: &Environment) -> Vec<CurrentRequest> {
+    let Ok(raw) = std::fs::read_to_string(env.daemon_current()) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
 }
 
 /// Everything this daemon is serving right now, reached through [`Self::enter`]
-/// rather than through [`publish_current`]/[`clear_current`] directly.
+/// rather than through [`publish_inflight`] directly.
 ///
-/// **One writer of one record**, which is what [`Environment::daemon_current`]
-/// asks for. A raw `publish_current` call, made by two callers at once, lets
-/// the second's write clobber the first's — the exact defect SH-173's
-/// concurrent dispatch would otherwise reintroduce. Routing every writer
+/// **One writer of the set**, which is what [`Environment::daemon_current`]
+/// asks for. A raw `publish_inflight` call, made by two callers at once, lets
+/// the second's write clobber the first's — the exact defect concurrent
+/// dispatch (SH-173) would otherwise reintroduce. Routing every writer
 /// through one `InFlight` closes that: [`Self::enter`] hands out a slot, and
 /// only the guard that owns a slot can name or clear it.
-///
-/// **Still one entry at a time, today.** SH-173 lands its dispatch pool in a
-/// later commit; until then exactly one [`Entry`] is ever open, so
-/// [`Self::publish`] always reduces to exactly [`publish_current`] or
-/// [`clear_current`] and the file on disk is unchanged from before this type
-/// existed. The multi-entry file format is a deliberate, separately-committed
-/// behaviour change, not a side effect of this refactor.
 pub struct InFlight {
     entries: std::sync::Mutex<std::collections::BTreeMap<u64, CurrentRequest>>,
     next: std::sync::atomic::AtomicU64,
@@ -196,7 +203,7 @@ impl InFlight {
     /// effort, like every other write this type performs — a state directory
     /// this daemon cannot write to is a daemon that should still start.
     pub fn harvest_stale(&self) {
-        clear_current(&self.env);
+        publish_inflight(&self.env, &[]);
     }
 
     /// Opens a slot for one request. The slot is unnamed — and therefore
@@ -238,16 +245,11 @@ impl InFlight {
     }
 
     /// Writes the file this daemon's clients read, from the current set of
-    /// named entries. See the type's own doc for why `entries.len() > 1` does
-    /// not arise yet.
+    /// named entries, in arrival order (a `BTreeMap` keyed by monotonically
+    /// increasing slot).
     fn publish(&self, entries: &std::collections::BTreeMap<u64, CurrentRequest>) {
-        match entries.len() {
-            0 => clear_current(&self.env),
-            1 => publish_current(&self.env, entries.values().next().expect("len is 1")),
-            _ => unreachable!(
-                "InFlight has more than one named entry before SH-173's dispatch pool exists"
-            ),
-        }
+        let ordered: Vec<CurrentRequest> = entries.values().cloned().collect();
+        publish_inflight(&self.env, &ordered);
     }
 }
 
@@ -940,7 +942,7 @@ fn spawn_child(env: &Environment) -> Result<std::process::Child, AppError> {
     // Mode 0600, not `File::create`'s 0644: this log carries the daemon's whole
     // stderr for its whole life, and since SH-153 that can include a GitHub
     // token surfaced in a diagnostic — every other daemon file that matters is
-    // already 0600 (`publish_current`, the pidfile).
+    // already 0600 (`publish_inflight`, the pidfile).
     let mut log_options = OpenOptions::new();
     log_options.create(true).write(true).truncate(true);
     #[cfg(unix)]
@@ -1220,9 +1222,9 @@ pub const RECORD_POLL: Duration = Duration::from_millis(250);
 
 /// How long a client waits for a daemon that publishes **nothing at all**.
 ///
-/// The branch that exists because the record can be absent for a reason no
-/// record can describe: the daemon accepted the connection and never reached
-/// [`publish_current`]. Post-SH-144 this is the only shape the unauthenticated
+/// The branch that exists because the set can be empty for a reason no
+/// entry can describe: the daemon accepted the connection and never reached
+/// [`Entry::name`]. Post-SH-144 this is the only shape the unauthenticated
 /// wedge can present to a client, and the reason it gets its own constant rather
 /// than sharing [`SERVED_DEADLINE`] is that its message is different — a daemon
 /// that is alive, holding its pidfile, and has not started your command.
@@ -1244,23 +1246,54 @@ pub enum ExchangeBound {
     Unbounded,
 }
 
-/// The bound for the command **named in the record** — never the command this
-/// client sent.
+/// The deadline this daemon commits to for `command`, computed once by
+/// whoever names an [`Entry`] and published as that record's
+/// `served_deadline_secs` — so every client, including one only queued
+/// behind somebody else's record, reads the same number the daemon derived,
+/// rather than recomputing a guess it has no way to make correctly for a
+/// project it cannot see.
 ///
-/// That distinction is the whole correction the council made to its own first
-/// answer. The daemon serves one request at a time, so the thing that decides
-/// how long a wait is legitimate is *what the daemon is doing*, not what I asked
-/// for; keying on my own invocation would give the shortest patience to
-/// `story list`, the command whose wait is most inflated by other people's work.
-///
-/// Keyed on the string, because the string is what crosses the file. It reads
-/// the vocabulary [`crate::invoke::invocation_name`] writes.
+/// `github-sync`'s total is set off this machine (SH-144) and gets its own
+/// constant regardless of hook configuration — its duration is
+/// O(stories × comments) × a 30s per-call client bound, not a function of
+/// any one project's hooks. Every other command's deadline widens by
+/// [`crate::event_hooks::max_configured_timeout`] at `cwd`: a command's own
+/// completion time is bounded above by *some* configured hook's timeout
+/// (`hook_depth` caps nesting at one, so at most one hook fires inside a
+/// single served request — [`crate::service::Ctx::hooks_enabled`]), so
+/// ignoring hook configuration entirely is what turned a legitimately slow
+/// hook into an abandoned command — the gap [`SERVED_DEADLINE`]'s own
+/// docstring names as the reason it could only be calibrated, not derived.
 #[must_use]
-pub fn deadline_for(command: &str) -> ExchangeBound {
-    match command {
-        "github-sync" => ExchangeBound::After(SYNC_SERVED_DEADLINE),
-        _ => ExchangeBound::After(SERVED_DEADLINE),
+pub fn served_deadline(command: &str, cwd: &Path) -> Duration {
+    if command == "github-sync" {
+        return SYNC_SERVED_DEADLINE;
     }
+    let allowance = crate::event_hooks::max_configured_timeout(cwd).unwrap_or(Duration::ZERO);
+    SERVED_DEADLINE + allowance
+}
+
+/// What a waiting client has observed about the daemon, at the moment it
+/// asks [`verdict`] what to do.
+///
+/// Two different clocks, because only one of them is ever a deadline.
+/// `mine_for` — how long *my own* entry has been present, if it is — is set
+/// the instant a client first sees its own `request_id` in the set and never
+/// reset while that entry stays present; `since_change` is reset whenever
+/// `inflight` changes at all, which is the signal a client with no entry of
+/// its own — queued, or the daemon has published nothing — has to go on.
+pub struct Observed<'a> {
+    /// This client's own request id.
+    pub mine: &'a str,
+    /// Everything the daemon says it is serving, in arrival order.
+    pub inflight: &'a [CurrentRequest],
+    /// How long my own entry has looked exactly as it looks now, if
+    /// `inflight` contains one naming `mine`.
+    pub mine_for: Option<Duration>,
+    /// How long the whole set has looked exactly as it looks now.
+    pub since_change: Duration,
+    /// The whole wait, from the first byte sent.
+    pub total: Duration,
 }
 
 /// What a waiting client should do, given what it has seen.
@@ -1272,77 +1305,82 @@ pub fn deadline_for(command: &str) -> ExchangeBound {
 /// would otherwise take a test minutes to express.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// The daemon is finishing things. Keep waiting, however long that is.
+    /// The daemon is finishing things, or has not gotten to mine yet. Keep
+    /// waiting, however long that takes.
     Wait,
-    /// The record has not moved for the deadline of the command it names.
-    GiveUp(CurrentRequest),
+    /// My own entry has been present past its own deadline.
+    GiveUpMine(CurrentRequest),
+    /// I am not in the set, and nothing in it has moved for the most patient
+    /// deadline among the commands it names.
+    GiveUpQueued(Vec<CurrentRequest>),
     /// The daemon published nothing at all for [`UNPUBLISHED_DEADLINE`].
     GaveUpUnpublished,
 }
 
 /// Decides whether to keep waiting.
 ///
-/// `since_change` is how long the record has looked exactly as it looks now;
-/// `total` is the whole wait. The two are different clocks and only one of them
-/// is a deadline — `total` is consulted **only** when there has never been a
-/// record to time, which is the one state the record itself cannot describe.
-///
-/// Note what is missing: there is no clock on queued time, and that is the
-/// design rather than an omission. While the record keeps changing the daemon is
-/// finishing work, so a client behind a long queue waits as long as the queue
-/// takes. That is M9's false positive deleted rather than tuned.
-/// `override_bound` is exactly what its name says: `None` means *use the
-/// deadline belonging to the command the record names*, which is the production
-/// path and the whole point of publishing the command at all. `Some` is the
-/// user's `$STORYHOOK_EXCHANGE_DEADLINE_SECS`, and it is also how a test drives
-/// a 120-second bound in 250 milliseconds.
+/// Note what is missing from the "queued" branch: there is no clock on
+/// queued time itself, and that is the design rather than an omission. While
+/// the set keeps changing the daemon is finishing work, so a client behind a
+/// long queue waits as long as the queue takes — that is SH-144's own M9
+/// false positive, deleted rather than tuned, and it survives this rewrite
+/// unchanged. `override_bound` is exactly what its name says: `None` means
+/// *use the deadline each record already carries*, which is the production
+/// path and the whole point of publishing it there. `Some` is the user's
+/// `$STORYHOOK_EXCHANGE_DEADLINE_SECS`, and it replaces every deadline below
+/// — including the unpublished one, because a user who says "wait 10
+/// minutes" means it whatever the daemon is or is not saying — and it is
+/// also how a test drives a 120-second bound in 250 milliseconds.
 #[must_use]
-pub fn verdict(
-    current: Option<&CurrentRequest>,
-    since_change: Duration,
-    total: Duration,
-    override_bound: Option<ExchangeBound>,
-) -> Verdict {
+pub fn verdict(seen: &Observed<'_>, override_bound: Option<ExchangeBound>) -> Verdict {
     if let Some(ExchangeBound::Unbounded) = override_bound {
         return Verdict::Wait;
     }
-    // The override, if there is one, replaces every deadline below — including
-    // the unpublished one, because a user who says "wait 10 minutes" means it
-    // whatever the daemon is or is not saying.
-    let deadline_of = |command: &str| match override_bound {
+    let deadline_of = |record: &CurrentRequest| match override_bound {
         Some(ExchangeBound::After(d)) => d,
-        _ => match deadline_for(command) {
-            ExchangeBound::After(d) => d,
-            // Unreachable: `deadline_for` never answers `Unbounded`, and the
-            // type is what stops that becoming a silent forever-wait if it ever
-            // did.
-            ExchangeBound::Unbounded => SERVED_DEADLINE,
-        },
+        _ => Duration::from_secs(record.served_deadline_secs),
     };
 
-    match current {
-        // A record is present: the deadline is the one for the command it
-        // names, whether or not that command is mine. A record frozen on
-        // somebody else's request still means the daemon has stopped finishing
-        // things, and it still blocks me.
-        Some(record) if since_change >= deadline_of(&record.command) => {
-            Verdict::GiveUp(record.clone())
-        }
-        Some(_) => Verdict::Wait,
-        // No record. Either the daemon is between requests — in which case one
-        // is about to appear and `since_change` keeps resetting — or it never
-        // published at all, which is the branch below.
-        None => {
-            let unpublished = match override_bound {
-                Some(ExchangeBound::After(d)) => d,
-                _ => UNPUBLISHED_DEADLINE,
-            };
-            if total >= unpublished {
-                Verdict::GaveUpUnpublished
-            } else {
-                Verdict::Wait
-            }
-        }
+    // My own entry, if the set carries one: bounded by its own deadline,
+    // whatever else is or is not also in flight.
+    let mine = seen.inflight.iter().find(|r| r.request_id == seen.mine);
+    if let (Some(mine_for), Some(record)) = (seen.mine_for, mine) {
+        return if mine_for >= deadline_of(record) {
+            Verdict::GiveUpMine(record.clone())
+        } else {
+            Verdict::Wait
+        };
+    }
+
+    // Not mine, or not there yet: queued behind whatever is in flight. A
+    // record frozen on somebody else's request still means the daemon has
+    // stopped finishing things, and it still blocks me — bounded by the most
+    // patient deadline any of them carries, because I am behind all of them.
+    if !seen.inflight.is_empty() {
+        let patience = seen
+            .inflight
+            .iter()
+            .map(deadline_of)
+            .max()
+            .unwrap_or(SERVED_DEADLINE);
+        return if seen.since_change >= patience {
+            Verdict::GiveUpQueued(seen.inflight.to_vec())
+        } else {
+            Verdict::Wait
+        };
+    }
+
+    // The set is empty. Either the daemon is between requests — in which
+    // case one is about to appear and `since_change` keeps resetting — or it
+    // never published at all, which is the branch below.
+    let unpublished = match override_bound {
+        Some(ExchangeBound::After(d)) => d,
+        _ => UNPUBLISHED_DEADLINE,
+    };
+    if seen.total >= unpublished {
+        Verdict::GaveUpUnpublished
+    } else {
+        Verdict::Wait
     }
 }
 
@@ -1820,7 +1858,10 @@ mod tests {
         assert_eq!(SPAWN_LOCK_DEADLINE, Duration::from_secs(30));
     }
 
-    /// A record naming `command`, otherwise uninteresting.
+    /// A record naming `command`, with `served_deadline_secs` set to exactly
+    /// what production [`served_deadline`] would compute for it at a `cwd`
+    /// with no hooks configured — so a test's fixture cannot silently drift
+    /// from what the daemon would actually publish.
     fn serving(command: &str, request_id: &str) -> CurrentRequest {
         CurrentRequest {
             request_id: request_id.to_string(),
@@ -1828,6 +1869,7 @@ mod tests {
             project: None,
             pid: 4711,
             started_at: "2026-01-01T00:00:00Z".to_string(),
+            served_deadline_secs: served_deadline(command, Path::new("/")).as_secs(),
         }
     }
 
@@ -1852,16 +1894,17 @@ mod tests {
         assert_eq!(SERVED_DEADLINE, Duration::from_secs(120));
     }
 
-    /// Only `github-sync` gets the long bound, and nothing is ever exempt.
+    /// Only `github-sync` gets the long bound, with no hooks configured.
     ///
-    /// The second half is the point. An exemption was proposed and rejected
-    /// because it restores the forever-hang this work exists to remove; this
-    /// asserts no command can reach an unbounded verdict.
+    /// There is no longer a matching "nothing is ever unbounded" half:
+    /// [`served_deadline`] returns a bare [`Duration`], so an unbounded
+    /// result is not a value the type can hold, rather than a case a runtime
+    /// check has to rule out.
     #[test]
-    fn only_github_sync_is_slow_and_nothing_is_unbounded() {
+    fn only_github_sync_gets_the_long_bound_with_no_hooks_configured() {
         assert_eq!(
-            deadline_for("github-sync"),
-            ExchangeBound::After(SYNC_SERVED_DEADLINE)
+            served_deadline("github-sync", Path::new("/")),
+            SYNC_SERVED_DEADLINE
         );
         for command in [
             "list",
@@ -1877,17 +1920,41 @@ mod tests {
             "",
         ] {
             assert_eq!(
-                deadline_for(command),
-                ExchangeBound::After(SERVED_DEADLINE),
-                "`{command}` must get the ordinary bound"
+                served_deadline(command, Path::new("/")),
+                SERVED_DEADLINE,
+                "`{command}` must get the ordinary bound when no hooks are configured"
             );
         }
-        for command in ["github-sync", "list", "anything-added-tomorrow"] {
-            assert!(
-                !matches!(deadline_for(command), ExchangeBound::Unbounded),
-                "no command may be unbounded: `{command}`"
-            );
-        }
+    }
+
+    /// The ordinary bound widens by the largest hook timeout the project at
+    /// `cwd` configures — the mitigation for the regression a dispatch pool
+    /// introduces: "the set kept moving" no longer says anything about *my*
+    /// entry once more than one can be in flight, so my own served time
+    /// needs a bound that accounts for my own project's slowest hook.
+    #[test]
+    fn the_ordinary_bound_widens_by_the_largest_configured_hook_timeout() {
+        let dir = scratch();
+        std::fs::create_dir_all(dir.path().join(".storyhook")).expect("the hooks directory");
+        std::fs::write(
+            dir.path().join(".storyhook/hooks.toml"),
+            "[settings]\ntimeout_seconds = 10\n\n\
+             [on_comment]\ncommand = \"true\"\n\n\
+             [on_create]\ncommand = \"true\"\ntimeout_seconds = 300\n",
+        )
+        .expect("writing hooks.toml");
+
+        assert_eq!(
+            served_deadline("comment", dir.path()),
+            SERVED_DEADLINE + Duration::from_secs(300),
+            "the largest configured hook wins, not the one `comment` would actually fire"
+        );
+        // Untouched: github-sync's total is set off this machine, not by any
+        // project's hook configuration.
+        assert_eq!(
+            served_deadline("github-sync", dir.path()),
+            SYNC_SERVED_DEADLINE
+        );
     }
 
     /// **The regression that matters most**, and the one every wall-clock design
@@ -1898,62 +1965,113 @@ mod tests {
     /// assertion is "at any queue length" rather than "at the one length a test
     /// had patience for".
     #[test]
-    fn a_client_behind_moving_work_waits_however_long_it_takes() {
+    fn a_client_queued_behind_moving_work_waits_however_long_it_takes() {
         let theirs = serving("github-sync", "not-mine");
+        let inflight = [theirs];
         for hours in [1_u64, 6, 24, 24 * 365] {
-            let total = Duration::from_secs(hours * 3600);
+            let seen = Observed {
+                mine: "mine",
+                inflight: &inflight,
+                mine_for: None,
+                // The set changed a moment ago, which is what "moving" means.
+                since_change: Duration::from_millis(1),
+                total: Duration::from_secs(hours * 3600),
+            };
             assert_eq!(
-                // The record changed a moment ago, which is what "moving" means.
-                verdict(Some(&theirs), Duration::from_millis(1), total, None),
+                verdict(&seen, None),
                 Verdict::Wait,
-                "a moving record must never be given up on, even after {hours}h"
+                "a moving set must never be given up on, even after {hours}h"
             );
         }
     }
 
-    /// A record that has stopped moving fires — whoever it names.
-    ///
-    /// Both halves matter. Frozen on my own request is the plain case; frozen on
-    /// somebody else's is the one a naive design gets wrong, because the daemon
-    /// has still stopped finishing things and I am still blocked behind it.
+    /// My own entry, frozen past its own deadline, fires — even with nothing
+    /// else in the set.
     #[test]
-    fn a_frozen_record_is_given_up_on_whoever_it_names() {
+    fn my_own_frozen_entry_is_given_up_on() {
         let mine = serving("import", "mine");
-        assert_eq!(
-            verdict(Some(&mine), SERVED_DEADLINE, SERVED_DEADLINE, None),
-            Verdict::GiveUp(mine.clone())
-        );
-
-        let theirs = serving("comment", "somebody-else");
-        assert_eq!(
-            verdict(Some(&theirs), SERVED_DEADLINE, SERVED_DEADLINE, None),
-            Verdict::GiveUp(theirs)
-        );
+        let inflight = [mine.clone()];
+        let seen = Observed {
+            mine: "mine",
+            inflight: &inflight,
+            mine_for: Some(SERVED_DEADLINE),
+            since_change: SERVED_DEADLINE,
+            total: SERVED_DEADLINE,
+        };
+        assert_eq!(verdict(&seen, None), Verdict::GiveUpMine(mine));
     }
 
-    /// The deadline is a property of the command *in the record*, never of the
-    /// command this client sent.
-    ///
-    /// The correction the council made to its own first answer: keying on my own
-    /// invocation would give the shortest patience to `story list`, the command
-    /// whose wait is most inflated by other people's work.
+    /// A frozen entry fires even when it names a stranger — the daemon has
+    /// still stopped finishing things, and a queued client is still blocked
+    /// behind it. The case a naive design gets wrong.
     #[test]
-    fn the_deadline_belongs_to_the_command_in_the_record() {
+    fn a_frozen_entry_is_given_up_on_even_when_it_names_a_stranger() {
+        let theirs = serving("comment", "somebody-else");
+        let inflight = [theirs.clone()];
+        let seen = Observed {
+            mine: "mine",
+            inflight: &inflight,
+            mine_for: None,
+            since_change: SERVED_DEADLINE,
+            total: SERVED_DEADLINE,
+        };
+        assert_eq!(verdict(&seen, None), Verdict::GiveUpQueued(vec![theirs]));
+    }
+
+    /// The deadline a queued client is bound by is a property of the record
+    /// it is behind, never of the command it sent itself.
+    ///
+    /// The correction the council made to its own first answer, still true
+    /// under a pool: keying on my own invocation would give the shortest
+    /// patience to `story list`, the command whose wait is most inflated by
+    /// other people's work.
+    #[test]
+    fn the_deadline_belongs_to_the_record_i_am_queued_behind() {
         let sync = serving("github-sync", "not-mine");
+        let inflight = [sync.clone()];
         // Well past the ordinary bound, nowhere near the sync one.
+        let still_waiting = Observed {
+            mine: "mine",
+            inflight: &inflight,
+            mine_for: None,
+            since_change: SERVED_DEADLINE,
+            total: SERVED_DEADLINE,
+        };
         assert_eq!(
-            verdict(Some(&sync), SERVED_DEADLINE, SERVED_DEADLINE, None),
+            verdict(&still_waiting, None),
             Verdict::Wait,
             "a frozen github-sync must get the long bound even for a client that sent `list`"
         );
+        let past_it = Observed {
+            mine: "mine",
+            inflight: &inflight,
+            mine_for: None,
+            since_change: SYNC_SERVED_DEADLINE,
+            total: SYNC_SERVED_DEADLINE,
+        };
+        assert_eq!(verdict(&past_it, None), Verdict::GiveUpQueued(vec![sync]));
+    }
+
+    /// A queued client is bound by the **most patient** deadline in the set,
+    /// never the least — one slow `github-sync` buys every neighbour its
+    /// hour, because a queued client is behind all of it, not whichever
+    /// entry happens to be fastest.
+    #[test]
+    fn one_slow_entry_in_the_set_buys_every_queued_client_its_patience() {
+        let comment = serving("comment", "also-not-mine");
+        let sync = serving("github-sync", "not-mine");
+        let inflight = [comment, sync];
+        let seen = Observed {
+            mine: "mine",
+            inflight: &inflight,
+            mine_for: None,
+            since_change: SERVED_DEADLINE,
+            total: SERVED_DEADLINE,
+        };
         assert_eq!(
-            verdict(
-                Some(&sync),
-                SYNC_SERVED_DEADLINE,
-                SYNC_SERVED_DEADLINE,
-                None
-            ),
-            Verdict::GiveUp(sync)
+            verdict(&seen, None),
+            Verdict::Wait,
+            "the set's slowest deadline must govern, not its fastest"
         );
     }
 
@@ -1961,38 +2079,55 @@ mod tests {
     /// deadline — the only shape the unauthenticated wedge can present.
     #[test]
     fn a_daemon_that_publishes_nothing_is_given_up_on_separately() {
-        assert_eq!(
-            verdict(None, Duration::ZERO, UNPUBLISHED_DEADLINE, None),
-            Verdict::GaveUpUnpublished
-        );
-        assert_eq!(
-            verdict(
-                None,
-                Duration::ZERO,
-                UNPUBLISHED_DEADLINE - Duration::from_secs(1),
-                None
-            ),
-            Verdict::Wait
-        );
+        let empty: [CurrentRequest; 0] = [];
+        let past_it = Observed {
+            mine: "mine",
+            inflight: &empty,
+            mine_for: None,
+            since_change: Duration::ZERO,
+            total: UNPUBLISHED_DEADLINE,
+        };
+        assert_eq!(verdict(&past_it, None), Verdict::GaveUpUnpublished);
+
+        let not_yet = Observed {
+            mine: "mine",
+            inflight: &empty,
+            mine_for: None,
+            since_change: Duration::ZERO,
+            total: UNPUBLISHED_DEADLINE - Duration::from_secs(1),
+        };
+        assert_eq!(verdict(&not_yet, None), Verdict::Wait);
     }
 
     /// The hatch's `none`, which is the only thing in storyhook that can produce
-    /// an unbounded wait.
+    /// an unbounded wait — for my own entry and for the unpublished case alike.
     #[test]
     fn the_override_can_switch_the_bound_off_entirely() {
         let mine = serving("import", "mine");
+        let inflight = [mine];
         let forever = Duration::from_secs(24 * 3600);
+        let with_mine = Observed {
+            mine: "mine",
+            inflight: &inflight,
+            mine_for: Some(forever),
+            since_change: forever,
+            total: forever,
+        };
         assert_eq!(
-            verdict(
-                Some(&mine),
-                forever,
-                forever,
-                Some(ExchangeBound::Unbounded)
-            ),
+            verdict(&with_mine, Some(ExchangeBound::Unbounded)),
             Verdict::Wait
         );
+
+        let empty: [CurrentRequest; 0] = [];
+        let with_nothing = Observed {
+            mine: "mine",
+            inflight: &empty,
+            mine_for: None,
+            since_change: forever,
+            total: forever,
+        };
         assert_eq!(
-            verdict(None, forever, forever, Some(ExchangeBound::Unbounded)),
+            verdict(&with_nothing, Some(ExchangeBound::Unbounded)),
             Verdict::Wait
         );
     }
@@ -2004,20 +2139,47 @@ mod tests {
     fn the_override_replaces_every_deadline() {
         let short = Some(ExchangeBound::After(Duration::from_millis(250)));
         let sync = serving("github-sync", "not-mine");
+        let inflight = [sync.clone()];
+        let queued = Observed {
+            mine: "mine",
+            inflight: &inflight,
+            mine_for: None,
+            since_change: Duration::from_millis(250),
+            total: Duration::ZERO,
+        };
         assert_eq!(
-            verdict(
-                Some(&sync),
-                Duration::from_millis(250),
-                Duration::ZERO,
-                short
-            ),
-            Verdict::GiveUp(sync),
+            verdict(&queued, short),
+            Verdict::GiveUpQueued(vec![sync]),
             "the override must shorten even the github-sync bound"
         );
-        assert_eq!(
-            verdict(None, Duration::ZERO, Duration::from_millis(250), short),
-            Verdict::GaveUpUnpublished
-        );
+
+        let empty: [CurrentRequest; 0] = [];
+        let unpublished = Observed {
+            mine: "mine",
+            inflight: &empty,
+            mine_for: None,
+            since_change: Duration::ZERO,
+            total: Duration::from_millis(250),
+        };
+        assert_eq!(verdict(&unpublished, short), Verdict::GaveUpUnpublished);
+    }
+
+    /// The override shortens my own entry's deadline too, not only the
+    /// queued case — the whole point being that a user who says "wait 10
+    /// minutes" means it whatever the daemon is or is not saying.
+    #[test]
+    fn the_override_shortens_my_own_deadline_too() {
+        let short = Some(ExchangeBound::After(Duration::from_millis(250)));
+        let mine = serving("github-sync", "mine");
+        let inflight = [mine.clone()];
+        let seen = Observed {
+            mine: "mine",
+            inflight: &inflight,
+            mine_for: Some(Duration::from_millis(250)),
+            since_change: Duration::from_millis(250),
+            total: Duration::from_millis(250),
+        };
+        assert_eq!(verdict(&seen, short), Verdict::GiveUpMine(mine));
     }
 
     /// The defect itself, at the smallest level it exists: a held lock used to
