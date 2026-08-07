@@ -135,11 +135,17 @@ where
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::new()),
     };
 
+    // One job channel and one dispatch thread for the whole daemon, no matter
+    // how many listeners are bound (SH-173) — a rendezvous channel, so a
+    // worker's `send` blocks until dispatch is ready for the next job, which
+    // is what keeps at most one job in flight to the store at a time.
+    let (jobs_tx, jobs_rx) = mpsc::sync_channel::<Job>(0);
+
     // Every background thread lives inside this scope, which is what lets the
-    // change-token poller borrow the store rather than being handed a raw
-    // pointer to it. The scope joins them on the way out, so the accept loop
-    // signals `stop` before it returns and the joins take one poll interval
-    // rather than forever.
+    // change-token poller and the dispatcher borrow the store rather than
+    // being handed a raw pointer to it. The scope joins them on the way out,
+    // so the accept loop signals `stop` before it returns and the joins take
+    // one poll interval rather than forever.
     thread::scope(|scope| {
         {
             let (bus, stop) = (bus.clone(), Arc::clone(&stop));
@@ -153,14 +159,19 @@ where
             let stop = Arc::clone(&stop);
             scope.spawn(move || watch_parent(&stop));
         }
+        {
+            let serving = &serving;
+            scope.spawn(move || dispatch(serving, jobs_rx));
+        }
 
         ready();
 
         for (server, loopback) in servers {
             let serving = &serving;
-            scope.spawn(move || accept_loop(serving, server, loopback));
+            let jobs_tx = jobs_tx.clone();
+            scope.spawn(move || accept_loop(serving, server, loopback, jobs_tx));
         }
-        accept_loop(&serving, primary.0, primary.1);
+        accept_loop(&serving, primary.0, primary.1, jobs_tx);
         stop.store(true, Ordering::Relaxed);
     });
     Ok(())
@@ -371,6 +382,14 @@ enum Verdict {
 /// now ties up one detached thread, never the thread every other client's
 /// command is queued behind.
 ///
+/// `jobs_tx` is shared with every other bound listener's accept loop (SH-173)
+/// — it is built once, in [`serve`], rather than one channel and one
+/// [`dispatch`] thread per listener. Before this split, a machine with a
+/// tailnet interface bound *two* listeners and therefore had two threads
+/// already serving the store concurrently, by accident of interface count
+/// rather than by design; one channel means one place SH-173's dispatch pool
+/// has to reason about.
+///
 /// **What this does not bound.** `tiny_http` exposes no way to configure an
 /// accepted socket — a request's body reader is an opaque `Box<dyn Read>`
 /// with no accessible file descriptor, and `SO_RCVTIMEO`/`SO_SNDTIMEO` set on
@@ -381,38 +400,34 @@ enum Verdict {
 /// what caught it before it shipped). So a single stalled worker still blocks
 /// forever in the worst case, tying up one thread and one fd rather than the
 /// whole daemon. Bounding that is SH-177's problem, not this one's.
-fn accept_loop<S: Store>(serving: &Serving<'_, S>, server: Server, loopback: bool) {
-    // A rendezvous channel: a worker's `send` blocks until dispatch is ready
-    // for the next job, which is what keeps this serial exactly as the
-    // original single-threaded loop was, and keeps at most one job in flight
-    // to the store at a time.
-    let (jobs_tx, jobs_rx) = mpsc::sync_channel::<Job>(0);
+fn accept_loop<S: Store>(
+    serving: &Serving<'_, S>,
+    server: Server,
+    loopback: bool,
+    jobs_tx: mpsc::SyncSender<Job>,
+) {
     let token: Arc<str> = Arc::from(serving.token.as_str());
 
-    thread::scope(|scope| {
-        scope.spawn(|| dispatch(serving, jobs_rx));
-
-        for request in server.incoming_requests() {
-            let jobs_tx = jobs_tx.clone();
-            let bus = serving.bus.clone();
-            let token = Arc::clone(&token);
-            let trusted_hosts = serving.trusted_hosts.clone();
-            let env = serving.env.clone();
-            let dispatch_registry = Arc::clone(&serving.dispatch_registry);
-            thread::spawn(move || {
-                worker(
-                    request,
-                    loopback,
-                    &token,
-                    bus,
-                    jobs_tx,
-                    &trusted_hosts,
-                    &env,
-                    &dispatch_registry,
-                )
-            });
-        }
-    });
+    for request in server.incoming_requests() {
+        let jobs_tx = jobs_tx.clone();
+        let bus = serving.bus.clone();
+        let token = Arc::clone(&token);
+        let trusted_hosts = serving.trusted_hosts.clone();
+        let env = serving.env.clone();
+        let dispatch_registry = Arc::clone(&serving.dispatch_registry);
+        thread::spawn(move || {
+            worker(
+                request,
+                loopback,
+                &token,
+                bus,
+                jobs_tx,
+                &trusted_hosts,
+                &env,
+                &dispatch_registry,
+            )
+        });
+    }
 }
 
 /// Handles one accepted connection's request — everything that touches the
