@@ -430,6 +430,26 @@ fn summary_and_report_agree_about_the_ready_count_by_two_different_routes() {
     assert_eq!(report.blocked_ids, Vec::<String>::new());
 }
 
+/// Regression test for SH-126 (council verdict,
+/// `.council/sh126-blocked-column-membership/DECISION.md`): a story in the
+/// literal `blocked` state, with no unmet `blocked-by` edge and no
+/// `awaiting` reason, used to be absent from `blocked_ids` and present in
+/// `ready_ids` — `report_data` computes both purely from `is_ready`, which
+/// never inspected `story.state`.
+#[test]
+fn report_data_treats_the_blocked_state_as_not_ready() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "manually blocked");
+    StoryService::new(&ctx)
+        .set_state(&id, "blocked", None, None)
+        .expect("blocking");
+
+    let report = query(&fixture, |service| service.report_data());
+    assert_eq!(report.blocked_ids, [id.as_str()]);
+    assert!(!report.ready_ids.contains(&id));
+}
+
 #[test]
 fn list_filters_are_conjunctive() {
     let fixture = ServiceFixture::new();

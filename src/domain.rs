@@ -1408,6 +1408,15 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnaps
     if story.superstate != SuperState::Open {
         return false;
     }
+    // `"blocked"` is one of the four `REQUIRED_STATES` (SH-125), pinned to
+    // `SuperState::Open` in every project by construction, so this is a safe
+    // check against a guaranteed reserved slug rather than a fragile string
+    // match against project-configurable state names. Without it, a story
+    // parked in `blocked` with no `awaiting` and no unmet `blocked-by` edge
+    // reported ready — SH-126's council verdict.
+    if story.state == "blocked" {
+        return false;
+    }
     if story.awaiting.is_some() {
         return false;
     }
@@ -3238,6 +3247,40 @@ mod tests {
             &state_map(),
         )
         .unwrap();
+
+        assert!(!is_ready(&story, &BTreeMap::new()));
+    }
+
+    /// Regression test for SH-126 (council verdict,
+    /// `.council/sh126-blocked-column-membership/DECISION.md`): a story
+    /// parked in the required `blocked` state (SH-125) with no `awaiting`
+    /// and no unmet `blocked-by` edge used to report `is_ready() == true`,
+    /// because `is_ready` never inspected `story.state`. The dashboard's
+    /// only affordance for blocking a story — dragging a card into the
+    /// Blocked column — writes exactly this shape (a bare state change, no
+    /// reason), so every dashboard-originated "block" contradicted its own
+    /// column.
+    #[test]
+    fn is_ready_returns_false_for_a_story_in_the_blocked_state() {
+        let story = StorySnapshot {
+            id: "SH-1".to_string(),
+            title: "Blocked".to_string(),
+            created_at: "2026-03-13T00:00:00Z".to_string(),
+            updated_at: "2026-03-13T00:00:00Z".to_string(),
+            state: "blocked".to_string(),
+            superstate: SuperState::Open,
+            assignee: None,
+            awaiting: None,
+            priority: Priority::None,
+            labels: Vec::new(),
+            story_type: None,
+            description: None,
+            comments: Vec::new(),
+            relationships: Vec::new(),
+            closed_at: None,
+            deleted: false,
+            deleted_reason: None,
+        };
 
         assert!(!is_ready(&story, &BTreeMap::new()));
     }

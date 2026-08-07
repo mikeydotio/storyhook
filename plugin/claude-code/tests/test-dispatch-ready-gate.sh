@@ -35,6 +35,15 @@ assert_eq "$(jqf "$out" .ok)" "false" "blocked-by: ok:false"
 assert_contains "$(jqf "$out" .display)" "blocked-by" "blocked-by: reason names the relationship"
 assert_contains "$(jqf "$out" .display)" "$dep_id" "blocked-by: reason names the blocker id"
 
+# --- literal blocked state (SH-126) ---
+# A story moved straight to the `blocked` state (not via `story block`, which
+# only sets `awaiting`) must also be refused by the gate — is_ready() checks
+# story.state directly now, so this is not the awaiting/blocked-by path above.
+blocked_state_id=$(new_story "$repo" "Manually blocked story")
+(cd "$repo" && story move "$blocked_state_id" "blocked" >/dev/null)
+out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$blocked_state_id" 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "blocked state: ok:false"
+
 # --- sanity: a genuinely ready story is NOT refused by the gate ---
 ready_id=$(new_story "$repo" "Ready story")
 out=$(cd "$repo" && STORY_DRY_RUN=1 bash "$SCRIPT" dispatch "$ready_id" 2>&1)
