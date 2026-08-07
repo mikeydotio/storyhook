@@ -74,10 +74,15 @@ fn forms_may_run_together(variant: &str) -> bool {
 /// `SyncConflict` is absent for a reason that changed with SH-152 and is worth
 /// stating precisely. It used to be constructed nowhere at all. It is now what
 /// `github-sync` answers with when a merge conflict is left undecided — but
-/// provoking one needs a live GitHub issue that disagrees with a local story,
-/// and `GithubClient` is a concrete `ureq` struct with no seam a test can stand
-/// in front of. So it is *reachable* and not *provokable here*, which is what
-/// [`UNPROVOKABLE`] now means. Its exit code is held by
+/// provoking one here needs a live GitHub issue that disagrees with a local
+/// story reached through this file's `provoke: fn(&TestEnv, bool) ->
+/// std::process::Output`, i.e. a real `story` subprocess. SH-158 gave
+/// `GithubClient` a trait seam (`github::api::GithubApi`), which is what makes
+/// `SyncConflict` provokable *in-process*, calling `github::run_sync_with`
+/// directly against a fake the way `github::outcome_tests` and the tests
+/// beside it do — but nothing wires that seam into the subprocess this file's
+/// rows spawn, so it stays *reachable* and not *provokable here*, which is
+/// what [`UNPROVOKABLE`] means. Its exit code is held by
 /// [`unreachable_variants_still_hold_their_exit_codes`], its refusal text by
 /// `github::outcome_tests`, and [`the_table_covers_every_variant`] is what
 /// stops it being forgotten.

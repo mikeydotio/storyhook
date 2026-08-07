@@ -70,7 +70,7 @@ pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
 pub use git_links::{CheckoutLink, GitLinkService, OriginLink};
 #[cfg(feature = "github-sync")]
-pub use github::{GithubSyncService, StoreSyncStorage};
+pub use github::{GithubSyncService, RealGithubApiFactory, StoreSyncStorage};
 pub use grouping::{GroupingService, PhaseCleared};
 pub use integrity::IntegrityService;
 pub use migrate::{MigrationPlan, MigrationReport};

@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use crate::cli::ConflictSide;
 use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot};
 use crate::error::AppError;
+use crate::github::api::{GithubApi, GithubApiFactory};
+use crate::github::client::GithubClient;
 use crate::github::conflict::Resolution;
 use crate::github::storage::SyncStorage;
 use crate::github::sync_state::GithubSyncConfig;
@@ -86,6 +88,7 @@ impl<'ctx, S: Store> GithubSyncService<'ctx, S> {
         });
         crate::github::run_sync_with(
             &StoreSyncStorage::new(self.ctx),
+            &RealGithubApiFactory,
             self.ctx.github_token(),
             story_id,
             dry_run,
@@ -93,6 +96,15 @@ impl<'ctx, S: Store> GithubSyncService<'ctx, S> {
             strategy,
             mode,
         )
+    }
+}
+
+/// [`GithubApiFactory`] backed by the real GitHub REST client.
+pub struct RealGithubApiFactory;
+
+impl GithubApiFactory for RealGithubApiFactory {
+    fn build(&self, token: String, owner: String, repo: String) -> Box<dyn GithubApi> {
+        Box::new(GithubClient::new(token, owner, repo))
     }
 }
 

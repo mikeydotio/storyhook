@@ -38,6 +38,7 @@
 
 mod crash;
 mod env;
+mod github;
 mod legacy_tree;
 mod project;
 mod pty;
@@ -48,6 +49,7 @@ mod store;
 
 pub use crash::{Crash, assert_no_daemon, crash_a_starting_daemon, crash_the_daemon, spawn_daemon};
 pub use env::{TestEnv, daemon_containment, story_binary};
+pub use github::{FakeGithubApiFactory, RecordedCall};
 pub use project::{
     Project, ProjectBuilder, SecondCheckout, assert_selection_is_not_inherited, git, slug_at,
 };
