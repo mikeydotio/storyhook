@@ -137,6 +137,36 @@ fn envelope(message: &str) -> String {
     .to_string()
 }
 
+/// What `story session-start` answers when it could not load project state at
+/// all — a failure caught before, or instead of, an ordinary answer from
+/// [`SessionService::context`].
+///
+/// # Why this is cause-agnostic
+///
+/// The caller here is a hook an agent harness kills on its own clock, well
+/// inside the 150s a `story` command may legitimately spend starting a cold
+/// daemon (`SPAWN_LOCK_DEADLINE`, 30s) and waiting for it to finish
+/// (`SERVED_DEADLINE`, 120s) — see SH-182. Whatever the underlying cause —
+/// spawn-lock contention, a `--deadline` this hook set expiring, a store that
+/// will not open — the remedy is the same for all of them: retry from a
+/// command with no external clock over it, or ask why. So this asks one
+/// question rather than diagnosing the failure it was given: does this
+/// checkout *claim* a project? If nothing here does, or the plugin is
+/// switched off, silence stays correct — indistinguishable from "no
+/// storyhook project", which is what [`SILENT`] has always meant, and
+/// changing that here would be scope this fix does not need.
+#[must_use]
+pub fn unavailable(cwd: &std::path::Path) -> String {
+    if plugin_disabled(cwd) || super::project::pointer_at_or_above(cwd).is_none() {
+        return SILENT.to_string();
+    }
+    envelope(
+        "storyhook is set up in this repository, but its project state could not be \
+         loaded in time. Run `story load-context` to retry outside this hook's budget \
+         — it will say why if it fails too.",
+    )
+}
+
 /// Whether the repository has switched the plugin off.
 ///
 /// The committed pointer file's `[plugin]` table first, the legacy

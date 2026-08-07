@@ -1179,3 +1179,110 @@ fn session_start_quiet_flag_still_outputs_json() {
         "additionalContext should not be empty with --quiet"
     );
 }
+
+// ============================================================
+// SH-182: session-start degrades rather than going silent when it cannot
+// answer in time.
+// ============================================================
+//
+// `story session-start` behind a held daemon spawn lock is `main.rs`'s
+// `Err(_) if silent_on_failure` branch reached for real: `lifecycle::ensure`
+// cannot take the lock, `--deadline` gives up before it does, and the
+// failure that reaches `session::unavailable` is exactly the shape a
+// contended cold start produces in production. `TestEnv` (rather than the
+// plain `story()` helper the rest of this file uses) is what makes holding
+// that lock from this test process safe: it is a private, isolated
+// environment, so nothing here can contend with a daemon anything else on
+// the machine is running.
+mod degrades_under_contention {
+    use fs4::FileExt;
+    use storyhook_test_support::TestEnv;
+
+    /// Opens (creating if needed) and exclusively locks `env`'s daemon spawn
+    /// lock. Unlocking is the caller's job.
+    fn hold_spawn_lock(env: &TestEnv) -> std::fs::File {
+        let environment = env.environment();
+        std::fs::create_dir_all(environment.daemon_state_dir()).expect("the daemon directory");
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(environment.daemon_spawn_lock())
+            .expect("opening the spawn lock");
+        held.try_lock_exclusive()
+            .expect("this test must be the one holding it");
+        held
+    }
+
+    /// A checkout that claims a project gets a recovery line, not silence,
+    /// when `--deadline` fires: the whole point of SH-182 is that this
+    /// failure is now something an agent can act on.
+    #[test]
+    fn a_pointer_file_present_gets_a_recovery_line_not_silence() {
+        let env = TestEnv::isolated();
+        let project = env.project().prefix("SH").build();
+        let held = hold_spawn_lock(&env);
+
+        let started = std::time::Instant::now();
+        let output = env
+            .story(project.path())
+            .args(["--deadline", "1", "session-start"])
+            .output()
+            .expect("running story --deadline 1 session-start");
+        let elapsed = started.elapsed();
+
+        let _ = FileExt::unlock(&held);
+        drop(held);
+
+        assert!(
+            output.status.success(),
+            "session-start must exit 0 even when it could not load project state: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "took {elapsed:?} against a --deadline of 1s"
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parsed: serde_json::Value =
+            serde_json::from_str(stdout.trim()).expect("output must still be valid JSON");
+        assert!(
+            super::has_session_context(&parsed),
+            "a checkout that claims a project must get the envelope, not bare {{}}: {stdout}"
+        );
+        let msg = super::context(&parsed);
+        assert!(
+            msg.contains("story load-context"),
+            "the recovery line must point at a way to retry: {msg}"
+        );
+    }
+
+    /// A directory with no pointer file — no reason to believe storyhook is
+    /// set up here at all — keeps the original silent contract: bare `{}`,
+    /// indistinguishable from "no storyhook project", exactly as it always
+    /// was before SH-182.
+    #[test]
+    fn no_pointer_file_stays_silent() {
+        let env = TestEnv::isolated();
+        let dir = storyhook_test_support::scratch_dir();
+        let held = hold_spawn_lock(&env);
+
+        let output = env
+            .story(dir.path())
+            .args(["--deadline", "1", "session-start"])
+            .output()
+            .expect("running story --deadline 1 session-start");
+
+        let _ = FileExt::unlock(&held);
+        drop(held);
+
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "{}",
+            "a directory claiming no project must stay silent, not gain a new failure mode"
+        );
+    }
+}

@@ -348,9 +348,15 @@ fn main() {
     // covers is raised by `daemon::lifecycle::ensure` *before* a daemon exists
     // to be asked, so there is no in-daemon layer that could answer it: only the
     // client can.
+    //
+    // `unavailable` rather than a bare `SILENT` (SH-182): the same window this
+    // covers — a spawn-lock wait, or a `--deadline` this invocation set —
+    // used to collapse into silence indistinguishable from "no project here",
+    // which is what let a session start with no storyhook context and nobody
+    // told. `unavailable` answers that only when there is nothing to say.
     let result = match result {
         Err(_) if silent_on_failure => Ok(Response::RawJson(
-            storyhook::service::session::SILENT.to_string(),
+            storyhook::service::session::unavailable(&cwd),
         )),
         other => other,
     };
