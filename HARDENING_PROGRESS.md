@@ -6,7 +6,7 @@ Plan of record:
 `/Users/mikey/.claude/plans/please-audit-the-dependency-majestic-hanrahan.md`
 
 An autonomous run over storyhook's backlog: a dependency-and-priority audit
-(done, PR #81), then **one story per context**, cleared by Freshen between them.
+(done, PR #81), then **one story per context**, cleared by Freshen before executing each.
 Every story gets a `## Log` entry below — successes, failures and skips alike.
 
 ---
@@ -118,55 +118,17 @@ destructively touch the real store outside SH-132's sanctioned procedure.
 
 ---
 
-## Phase 1 — backlog audit ✅
+## Backlog
 
-- [x] **1.1** Prune stale `CLAUDE.md` content (the "In flight" framing; the spent release note)
-- [x] **1.2** File four new stories — **SH-129** settings CLI, **SH-130** legal states, **SH-131** invariants, **SH-132** junk cleanup
-- [x] **1.3** Close SH-96 and SH-108 as obviated
-- [x] **1.4** Apply 14 dependency edges
-- [x] **1.5** Apply 20 priority changes
-- [x] **1.6** Verify — graph acyclic, nothing leaks into `--ready`, no `none` priorities, `story doctor` clean
-- [x] **1.7** Commit Phase 1 via `docs:` PR — merged as #81
-
-**Result:** 34 open → 36 open (four filed, two closed). 44 dependency edges.
-Critical path lengthened from 4 to 5: `SH-94 → SH-114 → SH-116 → SH-119 → SH-121`.
-Ready set fell from 25 to 21 — SH-95, SH-114, SH-124, SH-68, SH-109, SH-126 and
-SH-64 are now correctly blocked.
-
-**Deviation — SH-62 override.** SH-62 carried a deliberate prior decision:
-*"Not wired as a hard block on SH-116, but recommended ahead of it."* The audit
-upgraded it to a hard block and recorded why on the story. The reasoning behind
-the original call is unchanged; what changed is the reader. An autonomous loop
-reads the graph, not the prose, so a recommendation is invisible to it. Costs
-nothing — SH-62 is critical and SH-116 also waits on SH-114 and SH-115.
-
-**Deviation — running order.** `story next` leads with SH-62, not SH-129: both
-are critical and the tie breaks on age. Order among ready criticals is the
-orchestrator's call, so SH-129 → SH-124 run first as planned, to close the
-SH-124 hazard that corrupts this loop's own queue. (This tie-break-by-age
-fragility is SH-63, still open.)
-
-## Phase 2 — story queue
-
-**Re-derived from `story next` on 2026-08-03, after SH-118 landed**, and
-re-ordered by priority rather than by the original forecast. The forecast is
-gone: it named 20 stories and the backlog is now **51 open**, because this run
-and its neighbours filed 20 more while working (SH-133 … SH-168). Ordering by a
-list written before any of them existed was the thing to fix.
-
-**The graph has all but drained.** One `blocked-by` edge is left with an open
-story on the far end — SH-50 ← SH-120 — so almost everything below is ready
-and the order is a judgement rather than a topological sort. `story graph` is
-the check; re-run it rather than trusting this paragraph. (SH-64 ← SH-63 was
-the other one; SH-63 is done, below.)
-
-**Two stories are held by other sessions** and are marked ⚠ below. They are
-in-progress and were not moved by this loop: leave them alone, and skip to the
-next unheld line.
 
 ### Critical
 
-- **SH-112** — the server-owned epic · *closes when SH-120, SH-50 and SH-122 do; never worked directly*
+- **SH-112** — the server-owned epic · *re-derived 2026-08-07 from `story show SH-112`'s
+  relationships (`story graph` carries no edge for `parent-of`, so it will not surface
+  this): 14 children. SH-113–SH-122 and SH-50 are all done. Three remain open —
+  **SH-150** (below, medium) and **SH-187**, **SH-188** (priority `none`, filed under
+  this epic but not queued below — see their own `story show`). Closes when those three
+  do. Never worked directly.*
 
 ### High
 
@@ -188,9 +150,9 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-133** — rollback drops project settings · *filed by SH-129*
 - [x] **SH-137** — github-sync unreachable for an origin carrying userinfo
 - [x] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
-- [ ] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
+- [ ] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all · *picked up prematurely 2026-08-07 and un-claimed — see its own comment*
 - [ ] **SH-145** — the dashboard does not live-update a state change until reload
-- [ ] **SH-68** — `sync.mode = auto` is accepted and does nothing
+- ⚠ **SH-68** — `sync.mode = auto` is accepted and does nothing · *in-progress as of 2026-08-07T17:37 — another session; do not claim*
 
 ### Medium
 
@@ -206,16 +168,16 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [ ] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
 - [ ] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
 - [ ] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
-- [ ] **SH-164** — labels are sometimes concatenated
+- [x] **SH-164** — labels are sometimes concatenated
 - [ ] **SH-165** — an epic with in-progress children should read as in-progress
 - [ ] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118*
 - [ ] **SH-66** — `context --format json` double-encodes
-- [ ] **SH-42** — project selector dropdown
+- [x] **SH-42** — project selector dropdown
 - [ ] **SH-43** — archive
 - [ ] **SH-49** — linked PRs
 - [ ] **SH-155** — preserve presentation/layout settings
 - [ ] **SH-162** — allow hiding columns
-- [ ] **SH-50** — C9 Dispatch button · *unblocked, PR #134 merged; state `verifying` — held for Mikey's own sign-off, not for autonomous work*
+- [x] **SH-50** — C9 Dispatch button
 - [x] **SH-157** — visually indicate story types · *closed by another session*
 
 ### Low
