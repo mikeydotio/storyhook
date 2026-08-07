@@ -346,6 +346,33 @@ fn a_forced_stop_kills_a_daemon_that_is_still_draining() {
     // fast rather than waiting out its own deadline. Its exact error is not
     // this test's concern, only that it is reaped rather than left running.
     let _ = child.wait();
+
+    // What --force abandoned is not just gone — it is ledgered, and `story
+    // doctor abandoned` is how a human reviews and clears it.
+    let listing = env
+        .story(project.path())
+        .args(["doctor", "abandoned"])
+        .output()
+        .expect("listing abandoned commands");
+    let listing_text = String::from_utf8_lossy(&listing.stdout);
+    assert!(
+        listing_text.contains("comment"),
+        "the killed comment must appear in the abandoned ledger: {listing_text}"
+    );
+
+    env.story(project.path())
+        .args(["doctor", "abandoned", "clear", "--all"])
+        .assert()
+        .success();
+    let cleared = env
+        .story(project.path())
+        .args(["doctor", "abandoned"])
+        .output()
+        .expect("listing again after clearing");
+    assert!(
+        String::from_utf8_lossy(&cleared.stdout).contains("no abandoned"),
+        "clearing --all must actually empty the ledger"
+    );
 }
 
 /// The backups are reported by `daemon status` rather than by `doctor`: a

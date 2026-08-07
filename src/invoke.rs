@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    Attach, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
-    NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
-    StoreAction, TypeAction, WebAction,
+    AbandonedAction, Attach, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction,
+    Invocation, NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction,
+    StateAction, StoreAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState, TypeChanges, TypeDef};
 use crate::env::Environment;
@@ -596,6 +596,7 @@ pub fn dispatch<S: Store>(
                         let mut advice = orphan_advice(&orphans);
                         advice.extend(origin_advice(&origins));
                         advice.extend(backup_advice(ctx)?);
+                        advice.extend(abandoned_advice(ctx.env()));
                         Ok(Response::Issues(advice))
                     }
                     issues => Err(AppError::Integrity(issues.join("\n"))),
@@ -701,6 +702,7 @@ pub fn dispatch<S: Store>(
         } => dispatch_project_show(ctx),
         Invocation::Web { .. }
         | Invocation::Daemon { .. }
+        | Invocation::DoctorAbandoned { .. }
         | Invocation::Store { .. }
         | Invocation::Update { .. }
         | Invocation::ImportProject { .. }
@@ -1172,6 +1174,73 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
     }
 }
 
+/// `story doctor abandoned …` — the ledger [`ledger_abandoned`](crate::daemon::lifecycle::ledger_abandoned)
+/// writes, reviewed and triaged by hand.
+fn dispatch_doctor_abandoned(action: AbandonedAction) -> Result<Response, AppError> {
+    let env = Environment::from_process(None)?;
+    match action {
+        AbandonedAction::List => {
+            let ledger = crate::daemon::lifecycle::read_abandoned(&env);
+            Ok(Response::Message(abandoned_ledger_message(&ledger)))
+        }
+        AbandonedAction::Clear { request_id } => {
+            let changed = crate::daemon::lifecycle::clear_abandoned(&env, request_id.as_deref());
+            Ok(Response::Message(match request_id {
+                Some(id) if changed => format!("forgot the abandoned `{id}`."),
+                Some(id) => format!("no abandoned entry named `{id}`; nothing changed."),
+                None if changed => "forgot every abandoned entry.".to_string(),
+                None => "the abandoned-work ledger was already empty.".to_string(),
+            }))
+        }
+    }
+}
+
+/// What `story doctor abandoned` prints: every entry, with the recovery this
+/// codebase can actually recommend for its kind of work — `github-sync` may
+/// have made partial progress against GitHub itself and is safest re-run;
+/// anything else changed local data at most, and `story show`/`story list`
+/// answer whether it landed.
+fn abandoned_ledger_message(ledger: &[crate::daemon::lifecycle::AbandonedRequest]) -> String {
+    if ledger.is_empty() {
+        return "no abandoned commands.".to_string();
+    }
+    let mut body = format!(
+        "{} abandoned command{}, each one this daemon started but never confirmed \
+         finishing:\n\n",
+        ledger.len(),
+        if ledger.len() == 1 { "" } else { "s" }
+    );
+    for entry in ledger {
+        let recovery = if entry.request.command == "github-sync" {
+            "may have made partial progress against GitHub itself; re-running it is safe \
+             and picks up where it left off"
+        } else {
+            "may or may not have written locally; `story show`/`story list` on the story \
+             it named answers whether it landed"
+        };
+        body.push_str(&format!(
+            "  {}  `{}`{}\n    started {}, abandoned {}\n    {}\n    {}\n\n",
+            entry.request.request_id,
+            entry.request.command,
+            entry
+                .request
+                .project
+                .as_ref()
+                .map(|p| format!(" on `{p}`"))
+                .unwrap_or_default(),
+            entry.request.started_at,
+            entry.abandoned_at,
+            entry.reason,
+            recovery,
+        ));
+    }
+    body.push_str(
+        "`story doctor abandoned clear <request-id>` forgets one once you have checked \
+         it; `--all` forgets every entry above.",
+    );
+    body
+}
+
 /// `story update` — self-update, which touches no project data at all.
 fn update(check: bool, force: bool) -> Result<Response, AppError> {
     #[cfg(feature = "github-sync")]
@@ -1499,6 +1568,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
         invocation,
         Invocation::Daemon { .. }
             | Invocation::Web { .. }
+            | Invocation::DoctorAbandoned { .. }
             | Invocation::Store {
                 action: StoreAction::New { .. }
             }
@@ -1553,6 +1623,9 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         // one command a user reaches for when nothing is working.
         Invocation::Web { action } => dispatch_web(action),
         Invocation::Daemon { action } => dispatch_daemon(action),
+        // Reads and writes one file under the daemon's own state directory
+        // — no project, no store, exactly like the daemon commands above.
+        Invocation::DoctorAbandoned { action } => dispatch_doctor_abandoned(action),
         // `main` answers this one before a store is ever opened, for the
         // reasons on [`create_store`]. Reaching here means a caller went round
         // the front door, and the honest answer is that no store this arm could
@@ -1829,6 +1902,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
+        | Invocation::DoctorAbandoned { .. }
         | Invocation::Show { .. }
         | Invocation::Comment { .. }
         | Invocation::Assign { .. }
@@ -2051,6 +2125,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Plugin { .. } => "plugin",
         Invocation::Web { .. } => "web",
         Invocation::Daemon { .. } => "daemon",
+        Invocation::DoctorAbandoned { .. } => "doctor-abandoned",
         Invocation::Store { .. } => "store",
         Invocation::SessionStart => "session-start",
         Invocation::Update { .. } => "update",
@@ -3147,6 +3222,31 @@ fn backup_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppError> {
          backup of it does not include."
             .to_string(),
     ])
+}
+
+/// What `story doctor` says when the abandoned-command ledger is not empty
+/// (SH-173).
+///
+/// Advisory rather than an integrity failure, for the same reason
+/// [`backup_advice`] is: an abandoned command *may* have landed — a forced
+/// shutdown does not roll anything back, it only stops confirming — so a
+/// non-zero exit here would tell a script something is broken when the most
+/// likely truth is that nothing is. `story doctor abandoned` is where the
+/// detail and the recovery advice live; this is only the pointer to it, kept
+/// brief so a machine that has never forced a shutdown never sees it grow.
+fn abandoned_advice(env: &Environment) -> Vec<String> {
+    let ledger = crate::daemon::lifecycle::read_abandoned(env);
+    if ledger.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "{} command{} the daemon abandoned rather than confirmed finishing — most likely \
+         from `story daemon stop --force`, or a crash. `story doctor abandoned` lists each \
+         with a recovery suggestion; `story doctor abandoned clear` forgets one once you \
+         have checked it.",
+        ledger.len(),
+        if ledger.len() == 1 { "" } else { "s" }
+    )]
 }
 
 /// What `story doctor` says about a project whose checkout knows an origin the

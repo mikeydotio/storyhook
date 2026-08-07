@@ -360,6 +360,20 @@ impl Environment {
         self.daemon_state_dir().join("daemon.current.json")
     }
 
+    /// Where a daemon records work it abandoned rather than finished.
+    ///
+    /// Written only by `story daemon stop --force` (what it was still
+    /// serving when the grace period ran out) and by the next daemon's own
+    /// start (what [`Self::daemon_current`] still named when nothing could
+    /// legitimately still be running — the previous daemon did not exit
+    /// normally). A JSON array, in the order entries were abandoned; absent
+    /// when nothing has been. `story doctor` reads it to tell a user their
+    /// tracker may hold work whose outcome nobody confirmed, and
+    /// `story doctor abandoned` is how they review and clear it.
+    pub fn daemon_abandoned(&self) -> PathBuf {
+        self.daemon_state_dir().join("daemon.abandoned.json")
+    }
+
     /// Where a daemon that fails to start records *why*, for the client that
     /// started it.
     ///
