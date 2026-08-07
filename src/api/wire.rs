@@ -357,10 +357,10 @@ mod tests {
     /// back to reading the daemon's environment (SH-153).
     #[test]
     fn a_request_carries_its_token_across_the_hop() {
-        let token = crate::domain::secret::GithubToken::new("ghp_across_the_hop")
-            .expect("a usable token");
-        let request = WireRequest::new(Invocation::Summary, "/tmp/repo")
-            .github_token(Some(token.clone()));
+        let token =
+            crate::domain::secret::GithubToken::new("ghp_across_the_hop").expect("a usable token");
+        let request =
+            WireRequest::new(Invocation::Summary, "/tmp/repo").github_token(Some(token.clone()));
         let json = serde_json::to_string(&request).expect("encoding");
         let received: WireRequest = serde_json::from_str(&json).expect("decoding");
         assert_eq!(received, request);
@@ -382,7 +382,10 @@ mod tests {
     fn a_request_without_a_token_has_no_token_field() {
         let json = serde_json::to_value(WireRequest::new(Invocation::Summary, "/tmp")).unwrap();
         assert!(
-            !json.as_object().expect("an object").contains_key("github_token"),
+            !json
+                .as_object()
+                .expect("an object")
+                .contains_key("github_token"),
             "an absent credential must not appear on the wire at all: {json}"
         );
     }

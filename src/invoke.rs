@@ -1657,27 +1657,57 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
     match invocation {
         Invocation::GithubSync { .. } => true,
         // Everything else, listed rather than defaulted. See above.
-        Invocation::Help | Invocation::Project { .. } | Invocation::New { .. } |
-        Invocation::MemberAdd { .. } | Invocation::State { .. } | Invocation::List { .. } |
-        Invocation::Search { .. } | Invocation::Next { .. } | Invocation::Summary |
-        Invocation::Report { .. } | Invocation::Doctor { .. } | Invocation::Show { .. } |
-        Invocation::Comment { .. } | Invocation::Assign { .. } |
-        Invocation::SetState { .. } | Invocation::SetAwaiting { .. } |
-        Invocation::ClearAwaiting { .. } | Invocation::SetPriority { .. } |
-        Invocation::SetLabels { .. } | Invocation::Reopen { .. } |
-        Invocation::Delete { .. } | Invocation::Purge { .. } |
-        Invocation::BulkUpdate { .. } | Invocation::Import { .. } |
-        Invocation::Decompose { .. } | Invocation::Export |
-        Invocation::ImportProject { .. } | Invocation::Migrate { .. } |
-        Invocation::Context { .. } | Invocation::Handoff { .. } |
-        Invocation::Phase { .. } | Invocation::Type { .. } | Invocation::Epic { .. } |
-        Invocation::Graph { .. } | Invocation::SetFields { .. } |
-        Invocation::Relate { .. } | Invocation::Hooks { .. } |
-        Invocation::Scaffold { .. } | Invocation::CommitSync { .. } |
-        Invocation::HelpTopic { .. } | Invocation::HelpCompact | Invocation::HelpAll |
-        Invocation::Plugin { .. } | Invocation::Web { .. } | Invocation::Daemon { .. } |
-        Invocation::Store { .. } | Invocation::SessionStart | Invocation::Update { .. } |
-        Invocation::Version | Invocation::ProjectSnapshot | Invocation::History { .. } => false,
+        Invocation::Help
+        | Invocation::Project { .. }
+        | Invocation::New { .. }
+        | Invocation::MemberAdd { .. }
+        | Invocation::State { .. }
+        | Invocation::List { .. }
+        | Invocation::Search { .. }
+        | Invocation::Next { .. }
+        | Invocation::Summary
+        | Invocation::Report { .. }
+        | Invocation::Doctor { .. }
+        | Invocation::Show { .. }
+        | Invocation::Comment { .. }
+        | Invocation::Assign { .. }
+        | Invocation::SetState { .. }
+        | Invocation::SetAwaiting { .. }
+        | Invocation::ClearAwaiting { .. }
+        | Invocation::SetPriority { .. }
+        | Invocation::SetLabels { .. }
+        | Invocation::Reopen { .. }
+        | Invocation::Delete { .. }
+        | Invocation::Purge { .. }
+        | Invocation::BulkUpdate { .. }
+        | Invocation::Import { .. }
+        | Invocation::Decompose { .. }
+        | Invocation::Export
+        | Invocation::ImportProject { .. }
+        | Invocation::Migrate { .. }
+        | Invocation::Context { .. }
+        | Invocation::Handoff { .. }
+        | Invocation::Phase { .. }
+        | Invocation::Type { .. }
+        | Invocation::Epic { .. }
+        | Invocation::Graph { .. }
+        | Invocation::SetFields { .. }
+        | Invocation::Relate { .. }
+        | Invocation::Hooks { .. }
+        | Invocation::Scaffold { .. }
+        | Invocation::CommitSync { .. }
+        | Invocation::HelpTopic { .. }
+        | Invocation::HelpCompact
+        | Invocation::HelpAll
+        | Invocation::Plugin { .. }
+        | Invocation::Web { .. }
+        | Invocation::Daemon { .. }
+        | Invocation::Store { .. }
+        | Invocation::SessionStart
+        | Invocation::Update { .. }
+        | Invocation::Version
+        | Invocation::ProjectSnapshot
+        | Invocation::History { .. } => false,
     }
 }
 
