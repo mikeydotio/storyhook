@@ -187,7 +187,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
 - [x] **SH-133** — rollback drops project settings · *filed by SH-129*
 - [x] **SH-137** — github-sync unreachable for an origin carrying userinfo
-- [ ] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
+- [x] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
 - [ ] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
 - [ ] **SH-145** — the dashboard does not live-update a state change until reload
 - [ ] **SH-68** — `sync.mode = auto` is accepted and does nothing
@@ -215,7 +215,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [ ] **SH-49** — linked PRs
 - [ ] **SH-155** — preserve presentation/layout settings
 - [ ] **SH-162** — allow hiding columns
-- [ ] **SH-50** — C9 Dispatch button · *blocked by SH-120*
+- [ ] **SH-50** — C9 Dispatch button · *unblocked, PR #134 merged; state `verifying` — held for Mikey's own sign-off, not for autonomous work*
 - [x] **SH-157** — visually indicate story types · *closed by another session*
 
 ### Low
@@ -4653,3 +4653,90 @@ closed by another session, and its ⚠ was stale; SH-122 is now in-progress
 elsewhere and has gained one.
 
 **Council:** yes — `.council/sh-137-github-url-delegation/`.
+
+### SH-153 — done
+
+**Outcome:** `get_github_token` and `run_initial_setup` no longer call
+`Select::interact()` from the daemon. Two PRs, per the council verdict's own
+D4 split: #138 moves the credential into the request envelope; #139 replaces
+the three prompts with a setup-plan round trip and closes the story.
+
+**Deviation from the standard loop — recorded rather than smoothed over.**
+This story was not picked off the queue by an autonomous cycle. The session
+that reached D1-D4's council verdict (recorded on the story itself, before
+this entry) was interrupted mid-PR1 by a real hardware fault — a SEP panic,
+confirmed against `panic-full-2026-08-06-182940.0002.panic` and cross-checked
+against the crashed session's own transcript. The next session opened by
+resuming from that crash at Mikey's direction, verified nothing was lost
+(everything on disk was either committed or complete and uncommitted; the
+one real gap was that the two pre-crash commits had never been run through
+`cargo fmt`), and continued under his explicit direction rather than this
+file's own autonomy rule. Recorded here because the loop's honesty about its
+own deviations is the thing that makes the log worth trusting — no RCA filed:
+this was a hardware fault, not a defect in anything this program owns.
+
+**PR1 — the envelope.** `GithubToken` (already landed a commit earlier, see
+above) travels in `InvokeRequest`/`WireRequest` now, read once by
+`env::secrets::take_credentials()` as the first statement of `main` — reads
+**and removes** `STORYHOOK_GITHUB_TOKEN` in one call, so the daemon this
+process may spawn never inherits it and cannot hand it to an event hook, the
+dashboard's dispatch child, or `claude`. `TestEnv` gained `CLEARED_VARS`
+alongside `ISOLATED_VARS`: cleared rather than redirected, because there is
+no harmless value for a credential the way there is for a path. Three
+adjacent findings from the council's own D1, carried in the same PR:
+`update.rs`'s self-update check no longer attaches a bearer to a public,
+unauthenticated endpoint; `daemon.log` is 0600 like every other daemon file
+that matters, not `File::create`'s default 0644.
+
+**PR2 — the plan.** `run_initial_setup` now returns
+`InitialSetupOutcome::Plan` (nothing written) or `Configured` (computed, not
+yet saved — see the dry-run fix below), and `run_sync_with` turns a `Plan`
+into `Response::SetupRequired(SetupPlan)` — same model as
+`ConfirmationRequired`, asked by the client that has a terminal
+(`src/service/github_setup.rs`, built to `questionnaire.rs`'s shape) or
+answered up front with `--strategy`/`--mode`. The wizard's default is
+`future-only`, never `import-all`: a stray `Enter` must not perform the
+largest irreversible write the feature has. Match-by-title stopped being a
+per-pair menu and a case-insensitive substring rule; it is now exact after
+normalizing, unique on both sides, and order-invariant by construction (two
+frequency maps built once, rather than sequential exclusion reading its own
+growing output) — proven with a reversed-input comparison rather than
+asserted by inspection.
+
+**A live bug, found and fixed inside the same story rather than filed
+separately.** `story github-sync --dry-run --strategy <s> --mode <m>` on an
+unconfigured project wrote configuration despite `--dry-run` — the save used
+to live inside `run_initial_setup`, unconditionally. Not reproduced through a
+real command: reaching the write needs `GithubClient::validate_token`/
+`list_issues` to succeed first, and `GithubClient` has no trait seam
+(SH-158) to fake that offline. Fixed by moving the write to `run_sync_with`,
+beside every other write that function already gates on `dry_run`, and
+pinned with a structural test (`initial.rs` no longer calls `save_config` at
+all) — checked red against the prior commit before calling it fixed, the
+same discipline a behavioral repro would have gotten.
+
+`tests/invoker_seam.rs`'s allowlist: four entries to three.
+`src/github/initial.rs` is off it entirely; its replacement takes
+`impl BufRead` like `questionnaire.rs` and was never a candidate.
+
+**Filed, both independent of this story's own scope.** SH-195: `reserve_port()`
+binds a listener to prove nothing else holds a port, then releases it before
+the real daemon binds — a genuine TOCTOU window, found while investigating the
+crashed session's own unreproduced `daemon_git_env.rs` failure, and explicitly
+**not** claimed as that failure's cause (5 reproduction attempts, including at
+the exact pre-crash commit, all clean). SH-196: dashboard dispatch failing
+because the installed plugin cache predated the `--project` flag by nine
+commits — found from Mikey's own bug report after landing, reproduced exactly,
+and resolved by cutting a local-only-tagged plugin release (`story--v0.5.0`,
+untagged for push) rather than a code fix; the code-level defect (a
+version-skewed plugin fails with a generic usage message instead of a clear
+diagnosis) stays open.
+
+**Gate:** `make test` exits 0 twice — once for each PR — **2832 tests** after
+PR2, **0 failures**, plugin harness 24/24, browser suite 12/12. Every commit
+on both branches checked out and compiled individually under both
+`--all-features` and `--no-default-features` before push, to keep history
+bisectable. No orphans.
+
+**Council:** yes, before the crash — `.council/github-sync-setup-and-token-across-the-daemon/`.
+Not re-run; both PRs implement the verdict already recorded on the story.
