@@ -38,20 +38,26 @@ Both live in a new module, `src/api/dispatch.rs`, alongside `http`/`rest`/`rpc`/
 
 ### Off the store thread — the deadlock the design has to avoid
 
-`crate::daemon::serve::dispatch` is the single thread that owns the store, fed by a
-rendezvous channel of capacity zero — every other request queues behind whichever
-`rest::route`/`rpc::route` call is in flight. A dispatch takes 15–35 seconds even on
-the happy path, and `story.sh` gets there by making several of its own `story` CLI
-calls, each of which — since store isolation landed — reaches this **same** daemon
-over its own `/api/v1/invoke` connection. Answering a dispatch request on the store
-thread would deadlock on the first nested call: the request occupying that thread
-would be waiting on a child that is waiting on that same thread.
+`crate::daemon::serve::dispatch` runs on a fixed pool of `DISPATCHERS` threads that
+own the store between them, fed by a rendezvous channel of capacity zero — every
+request beyond that many queues behind whichever `rest::route`/`rpc::route` call is
+in flight on the rest (SH-173). A dispatch takes 15–35 seconds even on the happy
+path, and `story.sh` gets there by making several of its own `story` CLI calls, each
+of which — since store isolation landed — reaches this **same** daemon over its own
+`/api/v1/invoke` connection, at `hook_depth` 0. Answering a dispatch request on a pool
+thread would risk deadlock: with `MAX_RUNNING` dispatches each occupying one pool
+thread, their nested calls would have nowhere left to run — the same shape a hook
+that calls `story` back into this daemon would hit if its nested call queued behind
+the same pool its own parent occupies.
 
 So `api::dispatch::intercept` is checked in `worker()`, before a `Job` is ever built —
-the same place `GET /api/events` is already answered in full for the same reason. The
-subprocess runs on its own detached thread, tracked in a `DispatchRegistry` (in-memory,
-forgotten on daemon restart) that a `GET` polls. Nothing in this path ever touches
-`Serving::store`.
+the same place `GET /api/events` is already answered in full for the same reason, and
+the same shape SH-173's hook-depth lane generalizes: a request whose envelope names
+`hook_depth > 0` never queues behind the pool at all, because `hook_depth` caps
+nesting at one and a request that cannot recurse cannot deadlock waiting on itself.
+The dispatch subprocess runs on its own detached thread, tracked in a
+`DispatchRegistry` (in-memory, forgotten on daemon restart) that a `GET` polls.
+Nothing in this path ever touches `Serving::store`.
 
 ```mermaid
 sequenceDiagram
