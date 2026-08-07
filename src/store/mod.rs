@@ -171,6 +171,13 @@ pub trait ReadOps {
     /// id.
     fn project_by_slug(&self, slug: &str) -> Result<Option<ProjectRecord>, StoreError>;
 
+    /// The project whose story-id prefix this is, if any project holds it.
+    ///
+    /// Matched exactly, case included: a stored prefix is always canonical
+    /// uppercase. [`WriteOps::set_prefix`] is the one caller that must ask
+    /// before writing, so that two projects never mint colliding ids.
+    fn project_by_prefix(&self, prefix: &str) -> Result<Option<ProjectRecord>, StoreError>;
+
     /// Every project, ordered by slug.
     fn projects(&self) -> Result<Vec<ProjectRecord>, StoreError>;
 
@@ -372,6 +379,26 @@ pub trait WriteOps: ReadOps {
     /// flag is accepted and silently dropped — which is what the legacy
     /// registry, a file with a `name` field per repo, did not do.
     fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError>;
+
+    /// Sets a project's story-id prefix, leaving every other column alone.
+    ///
+    /// **Not, by itself, what makes a rename correct.** A story's rendered
+    /// `id` is derived fresh from this column every time it is folded, so
+    /// changing it here is enough for `id` on its own — but a relationship's
+    /// `other_id` is folded verbatim from the event that set it and does not
+    /// re-derive, so a caller that changes this without also appending
+    /// compensating `StoryRelationshipRemoved`/`StoryRelationshipAdded`
+    /// events for every relation in the project leaves the read model
+    /// internally inconsistent the moment anything is refolded: every
+    /// `other_id` still names the old prefix, `StoryNo::parse_id` rejects it
+    /// against the new one, and the story becomes unwritable. [`ProjectService::set_prefix`](crate::service::project::ProjectService::set_prefix)
+    /// is the one caller and does both, in the order this note describes —
+    /// this column first, so that its own compensating writes validate
+    /// against the prefix they are written under.
+    ///
+    /// Called after [`ReadOps::project_by_prefix`] has confirmed no other
+    /// project already holds `new_prefix`; this method does not check.
+    fn set_prefix(&mut self, project: ProjectId, new_prefix: &str) -> Result<(), StoreError>;
 
     /// Removes a project and every row recorded against it, permanently.
     ///
