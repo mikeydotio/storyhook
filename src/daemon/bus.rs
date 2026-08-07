@@ -1,17 +1,23 @@
 //! The daemon's change feed.
 //!
 //! Every connected `/api/events` client subscribes here, and everything that
-//! changes the store publishes here. Two publishers, deliberately:
+//! changes the store publishes here. Two publishers, deliberately — though
+//! only one of them reaches every write:
 //!
 //! 1. **The request boundary**, immediately after a mutating request commits.
 //!    Not inside the transaction — a subscriber woken while the writer still
 //!    holds the write lock would re-read the *previous* state, which is the
-//!    stale-dashboard bug in a new costume.
+//!    stale-dashboard bug in a new costume. **Only wired up for the
+//!    dashboard's own REST mutation routes** (`daemon/serve.rs`'s `dispatch()`,
+//!    the `rest::route` arm) — an ordinary `story` command's write, over
+//!    `POST /api/v1/invoke`, does not reach this publisher at all (filed as
+//!    SH-202; this is a documentation-accuracy note, not a fix).
 //! 2. **[`poll_data_version`]**, a low-frequency safety net over SQLite's
 //!    `PRAGMA data_version`, which changes whenever *another connection*
 //!    commits. That is how a write this daemon did not serve — a `story tui`
 //!    session, a second machine's rsync — reaches a browser that the daemon
-//!    never heard about.
+//!    never heard about. Until SH-202 is fixed, it is also the *only* way an
+//!    ordinary `story` command's own write reaches one.
 //!
 //! This replaces a filesystem watcher, and it is strictly more reliable than
 //! one. The watcher observed a directory of story files and provably missed
