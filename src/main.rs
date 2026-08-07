@@ -49,6 +49,19 @@ fn main() {
     // call site being single-threaded.
     storyhook::env::git_env::scrub_this_process();
 
+    // And the credential, in the same window and for a sharper version of the
+    // same reason (SH-153). `take_credentials` reads **and removes** in one
+    // call: from here on the GitHub token exists only as this value, so no
+    // child this process starts can inherit it — and the daemon, which would
+    // otherwise hold it for life and hand it to every event-hook script, the
+    // dashboard's dispatch child and `claude`, never sees it at all.
+    //
+    // Taken rather than scrubbed, and the two are not the same: `main` is also
+    // the one process that legitimately *reads* this variable, so a bare scrub
+    // beside the git one would leave the client with nothing to send. Reading
+    // and removing together is what makes the ordering impossible to get wrong.
+    let credentials = storyhook::env::secrets::take_credentials();
+
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
 
     // Global flags come off first, before anything looks at a verb, because
@@ -193,6 +206,32 @@ fn main() {
     } else {
         None
     };
+    // The caller's GitHub credential, read here for exactly the reason the
+    // piped stdin above is: this is the process that belongs to the person who
+    // typed the command. The daemon's environment is a snapshot of whichever
+    // client happened to start it, so reading it there answered a stranger's
+    // shell — telling a caller who had exported a token that it was unset, and
+    // handing the daemon's own to a caller who had not (SH-153).
+    //
+    // Asked per-invocation rather than read unconditionally: `story list` has
+    // no business carrying a credential, and `needs_github_token` is exhaustive
+    // over `Invocation` so that a later verb needing one cannot silently get
+    // `None`.
+    // Validated here rather than where it was taken, because a blank value is a
+    // different mistake from an absent one and has to be reported with the
+    // rendering the caller asked for — which was not known at the top of
+    // `main`. An *absent* credential is not an error at all here: the refusal
+    // belongs where the work runs, so that the dashboard and a hand-built
+    // request meet it too.
+    let github_token = if storyhook::invoke::needs_github_token(&invocation) {
+        match credentials.github_token() {
+            Ok(token) => token,
+            Err(error) => fail(&error, json),
+        }
+    } else {
+        None
+    };
+
     // The two sources are collapsed here, in the only process that can see
     // both: `$STORYHOOK_PROJECT` belongs to the caller's shell, and a daemon's
     // environment is its own. Applying precedence once, at the one site that
@@ -210,7 +249,8 @@ fn main() {
     let request = InvokeRequest::new(invocation)
         .no_hooks(flags.no_hooks)
         .stdin(piped)
-        .project(selector);
+        .project(selector)
+        .github_token(github_token);
     let depth = storyhook::event_hooks::depth_from_env();
     // **The CLI's only door.** There was a second — `--local`, which built a
     // `StoreInvoker` here and ran the work in this process — and it is gone

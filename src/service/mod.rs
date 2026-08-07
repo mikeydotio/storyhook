@@ -128,6 +128,7 @@ pub struct Ctx<'a, S: Store> {
     cwd: PathBuf,
     env: Environment,
     stdin: Option<String>,
+    github_token: Option<crate::domain::secret::GithubToken>,
 }
 
 impl<'a, S: Store> Ctx<'a, S> {
@@ -153,6 +154,7 @@ impl<'a, S: Store> Ctx<'a, S> {
             cwd: cwd.into(),
             env,
             stdin: None,
+            github_token: None,
         }
     }
 
@@ -165,6 +167,22 @@ impl<'a, S: Store> Ctx<'a, S> {
     #[must_use]
     pub fn with_stdin(mut self, stdin: Option<String>) -> Self {
         self.stdin = stdin;
+        self
+    }
+
+    /// Supplies the caller's GitHub credential.
+    ///
+    /// Here for the same reason [`with_stdin`](Self::with_stdin) is: the
+    /// credential belongs to whoever ran the command, and the daemon's own
+    /// environment belongs to whoever started the daemon (SH-153). An
+    /// in-process caller that leaves this unset has supplied none, and a
+    /// command that needs one refuses rather than looking elsewhere.
+    #[must_use]
+    pub fn with_github_token(
+        mut self,
+        github_token: Option<crate::domain::secret::GithubToken>,
+    ) -> Self {
+        self.github_token = github_token;
         self
     }
 
@@ -234,6 +252,12 @@ impl<'a, S: Store> Ctx<'a, S> {
     #[must_use]
     pub fn stdin(&self) -> Option<&str> {
         self.stdin.as_deref()
+    }
+
+    /// The caller's GitHub credential, if this invocation carried one.
+    #[must_use]
+    pub fn github_token(&self) -> Option<&crate::domain::secret::GithubToken> {
+        self.github_token.as_ref()
     }
 
     /// The current time, from this context's [`Clock`].
