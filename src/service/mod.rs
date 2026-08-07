@@ -34,6 +34,7 @@ pub mod git;
 pub mod git_links;
 #[cfg(feature = "github-sync")]
 pub mod github;
+pub mod github_setup;
 pub mod grouping;
 pub mod history;
 pub mod integrity;

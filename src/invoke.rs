@@ -182,6 +182,35 @@ impl InvokeRequest {
         }
         self
     }
+
+    /// The same request, with its setup answers already given.
+    ///
+    /// The second half of the two-step SH-153's D2 defines: the first
+    /// invocation answers [`Response::SetupRequired`] and writes nothing, the
+    /// client asks the user, and this is what carries the answer back. The
+    /// invocation is otherwise untouched — same story id, same `dry_run`,
+    /// same `resolve`.
+    ///
+    /// A request carrying anything other than `GithubSync` is returned
+    /// unchanged, which is what makes this safe to call unconditionally —
+    /// the same shape [`forced`](Self::forced) has.
+    #[must_use]
+    pub fn with_setup_answers(
+        mut self,
+        strategy: crate::cli::SetupStrategy,
+        mode: crate::cli::SetupMode,
+    ) -> Self {
+        if let Invocation::GithubSync {
+            strategy: s,
+            mode: m,
+            ..
+        } = &mut self.invocation
+        {
+            *s = Some(strategy);
+            *m = Some(mode);
+        }
+        self
+    }
 }
 
 /// Executes storyhook commands.
