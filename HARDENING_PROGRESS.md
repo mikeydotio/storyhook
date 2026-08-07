@@ -151,7 +151,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-137** — github-sync unreachable for an origin carrying userinfo
 - [x] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
 - [x] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
-- [ ] **SH-145** — the dashboard does not live-update a state change until reload
+- [x] **SH-145** — the dashboard does not live-update a state change until reload
 - ⚠ **SH-68** — `sync.mode = auto` is accepted and does nothing · *in-progress as of 2026-08-07T17:37 — another session; do not claim*
 
 ### Medium
@@ -4772,3 +4772,86 @@ Supervised per this file's own rule; no stall.
 dead-code finding named above.
 
 **PR:** #144, merged as `a7cbcbf`.
+
+### SH-145 — done
+
+Picked next off the High queue (first unchecked, non-⚠, non-⏸ line) after SH-158; SH-68,
+SH-112 and SH-173 were all confirmed genuinely in-progress in other sessions via `story
+list --state in-progress` before being skipped.
+
+**Reproduce before fix, taken literally.** The story's own three candidate mechanisms —
+did `poll_change_token` fire, did the heartbeat detect a dead connection, does the
+front end mishandle a received event — got an automated test and a live browser check
+before any code changed, per this file's rule 4 and CLAUDE.md's defect-handling tenets.
+
+First hypothesis, built from reading `daemon/serve.rs`'s `dispatch()`: the "request
+boundary" publisher the change feed's own module doc promises only fires for
+`rest::route` (the dashboard's own REST mutations) — `rpc::route`'s `POST /api/v1/invoke`,
+the *only* transport an ordinary `story` command uses since SH-114, returns its answer
+without ever touching `ChangeBus`. Wrote
+`tests/web_test.rs::sse_delivers_repo_changed_for_a_cli_write_through_the_daemon` — a real
+daemon subprocess, a real `story new`, an SSE connection watching — expecting red. It
+came back green in 2s: `poll_change_token`'s 250ms safety-net poll (over a `change_conn`
+dedicated to exactly this, per its own doc comment) already catches every CLI write fine.
+Confirmed a second way with a live Playwright browser against a real running daemon: a
+`story move` from another terminal moved the card between board columns instantly, no
+reload. Real gap (the module doc's "two publishers" claim is false for the primary write
+path), but not this story's root cause — filed separately as **SH-202** rather than fixed
+here, with a doc-accuracy correction to `daemon/bus.rs`'s module doc landed in its own
+commit.
+
+**Actual root cause**, found by re-reading what "the browser never got told" can mean:
+`EventSource` only reports an error when its connection actually *closes*. A connection
+that goes silently dead — laptop sleep, a NAT mapping expiring mid-idle — may never close
+at all: a browser's TCP stack keeps accepting the daemon's small, 20s-interval heartbeat
+writes into its local receive buffer without them ever crossing a link that no longer
+exists, so `onerror` never fires and nothing in `web_dashboard.html` ever reconnects it.
+No test could force a real network partition, but nothing needed to: the front end had
+*zero* liveness check independent of `EventSource`'s own (unreliable, for this failure
+mode) error reporting — a structural absence, provable by inspection and by what fixing it
+changes.
+
+**The fix:** a client-side watchdog with no server dependency. `sse.lastEventAt` updates on
+every SSE message; `sseWatchdog()` (a `setInterval`) force-closes and reopens the
+`EventSource` once too long has passed without one — bounding staleness to one watchdog
+interval instead of leaving it open-ended. `Change::Ping` became a real named `ping` event
+(`daemon/bus.rs`) rather than a bare SSE comment, since a comment is invisible to
+`EventSource`'s API and the watchdog needs a heartbeat to actually observe on an otherwise
+quiet connection. Both intervals are query-string overridable
+(`sseStaleAfterMs`/`sseWatchdogIntervalMs`), mirroring `STORYHOOK_SSE_HEARTBEAT_MS`'s
+existing pattern on the daemon side, so `e2e/specs/sse-watchdog.spec.ts` can shrink them to
+something a 15s test budget outwaits without touching the seeded daemon's real ~20s
+heartbeat — which, left alone, simply never fires inside the test's short window, no fault
+injection required to produce the silence the watchdog is supposed to notice.
+
+**Verified red→green the hard way:** `git stash` of the fix commit's frontend/bus.rs
+changes, reran the new e2e spec — failed exactly as expected (`Expected: > 3, Received:
+3`). Popped the stash, reran — green. This is the only test in the run so far verified
+against a genuine revert rather than trusted on first green, since the earlier `poll_change_token`
+test's own red→green (see above) already covered that discipline for the ruled-out path.
+
+**Council:** not run. No design question with 2+ defensible alternatives arose — the
+watchdog's shape (client-side timer, no server dependency) had one clearly-correct answer
+once the root cause was established, and SH-202's fix approach is explicitly left open for
+whoever picks it up next rather than decided here.
+
+**Three commits, two hats (plus one doc-only):** `docs(daemon)` — the bus.rs module-doc
+correction, SH-202 reference, no behavior change; `fix(web)` — the actual watchdog +
+Ping-becomes-an-event fix, bundled with its own regression tests (the updated ping
+wire-format assertion, the new e2e spec) since neither is a refactor and both are required
+at that commit; `test(web)` — the standalone CLI-invoke-path investigation test, additive
+coverage independent of the fix itself.
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace, all-targets), full
+Rust suite, plugin harness (24/24), e2e (13/13 including the new spec) — no failures, no
+warnings, clean working tree after. Supervised per this file's own rule: `make test`
+launched via `nohup ... &` inside a backgrounded Bash call, which detached it from the
+tool's own completion tracking (a lesson for next time — pass the long-running command
+directly to `run_in_background` rather than shell-backgrounding it); caught the mistake,
+stood up a manual log-growth watchdog with the prescribed 120s stall bound around the
+orphaned process instead of abandoning supervision. No stall; ran clean start to finish.
+
+**Filed, independent of this story's scope:** SH-202, the change feed's request-boundary
+publisher not reaching CLI writes (see above).
+
+**PR:** #147, merged as `b317a87`.
