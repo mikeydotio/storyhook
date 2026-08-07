@@ -17,15 +17,25 @@
 //!
 //! Registration and lookup must normalize *identically*, forever. Two functions
 //! that drift is the entire defect this design exists to prevent — and the drift
-//! is not hypothetical: [`crate::github::sync_state::parse_github_url`] parses
-//! remote URLs for a different purpose and matches three literal prefixes, so it
-//! already fails on `https://user@github.com/owner/repo.git`, a form two real
-//! repositories on that same machine use.
+//! was not hypothetical. [`crate::github::sync_state::parse_github_url`] parsed
+//! remote URLs for a different purpose, and because it matched three literal
+//! prefixes it refused `https://user@github.com/owner/repo.git` — a form two
+//! real repositories on that same machine use — while this module accepted it.
+//! One of the two was wrong, and it was not the one with the tests for it.
+//! SH-137 fixed that parser and then deleted it: it calls
+//! [`RemoteUrl::path_on`] now, so there is one grammar in the binary.
 //!
 //! So [`RemoteUrl`] has no public fields and no constructor other than
 //! [`RemoteUrl::normalize`] and the lookup-shaped wrapper around it. A caller
 //! cannot hold a key that some other rule produced, because there is no way to
 //! make one.
+//!
+//! Nor is there a way to take one apart. [`RemoteUrl::path_on`] answers a
+//! *question* — "what do you name on this host?" — where a `host()` and a
+//! `path()` would hand out the pieces of [`RemoteUrl::key`]'s format and invite
+//! the next caller to reassemble them into a third grammar. It takes the host as
+//! an argument, which is also what keeps the promise below: this module does not
+//! know what `github.com` is.
 //!
 //! # What the key collapses, and what it must never collapse
 //!
@@ -178,6 +188,44 @@ impl RemoteUrl {
     #[must_use]
     pub fn raw(&self) -> &str {
         &self.raw
+    }
+
+    /// The repository path this remote names **on `host`**, or `None` if it
+    /// names one somewhere else.
+    ///
+    /// # Why this is a question and not a decomposition
+    ///
+    /// This is the only way to ask a [`RemoteUrl`] what it points at, and it is
+    /// deliberately shaped as a question. There is no `host()` and no `path()`:
+    /// publishing those would turn [`key`](Self::key)'s `host/path` format into
+    /// a contract a caller could reassemble, and a caller that reassembles a key
+    /// is a caller with a second grammar — the one thing this module exists to
+    /// prevent. It takes the host as an **argument**, so nothing here ever
+    /// inspects a host's *value*, and a forge's own rules stay with the code
+    /// that knows about that forge.
+    ///
+    /// # What it matches
+    ///
+    /// `host` is compared against the whole host segment, case-insensitively
+    /// and **including any port**. `github.com` therefore does not match a
+    /// remote on `github.com:8443`: [`key`](Self::key) already treats those as
+    /// different endpoints, and this must not disagree with it.
+    ///
+    /// A filesystem remote always answers `None`, by an explicit prefix guard
+    /// rather than by the accident that `local:` happens not to equal any real
+    /// host a caller would pass.
+    ///
+    /// The path comes back as it is stored — case-folded, `.git`-stripped, and
+    /// with repeated slashes collapsed. How many segments a repository may have
+    /// is the caller's rule, not this module's: GitHub allows exactly two,
+    /// GitLab's nested subgroups legitimately allow more.
+    #[must_use]
+    pub fn path_on(&self, host: &str) -> Option<&str> {
+        if self.key.starts_with(LOCAL_PREFIX) {
+            return None;
+        }
+        let (key_host, path) = self.key.split_once('/')?;
+        key_host.eq_ignore_ascii_case(host).then_some(path)
     }
 }
 
@@ -365,6 +413,13 @@ impl From<NormalizeError> for AppError {
 /// local path.
 const NETWORK_SCHEMES: [&str; 4] = ["https", "http", "ssh", "git"];
 
+/// The class tag a filesystem remote's key carries, and the guard
+/// [`RemoteUrl::path_on`] reads it with.
+///
+/// One constant with two uses rather than two literals: the tag and the guard
+/// that recognises it cannot drift apart if there is only one of them.
+const LOCAL_PREFIX: &str = "local:/";
+
 /// Reduces a trimmed, non-empty remote to its key, deciding which of the three
 /// shapes it is.
 fn classify(raw: &str) -> Result<String, NormalizeError> {
@@ -472,7 +527,7 @@ fn local_key(path: &str, raw: &str) -> Result<String, NormalizeError> {
     if resolved.is_empty() {
         return Err(NormalizeError::Unclassifiable(raw.to_string()));
     }
-    Ok(format!("local:/{}", resolved.join("/")))
+    Ok(format!("{LOCAL_PREFIX}{}", resolved.join("/")))
 }
 
 /// Collapses repeated slashes and strips leading and trailing ones.
@@ -538,7 +593,7 @@ mod tests {
     #[test]
     fn userinfo_is_dropped_from_the_key() {
         // The exact form two real repositories on the author's machine use, and
-        // the one `github::sync_state::parse_github_url` fails on today.
+        // the one `github::sync_state::parse_github_url` refused until SH-137.
         assert_eq!(
             key("https://wookiee@github.com/mikeyward/keymux.git"),
             key("https://github.com/mikeyward/keymux")
@@ -794,6 +849,85 @@ mod tests {
         set.insert(a);
         assert!(set.contains(&b), "hashing must agree with equality");
         assert_eq!(set.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // `path_on` — the one question a caller may ask of a key
+    //
+    // Shaped as a question rather than a `host()`/`path()` pair on purpose, so
+    // no caller can reassemble the key format into a grammar of its own. These
+    // pin the properties that shape depends on.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn path_on_answers_for_its_own_host_and_no_other() {
+        let remote = RemoteUrl::normalize("git@github.com:acme/widgets.git").unwrap();
+        assert_eq!(remote.path_on("github.com"), Some("acme/widgets"));
+        assert_eq!(remote.path_on("gitlab.com"), None);
+    }
+
+    #[test]
+    fn path_on_matches_the_whole_host_never_a_suffix() {
+        // The failure this prevents is not cosmetic: a caller with a hardcoded
+        // api.github.com would otherwise accept `github.example.com` and query
+        // a same-named *public* repository — and `evilgithub.com` besides.
+        for raw in [
+            "https://github.example.com/acme/widgets",
+            "https://evilgithub.com/acme/widgets",
+            "https://github.com.example/acme/widgets",
+        ] {
+            assert_eq!(
+                RemoteUrl::normalize(raw).unwrap().path_on("github.com"),
+                None,
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_on_is_case_insensitive_in_its_argument() {
+        // The key's host is already folded; the argument is whatever a caller
+        // wrote in its own source, and the two must agree regardless.
+        let remote = RemoteUrl::normalize("https://GitHub.com/Acme/Widgets").unwrap();
+        assert_eq!(remote.path_on("GitHub.COM"), Some("acme/widgets"));
+    }
+
+    #[test]
+    fn path_on_treats_a_port_as_part_of_the_host() {
+        // `key` already holds these to be different endpoints. If this answered
+        // for the bare host it would disagree with the key it reads from.
+        let remote = RemoteUrl::normalize("https://git.acme.com:8443/o/r").unwrap();
+        assert_eq!(remote.path_on("git.acme.com"), None);
+        assert_eq!(remote.path_on("git.acme.com:8443"), Some("o/r"));
+    }
+
+    #[test]
+    fn path_on_never_answers_for_a_filesystem_remote() {
+        // Including when a caller asks for the class tag by name: `local:` is
+        // not a host, and the guard is explicit so this cannot come to depend
+        // on no real caller happening to pass that string.
+        for raw in ["/srv/git/repo.git", "file:///srv/git/repo"] {
+            let remote = RemoteUrl::normalize(raw).unwrap();
+            assert_eq!(remote.path_on("local:"), None, "{raw}");
+            assert_eq!(remote.path_on("local"), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn path_on_returns_the_path_as_the_key_stores_it() {
+        // Folded, `.git`-stripped, slashes collapsed — the caller gets exactly
+        // what identity decided, not a re-derivation of it.
+        let remote = RemoteUrl::normalize("https://GitHub.com//Acme//Widgets.GIT/").unwrap();
+        assert_eq!(remote.path_on("github.com"), Some("acme/widgets"));
+    }
+
+    #[test]
+    fn path_on_does_not_decide_how_many_segments_a_repository_has() {
+        // That rule belongs to the forge-specific caller. GitHub allows exactly
+        // two; GitLab's nested subgroups allow more. This hands back the path
+        // and lets the caller refuse.
+        let remote = RemoteUrl::normalize("https://github.com/acme/widgets/tree/main").unwrap();
+        assert_eq!(remote.path_on("github.com"), Some("acme/widgets/tree/main"));
     }
 
     #[test]

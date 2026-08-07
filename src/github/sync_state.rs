@@ -18,6 +18,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::remote::RemoteUrl;
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
@@ -95,50 +96,74 @@ pub fn find_mapping_by_issue(
 // Git remote detection
 // ---------------------------------------------------------------------------
 
-/// Parse a GitHub remote URL into owner/repo.
+/// The one host github-sync can talk to.
 ///
-/// Handles:
-/// - `https://github.com/{owner}/{repo}.git`
-/// - `https://github.com/{owner}/{repo}`
-/// - `git@github.com:{owner}/{repo}.git`
+/// Matched by **whole-host equality**, never a suffix. [`super::client`]
+/// hardcodes `https://api.github.com`, so accepting `github.example.com` would
+/// point the client at a same-named *public* repository and push an internal
+/// project's stories into a stranger's issue tracker; `ends_with("github.com")`
+/// would admit that and `evilgithub.com` besides. GitHub Enterprise needs a
+/// host-derived API base, which is its own story rather than a looser match
+/// here.
+const GITHUB_HOST: &str = "github.com";
+
+/// Parse a GitHub remote URL into owner/repo, or refuse it.
+///
+/// # One grammar
+///
+/// The URL grammar is [`RemoteUrl`]'s and nothing else's. This used to match
+/// three literal prefixes of its own, which is how it came to refuse
+/// `https://user@github.com/owner/repo.git` — a form two real repositories on
+/// the author's machine use — while the identity grammar next door accepted it
+/// (SH-137). Two parsers cannot drift apart if there is only one.
+///
+/// What is left here is the part that is GitHub's rather than git's: the host
+/// must be [`GITHUB_HOST`], and the path must be **exactly** `owner/repo`. That
+/// rule does not belong in [`RemoteUrl`] — GitLab's nested subgroups make three
+/// segments legitimate there — so [`RemoteUrl::path_on`] hands back the path and
+/// this function decides.
+///
+/// # What it accepts
+///
+/// Every spelling identity accepts on `github.com`: `https`, `http`, `ssh` and
+/// `git` schemes, the scp-like `[user@]github.com:owner/repo` form, with or
+/// without userinfo, `.git`, a trailing slash, repeated slashes, or surrounding
+/// whitespace.
+///
+/// # What it refuses
+///
+/// Any other host, including a GitHub Enterprise one and any host on a port; a
+/// filesystem remote; and a path that is not exactly two segments — a browse URL
+/// like `.../widgets/tree/main` used to yield the repo name `widgets/tree/main`,
+/// which the API can only 404 on, silently persisted into the sync config.
+///
+/// # Case
+///
+/// Owner and repo come back **case-folded**, because identity folds case for
+/// every host. Every consumer is case-insensitive — the API paths are
+/// `/repos/{owner}/{repo}`, which GitHub resolves either way — or cosmetic. A
+/// config written before this change keeps its own spelling and nothing
+/// re-derives it, so there is nothing to migrate.
 pub fn parse_github_url(url: &str) -> Option<GithubRepo> {
-    let url = url.trim();
-
-    // SSH format: git@github.com:owner/repo.git
-    if let Some(rest) = url.strip_prefix("git@github.com:") {
-        let rest = rest.strip_suffix(".git").unwrap_or(rest);
-        let (owner, repo) = rest.split_once('/')?;
-        if owner.is_empty() || repo.is_empty() {
-            return None;
-        }
-        return Some(GithubRepo {
-            owner: owner.to_string(),
-            repo: repo.to_string(),
-        });
+    // `normalize_for_lookup` rather than `normalize`: here every reason a URL
+    // could be refused means the same thing — this remote is not a GitHub
+    // project — and telling them apart would be the mistake.
+    let remote = RemoteUrl::normalize_for_lookup(url)?;
+    let (owner, repo) = remote.path_on(GITHUB_HOST)?.split_once('/')?;
+    if repo.contains('/') {
+        return None;
     }
-
-    // HTTPS format: https://github.com/owner/repo[.git]
-    if let Some(rest) = url
-        .strip_prefix("https://github.com/")
-        .or_else(|| url.strip_prefix("http://github.com/"))
-    {
-        let rest = rest.strip_suffix(".git").unwrap_or(rest);
-        let rest = rest.strip_suffix('/').unwrap_or(rest);
-        let (owner, repo) = rest.split_once('/')?;
-        if owner.is_empty() || repo.is_empty() {
-            return None;
-        }
-        return Some(GithubRepo {
-            owner: owner.to_string(),
-            repo: repo.to_string(),
-        });
-    }
-
-    None
+    Some(GithubRepo {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+    })
 }
 
-/// Detect owner/repo from git remote origin URL.
-/// Handles both HTTPS and SSH formats.
+/// Detect owner/repo from this repository's `origin`.
+///
+/// Every way this can fail — no git, no `origin`, a URL that is not a GitHub
+/// project — collapses to `Ok(None)`, which the caller reports as "No GitHub
+/// remote found". See [`parse_github_url`] for which URLs are which.
 pub fn detect_github_remote(root: &Path) -> Result<Option<GithubRepo>, AppError> {
     let output = crate::env::git_env::command(root)
         .args(["remote", "get-url", "origin"])
@@ -319,6 +344,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_https_url_with_userinfo() {
+        // The exact form two real repositories on the author's machine use.
+        // Userinfo is a credential hint git carries in the url, not part of the
+        // repository's identity, so it must not decide whether a remote is
+        // GitHub — it used to, and github-sync was unreachable for both (SH-137).
+        let r = parse_github_url("https://wookiee@github.com/mikeyward/keymux.git").unwrap();
+        assert_eq!(r.owner, "mikeyward");
+        assert_eq!(r.repo, "keymux");
+    }
+
+    #[test]
     fn parse_non_github_url_returns_none() {
         assert!(parse_github_url("https://gitlab.com/acme/widgets.git").is_none());
         assert!(parse_github_url("git@gitlab.com:acme/widgets.git").is_none());
@@ -331,5 +367,98 @@ mod tests {
         let r = parse_github_url("https://github.com/acme/widgets.git\n").unwrap();
         assert_eq!(r.owner, "acme");
         assert_eq!(r.repo, "widgets");
+    }
+
+    // -----------------------------------------------------------------------
+    // What the one grammar decided (SH-137)
+    //
+    // Everything above this line predates the delegation and passes unchanged;
+    // that is the gate on the URLs that already worked. Everything below is an
+    // arm the delegation newly decides, one test each, because delegating to a
+    // strictly more permissive grammar is a behaviour change and not a
+    // refactor.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_ssh_scheme_url() {
+        // A valid GitHub origin the three literal prefixes could not see.
+        let r = parse_github_url("ssh://git@github.com/acme/widgets").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_git_scheme_url() {
+        let r = parse_github_url("git://github.com/acme/widgets.git").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_scp_url_with_userinfo_other_than_git() {
+        // `git@` was matched as a literal, so any other user missed. The
+        // grammar cares that there is userinfo, not what it says.
+        let r = parse_github_url("wookiee@github.com:acme/widgets.git").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_url_with_repeated_slashes() {
+        let r = parse_github_url("https://github.com//acme//widgets").unwrap();
+        assert_eq!(r.owner, "acme");
+        assert_eq!(r.repo, "widgets");
+    }
+
+    #[test]
+    fn parse_url_folds_case() {
+        // Identity folds case for every host, so the pair this yields is
+        // folded too. Every consumer is case-insensitive — the API paths are
+        // `/repos/{owner}/{repo}`, which GitHub resolves either way — or
+        // cosmetic. A config written before this change keeps its own spelling
+        // and nothing re-derives it, so there is nothing to migrate.
+        let r = parse_github_url("https://github.com/MikeyWard/KeyMux").unwrap();
+        assert_eq!(r.owner, "mikeyward");
+        assert_eq!(r.repo, "keymux");
+    }
+
+    #[test]
+    fn parse_url_with_a_deeper_path_is_refused() {
+        // A browse URL pasted as a remote used to yield repo
+        // `widgets/tree/main` — a value the API can only 404 on, persisted
+        // silently into the sync config. A refusal is the honest answer.
+        assert!(parse_github_url("https://github.com/acme/widgets/tree/main").is_none());
+    }
+
+    #[test]
+    fn parse_url_naming_an_owner_but_no_repository_is_refused() {
+        assert!(parse_github_url("https://github.com/acme").is_none());
+        assert!(parse_github_url("https://github.com/").is_none());
+    }
+
+    #[test]
+    fn parse_github_enterprise_host_is_refused() {
+        // `GithubClient` hardcodes `https://api.github.com`, so accepting a GHE
+        // host would build a client that queries a same-named *public*
+        // repository and push an internal project's stories into a stranger's
+        // issue tracker. Whole-host equality, never a suffix match — which is
+        // also what keeps `evilgithub.com` out. Supporting GHE means a
+        // host-derived API base, and that is its own story.
+        assert!(parse_github_url("https://github.example.com/acme/widgets").is_none());
+        assert!(parse_github_url("https://evilgithub.com/acme/widgets").is_none());
+    }
+
+    #[test]
+    fn parse_url_on_a_github_port_is_refused() {
+        // A port names a different endpoint, and the API base is not it.
+        assert!(parse_github_url("https://github.com:8443/acme/widgets").is_none());
+    }
+
+    #[test]
+    fn parse_filesystem_remote_is_refused() {
+        // A bare repository on a NAS is a real git remote and no GitHub
+        // project. It must not be read as a host named `local`.
+        assert!(parse_github_url("/srv/git/widgets.git").is_none());
+        assert!(parse_github_url("file:///srv/git/widgets.git").is_none());
     }
 }
