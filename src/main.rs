@@ -193,6 +193,34 @@ fn main() {
     } else {
         None
     };
+    // The caller's GitHub credential, read here for exactly the reason the
+    // piped stdin above is: this is the process that belongs to the person who
+    // typed the command. The daemon's environment is a snapshot of whichever
+    // client happened to start it, so reading it there answered a stranger's
+    // shell — telling a caller who had exported a token that it was unset, and
+    // handing the daemon's own to a caller who had not (SH-153).
+    //
+    // Asked per-invocation rather than read unconditionally: `story list` has
+    // no business carrying a credential, and `needs_github_token` is exhaustive
+    // over `Invocation` so that a later verb needing one cannot silently get
+    // `None`.
+    let github_token = if storyhook::invoke::needs_github_token(&invocation) {
+        match env::var(storyhook::domain::secret::GITHUB_TOKEN_VAR) {
+            // A blank value is a different mistake from an absent one, and it
+            // is refused here rather than becoming a puzzling 401 from GitHub
+            // two network calls later.
+            Ok(raw) => match storyhook::domain::secret::GithubToken::new(raw) {
+                Ok(token) => Some(token),
+                Err(error) => fail(&error, json),
+            },
+            // Absent. The refusal belongs where the work runs, so that the
+            // dashboard and a hand-built request meet it too.
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
     // The two sources are collapsed here, in the only process that can see
     // both: `$STORYHOOK_PROJECT` belongs to the caller's shell, and a daemon's
     // environment is its own. Applying precedence once, at the one site that
@@ -210,7 +238,8 @@ fn main() {
     let request = InvokeRequest::new(invocation)
         .no_hooks(flags.no_hooks)
         .stdin(piped)
-        .project(selector);
+        .project(selector)
+        .github_token(github_token);
     let depth = storyhook::event_hooks::depth_from_env();
     // **The CLI's only door.** There was a second — `--local`, which built a
     // `StoreInvoker` here and ran the work in this process — and it is gone

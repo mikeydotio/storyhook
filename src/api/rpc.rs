@@ -186,7 +186,8 @@ fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
                 InvokeRequest::new(request.invocation.clone())
                     .no_hooks(request.no_hooks)
                     .stdin(request.stdin.clone())
-                    .project(request.project.clone()),
+                    .project(request.project.clone())
+                    .github_token(request.github_token.clone()),
             )
     }))
     .unwrap_or_else(|_| {
