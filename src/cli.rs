@@ -585,6 +585,26 @@ pub enum ProjectAction {
         /// Authorize the destruction without being asked.
         force: bool,
     },
+    /// Rename a project's story-id prefix, everywhere it is embedded — the
+    /// SH-109 verb that makes a rename safe to do at all.
+    ///
+    /// **No target of its own**, for the same reason as [`Delete`](Self::Delete):
+    /// the ordinary selector names the project, this names only the new
+    /// prefix.
+    ///
+    /// Rewrites the project row, every relationship any of its stories claim
+    /// (a story's own rendered `id` self-heals on refold; `other_id` does
+    /// not, and is rewritten by real compensating events), and any
+    /// github-sync merge-base snapshots. Free-text description and comment
+    /// bodies are deliberately left alone — there is no grammar in this
+    /// codebase for a story-id reference inside prose, so rewriting one
+    /// would be a guess dressed up as a fact.
+    SetPrefix {
+        /// The prefix every id renders under from this point on.
+        new_prefix: String,
+        /// Authorize the rewrite without being asked.
+        force: bool,
+    },
     /// Every project the store knows, checkout or no checkout.
     List,
     /// This project: which one the ordinary selector resolved, and where its
@@ -1312,6 +1332,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         subcommand: Some("delete"),
         flags: &[bare("force")],
     },
+    VerbFlags {
+        verb: "project",
+        subcommand: Some("set-prefix"),
+        flags: &[bare("force")],
+    },
     // The two retired verbs keep their entries, and this is the reason rather
     // than an oversight. Both are redirects now, and SH-62's gate runs *ahead*
     // of every parser — so without an entry declaring what each used to take,
@@ -1635,8 +1660,9 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
 
 const PROJECT_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                              [--attach <PATH> | --no-attach] [--no-agents-md] | delete \
-                             [--force] | show | list | link origin [URL]|checkout [PATH] | \
-                             unlink origin [URL]|checkout | settings list|get|set|unset";
+                             [--force] | set-prefix <NEW-PREFIX> [--force] | show | list | \
+                             link origin [URL]|checkout [PATH] | unlink origin [URL]|checkout \
+                             | settings list|get|set|unset";
 
 const PROJECT_SHOW_USAGE: &str = "usage: story project show\n\n`story project show` takes no \
                                   argument. It reports the project this directory resolves \
@@ -1646,6 +1672,12 @@ const PROJECT_DELETE_USAGE: &str = "usage: story project delete [--force]\n\n`st
                                     delete` takes no positional argument. It destroys the \
                                     project this directory resolves to; name a different one \
                                     with `--project <slug>`.";
+
+const PROJECT_SET_PREFIX_USAGE: &str = "usage: story project set-prefix <NEW-PREFIX> \
+                                        [--force]\n\n`story project set-prefix` takes exactly \
+                                        one positional argument, the new prefix. It rewrites \
+                                        the project this directory resolves to; name a \
+                                        different one with `--project <slug>`.";
 
 const PROJECT_NEW_USAGE: &str = "usage: story project new [--prefix <PREFIX>] [--name <NAME>] \
                                  [--attach <PATH> | --no-attach] [--no-agents-md]\n\nRun with no \
@@ -1671,6 +1703,7 @@ fn parse_project(args: &[String]) -> Result<Invocation, AppError> {
     match action.as_str() {
         "new" => parse_project_new(args),
         "delete" => parse_project_delete(args),
+        "set-prefix" => parse_project_set_prefix(args),
         // Redirects, never `unknown command`. Being told where a command went
         // is the whole difference from being told it never existed, and 34
         // files and five years of documents say `story project init`. Kept for
@@ -1795,6 +1828,31 @@ fn parse_project_delete(args: &[String]) -> Result<Invocation, AppError> {
 
     Ok(Invocation::Project {
         action: ProjectAction::Delete { force },
+    })
+}
+
+/// `story project set-prefix <NEW-PREFIX> [--force]`.
+///
+/// **Exactly one positional**, unlike `delete`: naming a project is still
+/// `--project`'s job, but the new prefix has no flag to hide behind — it is
+/// the one thing this verb exists to be told. Syntax is validated downstream,
+/// by the same [`crate::domain::prefix::validate`] every other prefix passes
+/// through, so the message a bad prefix gets is identical whichever verb
+/// typed it.
+fn parse_project_set_prefix(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = || AppError::Usage(PROJECT_SET_PREFIX_USAGE.to_string());
+    let new_prefix = args.get(2).ok_or_else(usage)?.clone();
+    let mut force = false;
+
+    for arg in &args[3..] {
+        match arg.as_str() {
+            "--force" | "-f" => force = true,
+            _ => return Err(usage()),
+        }
+    }
+
+    Ok(Invocation::Project {
+        action: ProjectAction::SetPrefix { new_prefix, force },
     })
 }
 

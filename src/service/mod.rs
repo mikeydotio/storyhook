@@ -75,7 +75,8 @@ pub use grouping::{GroupingService, PhaseCleared};
 pub use integrity::IntegrityService;
 pub use migrate::{MigrationPlan, MigrationReport};
 pub use project::{
-    DeleteOutcome, InitOptions, InitOutcome, OriginOutcome, ProjectPointer, ProjectService,
+    DeleteOutcome, InitOptions, InitOutcome, OriginOutcome, PointerUpdate, ProjectPointer,
+    ProjectService, SetPrefixOutcome,
 };
 pub use query::{ListFilters, QueryService};
 pub use relation::{RelationOutcome, RelationService};

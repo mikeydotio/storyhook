@@ -156,7 +156,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 
 ### Medium
 
-- [ ] **SH-109** — prefix confirmation / `set-prefix` residual
+- [x] **SH-109** — prefix confirmation / `set-prefix` residual
 - [x] **SH-122** — C11 Residual gap
 - [ ] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
 - [ ] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
@@ -4855,6 +4855,108 @@ orphaned process instead of abandoning supervision. No stall; ran clean start to
 publisher not reaching CLI writes (see above).
 
 **PR:** #147, merged as `b317a87`.
+
+### SH-109 — done
+
+Picked next off the Medium queue (first unchecked, non-⚠, non-⏸ line) after SH-158/SH-145;
+the High queue's own remainder was SH-182 (⏸, held for Mikey) and SH-68 (⚠, confirmed
+genuinely in-progress via `story list --state in-progress`, updated within the hour).
+
+**Scope, read from the story's own comment rather than its title**, per this file's rule 3.
+The title says "prefix confirmation"; the 2026-08-01 comment says items 1–2 (confirm at
+init, derive a default from the directory name) landed with SH-117 already, and re-scopes
+this story to item 3 alone: a supported `story project set-prefix` that rewrites a
+project's story-id prefix everywhere it is embedded, in one transaction — "the one that
+would have made the original incident a non-event."
+
+**Investigation before design.** An Explore agent mapped the whole surface before any
+code: the `events_reject_update`/`events_reject_delete` triggers (append-only, no
+precedent for lifting either — the sanctioned pattern for "rewrite what an old event
+value was baked into" is a compensating `INSERT`, demonstrated by migration 9's own
+`story`→`normal` type rename); that `stories.snapshot.id` self-heals for free on refold
+(rendered fresh from the live prefix) while `snapshot.relationships[].other_id` does not
+(folded verbatim from the event that set it); the exact `StoryNo::parse_id` validation
+and its ~14 call sites; and the `ProjectService::delete`/`purge` precedent for a two-step
+dry-run-then-confirm destructive verb.
+
+**Council:** yes, three questions with real tradeoffs — scope (structured-only vs.
+heuristic free-text rewrite), the safety backup's destination, and the confirmation
+shape. Panel: data-engineer, software-architect, skeptic. Unanimous 3-0 on the first
+round, all three converging on the skeptic's own proposal after independently verifying
+its two sharpest claims against the source: that the obvious backup call
+(`store.snapshot(&env.backups_dir())`) would collide with the daily FIFO prune's
+filename-only match and could be silently swept before anyone used it — the SH-135
+defect, reproduced in automated form — and that nothing anywhere enforces prefix
+uniqueness across projects, a gap all three round-1 proposals had otherwise missed. Audit
+trail in `.council/set-prefix-scope-safety-confirmation/` (gitignored, per this repo's
+`.gitignore`); verdict recorded as a comment on SH-109 rather than re-litigated.
+
+**What shipped**, matching the verdict exactly: `WriteOps::set_prefix` (a plain `UPDATE`,
+mirroring `rename_project`) plus, for every relationship a project's stories claim, one
+compensating `StoryRelationshipRemoved` (old-form `other_id`) and one
+`StoryRelationshipAdded` (new-form) — `StoryService::purge`'s own "rewrite via a real
+event, never a silent table edit" pattern — folded together with the story's own refold.
+`github_bases` merge-base snapshots are rewritten directly (no event log of their own to
+fold from); the linked checkout's `.storyhook.toml` is updated best-effort after the store
+transaction commits, reported rather than failing the whole rewrite if it can't be. A
+verified whole-store snapshot lands in a new `Environment::maintenance_backups_dir` —
+deliberately not `backups_dir`, so the daily prune can never reach it. The confirmation is
+`ConfirmationPlan::SetPrefix`, dry-run counts computed in a read transaction exactly like
+`delete_plan`/`purge_plan`, gated by the same typed-token mechanism (token = the new
+prefix) — which needed `main.rs::confirm()`'s hardcoded "this would permanently delete"
+generalized into `ConfirmationPlan::headline()`, since a rename destroys nothing and the
+old wording would have been describing an act that never happens.
+
+**Deliberately not rewritten:** free-text description and comment bodies. `scan_story_refs`
+is the only grammar this codebase has for a story-id reference in text, and it is proven
+for exactly one thing — git commit messages, during commit-sync — never prose. The council
+ruled out even an opt-in flag for this: a guess at a reference inside user-authored text
+risks rewriting something that only looks like one, with no evidence anyone has asked for
+it. Recorded on SH-109 as a known limitation rather than solved speculatively.
+
+**Reproduced the original defect directly, TDD-style, before trusting the fix.**
+`tests/service_project_set_prefix.rs`'s first test is not a test of `set_prefix` at all —
+it links two stories, swaps `projects.prefix` with a raw `UPDATE` through a second
+connection (the exact manual mistake made on the real `agentics` project), and asserts an
+ordinary write to either story now fails with `story id `HP-7` does not belong to a
+project with prefix `AGE``. Every other test in that file and in
+`tests/project_set_prefix.rs` (CLI-level: the confirmation gate, `--json`/no-terminal
+refusals, the two-step round trip, an end-to-end rename) is the same fixture put through
+`ProjectService::set_prefix` instead. Verified red before green: temporarily forcing the
+per-story loop to always take the no-relationships refold path (skipping the compensating
+events) turned 3 of 11 service-level tests and 1 of 13 CLI-level tests red with exactly
+that failure, confirmed, then reverted.
+
+**Five commits, dependency-ordered rather than by two-hats** (there is no refactor here to
+separate a fix from): `feat(store)` → `feat(output)` → `feat(service)` → `feat(cli)` →
+`test`. Each verified to compile in isolation — `git stash push -u`, `cargo check
+--all-targets --all-features`, `git stash pop`, repeated at every step — so the branch
+stays bisectable in fact, not just in principle.
+
+**Gate, run twice.** Once on the complete, unsplit diff before commits existed at all, and
+again on the final five-commit HEAD after splitting — both clean: fmt, clippy
+(`-D warnings`, workspace, all-targets), full Rust suite, plugin harness (24/24), e2e
+(13/13). **Made the exact mistake this file's own SH-145 entry warns about, twice**:
+launched `make test` as `nohup ... &` / `( ... ) &` inside an already-backgrounded shell
+call both times, which let the launcher return immediately and produced a false-early
+"completed" notification while the real run kept going unsupervised underneath. Caught
+both times by checking the actual process table (`ps aux`) rather than trusting the
+notification, and recovered by supervising the real PID directly with a `Monitor` log-
+growth heartbeat (20s interval, 120s stall bound) instead of restarting. No true stall in
+either run. The lesson recorded in SH-145's own entry was read and still not applied on
+the first attempt here — worth being blunt about rather than smoothing over, since the fix
+that would actually prevent a third repeat is procedural (pass the command straight to
+`run_in_background`, never wrap it in a subshell `&`), not documentary; the words were
+already on the page.
+
+One other stray observed during supervision, not touched: a second, unrelated `make test`
+was running concurrently (PID 4695, started 1:56PM) from what `story list --state
+in-progress` confirms is another session's SH-173 worktree. Left alone, per this file's own
+rule about not claiming a story another session has in progress, extended here to not
+touching another session's processes either.
+
+**PR:** #149, merged as `13af39b`. SH-109 auto-closed by the merge (the `feat(service)`
+commit's body carried `Closes SH-109`).
 
 ### SH-182 — done
 
