@@ -709,8 +709,17 @@ First time on a project:
     manual          run 'story github-sync' explicitly (the wizard's default)
     off             disable sync for this project
 
-  Both flags must be given together, or not at all, and neither
-  applies to a project that is already configured.
+  --strategy and --mode must be given together for this first sync, and
+  --strategy never applies to a project that is already configured.
+
+Changing the mode later:
+  story github-sync --mode manual|off
+
+  On a project that is already configured, --mode alone (no --strategy,
+  no <id>) changes the stored mode instead of syncing -- the way to
+  turn a disabled project back on, or to repair one still carrying a
+  mode this build refuses to run under. Needs no GitHub token: it
+  writes the stored configuration and nothing else.
 
 Conflicts:
   When both sides changed one field to different values, storyhook
@@ -727,13 +736,13 @@ Conflicts:
 Configuration (per project, in the store):
   sync_mode = "manual"    # off | manual
 
-  Note: "auto" is no longer offered. It fired from the tail of the
-  pre-rearchitecture write path, was never given an equivalent on the
-  invoker, and was deleted with that path. A project migrated from
-  before then may still carry it; storyhook says so and treats it as
-  "manual". Honest auto-sync means a GitHub call on the tail of every
-  story-modifying command, in the daemon as well as locally — a feature
-  with a failure policy and a timeout to design, not a switch to flip.
+  Note: "auto" is not offered, and a project still carrying it -- from
+  before the rearchitecture, which deleted the code that ran it -- is
+  refused rather than silently treated as manual, naming the repair:
+  `story github-sync --mode manual` (or --mode off). Honest auto-sync
+  means a GitHub call on the tail of every story-modifying command, in
+  the daemon as well as locally — a feature with a failure policy and a
+  timeout to design, not a switch to flip.
 
 Related:
   story commit-sync  — Link git commits to stories
