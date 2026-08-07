@@ -144,7 +144,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-120** — C8 Dispatch plumbing · *both halves landed; SH-50 is unblocked*
 - [x] **SH-166** — `/story do` should not prefix the worktree with the repo name · *closed by another session as #119*
 - [x] **SH-140** — five assertions assert speed, not liveness, at core-count parallelism
-- ⏸ **SH-182** — the SessionStart hook's 5s budget sits below the 30s spawn-lock wait its own `story` call may take · *filed by SH-140's council; **held for Mikey's design call** — do not work it autonomously*
+- [x] **SH-182** — the SessionStart hook's 5s budget sits below the 30s spawn-lock wait its own `story` call may take · *filed by SH-140's council; Mikey's design call taken 2026-08-07*
 - [x] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
 - [x] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
 - [x] **SH-133** — rollback drops project settings · *filed by SH-129*
@@ -4855,3 +4855,79 @@ orphaned process instead of abandoning supervision. No stall; ran clean start to
 publisher not reaching CLI writes (see above).
 
 **PR:** #147, merged as `b317a87`.
+
+### SH-182 — done
+
+Not picked from the queue — held for Mikey's design call since SH-140 filed it (see
+above), worked directly in a linked worktree once he made it, not by this file's
+autonomous loop.
+
+**The call:** neither of the two shapes the story offered. Not "raise the timeout to
+30s" (explicitly rejected in the story itself — a 30s session start is worse than the
+bug), and not a session-start-only fix either. The budget now travels from the *caller*
+as a global `--deadline <seconds>` flag — a mechanism, not a special case — because
+`post-git.sh` (`story commit-sync`, 10s) and `stop-handoff.sh` (`story handoff`, 15s)
+carry the identical ordering violation against the same 150s ceiling
+(`SPAWN_LOCK_DEADLINE` + `SERVED_DEADLINE`) and needed the same fix, not a story each.
+`hooks.json`'s numbers do not change: each script now declares its own `--deadline` 2s
+inside its manifest timeout (3/8/13 against 5/10/15), so the manifest is a backstop the
+script's own bound has to beat, not the thing that governs the wait.
+
+**Reproduced before anything was written**, per this file's own rule 4: held
+`daemon.spawn.lock` with `fs4`'s `try_lock_exclusive` from the test process (the exact
+fixture `tests/daemon_timeouts.rs::ensure_gives_up_on_a_spawn_lock_somebody_else_holds`
+already uses), ran `story session-start` against it with no fix in place — **31.05s**,
+exit 0, `{}`. Confirmed the story's own claim exactly: allowed to live 5s, actually took
+6x that, and would have been SIGKILLed by Claude Code with nothing recovered.
+
+**`session::unavailable(cwd)` is deliberately cause-agnostic**, which is the one design
+decision inside the accepted shape that was not dictated by the story text. It replaces
+the blind `{}` `main.rs` fell back to on *every* session-start failure — an expired
+`--deadline`, spawn-lock contention, a store that will not open — with the same recovery
+line for all of them: `story load-context` has no external clock over it and will say why
+if it fails too. It only speaks when a pointer file actually claims a project here and
+the plugin is not switched off; a directory claiming nothing stays silent, unchanged. This
+turned out to reach further than session-start's own contention case: an existing test
+(`tests/project_selection.rs`) had pinned bare `{}` for a *corrupted store* too, which is
+squarely the same failure class this fix means to cover — updated rather than left as a
+regression, with an explicit assertion that the recovery line never leaks the store's own
+corruption detail.
+
+**Verified against contention that is not a test fixture.** A separate `python3` process
+held the real `daemon.spawn.lock` via `flock` while `session-start.sh` ran unmodified,
+against a real daemon state directory: 3.1s, carrying the recovery line, against the same
+scenario's 31s before the fix and the 5s Claude Code allows. Warm daemon and cold spawn
+both measured too (18ms, 136ms) — the fix costs nothing on the path that already worked.
+
+**Four commits, two hats, plus one caught by the gate itself:** the pure refactor
+(`pointer_at_or_above` lifted to a free function `session::unavailable` also needs), the
+`--deadline` mechanism (with its own live tests — expires behind a held lock, does not
+wedge the next command, `0` is a legitimate value, a non-numeric value is refused by
+name), the actual fix (the three scripts, `session::unavailable`, the static
+`tests/hook_budgets.rs` regression guard the story asked for — reads `hooks.json` and
+every script, no wall clock spent, moved its manifest parser into
+`storyhook-test-support` so `tests/session_start_hook.rs`'s SH-140 copy cannot drift from
+it), and the `project_selection.rs` update above. A fifth, `style: cargo fmt src/cli.rs`,
+exists only because the gate's `fmt --check` leg caught a formatting slip in the
+`--deadline` commit that a local `cargo build` does not — kept separate rather than
+folded back in, since amending a non-HEAD commit here means an interactive rebase this
+project's own rules forbid.
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace, all-targets), 126
+green test blocks (0 failures), plugin harness 24/24, e2e 13/13, clean working tree after.
+One real failure surfaced and was fixed mid-run (the `project_selection.rs` update above),
+not silently worked around. Supervised per this file's own rule — and its own lesson from
+the SH-145 entry above was repeated once before being caught: the first `make test` run
+was shell-backgrounded with `nohup ... &`, detaching it from the tool's own completion
+tracking exactly as that entry warns; relaunched with the long-running command passed
+directly to the harness's background execution instead, which is what actually caught the
+next failure (a `cargo fmt` violation) via a real completion notification rather than a
+guess.
+
+**Council:** not run. AskUserQuestion settled the three open design questions directly
+with Mikey during planning — the degrade shape, the exact 3s budget, and whether to fix
+all three hooks now — each a single clear call once framed as options, not a 2+-defensible-
+alternative decision needing a panel.
+
+**PR:** #151, opened from the linked worktree; not merged from here per this project's own
+rule (worktrees stop after opening the PR — deploys and version bumps happen from `main`).
