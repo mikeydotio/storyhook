@@ -1282,6 +1282,14 @@ fn invocation_corpus() -> Vec<Invocation> {
                 path: "/tmp/scratch/store.db".to_string(),
             },
         },
+        Invocation::Store {
+            action: StoreAction::Backup {
+                label: Some("pre-migration".to_string()),
+            },
+        },
+        Invocation::Store {
+            action: StoreAction::Backup { label: None },
+        },
     ]
 }
 
