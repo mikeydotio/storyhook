@@ -5203,3 +5203,159 @@ process) is not this story's defect to fix.
 **PR:** #154, merged as `c38b4de`. Neither commit body carried a `Closes SH-135` trailer,
 so `story move SH-135 done` was run explicitly per step 7, after verifying the merge
 landed and `main` was pulled clean.
+
+### SH-173 — done
+
+**Outcome:** merged. One slow command no longer blocks every client on the
+machine — the measured defect (a `sleep 20` event hook inside `story comment`
+made `story list`, `GET /api/v1/hello` and `GET /api/projects` all return
+**together at 16.95s**) reproduced directly against this binary before any
+line changed (`story list` took **19.7s** queued behind a 20s hook), and is
+gone after: a slow hook-bound command no longer inflates a concurrent
+`story list` at all in `tests/daemon_concurrency.rs`.
+
+**The determination the story's own comment asked for.** Concurrent mutation
+of SQLite is unsafe *in general*, but the daemon never asked SQLite to
+tolerate concurrent writers — `SqliteStore::write` holds `write_lock` for its
+whole closure before and after this story, so N dispatchers still serialize
+into one `BEGIN IMMEDIATE` at a time. What becomes concurrent is readers
+against a writer, and everything that was never the store at all: hooks,
+git, GitHub, rendering. No move to PostgreSQL; the store layer was already
+built for this (`Store: Send + Sync`, WAL, a real connection pool, story
+numbers minted inside the write transaction, and `store::conformance.rs`
+already proving 8 concurrent writers before this story touched anything).
+
+**The pool is fixed, not elastic, and the reason is structural rather than
+stylistic.** `DISPATCHERS = 8`, derived from `api::dispatch::MAX_RUNNING`
+(4) plus margin, enforced against it as a `const _: () = assert!(...)` so
+the two constants can never drift apart silently. An elastic pool was
+designed first and rejected: it still deadlocks at its own ceiling — "grows
+on demand" only raises the threshold, it does not change the shape — and the
+chosen primitive (`Mutex<Receiver<Job>>`) cannot support proper idle
+retirement without discarding the rendezvous channel that gives the pool its
+back-pressure in the first place.
+
+**What actually makes the deadlock impossible, not merely rarer:** a request
+nested inside an event hook (`hook_depth > 0`) never queues behind the fixed
+pool at all. `worker` peeks `hook_depth` from the still-unparsed body — the
+envelope stays the single source of truth for *behaviour*, the peek decides
+only *scheduling* — and routes it through a second, unbounded channel to an
+always-alive `nested_lane` thread that spawns a fresh scoped thread per
+nested job. `hook_depth` caps nesting at one, so the lane can never recurse:
+bounded by construction to at most `DISPATCHERS` concurrent nested requests,
+never by a limit that could itself be exceeded. Recursive `thread::scope`
+spawning turned out to be exactly as sound as the design needed — `Scope` is
+`Send + Sync`, and each spawn is a fresh OS thread, not stack recursion.
+
+**`daemon.current.json` widened from one record to the whole in-flight set**,
+behind a new `InFlight`/`Entry` RAII type that is the *only* writer — a raw
+write from two callers at once would let the second clobber the first, the
+exact defect concurrent dispatch would otherwise have reintroduced. Each
+entry now carries `served_deadline_secs`, computed once, server-side,
+because only the daemon can resolve a command's own `cwd` and therefore its
+project's hook configuration; `lifecycle::verdict` became a pure function
+over an `Observed` bundle with two clocks (`mine_for`, tracked from the
+moment a client first sees its own `request_id` in the set, and
+`since_change`, over the whole set) rather than one. SH-144's central
+property — a client queued behind moving work waits arbitrarily long —
+survives verbatim; what changes is that a client's *own* served time is now
+bounded by its own entry rather than by "did anything in the daemon move",
+which stopped being a safe proxy the moment more than one thing could
+legitimately be in flight. Named plainly as the one regression this story
+knowingly ships, with the mitigation that could be built: the deadline
+widens by the largest hook timeout the project actually configures, turning
+`SERVED_DEADLINE`'s own long-standing "no honest derivation exists yet" into
+one.
+
+**Shutdown stopped sleeping 500ms and hoping.** The request that answers
+`/api/v1/shutdown` sets a `draining` flag before its reply goes out; every
+dispatcher checks it before routing a job it dequeues and refuses new work
+with the 503 a shutting-down daemon already used elsewhere. The worker that
+received the shutdown reply then polls the in-flight registry — uncapped —
+and exits the instant it empties, faster than the old blind sleep on the
+common path and correct on the uncommon one. `story daemon stop` gained a
+mode: unforced waits however long an orderly drain takes and announces
+itself once past `SERVED_PATIENCE`, naming `--force` as the escape hatch;
+`--force` gives `FORCE_GRACE` (2s), then signals the pid directly, and
+whatever was still in flight at that moment becomes the caller's problem —
+literally: it is ledgered.
+
+**`daemon.abandoned.json`, a new file, closes a defect this story found
+along the way rather than one it went looking for.** Nothing ever cleared a
+stale `daemon.current.json` left by a `kill -9` or a crash; the next daemon
+inherited it and the next client waiting on that daemon read a frozen record
+naming a command that finished long ago. `InFlight::harvest_stale` now
+ledgers what it finds before clearing it, and `--force` ledgers whatever it
+abandoned immediately before signalling. `story doctor` reports a non-empty
+ledger as advisory, not an integrity failure — the same reasoning already
+applied to backup and origin advisories: a forced shutdown does not roll
+anything back, it only stops confirming, so "may have landed" is the honest
+state and a non-zero exit would tell scripts something is broken when the
+likely truth is that nothing is. `story doctor abandoned` lists each entry
+with a recovery suggestion (`github-sync` may have made partial progress
+against GitHub and is safe to re-run; anything else, `story show`/`story
+list` answers whether it landed); `story doctor abandoned clear
+<request-id>` or `--all` is the human's confirmation they reviewed it.
+
+**Two integrity holes concurrent dispatch opens, closed by refusal rather
+than left.** `github-sync`'s own compare-and-swap is deliberately disabled
+(it reads a story, talks to GitHub for as long as that takes, and writes
+back) — safe only because serial dispatch made two concurrent syncs of one
+project impossible; a duplicated *network* side effect is not rollback-able
+by any transaction. `migrate`'s own `refuse_in_linked_worktree` is a read
+followed by a mint; two concurrent migrations of one directory both pass it
+and mint two projects with the same prefix and overlapping story numbers.
+Both refused by one scan of the in-flight registry inside `rpc::invoke`.
+
+**A design mistake, caught by the gate rather than shipped.** `migrate` has
+no project to scope its refusal to — it is what mints one — so the first
+version refused a second concurrent `migrate` *globally*, regardless of
+directory. `make test` caught it immediately: this project's own test suite
+runs two unrelated fixtures that each migrate a different scratch directory
+around the same wall-clock moment, and the global lock refused the second as
+though it conflicted with the first — exactly the false-positive shape a
+real user with two unrelated projects would also have hit. Fixed by giving
+`CurrentRequest` a `cwd` field and scoping `migrate`'s refusal to the
+directory actually being migrated, which is the thing two concurrent
+instances can really collide over. Left in the log because the gate doing
+its job — a real design flaw caught before merge, not after — is the whole
+point of running it every commit rather than once at the end.
+
+**Nine commits, two-hats throughout, each green on `make test` before the
+next began:** the job channel and dispatcher hoisted out of `accept_loop`
+into `serve()` (no behaviour change); the dispatcher given ownership of the
+in-flight record (still one entry, byte-identical file); a stale record no
+longer outlives the daemon that wrote it; the in-flight set widened to more
+than one entry with the new `verdict` table (still one dispatcher, so no
+behaviour change yet); the pool and the hook-depth lane (**the story's own
+fix**); the drain and `--force`; the abandoned-work ledger and `doctor`
+triage; the two concurrency refusals; this entry.
+
+**Gate:** `make test` — the whole gate, the only one — green before every
+one of the nine commits. Final run: **124 test-result blocks, 2734 tests, 0
+failures**, plugin harness 24/24, browser suite 12/12, no orphans.
+`tests/daemon_concurrency.rs` (new) verified red against the pre-fix tree
+before being verified green against the fix — a slow hook-bound command
+blocked an unrelated `story list` (3.06s vs a 9.6ms baseline), and three
+concurrent hook-firing commands genuinely deadlocked the daemon on itself (0
+of 3 finished in 20s) — the reproduction this repo's own tenet asks for, not
+a test written to match the fix.
+
+**Semver: minor.** New user-facing behaviour (`story daemon stop --force`,
+`story doctor abandoned`) and a changed daemon file format
+(`daemon.current.json`'s single object becomes an array); no removed or
+incompatible interface.
+
+**Council:** not convened. The design was reasoned through directly with
+Mikey across the plan's clarifying questions (the shutdown/`--force` shape,
+the abandoned-ledger requirement, the datastore determination the story's
+own comment asked for) rather than through a panel vote.
+
+**Filed as their own stories, not fixed here, each pre-existing and named
+rather than silently left:** the `ChangeBus` 200ms coalescing window, which
+two dispatch threads and the 250ms change-token poller already raced before
+this story touched either; `rest::route`'s missing `catch_unwind` and the
+permanent-503 wedge a REST-side panic causes (`rpc::invoke` was already
+wrapped; `rest::route` never was); `story daemon status` reporting the
+in-flight set, which the new stalled-client messages now imply more
+strongly than the command itself delivers.
