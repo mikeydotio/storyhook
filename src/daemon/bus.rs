@@ -79,9 +79,17 @@ pub enum Change {
     /// Sent before a version-skew restart so a browser reconnects to the new
     /// daemon on purpose rather than after its own retry timer expires.
     Reload,
-    /// Keep-alive comment. A failed write while sending this is how a
-    /// connection that vanished without a clean close (sleep, network drop)
-    /// is detected and its subscriber pruned, rather than lingering forever.
+    /// Keep-alive. A failed write while sending this is how a connection
+    /// that vanished without a clean close (sleep, network drop) is
+    /// detected and its subscriber pruned — *when the write actually
+    /// fails*, which a silently dead connection may never make happen: a
+    /// browser's TCP stack can keep accepting small, infrequent writes into
+    /// its local receive buffer indefinitely without them ever crossing a
+    /// link that no longer exists. A real named event, rather than a bare
+    /// SSE comment, so the client side has the same signal to act on —
+    /// `web_dashboard.html`'s `sseWatchdog` treats the *absence* of one
+    /// arriving as the proof the request boundary and the server-side write
+    /// failure cannot supply (SH-145).
     Ping,
 }
 
@@ -90,7 +98,7 @@ impl Change {
     /// blank line that tells an `EventSource` the message is over.
     pub fn to_sse(&self) -> String {
         match self {
-            Change::Ping => ": ping\n\n".to_string(),
+            Change::Ping => "event: ping\ndata: {}\n\n".to_string(),
             Change::Catalog => "event: repos-changed\ndata: {}\n\n".to_string(),
             Change::Project(slug) => format!(
                 "event: repo-changed\ndata: {}\n\n",

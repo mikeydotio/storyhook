@@ -3602,8 +3602,11 @@ fn no_filesystem_watcher_remains() {
     );
 }
 
-/// A heartbeat `: ping` comment arrives even with no story changes at all,
-/// so a client can tell "connected and idle" apart from "silently dead".
+/// A heartbeat `ping` event arrives even with no story changes at all, so a
+/// client can tell "connected and idle" apart from "silently dead". It is a
+/// real named event, not a bare SSE comment, precisely so a browser can act
+/// on it (`sseWatchdog` in `web_dashboard.html`, SH-145) — this pins the
+/// wire format that depends on.
 /// Runs the server as the real daemon subprocess (`web start`) rather than
 /// in-thread, so `STORYHOOK_SSE_HEARTBEAT_MS` — process-wide env state —
 /// is scoped to that child process instead of leaking into this test
@@ -3625,9 +3628,9 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
     wait_for_server(port);
 
     let mut sse = connect_sse(port);
-    let received = read_sse_until(&mut sse, ": ping", Duration::from_secs(8));
+    let received = read_sse_until(&mut sse, "event: ping", Duration::from_secs(8));
     assert!(
-        received.contains(": ping"),
+        received.contains("event: ping"),
         "expected a heartbeat ping, got: {received}"
     );
 

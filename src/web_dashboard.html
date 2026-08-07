@@ -711,6 +711,27 @@ tbody tr:hover { background: var(--bg-sunken); }
   // doesn't sit there waiting to catch a later, unrelated click.
   var DELETE_CONFIRM_TIMEOUT_MS = 6000;
 
+  /** A positive-integer override from the URL's query string, or `fallback`
+   * if `name` is absent, non-numeric, or not positive. Mirrors the daemon's
+   * own `STORYHOOK_SSE_HEARTBEAT_MS` pattern (`daemon/serve.rs`) so the two
+   * SSE-timing knobs a test needs to shrink are configured the same way on
+   * both sides of the connection, rather than one via the environment and
+   * the other requiring a rebuild. */
+  function intFromQuery(name, fallback) {
+    var raw = new URLSearchParams(window.location.search).get(name);
+    var parsed = raw === null ? NaN : parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  // How often `sseWatchdog()` (see `connectEvents`) checks whether the
+  // `EventSource` has gone silent.
+  var SSE_WATCHDOG_INTERVAL_MS = intFromQuery("sseWatchdogIntervalMs", 15000);
+  // How long without any SSE message — a push or a `ping` heartbeat — before
+  // the connection is declared dead and replaced. Comfortably above the
+  // daemon's own 20s heartbeat interval so a healthy connection under load is
+  // never force-reconnected.
+  var SSE_STALE_AFTER_MS = intFromQuery("sseStaleAfterMs", 50000);
+
   var PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
 
   // ============================================================
@@ -758,8 +779,20 @@ tbody tr:hover { background: var(--bg-sunken); }
   var pendingAnimations = null;
 
   /** Real-time connection state, driven by the `EventSource` in
-   * `connectEvents()` — see `updateConnection()`. */
-  var sse = { connected: false };
+   * `connectEvents()` — see `updateConnection()`.
+   *
+   * `lastEventAt` is what `sseWatchdog()` checks against, and it is
+   * deliberately not the same signal as `connected`. `connected` only ever
+   * goes false when `EventSource` itself reports an error — but a
+   * connection that goes silently dead (a laptop sleeping, a NAT mapping
+   * expiring mid-idle) may never report one at all: the browser's TCP stack
+   * can keep accepting the daemon's small, infrequent heartbeat writes
+   * without them ever crossing a link that no longer exists, so `onerror`
+   * never fires and the tab looks "Live" while showing an arbitrarily stale
+   * board (SH-145). `lastEventAt` tracks the one thing that can't lie —
+   * whether a message has actually arrived recently — independent of what
+   * `readyState` claims. */
+  var sse = { connected: false, lastEventAt: Date.now(), source: null };
 
   /** The `/api/repos/<id>` prefix every per-repo route hangs off. */
   function repoApiBase(id) { return "/api/repos/" + encodeURIComponent(id); }
@@ -3405,16 +3438,27 @@ tbody tr:hover { background: var(--bg-sunken); }
   function connectEvents() {
     if (!window.EventSource) return; // no push support — the safety poll alone drives updates
     var es = new EventSource("/api/events");
+    sse.source = es;
     es.onopen = function() {
       sse.connected = true;
+      sse.lastEventAt = Date.now();
       updateConnection();
       fetchReposOnce();
       if (state.screen === "repo" && state.repoId) fetchData();
     };
+    // The daemon's heartbeat (`Change::Ping`, `daemon/bus.rs`) is a real
+    // named event, not just an SSE comment, precisely so a connection with
+    // no story changes at all still moves `lastEventAt` — that is the whole
+    // signal `sseWatchdog()` acts on.
+    es.addEventListener("ping", function() {
+      sse.lastEventAt = Date.now();
+    });
     es.addEventListener("repos-changed", function() {
+      sse.lastEventAt = Date.now();
       fetchReposOnce();
     });
     es.addEventListener("repo-changed", function(e) {
+      sse.lastEventAt = Date.now();
       fetchReposOnce();
       var changed = null;
       try {
@@ -3432,6 +3476,24 @@ tbody tr:hover { background: var(--bg-sunken); }
       sse.connected = false;
       updateConnection();
     };
+  }
+
+  /** Replaces a connection `sseWatchdog()` has decided is dead.
+   *
+   * `EventSource` never surfaces a silently-dead connection on its own (see
+   * `sse.lastEventAt`'s comment on why), so this is the only thing that
+   * ever will. Runs on `SSE_WATCHDOG_INTERVAL_MS`; closing the stale socket
+   * before opening a fresh one costs nothing even though the stale one may
+   * still look "open" to the browser, and a fresh `EventSource` opens a new
+   * underlying connection — unaffected by whatever silently killed the old
+   * one — so `onopen`'s resync is what actually catches the board up. */
+  function sseWatchdog() {
+    if (!window.EventSource) return;
+    if (Date.now() - sse.lastEventAt < SSE_STALE_AFTER_MS) return;
+    if (sse.source) sse.source.close();
+    sse.connected = false;
+    updateConnection();
+    connectEvents();
   }
 
   /** Initial load: fetch the repo list once, then enter the "repo" screen
@@ -3460,6 +3522,7 @@ tbody tr:hover { background: var(--bg-sunken); }
   connectEvents();
   setInterval(pollTick, SAFETY_POLL_INTERVAL_MS);
   setInterval(updateFooter, FOOTER_TICK_MS);
+  setInterval(sseWatchdog, SSE_WATCHDOG_INTERVAL_MS);
 })();
 </script>
 
