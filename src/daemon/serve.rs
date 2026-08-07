@@ -822,6 +822,10 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         pid: std::process::id(),
         started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         served_deadline_secs: crate::daemon::lifecycle::SERVED_DEADLINE.as_secs(),
+        // No client directory on this surface — a browser names a project
+        // and a story, never a `cwd` — so this is never a `migrate`'s own
+        // concurrency check could match against.
+        cwd: std::path::PathBuf::new(),
     });
 
     let routed = rest::route(

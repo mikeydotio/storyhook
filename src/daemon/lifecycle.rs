@@ -96,6 +96,14 @@ pub struct CurrentRequest {
     /// client reads it rather than recomputing a guess, which is what makes
     /// the number the same whether the record is theirs or somebody else's.
     pub served_deadline_secs: u64,
+    /// The client's own working directory, as it named it in the envelope.
+    /// Empty for a REST/dashboard job, which has no directory of its own to
+    /// name. The one field `migrate`'s own concurrency check
+    /// (`crate::api::rpc::concurrency_conflict`) can key on: `migrate` mints
+    /// the project it would otherwise be scoped to, so `cwd` — the directory
+    /// actually being migrated — is the only thing two concurrent instances
+    /// can be compared by.
+    pub cwd: PathBuf,
 }
 
 /// Writes the file a daemon's clients read, from `entries` in the order
@@ -2069,6 +2077,7 @@ mod tests {
             pid: 4711,
             started_at: "2026-01-01T00:00:00Z".to_string(),
             served_deadline_secs: served_deadline(command, Path::new("/")).as_secs(),
+            cwd: PathBuf::from("/"),
         }
     }
 
@@ -2542,6 +2551,7 @@ mod tests {
             pid: 4711,
             started_at: "2026-01-01T00:00:00Z".to_string(),
             served_deadline_secs: SERVED_DEADLINE.as_secs(),
+            cwd: PathBuf::from("/"),
         }
     }
 
