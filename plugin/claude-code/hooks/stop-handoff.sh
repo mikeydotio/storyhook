@@ -33,8 +33,12 @@ if ! command -v story &>/dev/null; then
   exit 0
 fi
 
-# Generate session handoff
-handoff_output=$(story handoff --since 4h 2>/dev/null || echo "")
+# Generate session handoff. --deadline 13: this hook has 15s (hooks.json)
+# before Claude Code kills it; a cold daemon plus the store's own reply may
+# legitimately take 150s (SH-182). 13s leaves 2s for this script itself, and
+# gives up loudly into the `|| echo ""` fallback below rather than being
+# killed mid-write.
+handoff_output=$(story --deadline 13 handoff --since 4h 2>/dev/null || echo "")
 
 if [[ -n "$handoff_output" ]]; then
   # Escape for JSON output

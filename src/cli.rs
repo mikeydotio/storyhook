@@ -217,6 +217,13 @@ Global options:
                   storyhook uses the project this checkout belongs to, and
                   refuses rather than guessing when there is none.
                   `story project list` shows the slugs.
+  --deadline <seconds>
+                  Give up waiting on the daemon after this long, rather than
+                  however long starting one and running the command could
+                  otherwise take. The request is not cancelled: the daemon
+                  finishes what it accepted, this process just stops waiting
+                  for the answer. For a caller — a session hook, a script —
+                  that cannot wait regardless of whether storyhook could.
   -h, --help
   -V, --version   Print the installed story version
 "#;
@@ -877,6 +884,24 @@ pub struct GlobalFlags {
     /// the token never survives to the verb's own arguments, SH-62's
     /// fail-closed gate never has to be told about it.
     pub project: Option<String>,
+    /// `--deadline <seconds>`: give up waiting on the daemon after this long,
+    /// rather than however long `lifecycle::ensure` and the invoker's own
+    /// exchange bound would otherwise allow (up to `SPAWN_LOCK_DEADLINE` +
+    /// `SERVED_DEADLINE` — 150s).
+    ///
+    /// A flag, not an environment variable, and deliberately so: a caller that
+    /// cannot wait — a session hook Claude Code will kill regardless — states
+    /// that once, for the one invocation asking. `$STORYHOOK_EXCHANGE_DEADLINE_SECS`
+    /// already shows the hazard the other shape has: a variable is set once
+    /// and inherited by everything a shell starts afterward, so one `export`
+    /// would silently abandon every write on the machine (SH-182).
+    ///
+    /// Expiry does not cancel the request: the daemon finishes whatever it
+    /// accepted, and this process simply stops waiting for the answer and
+    /// reports so. Applied in `main`, global because the bound has to cover
+    /// the whole round trip, including starting a daemon that does not exist
+    /// yet, which happens before a verb is dispatched.
+    pub deadline: Option<std::time::Duration>,
 }
 
 /// Splits the global flags out of `args`, leaving the verb and its own
@@ -966,12 +991,52 @@ pub fn split_global_flags(args: &[String]) -> Result<(GlobalFlags, Vec<String>),
                 }
                 flags.project = Some(value.to_string());
             }
+            "--deadline" => {
+                let Some(value) = args.get(i + 1) else {
+                    return Err(deadline_usage());
+                };
+                flags.deadline = Some(parse_deadline_secs(value)?);
+                i += 2;
+                continue;
+            }
+            other if other.starts_with("--deadline=") => {
+                let value = other.trim_start_matches("--deadline=");
+                flags.deadline = Some(parse_deadline_secs(value)?);
+            }
             _ => filtered.push(args[i].clone()),
         }
         i += 1;
     }
 
     Ok((flags, filtered))
+}
+
+/// The error for `--deadline` given no value at all.
+fn deadline_usage() -> AppError {
+    AppError::Usage(
+        "--deadline needs a number of seconds to wait for the daemon, for example \
+         `--deadline 3`."
+            .to_string(),
+    )
+}
+
+/// Parses `--deadline`'s value: a non-negative whole number of seconds.
+///
+/// `0` is accepted rather than refused — it is a legitimate (if extreme)
+/// request to abandon the very first wait, and refusing it would be one more
+/// special case for a caller to work around. What it must not be is negative
+/// or fractional: both parse as a `u64` failing, which folds them into the
+/// same "not a number of seconds" message rather than needing their own.
+fn parse_deadline_secs(value: &str) -> Result<std::time::Duration, AppError> {
+    value
+        .parse::<u64>()
+        .map(std::time::Duration::from_secs)
+        .map_err(|_| {
+            AppError::Usage(format!(
+                "--deadline=`{value}` is not a whole number of seconds, for example \
+             `--deadline 3`."
+            ))
+        })
 }
 
 /// Whether `args` — a whole invocation, verb included — asks a verb to

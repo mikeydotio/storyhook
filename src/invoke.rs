@@ -2515,7 +2515,7 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
         // have. It is not an answer, but it outranks every farther one: see
         // `unresolvable_pointer_refusal`.
         let mut claimed: Option<String> = None;
-        for dir in ancestors(&self.cwd) {
+        for dir in crate::service::project::ancestors(&self.cwd) {
             if let Some(project) = resolve_at(self.store, &dir)? {
                 if let Some(uuid) = &claimed {
                     return Err(unresolvable_pointer_refusal(uuid));
@@ -2567,13 +2567,11 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     ///
     /// Only consulted once [`Self::resolve`] has already failed, to tell a
     /// checkout that *claims* a project from a directory that claims nothing.
-    /// Errors are swallowed deliberately: an unreadable pointer file has its own
-    /// message, raised by resolution, and this is a second attempt at explaining
-    /// a failure that has already happened.
+    /// Delegates to [`crate::service::project::pointer_at_or_above`], which
+    /// also backs `session::unavailable` — a hook degrading on a slow daemon
+    /// asks the identical question this refusal does.
     fn pointer_at_or_above(&self) -> Option<crate::service::project::ProjectPointer> {
-        ancestors(&self.cwd)
-            .into_iter()
-            .find_map(|dir| crate::service::project::read_pointer(&dir).ok().flatten())
+        crate::service::project::pointer_at_or_above(&self.cwd)
     }
 }
 
@@ -2614,34 +2612,6 @@ fn unresolvable_pointer_refusal(uuid: &str) -> AppError {
 /// The bound is a `stat` for `.git`, not a `git` subprocess: resolution runs on
 /// almost every command, and SH-116 measured an 11.8 ms whole-command baseline
 /// against which a 14 ms `git` call is not a bound but a doubling.
-fn ancestors(cwd: &Path) -> Vec<PathBuf> {
-    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let mut walked = Vec::new();
-    for dir in root.ancestors() {
-        walked.push(dir.to_path_buf());
-        if is_repository_top_level(dir) {
-            break;
-        }
-    }
-    walked
-}
-
-/// Whether `dir` is a repository's *own* top level.
-///
-/// A **directory** named `.git`, deliberately, and this is the load-bearing
-/// half of the bound. A linked worktree — and a submodule — holds a `.git`
-/// *file* pointing at a git directory that belongs to somebody else, so neither
-/// is a top level in the sense that matters here and neither stops the climb.
-///
-/// That is what keeps a worktree resolving. `git worktree add` checks out a
-/// commit, and the pointer file is written by `story project new` *after* the
-/// commit that created the repository — so a worktree's own tree very often does
-/// not carry one, and the main checkout's is the only pointer there is. Stopping
-/// at a `.git` file would strand every one of them, `dispatch` included.
-fn is_repository_top_level(dir: &Path) -> bool {
-    dir.join(".git").is_dir()
-}
-
 /// The project `dir` itself identifies — the uuid in its committed pointer file.
 ///
 /// A pointer naming a uuid the store does not hold is **not** an answer here.

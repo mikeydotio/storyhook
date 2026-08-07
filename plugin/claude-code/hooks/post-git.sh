@@ -73,8 +73,11 @@ if [[ -f ".git/hooks/post-commit" ]] && grep -q "# storyhook managed hook" ".git
   exit 0
 fi
 
-# Run sync
-sync_output=$(story commit-sync --since 1h --quiet 2>/dev/null || echo "")
+# Run sync. --deadline 8: this hook has 10s (hooks.json) before Claude Code
+# kills it; a cold daemon plus the store's own reply may legitimately take
+# 150s (SH-182). 8s leaves 2s for this script itself, and gives up loudly
+# into the `|| echo ""` fallback below rather than being killed mid-write.
+sync_output=$(story --deadline 8 commit-sync --since 1h --quiet 2>/dev/null || echo "")
 
 if [[ -n "$sync_output" ]]; then
   # Build the JSON with python3's json.dumps rather than manual sed escaping,
