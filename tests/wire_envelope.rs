@@ -30,8 +30,8 @@ use storyhook::domain::{
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
     BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
-    ProjectSnapshotView, PurgePlan, Response, SettingKind, SettingSource, SettingView, SetupPlan,
-    StaleInfo, StoryView, SummaryView, render_error, render_response,
+    ProjectSnapshotView, PurgePlan, Response, SetPrefixPlan, SettingKind, SettingSource,
+    SettingView, SetupPlan, StaleInfo, StoryView, SummaryView, render_error, render_response,
 };
 
 /// The four ways a `Response` can be rendered. Every case in this file is
@@ -475,6 +475,18 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
             }))),
         ),
         (
+            "confirmation_required_set_prefix",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::SetPrefix(SetPrefixPlan {
+                slug: "storyhook".to_string(),
+                name: "storyhook — the tracker".to_string(),
+                old_prefix: "SH".to_string(),
+                new_prefix: "AGE".to_string(),
+                stories: 47,
+                relationships: 12,
+                github_bases: 3,
+            }))),
+        ),
+        (
             "setup_required",
             Response::SetupRequired(Box::new(SetupPlan {
                 owner: "acme".to_string(),
@@ -867,6 +879,12 @@ fn invocation_corpus() -> Vec<Invocation> {
         },
         Invocation::Project {
             action: ProjectAction::Delete { force: true },
+        },
+        Invocation::Project {
+            action: ProjectAction::SetPrefix {
+                new_prefix: "AGE".to_string(),
+                force: false,
+            },
         },
         Invocation::Project {
             action: ProjectAction::List,

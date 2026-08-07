@@ -102,6 +102,19 @@ pub(super) fn project_by_slug(
     )
 }
 
+pub(super) fn project_by_prefix(
+    conn: &Connection,
+    prefix: &str,
+) -> Result<Option<ProjectRecord>, StoreError> {
+    one(
+        conn,
+        &format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE prefix = ?1"),
+        params![prefix],
+        project_from_row,
+        "reading a project by prefix",
+    )
+}
+
 /// The project that registered this git origin.
 ///
 /// Matched on the normalized key alone. `idx_project_remotes_normalized`
