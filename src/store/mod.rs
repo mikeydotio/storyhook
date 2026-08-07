@@ -149,7 +149,15 @@ pub trait Store: Send + Sync + 'static {
     /// Verified means the copy is reopened and `integrity_check`ed before this
     /// returns: a backup that is only discovered to be corrupt when it is needed
     /// is worse than no backup, because it was believed in.
-    fn snapshot(&self, dir: &Path) -> Result<PathBuf, StoreError>;
+    ///
+    /// `label` distinguishes what the copy is *for* — a directory holding both
+    /// a daily schedule's output and a maintenance operation's own safety net
+    /// still says which is which. It becomes a filename component, so a caller
+    /// that took it from outside the process must validate it first; this
+    /// method trusts its caller rather than re-checking, the same division of
+    /// responsibility [`crate::domain::prefix::validate`] documents for a
+    /// project's prefix.
+    fn snapshot(&self, dir: &Path, label: &str) -> Result<PathBuf, StoreError>;
 }
 
 /// Everything that can be read inside a transaction.
