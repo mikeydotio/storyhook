@@ -27,16 +27,17 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{StateDef, SuperState, TypeDef};
+use crate::domain::{StateDef, StoryEvent, SuperState, TypeDef};
 use crate::error::AppError;
-use crate::output::DeletePlan;
+use crate::output::{DeletePlan, SetPrefixPlan};
 use crate::store::{
-    DeletedProject, NewProject, ProjectId, ProjectRecord, ReadOps, Store, WriteOps,
+    DeletedProject, ExpectedSeq, NewProject, ProjectId, ProjectRecord, ReadOps, Store, StoreError,
+    StoryNo, StoryQuery, WriteOps,
 };
 
-use super::Clock;
 use super::state_set::write_states;
 use super::templates;
+use super::{Clock, append_and_fold, refold_story};
 
 /// The story-id prefix a project gets when `init` is not told one.
 pub const DEFAULT_PREFIX: &str = "SH";
@@ -1056,6 +1057,40 @@ pub struct DeleteOutcome {
     pub removed: DeletedProject,
 }
 
+/// What a [`ProjectService::set_prefix`] rewrote.
+#[derive(Clone, Debug)]
+pub struct SetPrefixOutcome {
+    /// The rewrite as it actually ran, with counts observed inside the write
+    /// transaction — not the pre-computed dry-run plan, which a concurrent
+    /// write landing between the read and the write could have made stale.
+    pub plan: SetPrefixPlan,
+    /// Where the pre-write safety snapshot landed.
+    pub backup_path: PathBuf,
+    /// What happened to the project's linked checkout, if it has one.
+    pub pointer_updated: PointerUpdate,
+}
+
+/// What happened to a project's `.storyhook.toml` after a
+/// [`ProjectService::set_prefix`], attempted best-effort after the store
+/// transaction that made the rewrite real had already committed.
+#[derive(Clone, Debug)]
+pub enum PointerUpdate {
+    /// No checkout is registered for this project — nothing to update.
+    NoCheckout,
+    /// The checkout's pointer file was rewritten to the new prefix.
+    Updated(PathBuf),
+    /// A checkout is registered, but its pointer could not be rewritten. The
+    /// store-side rewrite already committed regardless; this names what an
+    /// operator still needs to fix by hand.
+    Failed {
+        /// The pointer file this could not update, empty if the checkout
+        /// itself could not even be looked up.
+        path: PathBuf,
+        /// Why.
+        reason: String,
+    },
+}
+
 /// Creating projects and registering the checkouts that belong to them.
 ///
 /// Unlike every other service this one does *not* take a
@@ -1364,6 +1399,241 @@ impl<'a, S: Store> ProjectService<'a, S> {
         Ok(DeleteOutcome { plan, removed })
     }
 
+    /// Everything a [`set_prefix`](Self::set_prefix) would rewrite. Writes
+    /// nothing.
+    ///
+    /// One read transaction, so the counts it reports and the state
+    /// [`set_prefix`](Self::set_prefix) later mutates are one consistent
+    /// snapshot rather than two — the same discipline
+    /// [`delete_plan`](Self::delete_plan) uses, for the same reason: the
+    /// person confirming and the write that follows must be looking at the
+    /// same numbers.
+    pub fn set_prefix_plan(
+        &self,
+        project: ProjectId,
+        new_prefix: &str,
+    ) -> Result<SetPrefixPlan, AppError> {
+        let new_prefix = crate::domain::prefix::validate(new_prefix)?;
+        Ok(self.store.read(|tx| {
+            let record = tx
+                .project(project)?
+                .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))?;
+            validate_prefix_change(tx, &record, &new_prefix)?;
+            let (stories, relationships, github_bases) = count_prefix_rewrite(tx, project)?;
+            Ok(SetPrefixPlan {
+                slug: record.slug,
+                name: record.name,
+                old_prefix: record.prefix,
+                new_prefix: new_prefix.clone(),
+                stories,
+                relationships,
+                github_bases,
+            })
+        })?)
+    }
+
+    /// Renames a project's story-id prefix, everywhere it is embedded, in one
+    /// transaction — the operation SH-109 was filed to make exist at all.
+    ///
+    /// # Why a prior manual attempt at this corrupted a project
+    ///
+    /// A story's rendered `id` is never stored on its own:
+    /// [`crate::domain::fold_story`] — [`refold_story`] and
+    /// [`append_and_fold`] are the two ways it ever runs — derives it fresh
+    /// from `story_no.to_id(prefix)` every time a row is folded, reading
+    /// `prefix` live from the project. Change `projects.prefix` and refold,
+    /// and `id` self-heals for free.
+    ///
+    /// A relationship's `other_id` does not. It is folded verbatim from the
+    /// `other_id` field of the `StoryRelationshipAdded` event that set it —
+    /// the append-only log holds text, not a reference — so it goes on
+    /// reading the *old* prefix no matter how many times the story is
+    /// refolded. The next ordinary write validates every relationship
+    /// against the *current* prefix (`StoreError::Validation` via
+    /// `StoryNo::parse_id`, ~14 call sites deep) and refuses, and the story
+    /// becomes unwritable. That is exactly what happened by hand on
+    /// `agentics`, and it is why this method's whole shape is "change the
+    /// column, then repair everything that column's old value was baked
+    /// into" rather than a bare `UPDATE`.
+    ///
+    /// # What is rewritten, and how
+    ///
+    /// * **The project row.** [`crate::store::WriteOps::set_prefix`] —
+    ///   first, because every write below validates against whatever this
+    ///   column currently holds, and each one must see the *new* value.
+    /// * **Every relationship.** For each relation a story's snapshot
+    ///   already claims, one real `StoryRelationshipRemoved` (old-form
+    ///   `other_id`) and one real `StoryRelationshipAdded` (new-form) —
+    ///   `StoryService::purge`'s own pattern for "rewrite what another story
+    ///   claims via a real event, never a silent table edit" — folded
+    ///   together with the story's own refold so the read model never
+    ///   observes a half-migrated relationship.
+    /// * **Every story's read model**, whether or not it had a relationship
+    ///   to rewrite — `id` self-heals on any refold, but a story with no
+    ///   relationships still needs that refold to happen at all.
+    /// * **Every github-sync merge-base snapshot.** `github_bases` carries
+    ///   its own full `StorySnapshot` JSON with the identical stale-id
+    ///   problem and no event log of its own to fold from, so this is a
+    ///   direct rewrite of the cached document rather than a fold.
+    /// * **The linked checkout's pointer file**, best-effort, after the
+    ///   store transaction commits — see [`Self::update_checkout_pointer`].
+    ///
+    /// **What is deliberately not rewritten**: free-text description and
+    /// comment bodies. There is no grammar anywhere in this codebase for a
+    /// story-id reference inside prose — `scan_story_refs` is proven for one
+    /// thing only, scanning git commit messages during commit-sync — so
+    /// guessing at one here would risk rewriting text that only looks like a
+    /// reference. Recorded as a known limitation on SH-109 rather than
+    /// solved by a flag nobody asked for.
+    ///
+    /// # Safety
+    ///
+    /// A verified snapshot of the whole store is taken into `backups_dir`
+    /// before anything is written — deliberately not
+    /// [`crate::env::Environment::backups_dir`], whose daily prune could
+    /// delete it before an operator who needed it ever looked. See
+    /// [`crate::env::Environment::maintenance_backups_dir`].
+    ///
+    /// Refuses if `new_prefix` is not valid, is the prefix this project
+    /// already has, or already belongs to another project — nothing in the
+    /// schema stops two projects sharing a prefix, and project resolution
+    /// never consults one, so a silent collision would let a typed id
+    /// resolve into the wrong project undetected.
+    pub fn set_prefix(
+        &self,
+        project: ProjectId,
+        new_prefix: &str,
+        backups_dir: &Path,
+    ) -> Result<SetPrefixOutcome, AppError> {
+        let new_prefix = crate::domain::prefix::validate(new_prefix)?;
+        let now = self.clock.now();
+        let backup_path = self.store.snapshot(backups_dir)?;
+
+        let plan = self.store.write(|tx| {
+            let record = tx
+                .project(project)?
+                .ok_or_else(|| StoreError::NotFound(format!("project {project} does not exist")))?;
+            validate_prefix_change(&*tx, &record, &new_prefix)?;
+            let old_prefix = record.prefix;
+
+            // First, so every write below — this story's own refold
+            // included — validates its relationships against the prefix
+            // they are about to be rewritten to rather than the one they
+            // are being rewritten from.
+            tx.set_prefix(project, &new_prefix)?;
+
+            let states = tx.state_map(project)?;
+            let rows = tx.stories(project, &StoryQuery::all())?;
+            let mut relationships = 0usize;
+            let mut github_bases = 0usize;
+
+            for row in &rows {
+                if row.snapshot.relationships.is_empty() {
+                    refold_story(tx, project, row.story_no, &new_prefix, &states)?;
+                } else {
+                    let mut events = Vec::with_capacity(row.snapshot.relationships.len() * 2);
+                    for relation in &row.snapshot.relationships {
+                        let other_no = StoryNo::parse_id(&old_prefix, &relation.other_id)?;
+                        events.push(StoryEvent::StoryRelationshipRemoved {
+                            at: now.clone(),
+                            other_id: relation.other_id.clone(),
+                            relation: relation.relation.clone(),
+                        });
+                        events.push(StoryEvent::StoryRelationshipAdded {
+                            at: now.clone(),
+                            other_id: other_no.to_id(&new_prefix),
+                            relation: relation.relation.clone(),
+                        });
+                        relationships += 1;
+                    }
+                    append_and_fold(
+                        tx,
+                        project,
+                        row.story_no,
+                        &new_prefix,
+                        &states,
+                        ExpectedSeq::Exact(row.head_seq),
+                        &events,
+                    )?;
+                }
+
+                if let Some(mut base) = tx.github_base(project, row.story_no)? {
+                    base.id = row.story_no.to_id(&new_prefix);
+                    for relation in &mut base.relationships {
+                        let other_no = StoryNo::parse_id(&old_prefix, &relation.other_id)?;
+                        relation.other_id = other_no.to_id(&new_prefix);
+                    }
+                    tx.put_github_base(project, row.story_no, &base)?;
+                    github_bases += 1;
+                }
+            }
+
+            Ok(SetPrefixPlan {
+                slug: record.slug,
+                name: record.name,
+                old_prefix,
+                new_prefix: new_prefix.clone(),
+                stories: rows.len(),
+                relationships,
+                github_bases,
+            })
+        })?;
+
+        let pointer_updated = self.update_checkout_pointer(project, &plan.new_prefix);
+        Ok(SetPrefixOutcome {
+            plan,
+            backup_path,
+            pointer_updated,
+        })
+    }
+
+    /// Rewrites the project's linked checkout, if it has one, to name its new
+    /// prefix — best-effort, and reported rather than propagated.
+    ///
+    /// Runs after the store transaction has committed, on purpose: the store
+    /// is what makes the project usable again, and a filesystem problem in a
+    /// checkout — moved, deleted, made read-only since it was registered —
+    /// must not undo that or make the caller believe the rewrite never
+    /// happened. `.storyhook.toml`'s `prefix` is read only on the disaster-
+    /// recovery "adopt an orphaned pointer" path, never on an ordinary
+    /// command, so a checkout left stale here is a landmine for a *future*
+    /// recovery rather than a defect in this one — worth closing since this
+    /// method exists precisely because such a landmine already went off
+    /// once, but not worth failing the whole rewrite over.
+    fn update_checkout_pointer(&self, project: ProjectId, new_prefix: &str) -> PointerUpdate {
+        let checkout = match self.store.read(|tx| tx.checkout_path(project)) {
+            Ok(Some(path)) => path,
+            Ok(None) => return PointerUpdate::NoCheckout,
+            Err(error) => {
+                return PointerUpdate::Failed {
+                    path: PathBuf::new(),
+                    reason: error.to_string(),
+                };
+            }
+        };
+        let path = pointer_path(&checkout);
+        match read_pointer(&checkout) {
+            Ok(Some(mut pointer)) => {
+                pointer.prefix = new_prefix.to_string();
+                match write_pointer(&checkout, &pointer) {
+                    Ok(()) => PointerUpdate::Updated(path),
+                    Err(error) => PointerUpdate::Failed {
+                        path,
+                        reason: error.to_string(),
+                    },
+                }
+            }
+            Ok(None) => PointerUpdate::Failed {
+                path,
+                reason: "the checkout is registered but has no .storyhook.toml".to_string(),
+            },
+            Err(error) => PointerUpdate::Failed {
+                path,
+                reason: error.to_string(),
+            },
+        }
+    }
+
     /// This project's catalog row, or a `NotFound` naming the id.
     ///
     /// The id has already been resolved by the selector, so a miss here means
@@ -1393,6 +1663,53 @@ impl<'a, S: Store> ProjectService<'a, S> {
         std::fs::write(&path, templates::agents_md(prefix, done_state))?;
         Ok(true)
     }
+}
+
+/// Refuses a prefix change that has no effect or would collide, inside
+/// whatever transaction [`ProjectService::set_prefix_plan`] or
+/// [`ProjectService::set_prefix`] is already running.
+fn validate_prefix_change(
+    tx: &impl ReadOps,
+    record: &ProjectRecord,
+    new_prefix: &str,
+) -> Result<(), StoreError> {
+    if record.prefix == new_prefix {
+        return Err(StoreError::Validation(format!(
+            "`{}` already has the prefix `{new_prefix}`",
+            record.slug
+        )));
+    }
+    if let Some(holder) = tx.project_by_prefix(new_prefix)? {
+        return Err(StoreError::Validation(format!(
+            "the prefix `{new_prefix}` already belongs to `{}` — prefixes must be unique \
+             across every project in this store",
+            holder.slug
+        )));
+    }
+    Ok(())
+}
+
+/// `(stories, relationships, github_bases)` a prefix rewrite would touch.
+///
+/// Used by [`ProjectService::set_prefix_plan`]'s dry run, and only there —
+/// [`ProjectService::set_prefix`]'s own write transaction derives its counts
+/// from what it actually rewrites, since only that describes what happened.
+/// The two use the same query so the two sets of numbers agree absent a
+/// race.
+fn count_prefix_rewrite(
+    tx: &impl ReadOps,
+    project: ProjectId,
+) -> Result<(usize, usize, usize), StoreError> {
+    let rows = tx.stories(project, &StoryQuery::all())?;
+    let mut relationships = 0usize;
+    let mut github_bases = 0usize;
+    for row in &rows {
+        relationships += row.snapshot.relationships.len();
+        if tx.github_base(project, row.story_no)?.is_some() {
+            github_bases += 1;
+        }
+    }
+    Ok((rows.len(), relationships, github_bases))
 }
 
 /// The state set a new project starts with.

@@ -90,6 +90,42 @@ pub struct PurgePlan {
     pub retracted: Vec<(String, String)>,
 }
 
+/// What `story project set-prefix` would rewrite, read before anything is.
+///
+/// Unlike [`DeletePlan`] and [`PurgePlan`] this is not a plan to destroy
+/// anything — every story, event and relationship survives. What is
+/// irreversible is the *prefix itself*: every id a person or a script has
+/// already written down under `old_prefix` stops resolving the moment this
+/// runs, which is a different kind of one-way door and still one this gate
+/// belongs in front of.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetPrefixPlan {
+    /// The project's slug, so the person confirming can tell it is the right
+    /// project — the prefix itself is about to stop being a reliable way to
+    /// name it.
+    pub slug: String,
+    /// Its display name.
+    pub name: String,
+    /// The prefix every existing id was minted under.
+    pub old_prefix: String,
+    /// The prefix every id renders under from this point on — what the user
+    /// must type to confirm.
+    pub new_prefix: String,
+    /// How many stories will be refolded so their rendered `id` reflects
+    /// `new_prefix`. Every story in the project, deleted and archived ones
+    /// included — `id` is a read-model artifact of all of them, not just the
+    /// open ones.
+    pub stories: usize,
+    /// How many relationships will each be rewritten by one retracting and
+    /// one re-asserting event, since a relationship's `other_id` is folded
+    /// verbatim from the event that set it and does not re-derive from the
+    /// project's current prefix the way a story's own `id` does.
+    pub relationships: usize,
+    /// How many github-sync merge-base snapshots carry ids that will be
+    /// rewritten alongside the read model proper.
+    pub github_bases: usize,
+}
+
 /// What a destructive command is about to do, in the shape its own kind of
 /// destruction needs.
 ///
@@ -110,18 +146,42 @@ pub enum ConfirmationPlan {
     Delete(DeletePlan),
     /// `story purge` — one story and everything recorded against it.
     Purge(PurgePlan),
+    /// `story project set-prefix` — every id this project has ever minted.
+    SetPrefix(SetPrefixPlan),
 }
 
 impl ConfirmationPlan {
     /// What the user must type, exactly, to go through with this.
     ///
-    /// Also what the refusal names, so a caller reading "this would permanently
-    /// delete `X`" is reading the same `X` they would have had to type.
+    /// Also what the refusal names, so a caller reading a warning about `X`
+    /// is reading the same `X` they would have had to type.
     #[must_use]
     pub fn token(&self) -> &str {
         match self {
             Self::Delete(plan) => &plan.slug,
             Self::Purge(plan) => &plan.id,
+            Self::SetPrefix(plan) => &plan.new_prefix,
+        }
+    }
+
+    /// The one-sentence fragment naming *what* this would do, for the
+    /// terminal prompt that precedes the full plan.
+    ///
+    /// Factored out because [`Self::Delete`] and [`Self::Purge`] are both
+    /// permanent deletions and [`Self::SetPrefix`] is not — it destroys
+    /// nothing, it makes every id already written down under the old prefix
+    /// stop resolving. A prompt that called that "permanently delete `AGE`"
+    /// would be describing an act that never happens.
+    #[must_use]
+    pub fn headline(&self) -> String {
+        match self {
+            Self::Delete(_) | Self::Purge(_) => {
+                format!("this would permanently delete `{}`", self.token())
+            }
+            Self::SetPrefix(plan) => format!(
+                "this would rename every `{}` id in `{}` to `{}`",
+                plan.old_prefix, plan.slug, plan.new_prefix
+            ),
         }
     }
 }
@@ -827,7 +887,56 @@ pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
     match plan {
         ConfirmationPlan::Delete(plan) => render_delete_plan(plan),
         ConfirmationPlan::Purge(plan) => render_purge_plan(plan),
+        ConfirmationPlan::SetPrefix(plan) => render_set_prefix_plan(plan),
     }
+}
+
+/// The warning `story project set-prefix` prints before it asks.
+///
+/// Ordered like [`render_delete_plan`] and [`render_purge_plan`]: what this
+/// is, what changes and by how much, and only then the question. Unlike
+/// either of those this is not a body count — nothing is destroyed — so the
+/// closing line says what actually cannot be undone: every id already
+/// quoted anywhere under the old prefix.
+#[must_use]
+pub fn render_set_prefix_plan(plan: &SetPrefixPlan) -> String {
+    let mut body = String::new();
+    body.push_str(&format!(
+        "{} — {} ({} → {})\n",
+        plan.slug, plan.name, plan.old_prefix, plan.new_prefix
+    ));
+    body.push_str(&format!(
+        "  {} stor{} will be renumbered from `{}-…` to `{}-…`.\n",
+        plan.stories,
+        if plan.stories == 1 { "y" } else { "ies" },
+        plan.old_prefix,
+        plan.new_prefix,
+    ));
+    if plan.relationships > 0 {
+        body.push_str(&format!(
+            "  {} relationship{} will each be rewritten by one retracting and one \
+             re-asserting event.\n",
+            plan.relationships,
+            if plan.relationships == 1 { "" } else { "s" },
+        ));
+    }
+    if plan.github_bases > 0 {
+        body.push_str(&format!(
+            "  {} github-sync merge base{} will be rewritten to match.\n",
+            plan.github_bases,
+            if plan.github_bases == 1 { "" } else { "s" },
+        ));
+    }
+    body.push_str(
+        "  Free-text description and comment bodies are left untouched: any of them that \
+         quote an old-prefix id will keep quoting it.\n",
+    );
+    body.push_str(&format!(
+        "\nEvery `{}-…` id already written down — in a commit message, a document, a \
+         browser tab — stops resolving. This cannot be undone.\n",
+        plan.old_prefix
+    ));
+    body
 }
 
 /// What a first-time `story github-sync` found, in prose — shown before the

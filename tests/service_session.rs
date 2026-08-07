@@ -81,6 +81,24 @@ fn the_counts_separate_open_from_ready() {
     );
 }
 
+/// Regression test for SH-126 (council verdict,
+/// `.council/sh126-blocked-column-membership/DECISION.md`): a story parked
+/// in the literal `blocked` state, with no unmet `blocked-by` edge, used to
+/// still count as ready and could be offered as the session's `Next:` pick
+/// — `is_ready` never inspected `story.state`.
+#[test]
+fn a_story_in_the_blocked_state_is_never_the_next_line() {
+    let fixture = ServiceFixture::new();
+    let only = create(&fixture, "Manually blocked", None);
+    StoryService::new(&fixture.ctx())
+        .set_state(&only, "blocked", None, None)
+        .expect("blocking");
+
+    let context = context(&fixture);
+    assert!(context.contains("1 open stories, 0 ready"), "{context}");
+    assert!(!context.contains("Next:"), "{context}");
+}
+
 #[test]
 fn the_next_line_reports_a_priority_when_there_is_one() {
     let fixture = ServiceFixture::new();

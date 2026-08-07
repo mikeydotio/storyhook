@@ -562,6 +562,10 @@ macro_rules! impl_read_ops {
                 read::project_by_slug(&self.conn, slug)
             }
 
+            fn project_by_prefix(&self, prefix: &str) -> Result<Option<ProjectRecord>, StoreError> {
+                read::project_by_prefix(&self.conn, prefix)
+            }
+
             fn projects(&self) -> Result<Vec<ProjectRecord>, StoreError> {
                 read::projects(&self.conn)
             }
@@ -727,6 +731,10 @@ impl WriteOps for SqliteWriteTx<'_> {
 
     fn rename_project(&mut self, project: ProjectId, name: &str) -> Result<(), StoreError> {
         write::rename_project(&self.conn, project, name)
+    }
+
+    fn set_prefix(&mut self, project: ProjectId, new_prefix: &str) -> Result<(), StoreError> {
+        write::set_prefix(&self.conn, project, new_prefix)
     }
 
     fn delete_project(&mut self, project: ProjectId) -> Result<DeletedProject, StoreError> {
