@@ -19,6 +19,7 @@ static TOPICS: std::sync::LazyLock<BTreeMap<&'static str, &'static str>> =
             r#"story project new [--prefix <PREFIX>] [--name <NAME>]
                   [--attach <PATH> | --no-attach] [--no-agents-md]
 story project delete [--force]
+story project set-prefix <NEW-PREFIX> [--force]
 story project show
 story project list
 story project link origin [URL] | link checkout [PATH]
@@ -43,8 +44,10 @@ new
   With NO flags at a terminal it asks you the six questions instead.
   Any switch at all — or --json, or no terminal — makes it fully
   non-interactive, and then --prefix is required: it is minted into
-  every story id this project ever creates and cannot be changed
-  afterwards, so it is never defaulted for you.
+  every story id this project ever creates, so it is never defaulted
+  for you. 'story project set-prefix' can change it later, but only
+  by rewriting every relationship this project's stories claim — treat
+  it as effectively permanent and choose carefully.
 
   Commit .storyhook.toml. It is how a fresh clone — or a linked worktree
   — knows which project this checkout belongs to before it has a local
@@ -80,6 +83,34 @@ delete
   checkout are left exactly where they are — the warning lists those
   directories so you know which ones are now claiming an identity that
   does not exist.
+
+set-prefix
+  Renames the project's story-id prefix — SH-1 becomes AGE-1 — and
+  rewrites everywhere the old one is embedded: the project row, every
+  relationship any of its stories claim (via real compensating events,
+  never a silent edit), and any github-sync merge-base snapshots. If
+  this checkout has one, its .storyhook.toml is updated too.
+
+  Nothing is deleted; every story, event and comment survives. What
+  cannot be undone is the prefix itself: every id already written down
+  anywhere under the old one — a commit message, a document, a browser
+  tab — stops resolving the moment this runs.
+
+  It always asks first, and the confirmation is the new prefix typed
+  in full. --force skips the question; with --json, or with no
+  terminal to ask at, --force is required rather than assumed either
+  way.
+
+  It takes no path or slug: it rewrites the project this directory
+  resolves to, or the one --project names. Refuses if the prefix given
+  is invalid, is the one this project already has, or already belongs
+  to another project in this store.
+
+  Free-text description and comment bodies are left untouched — there
+  is no reliable way to tell a genuine story-id reference in prose
+  from text that only looks like one, so nothing there is rewritten.
+  A backup of the whole store is taken automatically before anything
+  is written.
 
 list
   Every project the store knows, including any whose checkout is not on
@@ -133,6 +164,8 @@ Examples:
   story project settings list
   story project delete                  # Asks before destroying anything
   story --project old-thing project delete --force
+  story project set-prefix AGE          # Asks before rewriting anything
+  story --project thing project set-prefix TH --force
 
 Related:
   story help project-settings — The settings keys, in detail

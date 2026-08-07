@@ -40,9 +40,9 @@ use crate::service::transfer::ProjectExport;
 use crate::service::{
     CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits, GitService,
     GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
-    NewStoryInput, PhaseCleared, ProjectService, QueryService, RelationOutcome, RelationService,
-    ReopenOutcome, SessionService, SettingsService, StateListing, StoryService, SystemService,
-    TransferService, migrate, session, system, transfer,
+    NewStoryInput, PhaseCleared, PointerUpdate, ProjectService, QueryService, RelationOutcome,
+    RelationService, ReopenOutcome, SessionService, SetPrefixOutcome, SettingsService,
+    StateListing, StoryService, SystemService, TransferService, migrate, session, system, transfer,
 };
 use crate::store::{ProjectId, ReadOps, Store};
 
@@ -170,6 +170,7 @@ impl InvokeRequest {
         match &mut self.invocation {
             Invocation::Project { action } => match action {
                 ProjectAction::Delete { force } => *force = true,
+                ProjectAction::SetPrefix { force, .. } => *force = true,
                 ProjectAction::New(_)
                 | ProjectAction::List
                 | ProjectAction::Show
@@ -693,6 +694,9 @@ pub fn dispatch<S: Store>(
             action: ProjectAction::Delete { force },
         } => dispatch_project_delete(ctx, force),
         Invocation::Project {
+            action: ProjectAction::SetPrefix { new_prefix, force },
+        } => dispatch_project_set_prefix(ctx, new_prefix, force),
+        Invocation::Project {
             action: ProjectAction::Show,
         } => dispatch_project_show(ctx),
         Invocation::Web { .. }
@@ -844,6 +848,11 @@ fn dispatch_project<S: Store>(
              it in a checkout storyhook already resolves."
                 .to_string(),
         )),
+        ProjectAction::SetPrefix { .. } => Err(AppError::Usage(
+            "`story project set-prefix` needs a project: name one with `--project <slug>`, or \
+             run it in a checkout storyhook already resolves."
+                .to_string(),
+        )),
     }
 }
 
@@ -864,6 +873,29 @@ fn dispatch_project_delete<S: Store>(ctx: &Ctx<'_, S>, force: bool) -> Result<Re
     }
     let outcome = service.delete(ctx.project())?;
     Ok(Response::Message(delete_message(&outcome)))
+}
+
+/// `story project set-prefix <NEW-PREFIX> [--force]` against a resolved
+/// project.
+///
+/// The same two-step [`dispatch_project_delete`] uses, for the same reason:
+/// an unforced request answers with the plan and writes nothing, and the
+/// client turns that into a prompt.
+fn dispatch_project_set_prefix<S: Store>(
+    ctx: &Ctx<'_, S>,
+    new_prefix: String,
+    force: bool,
+) -> Result<Response, AppError> {
+    let service =
+        ProjectService::new(ctx.store(), ctx.cwd()).clock(Clock::Fixed(ctx.now().to_string()));
+    if !force {
+        return Ok(Response::ConfirmationRequired(Box::new(
+            ConfirmationPlan::SetPrefix(service.set_prefix_plan(ctx.project(), &new_prefix)?),
+        )));
+    }
+    let backups_dir = ctx.env().maintenance_backups_dir();
+    let outcome = service.set_prefix(ctx.project(), &new_prefix, &backups_dir)?;
+    Ok(Response::Message(set_prefix_message(&outcome)))
 }
 
 /// `story project link origin|checkout …` against a resolved project.
@@ -1036,6 +1068,50 @@ fn delete_message(outcome: &DeleteOutcome) -> String {
     ));
     for checkout in &plan.checkouts {
         lines.push(format!("  left      {checkout}"));
+    }
+    lines.join("\n")
+}
+
+/// What a completed `story project set-prefix` tells the user.
+fn set_prefix_message(outcome: &SetPrefixOutcome) -> String {
+    let plan = &outcome.plan;
+    let mut lines = vec![format!(
+        "renamed {} — {} ({} → {})",
+        plan.slug, plan.name, plan.old_prefix, plan.new_prefix
+    )];
+    lines.push(format!(
+        "  refolded  {} stor{}",
+        plan.stories,
+        if plan.stories == 1 { "y" } else { "ies" },
+    ));
+    if plan.relationships > 0 {
+        lines.push(format!(
+            "  rewrote   {} relationship{}",
+            plan.relationships,
+            if plan.relationships == 1 { "" } else { "s" },
+        ));
+    }
+    if plan.github_bases > 0 {
+        lines.push(format!(
+            "  rewrote   {} github-sync merge base{}",
+            plan.github_bases,
+            if plan.github_bases == 1 { "" } else { "s" },
+        ));
+    }
+    lines.push(format!("  backup    {}", outcome.backup_path.display()));
+    match &outcome.pointer_updated {
+        PointerUpdate::NoCheckout => {}
+        PointerUpdate::Updated(path) => {
+            lines.push(format!("  updated   {} (checkout pointer)", path.display()));
+        }
+        PointerUpdate::Failed { path, reason } => {
+            lines.push(format!(
+                "  the checkout's pointer at {} was not updated: {reason}. Update its `prefix` \
+                 to `{}` by hand.",
+                path.display(),
+                plan.new_prefix
+            ));
+        }
     }
     lines.join("\n")
 }
@@ -2627,6 +2703,7 @@ fn project_creation_target(invocation: &Invocation, cwd: &Path) -> Option<PathBu
                 },
             },
             ProjectAction::Delete { .. }
+            | ProjectAction::SetPrefix { .. }
             | ProjectAction::List
             | ProjectAction::Show
             | ProjectAction::Link(_)
@@ -2824,6 +2901,7 @@ fn describe_unscoped(invocation: &Invocation) -> String {
         Invocation::Project { action } => match action {
             ProjectAction::New(_) => "project new",
             ProjectAction::Delete { .. } => "project delete",
+            ProjectAction::SetPrefix { .. } => "project set-prefix",
             ProjectAction::List => "project list",
             ProjectAction::Show => "project show",
             ProjectAction::Link(_) => "project link",
