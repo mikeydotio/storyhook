@@ -7,13 +7,17 @@
 //! could not run — fixed the same way: `--mode` alone, on an already-
 //! configured project, changes the stored mode instead of being refused.
 //!
-//! # What is testable offline, and what is not
+//! # What is testable through the real `story` subprocess, and what is not
 //!
-//! `run_initial_setup` still calls `GithubClient::validate_token` and
-//! `list_issues` before it can decide plan-vs-proceed — `GithubClient` has no
-//! trait seam (SH-158), so no automated test in this story can drive the
-//! `Response::SetupRequired` path itself end to end. What *is* reachable
-//! offline, because every check below fires before any network call:
+//! `run_initial_setup` still calls `validate_token` and `list_issues` before
+//! it can decide plan-vs-proceed, and nothing wires SH-158's `GithubApi` seam
+//! into the real `story` binary this file's fixtures run — a fake exercises
+//! the engine, not GitHub, so it stays in-process. The
+//! `Response::SetupRequired` path itself, end to end, is driven that way now:
+//! `tests/github_sync_engine.rs`, calling `run_initial_setup`/`run_sync_with`
+//! directly against `FakeGithubApiFactory`. What stays here, reachable
+//! offline through the subprocess because every check below fires before any
+//! network call:
 //!
 //! * `--strategy` without `--mode` is refused, on any project — checked
 //!   before `sync.load_config()` even runs.
@@ -23,7 +27,7 @@
 //!   — checked right after `load_config()` returns `None`.
 //! * `--mode` without `--strategy`, on a *configured* project, changes the
 //!   stored mode and returns — reachable with **no token and no network**,
-//!   since it never constructs a `GithubClient` at all.
+//!   since it never builds a `GithubApi` client at all.
 //!
 //! Every fixture uses [`OFFLINE`] anyway, on the same principle
 //! `tests/github_sync_token.rs` states: a refusal — or, here, a repair — that
@@ -304,8 +308,8 @@ fn the_off_refusal_names_a_command_that_works() {
     );
 }
 
-/// A mode change touches only the stored document — no `GithubClient` is ever
-/// constructed, so it needs no credential. `TestEnv` already strips
+/// A mode change touches only the stored document — no `GithubApi` client is
+/// ever built, so it needs no credential. `TestEnv` already strips
 /// `STORYHOOK_GITHUB_TOKEN` from every child (`crates/storyhook-test-support`,
 /// so no other proof is needed), and this run succeeds anyway.
 #[test]
@@ -418,14 +422,16 @@ fn changing_to_the_mode_already_set_succeeds() {
 /// never run github-sync before wrote configuration despite `--dry-run`
 /// (SH-153).
 ///
-/// This cannot be reproduced through a real command: reaching the write
-/// requires `GithubClient::validate_token` and `list_issues` to succeed
-/// first, and `GithubClient` has no trait seam to fake that offline (SH-158)
-/// — the same wall the module docs above name. What is checked instead is the
-/// structural fact that makes the bug impossible: `src/github/initial.rs`
+/// This cannot be reproduced through a real `story` subprocess: reaching the
+/// write requires `validate_token` and `list_issues` to succeed first, and
+/// nothing wires SH-158's `GithubApi` seam into the binary this file drives
+/// — the same wall the module docs above name. What is checked here instead
+/// is the structural fact that makes the bug impossible: `src/github/initial.rs`
 /// does not call `save_config` at all any more. The write moved to
 /// `run_sync_with`, gated on `!dry_run` alongside every other write that
-/// function makes.
+/// function makes. The behavior itself — a dry run against a fake GitHub,
+/// writing nothing — is now also pinned directly, in-process:
+/// `tests/github_sync_engine.rs::dry_run_writes_no_configuration_on_first_setup`.
 #[test]
 fn initial_setup_never_calls_save_config_itself() {
     let source = std::fs::read_to_string(concat!(

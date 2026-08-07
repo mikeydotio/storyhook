@@ -6,7 +6,7 @@ Plan of record:
 `/Users/mikey/.claude/plans/please-audit-the-dependency-majestic-hanrahan.md`
 
 An autonomous run over storyhook's backlog: a dependency-and-priority audit
-(done, PR #81), then **one story per context**, cleared by Freshen between them.
+(done, PR #81), then **one story per context**, cleared by Freshen before executing each.
 Every story gets a `## Log` entry below — successes, failures and skips alike.
 
 ---
@@ -118,55 +118,17 @@ destructively touch the real store outside SH-132's sanctioned procedure.
 
 ---
 
-## Phase 1 — backlog audit ✅
+## Backlog
 
-- [x] **1.1** Prune stale `CLAUDE.md` content (the "In flight" framing; the spent release note)
-- [x] **1.2** File four new stories — **SH-129** settings CLI, **SH-130** legal states, **SH-131** invariants, **SH-132** junk cleanup
-- [x] **1.3** Close SH-96 and SH-108 as obviated
-- [x] **1.4** Apply 14 dependency edges
-- [x] **1.5** Apply 20 priority changes
-- [x] **1.6** Verify — graph acyclic, nothing leaks into `--ready`, no `none` priorities, `story doctor` clean
-- [x] **1.7** Commit Phase 1 via `docs:` PR — merged as #81
-
-**Result:** 34 open → 36 open (four filed, two closed). 44 dependency edges.
-Critical path lengthened from 4 to 5: `SH-94 → SH-114 → SH-116 → SH-119 → SH-121`.
-Ready set fell from 25 to 21 — SH-95, SH-114, SH-124, SH-68, SH-109, SH-126 and
-SH-64 are now correctly blocked.
-
-**Deviation — SH-62 override.** SH-62 carried a deliberate prior decision:
-*"Not wired as a hard block on SH-116, but recommended ahead of it."* The audit
-upgraded it to a hard block and recorded why on the story. The reasoning behind
-the original call is unchanged; what changed is the reader. An autonomous loop
-reads the graph, not the prose, so a recommendation is invisible to it. Costs
-nothing — SH-62 is critical and SH-116 also waits on SH-114 and SH-115.
-
-**Deviation — running order.** `story next` leads with SH-62, not SH-129: both
-are critical and the tie breaks on age. Order among ready criticals is the
-orchestrator's call, so SH-129 → SH-124 run first as planned, to close the
-SH-124 hazard that corrupts this loop's own queue. (This tie-break-by-age
-fragility is SH-63, still open.)
-
-## Phase 2 — story queue
-
-**Re-derived from `story next` on 2026-08-03, after SH-118 landed**, and
-re-ordered by priority rather than by the original forecast. The forecast is
-gone: it named 20 stories and the backlog is now **51 open**, because this run
-and its neighbours filed 20 more while working (SH-133 … SH-168). Ordering by a
-list written before any of them existed was the thing to fix.
-
-**The graph has all but drained.** One `blocked-by` edge is left with an open
-story on the far end — SH-50 ← SH-120 — so almost everything below is ready
-and the order is a judgement rather than a topological sort. `story graph` is
-the check; re-run it rather than trusting this paragraph. (SH-64 ← SH-63 was
-the other one; SH-63 is done, below.)
-
-**Two stories are held by other sessions** and are marked ⚠ below. They are
-in-progress and were not moved by this loop: leave them alone, and skip to the
-next unheld line.
 
 ### Critical
 
-- **SH-112** — the server-owned epic · *closes when SH-120, SH-50 and SH-122 do; never worked directly*
+- **SH-112** — the server-owned epic · *re-derived 2026-08-07 from `story show SH-112`'s
+  relationships (`story graph` carries no edge for `parent-of`, so it will not surface
+  this): 14 children. SH-113–SH-122 and SH-50 are all done. Three remain open —
+  **SH-150** (below, medium) and **SH-187**, **SH-188** (priority `none`, filed under
+  this epic but not queued below — see their own `story show`). Closes when those three
+  do. Never worked directly.*
 
 ### High
 
@@ -187,15 +149,15 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
 - [x] **SH-133** — rollback drops project settings · *filed by SH-129*
 - [x] **SH-137** — github-sync unreachable for an origin carrying userinfo
-- [ ] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
-- [ ] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
-- [ ] **SH-145** — the dashboard does not live-update a state change until reload
-- [ ] **SH-68** — `sync.mode = auto` is accepted and does nothing
+- [x] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
+- [x] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
+- [x] **SH-145** — the dashboard does not live-update a state change until reload
+- ⚠ **SH-68** — `sync.mode = auto` is accepted and does nothing · *in-progress as of 2026-08-07T17:37 — another session; do not claim*
 
 ### Medium
 
 - [ ] **SH-109** — prefix confirmation / `set-prefix` residual
-- ⚠ **SH-122** — C11 Residual gap · *third of the epic's three remaining children; in-progress elsewhere as of 2026-08-06*
+- [x] **SH-122** — C11 Residual gap
 - [ ] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
 - [ ] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
 - [ ] **SH-138** — rollback drops a project's registered origins
@@ -206,16 +168,16 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [ ] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
 - [ ] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
 - [ ] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
-- [ ] **SH-164** — labels are sometimes concatenated
+- [x] **SH-164** — labels are sometimes concatenated
 - [ ] **SH-165** — an epic with in-progress children should read as in-progress
 - [ ] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118*
 - [ ] **SH-66** — `context --format json` double-encodes
-- [ ] **SH-42** — project selector dropdown
+- [x] **SH-42** — project selector dropdown
 - [ ] **SH-43** — archive
 - [ ] **SH-49** — linked PRs
 - [ ] **SH-155** — preserve presentation/layout settings
 - [ ] **SH-162** — allow hiding columns
-- [ ] **SH-50** — C9 Dispatch button · *blocked by SH-120*
+- [x] **SH-50** — C9 Dispatch button
 - [x] **SH-157** — visually indicate story types · *closed by another session*
 
 ### Low
@@ -4653,3 +4615,243 @@ closed by another session, and its ⚠ was stale; SH-122 is now in-progress
 elsewhere and has gained one.
 
 **Council:** yes — `.council/sh-137-github-url-delegation/`.
+
+### SH-153 — done
+
+**Outcome:** `get_github_token` and `run_initial_setup` no longer call
+`Select::interact()` from the daemon. Two PRs, per the council verdict's own
+D4 split: #138 moves the credential into the request envelope; #139 replaces
+the three prompts with a setup-plan round trip and closes the story.
+
+**Deviation from the standard loop — recorded rather than smoothed over.**
+This story was not picked off the queue by an autonomous cycle. The session
+that reached D1-D4's council verdict (recorded on the story itself, before
+this entry) was interrupted mid-PR1 by a real hardware fault — a SEP panic,
+confirmed against `panic-full-2026-08-06-182940.0002.panic` and cross-checked
+against the crashed session's own transcript. The next session opened by
+resuming from that crash at Mikey's direction, verified nothing was lost
+(everything on disk was either committed or complete and uncommitted; the
+one real gap was that the two pre-crash commits had never been run through
+`cargo fmt`), and continued under his explicit direction rather than this
+file's own autonomy rule. Recorded here because the loop's honesty about its
+own deviations is the thing that makes the log worth trusting — no RCA filed:
+this was a hardware fault, not a defect in anything this program owns.
+
+**PR1 — the envelope.** `GithubToken` (already landed a commit earlier, see
+above) travels in `InvokeRequest`/`WireRequest` now, read once by
+`env::secrets::take_credentials()` as the first statement of `main` — reads
+**and removes** `STORYHOOK_GITHUB_TOKEN` in one call, so the daemon this
+process may spawn never inherits it and cannot hand it to an event hook, the
+dashboard's dispatch child, or `claude`. `TestEnv` gained `CLEARED_VARS`
+alongside `ISOLATED_VARS`: cleared rather than redirected, because there is
+no harmless value for a credential the way there is for a path. Three
+adjacent findings from the council's own D1, carried in the same PR:
+`update.rs`'s self-update check no longer attaches a bearer to a public,
+unauthenticated endpoint; `daemon.log` is 0600 like every other daemon file
+that matters, not `File::create`'s default 0644.
+
+**PR2 — the plan.** `run_initial_setup` now returns
+`InitialSetupOutcome::Plan` (nothing written) or `Configured` (computed, not
+yet saved — see the dry-run fix below), and `run_sync_with` turns a `Plan`
+into `Response::SetupRequired(SetupPlan)` — same model as
+`ConfirmationRequired`, asked by the client that has a terminal
+(`src/service/github_setup.rs`, built to `questionnaire.rs`'s shape) or
+answered up front with `--strategy`/`--mode`. The wizard's default is
+`future-only`, never `import-all`: a stray `Enter` must not perform the
+largest irreversible write the feature has. Match-by-title stopped being a
+per-pair menu and a case-insensitive substring rule; it is now exact after
+normalizing, unique on both sides, and order-invariant by construction (two
+frequency maps built once, rather than sequential exclusion reading its own
+growing output) — proven with a reversed-input comparison rather than
+asserted by inspection.
+
+**A live bug, found and fixed inside the same story rather than filed
+separately.** `story github-sync --dry-run --strategy <s> --mode <m>` on an
+unconfigured project wrote configuration despite `--dry-run` — the save used
+to live inside `run_initial_setup`, unconditionally. Not reproduced through a
+real command: reaching the write needs `GithubClient::validate_token`/
+`list_issues` to succeed first, and `GithubClient` has no trait seam
+(SH-158) to fake that offline. Fixed by moving the write to `run_sync_with`,
+beside every other write that function already gates on `dry_run`, and
+pinned with a structural test (`initial.rs` no longer calls `save_config` at
+all) — checked red against the prior commit before calling it fixed, the
+same discipline a behavioral repro would have gotten.
+
+`tests/invoker_seam.rs`'s allowlist: four entries to three.
+`src/github/initial.rs` is off it entirely; its replacement takes
+`impl BufRead` like `questionnaire.rs` and was never a candidate.
+
+**Filed, both independent of this story's own scope.** SH-195: `reserve_port()`
+binds a listener to prove nothing else holds a port, then releases it before
+the real daemon binds — a genuine TOCTOU window, found while investigating the
+crashed session's own unreproduced `daemon_git_env.rs` failure, and explicitly
+**not** claimed as that failure's cause (5 reproduction attempts, including at
+the exact pre-crash commit, all clean). SH-196: dashboard dispatch failing
+because the installed plugin cache predated the `--project` flag by nine
+commits — found from Mikey's own bug report after landing, reproduced exactly,
+and resolved by cutting a local-only-tagged plugin release (`story--v0.5.0`,
+untagged for push) rather than a code fix; the code-level defect (a
+version-skewed plugin fails with a generic usage message instead of a clear
+diagnosis) stays open.
+
+**Gate:** `make test` exits 0 twice — once for each PR — **2832 tests** after
+PR2, **0 failures**, plugin harness 24/24, browser suite 12/12. Every commit
+on both branches checked out and compiled individually under both
+`--all-features` and `--no-default-features` before push, to keep history
+bisectable. No orphans.
+
+**Council:** yes, before the crash — `.council/github-sync-setup-and-token-across-the-daemon/`.
+Not re-run; both PRs implement the verdict already recorded on the story.
+
+### Queue resync — 2026-08-07, before picking a story
+
+Before claiming anything, re-derived what SH-112 actually depends on: `story
+show SH-112`'s relationships name 14 children (`parent-of`), not the three the
+file's own line claimed. 11 are done (SH-113–SH-122, SH-50); three remain open
+(SH-150, already queued below; SH-187 and SH-188, priority `none`, filed under
+the epic but not queued). Rewrote the SH-112 line to say so. The same fresh
+cross-check — every Backlog checkbox against real story state, not the marks —
+found two more false negatives (SH-42, SH-164, both closed 2026-08-04 but
+still unchecked) and one true positive missing a hold marker (SH-68,
+in-progress in another session as of today, now ⚠). Landed as its own PR
+(#143) per START HERE's instruction, before touching the queue.
+
+### SH-158 — done
+
+`GithubClient` had no trait seam, so `run_sync_with`, `sync_single_story` and
+everything downstream of them had zero automated coverage, and
+`AppError::SyncConflict` sat on `tests/error_contract.rs`'s `UNPROVOKABLE`
+list for lack of a way to fake a conflicting GitHub issue.
+
+**Council first** — the prior attempt's own council was interrupted mid-vote
+with nothing recorded, so this one started fresh rather than reusing anything.
+3 seats (software-architect, api-designer, qa-engineer); round 1 split 2-1 on
+whether the fake needed a per-call error-injection toggle; resolved unanimous
+3-0 in the ranked-choice runoff after two seats independently verified against
+`tests/error_contract.rs` and this file that error-accumulation testing is
+SH-159's separately-filed, still-open scope, not SH-158's to presuppose an
+answer to. Full trail: `.council/sh158-githubapi-trait-seam/DECISION.md`.
+
+**The seam.** `GithubApi` (`src/github/api.rs`) names the 7 calls the engine
+actually reaches — `get_timeline` has zero call sites anywhere and stays off
+the trait, filed separately as **SH-198**. Owner/repo are only known
+mid-function (after config load in `run_sync_with`, after remote detection in
+`run_initial_setup`), never at the caller's point of call, so both functions
+take a `GithubApiFactory` instead of building a client themselves.
+`RealGithubApiFactory` is the production implementation
+(`src/service/github.rs`); `FakeGithubApiFactory`
+(`crates/storyhook-test-support/src/github.rs`) is the test one, one shared
+`Rc<RefCell<...>>` state across every client it builds — load-bearing, since
+`run_sync_with` calls `run_initial_setup` internally on an unconfigured
+project and each constructs its own client.
+
+**The tests** — `tests/github_sync_engine.rs`, 9 of them, calling
+`run_initial_setup`/`run_sync_with` directly against the fake, the way
+`tests/service_github.rs` already calls `StoreSyncStorage` directly. Covers
+SH-153's four named assertions (`SetupRequired` for an unanswered setup,
+stated answers write config, `--dry-run` writes none, unique title pairs link
+end to end) plus the orchestration the original filing named as uncovered:
+pull-phase story creation, push-phase issue creation, a real merge conflict
+reaching `AppError::SyncConflict` in-process, and one story's error not
+aborting the rest of a sync — reached with an ordinary mapping to an issue
+number the fake never seeded, no injection mechanism required, exactly as the
+council decided. `tests/error_contract.rs`'s `UNPROVOKABLE` entry for
+`SyncConflict` is unchanged on purpose: nothing wires this seam into the real
+`story` subprocess that file drives, only in-process callers reach it.
+
+Three commits, two hats: the refactor (behaviour-preserving, no new
+assertions), the tests, and a doc-accuracy fix to three test files that named
+SH-158 as the reason certain things couldn't be tested.
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace,
+all-targets), full Rust suite, plugin harness, e2e — no failures, no warnings,
+clean working tree after. `cargo check --no-default-features` also compiles.
+Supervised per this file's own rule; no stall.
+
+**Filed, independent of this story's scope:** SH-198, the `get_timeline`
+dead-code finding named above.
+
+**PR:** #144, merged as `a7cbcbf`.
+
+### SH-145 — done
+
+Picked next off the High queue (first unchecked, non-⚠, non-⏸ line) after SH-158; SH-68,
+SH-112 and SH-173 were all confirmed genuinely in-progress in other sessions via `story
+list --state in-progress` before being skipped.
+
+**Reproduce before fix, taken literally.** The story's own three candidate mechanisms —
+did `poll_change_token` fire, did the heartbeat detect a dead connection, does the
+front end mishandle a received event — got an automated test and a live browser check
+before any code changed, per this file's rule 4 and CLAUDE.md's defect-handling tenets.
+
+First hypothesis, built from reading `daemon/serve.rs`'s `dispatch()`: the "request
+boundary" publisher the change feed's own module doc promises only fires for
+`rest::route` (the dashboard's own REST mutations) — `rpc::route`'s `POST /api/v1/invoke`,
+the *only* transport an ordinary `story` command uses since SH-114, returns its answer
+without ever touching `ChangeBus`. Wrote
+`tests/web_test.rs::sse_delivers_repo_changed_for_a_cli_write_through_the_daemon` — a real
+daemon subprocess, a real `story new`, an SSE connection watching — expecting red. It
+came back green in 2s: `poll_change_token`'s 250ms safety-net poll (over a `change_conn`
+dedicated to exactly this, per its own doc comment) already catches every CLI write fine.
+Confirmed a second way with a live Playwright browser against a real running daemon: a
+`story move` from another terminal moved the card between board columns instantly, no
+reload. Real gap (the module doc's "two publishers" claim is false for the primary write
+path), but not this story's root cause — filed separately as **SH-202** rather than fixed
+here, with a doc-accuracy correction to `daemon/bus.rs`'s module doc landed in its own
+commit.
+
+**Actual root cause**, found by re-reading what "the browser never got told" can mean:
+`EventSource` only reports an error when its connection actually *closes*. A connection
+that goes silently dead — laptop sleep, a NAT mapping expiring mid-idle — may never close
+at all: a browser's TCP stack keeps accepting the daemon's small, 20s-interval heartbeat
+writes into its local receive buffer without them ever crossing a link that no longer
+exists, so `onerror` never fires and nothing in `web_dashboard.html` ever reconnects it.
+No test could force a real network partition, but nothing needed to: the front end had
+*zero* liveness check independent of `EventSource`'s own (unreliable, for this failure
+mode) error reporting — a structural absence, provable by inspection and by what fixing it
+changes.
+
+**The fix:** a client-side watchdog with no server dependency. `sse.lastEventAt` updates on
+every SSE message; `sseWatchdog()` (a `setInterval`) force-closes and reopens the
+`EventSource` once too long has passed without one — bounding staleness to one watchdog
+interval instead of leaving it open-ended. `Change::Ping` became a real named `ping` event
+(`daemon/bus.rs`) rather than a bare SSE comment, since a comment is invisible to
+`EventSource`'s API and the watchdog needs a heartbeat to actually observe on an otherwise
+quiet connection. Both intervals are query-string overridable
+(`sseStaleAfterMs`/`sseWatchdogIntervalMs`), mirroring `STORYHOOK_SSE_HEARTBEAT_MS`'s
+existing pattern on the daemon side, so `e2e/specs/sse-watchdog.spec.ts` can shrink them to
+something a 15s test budget outwaits without touching the seeded daemon's real ~20s
+heartbeat — which, left alone, simply never fires inside the test's short window, no fault
+injection required to produce the silence the watchdog is supposed to notice.
+
+**Verified red→green the hard way:** `git stash` of the fix commit's frontend/bus.rs
+changes, reran the new e2e spec — failed exactly as expected (`Expected: > 3, Received:
+3`). Popped the stash, reran — green. This is the only test in the run so far verified
+against a genuine revert rather than trusted on first green, since the earlier `poll_change_token`
+test's own red→green (see above) already covered that discipline for the ruled-out path.
+
+**Council:** not run. No design question with 2+ defensible alternatives arose — the
+watchdog's shape (client-side timer, no server dependency) had one clearly-correct answer
+once the root cause was established, and SH-202's fix approach is explicitly left open for
+whoever picks it up next rather than decided here.
+
+**Three commits, two hats (plus one doc-only):** `docs(daemon)` — the bus.rs module-doc
+correction, SH-202 reference, no behavior change; `fix(web)` — the actual watchdog +
+Ping-becomes-an-event fix, bundled with its own regression tests (the updated ping
+wire-format assertion, the new e2e spec) since neither is a refactor and both are required
+at that commit; `test(web)` — the standalone CLI-invoke-path investigation test, additive
+coverage independent of the fix itself.
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace, all-targets), full
+Rust suite, plugin harness (24/24), e2e (13/13 including the new spec) — no failures, no
+warnings, clean working tree after. Supervised per this file's own rule: `make test`
+launched via `nohup ... &` inside a backgrounded Bash call, which detached it from the
+tool's own completion tracking (a lesson for next time — pass the long-running command
+directly to `run_in_background` rather than shell-backgrounding it); caught the mistake,
+stood up a manual log-growth watchdog with the prescribed 120s stall bound around the
+orphaned process instead of abandoning supervision. No stall; ran clean start to finish.
+
+**Filed, independent of this story's scope:** SH-202, the change feed's request-boundary
+publisher not reaching CLI writes (see above).
+
+**PR:** #147, merged as `b317a87`.

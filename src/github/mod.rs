@@ -1,3 +1,4 @@
+pub mod api;
 pub mod body_block;
 pub mod client;
 pub mod conflict;
@@ -12,7 +13,7 @@ use crate::domain::{Member, Priority, StateDef, StoryEvent, StorySnapshot, norma
 use crate::error::AppError;
 use crate::output::Response;
 
-use self::client::GithubClient;
+use self::api::{GithubApi, GithubApiFactory};
 use self::conflict::{Resolution, ResolvedConflict, resolve_conflicts_batch};
 use self::diff::{
     ConflictField, FieldConflict, FieldUpdates, MergeResult, base_after_sync, three_way_merge,
@@ -287,6 +288,7 @@ fn change_mode(
 #[allow(clippy::too_many_arguments)]
 pub fn run_sync_with(
     sync: &dyn SyncStorage,
+    api_factory: &dyn GithubApiFactory,
     token: Option<&crate::domain::secret::GithubToken>,
     story_id: Option<&str>,
     dry_run: bool,
@@ -385,7 +387,7 @@ pub fn run_sync_with(
             let answers = strategy
                 .zip(mode)
                 .map(|(strategy, mode)| SetupAnswers { strategy, mode });
-            match run_initial_setup(sync, token, answers)? {
+            match run_initial_setup(sync, api_factory, token, answers)? {
                 InitialSetupOutcome::Plan(plan) => return Ok(Response::SetupRequired(plan)),
                 InitialSetupOutcome::Configured { config, notes } => {
                     // Not `run_initial_setup`'s call: a dry run must not
@@ -412,7 +414,7 @@ pub fn run_sync_with(
 
     // 2. Get token and create client
     let token = require_github_token(token)?;
-    let client = GithubClient::new(
+    let client = api_factory.build(
         token.expose().to_string(),
         config.github.owner.clone(),
         config.github.repo.clone(),
@@ -439,7 +441,7 @@ pub fn run_sync_with(
 
         match sync_single_story(
             sync,
-            &client,
+            client.as_ref(),
             &mut config,
             story,
             &states,
@@ -498,7 +500,7 @@ pub fn run_sync_with(
 
                 match create_story_from_issue(
                     sync,
-                    &client,
+                    client.as_ref(),
                     &mut config,
                     issue,
                     &remote_snap,
@@ -530,7 +532,7 @@ pub fn run_sync_with(
 
             match sync_single_story(
                 sync,
-                &client,
+                client.as_ref(),
                 &mut config,
                 story,
                 &states,
@@ -574,7 +576,7 @@ pub fn run_sync_with(
 
             match create_story_from_issue(
                 sync,
-                &client,
+                client.as_ref(),
                 &mut config,
                 issue,
                 &remote_snap,
@@ -606,7 +608,7 @@ pub fn run_sync_with(
             // Mapped but not in pull results -- check for local-only changes to push
             match sync_single_story(
                 sync,
-                &client,
+                client.as_ref(),
                 &mut config,
                 story,
                 &states,
@@ -631,7 +633,7 @@ pub fn run_sync_with(
 
             match create_issue_from_story(
                 sync,
-                &client,
+                client.as_ref(),
                 &mut config,
                 story,
                 &states,
@@ -666,7 +668,7 @@ pub fn run_sync_with(
 #[allow(clippy::too_many_arguments)]
 fn sync_single_story(
     sync: &dyn SyncStorage,
-    client: &GithubClient,
+    client: &dyn GithubApi,
     config: &mut GithubSyncConfig,
     story: &StorySnapshot,
     states: &[StateDef],
@@ -870,7 +872,7 @@ fn sync_single_story(
 #[allow(clippy::too_many_arguments)]
 fn create_story_from_issue(
     sync: &dyn SyncStorage,
-    client: &GithubClient,
+    client: &dyn GithubApi,
     config: &mut GithubSyncConfig,
     issue: &types::GithubIssue,
     remote_snap: &RemoteSnapshot,
@@ -1009,7 +1011,7 @@ fn create_story_from_issue(
 
 fn create_issue_from_story(
     sync: &dyn SyncStorage,
-    client: &GithubClient,
+    client: &dyn GithubApi,
     config: &mut GithubSyncConfig,
     story: &StorySnapshot,
     _states: &[StateDef],
@@ -1198,7 +1200,7 @@ fn apply_conflict_locally(
 // ---------------------------------------------------------------------------
 
 fn apply_conflict_remotely(
-    client: &GithubClient,
+    client: &dyn GithubApi,
     mapping: &StoryIssueMapping,
     resolved: &ResolvedConflict,
     conflicts: &[FieldConflict],
