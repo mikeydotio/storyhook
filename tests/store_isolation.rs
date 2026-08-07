@@ -576,6 +576,147 @@ fn store_new_does_not_resolve_the_ambient_store() {
 }
 
 // ---------------------------------------------------------------------------
+// `story store backup` (SH-135)
+// ---------------------------------------------------------------------------
+
+/// Pulls the path `dispatch_store_backup`'s success message names, rather
+/// than re-deriving `maintenance_backups_dir()`'s own layout logic here — the
+/// message is the one place a caller (human or script) learns where the file
+/// went, so asserting through it also pins that the message is honest.
+fn backup_path_from_message(message: &str) -> PathBuf {
+    let after = message
+        .strip_prefix("backup written to ")
+        .unwrap_or_else(|| panic!("unexpected success message: {message}"));
+    let path = after
+        .split(" (label:")
+        .next()
+        .unwrap_or_else(|| panic!("unexpected success message: {message}"));
+    PathBuf::from(path)
+}
+
+#[test]
+fn store_backup_writes_a_verified_snapshot_into_the_maintenance_directory() {
+    let probe = Probe::new();
+    let repo = probe.dir("repo");
+    let data_dir = probe.dir("data");
+
+    let out = ok(probe
+        .story(&repo)
+        .env("STORYHOOK_DATA_DIR", &data_dir)
+        .args(["store", "backup", "--label", "pre-migration"]));
+    assert!(
+        out.contains("pre-migration"),
+        "the success message should name the label; it said:\n{out}"
+    );
+
+    let path = backup_path_from_message(out.trim());
+    assert!(
+        path.exists(),
+        "the message named {path:?}, which must exist on disk"
+    );
+    assert!(
+        path.to_string_lossy().contains("pre-migration"),
+        "the label should be part of the filename: {path:?}"
+    );
+    assert!(
+        path.components().any(|c| c.as_os_str() == "maintenance"),
+        "a hand-taken backup must land under a `maintenance` directory, not the one the \
+         daily prune scans: {path:?}"
+    );
+}
+
+#[test]
+fn store_backup_defaults_its_label_to_manual() {
+    let probe = Probe::new();
+    let repo = probe.dir("repo");
+    let data_dir = probe.dir("data");
+
+    let out = ok(probe
+        .story(&repo)
+        .env("STORYHOOK_DATA_DIR", &data_dir)
+        .args(["store", "backup"]));
+
+    let path = backup_path_from_message(out.trim());
+    assert!(
+        path.to_string_lossy().contains("manual"),
+        "an unlabeled backup should default to `manual`: {path:?}"
+    );
+}
+
+#[test]
+fn store_backup_refuses_a_label_that_is_not_a_safe_filename_component() {
+    let probe = Probe::new();
+    let repo = probe.dir("repo");
+    let data_dir = probe.dir("data");
+
+    let stderr = refused(
+        probe
+            .story(&repo)
+            .env("STORYHOOK_DATA_DIR", &data_dir)
+            .args(["store", "backup", "--label", "../../etc/passwd"]),
+    );
+    assert!(
+        stderr.contains("invalid backup label"),
+        "the refusal should name the problem; it said:\n{stderr}"
+    );
+}
+
+/// `story store backup` acts on the ambient store, not a project — it must
+/// answer in a directory storyhook has never heard of, the same as `story web
+/// status` (`invoker_seam.rs`'s `the_project_less_verbs_all_answer_outside_a_project`
+/// pins this at the seam level; this pins it end to end through the real
+/// binary).
+#[test]
+fn store_backup_runs_in_an_uninitialized_directory() {
+    let probe = Probe::new();
+    let repo = probe.dir("repo");
+    let data_dir = probe.dir("data");
+
+    ok(probe
+        .story(&repo)
+        .env("STORYHOOK_DATA_DIR", &data_dir)
+        .args(["store", "backup"]));
+}
+
+/// The backup is reported by `daemon status`, per this same story's council
+/// decision — never by `story doctor`, whose output is pinned by a golden
+/// corpus and whose exit code means a project's integrity, not a machine's
+/// backup freshness.
+#[test]
+fn store_backup_is_reported_by_daemon_status_not_by_doctor() {
+    let probe = Probe::new();
+    let repo = probe.dir("repo");
+    let data_dir = probe.dir("data");
+
+    ok(probe
+        .story(&repo)
+        .env("STORYHOOK_DATA_DIR", &data_dir)
+        .args(["store", "backup", "--label", "pre-migration"]));
+
+    let status = ok(probe
+        .story(&repo)
+        .env("STORYHOOK_DATA_DIR", &data_dir)
+        .args(["daemon", "status"]));
+    assert!(
+        status.contains("maintenance backups"),
+        "`daemon status` should report the maintenance directory; it said:\n{status}"
+    );
+
+    ok(probe
+        .story(&repo)
+        .env("STORYHOOK_DATA_DIR", &data_dir)
+        .args(["project", "new", "--prefix", "SH"]));
+    let doctor = ok(probe
+        .story(&repo)
+        .env("STORYHOOK_DATA_DIR", &data_dir)
+        .args(["doctor"]));
+    assert!(
+        !doctor.to_lowercase().contains("maintenance backup"),
+        "`story doctor`'s golden-corpus-pinned output must not mention backups; it said:\n{doctor}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The upgrade
 // ---------------------------------------------------------------------------
 

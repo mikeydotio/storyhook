@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::cli::{
     Attach, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
     NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
-    TypeAction, WebAction,
+    StoreAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState, TypeChanges, TypeDef};
 use crate::env::Environment;
@@ -712,6 +712,7 @@ pub fn dispatch<S: Store>(
         | Invocation::HelpAll
         | Invocation::Version => dispatch_unscoped_with_stdin(
             ctx.store(),
+            ctx.env(),
             ctx.cwd(),
             &ctx.now(),
             invocation,
@@ -1448,11 +1449,12 @@ fn format_state_line(listing: &StateListing) -> String {
 /// invocation, from whichever clock the caller is using.
 pub fn dispatch_unscoped<S: Store>(
     store: &S,
+    env: &Environment,
     root: &Path,
     now: &str,
     invocation: Invocation,
 ) -> Result<Response, AppError> {
-    dispatch_unscoped_with_stdin(store, root, now, invocation, None)
+    dispatch_unscoped_with_stdin(store, env, root, now, invocation, None)
 }
 
 /// Whether an invocation can be answered without opening a store at all.
@@ -1478,7 +1480,11 @@ pub fn dispatch_unscoped<S: Store>(
 ///   command that stops a daemon would start one first.
 /// * **Self-update.** `story update` replaces the binary the daemon is running.
 /// * **Store creation.** `story store new` is about a store that does not exist
-///   yet; `main` answers it before anything is opened.
+///   yet; `main` answers it before anything is opened. **Only `New`** — its
+///   sibling `StoreAction::Backup` is the opposite: it backs up the *ambient*
+///   store, so it needs one open like any ordinary command, and is matched
+///   for that specifically rather than falling out of a blanket
+///   `Invocation::Store { .. }`.
 /// * **Pure functions of compiled-in text.** `--help` and `--version` are
 ///   answered from a string constant.
 ///
@@ -1491,7 +1497,9 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
         invocation,
         Invocation::Daemon { .. }
             | Invocation::Web { .. }
-            | Invocation::Store { .. }
+            | Invocation::Store {
+                action: StoreAction::New { .. }
+            }
             | Invocation::Update { .. }
             | Invocation::Help
             | Invocation::HelpTopic { .. }
@@ -1546,8 +1554,14 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         // `main` answers this one before a store is ever opened, for the
         // reasons on [`create_store`]. Reaching here means a caller went round
         // the front door, and the honest answer is that no store this arm could
-        // reach is the right one to create anything with.
-        Invocation::Store { .. } => Err(AppError::Storage(
+        // reach is the right one to create anything with. Narrowed to `New`
+        // specifically — `needs_no_store` no longer sends `Backup` here, and a
+        // `Backup` reaching this match anyway falls to the `other` arm below,
+        // whose message correctly names the invocation rather than blaming
+        // `store new` for it.
+        Invocation::Store {
+            action: StoreAction::New { .. },
+        } => Err(AppError::Storage(
             "`story store new` is handled before the store is opened".to_string(),
         )),
         other => Err(AppError::Storage(format!(
@@ -1560,6 +1574,7 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
 /// [`dispatch_unscoped`], given whatever the client read on standard input.
 pub fn dispatch_unscoped_with_stdin<S: Store>(
     store: &S,
+    env: &Environment,
     root: &Path,
     now: &str,
     invocation: Invocation,
@@ -1570,6 +1585,14 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
     }
     match invocation {
         Invocation::Project { action } => dispatch_project(store, root, now, action),
+        // `story store new` is intercepted before a store is even opened (see
+        // [`create_store`]) and never reaches here; `Backup` is the only
+        // `StoreAction` `needs_no_store` lets through. Unconfirmed — it only
+        // ever creates a file — and store-wide rather than project-scoped,
+        // which is why it is answered here rather than in `dispatch`.
+        Invocation::Store {
+            action: StoreAction::Backup { label },
+        } => dispatch_store_backup(store, env, label.as_deref()),
         // Parsing a spec is a pure function of its text. `--dry-run` prints the
         // stories it *would* create and writes nothing, which the legacy path
         // answered before it ever looked for a project — so this arm does too,
@@ -1677,6 +1700,29 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
         }
         other => Err(not_yet_ported(&other)),
     }
+}
+
+/// `story store backup [--label <text>]` — a verified, on-demand backup of
+/// the ambient store, unconfirmed and store-wide (SH-135).
+///
+/// Delegates to [`crate::daemon::backup::take_manual`], which writes into
+/// [`Environment::maintenance_backups_dir`] rather than the directory the
+/// daily schedule prunes, so the result survives by construction. `label`
+/// defaults to `"manual"` — anything more specific (`pre-migration`,
+/// `pre-sh130-purge`) is the caller's to choose and is validated before it
+/// becomes part of the filename.
+fn dispatch_store_backup<S: Store>(
+    store: &S,
+    env: &Environment,
+    label: Option<&str>,
+) -> Result<Response, AppError> {
+    let label = label.unwrap_or("manual");
+    let path = crate::daemon::backup::take_manual(store, &env.maintenance_backups_dir(), label)?;
+    Ok(Response::Message(format!(
+        "backup written to {} (label: {label}, verified: VACUUM INTO + integrity_check)\n\
+         `story daemon status` / `story web status` report it alongside every other backup.",
+        path.display()
+    )))
 }
 
 /// Reads a command's input document from a file, or from standard input when
@@ -2756,6 +2802,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             }
             return dispatch_unscoped_with_stdin(
                 self.store,
+                &self.env,
                 &self.cwd,
                 &now,
                 request.invocation,
@@ -2778,6 +2825,7 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
             if matches!(request.invocation, Invocation::Scaffold { .. }) {
                 return dispatch_unscoped_with_stdin(
                     self.store,
+                    &self.env,
                     &self.cwd,
                     &now,
                     request.invocation,
@@ -2933,6 +2981,11 @@ fn is_project_less(invocation: &Invocation) -> bool {
         Invocation::Hooks { action } => !matches!(action, HooksAction::Test { .. }),
         // A dry run parses and prints; only a real one writes stories.
         Invocation::Decompose { dry_run, .. } => *dry_run,
+        // Every `story store` verb is about the store as a whole, never about
+        // a project inside one — `StoreAction::New` already returns above via
+        // `needs_no_store`; `StoreAction::Backup` snapshots the *whole*
+        // ambient store, so it belongs here for the same reason.
+        Invocation::Store { .. } => true,
         _ => false,
     }
 }

@@ -514,10 +514,10 @@ impl Store for SqliteStore {
         self.migrate_with(MIGRATIONS)
     }
 
-    fn snapshot(&self, dir: &Path) -> Result<PathBuf, StoreError> {
+    fn snapshot(&self, dir: &Path, label: &str) -> Result<PathBuf, StoreError> {
         self.explain_corruption((|| {
             let conn = self.checkout()?;
-            migrate::snapshot(&conn, dir, "snapshot")
+            migrate::snapshot(&conn, dir, label)
         })())
     }
 

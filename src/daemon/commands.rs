@@ -5,13 +5,15 @@
 //! are aliases for the first three; they kept their wording, because scripts
 //! read it, and gained a line on stderr saying where they moved.
 //!
-//! [`status`] is also where the backups are reported. The plan said `story
-//! doctor`, and this is a deliberate departure: `doctor`'s output is pinned
-//! byte-for-byte by the golden corpus, and its exit code *means* something —
-//! a project's integrity. How old a copy of the database is a fact about the
-//! machine, not about the project, and adding it to `doctor` would either move
-//! bytes the whole rearchitecture is measured against or turn "this machine has
-//! not run a daemon lately" into an integrity failure.
+//! [`status`] is also where the backups — both the daily schedule and the
+//! unpruned maintenance/hand-taken directory `story store backup` writes to
+//! (SH-135) — are reported. The plan said `story doctor`, and this is a
+//! deliberate departure: `doctor`'s output is pinned byte-for-byte by the
+//! golden corpus, and its exit code *means* something — a project's
+//! integrity. How old a copy of the database is a fact about the machine, not
+//! about the project, and adding it to `doctor` would either move bytes the
+//! whole rearchitecture is measured against or turn "this machine has not run
+//! a daemon lately" into an integrity failure.
 
 use std::path::PathBuf;
 
@@ -59,9 +61,10 @@ pub fn stop(env: &Environment) -> Result<String, AppError> {
 pub fn status(env: &Environment) -> Result<String, AppError> {
     if !lifecycle::is_live(env) {
         return Ok(format!(
-            "storyhook daemon is not running\n\n{}\n{}",
+            "storyhook daemon is not running\n\n{}\n{}\n{}",
             lifecycle::describe_paths(env),
-            crate::daemon::backup::describe(env)
+            crate::daemon::backup::describe(env),
+            crate::daemon::backup::describe_maintenance(env)
         ));
     }
     match lifecycle::read_info(env) {
@@ -79,13 +82,14 @@ pub fn status(env: &Environment) -> Result<String, AppError> {
                 )
             };
             Ok(format!(
-                "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}",
+                "storyhook daemon {} running at {} (PID {}){}\n\n{}\n{}\n{}",
                 info.version,
                 info.dashboard_url(),
                 info.pid,
                 staleness,
                 lifecycle::describe_paths(env),
-                crate::daemon::backup::describe(env)
+                crate::daemon::backup::describe(env),
+                crate::daemon::backup::describe_maintenance(env)
             ))
         }
         // The lock is held by something that published nothing. Say so plainly

@@ -269,7 +269,7 @@ mod resolution {
 /// that must never happen: none of them may be refused for want of a project.
 #[test]
 fn the_project_less_verbs_all_answer_outside_a_project() {
-    use storyhook::cli::{HooksAction, PluginAction, WebAction};
+    use storyhook::cli::{HooksAction, PluginAction, StoreAction, WebAction};
     use storyhook::invoke::{StoreInvoker, open_store};
     use storyhook_test_support::scratch_dir;
 
@@ -317,6 +317,15 @@ fn the_project_less_verbs_all_answer_outside_a_project() {
             "web status",
             Invocation::Web {
                 action: WebAction::Status,
+            },
+        ),
+        // SH-135: `story store backup` snapshots the *ambient* store, so — like
+        // `web status` and `update --check` before it — it must answer with no
+        // project resolvable, never with "not initialized in this directory".
+        (
+            "store backup",
+            Invocation::Store {
+                action: StoreAction::Backup { label: None },
             },
         ),
         (

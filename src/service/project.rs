@@ -1507,7 +1507,7 @@ impl<'a, S: Store> ProjectService<'a, S> {
     ) -> Result<SetPrefixOutcome, AppError> {
         let new_prefix = crate::domain::prefix::validate(new_prefix)?;
         let now = self.clock.now();
-        let backup_path = self.store.snapshot(backups_dir)?;
+        let backup_path = self.store.snapshot(backups_dir, "set-prefix")?;
 
         let plan = self.store.write(|tx| {
             let record = tx
