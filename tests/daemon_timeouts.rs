@@ -281,6 +281,7 @@ mod exchange {
             pid: std::process::id(),
             started_at: "2026-01-01T00:00:00Z".to_string(),
             served_deadline_secs,
+            cwd: std::path::PathBuf::from("/"),
         };
         storyhook::daemon::lifecycle::publish_inflight(env, std::slice::from_ref(&record));
         record
@@ -368,6 +369,7 @@ mod exchange {
                     pid: std::process::id(),
                     started_at: "2026-01-01T00:00:00Z".to_string(),
                     served_deadline_secs: DRIVEN.as_secs(),
+                    cwd: std::path::PathBuf::from("/"),
                 };
                 storyhook::daemon::lifecycle::publish_inflight(
                     &churning,

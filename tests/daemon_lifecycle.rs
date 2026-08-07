@@ -920,6 +920,7 @@ fn a_record_a_killed_daemon_left_behind_does_not_survive_the_next_ones_start() {
             pid: 1,
             started_at: "2020-01-01T00:00:00Z".to_string(),
             served_deadline_secs: lifecycle::SYNC_SERVED_DEADLINE.as_secs(),
+            cwd: std::path::PathBuf::from("/"),
         }],
     );
     assert!(
