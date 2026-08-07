@@ -206,7 +206,10 @@ struct FakeGithubApi {
 
 impl GithubApi for FakeGithubApi {
     fn validate_token(&self) -> Result<(), AppError> {
-        self.state.borrow_mut().recorded.push(RecordedCall::ValidateToken);
+        self.state
+            .borrow_mut()
+            .recorded
+            .push(RecordedCall::ValidateToken);
         Ok(())
     }
 
@@ -227,7 +230,9 @@ impl GithubApi for FakeGithubApi {
             .find(|i| i.number == number)
             .cloned()
             .ok_or_else(|| {
-                AppError::NotFound(format!("GitHub resource not found (HTTP 404): issue #{number}"))
+                AppError::NotFound(format!(
+                    "GitHub resource not found (HTTP 404): issue #{number}"
+                ))
             })
     }
 
@@ -257,13 +262,16 @@ impl GithubApi for FakeGithubApi {
 
     fn update_issue(&self, number: u64, req: &UpdateIssueRequest) -> Result<GithubIssue, AppError> {
         let mut s = self.state.borrow_mut();
-        s.recorded.push(RecordedCall::UpdateIssue(number, req.clone()));
+        s.recorded
+            .push(RecordedCall::UpdateIssue(number, req.clone()));
         let issue = s
             .issues
             .iter_mut()
             .find(|i| i.number == number)
             .ok_or_else(|| {
-                AppError::NotFound(format!("GitHub resource not found (HTTP 404): issue #{number}"))
+                AppError::NotFound(format!(
+                    "GitHub resource not found (HTTP 404): issue #{number}"
+                ))
             })?;
         if let Some(title) = &req.title {
             issue.title = title.clone();
@@ -310,7 +318,10 @@ impl GithubApi for FakeGithubApi {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
         };
-        s.comments.entry(issue_number).or_default().push(comment.clone());
+        s.comments
+            .entry(issue_number)
+            .or_default()
+            .push(comment.clone());
         Ok(comment)
     }
 }
