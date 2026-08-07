@@ -210,29 +210,53 @@ enum SyncStoryResult {
     Conflicts(Vec<FieldConflict>),
 }
 
-/// What to tell a user whose project is configured for a mode this build does
-/// not implement.
-///
-/// Only `auto` qualifies, and only because it once did. It fired from the tail
-/// of the pre-rearchitecture `app::run`, was never given an equivalent on the
-/// invoker, and was deleted with the rest of the legacy write path — so a
-/// project migrated from before then can still carry it. The variant stays
-/// deserializable deliberately: refusing to parse the document would make the
-/// project unreadable over a setting that is merely inert, which trades a
-/// cosmetic problem for a real one.
-///
-/// What must not happen is silence. A setting that is accepted and ignored is
-/// the defect class this rearchitecture spent a wave removing.
-fn unimplemented_mode_notice(mode: &SyncMode) -> Option<String> {
+/// The word a sync mode is spelled as — including `auto`, which this build
+/// refuses as an *input* (`cli::SetupMode` has no such variant) but must still
+/// be able to *name*: in the refusal a project stored with it meets, and in
+/// the "changed from" message once [`change_mode`] repairs it.
+fn mode_word(mode: &SyncMode) -> &'static str {
     match mode {
-        SyncMode::Auto => Some(
-            "note: this project is configured with sync mode `auto`, which storyhook no \
-             longer implements — nothing syncs on its own. It is being treated as `manual`. \
-             Re-run `story github-sync` to choose a mode this build honours."
-                .to_string(),
-        ),
-        SyncMode::Manual | SyncMode::Off => None,
+        SyncMode::Off => "off",
+        SyncMode::Manual => "manual",
+        SyncMode::Auto => "auto",
     }
+}
+
+/// Changes an already-configured project's stored sync mode, without syncing.
+///
+/// The one repair path for a project stuck on a mode this build refuses to
+/// run under (SH-68, SH-201). Deliberately reachable with **no GitHub token
+/// and no network call** — `sync.save_config` alone — which is what lets it
+/// repair a project whose credential has since been revoked, and what makes
+/// it safe to place above `require_github_token` in [`run_sync_with`].
+fn change_mode(
+    sync: &dyn SyncStorage,
+    mut config: GithubSyncConfig,
+    new_mode: SyncMode,
+    dry_run: bool,
+) -> Result<Response, AppError> {
+    let repo = format!("{}/{}", config.github.owner, config.github.repo);
+    if config.sync.mode == new_mode {
+        return Ok(Response::Message(format!(
+            "Sync mode for {repo} is already `{}`.",
+            mode_word(&new_mode)
+        )));
+    }
+    let old_word = mode_word(&config.sync.mode);
+    let new_word = mode_word(&new_mode);
+    if dry_run {
+        return Ok(Response::Message(format!(
+            "Dry run: sync mode for {repo} would change from `{old_word}` to `{new_word}`. \
+             Nothing was written."
+        )));
+    }
+    let mut message = format!("Sync mode for {repo} changed from `{old_word}` to `{new_word}`.");
+    if new_mode == SyncMode::Manual {
+        message.push_str(" Run `story github-sync` to sync.");
+    }
+    config.sync.mode = new_mode;
+    sync.save_config(&config)?;
+    Ok(Response::Message(message))
 }
 
 // ---------------------------------------------------------------------------
@@ -250,8 +274,16 @@ fn unimplemented_mode_notice(mode: &SyncMode) -> Option<String> {
 /// `strategy` and `mode` answer the initial-setup questions on an unconfigured
 /// project, in advance — SH-153's D2. `None, None` on an unconfigured project
 /// returns [`Response::SetupRequired`] rather than asking, because this may be
-/// running in a daemon with no terminal to ask at; either value alone, or both
-/// on a project that is already configured, is a refusal.
+/// running in a daemon with no terminal to ask at; `strategy` alone is always a
+/// refusal, since it only answers half that question.
+///
+/// `mode` alone is different, and its meaning depends on whether the project is
+/// already configured — SH-68/SH-201. On an unconfigured project it is a
+/// refusal for the same reason `strategy` alone is. On a configured project it
+/// changes the stored sync mode and returns without syncing: the one repair
+/// path for a project stuck on a mode this build refuses to run under —
+/// `auto`, inherited from before the rearchitecture and never implemented, or
+/// `off`, chosen deliberately and otherwise permanent.
 #[allow(clippy::too_many_arguments)]
 pub fn run_sync_with(
     sync: &dyn SyncStorage,
@@ -278,14 +310,18 @@ pub fn run_sync_with(
         ));
     }
 
-    // `--strategy` and `--mode` answer one question together, for the same
-    // reason `--resolve` is checked here rather than in the parser: this is
-    // the one gate every door passes.
-    if strategy.is_some() != mode.is_some() {
+    // `--strategy` alone never means anything — it only answers half the
+    // first-setup question, whatever the project's state, so it is refused
+    // here regardless of what `load_config` below would say. `--mode` alone
+    // is not refused at this gate: whether it means "here is the other half
+    // of the first-setup answer" (invalid — refused after the load, once
+    // "unconfigured" is confirmed) or "change the stored mode" (valid, once
+    // "configured" is confirmed) depends on `load_config`, so only `load_config`
+    // can decide it.
+    if strategy.is_some() && mode.is_none() {
         return Err(AppError::Usage(
-            "--strategy and --mode answer the same question during initial setup and must be \
-             given together, or not at all: `story github-sync --strategy <strategy> --mode \
-             <mode>`"
+            "--strategy needs --mode alongside it to answer the first-setup question: \
+             `story github-sync --strategy <strategy> --mode <mode>`"
                 .to_string(),
         ));
     }
@@ -295,26 +331,57 @@ pub fn run_sync_with(
     // 1. Load sync config
     let mut config = match sync.load_config()? {
         Some(cfg) => {
-            if strategy.is_some() || mode.is_some() {
+            if strategy.is_some() {
                 return Err(AppError::Usage(
-                    "--strategy and --mode only apply to a project's first github-sync, and \
-                     this project is already configured. Remove the flags and re-run."
+                    "--strategy only applies to a project's first github-sync, and this \
+                     project is already configured. To change its sync mode, drop \
+                     --strategy: `story github-sync --mode manual|off`."
+                        .to_string(),
+                ));
+            }
+            // `--mode` alone, on a project that already has a configuration:
+            // change the stored mode and return, without syncing. The one
+            // repair path for `auto` (SH-68) and for `off` (SH-201) — both
+            // otherwise permanent, since nothing else can write this column
+            // (`story project settings` holds it read-only, `managed_by:
+            // "story github-sync"`).
+            if let Some(new_mode) = mode {
+                if story_id.is_some() {
+                    return Err(AppError::Usage(
+                        "--mode changes a project's sync mode as a whole and takes no \
+                         story: `story github-sync --mode manual|off`"
+                            .to_string(),
+                    ));
+                }
+                return change_mode(sync, cfg, new_mode, dry_run);
+            }
+            if cfg.sync.mode == SyncMode::Auto {
+                return Err(AppError::Usage(
+                    "this project is configured with sync mode `auto`, which storyhook no \
+                     longer implements — nothing syncs on its own. Choose a mode it \
+                     honours: `story github-sync --mode manual` or `story github-sync \
+                     --mode off`."
                         .to_string(),
                 ));
             }
             if cfg.sync.mode == SyncMode::Off {
                 return Err(AppError::Usage(
-                    "GitHub sync is disabled for this project (sync mode `off`). Re-run \
-                     `story github-sync` and choose `manual`."
+                    "GitHub sync is disabled for this project (sync mode `off`). Turn it \
+                     back on with `story github-sync --mode manual`."
                         .to_string(),
                 ));
-            }
-            if let Some(notice) = unimplemented_mode_notice(&cfg.sync.mode) {
-                eprintln!("{notice}");
             }
             cfg
         }
         None => {
+            if mode.is_some() && strategy.is_none() {
+                return Err(AppError::Usage(
+                    "this project has never synced, so --mode alone doesn't say enough: \
+                     name a strategy too: `story github-sync --strategy <strategy> --mode \
+                     <mode>`"
+                        .to_string(),
+                ));
+            }
             let answers = strategy
                 .zip(mode)
                 .map(|(strategy, mode)| SetupAnswers { strategy, mode });
@@ -1321,27 +1388,17 @@ fn print_field_updates(indent: &str, updates: &FieldUpdates) {
 }
 
 #[cfg(test)]
-mod mode_notice_tests {
+mod mode_word_tests {
     use super::*;
 
-    /// A project carrying `auto` from before the rearchitecture must be told,
-    /// not quietly demoted. The message has to say three things: what is
-    /// configured, that nothing acts on it, and what to do.
+    /// `auto` is unspellable as an input (`cli::SetupMode` has no such
+    /// variant) but must still be nameable — in the refusal a stored `auto`
+    /// meets, and this is the one function that spells it.
     #[test]
-    fn auto_is_reported_as_unimplemented_and_treated_as_manual() {
-        let notice = unimplemented_mode_notice(&SyncMode::Auto).expect("auto needs a notice");
-        assert!(notice.contains("auto"), "{notice}");
-        assert!(notice.contains("no longer implements"), "{notice}");
-        assert!(notice.contains("manual"), "{notice}");
-        assert!(notice.contains("story github-sync"), "{notice}");
-    }
-
-    /// And the modes that work say nothing, because a notice on every run is a
-    /// notice nobody reads.
-    #[test]
-    fn the_modes_that_work_are_silent() {
-        assert!(unimplemented_mode_notice(&SyncMode::Manual).is_none());
-        assert!(unimplemented_mode_notice(&SyncMode::Off).is_none());
+    fn every_stored_mode_has_a_word() {
+        assert_eq!(mode_word(&SyncMode::Off), "off");
+        assert_eq!(mode_word(&SyncMode::Manual), "manual");
+        assert_eq!(mode_word(&SyncMode::Auto), "auto");
     }
 }
 
