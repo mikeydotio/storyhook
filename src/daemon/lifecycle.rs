@@ -61,9 +61,6 @@ const SPAWN_DEADLINE: Duration = Duration::from_secs(5);
 /// How often it asks, while waiting.
 const SPAWN_POLL: Duration = Duration::from_millis(25);
 
-/// How long a shutting-down daemon lets in-flight requests finish.
-pub const DRAIN_DEADLINE: Duration = Duration::from_millis(500);
-
 /// One request the daemon is serving right now.
 ///
 /// **The record whose motion is the client's clock.** Published when a
@@ -204,6 +201,22 @@ impl InFlight {
     /// this daemon cannot write to is a daemon that should still start.
     pub fn harvest_stale(&self) {
         publish_inflight(&self.env, &[]);
+    }
+
+    /// How many named entries are open right now — what a shutdown drains
+    /// to zero before this daemon exits.
+    ///
+    /// An unnamed slot (`hello`, `shutdown`) never counts: it was never
+    /// inserted, so there is nothing here for a drain to wait on.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Whether nothing is named right now.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Opens a slot for one request. The slot is unnamed — and therefore
@@ -1460,12 +1473,34 @@ pub fn request_shutdown(info: &DaemonInfo) -> Result<(), AppError> {
     Ok(())
 }
 
+/// How `stop` behaves once it has asked the daemon to shut down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopMode {
+    /// Wait for the daemon to drain and exit on its own, however long that
+    /// takes. The default — `story daemon stop` with no flag — because
+    /// nothing is abandoned this way.
+    Graceful,
+    /// Give the daemon [`FORCE_GRACE`] to drain and exit on its own; past
+    /// that, signal its pid directly. Whatever the daemon was still serving
+    /// at that moment is abandoned — naming it is the caller's problem
+    /// (`story daemon stop --force`'s), not this function's.
+    Force,
+}
+
+/// How long [`StopMode::Force`] waits for an orderly exit before signalling.
+///
+/// Short, deliberately: forcing is the caller saying they will not wait, and
+/// a daemon with nothing left in flight exits within one `SHUTDOWN_CHECK`
+/// (250ms, `crate::daemon::serve`) of answering the shutdown request — this
+/// is headroom for a handful of requests to finish, not a real drain window.
+pub const FORCE_GRACE: Duration = Duration::from_secs(2);
+
 /// Stops the running daemon, if there is one.
 ///
 /// Reports what it stopped, or `None` when nothing was running — a distinction
 /// the caller renders, because "already stopped" is a success for `daemon stop`
 /// and a surprise for a restart.
-pub fn stop(env: &Environment) -> Result<Option<DaemonInfo>, AppError> {
+pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, AppError> {
     if !is_live(env) {
         // Nothing holds the lock. Clear a portfile left by a daemon that
         // crashed, so `daemon status` stops describing a process that is gone.
@@ -1480,16 +1515,64 @@ pub fn stop(env: &Environment) -> Result<Option<DaemonInfo>, AppError> {
         )));
     };
     request_shutdown(&info)?;
-    if !wait_until(SPAWN_DEADLINE, || !is_live(env)) {
-        return Err(AppError::Storage(format!(
-            "the daemon on port {} did not stop within {}s",
-            info.port,
-            SPAWN_DEADLINE.as_secs()
-        )));
+    match mode {
+        StopMode::Graceful => wait_forever(env, &info),
+        StopMode::Force => {
+            if !wait_until(FORCE_GRACE, || !is_live(env)) {
+                kill_pid(info.pid);
+                if !wait_until(SPAWN_DEADLINE, || !is_live(env)) {
+                    return Err(AppError::Storage(format!(
+                        "signalled pid {} and it still holds {} after {}s; it may be \
+                         unkillable (a zombie, or blocked in an uninterruptible wait)",
+                        info.pid,
+                        env.daemon_pidfile().display(),
+                        SPAWN_DEADLINE.as_secs()
+                    )));
+                }
+            }
+        }
     }
     let _ = std::fs::remove_file(env.daemon_file());
     Ok(Some(info))
 }
+
+/// Waits for a daemon to release its pidfile with no deadline of its own —
+/// `story daemon stop --force` is the escape hatch, not a timeout buried in
+/// here. Announces itself once, past [`SERVED_PATIENCE`], so a human at a
+/// terminal learns the escape hatch exists rather than watching a command
+/// that appears to hang.
+fn wait_forever(env: &Environment, info: &DaemonInfo) {
+    use std::io::IsTerminal;
+    let started = Instant::now();
+    let mut announced = false;
+    while is_live(env) {
+        if !announced && started.elapsed() >= SERVED_PATIENCE && std::io::stderr().is_terminal() {
+            announced = true;
+            eprintln!(
+                "storyhook: waiting for the daemon (pid {}) to finish what it is running \
+                 before it stops. `story daemon stop --force` gives it {}s more, then \
+                 signals it directly.",
+                info.pid,
+                FORCE_GRACE.as_secs()
+            );
+        }
+        std::thread::sleep(SPAWN_POLL);
+    }
+}
+
+/// Sends `pid` an unignorable kill signal. Best-effort: a pid that has
+/// already exited is not an error here, it is the outcome being asked for.
+#[cfg(unix)]
+fn kill_pid(pid: u32) {
+    // SAFETY: `kill` with a real signal affects only the target process's own
+    // lifecycle, and this process holds no lock or resource on its behalf.
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_pid(_pid: u32) {}
 
 /// Removes a portfile. Used by a daemon on its way out, best-effort.
 pub fn clear_info(env: &Environment) {
@@ -2312,7 +2395,7 @@ mod tests {
     fn stopping_nothing_is_not_an_error() {
         let dir = scratch();
         let env = Environment::at(dir.path());
-        assert_eq!(stop(&env).expect("stopping nothing"), None);
+        assert_eq!(stop(&env, StopMode::Force).expect("stopping nothing"), None);
     }
 
     /// A daemon that crashed leaves its portfile behind. `stop` clears it, so
@@ -2329,7 +2412,7 @@ mod tests {
         )
         .expect("building the info");
         write_info(&env, &info).expect("writing the portfile");
-        assert_eq!(stop(&env).expect("stopping"), None);
+        assert_eq!(stop(&env, StopMode::Force).expect("stopping"), None);
         assert!(!env.daemon_file().exists());
     }
 }

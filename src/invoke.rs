@@ -1159,7 +1159,9 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
                 info.pid
             )))
         }
-        DaemonAction::Stop => crate::daemon::commands::stop(&env).map(Response::Message),
+        DaemonAction::Stop { force } => {
+            crate::daemon::commands::stop(&env, force).map(Response::Message)
+        }
         DaemonAction::Status => crate::daemon::commands::status(&env).map(Response::Message),
         DaemonAction::Install => crate::daemon::commands::install(&env).map(Response::Message),
         DaemonAction::Uninstall => crate::daemon::commands::uninstall(&env).map(Response::Message),

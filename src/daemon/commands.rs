@@ -50,8 +50,19 @@ pub fn start(env: &Environment, port: Option<u16>) -> Result<DaemonInfo, AppErro
 }
 
 /// Stops the running daemon.
-pub fn stop(env: &Environment) -> Result<String, AppError> {
-    match lifecycle::stop(env)? {
+///
+/// `force` selects [`lifecycle::StopMode::Force`]: a short grace period,
+/// then a kill signal, abandoning whatever the daemon was still serving.
+/// Without it, this waits however long an orderly drain takes — nothing is
+/// abandoned, but there is no deadline of its own; `--force` is the escape
+/// hatch for a daemon that is not draining.
+pub fn stop(env: &Environment, force: bool) -> Result<String, AppError> {
+    let mode = if force {
+        lifecycle::StopMode::Force
+    } else {
+        lifecycle::StopMode::Graceful
+    };
+    match lifecycle::stop(env, mode)? {
         Some(info) => Ok(format!("storyhook daemon stopped (PID {})", info.pid)),
         None => Ok("storyhook daemon is not running".to_string()),
     }
@@ -287,7 +298,7 @@ mod tests {
     fn stopping_nothing_says_so_rather_than_failing() {
         let dir = scratch();
         let env = Environment::at(dir.path());
-        assert!(stop(&env).expect("stop").contains("not running"));
+        assert!(stop(&env, false).expect("stop").contains("not running"));
     }
 
     /// **`RunAtLoad` yes, `KeepAlive` no**, and both halves are decisions rather

@@ -57,10 +57,12 @@ pub fn handle_start(port: u16) -> Result<String, AppError> {
 pub fn handle_stop() -> Result<String, AppError> {
     deprecation("web stop", "daemon stop");
     let env = environment()?;
-    Ok(match lifecycle::stop(&env)? {
-        Some(info) => format!("Web UI stopped (PID {})", info.pid),
-        None => "Web UI is not running".to_string(),
-    })
+    Ok(
+        match lifecycle::stop(&env, lifecycle::StopMode::Graceful)? {
+            Some(info) => format!("Web UI stopped (PID {})", info.pid),
+            None => "Web UI is not running".to_string(),
+        },
+    )
 }
 
 /// `story web status` — an alias for `story daemon status`.

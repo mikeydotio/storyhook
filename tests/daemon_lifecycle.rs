@@ -39,7 +39,7 @@ struct DaemonGuard<'a>(&'a TestEnv);
 
 impl Drop for DaemonGuard<'_> {
     fn drop(&mut self) {
-        let _ = lifecycle::stop(&self.0.environment());
+        let _ = lifecycle::stop(&self.0.environment(), lifecycle::StopMode::Force);
     }
 }
 
@@ -217,6 +217,135 @@ fn stopping_nothing_says_so_and_succeeds() {
         .assert()
         .success()
         .stdout(predicates::str::contains("not running"));
+}
+
+/// An unforced `daemon stop` waits for in-flight work to finish rather than
+/// abandoning it — the whole point of the default not being `--force`.
+///
+/// The fixture holds a request open with a 2s hook; `daemon stop` must not
+/// return before that hook does, and the daemon must actually be gone once
+/// it does return (drained, not merely told to drain).
+#[test]
+fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
+    use std::io::Write;
+
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("PB").build();
+    let _guard = DaemonGuard(&env);
+
+    std::fs::create_dir_all(project.path().join(".storyhook")).expect("the hooks directory");
+    let mut hooks = std::fs::File::create(project.path().join(".storyhook/hooks.toml"))
+        .expect("writing hooks.toml");
+    hooks
+        .write_all(
+            b"[settings]\ntimeout_seconds = 60\n\n\
+              [on_comment]\ncommand = \"sleep 2\"\ntimeout_seconds = 60\n",
+        )
+        .expect("writing the hook");
+    drop(hooks);
+    env.story(project.path())
+        .args(["new", "a story"])
+        .assert()
+        .success();
+
+    let mut slow = env.raw_story(project.path());
+    let mut child = slow
+        .args(["comment", "PB-1", "trip the hook"])
+        .spawn()
+        .expect("spawning the slow command");
+
+    let environment = env.environment();
+    wait_for(
+        "the daemon to publish the slow comment as in flight",
+        || {
+            lifecycle::read_inflight(&environment)
+                .iter()
+                .any(|r| r.command == "comment")
+        },
+    );
+
+    let started = Instant::now();
+    env.story(project.path())
+        .args(["daemon", "stop"])
+        .assert()
+        .success();
+    let waited = started.elapsed();
+
+    assert!(
+        waited >= Duration::from_secs(2),
+        "an unforced stop must wait for the 2s hook to finish, not abandon it: took {waited:?}"
+    );
+    assert!(
+        !lifecycle::is_live(&environment),
+        "the daemon must actually be gone once stop returns"
+    );
+    child.wait().expect("the slow command finishes");
+}
+
+/// `daemon stop --force` does not wait for a hook that outlives its grace
+/// period — it signals the daemon directly once that period elapses.
+///
+/// The fixture's hook sleeps far longer than `FORCE_GRACE`, so a `--force`
+/// stop that waited for it would time this test out; one that behaves
+/// correctly returns within a few seconds of the grace period regardless.
+#[test]
+fn a_forced_stop_kills_a_daemon_that_is_still_draining() {
+    use std::io::Write;
+
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("PB").build();
+    let _guard = DaemonGuard(&env);
+
+    std::fs::create_dir_all(project.path().join(".storyhook")).expect("the hooks directory");
+    let mut hooks = std::fs::File::create(project.path().join(".storyhook/hooks.toml"))
+        .expect("writing hooks.toml");
+    hooks
+        .write_all(
+            b"[settings]\ntimeout_seconds = 60\n\n\
+              [on_comment]\ncommand = \"sleep 60\"\ntimeout_seconds = 60\n",
+        )
+        .expect("writing the hook");
+    drop(hooks);
+    env.story(project.path())
+        .args(["new", "a story"])
+        .assert()
+        .success();
+
+    let mut slow = env.raw_story(project.path());
+    let mut child = slow
+        .args(["comment", "PB-1", "trip the hook"])
+        .spawn()
+        .expect("spawning the slow command");
+
+    let environment = env.environment();
+    wait_for(
+        "the daemon to publish the slow comment as in flight",
+        || {
+            lifecycle::read_inflight(&environment)
+                .iter()
+                .any(|r| r.command == "comment")
+        },
+    );
+
+    let started = Instant::now();
+    env.story(project.path())
+        .args(["daemon", "stop", "--force"])
+        .assert()
+        .success();
+    let waited = started.elapsed();
+
+    assert!(
+        waited < Duration::from_secs(10),
+        "a forced stop must not wait for a 60s hook: took {waited:?}"
+    );
+    assert!(
+        !lifecycle::is_live(&environment),
+        "the daemon must actually be gone once a forced stop returns"
+    );
+    // The killed daemon's socket closes underneath it — this client fails
+    // fast rather than waiting out its own deadline. Its exact error is not
+    // this test's concern, only that it is reaped rather than left running.
+    let _ = child.wait();
 }
 
 /// The backups are reported by `daemon status` rather than by `doctor`: a
