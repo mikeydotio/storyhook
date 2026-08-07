@@ -49,6 +49,19 @@ fn main() {
     // call site being single-threaded.
     storyhook::env::git_env::scrub_this_process();
 
+    // And the credential, in the same window and for a sharper version of the
+    // same reason (SH-153). `take_credentials` reads **and removes** in one
+    // call: from here on the GitHub token exists only as this value, so no
+    // child this process starts can inherit it — and the daemon, which would
+    // otherwise hold it for life and hand it to every event-hook script, the
+    // dashboard's dispatch child and `claude`, never sees it at all.
+    //
+    // Taken rather than scrubbed, and the two are not the same: `main` is also
+    // the one process that legitimately *reads* this variable, so a bare scrub
+    // beside the git one would leave the client with nothing to send. Reading
+    // and removing together is what makes the ordering impossible to get wrong.
+    let credentials = storyhook::env::secrets::take_credentials();
+
     let raw_args = env::args().skip(1).collect::<Vec<_>>();
 
     // Global flags come off first, before anything looks at a verb, because
@@ -204,18 +217,16 @@ fn main() {
     // no business carrying a credential, and `needs_github_token` is exhaustive
     // over `Invocation` so that a later verb needing one cannot silently get
     // `None`.
+    // Validated here rather than where it was taken, because a blank value is a
+    // different mistake from an absent one and has to be reported with the
+    // rendering the caller asked for — which was not known at the top of
+    // `main`. An *absent* credential is not an error at all here: the refusal
+    // belongs where the work runs, so that the dashboard and a hand-built
+    // request meet it too.
     let github_token = if storyhook::invoke::needs_github_token(&invocation) {
-        match env::var(storyhook::domain::secret::GITHUB_TOKEN_VAR) {
-            // A blank value is a different mistake from an absent one, and it
-            // is refused here rather than becoming a puzzling 401 from GitHub
-            // two network calls later.
-            Ok(raw) => match storyhook::domain::secret::GithubToken::new(raw) {
-                Ok(token) => Some(token),
-                Err(error) => fail(&error, json),
-            },
-            // Absent. The refusal belongs where the work runs, so that the
-            // dashboard and a hand-built request meet it too.
-            Err(_) => None,
+        match credentials.github_token() {
+            Ok(token) => token,
+            Err(error) => fail(&error, json),
         }
     } else {
         None

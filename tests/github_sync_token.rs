@@ -125,7 +125,10 @@ fn a_token_the_client_exported_reaches_the_daemon() {
     let mut cmd = env.story(project.path());
     cmd.envs(OFFLINE);
     cmd.env("STORYHOOK_GITHUB_TOKEN", "ghp_exported_by_this_client");
-    let output = cmd.args(["github-sync"]).output().expect("running the sync");
+    let output = cmd
+        .args(["github-sync"])
+        .output()
+        .expect("running the sync");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -170,7 +173,10 @@ fn a_daemon_that_holds_a_token_does_not_lend_it_to_a_client_without_one() {
     let mut cmd = env.story(project.path());
     cmd.envs(OFFLINE);
     cmd.env_remove("STORYHOOK_GITHUB_TOKEN");
-    let output = cmd.args(["github-sync"]).output().expect("running the sync");
+    let output = cmd
+        .args(["github-sync"])
+        .output()
+        .expect("running the sync");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(
@@ -182,5 +188,62 @@ fn a_daemon_that_holds_a_token_does_not_lend_it_to_a_client_without_one() {
     assert!(
         stderr.contains("environment variable is not set"),
         "and the refusal must be the one that names what to do about it: {stderr}"
+    );
+}
+
+/// **What the daemon hands on.** The scrub is a *process* scrub, and this is the
+/// assertion that says so.
+///
+/// A fix that only stopped `src/github` from reading the variable would leave
+/// the daemon still holding it — `spawn_child` builds its `Command` with no
+/// `env_clear`, so the credential would still be in the environment the daemon
+/// passes to every user event hook it fires, to the dashboard's dispatch child
+/// and to `claude`. None of those is a `git` command or a github-sync call site,
+/// so no funnel inside `src/` can reach them.
+///
+/// The hook reports the *variable*, not a consequence of it, for the same
+/// reason `tests/daemon_git_env.rs` does: what is under test is the environment
+/// handed to somebody else's script.
+#[test]
+fn an_event_hook_does_not_inherit_a_github_token_from_the_daemon() {
+    let env = TestEnv::isolated();
+    env.stop_daemon();
+
+    let project = env.project().build();
+
+    // The client that starts the daemon carries the credential — the case the
+    // scrub exists to make harmless.
+    env.stop_daemon();
+    env.story(project.path())
+        .env("STORYHOOK_GITHUB_TOKEN", "ghp_the_spawning_client_had_one")
+        .args(["summary"])
+        .assert()
+        .success();
+
+    let seen = project.path().join("what-the-hook-saw");
+    let pointer = project.path().join(".storyhook.toml");
+    let identity = std::fs::read_to_string(&pointer)
+        .expect("`story project new` must have written the pointer file");
+    std::fs::write(
+        &pointer,
+        format!(
+            "{identity}\n[hooks.on_create]\ncommand = \"printf '%s' \\\"${{STORYHOOK_GITHUB_TOKEN-unset}}\\\" > {}\"\n",
+            seen.display()
+        ),
+    )
+    .expect("appending the hook to the pointer file");
+
+    env.story(project.path())
+        .args(["new", "a story whose creation fires the hook"])
+        .assert()
+        .success();
+
+    let reported = std::fs::read_to_string(&seen)
+        .expect("the on_create hook must have run and written its file");
+    assert_eq!(
+        reported.trim(),
+        "unset",
+        "the daemon handed a GitHub credential to a user's event hook; it saw `{}`",
+        reported.trim()
     );
 }
