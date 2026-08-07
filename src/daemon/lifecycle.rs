@@ -199,7 +199,18 @@ impl InFlight {
     /// and gives up after its deadline having learned nothing true. Best
     /// effort, like every other write this type performs — a state directory
     /// this daemon cannot write to is a daemon that should still start.
+    ///
+    /// Whatever is found is also the ledger's problem now: it did not finish
+    /// and nobody confirmed whether its write landed, which is exactly what
+    /// [`ledger_abandoned`] exists to surface to `story doctor`.
     pub fn harvest_stale(&self) {
+        let stale = read_inflight(&self.env);
+        ledger_abandoned(
+            &self.env,
+            &stale,
+            "found still in flight when this daemon started; the daemon that \
+             named it did not exit normally",
+        );
         publish_inflight(&self.env, &[]);
     }
 
@@ -288,6 +299,101 @@ impl Drop for Entry<'_> {
     fn drop(&mut self) {
         self.inflight.leave(self.slot);
     }
+}
+
+/// A request abandoned mid-flight — forced out by `story daemon stop
+/// --force`, or found already abandoned when the next daemon started
+/// ([`InFlight::harvest_stale`]) because the one that named it did not exit
+/// normally.
+///
+/// Kept as its own file rather than folded into the store: the daemon may be
+/// dying while it holds `write_lock`, so anything written on this path has
+/// to work without the store's cooperation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AbandonedRequest {
+    /// What was abandoned. The whole record, not a summary — `story doctor
+    /// abandoned` is what a human reads to decide whether to redo it.
+    #[serde(flatten)]
+    pub request: CurrentRequest,
+    /// RFC 3339, when this daemon concluded the request was abandoned — not
+    /// when the work itself actually stopped, which is unknowable from here.
+    pub abandoned_at: String,
+    /// Human-readable: which path recorded this, and why.
+    pub reason: String,
+}
+
+/// Reads the abandoned-work ledger, oldest first.
+#[must_use]
+pub fn read_abandoned(env: &Environment) -> Vec<AbandonedRequest> {
+    let Ok(raw) = std::fs::read_to_string(env.daemon_abandoned()) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// Appends `entries` to the abandoned-work ledger, each stamped with `reason`
+/// and the current time. A no-op on an empty slice, so a healthy stop or
+/// start never touches this file at all.
+///
+/// Best-effort, like every other write in this module: a ledger this daemon
+/// cannot write to must not stop it from stopping, or from starting — losing
+/// the *diagnostic* is a strictly smaller failure than losing the *work*.
+pub fn ledger_abandoned(env: &Environment, entries: &[CurrentRequest], reason: &str) {
+    if entries.is_empty() {
+        return;
+    }
+    let abandoned_at = env.now();
+    let mut ledger = read_abandoned(env);
+    ledger.extend(entries.iter().cloned().map(|request| AbandonedRequest {
+        request,
+        abandoned_at: abandoned_at.clone(),
+        reason: reason.to_string(),
+    }));
+    write_abandoned(env, &ledger);
+}
+
+/// Forgets one abandoned entry by request id, or every entry when `request_id`
+/// is `None` — `story doctor abandoned clear` and `--all` respectively.
+/// Returns whether anything was actually removed, so the caller can say so.
+pub fn clear_abandoned(env: &Environment, request_id: Option<&str>) -> bool {
+    let ledger = read_abandoned(env);
+    let kept: Vec<AbandonedRequest> = match request_id {
+        Some(id) => ledger
+            .iter()
+            .filter(|entry| entry.request.request_id != id)
+            .cloned()
+            .collect(),
+        None => Vec::new(),
+    };
+    let changed = kept.len() != ledger.len();
+    if changed {
+        write_abandoned(env, &kept);
+    }
+    changed
+}
+
+fn write_abandoned(env: &Environment, ledger: &[AbandonedRequest]) {
+    let path = env.daemon_abandoned();
+    if ledger.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let Ok(document) = serde_json::to_string(ledger) else {
+        return;
+    };
+    let temp = path.with_extension("json.tmp");
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let Ok(mut file) = options.open(&temp) else {
+        return;
+    };
+    if file.write_all(document.as_bytes()).is_err() {
+        return;
+    }
+    drop(file);
+    let _ = std::fs::rename(&temp, &path);
 }
 
 /// What a running daemon publishes about itself.
@@ -1519,6 +1625,10 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
         StopMode::Graceful => wait_forever(env, &info),
         StopMode::Force => {
             if !wait_until(FORCE_GRACE, || !is_live(env)) {
+                // Read before the signal, not after: once the daemon is dead
+                // this file is whatever it last wrote, which is exactly the
+                // set that never got to answer for itself.
+                let abandoned = read_inflight(env);
                 kill_pid(info.pid);
                 if !wait_until(SPAWN_DEADLINE, || !is_live(env)) {
                     return Err(AppError::Storage(format!(
@@ -1529,6 +1639,12 @@ pub fn stop(env: &Environment, mode: StopMode) -> Result<Option<DaemonInfo>, App
                         SPAWN_DEADLINE.as_secs()
                     )));
                 }
+                ledger_abandoned(
+                    env,
+                    &abandoned,
+                    "killed by `story daemon stop --force` after it did not drain \
+                     within the grace period",
+                );
             }
         }
     }
@@ -2414,5 +2530,122 @@ mod tests {
         write_info(&env, &info).expect("writing the portfile");
         assert_eq!(stop(&env, StopMode::Force).expect("stopping"), None);
         assert!(!env.daemon_file().exists());
+    }
+
+    /// A record naming `command`, for the ledger tests below — otherwise
+    /// uninteresting, so its own deadline does not matter.
+    fn abandoned_request(command: &str, request_id: &str) -> CurrentRequest {
+        CurrentRequest {
+            request_id: request_id.to_string(),
+            command: command.to_string(),
+            project: Some("PB".to_string()),
+            pid: 4711,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            served_deadline_secs: SERVED_DEADLINE.as_secs(),
+        }
+    }
+
+    #[test]
+    fn an_empty_slice_never_touches_the_ledger_file() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the state dir");
+        ledger_abandoned(&env, &[], "should never be reached");
+        assert!(!env.daemon_abandoned().exists());
+    }
+
+    #[test]
+    fn abandoned_entries_accumulate_across_separate_calls() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the state dir");
+
+        ledger_abandoned(
+            &env,
+            &[abandoned_request("comment", "first")],
+            "the first reason",
+        );
+        ledger_abandoned(
+            &env,
+            &[abandoned_request("github-sync", "second")],
+            "the second reason",
+        );
+
+        let ledger = read_abandoned(&env);
+        assert_eq!(
+            ledger.len(),
+            2,
+            "both calls must be preserved, not overwritten"
+        );
+        assert_eq!(ledger[0].request.request_id, "first");
+        assert_eq!(ledger[0].reason, "the first reason");
+        assert_eq!(ledger[1].request.request_id, "second");
+        assert_eq!(ledger[1].reason, "the second reason");
+    }
+
+    #[test]
+    fn clearing_one_entry_leaves_the_others() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the state dir");
+        ledger_abandoned(
+            &env,
+            &[
+                abandoned_request("comment", "keep-me"),
+                abandoned_request("comment", "forget-me"),
+            ],
+            "a reason",
+        );
+
+        assert!(clear_abandoned(&env, Some("forget-me")));
+        let ledger = read_abandoned(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0].request.request_id, "keep-me");
+
+        assert!(
+            !clear_abandoned(&env, Some("not-in-the-ledger")),
+            "clearing an id that was never there must report nothing changed"
+        );
+    }
+
+    #[test]
+    fn clearing_everything_empties_the_file() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the state dir");
+        ledger_abandoned(
+            &env,
+            &[
+                abandoned_request("comment", "a"),
+                abandoned_request("comment", "b"),
+            ],
+            "a reason",
+        );
+
+        assert!(clear_abandoned(&env, None));
+        assert!(read_abandoned(&env).is_empty());
+        assert!(!env.daemon_abandoned().exists());
+    }
+
+    /// `harvest_stale` does not merely clear a stale record — it ledgers it,
+    /// because a record that survived to here means the daemon that named it
+    /// did not exit normally, and that is exactly what the ledger is for.
+    #[test]
+    fn harvest_stale_ledgers_what_it_finds() {
+        let dir = scratch();
+        let env = Environment::at(dir.path());
+        std::fs::create_dir_all(env.daemon_state_dir()).expect("the state dir");
+        publish_inflight(&env, &[abandoned_request("github-sync", "stale-one")]);
+
+        let inflight = InFlight::new(env.clone());
+        inflight.harvest_stale();
+
+        assert!(
+            read_inflight(&env).is_empty(),
+            "the stale record must still be cleared"
+        );
+        let ledger = read_abandoned(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0].request.request_id, "stale-one");
     }
 }
