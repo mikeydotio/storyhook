@@ -836,12 +836,13 @@ fn no_client_process_probes_for_the_host_it_prints() {
 /// makes each existing violation a *recorded, story-linked exemption* instead
 /// of a silent hole, and a new one a deliberate edit that shows up in review.
 /// Removing a violation shrinks the list, which is why the count is asserted —
-/// it has gone from five to four exactly once, when SH-152 deleted the menu in
-/// `src/github/conflict.rs`.
+/// five to four when SH-152 deleted the menu in `src/github/conflict.rs`, then
+/// four to three when SH-153 deleted the last three sites, in
+/// `src/github/initial.rs`.
 ///
-/// `src/service/questionnaire.rs` is deliberately **not** here: it takes
-/// `impl BufRead` and never names stdin at all, which is the shape a prompting
-/// module is supposed to have.
+/// `src/service/questionnaire.rs` and `src/service/github_setup.rs` are
+/// deliberately **not** here: both take `impl BufRead` and never name stdin at
+/// all, which is the shape a prompting module is supposed to have.
 #[test]
 fn every_interactive_prompt_is_in_the_allowlist() {
     use std::path::Path;
@@ -864,25 +865,26 @@ fn every_interactive_prompt_is_in_the_allowlist() {
     /// Every file permitted to, with the story that will remove it.
     ///
     /// * `src/main.rs` — the client, and the one legitimate site. It owns the
-    ///   `IsTerminal` decision for both prompts in the program.
+    ///   `IsTerminal` decision for every prompt in the program.
     /// * `src/invoke.rs` — `Ctx`'s envelope-stdin fallback, documented as
     ///   deliberate for the TUI and in-process callers.
     /// * `src/service/story.rs` — `confirm_undelete` prompts from the *service*
     ///   layer, so `story reopen` can never ask and always refuses (SH-154).
-    /// * `src/github/initial.rs` — three `Select::interact()` sites with no
-    ///   terminal check at all (SH-153).
     ///
-    /// `src/github/conflict.rs` was the fourth, and is the first entry this
-    /// list has ever lost: its `.interact().unwrap_or(2)` chose Skip for the
+    /// `src/github/conflict.rs` was the fourth entry this list ever held, and
+    /// the first it lost: its `.interact().unwrap_or(2)` chose Skip for the
     /// user whenever there was no terminal, which under the daemon is always.
-    /// The menu is deleted rather than guarded — a conflict the caller has not
-    /// answered now comes back as `AppError::SyncConflict` (SH-152).
-    const ALLOWED: [&str; 4] = [
-        "src/main.rs",
-        "src/invoke.rs",
-        "src/service/story.rs",
-        "src/github/initial.rs",
-    ];
+    /// The menu was deleted rather than guarded — a conflict the caller has
+    /// not answered comes back as `AppError::SyncConflict` (SH-152).
+    ///
+    /// `src/github/initial.rs` was the second entry lost, three sites at once:
+    /// the strategy menu, the sync-mode menu and the per-pair "Link these?"
+    /// question. None survived as a guarded prompt — `run_initial_setup` now
+    /// computes what setup would do and returns it as a plan; the question
+    /// moved to the one process that has a terminal, in
+    /// `src/service/github_setup.rs`, built to `questionnaire.rs`'s shape
+    /// below and so never a candidate for this list at all (SH-153).
+    const ALLOWED: [&str; 3] = ["src/main.rs", "src/invoke.rs", "src/service/story.rs"];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
@@ -924,11 +926,11 @@ fn every_interactive_prompt_is_in_the_allowlist() {
     );
 
     // Asserted so that *removing* a violation is also a deliberate edit here:
-    // the list is a ledger of four filed defects plus one legitimate site, and
-    // it should only ever get shorter.
+    // the list is a ledger of one filed defect (SH-154) plus two legitimate,
+    // documented sites, and it should only ever get shorter.
     assert_eq!(
         ALLOWED.len(),
-        4,
+        3,
         "the allowlist changed; each entry is a filed exemption, so adding one needs a story \
          and removing one needs the defect to be gone"
     );
