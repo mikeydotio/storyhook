@@ -164,19 +164,17 @@ mod tests {
             !printed.contains("ghp_a_very_secret_value"),
             "the value must not appear: {printed}"
         );
-        assert!(printed.contains("redacted"), "and it must say so: {printed}");
+        assert!(
+            printed.contains("redacted"),
+            "and it must say so: {printed}"
+        );
 
         #[derive(Debug)]
         struct Envelope {
             #[allow(dead_code)]
             token: Option<GithubToken>,
         }
-        let printed = format!(
-            "{:?}",
-            Envelope {
-                token: Some(token)
-            }
-        );
+        let printed = format!("{:?}", Envelope { token: Some(token) });
         assert!(
             !printed.contains("ghp_a_very_secret_value"),
             "a derived Debug around it must be safe too — this is the case that \
@@ -214,8 +212,8 @@ mod tests {
     /// put a state past the constructor that the constructor exists to prevent.
     #[test]
     fn a_blank_token_cannot_arrive_off_the_wire_either() {
-        let error = serde_json::from_str::<GithubToken>("\"\"")
-            .expect_err("an empty token is not a token");
+        let error =
+            serde_json::from_str::<GithubToken>("\"\"").expect_err("an empty token is not a token");
         assert!(
             format!("{error}").contains("set but empty"),
             "the constructor's reason must survive deserialization: {error}"
