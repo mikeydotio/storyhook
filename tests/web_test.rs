@@ -3640,6 +3640,58 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
         .success();
 }
 
+/// SH-145: a story created through the CLI's `/api/v1/invoke` transport
+/// must still reach an open dashboard tab live.
+///
+/// Every other `sse_*` test in this file mutates through `Served::seed`
+/// (an in-process `dispatch`, bypassing the daemon's HTTP surface entirely)
+/// or through the dashboard's own REST routes (`rest::route`, published at
+/// the request boundary by `dispatch()` in `daemon/serve.rs`). Neither is
+/// what a real `story` command does: since SH-114 every CLI write goes
+/// through `rpc::route`'s `POST /api/v1/invoke`, which — unlike
+/// `rest::route` — publishes nothing at the request boundary and leaves the
+/// change feed to notice the write only via `poll_change_token`'s 250ms
+/// safety-net poll. This test is the one that actually exercises that path,
+/// running the real daemon subprocess and a real `story new` alongside it.
+#[test]
+fn sse_delivers_repo_changed_for_a_cli_write_through_the_daemon() {
+    let _sse_guard = sse_test_lock();
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let port = reserve_port();
+    let _daemon = DaemonGuard::new(&env, dir.path());
+
+    env.story(dir.path())
+        .args(["web", "start", "--port", &port.to_string()])
+        .assert()
+        .success();
+    wait_for_server(port);
+
+    env.story(dir.path())
+        .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
+        .assert()
+        .success();
+
+    let mut sse = connect_sse(port);
+
+    env.story(dir.path())
+        .args(["new", "Created through the CLI, not the dashboard"])
+        .assert()
+        .success();
+
+    let received = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    assert!(
+        received.contains("event: repo-changed"),
+        "a story created via `story new` (the CLI's `/api/v1/invoke` transport) must \
+         reach an open dashboard tab live, got: {received}"
+    );
+
+    env.story(dir.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
 /// Holding an SSE connection open must not stall the accept loop: an
 /// ordinary request made while the connection is live still returns
 /// promptly, proving the `GET /api/events` handoff to its own thread (see
