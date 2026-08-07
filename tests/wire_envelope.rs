@@ -20,7 +20,8 @@
 use storyhook::cli::{
     Attach, ConflictSide, DaemonAction, EpicAction, GraphMode, HistoryAction, HooksAction,
     Invocation, MemberInput, NewProjectRequest, NewProjectSpec, PhaseAction, PluginAction,
-    ProjectAction, SettingsAction, StateAction, StoreAction, TypeAction, WebAction,
+    ProjectAction, SettingsAction, SetupMode, SetupStrategy, StateAction, StoreAction, TypeAction,
+    WebAction,
 };
 use storyhook::domain::{
     Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent, StoryRelation,
@@ -29,8 +30,8 @@ use storyhook::domain::{
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
     BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
-    ProjectSnapshotView, PurgePlan, Response, SettingKind, SettingSource, SettingView, StaleInfo,
-    StoryView, SummaryView, render_error, render_response,
+    ProjectSnapshotView, PurgePlan, Response, SettingKind, SettingSource, SettingView, SetupPlan,
+    StaleInfo, StoryView, SummaryView, render_error, render_response,
 };
 
 /// The four ways a `Response` can be rendered. Every case in this file is
@@ -473,6 +474,16 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 retracted: Vec::new(),
             }))),
         ),
+        (
+            "setup_required",
+            Response::SetupRequired(Box::new(SetupPlan {
+                owner: "acme".to_string(),
+                repo: "widgets".to_string(),
+                local_story_count: 12,
+                open_issue_count: 30,
+                exact_match_count: 4,
+            })),
+        ),
     ]
 }
 
@@ -570,10 +581,11 @@ fn the_response_corpus_covers_every_variant() {
             Response::StoryHistory(_) => "story_history",
             Response::ConfirmationRequired(_) => "confirmation_required",
             Response::Project(_) => "project",
+            Response::SetupRequired(_) => "setup_required",
         }
     }
 
-    const EVERY_VARIANT: [&str; 13] = [
+    const EVERY_VARIANT: [&str; 14] = [
         "message",
         "story",
         "stories",
@@ -587,6 +599,7 @@ fn the_response_corpus_covers_every_variant() {
         "story_history",
         "confirmation_required",
         "project",
+        "setup_required",
     ];
 
     let mut covered: Vec<&str> = response_corpus()
@@ -627,6 +640,7 @@ fn response_variants_travel_as_snake_case_keys() {
         ("raw_json", "raw_json"),
         ("confirmation_required", "confirmation_required"),
         ("project_full", "project"),
+        ("setup_required", "setup_required"),
     ];
     let corpus = response_corpus();
     for (label, key) in expected {
@@ -1139,6 +1153,8 @@ fn invocation_corpus() -> Vec<Invocation> {
             id: Some("SH-1".to_string()),
             dry_run: true,
             resolve: Some(ConflictSide::Local),
+            strategy: None,
+            mode: None,
         },
         // Both sides of `--resolve`, and its absence — which is not a default
         // but the state that makes a conflicting sync refuse (SH-152).
@@ -1146,11 +1162,24 @@ fn invocation_corpus() -> Vec<Invocation> {
             id: Some("SH-1".to_string()),
             dry_run: false,
             resolve: Some(ConflictSide::Remote),
+            strategy: None,
+            mode: None,
         },
         Invocation::GithubSync {
             id: None,
             dry_run: false,
             resolve: None,
+            strategy: None,
+            mode: None,
+        },
+        // `--strategy`/`--mode`, stated together — the only shape that is not
+        // a refusal (SH-153's D2).
+        Invocation::GithubSync {
+            id: None,
+            dry_run: false,
+            resolve: None,
+            strategy: Some(SetupStrategy::MatchTitles),
+            mode: Some(SetupMode::Off),
         },
         Invocation::HelpTopic {
             topic: "states".to_string(),

@@ -316,6 +316,8 @@ mod tests {
                     id: Some("1".into()),
                     dry_run: false,
                     resolve: Some(ConflictSide::Local),
+                    strategy: None,
+                    mode: None,
                 },
                 1,
             ),

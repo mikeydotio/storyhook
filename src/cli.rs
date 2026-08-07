@@ -431,6 +431,13 @@ pub enum Invocation {
         /// Which side of every conflict this run meets wins, if the caller has
         /// said. `None` is not "guess" — it is the reason the run refuses.
         resolve: Option<ConflictSide>,
+        /// The initial-sync strategy, if the caller has said in advance.
+        /// `None` on an unconfigured project means "ask" — SH-153's D2.
+        strategy: Option<SetupStrategy>,
+        /// The sync mode to save, if the caller has said in advance. Answers
+        /// the same question as `strategy` and must be given together with
+        /// it, or not at all.
+        mode: Option<SetupMode>,
     },
     HelpTopic {
         topic: String,
@@ -763,6 +770,33 @@ pub enum ConflictSide {
     Local,
     /// Take what GitHub has.
     Remote,
+}
+
+/// The initial-sync strategy for a github-sync project that has never been
+/// configured, stated up front rather than picked from a menu the daemon
+/// cannot show (SH-153's D2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SetupStrategy {
+    ImportAll,
+    MatchTitles,
+    PushOnly,
+    FutureOnly,
+}
+
+/// The sync mode a fresh setup should save, stated up front.
+///
+/// Not `github::sync_state::SyncMode`: that type lives behind the
+/// `github-sync` feature, and this flag's value must exist in every build —
+/// the same reason [`ConflictSide`] is not `github::conflict::Resolution`.
+/// `auto` is unspellable on purpose: nothing implements it (SH-68), and
+/// offering a mode nothing acts on is the defect `github::initial`'s own
+/// `MODE_OPTIONS` already exists to avoid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SetupMode {
+    Manual,
+    Off,
 }
 
 /// The `story store …` subcommands.
@@ -1144,7 +1178,12 @@ static VERB_FLAGS: &[VerbFlags] = &[
     VerbFlags {
         verb: "github-sync",
         subcommand: None,
-        flags: &[bare("dry-run"), value("resolve")],
+        flags: &[
+            bare("dry-run"),
+            value("resolve"),
+            value("strategy"),
+            value("mode"),
+        ],
     },
     VerbFlags {
         verb: "decompose",
@@ -2733,8 +2772,12 @@ fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
     let mut id = None;
     let mut dry_run = false;
     let mut resolve = None;
+    let mut strategy = None;
+    let mut mode = None;
     let mut index = 1;
-    let usage = "usage: story github-sync [<id>] [--dry-run] [--resolve local|remote]";
+    let usage = "usage: story github-sync [<id>] [--dry-run] [--resolve local|remote] \
+                 [--strategy import-all|match-titles|push-only|future-only] \
+                 [--mode manual|off]";
     while index < args.len() {
         match args[index].as_str() {
             "--dry-run" => {
@@ -2756,6 +2799,47 @@ fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
                 });
                 index += 2;
             }
+            "--strategy" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage(format!(
+                        "--strategy needs import-all, match-titles, push-only or future-only\n{usage}"
+                    ))
+                })?;
+                strategy = Some(match value.as_str() {
+                    "import-all" => SetupStrategy::ImportAll,
+                    "match-titles" => SetupStrategy::MatchTitles,
+                    "push-only" => SetupStrategy::PushOnly,
+                    "future-only" => SetupStrategy::FutureOnly,
+                    other => {
+                        return Err(AppError::Usage(format!(
+                            "--strategy takes import-all, match-titles, push-only or \
+                             future-only, not `{other}`\n{usage}"
+                        )));
+                    }
+                });
+                index += 2;
+            }
+            "--mode" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Usage(format!("--mode needs `manual` or `off`\n{usage}"))
+                })?;
+                mode = Some(match value.as_str() {
+                    "manual" => SetupMode::Manual,
+                    "off" => SetupMode::Off,
+                    "auto" => {
+                        return Err(AppError::Usage(format!(
+                            "--mode auto is not implemented -- storyhook never syncs on its \
+                             own (SH-68)\n{usage}"
+                        )));
+                    }
+                    other => {
+                        return Err(AppError::Usage(format!(
+                            "--mode takes `manual` or `off`, not `{other}`\n{usage}"
+                        )));
+                    }
+                });
+                index += 2;
+            }
             arg if looks_like_story_id(arg) => {
                 id = Some(arg.to_string());
                 index += 1;
@@ -2765,14 +2849,18 @@ fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
             }
         }
     }
-    // `--resolve` without an `<id>` is refused, but not here: the rule lives in
-    // `github::run_sync_with`, which is the one gate every door passes through —
-    // this parser, the dashboard, the TUI and a hand-built `InvokeRequest`. A
-    // copy here would be a second place for it to drift out of.
+    // `--resolve` without an `<id>`, `--strategy`/`--mode` given alone or on an
+    // already-configured project: none of these are refused here. The rule
+    // lives in `github::run_sync_with`, which is the one gate every door passes
+    // through — this parser, the dashboard, the TUI and a hand-built
+    // `InvokeRequest`. A copy here would be a second place for it to drift out
+    // of.
     Ok(Invocation::GithubSync {
         id,
         dry_run,
         resolve,
+        strategy,
+        mode,
     })
 }
 
@@ -4076,6 +4164,8 @@ mod tests {
                     id: None,
                     dry_run: false,
                     resolve: None,
+                    strategy: None,
+                    mode: None,
                 }
             );
         }
@@ -4092,6 +4182,8 @@ mod tests {
                         id: Some("SH-1".to_string()),
                         dry_run: false,
                         resolve: Some(side),
+                        strategy: None,
+                        mode: None,
                     }
                 );
             }
@@ -4110,6 +4202,8 @@ mod tests {
                     id: None,
                     dry_run: false,
                     resolve: Some(ConflictSide::Local),
+                    strategy: None,
+                    mode: None,
                 }
             );
         }
@@ -4127,6 +4221,113 @@ mod tests {
             let message = error.to_string();
             assert!(message.contains("local"), "{message}");
             assert!(message.contains("remote"), "{message}");
+        }
+    }
+
+    /// `story github-sync --strategy … --mode …` — SH-153's D2. The parser's
+    /// job is the shape; whether the pair is allowed together, alone, or on an
+    /// already-configured project is `github::run_sync_with`'s rule, same as
+    /// `--resolve`'s.
+    mod github_sync_setup_flags {
+        use super::super::{Invocation, SetupMode, SetupStrategy, parse_invocation};
+
+        fn parse(args: &[&str]) -> Result<Invocation, crate::error::AppError> {
+            parse_invocation(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+        }
+
+        #[test]
+        fn every_strategy_word_parses() {
+            for (word, strategy) in [
+                ("import-all", SetupStrategy::ImportAll),
+                ("match-titles", SetupStrategy::MatchTitles),
+                ("push-only", SetupStrategy::PushOnly),
+                ("future-only", SetupStrategy::FutureOnly),
+            ] {
+                assert_eq!(
+                    parse(&["github-sync", "--strategy", word, "--mode", "manual"])
+                        .expect("parses"),
+                    Invocation::GithubSync {
+                        id: None,
+                        dry_run: false,
+                        resolve: None,
+                        strategy: Some(strategy),
+                        mode: Some(SetupMode::Manual),
+                    }
+                );
+            }
+        }
+
+        #[test]
+        fn both_mode_words_parse() {
+            for (word, mode) in [("manual", SetupMode::Manual), ("off", SetupMode::Off)] {
+                assert_eq!(
+                    parse(&["github-sync", "--strategy", "future-only", "--mode", word])
+                        .expect("parses"),
+                    Invocation::GithubSync {
+                        id: None,
+                        dry_run: false,
+                        resolve: None,
+                        strategy: Some(SetupStrategy::FutureOnly),
+                        mode: Some(mode),
+                    }
+                );
+            }
+        }
+
+        /// `auto` is refused by name, not silently accepted and dropped —
+        /// nothing implements it (SH-68).
+        #[test]
+        fn mode_auto_is_refused_by_name() {
+            let error = parse(&["github-sync", "--strategy", "future-only", "--mode", "auto"])
+                .expect_err("refuses");
+            assert!(error.to_string().contains("SH-68"), "{error}");
+        }
+
+        #[test]
+        fn an_unknown_strategy_word_is_refused_by_name() {
+            let error = parse(&["github-sync", "--strategy", "guess", "--mode", "manual"])
+                .expect_err("refuses");
+            assert!(error.to_string().contains("guess"), "{error}");
+        }
+
+        #[test]
+        fn an_unknown_mode_word_is_refused_by_name() {
+            let error = parse(&[
+                "github-sync",
+                "--strategy",
+                "future-only",
+                "--mode",
+                "guess",
+            ])
+            .expect_err("refuses");
+            assert!(error.to_string().contains("guess"), "{error}");
+        }
+
+        /// The parser accepts either flag alone: whether that pairing is
+        /// allowed is `run_sync_with`'s rule, pinned in
+        /// `tests/github_sync_setup.rs`.
+        #[test]
+        fn either_flag_alone_parses_and_is_refused_deeper_down() {
+            assert_eq!(
+                parse(&["github-sync", "--strategy", "future-only"]).expect("parses"),
+                Invocation::GithubSync {
+                    id: None,
+                    dry_run: false,
+                    resolve: None,
+                    strategy: Some(SetupStrategy::FutureOnly),
+                    mode: None,
+                }
+            );
+            assert_eq!(
+                parse(&["github-sync", "--mode", "manual"]).expect("parses"),
+                Invocation::GithubSync {
+                    id: None,
+                    dry_run: false,
+                    resolve: None,
+                    strategy: None,
+                    mode: Some(SetupMode::Manual),
+                }
+            );
         }
     }
 }
