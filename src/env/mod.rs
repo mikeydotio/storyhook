@@ -317,21 +317,26 @@ impl Environment {
         self.daemon_state_dir().join("daemon.log")
     }
 
-    /// Where the daemon publishes the one request it is currently serving.
+    /// Where the daemon publishes everything it is currently serving.
     ///
     /// **The observable the wire does not have.** A daemon writes no bytes at
-    /// all until its handler returns, so a client waiting on `/api/v1/invoke`
+    /// all until a handler returns, so a client waiting on `/api/v1/invoke`
     /// cannot tell — from the socket — whether its command is running, queued
     /// behind somebody else's, or wedged. This file is how it finds out, and it
-    /// is read without asking the daemon anything, which matters because the
-    /// daemon serves one request at a time and a wedged one answers nothing
-    /// (SH-144).
+    /// is read without asking the daemon anything, which matters because a
+    /// wedged handler answers nothing (SH-144).
     ///
-    /// Written by [`crate::api::rpc`] when a request's envelope has parsed and
-    /// removed when its answer is ready, so it changes exactly when the daemon
-    /// **finishes something**. That is the whole signal: a client's deadline
-    /// resets on every change, which is what lets queueing be unbounded while
-    /// the client's own served time is not.
+    /// A JSON array of `CurrentRequest`, in arrival order — not the single
+    /// object it was before SH-173's dispatch pool made more than one request
+    /// legitimately in flight at once. Each entry is added by
+    /// [`crate::daemon::lifecycle::Entry::name`] when a request's envelope has
+    /// parsed and removed when its answer is ready, so the *set* changes
+    /// exactly when the daemon **finishes something**. That is the whole
+    /// signal: a client's deadline resets on every change to the set, which is
+    /// what lets queueing be unbounded while a client's own served time is
+    /// not. Absent and empty mean the same thing — nothing in flight — and the
+    /// file is removed rather than written as `[]` so that meaning survives
+    /// unchanged from when it held at most one bare object.
     ///
     /// The third of three files a client reads about a daemon rather than from
     /// it, beside [`Self::daemon_attempt`] (a *client* on a start attempt) and
@@ -343,22 +348,13 @@ impl Environment {
     /// a record its own build wrote. A version field here would be a second
     /// answer to a question the binary check has already settled.
     ///
-    /// # What this record does not cover, and why that is a judgement rather
-    /// # than an oversight
-    ///
-    /// It names `/api/v1/invoke` requests only. The dashboard's REST handlers
-    /// share the same accept loop, so a client queued behind one sees **no
-    /// record** for that interval and falls into the "published nothing" branch
-    /// rather than the "queued behind named work" one.
-    ///
-    /// Judged acceptable rather than fixed: those handlers are local store
-    /// reads, measured sub-second against a store 33x the size of the real one,
-    /// and the one genuinely long-lived REST route — the `/api/events` stream —
-    /// is detached onto its own thread before the loop moves on, so it never
-    /// holds the queue at all.
-    ///
-    /// If that stops being true, the fix is to **widen this one write site**
-    /// rather than to add a second one. Two writers of one record is how the
+    /// **One writer of the set.** A raw write from two callers at once would
+    /// let the second clobber the first — the defect concurrent dispatch would
+    /// otherwise reintroduce — so every write goes through one
+    /// [`crate::daemon::lifecycle::InFlight`], which is what makes widening
+    /// this record to more than one entry safe. If a future need widens what
+    /// gets published here again, the fix is to widen this one write site
+    /// rather than to add a second one: two writers of one record is how the
     /// two ends come to disagree about what it means.
     pub fn daemon_current(&self) -> PathBuf {
         self.daemon_state_dir().join("daemon.current.json")

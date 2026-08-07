@@ -174,12 +174,14 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
         return answer(&request.request_id, Err(mismatch));
     }
 
+    let command = crate::invoke::invocation_name(&request.invocation);
     entry.name(lifecycle::CurrentRequest {
         request_id: request.request_id.clone(),
-        command: crate::invoke::invocation_name(&request.invocation).to_string(),
+        command: command.to_string(),
         project: request.project.as_ref().map(|p| p.slug().to_string()),
         pid: std::process::id(),
         started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        served_deadline_secs: lifecycle::served_deadline(command, &request.cwd).as_secs(),
     });
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

@@ -551,11 +551,12 @@ fn worker(
 /// *client* can no longer make the *dispatcher* slow for everyone else.
 fn dispatch<S: Store>(serving: &Serving<'_, S>, jobs: mpsc::Receiver<Job>) {
     for job in jobs {
-        // Opened for every job, named only by `rpc::invoke` (SH-144's own
-        // reasoning for publishing where it does, unchanged: a record is only
-        // worth reading once it can say what it names). A REST job's slot
-        // stays unnamed here — widening that is SH-173's own later, deliberate
-        // change, not a side effect of this one.
+        // Opened for every job; `rpc::invoke` names an RPC job once its
+        // envelope has parsed (SH-144's own reasoning for publishing where it
+        // does). A REST job is named here, generically, the moment it is
+        // known to be one: there is no per-request `cwd` on that surface the
+        // way an RPC envelope carries one, so it gets the ordinary deadline
+        // rather than one widened by a project's own hook configuration.
         let entry = serving.inflight.enter();
         let surface = rpc::Surface {
             store: serving.store,
@@ -593,7 +594,19 @@ fn dispatch<S: Store>(serving: &Serving<'_, S>, jobs: mpsc::Receiver<Job>) {
             let _ = job.reply.send(verdict);
             continue;
         }
-        drop(entry);
+        // A fixed name: a browser never polls this record the way
+        // `HttpInvoker::send` does, so nothing depends on it being unique
+        // across concurrent dashboard requests — only on it never colliding
+        // with a real client's own request id, which no CLI-generated UUID
+        // ever will.
+        entry.name(crate::daemon::lifecycle::CurrentRequest {
+            request_id: "dashboard".to_string(),
+            command: "dashboard".to_string(),
+            project: None,
+            pid: std::process::id(),
+            started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            served_deadline_secs: crate::daemon::lifecycle::SERVED_DEADLINE.as_secs(),
+        });
 
         let routed = rest::route(
             serving.store,
@@ -604,6 +617,7 @@ fn dispatch<S: Store>(serving: &Serving<'_, S>, jobs: mpsc::Receiver<Job>) {
             &job.body,
             &serving.trusted_hosts,
         );
+        drop(entry);
         // Published here, at the request boundary: the write has committed and
         // its transaction is over, so a subscriber woken by this can read what
         // just happened rather than what was there before it.

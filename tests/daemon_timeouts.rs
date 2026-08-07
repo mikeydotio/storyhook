@@ -272,7 +272,7 @@ mod exchange {
     }
 
     /// A record naming `command`, written where a client will look for it.
-    fn publish(env: &Environment, command: &str) -> CurrentRequest {
+    fn publish(env: &Environment, command: &str, served_deadline_secs: u64) -> CurrentRequest {
         std::fs::create_dir_all(env.daemon_state_dir()).expect("the daemon directory");
         let record = CurrentRequest {
             request_id: "somebody-elses-request".to_string(),
@@ -280,8 +280,9 @@ mod exchange {
             project: None,
             pid: std::process::id(),
             started_at: "2026-01-01T00:00:00Z".to_string(),
+            served_deadline_secs,
         };
-        storyhook::daemon::lifecycle::publish_current(env, &record);
+        storyhook::daemon::lifecycle::publish_inflight(env, std::slice::from_ref(&record));
         record
     }
 
@@ -346,7 +347,7 @@ mod exchange {
         let peer = SilentPeer::bind();
         let info = peer.as_daemon();
 
-        // The directory must exist before the churn starts: `publish_current`
+        // The directory must exist before the churn starts: `publish_inflight`
         // is best-effort by design, so a missing directory would make every
         // write a silent no-op and this test would pass for the wrong reason —
         // the client would be giving up on a daemon that published nothing,
@@ -360,15 +361,17 @@ mod exchange {
             let mut n = 0_u32;
             while !stopper.load(std::sync::atomic::Ordering::Relaxed) {
                 n += 1;
-                storyhook::daemon::lifecycle::publish_current(
+                let record = CurrentRequest {
+                    request_id: format!("request-{n}"),
+                    command: "comment".to_string(),
+                    project: None,
+                    pid: std::process::id(),
+                    started_at: "2026-01-01T00:00:00Z".to_string(),
+                    served_deadline_secs: DRIVEN.as_secs(),
+                };
+                storyhook::daemon::lifecycle::publish_inflight(
                     &churning,
-                    &CurrentRequest {
-                        request_id: format!("request-{n}"),
-                        command: "comment".to_string(),
-                        project: None,
-                        pid: std::process::id(),
-                        started_at: "2026-01-01T00:00:00Z".to_string(),
-                    },
+                    std::slice::from_ref(&record),
                 );
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -412,7 +415,11 @@ mod exchange {
         let env = Environment::at(dir.path());
         let peer = SilentPeer::bind();
         let info = peer.as_daemon();
-        publish(&env, "github-sync");
+        publish(
+            &env,
+            "github-sync",
+            storyhook::daemon::lifecycle::SYNC_SERVED_DEADLINE.as_secs(),
+        );
 
         let (tx, rx) = std::sync::mpsc::channel();
         let waiting = env.clone();
