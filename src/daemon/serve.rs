@@ -44,9 +44,10 @@ use crate::env::Environment;
 use crate::error::AppError;
 use crate::store::{ReadOps, Store};
 
-/// How often a heartbeat is published to every connected client, so a
-/// connection that vanished without a clean close (laptop sleep, network drop)
-/// is noticed — its next write fails — rather than lingering forever.
+/// How often a heartbeat is published to every connected client. A server-side
+/// write failure prunes a connection that vanished without a clean close, and a
+/// silence longer than this on the client side is what `web_dashboard.html`'s
+/// `sseWatchdog` treats as the same thing when no write ever fails (SH-145).
 /// Overridable via `STORYHOOK_SSE_HEARTBEAT_MS` so integration tests do not have
 /// to wait out the production interval.
 fn heartbeat_interval() -> Duration {

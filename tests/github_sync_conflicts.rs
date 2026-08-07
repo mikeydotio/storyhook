@@ -3,15 +3,19 @@
 //!
 //! # Why this file is small, and what covers the rest
 //!
-//! A real conflict needs a GitHub issue that disagrees with a local story, and
-//! `GithubClient` is a concrete `ureq` struct against `api.github.com` with no
-//! seam a test can stand in front of. So the conflict *path* is pinned where it
-//! is reachable without a network: `github::diff`'s unit tests hold the merge
-//! base rule that the data loss actually lived in, and `github::outcome_tests`
-//! holds the refusal's exit code and text. What is left for an end-to-end test
-//! is the one rule that fires before any socket is opened — and the structural
-//! guarantee that no prompt survives anywhere under `src/`, which
-//! `tests/invoker_seam.rs` owns.
+//! A real conflict needs a GitHub issue that disagrees with a local story. This
+//! file drives a real `story` subprocess, and `GithubClient` — even with
+//! SH-158's `github::api::GithubApi` trait seam — has no wiring from that
+//! subprocess to a fake, only from an in-process caller. So the conflict
+//! *path* is pinned where it is reachable: `github::diff`'s unit tests hold
+//! the merge base rule that the data loss actually lived in,
+//! `github::outcome_tests` holds the refusal's exit code and text, and the
+//! orchestration in between — including a conflict actually reaching
+//! `SyncReport` — is exercised in-process against `FakeGithubApi` in
+//! `tests/github_sync_engine.rs`. What is left for *this* file, an end-to-end
+//! subprocess test, is the one rule that fires before any socket is opened —
+//! and the structural guarantee that no prompt survives anywhere under `src/`,
+//! which `tests/invoker_seam.rs` owns.
 //!
 //! # The defect, in one sentence
 //!

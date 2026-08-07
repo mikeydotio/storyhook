@@ -4,7 +4,7 @@ use crate::domain::secret::{self, GithubToken};
 use crate::error::AppError;
 use crate::output::SetupPlan;
 
-use super::client::GithubClient;
+use super::api::GithubApiFactory;
 use super::storage::SyncStorage;
 use super::sync_state::{
     GithubSyncConfig, StoryIssueMapping, SyncMode, SyncSettings, detect_github_remote,
@@ -70,9 +70,8 @@ pub enum InitialSetupOutcome {
 /// Decides plan-vs-proceed from counts alone — no network, no storage.
 ///
 /// **This is the one place in the file that makes the decision, and it needs
-/// none of `GithubClient`'s calls to do it.** SH-158 tracks giving
-/// `GithubClient` a trait seam; until then, this function is what stays
-/// testable offline even though the counts that feed it are not.
+/// none of a [`super::api::GithubApi`]'s calls to do it** — those still run
+/// first, to produce the counts this function decides from.
 fn plan_or_answers(
     owner: &str,
     repo: &str,
@@ -106,6 +105,7 @@ fn plan_or_answers(
 /// a dry run.
 pub fn run_initial_setup(
     sync: &dyn SyncStorage,
+    api_factory: &dyn GithubApiFactory,
     token: Option<&GithubToken>,
     answers: Option<SetupAnswers>,
 ) -> Result<InitialSetupOutcome, AppError> {
@@ -119,7 +119,7 @@ pub fn run_initial_setup(
 
     // 2. Validate token
     let token = require_github_token(token)?;
-    let client = GithubClient::new(
+    let client = api_factory.build(
         token.expose().to_string(),
         github_repo.owner.clone(),
         github_repo.repo.clone(),
