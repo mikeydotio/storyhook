@@ -145,6 +145,115 @@ pub fn read_current(env: &Environment) -> Option<CurrentRequest> {
     serde_json::from_str(&raw).ok()
 }
 
+/// Everything this daemon is serving right now, reached through [`Self::enter`]
+/// rather than through [`publish_current`]/[`clear_current`] directly.
+///
+/// **One writer of one record**, which is what [`Environment::daemon_current`]
+/// asks for. A raw `publish_current` call, made by two callers at once, lets
+/// the second's write clobber the first's — the exact defect SH-173's
+/// concurrent dispatch would otherwise reintroduce. Routing every writer
+/// through one `InFlight` closes that: [`Self::enter`] hands out a slot, and
+/// only the guard that owns a slot can name or clear it.
+///
+/// **Still one entry at a time, today.** SH-173 lands its dispatch pool in a
+/// later commit; until then exactly one [`Entry`] is ever open, so
+/// [`Self::publish`] always reduces to exactly [`publish_current`] or
+/// [`clear_current`] and the file on disk is unchanged from before this type
+/// existed. The multi-entry file format is a deliberate, separately-committed
+/// behaviour change, not a side effect of this refactor.
+pub struct InFlight {
+    entries: std::sync::Mutex<std::collections::BTreeMap<u64, CurrentRequest>>,
+    next: std::sync::atomic::AtomicU64,
+    env: Environment,
+}
+
+impl InFlight {
+    /// A registry with nothing in flight, for the daemon rooted at `env`.
+    #[must_use]
+    pub fn new(env: Environment) -> Self {
+        Self {
+            entries: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            next: std::sync::atomic::AtomicU64::new(0),
+            env,
+        }
+    }
+
+    /// Opens a slot for one request. The slot is unnamed — and therefore
+    /// invisible to a reader of the file — until [`Entry::name`] is called;
+    /// closing the returned guard (on drop, including on a panic) retracts it.
+    ///
+    /// Reserving a slot is one atomic increment, no I/O: a caller that never
+    /// names its entry (`hello`, `shutdown` — see [`crate::api::rpc::route`])
+    /// costs nothing beyond the counter.
+    #[must_use]
+    pub fn enter(&self) -> Entry<'_> {
+        let slot = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Entry {
+            inflight: self,
+            slot,
+        }
+    }
+
+    fn amend(&self, slot: u64, what: CurrentRequest) {
+        let mut entries = self.lock();
+        entries.insert(slot, what);
+        self.publish(&entries);
+    }
+
+    /// Removes a slot. A no-op removal (the slot was never named) republishes
+    /// nothing — the file a reader sees is unaffected by a request that never
+    /// named itself.
+    fn leave(&self, slot: u64) {
+        let mut entries = self.lock();
+        if entries.remove(&slot).is_some() {
+            self.publish(&entries);
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<u64, CurrentRequest>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Writes the file this daemon's clients read, from the current set of
+    /// named entries. See the type's own doc for why `entries.len() > 1` does
+    /// not arise yet.
+    fn publish(&self, entries: &std::collections::BTreeMap<u64, CurrentRequest>) {
+        match entries.len() {
+            0 => clear_current(&self.env),
+            1 => publish_current(&self.env, entries.values().next().expect("len is 1")),
+            _ => unreachable!(
+                "InFlight has more than one named entry before SH-173's dispatch pool exists"
+            ),
+        }
+    }
+}
+
+/// A guard over one open slot in [`InFlight`]. Closes the slot on drop —
+/// including on an unwind — so a panicked handler cannot leave a stale record
+/// behind the way a bare `clear_current` call, skipped by an early return,
+/// could.
+pub struct Entry<'a> {
+    inflight: &'a InFlight,
+    slot: u64,
+}
+
+impl Entry<'_> {
+    /// Names the work this slot is doing. Called once an envelope has parsed
+    /// — the moment a record becomes worth reading at all (`crate::api::rpc`'s
+    /// own reasoning for publishing where it does, unchanged by this type).
+    pub fn name(&self, what: CurrentRequest) {
+        self.inflight.amend(self.slot, what);
+    }
+}
+
+impl Drop for Entry<'_> {
+    fn drop(&mut self) {
+        self.inflight.leave(self.slot);
+    }
+}
+
 /// What a running daemon publishes about itself.
 ///
 /// Every field is here to answer one question a client has before it sends
