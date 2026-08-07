@@ -60,3 +60,17 @@ warnings, which is why it cannot be the JSON channel.
   exact key list, sorted.
 - **`LockTimeout` costs ~5s to provoke** and is the single largest fixed cost
   in the gate; see `timings.md`.
+- **`GithubAuth`'s message fragment gained a second clause (SH-153).** A
+  credential present but blank — `export STORYHOOK_GITHUB_TOKEN=` — now
+  answers `STORYHOOK_GITHUB_TOKEN is set but empty` rather than the absent-
+  variable text this table pins; the fragment above still matches the absent
+  case, which is unchanged. Appended rather than edited in place, so this
+  baseline stays a capture of what was measured rather than a description of
+  what was later decided.
+- **`Validation`/2 also covers two SH-153 additions**, neither changing the
+  row above: a first-time `story github-sync` answering
+  `Response::SetupRequired` under `--json` (a scripted caller must not read
+  `"result": "ok"` for a run that configured nothing), and an unanswerable
+  interactive setup prompt (no terminal, or three unusable answers). `Usage`/2
+  covers `--strategy`/`--mode` given one without the other, or either on a
+  project that is already configured.

@@ -674,6 +674,8 @@ Related:
         m.insert(
             "github-sync",
             r#"story github-sync [<id>] [--dry-run] [--resolve local|remote]
+                   [--strategy import-all|match-titles|push-only|future-only]
+                   [--mode manual|off]
 
 Sync stories with GitHub Issues bidirectionally. Pulls remote changes
 and pushes local changes using three-way merge. Requires the
@@ -689,6 +691,26 @@ Examples:
   story github-sync SH-1            # Sync a single story
   story github-sync --dry-run       # Preview changes without applying
   story github-sync SH-1 --resolve remote   # Take GitHub's side of SH-1
+
+First time on a project:
+  A project that has never run github-sync is asked how to handle the
+  initial sync, interactively -- or, non-interactively (a script, a
+  pipe, --json), told to say so up front:
+
+    story github-sync --strategy future-only --mode manual
+
+  strategy:
+    import-all      import every open issue as a local story
+    match-titles    link stories to issues whose titles match exactly
+    push-only       push local stories to GitHub, import nothing
+    future-only     sync only changes from now on (the wizard's default)
+
+  mode:
+    manual          run 'story github-sync' explicitly (the wizard's default)
+    off             disable sync for this project
+
+  Both flags must be given together, or not at all, and neither
+  applies to a project that is already configured.
 
 Conflicts:
   When both sides changed one field to different values, storyhook
