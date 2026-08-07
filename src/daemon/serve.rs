@@ -85,6 +85,8 @@ struct Serving<'a, S: Store> {
     /// answered off the store thread, so it is not reached through
     /// [`dispatch`] the way everything else in this struct is.
     dispatch_registry: Arc<crate::api::dispatch::DispatchRegistry>,
+    /// Everything this daemon is serving right now (SH-173, SH-144).
+    inflight: crate::daemon::lifecycle::InFlight,
 }
 
 /// Serves `listeners` until the process ends.
@@ -133,6 +135,7 @@ where
             started_at: env.now(),
         },
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::new()),
+        inflight: crate::daemon::lifecycle::InFlight::new(env.clone()),
     };
 
     // One job channel and one dispatch thread for the whole daemon, no matter
@@ -544,11 +547,18 @@ fn worker(
 /// *client* can no longer make the *dispatcher* slow for everyone else.
 fn dispatch<S: Store>(serving: &Serving<'_, S>, jobs: mpsc::Receiver<Job>) {
     for job in jobs {
+        // Opened for every job, named only by `rpc::invoke` (SH-144's own
+        // reasoning for publishing where it does, unchanged: a record is only
+        // worth reading once it can say what it names). A REST job's slot
+        // stays unnamed here — widening that is SH-173's own later, deliberate
+        // change, not a side effect of this one.
+        let entry = serving.inflight.enter();
         let surface = rpc::Surface {
             store: serving.store,
             env: &serving.env,
             token: &serving.token,
             hello: &serving.hello,
+            entry: &entry,
         };
         let segments = path_segments(&job.path);
         if let Some(answer) = rpc::route(
@@ -572,9 +582,14 @@ fn dispatch<S: Store>(serving: &Serving<'_, S>, jobs: mpsc::Receiver<Job>) {
                     }
                 }
             };
+            // Closed before the reply is sent, matching the property SH-144
+            // relies on: the record changes exactly when the daemon finishes
+            // something, not a moment after its client already knows that.
+            drop(entry);
             let _ = job.reply.send(verdict);
             continue;
         }
+        drop(entry);
 
         let routed = rest::route(
             serving.store,

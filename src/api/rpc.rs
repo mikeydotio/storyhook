@@ -20,7 +20,7 @@ use tiny_http::{Header, Method};
 
 use crate::api::http::{Reply, error_reply, header_value, json_reply, text_reply, to_json};
 use crate::api::wire::{WireRequest, WireResponse};
-use crate::daemon::lifecycle::{self, Hello, PROTOCOL};
+use crate::daemon::lifecycle::{self, Entry, Hello, PROTOCOL};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::invoke::{InvokeRequest, Invoker, StoreInvoker};
@@ -52,6 +52,10 @@ pub struct Surface<'a, S: Store> {
     pub token: &'a str,
     /// What `/api/v1/hello` answers.
     pub hello: &'a Hello,
+    /// The in-flight slot the dispatcher already opened for this request.
+    /// Only `invoke` names it — `hello` and `shutdown` carry no work worth
+    /// publishing, exactly as before this type existed.
+    pub entry: &'a Entry<'a>,
 }
 
 /// Whether a request under `/api/v1/*` is admitted, decided entirely from its
@@ -114,7 +118,9 @@ pub fn route<S: Store>(
             200,
             serde_json::json!({"result": "ok", "protocol": PROTOCOL}).to_string(),
         )),
-        (["invoke"], Method::Post) => Answer::Reply(invoke(surface.store, surface.env, body)),
+        (["invoke"], Method::Post) => {
+            Answer::Reply(invoke(surface.store, surface.env, surface.entry, body))
+        }
         (["hello"] | ["shutdown"] | ["invoke"], _) => {
             Answer::Reply(text_reply(405, "Method not allowed"))
         }
@@ -139,16 +145,19 @@ pub fn route<S: Store>(
 ///
 /// The daemon writes no bytes until this function returns, and it serves one
 /// request at a time, so a waiting client can learn nothing from its socket and
-/// nothing from a second request. It therefore publishes a
-/// [`CurrentRequest`] here and retracts it before returning, which makes the
-/// record change exactly when the daemon **finishes something** — the signal a
-/// client's deadline resets on (SH-144).
+/// nothing from a second request. It therefore names `entry` here, and the
+/// dispatcher that opened it closes it once this returns — `Entry`'s `Drop`,
+/// so a path that returns without reaching the end of this function (there is
+/// none today, but a future one need not remember) cannot leave a stale
+/// record behind the way a bare `clear_current` call could — which makes the
+/// record change exactly when the daemon **finishes something** — the signal
+/// a client's deadline resets on (SH-144).
 ///
 /// **Here rather than in the accept loop**, because a record is only worth
 /// reading if it can *name* the command, and the command does not exist until
 /// the envelope above has parsed. A record written earlier could say no more
 /// than `POST /api/v1/invoke`, which is the one thing the user already knows.
-fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
+fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str) -> Reply {
     let request: WireRequest = match serde_json::from_str(body) {
         Ok(request) => request,
         Err(e) => {
@@ -165,19 +174,13 @@ fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
         return answer(&request.request_id, Err(mismatch));
     }
 
-    // Published before the work and retracted after it, including after a
-    // panic — `catch_unwind` returns rather than unwinding past here, so the
-    // retraction below is reached on every path out of the command.
-    lifecycle::publish_current(
-        env,
-        &lifecycle::CurrentRequest {
-            request_id: request.request_id.clone(),
-            command: crate::invoke::invocation_name(&request.invocation).to_string(),
-            project: request.project.as_ref().map(|p| p.slug().to_string()),
-            pid: std::process::id(),
-            started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        },
-    );
+    entry.name(lifecycle::CurrentRequest {
+        request_id: request.request_id.clone(),
+        command: crate::invoke::invocation_name(&request.invocation).to_string(),
+        project: request.project.as_ref().map(|p| p.slug().to_string()),
+        pid: std::process::id(),
+        started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    });
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         StoreInvoker::new(store, &request.cwd, env.clone())
@@ -198,7 +201,6 @@ fn invoke<S: Store>(store: &S, env: &Environment, body: &str) -> Reply {
         ))
     });
 
-    lifecycle::clear_current(env);
     answer(&request.request_id, result)
 }
 
@@ -314,11 +316,14 @@ mod tests {
         let (dir, store) = store();
         let env = Environment::at(dir.path());
         let hello = hello();
+        let inflight = lifecycle::InFlight::new(env.clone());
+        let entry = inflight.enter();
         let surface = Surface {
             store: &store,
             env: &env,
             token: "t",
             hello: &hello,
+            entry: &entry,
         };
         route(&surface, segments, method, headers, "", loopback)
     }
@@ -455,7 +460,9 @@ mod tests {
     fn an_unreadable_envelope_is_refused_with_a_reason() {
         let (dir, store) = store();
         let env = Environment::at(dir.path());
-        let reply = invoke(&store, &env, "{ not json");
+        let inflight = lifecycle::InFlight::new(env.clone());
+        let entry = inflight.enter();
+        let reply = invoke(&store, &env, &entry, "{ not json");
         assert_eq!(reply.status, 400);
     }
 
@@ -469,7 +476,14 @@ mod tests {
         let mut request =
             crate::api::wire::WireRequest::new(crate::cli::Invocation::Version, dir.path());
         request.client_version = "0.0.0-not-this-one".to_string();
-        let reply = invoke(&store, &env, &serde_json::to_string(&request).unwrap());
+        let inflight = lifecycle::InFlight::new(env.clone());
+        let entry = inflight.enter();
+        let reply = invoke(
+            &store,
+            &env,
+            &entry,
+            &serde_json::to_string(&request).unwrap(),
+        );
         assert_eq!(
             reply.status, 200,
             "the transport succeeded; the command did not"
