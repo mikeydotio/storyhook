@@ -21,7 +21,7 @@ use self::field_map::{
     RemoteSnapshot, format_comment_for_github, github_comment_to_story, is_sync_generated_comment,
     issue_to_remote_snapshot, story_to_create_request, updates_to_issue_request,
 };
-use self::initial::{get_github_token, run_initial_setup};
+use self::initial::{require_github_token, run_initial_setup};
 use self::storage::SyncStorage;
 use self::sync_state::{
     GithubSyncConfig, StoryIssueMapping, SyncMode, find_mapping, find_mapping_by_issue,
@@ -231,6 +231,7 @@ fn unimplemented_mode_notice(mode: &SyncMode) -> Option<String> {
 /// refusal rather than being decided here (SH-152).
 pub fn run_sync_with(
     sync: &dyn SyncStorage,
+    token: Option<&crate::domain::secret::GithubToken>,
     story_id: Option<&str>,
     dry_run: bool,
     resolve: Option<Resolution>,
@@ -266,7 +267,7 @@ pub fn run_sync_with(
             }
             cfg
         }
-        None => run_initial_setup(sync)?,
+        None => run_initial_setup(sync, token)?,
     };
 
     // If initial setup returned Off mode, bail
@@ -277,9 +278,9 @@ pub fn run_sync_with(
     }
 
     // 2. Get token and create client
-    let token = get_github_token()?;
+    let token = require_github_token(token)?;
     let client = GithubClient::new(
-        token,
+        token.expose().to_string(),
         config.github.owner.clone(),
         config.github.repo.clone(),
     );

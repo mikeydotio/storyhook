@@ -87,6 +87,19 @@ pub struct InvokeRequest {
     /// [`ProjectSelector`](crate::api::wire::ProjectSelector).
     #[serde(default)]
     pub project: Option<crate::api::wire::ProjectSelector>,
+    /// The caller's GitHub credential, when the command spends one.
+    ///
+    /// Read by the client from its own environment and carried here for the
+    /// same reason [`stdin`](Self::stdin) is: the daemon's environment belongs
+    /// to whichever process happened to start it, not to whoever typed the
+    /// command. Before SH-153 the daemon read `$STORYHOOK_GITHUB_TOKEN`
+    /// directly, so a caller who exported one was told it was unset while a
+    /// caller who had not exported one silently spent the daemon's.
+    ///
+    /// `None` means "this caller supplied none", and it is never a licence to
+    /// look elsewhere: the refusal is raised where the work runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token: Option<crate::domain::secret::GithubToken>,
 }
 
 impl InvokeRequest {
@@ -97,7 +110,18 @@ impl InvokeRequest {
             no_hooks: false,
             stdin: None,
             project: None,
+            github_token: None,
         }
+    }
+
+    /// Supplies the caller's GitHub credential.
+    #[must_use]
+    pub fn github_token(
+        mut self,
+        github_token: Option<crate::domain::secret::GithubToken>,
+    ) -> Self {
+        self.github_token = github_token;
+        self
     }
 
     /// Supplies the standard input this invocation should read.
@@ -1614,6 +1638,49 @@ pub fn reads_stdin(invocation: &Invocation) -> bool {
     }
 }
 
+/// Whether running `invocation` would spend the caller's GitHub credential.
+///
+/// The client asks before it sends, exactly as it does for
+/// [`reads_stdin`] — and for the same reason, since the daemon has no
+/// legitimate credential of its own to fall back on.
+///
+/// # Why this one is exhaustive where `reads_stdin` is not
+///
+/// A wildcard here would mean that a *later* verb needing a token silently gets
+/// `None` and fails with an auth error nobody can explain — which is SH-153
+/// again, arriving by the same route. Listing every variant makes adding one a
+/// compile error at this function, where the question "does this spend a
+/// credential?" gets asked once and answered deliberately. The cost is a long
+/// match; `invocation_name` below pays the same cost for a weaker reason.
+#[must_use]
+pub fn needs_github_token(invocation: &Invocation) -> bool {
+    match invocation {
+        Invocation::GithubSync { .. } => true,
+        // Everything else, listed rather than defaulted. See above.
+        Invocation::Help | Invocation::Project { .. } | Invocation::New { .. } |
+        Invocation::MemberAdd { .. } | Invocation::State { .. } | Invocation::List { .. } |
+        Invocation::Search { .. } | Invocation::Next { .. } | Invocation::Summary |
+        Invocation::Report { .. } | Invocation::Doctor { .. } | Invocation::Show { .. } |
+        Invocation::Comment { .. } | Invocation::Assign { .. } |
+        Invocation::SetState { .. } | Invocation::SetAwaiting { .. } |
+        Invocation::ClearAwaiting { .. } | Invocation::SetPriority { .. } |
+        Invocation::SetLabels { .. } | Invocation::Reopen { .. } |
+        Invocation::Delete { .. } | Invocation::Purge { .. } |
+        Invocation::BulkUpdate { .. } | Invocation::Import { .. } |
+        Invocation::Decompose { .. } | Invocation::Export |
+        Invocation::ImportProject { .. } | Invocation::Migrate { .. } |
+        Invocation::Context { .. } | Invocation::Handoff { .. } |
+        Invocation::Phase { .. } | Invocation::Type { .. } | Invocation::Epic { .. } |
+        Invocation::Graph { .. } | Invocation::SetFields { .. } |
+        Invocation::Relate { .. } | Invocation::Hooks { .. } |
+        Invocation::Scaffold { .. } | Invocation::CommitSync { .. } |
+        Invocation::HelpTopic { .. } | Invocation::HelpCompact | Invocation::HelpAll |
+        Invocation::Plugin { .. } | Invocation::Web { .. } | Invocation::Daemon { .. } |
+        Invocation::Store { .. } | Invocation::SessionStart | Invocation::Update { .. } |
+        Invocation::Version | Invocation::ProjectSnapshot | Invocation::History { .. } => false,
+    }
+}
+
 /// The spec text `story decompose` was pointed at.
 ///
 /// One helper for both dispatchers, because a dry run is answered without a
@@ -2151,7 +2218,8 @@ impl Invoker for HttpInvoker {
             .no_hooks(request.no_hooks)
             .hook_depth(self.hook_depth)
             .stdin(request.stdin)
-            .project(request.project);
+            .project(request.project)
+            .github_token(request.github_token);
 
         // Resolved once, up here, rather than inside `send`: the bound is a
         // clock, and `main.rs` states the rule that nothing below its own line
@@ -2631,7 +2699,8 @@ impl<S: Store> Invoker for StoreInvoker<'_, S> {
         let ctx = Ctx::new(self.store, project, &self.cwd, self.env.clone())
             .no_hooks(request.no_hooks)
             .hook_depth(self.hook_depth)
-            .with_stdin(request.stdin);
+            .with_stdin(request.stdin)
+            .with_github_token(request.github_token);
         dispatch(&ctx, request.invocation)
     }
 }
@@ -3015,6 +3084,41 @@ mod creates_a_project_tests {
             assert!(
                 !creates_a_project(&invocation),
                 "{invocation:?} must not be gated by the burst check"
+            );
+        }
+    }
+
+    /// **Only `github-sync` spends a credential**, and the check that says so is
+    /// exhaustive over `Invocation` rather than defaulted.
+    ///
+    /// The positive half is the point of SH-153. The negative half is worth a
+    /// test of its own: `story list` is the overwhelming majority of traffic,
+    /// and an envelope that carries a secret it has no use for is a secret in a
+    /// place nobody thought about.
+    #[test]
+    fn only_github_sync_carries_a_credential() {
+        assert!(needs_github_token(&Invocation::GithubSync {
+            id: None,
+            dry_run: false,
+            resolve: None,
+        }));
+        for invocation in [
+            Invocation::Summary,
+            Invocation::Version,
+            Invocation::Export,
+            Invocation::SessionStart,
+            Invocation::Show {
+                id: "SH-1".to_string(),
+            },
+            Invocation::CommitSync { since: None },
+            Invocation::Update {
+                check: true,
+                force: false,
+            },
+        ] {
+            assert!(
+                !needs_github_token(&invocation),
+                "{invocation:?} has no GitHub credential to spend"
             );
         }
     }
