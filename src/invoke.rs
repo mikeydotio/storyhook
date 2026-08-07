@@ -182,6 +182,35 @@ impl InvokeRequest {
         }
         self
     }
+
+    /// The same request, with its setup answers already given.
+    ///
+    /// The second half of the two-step SH-153's D2 defines: the first
+    /// invocation answers [`Response::SetupRequired`] and writes nothing, the
+    /// client asks the user, and this is what carries the answer back. The
+    /// invocation is otherwise untouched — same story id, same `dry_run`,
+    /// same `resolve`.
+    ///
+    /// A request carrying anything other than `GithubSync` is returned
+    /// unchanged, which is what makes this safe to call unconditionally —
+    /// the same shape [`forced`](Self::forced) has.
+    #[must_use]
+    pub fn with_setup_answers(
+        mut self,
+        strategy: crate::cli::SetupStrategy,
+        mode: crate::cli::SetupMode,
+    ) -> Self {
+        if let Invocation::GithubSync {
+            strategy: s,
+            mode: m,
+            ..
+        } = &mut self.invocation
+        {
+            *s = Some(strategy);
+            *m = Some(mode);
+        }
+        self
+    }
 }
 
 /// Executes storyhook commands.
@@ -589,14 +618,22 @@ pub fn dispatch<S: Store>(
             id,
             dry_run,
             resolve,
+            strategy,
+            mode,
         } => {
             #[cfg(feature = "github-sync")]
             {
-                crate::service::GithubSyncService::new(ctx).sync(id.as_deref(), dry_run, resolve)
+                crate::service::GithubSyncService::new(ctx).sync(
+                    id.as_deref(),
+                    dry_run,
+                    resolve,
+                    strategy,
+                    mode,
+                )
             }
             #[cfg(not(feature = "github-sync"))]
             {
-                let _ = (id, dry_run, resolve);
+                let _ = (id, dry_run, resolve, strategy, mode);
                 Err(AppError::Usage(
                     "github-sync requires the `github-sync` feature. \
                      Rebuild with: cargo install storyhook --features github-sync"
@@ -3131,6 +3168,8 @@ mod creates_a_project_tests {
             id: None,
             dry_run: false,
             resolve: None,
+            strategy: None,
+            mode: None,
         }));
         for invocation in [
             Invocation::Summary,
