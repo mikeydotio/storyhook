@@ -408,6 +408,24 @@ impl Environment {
         self.per_store_state().join("github-sync/backups")
     }
 
+    /// Where a rare, maintainer-invoked, store-wide rewrite — `story project
+    /// set-prefix` is the first — takes its own safety snapshot before
+    /// writing.
+    ///
+    /// **Deliberately not [`Self::backups_dir`].** `daemon::backup::prune`
+    /// scans that one directory and deletes down to the newest
+    /// [`crate::daemon::backup::RETAIN`], matching on filename alone; a
+    /// snapshot dropped there could be swept by the very next daemon restart,
+    /// gone before the operator it protects ever needed it (SH-135 is this
+    /// failure happening to a hand-taken backup, which is what a snapshot
+    /// left unprotected here would repeat automatically). Nothing prunes this
+    /// directory — an operation rare enough to want its own copy of the whole
+    /// store is rare enough that unbounded growth here is a maintainer's
+    /// problem to notice, not a daemon's to solve unasked.
+    pub fn maintenance_backups_dir(&self) -> PathBuf {
+        self.per_store_state().join("maintenance/backups")
+    }
+
     /// Where state that belongs to *this* store, and must survive its daemon,
     /// lives.
     fn per_store_state(&self) -> PathBuf {
@@ -733,7 +751,23 @@ mod tests {
         assert!(!named.store().is_default());
         assert_ne!(named.backups_dir(), default.backups_dir());
         assert_ne!(named.github_backups_dir(), default.github_backups_dir());
+        assert_ne!(
+            named.maintenance_backups_dir(),
+            default.maintenance_backups_dir()
+        );
         assert!(named.backups_dir().starts_with(named.daemon_state_dir()));
+    }
+
+    /// The property `set_prefix`'s safety snapshot depends on: its directory
+    /// is not the one `daemon::backup::prune` scans, so a daily prune sweep
+    /// can never delete it out from under an operator who has not looked at
+    /// it yet — the SH-135 failure mode, closed for this caller by construction
+    /// rather than by remembering to name the backup so it sorts differently.
+    #[test]
+    fn the_maintenance_backup_directory_is_not_the_pruned_one() {
+        let env = Environment::at("/tmp/storyhook-env-test");
+        assert_ne!(env.maintenance_backups_dir(), env.backups_dir());
+        assert_ne!(env.maintenance_backups_dir(), env.github_backups_dir());
     }
 
     /// The default store keeps the port a bookmarked dashboard names; anything

@@ -104,6 +104,30 @@ pub(super) fn rename_project(
     Ok(())
 }
 
+/// Sets a project's story-id prefix, leaving every other column alone. See
+/// [`crate::store::WriteOps::set_prefix`] for what a caller must do around
+/// this call for the result to be consistent.
+pub(super) fn set_prefix(
+    conn: &Connection,
+    project: ProjectId,
+    new_prefix: &str,
+) -> Result<(), StoreError> {
+    let updated = sql(
+        conn.execute(
+            "UPDATE projects SET prefix = ?2 WHERE id = ?1",
+            params![project.get(), new_prefix],
+        ),
+        "setting a project's prefix",
+    )?;
+    if updated == 0 {
+        return Err(StoreError::Invariant(format!(
+            "setting the prefix of a project that does not exist (id {})",
+            project.get()
+        )));
+    }
+    Ok(())
+}
+
 /// Every table holding rows scoped to a single project, in the order they must
 /// be cleared, paired with the column naming the project.
 ///
