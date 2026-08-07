@@ -1848,6 +1848,19 @@ supported way to give a test suite, or a second tracker, a store of its own.
 It refuses to create the default path; that one is made by the daemon on its
 first run, never by this verb.
 
+story store backup [--label <text>] takes a verified, on-demand backup of the
+ambient store — the safe way to protect it before a risky bulk operation,
+replacing a hand-copied store.db (which can capture a hot write-ahead log
+mid-write and look fine while being corrupt). It writes into a maintenance
+directory the daily schedule never prunes, so the backup survives on its own
+schedule rather than the daemon's. Runs immediately, with no confirmation
+step: it only ever creates a file. --label distinguishes it from every other
+backup sharing that directory (for example --label pre-migration); it
+defaults to "manual" when omitted. story daemon status and story web status
+report both the daily and the maintenance backups — story doctor does not,
+since its output is pinned by the golden corpus and its exit code means a
+project's integrity, not a machine's backup freshness.
+
 story project new also refuses once too many projects appear in a real store
 too fast: 5 or more inside ten minutes is refused, because that rate is the
 signature of a test suite driving story without a store of its own, not a

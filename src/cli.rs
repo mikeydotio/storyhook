@@ -148,6 +148,7 @@ Usage:
   story import-project <file>
   story migrate [<path>] [--dry-run]               (move a .storyhook tree into the store)
   story store new <path>                           (create an empty store beside the default one)
+  story store backup [--label <text>]              (safe, on-demand backup of the ambient store)
   story load-context [--format markdown|json]
   story handoff [--since <duration>]
   story phase list
@@ -824,12 +825,26 @@ pub enum SetupMode {
 /// About *stores* rather than about anything inside one, which is what makes
 /// them different from every other verb: `store new` names the store it creates,
 /// so it must not resolve — let alone create — the ambient one on its way.
+/// `backup` is the other shape a store-wide verb takes: it resolves the
+/// *ambient* store like any ordinary command, rather than avoiding one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StoreAction {
     /// Create an empty store at a path nothing else owns.
     New {
         /// Where to put it. Resolved against the client's working directory.
         path: String,
+    },
+    /// Take a verified, on-demand backup of the ambient store — the safe
+    /// alternative to hand-copying `store.db` before a risky operation
+    /// (SH-135). Writes into
+    /// [`crate::env::Environment::maintenance_backups_dir`], which the daily
+    /// schedule never prunes, so the result survives by construction.
+    Backup {
+        /// Distinguishes this backup from every other in a shared, unpruned
+        /// directory — `pre-sh130-purge`, say. Defaults to `manual` when
+        /// omitted. Validated by [`crate::daemon::backup::validate_label`]
+        /// before it becomes part of a filename.
+        label: Option<String>,
     },
 }
 
@@ -1348,6 +1363,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "state",
         subcommand: Some("remove"),
         flags: &[value("move-stories-to")],
+    },
+    VerbFlags {
+        verb: "store",
+        subcommand: Some("backup"),
+        flags: &[value("label")],
     },
 ];
 
@@ -2979,26 +2999,53 @@ fn parse_plugin(args: &[String]) -> Result<Invocation, AppError> {
     }
 }
 
-/// `story daemon start|stop|status|install|uninstall|--serve`.
+/// `story store new <path> | backup [--label <text>]`.
 fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
-    let usage = "usage: story store new <path>";
+    let usage = "usage: story store new <path> | story store backup [--label <text>]";
     let action = match args.get(1).map(String::as_str) {
-        Some("new") => match args.get(2) {
-            Some(path) if !path.is_empty() && !path.starts_with('-') => {
-                StoreAction::New { path: path.clone() }
+        Some("new") => {
+            let action = match args.get(2) {
+                Some(path) if !path.is_empty() && !path.starts_with('-') => {
+                    StoreAction::New { path: path.clone() }
+                }
+                _ => {
+                    return Err(AppError::Usage(format!(
+                        "{usage}\n\n`store new` names the file to create, for example \
+                         `story store new /tmp/scratch/store.db`."
+                    )));
+                }
+            };
+            if args.len() > 3 {
+                return Err(AppError::Usage(usage.to_string()));
             }
-            _ => {
-                return Err(AppError::Usage(format!(
-                    "{usage}\n\n`store new` names the file to create, for example \
-                     `story store new /tmp/scratch/store.db`."
-                )));
+            action
+        }
+        Some("backup") => {
+            let mut label = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--label" => {
+                        let value = args.get(index + 1).ok_or_else(|| {
+                            AppError::Usage(format!(
+                                "{usage}\n\n`--label` takes a value, for example \
+                                 `story store backup --label pre-migration`."
+                            ))
+                        })?;
+                        label = Some(value.clone());
+                        index += 2;
+                    }
+                    other => {
+                        return Err(AppError::Usage(format!(
+                            "{usage}\n\nunrecognized argument `{other}`."
+                        )));
+                    }
+                }
             }
-        },
+            StoreAction::Backup { label }
+        }
         _ => return Err(AppError::Usage(usage.to_string())),
     };
-    if args.len() > 3 {
-        return Err(AppError::Usage(usage.to_string()));
-    }
     Ok(Invocation::Store { action })
 }
 
