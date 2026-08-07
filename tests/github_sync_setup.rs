@@ -141,3 +141,41 @@ fn mode_auto_is_refused_by_name() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("SH-68"), "{stderr}");
 }
+
+/// **`--dry-run` must never write configuration to an unconfigured project.**
+///
+/// `run_initial_setup(sync, token, Some(answers))` used to call
+/// `sync.save_config` itself, unconditionally — so
+/// `story github-sync --dry-run --strategy … --mode …` on a project that had
+/// never run github-sync before wrote configuration despite `--dry-run`
+/// (SH-153).
+///
+/// This cannot be reproduced through a real command: reaching the write
+/// requires `GithubClient::validate_token` and `list_issues` to succeed
+/// first, and `GithubClient` has no trait seam to fake that offline (SH-158)
+/// — the same wall the module docs above name. What is checked instead is the
+/// structural fact that makes the bug impossible: `src/github/initial.rs`
+/// does not call `save_config` at all any more. The write moved to
+/// `run_sync_with`, gated on `!dry_run` alongside every other write that
+/// function makes.
+#[test]
+fn initial_setup_never_calls_save_config_itself() {
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/github/initial.rs"
+    ))
+    .expect("reading src/github/initial.rs");
+    for (number, line) in source.lines().enumerate() {
+        let code = line.trim_start();
+        if code.starts_with("//") {
+            continue;
+        }
+        assert!(
+            !code.contains("save_config"),
+            "src/github/initial.rs:{}: {} -- the write belongs in run_sync_with, gated on \
+             !dry_run, not here",
+            number + 1,
+            code.trim()
+        );
+    }
+}

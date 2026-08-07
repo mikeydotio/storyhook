@@ -321,6 +321,14 @@ pub fn run_sync_with(
             match run_initial_setup(sync, token, answers)? {
                 InitialSetupOutcome::Plan(plan) => return Ok(Response::SetupRequired(plan)),
                 InitialSetupOutcome::Configured { config, notes } => {
+                    // Not `run_initial_setup`'s call: a dry run must not
+                    // write configuration to an unconfigured project any more
+                    // than it writes anything else this function produces.
+                    // `story github-sync --dry-run --strategy … --mode …`
+                    // did exactly that until this gate existed (SH-153).
+                    if !dry_run {
+                        sync.save_config(&config)?;
+                    }
                     setup_notes = notes;
                     config
                 }
