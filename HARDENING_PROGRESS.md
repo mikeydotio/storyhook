@@ -150,7 +150,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-133** — rollback drops project settings · *filed by SH-129*
 - [x] **SH-137** — github-sync unreachable for an origin carrying userinfo
 - [x] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
-- [ ] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all · *picked up prematurely 2026-08-07 and un-claimed — see its own comment*
+- [x] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
 - [ ] **SH-145** — the dashboard does not live-update a state change until reload
 - ⚠ **SH-68** — `sync.mode = auto` is accepted and does nothing · *in-progress as of 2026-08-07T17:37 — another session; do not claim*
 
@@ -4702,3 +4702,73 @@ bisectable. No orphans.
 
 **Council:** yes, before the crash — `.council/github-sync-setup-and-token-across-the-daemon/`.
 Not re-run; both PRs implement the verdict already recorded on the story.
+
+### Queue resync — 2026-08-07, before picking a story
+
+Before claiming anything, re-derived what SH-112 actually depends on: `story
+show SH-112`'s relationships name 14 children (`parent-of`), not the three the
+file's own line claimed. 11 are done (SH-113–SH-122, SH-50); three remain open
+(SH-150, already queued below; SH-187 and SH-188, priority `none`, filed under
+the epic but not queued). Rewrote the SH-112 line to say so. The same fresh
+cross-check — every Backlog checkbox against real story state, not the marks —
+found two more false negatives (SH-42, SH-164, both closed 2026-08-04 but
+still unchecked) and one true positive missing a hold marker (SH-68,
+in-progress in another session as of today, now ⚠). Landed as its own PR
+(#143) per START HERE's instruction, before touching the queue.
+
+### SH-158 — done
+
+`GithubClient` had no trait seam, so `run_sync_with`, `sync_single_story` and
+everything downstream of them had zero automated coverage, and
+`AppError::SyncConflict` sat on `tests/error_contract.rs`'s `UNPROVOKABLE`
+list for lack of a way to fake a conflicting GitHub issue.
+
+**Council first** — the prior attempt's own council was interrupted mid-vote
+with nothing recorded, so this one started fresh rather than reusing anything.
+3 seats (software-architect, api-designer, qa-engineer); round 1 split 2-1 on
+whether the fake needed a per-call error-injection toggle; resolved unanimous
+3-0 in the ranked-choice runoff after two seats independently verified against
+`tests/error_contract.rs` and this file that error-accumulation testing is
+SH-159's separately-filed, still-open scope, not SH-158's to presuppose an
+answer to. Full trail: `.council/sh158-githubapi-trait-seam/DECISION.md`.
+
+**The seam.** `GithubApi` (`src/github/api.rs`) names the 7 calls the engine
+actually reaches — `get_timeline` has zero call sites anywhere and stays off
+the trait, filed separately as **SH-198**. Owner/repo are only known
+mid-function (after config load in `run_sync_with`, after remote detection in
+`run_initial_setup`), never at the caller's point of call, so both functions
+take a `GithubApiFactory` instead of building a client themselves.
+`RealGithubApiFactory` is the production implementation
+(`src/service/github.rs`); `FakeGithubApiFactory`
+(`crates/storyhook-test-support/src/github.rs`) is the test one, one shared
+`Rc<RefCell<...>>` state across every client it builds — load-bearing, since
+`run_sync_with` calls `run_initial_setup` internally on an unconfigured
+project and each constructs its own client.
+
+**The tests** — `tests/github_sync_engine.rs`, 9 of them, calling
+`run_initial_setup`/`run_sync_with` directly against the fake, the way
+`tests/service_github.rs` already calls `StoreSyncStorage` directly. Covers
+SH-153's four named assertions (`SetupRequired` for an unanswered setup,
+stated answers write config, `--dry-run` writes none, unique title pairs link
+end to end) plus the orchestration the original filing named as uncovered:
+pull-phase story creation, push-phase issue creation, a real merge conflict
+reaching `AppError::SyncConflict` in-process, and one story's error not
+aborting the rest of a sync — reached with an ordinary mapping to an issue
+number the fake never seeded, no injection mechanism required, exactly as the
+council decided. `tests/error_contract.rs`'s `UNPROVOKABLE` entry for
+`SyncConflict` is unchanged on purpose: nothing wires this seam into the real
+`story` subprocess that file drives, only in-process callers reach it.
+
+Three commits, two hats: the refactor (behaviour-preserving, no new
+assertions), the tests, and a doc-accuracy fix to three test files that named
+SH-158 as the reason certain things couldn't be tested.
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace,
+all-targets), full Rust suite, plugin harness, e2e — no failures, no warnings,
+clean working tree after. `cargo check --no-default-features` also compiles.
+Supervised per this file's own rule; no stall.
+
+**Filed, independent of this story's scope:** SH-198, the `get_timeline`
+dead-code finding named above.
+
+**PR:** #144, merged as `a7cbcbf`.
