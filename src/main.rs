@@ -452,8 +452,8 @@ fn confirm(plan: &storyhook::output::ConfirmationPlan, json: bool, quiet: bool) 
     // about to go.
     let refuse = |why: &str| {
         Confirmed::CannotAsk(storyhook::error::AppError::Validation(format!(
-            "this would permanently delete `{token}`, and {why}.\n\n{}\nRe-run with --force to \
-             confirm.",
+            "{}, and {why}.\n\n{}\nRe-run with --force to confirm.",
+            plan.headline(),
             storyhook::output::render_confirmation_plan(plan),
         )))
     };
