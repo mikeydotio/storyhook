@@ -110,6 +110,7 @@ impl Served {
         let dir = scratch_dir();
         dispatch_unscoped(
             &*self.store,
+            &self.environment(),
             dir.path(),
             "2026-01-01T00:00:00Z",
             parse_invocation(&[
@@ -156,6 +157,7 @@ fn served() -> Served {
 
     dispatch_unscoped(
         &*store,
+        &environment,
         dir.path(),
         "2026-01-01T00:00:00Z",
         parse_invocation(&[

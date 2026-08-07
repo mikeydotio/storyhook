@@ -327,6 +327,7 @@ fn every_declared_flag_is_accepted_by_its_verb() {
         (&["project", "new"], "--attach", Some(".")),
         (&["project", "new"], "--no-attach", None),
         (&["project", "new"], "--no-agents-md", None),
+        (&["store", "backup"], "--label", Some("pre-migration")),
     ];
 
     for (path, flag, value) in declared {
