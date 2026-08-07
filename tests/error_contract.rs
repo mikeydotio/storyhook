@@ -256,11 +256,14 @@ fn cases() -> Vec<Case> {
                         .expect("writing the github-sync config");
                 }
                 // Reached before any socket is opened, so this is offline.
-                // `env_remove` and not `env("")`: `env::var` returns Ok("") for
-                // an empty value, which would sail past the check.
-                let mut cmd = env.story(project.path());
-                cmd.env_remove("STORYHOOK_GITHUB_TOKEN");
-                finish(cmd, &["github-sync"], json)
+                //
+                // No `env_remove` here any more: `TestEnv` clears
+                // `STORYHOOK_GITHUB_TOKEN` from every fixture command it builds
+                // (`CLEARED_VARS`). This row used to carry its own removal,
+                // which was one test compensating locally for a harness-wide
+                // gap — on a developer machine with a real token exported,
+                // every *other* fixture inherited it (SH-153).
+                finish(env.story(project.path()), &["github-sync"], json)
             },
         },
         Case {

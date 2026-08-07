@@ -26,6 +26,20 @@ use crate::scratch::scratch_dir_named;
 /// store no matter what else this harness set. It is given a value rather than
 /// removed, so that what the child sees is asserted the same way as everything
 /// else here.
+/// Variables every fixture command has **removed** rather than redirected.
+///
+/// `ISOLATED_VARS` below points a path somewhere harmless; there is no harmless
+/// value for a credential, so this list is cleared instead.
+///
+/// **This is not tidiness.** On a developer machine with a real
+/// `STORYHOOK_GITHUB_TOKEN` exported, every fixture child and every test daemon
+/// inherited that PAT — so the suite's behaviour depended on whose shell it ran
+/// in, and a `github-sync` fixture could reach the network with a real
+/// credential. `tests/error_contract.rs` used to carry a local `env_remove` for
+/// exactly this, which was one test compensating for a harness-wide gap
+/// (SH-153).
+const CLEARED_VARS: [&str; 1] = ["STORYHOOK_GITHUB_TOKEN"];
+
 const ISOLATED_VARS: [&str; 6] = [
     "HOME",
     "XDG_DATA_HOME",
@@ -185,6 +199,9 @@ impl TestEnv {
     /// `~/.gitconfig` is not isolated either.
     pub fn apply(&self, cmd: &mut std::process::Command) {
         cmd.env("PATH", self.path_with_binary());
+        for name in CLEARED_VARS {
+            cmd.env_remove(name);
+        }
         for (name, value) in self.vars() {
             cmd.env(name, value);
         }
@@ -200,6 +217,11 @@ impl TestEnv {
         let mut cmd = assert_cmd::Command::new(story_binary());
         cmd.current_dir(cwd.as_ref());
         cmd.env("PATH", self.path_with_binary());
+        // Removed before the rest is set, so a test that deliberately supplies
+        // one (tests/github_sync_token.rs) still wins by setting it afterwards.
+        for name in CLEARED_VARS {
+            cmd.env_remove(name);
+        }
         for (name, value) in self.vars() {
             cmd.env(name, value);
         }
@@ -364,6 +386,54 @@ mod tests {
         let env = TestEnv::isolated();
         let names: Vec<_> = env.vars().iter().map(|(name, _)| *name).collect();
         assert_eq!(names, ISOLATED_VARS);
+    }
+
+    /// **A real credential must not reach a fixture.**
+    ///
+    /// Checked against what the child actually receives rather than what the
+    /// harness believes it set, because the failure this prevents is invisible
+    /// from inside: on a developer machine with `STORYHOOK_GITHUB_TOKEN`
+    /// exported, every fixture child and every test daemon used to inherit that
+    /// PAT, so what the suite did depended on whose shell ran it (SH-153). The
+    /// variable is set here deliberately so the removal has something to remove.
+    #[test]
+    fn no_real_credential_reaches_a_fixture_child() {
+        let env = TestEnv::isolated();
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        cmd.env("STORYHOOK_GITHUB_TOKEN", "ghp_the_developers_real_token");
+        env.apply(&mut cmd);
+        let out = cmd.output().expect("running env(1)");
+        let seen = String::from_utf8_lossy(&out.stdout).into_owned();
+
+        assert!(
+            !seen.contains("ghp_the_developers_real_token"),
+            "a fixture child must not inherit a credential; it saw:\n{seen}"
+        );
+        for name in CLEARED_VARS {
+            assert!(
+                !seen
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{name}="))),
+                "{name} must not reach the child at all"
+            );
+        }
+    }
+
+    /// A test that *wants* a credential still gets one — the harness clears
+    /// before it applies, so a later `env` wins. `tests/github_sync_token.rs`
+    /// depends on this, and it is the sort of ordering that breaks silently.
+    #[test]
+    fn a_test_can_still_supply_a_credential_on_purpose() {
+        let env = TestEnv::isolated();
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        env.apply(&mut cmd);
+        cmd.env("STORYHOOK_GITHUB_TOKEN", "ghp_supplied_by_the_test");
+        let out = cmd.output().expect("running env(1)");
+        let seen = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            seen.contains("ghp_supplied_by_the_test"),
+            "a deliberate credential must survive the clearing:\n{seen}"
+        );
     }
 
     /// The production port belongs to whoever is using it, and on a machine
