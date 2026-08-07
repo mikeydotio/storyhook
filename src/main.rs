@@ -29,6 +29,46 @@ fn fail(error: &storyhook::error::AppError, json: bool) -> ! {
     process::exit(error.exit_code());
 }
 
+/// Runs `invoke` on its own thread, and gives up waiting on it after
+/// `deadline` — `--deadline`'s whole implementation.
+///
+/// # Abandoned, not cancelled
+///
+/// There is no way to interrupt an HTTP call already sent: the daemon may
+/// commit the write it carried before this process stops waiting for the
+/// reply, or after, and there is no third state to report. So this never
+/// retries and never claims to know whether the command ran — the same
+/// obligation `HttpInvoker::send`'s own "may or may not have run" message
+/// keeps. The spawned thread is not joined: it is left to finish (or to sit
+/// blocked in a wait this process no longer cares about) and dies with the
+/// process, same as any other detached work here.
+///
+/// # Why a thread rather than a socket-level timeout
+///
+/// The wait this bounds is not one HTTP call, it is `lifecycle::ensure` (up
+/// to `SPAWN_LOCK_DEADLINE`, 30s — starting a daemon, or queueing behind
+/// whoever else is starting one) *and then* `HttpInvoker::send` (up to
+/// `SERVED_DEADLINE`, 120s — the daemon actually running the command). A
+/// deadline on the socket alone would leave the first of those two
+/// unbounded, which is the exact defect SH-182 is about.
+fn run_with_deadline(
+    invoke: impl FnOnce() -> Result<Response, storyhook::error::AppError> + Send + 'static,
+    deadline: std::time::Duration,
+) -> Result<Response, storyhook::error::AppError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(invoke());
+    });
+    rx.recv_timeout(deadline).unwrap_or_else(|_| {
+        Err(storyhook::error::AppError::Storage(format!(
+            "gave up after {}s waiting for storyhook, as --deadline asked. This command was \
+             not cancelled: the daemon may still be running it, and storyhook will not repeat \
+             it. Check with `story show` or `story list`, then try again if it did not.",
+            deadline.as_secs(),
+        )))
+    })
+}
+
 fn main() {
     // First, before anything — including argument parsing, which decides
     // nothing this depends on.
@@ -257,10 +297,24 @@ fn main() {
     // (SH-114). `StoreInvoker` survives as the *executor* both remaining
     // callers use: `api/rpc.rs`, which is the daemon running the work this
     // request is about to travel to, and `tui/app.rs`.
+    // `--deadline` bounds this call and this call alone: `confirm` and
+    // `ask_setup` below block on a human at a terminal, not on storyhook, and
+    // are never wrapped. Cloning `environment` and `cwd` here rather than
+    // moving them is what lets `run` be called more than once — once for the
+    // first attempt, again after a confirmation or a setup answer — each call
+    // getting a fresh, independently timed invocation.
     let run = |request: InvokeRequest| {
-        HttpInvoker::new(environment.clone(), &cwd)
-            .hook_depth(depth)
-            .invoke(request)
+        let environment = environment.clone();
+        let cwd = cwd.clone();
+        let invoke = move || {
+            HttpInvoker::new(environment, &cwd)
+                .hook_depth(depth)
+                .invoke(request)
+        };
+        match flags.deadline {
+            Some(deadline) => run_with_deadline(invoke, deadline),
+            None => invoke(),
+        }
     };
 
     // A destructive command answers with what it *would* destroy rather than
@@ -294,9 +348,15 @@ fn main() {
     // covers is raised by `daemon::lifecycle::ensure` *before* a daemon exists
     // to be asked, so there is no in-daemon layer that could answer it: only the
     // client can.
+    //
+    // `unavailable` rather than a bare `SILENT` (SH-182): the same window this
+    // covers — a spawn-lock wait, or a `--deadline` this invocation set —
+    // used to collapse into silence indistinguishable from "no project here",
+    // which is what let a session start with no storyhook context and nobody
+    // told. `unavailable` answers that only when there is nothing to say.
     let result = match result {
         Err(_) if silent_on_failure => Ok(Response::RawJson(
-            storyhook::service::session::SILENT.to_string(),
+            storyhook::service::session::unavailable(&cwd),
         )),
         other => other,
     };

@@ -25,8 +25,13 @@ fi
 # "error: unknown command `session-start`. Run `story --help` for usage." into
 # the session. Capture stdout and pass it through only when it is JSON (starts
 # with `{`); a non-zero exit blanks it and anything else collapses to `{}`.
+#
+# --deadline 3: this hook has 5s (hooks.json) before Claude Code kills it; a
+# cold daemon start plus the store's own reply may legitimately take 150s
+# (SH-182). 3s leaves 2s for this script itself and gives up loudly instead,
+# which `story session-start` turns into a recoverable {} rather than nothing.
 if command -v story &>/dev/null; then
-  out=$(story session-start 2>/dev/null) || out=""
+  out=$(story --deadline 3 session-start 2>/dev/null) || out=""
   case "$out" in "{"*) printf '%s' "$out" ;; *) printf '{}' ;; esac
 else
   printf '{}'

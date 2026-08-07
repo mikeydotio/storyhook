@@ -12,16 +12,9 @@ use assert_cmd::Command;
 use std::process;
 use storyhook_test_support::scratch_dir;
 
-const HOOK_PATH: &str = "plugin/claude-code/hooks/session-start.sh";
-
-/// The plugin manifest declaring what Claude Code runs, and how long it may
-/// take. The source of truth for this file's one wall-clock bound.
-const HOOKS_MANIFEST: &str = "plugin/claude-code/hooks/hooks.json";
-
 /// Get the absolute path to the hook script from the project root.
 fn hook_script() -> std::path::PathBuf {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.join(HOOK_PATH)
+    storyhook_test_support::hook_script("session-start.sh")
 }
 
 fn story(dir: &std::path::Path) -> Command {
@@ -272,35 +265,11 @@ fn hook_system_message_contains_next_story_info() {
 /// the contract if the declared value ever moves, and fails loudly rather than
 /// silently guarding nothing if the manifest stops declaring one.
 ///
-/// The entry is located by its command rather than by position, so a manifest
-/// that gains another SessionStart hook cannot quietly hand this test somebody
-/// else's budget.
+/// Delegates to `storyhook_test_support::declared_timeout`, which
+/// `tests/hook_budgets.rs` (SH-182) also reads — one parser for what the
+/// manifest promises, rather than a second copy that could drift from it.
 fn declared_session_start_timeout() -> std::time::Duration {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let raw = std::fs::read_to_string(manifest_dir.join(HOOKS_MANIFEST))
-        .expect("the plugin's hooks manifest must be readable");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&raw).expect("the plugin's hooks manifest must be JSON");
-
-    let seconds = parsed["hooks"]["SessionStart"]
-        .as_array()
-        .expect("hooks.json must declare SessionStart matchers")
-        .iter()
-        .flat_map(|matcher| {
-            matcher["hooks"]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-        })
-        .find(|hook| {
-            hook["command"]
-                .as_str()
-                .is_some_and(|command| command.contains("session-start.sh"))
-        })
-        .and_then(|hook| hook["timeout"].as_u64())
-        .expect("the SessionStart entry running session-start.sh must declare a timeout");
-
-    std::time::Duration::from_secs(seconds)
+    storyhook_test_support::declared_timeout("SessionStart", "session-start.sh")
 }
 
 /// The hook finishes inside the budget its own manifest gives it.
@@ -311,11 +280,11 @@ fn declared_session_start_timeout() -> std::time::Duration {
 /// `/dev/null`. That is why the bound stays where two of the six others were
 /// deleted (SH-140): the number is the product's, not the test's.
 ///
-/// Measured at 18-59ms against the declared 5s. If this ever fires, suspect the
-/// machine before the hook: the command inside may wait up to
-/// `SPAWN_LOCK_DEADLINE` (30s) for the daemon spawn lock, which is longer than
-/// the hook is allowed to live — an ordering violation in the *product* that is
-/// filed separately and cannot be fixed from here.
+/// Measured at 18-59ms against the declared 5s. It stays this fast under
+/// ordinary conditions because nothing here contends for the daemon spawn
+/// lock; `tests/cli_deadline.rs` covers the case where something does, and
+/// `session-start.sh`'s own `--deadline 3` (SH-182) is what keeps that case
+/// bounded rather than killed.
 #[test]
 fn hook_completes_within_the_timeout_its_manifest_declares() {
     let dir = scratch_dir();
@@ -337,9 +306,10 @@ fn hook_completes_within_the_timeout_its_manifest_declares() {
     assert!(
         elapsed < budget,
         "the SessionStart hook took {elapsed:?}, against the {budget:?} that \
-         {HOOKS_MANIFEST} gives it. Claude Code kills the hook at that deadline, \
+         {} gives it. Claude Code kills the hook at that deadline, \
          so this is not a slow session start, it is one with no storyhook \
-         context at all"
+         context at all",
+        storyhook_test_support::HOOKS_MANIFEST,
     );
 }
 
