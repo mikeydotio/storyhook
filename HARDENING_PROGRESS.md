@@ -195,7 +195,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 ### Medium
 
 - [ ] **SH-109** — prefix confirmation / `set-prefix` residual
-- ⚠ **SH-122** — C11 Residual gap · *third of the epic's three remaining children; in-progress elsewhere as of 2026-08-06*
+- [x] **SH-122** — C11 Residual gap
 - [ ] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
 - [ ] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
 - [ ] **SH-138** — rollback drops a project's registered origins
