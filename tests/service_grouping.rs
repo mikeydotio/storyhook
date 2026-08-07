@@ -210,7 +210,10 @@ fn a_story_in_the_blocked_state_rolls_up_as_blocked_even_with_no_unmet_dependenc
 
     let phases = service.phases().expect("listing");
     let phase = &phases[0];
-    assert_eq!(phase.blocked, 1, "a state=blocked story must roll up as blocked");
+    assert_eq!(
+        phase.blocked, 1,
+        "a state=blocked story must roll up as blocked"
+    );
     assert_eq!(phase.in_progress, 0);
     assert_eq!(phase.todo, 0);
 }
