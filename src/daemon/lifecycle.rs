@@ -178,6 +178,27 @@ impl InFlight {
         }
     }
 
+    /// Clears whatever this record said before this daemon existed.
+    ///
+    /// Call once, before any [`Self::enter`] — [`serve`](crate::daemon::serve::serve)
+    /// does this immediately after building its `InFlight`, ahead of `ready()`
+    /// and therefore ahead of any listener accepting a request a client could
+    /// poll this record from. At that moment nothing can legitimately be in
+    /// flight yet, so a non-empty record can only be one a *previous* daemon
+    /// left behind: an orderly shutdown always empties it (the last open
+    /// [`Entry`]'s drop calls [`Self::leave`], which publishes an empty set),
+    /// so surviving to here means that daemon did not exit in an orderly way
+    /// — `kill -9`, a crash.
+    ///
+    /// Left alone, this is a live defect: the next client to wait on this new
+    /// daemon reads a frozen record naming a command that finished long ago,
+    /// and gives up after its deadline having learned nothing true. Best
+    /// effort, like every other write this type performs — a state directory
+    /// this daemon cannot write to is a daemon that should still start.
+    pub fn harvest_stale(&self) {
+        clear_current(&self.env);
+    }
+
     /// Opens a slot for one request. The slot is unnamed — and therefore
     /// invisible to a reader of the file — until [`Entry::name`] is called;
     /// closing the returned guard (on drop, including on a panic) retracts it.

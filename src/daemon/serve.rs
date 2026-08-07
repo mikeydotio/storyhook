@@ -137,6 +137,10 @@ where
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::new()),
         inflight: crate::daemon::lifecycle::InFlight::new(env.clone()),
     };
+    // Before `ready()`, so no listener has accepted a request a client could
+    // poll a stale record from: a record surviving to here can only be one a
+    // *previous* daemon left behind (SH-173).
+    serving.inflight.harvest_stale();
 
     // One job channel and one dispatch thread for the whole daemon, no matter
     // how many listeners are bound (SH-173) — a rendezvous channel, so a

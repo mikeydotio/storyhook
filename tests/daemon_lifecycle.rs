@@ -740,6 +740,44 @@ fn a_running_command_is_published_and_retracted() {
     });
 }
 
+/// A record a `kill -9`'d daemon left behind does not poison the next one.
+///
+/// Nothing writes `daemon.current.json` on an abnormal exit's way out — there
+/// is no way out to run code on — so a killed daemon can leave the file
+/// naming a command that finished long before this test's daemon ever
+/// started. Without a harvest at startup, the next client to wait on this new
+/// daemon would read that frozen record, wait out its deadline, and be told a
+/// command it never ran "may or may not have run".
+#[test]
+fn a_record_a_killed_daemon_left_behind_does_not_survive_the_next_ones_start() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let environment = env.environment();
+
+    std::fs::create_dir_all(environment.daemon_state_dir()).expect("the daemon's state directory");
+    lifecycle::publish_current(
+        &environment,
+        &lifecycle::CurrentRequest {
+            request_id: "stale-from-a-killed-daemon".to_string(),
+            command: "github-sync".to_string(),
+            project: Some("stale-project".to_string()),
+            pid: 1,
+            started_at: "2020-01-01T00:00:00Z".to_string(),
+        },
+    );
+    assert!(
+        lifecycle::read_current(&environment).is_some(),
+        "the fixture must actually plant a stale record before starting a daemon"
+    );
+
+    start(&env);
+
+    wait_for(
+        "the stale record to be cleared by the new daemon's own start",
+        || lifecycle::read_current(&environment).is_none(),
+    );
+}
+
 /// **The daemon log is 0600, the same as every other daemon file that
 /// matters.**
 ///
