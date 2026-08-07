@@ -186,7 +186,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-134** — `add_type` accepts an unaddressable slug · *filed by SH-62's council*
 - [x] **SH-67** — `TransferService::export` silently drops event kinds it does not understand
 - [x] **SH-133** — rollback drops project settings · *filed by SH-129*
-- [ ] **SH-137** — github-sync unreachable for an origin carrying userinfo
+- [x] **SH-137** — github-sync unreachable for an origin carrying userinfo
 - [ ] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
 - [ ] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
 - [ ] **SH-145** — the dashboard does not live-update a state change until reload
@@ -195,7 +195,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 ### Medium
 
 - [ ] **SH-109** — prefix confirmation / `set-prefix` residual
-- [ ] **SH-122** — C11 Residual gap · *third of the epic's three remaining children*
+- ⚠ **SH-122** — C11 Residual gap · *third of the epic's three remaining children; in-progress elsewhere as of 2026-08-06*
 - [ ] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
 - [ ] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
 - [ ] **SH-138** — rollback drops a project's registered origins
@@ -216,7 +216,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [ ] **SH-155** — preserve presentation/layout settings
 - [ ] **SH-162** — allow hiding columns
 - [ ] **SH-50** — C9 Dispatch button · *blocked by SH-120*
-- ⚠ **SH-157** — visually indicate story types · *in-progress elsewhere*
+- [x] **SH-157** — visually indicate story types · *closed by another session*
 
 ### Low
 
@@ -4557,3 +4557,99 @@ touches another's tests, which is what says the three halves are separately
 load-bearing rather than one fix tested three ways.
 
 **Council:** yes — `.council/sh-133-rollback-drops-project-settings/`.
+
+### SH-137 — done
+
+**Outcome:** `story github-sync` reaches a repository whose `origin` carries
+userinfo, and the binary has one URL grammar instead of two. `keymux` — a real
+project in the live store, whose origin is
+`https://wookiee@github.com/mikeyward/keymux.git` — was silently unable to sync
+and now can.
+
+**The story was right about everything, including where the fix belonged.**
+First entry in this run with no premise to correct: the repro reproduced, the
+named function was the defect, and the "fix this wants" section described the
+delegation the council independently arrived at. SH-115's council had already
+ruled that this be a story rather than a fold-in, and that ruling reads better a
+month later than it did at the time — the fix took two commits and a design
+vote, which is not what a drive-by inside SH-115 would have received.
+
+**Two hats, and the second one is not a refactor.** The first commit strips
+userinfo in the HTTPS arm and changes nothing else; eight pre-existing URL tests
+pass untouched. The second deletes the parser and delegates. The council was
+explicit that this cannot be labelled `refactor:` — delegating to a strictly
+more permissive grammar changes behaviour by construction, and a subject line
+claiming otherwise is exactly the smuggling two hats exists to stop. So the
+second commit is `feat:`, and every arm it newly decides ships a test:
+
+| Arm | Before | Now |
+|---|---|---|
+| `ssh://git@github.com/o/r` | refused | accepted |
+| `git://github.com/o/r` | refused | accepted |
+| `wookiee@github.com:o/r` | refused — `git@` was matched as a **literal** | accepted |
+| `https://github.com//o//r` | refused | accepted |
+| `.../o/r/tree/main` | repo = `r/tree/main`, a guaranteed 404, persisted silently | refused |
+| `github.com/MikeyWard/KeyMux` | `MikeyWard`/`KeyMux` | `mikeyward`/`keymux` |
+
+**The council chose a question over a decomposition, 3-0 on the first ballot,
+and both losing authors voted against their own proposals.** The obvious
+delegation is `host()` + `repo_path()` on `RemoteUrl` — and it is a trap. Those
+two accessors publish `key()`'s `host/path` format as a contract and hand the
+next caller the parts to reassemble a *third* grammar, inside the commit whose
+whole purpose is deleting the second. The architect, who proposed them, named
+that defect in its own vote. The alternative — a github-aware method on
+`RemoteUrl` — puts a forge's rule in the identity module, where GitLab's nested
+subgroups make the two-segment assumption wrong; the skeptic, who proposed it,
+named that in *its* own vote.
+
+What landed is one method that asks a question:
+
+```rust
+pub fn path_on(&self, host: &str) -> Option<&str>
+```
+
+The host is an **argument**, so `domain::remote` still does not know what
+`github.com` is — the structural property its own header claims. "Exactly two
+segments" stays in `sync_state`, because that rule is GitHub's and not git's.
+
+**GitHub Enterprise stays refused, and the reason is disclosure rather than
+scope.** `GithubClient` hardcodes `https://api.github.com`. A suffix match would
+accept `github.example.com`, build a client pointed at a same-named **public**
+repository, and push an internal project's stories into a stranger's issue
+tracker — and would admit `evilgithub.com` besides. Whole-host equality.
+Disarmed to `ends_with` to check the assertion is load-bearing: exactly one test
+fails in each module, `parse_github_enterprise_host_is_refused` and
+`path_on_matches_the_whole_host_never_a_suffix`.
+
+**The case fold was checked at every consumer rather than assumed safe.** All
+`GithubClient` call sites format `/repos/{owner}/{repo}`, which GitHub resolves
+either way; the rest is one `eprintln!` and persistence. Nothing compares the
+pair against GitHub's canonical `full_name`, so nothing can silently
+mis-reconcile. Configs written before this keep their own spelling and nothing
+re-derives them — no migration. If canonical casing is ever wanted it must come
+from the repo object `validate_token()` already fetches, which is a different
+story.
+
+**Filed: SH-192, found by the council and reproduced before filing.**
+`domain::remote`'s header claims a `local:` key "can never collide with a
+host-shaped key". It can: `https://local:/o/r` and `/o/r` both normalize to
+`local:/o/r`, because a host with an empty port keeps its colon. The existing
+guard test uses `https://local/srv`, which has no colon and so misses it. Seat 3
+found it by reading; the chair ran it against the real code and got the assertion
+failure before writing the story. Not fixed here — reproduce-then-file is the
+rule, and this commit is not its home.
+
+**Two commits, two hats**, plus the log. Ten new tests in `sync_state`, seven in
+`domain::remote`.
+
+**Gate:** `make test` exits 0 — **121 green blocks, 2663 tests, 0 failures**.
+Supervised with a log-growth heartbeat on a 120-second stall bound; **no wedge**,
+three heartbeats (+77.6 KB, +104.8 KB, +15.5 KB). Orphan check clean before and
+after.
+
+**Queue maintenance:** the ⚠ marks were re-swept against `story list --state
+in-progress` rather than trusted, as START HERE instructs. SH-157 is **done**,
+closed by another session, and its ⚠ was stale; SH-122 is now in-progress
+elsewhere and has gained one.
+
+**Council:** yes — `.council/sh-137-github-url-delegation/`.
