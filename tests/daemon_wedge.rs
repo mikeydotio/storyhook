@@ -41,7 +41,7 @@ struct DaemonGuard<'a>(&'a TestEnv);
 
 impl Drop for DaemonGuard<'_> {
     fn drop(&mut self) {
-        let _ = lifecycle::stop(&self.0.environment());
+        let _ = lifecycle::stop(&self.0.environment(), lifecycle::StopMode::Force);
     }
 }
 

@@ -541,7 +541,12 @@ pub enum DaemonAction {
         port: Option<u16>,
     },
     /// Ask the running daemon to shut down.
-    Stop,
+    Stop {
+        /// After a short grace period, signal the daemon's pid directly
+        /// rather than waiting for it to drain on its own. Abandons
+        /// whatever it was still serving.
+        force: bool,
+    },
     /// Report whether one is running, and where.
     Status,
     /// Register a launchd agent so the daemon starts at login.
@@ -1321,10 +1326,14 @@ static VERB_FLAGS: &[VerbFlags] = &[
     },
     // `--serve` is a subcommand spelled as a flag: it is what the spawner
     // execs, never what a user types. Declared, or the daemon cannot start.
+    // `--force` belongs only to `stop`, and `port` only to `start`/`--serve`
+    // — one shared entry rather than per-subcommand ones, matching this
+    // table's existing looseness for `daemon`: `parse_daemon` itself is what
+    // actually refuses a flag on the wrong subcommand.
     VerbFlags {
         verb: "daemon",
         subcommand: None,
-        flags: &[bare("serve"), value("port")],
+        flags: &[bare("serve"), value("port"), bare("force")],
     },
     VerbFlags {
         verb: "web",
@@ -3115,8 +3124,8 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
-    let usage =
-        "usage: story daemon start [--port <PORT>] | stop | status | install | uninstall | token";
+    let usage = "usage: story daemon start [--port <PORT>] | stop [--force] | status | \
+                 install | uninstall | token";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -3130,7 +3139,13 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
         "--serve" => DaemonAction::Serve {
             port: parse_port_flag(&args[2..], usage)?,
         },
-        "stop" => DaemonAction::Stop,
+        "stop" => DaemonAction::Stop {
+            force: match &args[2..] {
+                [] => false,
+                [flag] if flag == "--force" => true,
+                _ => return Err(AppError::Usage(usage.to_string())),
+            },
+        },
         "status" => DaemonAction::Status,
         "install" => DaemonAction::Install,
         "uninstall" => DaemonAction::Uninstall,

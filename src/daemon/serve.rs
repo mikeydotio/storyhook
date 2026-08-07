@@ -119,8 +119,16 @@ struct Serving<'a, S: Store> {
     /// answered off the store thread, so it is not reached through
     /// [`dispatch`] the way everything else in this struct is.
     dispatch_registry: Arc<crate::api::dispatch::DispatchRegistry>,
-    /// Everything this daemon is serving right now (SH-173, SH-144).
-    inflight: crate::daemon::lifecycle::InFlight,
+    /// Everything this daemon is serving right now (SH-173, SH-144). An `Arc`
+    /// so the detached thread [`worker`] spawns on the shutdown path — which
+    /// has no `'scope` of its own — can still poll it while draining.
+    inflight: Arc<crate::daemon::lifecycle::InFlight>,
+    /// Set once, when the shutdown request itself is answered. Every
+    /// dispatcher checks this before routing a job it dequeues, so work
+    /// still queued when shutdown was requested is refused rather than
+    /// started — "new work" stops here, not at the accept loop, so a peer
+    /// still gets an answer rather than a reset connection.
+    draining: AtomicBool,
 }
 
 /// Serves `listeners` until the process ends.
@@ -169,7 +177,8 @@ where
             started_at: env.now(),
         },
         dispatch_registry: Arc::new(crate::api::dispatch::DispatchRegistry::new()),
-        inflight: crate::daemon::lifecycle::InFlight::new(env.clone()),
+        inflight: Arc::new(crate::daemon::lifecycle::InFlight::new(env.clone())),
+        draining: AtomicBool::new(false),
     };
     // Before `ready()`, so no listener has accepted a request a client could
     // poll a stale record from: a record surviving to here can only be one a
@@ -420,10 +429,16 @@ struct Job {
 enum Verdict {
     /// Answer it.
     Reply(Reply),
-    /// Answer it, then the daemon exits. The dispatch thread never holds
-    /// `request` — [`worker`] does — so the environment needed to clear the
-    /// portfile travels inside the verdict instead of being re-read.
-    Shutdown { reply: Reply, env: Environment },
+    /// Answer it, then the daemon exits once nothing is left in flight. The
+    /// dispatch thread never holds `request` — [`worker`] does — so the
+    /// environment needed to clear the portfile, and the registry needed to
+    /// know when it is safe to exit, travel inside the verdict instead of
+    /// being re-read or re-derived.
+    Shutdown {
+        reply: Reply,
+        env: Environment,
+        inflight: Arc<crate::daemon::lifecycle::InFlight>,
+    },
 }
 
 /// Runs the request-accept loop for one bound server.
@@ -629,10 +644,23 @@ fn worker(
     }
     match reply_rx.recv() {
         Ok(Verdict::Reply(reply)) => finish(request, reply),
-        Ok(Verdict::Shutdown { reply, env }) => {
+        Ok(Verdict::Shutdown {
+            reply,
+            env,
+            inflight,
+        }) => {
             finish(request, reply);
             thread::spawn(move || {
-                thread::sleep(crate::daemon::lifecycle::DRAIN_DEADLINE);
+                // Uncapped: `draining` already refuses every job dequeued
+                // after this point, so this can only shrink. A daemon with
+                // nothing in flight exits after one `SHUTDOWN_CHECK` —
+                // faster than the blind sleep this replaced — and one that
+                // is genuinely wedged is `story daemon stop --force`'s
+                // problem, not this loop's: it does not wait for this loop
+                // to notice anything, it signals the pid directly.
+                while !inflight.is_empty() {
+                    thread::sleep(SHUTDOWN_CHECK);
+                }
                 crate::daemon::lifecycle::clear_info(&env);
                 std::process::exit(0);
             });
@@ -722,6 +750,18 @@ fn route_job<S: Store>(serving: &Serving<'_, S>, job: Job) {
 }
 
 fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
+    // Shutdown was already answered and accepted: this job was either
+    // queued behind the pool when that happened, or arrived after — either
+    // way it is "new work", and new work stops here rather than at the
+    // accept loop, so its peer gets an answer instead of a reset connection.
+    if serving.draining.load(Ordering::Relaxed) {
+        let _ = job.reply.send(Verdict::Reply(text_reply(
+            503,
+            "storyhook daemon is shutting down",
+        )));
+        return;
+    }
+
     // Opened for every job; `rpc::invoke` names an RPC job once its
     // envelope has parsed (SH-144's own reasoning for publishing where it
     // does). A REST job is named here, generically, the moment it is
@@ -748,6 +788,10 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         let verdict = match answer {
             rpc::Answer::Reply(reply) => Verdict::Reply(reply),
             rpc::Answer::Shutdown(reply) => {
+                // Set before the reply goes out, so no dispatcher that sees
+                // this daemon's own answer to the shutdown request can also
+                // see a dequeue racing ahead of this store.
+                serving.draining.store(true, Ordering::Relaxed);
                 // Tell every connected browser to reconnect *before*
                 // answering, so a client that is about to lose its stream
                 // knows why.
@@ -755,6 +799,7 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
                 Verdict::Shutdown {
                     reply,
                     env: serving.env.clone(),
+                    inflight: Arc::clone(&serving.inflight),
                 }
             }
         };
