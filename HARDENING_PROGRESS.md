@@ -158,13 +158,13 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 
 - [x] **SH-109** — prefix confirmation / `set-prefix` residual
 - [x] **SH-122** — C11 Residual gap
-- [ ] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
+- [x] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
 - [ ] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
 - [ ] **SH-138** — rollback drops a project's registered origins
 - [ ] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
 - [ ] **SH-146** — the daemon never re-attempts its tailnet bind
 - [ ] **SH-147** — the tailnet probe runs twice on the port-fallback path
-- [ ] **SH-150** — the TUI holds its own store handle
+- ⚠ **SH-150** — the TUI holds its own store handle · *in-progress as of 2026-08-07T20:35 — another session; do not claim*
 - [ ] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
 - [ ] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
 - [ ] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
@@ -4957,3 +4957,77 @@ touching another session's processes either.
 
 **PR:** #149, merged as `13af39b`. SH-109 auto-closed by the merge (the `feat(service)`
 commit's body carried `Closes SH-109`).
+
+### SH-126 — done
+
+Picked next off the Medium queue (first unchecked, non-⚠, non-⏸ line) after SH-109. Re-checked
+`story list --state in-progress` before claiming: SH-112 (epic, skip), SH-182 (⏸, held for
+Mikey) and SH-68 (⚠) as before, plus one newly-stale mark found — **SH-150** had gone
+in-progress in another session (updated 2026-08-07T20:35, four minutes before this session
+started) with no ⚠ on its queue line. Fixed inline with this story's own log commit rather
+than as a separate resync PR, since it was a single-line finding, not a multi-story
+re-derivation like the 2026-08-07 resync above.
+
+**Scope was not what the title said.** "WebUI should display blocked stories in the Blocked
+status column" turned out to already be true: `renderBoard` (`web_dashboard.html:1571`) buckets
+every column purely by `story.state`, and `blocked` has been a required state since SH-125, so
+the Blocked column already shows every `state=blocked` story with zero dashboard code needed.
+What SH-125's own handoff note actually flagged was live: `domain::is_ready` never inspected
+`story.state`, so a story parked in `blocked` with no `awaiting` and no unmet `blocked-by` edge
+reported `is_ready() == true` — every dashboard-originated "block" (the only way to block a
+story from the UI is dragging a card into that column, a bare state change with no reason)
+contradicted its own column with a "● ready" badge.
+
+**Council, because the real question had no obviously correct answer.** Not "does the fix
+belong in `is_ready`" — a genuine tension between keeping SH-126 WebUI-scoped (`is_ready` has
+blast radius past the dashboard: `story next`, `summary`, `report`, the phase rollup, the TUI,
+MCP tools) and leaving a live domain-logic defect deferred to an unscheduled future story. Panel:
+ux-designer-web, software-architect, skeptic. Round 1 split 2-1 (software-architect alone
+preferred deferring the fix to its own story). In deliberation the skeptic traced every
+`is_ready` call site and found a **confirmed, already-live sibling defect** independent of
+SH-126: `grouping.rs:313`'s phase rollup buckets a story as "blocked" purely via
+`!is_ready(...)`, so a state=blocked story with no unmet dependency was *already* mis-bucketed
+as "in-progress" in the TUI/CLI phase rollup, before this story existed. That evidence — a
+sibling-defect sweep, per CLAUDE.md's own defect-handling tenet — moved software-architect off
+its round-1 vote; round 2 was unanimous 3-0 for folding the fix into SH-126, conditioned on
+explicit multi-surface regression coverage. Audit trail:
+`.council/sh126-blocked-column-membership/` (gitignored); verdict recorded as a comment on
+SH-126.
+
+**What shipped.** One line in `domain::is_ready`: `state == "blocked"` now returns not-ready,
+keyed off the literal slug SH-125's `REQUIRED_STATES` pins to `SuperState::Open` in every
+project by construction — safe to check directly, not a fragile match against
+project-configurable state names. Monotonic: only adds false-returns for `state=blocked`, never
+flips an already-ready story to not-ready. Column membership itself needed no change — every
+other column is already a strict state-to-column mapping, and the council rejected both a
+derived-only and a union membership rule as breaking that single, learnable Kanban contract
+every column (including drag-and-drop) relies on.
+
+**Regression coverage across every verified consumer**, per the council's explicit condition —
+each test verified red against the pre-fix predicate, green after: `domain::tests` (direct unit
+test on `is_ready`), `tests/service_grouping.rs` (the confirmed sibling phase-rollup defect),
+`tests/service_query.rs` (`report_data`'s `blocked_ids`/`ready_ids`), `tests/service_session.rs`
+(the session's `Next:` pick), and `plugin/claude-code/tests/test-dispatch-ready-gate.sh` (a new
+case: `/story do` refuses a story moved straight to `blocked`, verified red by building the
+pre-fix binary and re-running the shell test standalone before restoring the fix).
+
+**Deliberately not built.** Write-path reason-capture UX — should dragging a card into Blocked,
+or `story block` generally, prompt for or require an `awaiting` reason? The council ruled this
+out of scope on purpose (a genuine CLI-ergonomics question, not a bug) and it was filed
+separately as **SH-205**, `blocked-by` this story, priority low.
+
+**Three commits, dependency-ordered**: `fix(domain)` (the predicate, with its own direct unit
+test — inseparable from the fix itself), `test` (the four sibling-consumer regression tests),
+`style` (a `cargo fmt` fixup on the second commit's test, caught by the gate's `fmt --check`
+leg and given its own commit per this file's format-only-changes rule rather than folded back
+in).
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace, all-targets), 904 lib
+tests plus the full integration suite, plugin harness 24/24, e2e 13/13, clean working tree
+after. Supervised with a 20s-interval log-growth heartbeat and a 120s stall bound (this file's
+own rule); one run failed fast on `cargo fmt --check` (not a stall — fixed and re-run), no
+stall in either run.
+
+**PR:** #152, merged as `f0cec5c`. None of the three commit bodies carried a `Closes SH-126`
+trailer (commit-sync only auto-transitions on that convention), so `story move SH-126 done`
+was run explicitly per step 7, after verifying the merge landed and `main` was pulled clean.
