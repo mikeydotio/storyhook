@@ -1008,12 +1008,15 @@ fn deadline_usage() -> AppError {
 /// or fractional: both parse as a `u64` failing, which folds them into the
 /// same "not a number of seconds" message rather than needing their own.
 fn parse_deadline_secs(value: &str) -> Result<std::time::Duration, AppError> {
-    value.parse::<u64>().map(std::time::Duration::from_secs).map_err(|_| {
-        AppError::Usage(format!(
-            "--deadline=`{value}` is not a whole number of seconds, for example \
+    value
+        .parse::<u64>()
+        .map(std::time::Duration::from_secs)
+        .map_err(|_| {
+            AppError::Usage(format!(
+                "--deadline=`{value}` is not a whole number of seconds, for example \
              `--deadline 3`."
-        ))
-    })
+            ))
+        })
 }
 
 /// Whether `args` — a whole invocation, verb included — asks a verb to
