@@ -159,7 +159,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-109** — prefix confirmation / `set-prefix` residual
 - [x] **SH-122** — C11 Residual gap
 - [x] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
-- [ ] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
+- [x] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
 - [ ] **SH-138** — rollback drops a project's registered origins
 - [ ] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
 - [ ] **SH-146** — the daemon never re-attempts its tailnet bind
@@ -5107,3 +5107,99 @@ alternative decision needing a panel.
 
 **PR:** #151, opened from the linked worktree; not merged from here per this project's own
 rule (worktrees stop after opening the PR — deploys and version bumps happen from `main`).
+
+### SH-135 — done
+
+Picked next off the Medium queue (first unchecked, non-⚠, non-⏸ line) after SH-126, once
+SH-150's stale mark had been fixed inline with that story's own log commit. Re-checked
+`story list --state in-progress` before claiming: SH-112 (epic, skip), SH-150 and SH-182
+(⚠ / then-⏸, both correctly marked), and **SH-173** — a High story not yet on this file's
+own queue, in progress in another session's worktree since 2026-08-07T22:15, five minutes
+before this session started. Left untouched.
+
+**The find that decided the design before the council even convened.** `src/env/mod.rs`'s
+doc comment on `maintenance_backups_dir` — added hours earlier in this same run, by SH-109
+— names SH-135 explicitly as the failure that directory exists to prevent: "a snapshot
+dropped [in `backups_dir`] could be swept by the very next daemon restart... which is what
+a snapshot left unprotected here would repeat automatically." SH-109's author had already
+solved the storage half of this story without knowing its number. What remained open was
+the CLI surface: nothing exposed a safe way to take a backup at all — the two at-risk
+artifacts the story names were hand-copied with `cp`, which the module's own doc comment
+already warns against (a hot write-ahead log makes a copy "look fine and is not").
+
+**Council, because the surface had no single obviously correct answer.** Three
+seats — ux-designer-cli, software-architect, data-engineer. Round 1 split 0-1-2: two
+seats proposed extending `story doctor`'s `describe()` to report the new directory; the
+architect dissented with a citation (`src/daemon/commands.rs:8-14`, itself written for
+this same run's earlier work) that backup reporting was deliberately pulled *out* of
+`doctor` because its output is pinned byte-for-byte by the golden corpus and its exit
+code means a project's integrity, not a machine's backup age. The chair verified the
+citation before deliberation rather than trusting it. All three seats revised in one
+round; the runoff was unanimous 3-0 for `story store backup [--label <text>]` — a new
+`StoreAction`, unconfirmed, via `Store::snapshot`, into `maintenance_backups_dir`,
+reported by `daemon status`/`web status` and specifically not by `doctor`. Verdict
+recorded as a comment on SH-135; audit trail at
+`.council/sh135-manual-backup-cli-surface/` (gitignored).
+
+**What shipped, two commits.** `feat(store)`: `Store::snapshot` gained a `label`
+parameter (previously hardcoded to `"snapshot"` at every call site) so a shared directory
+can say which backup is which; `daemon::backup::validate_label` rejects anything that
+could become a path component (a slash or a leading dot refuses outright — the load-
+bearing case, since a label reaches `VACUUM INTO` as a raw filename fragment) before
+`take_manual` ever touches disk; `describe`/`describe_maintenance` split one function
+into two so `daemon status` can report both directories without touching `doctor`.
+`feat(cli)`: the new verb, wired through the seam. `story store new` is special-cased in
+`main.rs` to run *before* a store opens; `backup` is the opposite — it needs the ambient
+store open, like any ordinary command — so `needs_no_store` and `dispatch_without_store`
+had to narrow from matching the whole `Invocation::Store {..}` variant to matching `New`
+specifically, and `is_project_less` gained an entry so the verb never tries to resolve a
+project it does not need. `dispatch_unscoped`/`dispatch_unscoped_with_stdin` gained an
+`Environment` parameter to reach `maintenance_backups_dir` — five call sites updated (three
+in `invoke.rs`, two in `tests/web_test.rs`).
+
+**Two rounds of test failures caught before push, neither a stall.** First `make test`
+run: 5 new tests failed. `--label` was refused as an unknown flag — SH-62's fail-closed
+flag gate (`VERB_FLAGS` in `cli.rs`) is a second source of truth from the parser itself,
+and adding a flag to `parse_store` without adding an entry there is exactly the drift the
+gate exists to catch loudly; fixed with a `VerbFlags` entry, plus a case in
+`unknown_flag_sweep.rs`'s own drift guard so this cannot regress silently. Separately,
+four `store_isolation.rs` tests that ran `story store backup` with no `--store-path` or
+`$STORYHOOK_DATA_DIR` hit `storyhook::env::is_test_build`'s refusal to guess a real data
+home under `cargo test` — a fixture gap, not a product bug: every existing test in that
+file that touches the *ambient* default store already names one explicitly, and mine had
+not. Fixed by setting `STORYHOOK_DATA_DIR` per test and reading the actual backup path back
+out of the command's own success message rather than re-deriving
+`maintenance_backups_dir`'s directory-keying logic (`is_default()`) a second time in the
+test — the message is the one place a caller learns where the file went, so asserting
+through it also pins that the message is honest. Second `make test` run, after both fixes:
+clean.
+
+**The `nohup ... &` mistake, again — caught in seconds this time.** Backgrounded the first
+`make test` attempt with `nohup make test > log 2>&1 &` inside a tool call also marked
+`run_in_background: true`; the tool tracked the launcher shell, which returns immediately
+once the child is detached, not the `make test` process itself — the exact failure mode
+SH-182's own log entry above names. Noticed from the log being 3 lines long against a
+"completed" notification, killed nothing (the detached process was healthy and unrelated
+to a live worktree), and re-ran with the long command passed directly to the background
+tool plus a 20s-interval log-growth heartbeat and 120s stall bound. No stall in either
+supervised run.
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace, all-targets), 934 lib
+and integration tests (914 lib, up from 904 before this story's new unit tests), plugin
+harness 24/24, e2e 13/13, clean working tree after.
+
+**One flaky pre-push failure, diagnosed rather than bypassed.** The push hook's own
+`make test` failed once, on `storyhook-test-support::pty::tests::an_expect_fails_at_once_
+when_the_child_exits_first` — a 30s-deadline PTY timing test in a file this story never
+touched. `ps aux` showed a second, full `make test` running concurrently from another
+session's `.claude/worktrees/SH-173` checkout, started minutes earlier. Re-ran the single
+test in isolation three times (0.05–0.09s each, nowhere near its 30s bound) rather than
+reaching for `SKIP_PREPUSH_TESTS` on the strength of a guess; once the concurrent run had
+exited, the retried push's own `make test` passed clean. No code changed for this —
+per CLAUDE.md's reproduce-before-you-fix tenet, a failure that will not reproduce in
+isolation and disappears with a named external cause (contention with a sibling
+process) is not this story's defect to fix.
+
+**PR:** #154, merged as `c38b4de`. Neither commit body carried a `Closes SH-135` trailer,
+so `story move SH-135 done` was run explicitly per step 7, after verifying the merge
+landed and `main` was pulled clean.
