@@ -857,6 +857,57 @@ pub fn pointer_plugin(root: &Path) -> Option<toml::Value> {
     read_pointer(root).ok().flatten().and_then(|p| p.plugin)
 }
 
+/// The nearest pointer file at or above `cwd`, whatever it names.
+///
+/// For a caller that already knows resolution failed and wants to tell a
+/// checkout that *claims* a project from a directory that claims nothing.
+/// Errors are swallowed deliberately: an unreadable pointer file has its own
+/// message, raised by resolution, and this is a second attempt at explaining a
+/// failure that has already happened.
+#[must_use]
+pub fn pointer_at_or_above(cwd: &Path) -> Option<ProjectPointer> {
+    ancestors(cwd)
+        .into_iter()
+        .find_map(|dir| read_pointer(&dir).ok().flatten())
+}
+
+/// Every directory from `cwd` up to and including the repository's own top
+/// level, nearest first.
+///
+/// Canonicalized before the walk starts, so a caller standing in a directory
+/// reached through a symlink still climbs the real tree. Falls back to the
+/// path as given when canonicalization fails — a directory that does not
+/// (yet) exist is not this function's problem to report.
+#[must_use]
+pub fn ancestors(cwd: &Path) -> Vec<PathBuf> {
+    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let mut walked = Vec::new();
+    for dir in root.ancestors() {
+        walked.push(dir.to_path_buf());
+        if is_repository_top_level(dir) {
+            break;
+        }
+    }
+    walked
+}
+
+/// Whether `dir` is a repository's *own* top level.
+///
+/// A **directory** named `.git`, deliberately, and this is the load-bearing
+/// half of the bound. A linked worktree — and a submodule — holds a `.git`
+/// *file* pointing at a git directory that belongs to somebody else, so
+/// neither is a top level in the sense that matters here and neither stops
+/// the climb.
+///
+/// That is what keeps a worktree resolving. `git worktree add` checks out a
+/// commit, and the pointer file is written by `story project new` *after* the
+/// commit that created the repository — so a worktree's own tree very often
+/// does not carry one, and the main checkout's is the only pointer there is.
+/// Stopping at a `.git` file would strand every one of them.
+fn is_repository_top_level(dir: &Path) -> bool {
+    dir.join(".git").is_dir()
+}
+
 /// The pointer format this build writes.
 pub(crate) const POINTER_SCHEMA: u32 = 1;
 
