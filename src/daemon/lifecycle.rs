@@ -807,7 +807,16 @@ fn disinherit_descriptors() {
 fn spawn_child(env: &Environment) -> Result<std::process::Child, AppError> {
     let (exe, _) = current_binary()?;
     std::fs::create_dir_all(env.daemon_state_dir())?;
-    let log = File::create(env.daemon_log())
+    // Mode 0600, not `File::create`'s 0644: this log carries the daemon's whole
+    // stderr for its whole life, and since SH-153 that can include a GitHub
+    // token surfaced in a diagnostic — every other daemon file that matters is
+    // already 0600 (`publish_current`, the pidfile).
+    let mut log_options = OpenOptions::new();
+    log_options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut log_options, 0o600);
+    let log = log_options
+        .open(env.daemon_log())
         .map_err(|e| AppError::Storage(format!("failed to create the daemon log: {e}")))?;
     // Any failure still on disk belongs to a previous spawn. Removing it here —
     // in the one place that starts a daemon, immediately before starting it —
