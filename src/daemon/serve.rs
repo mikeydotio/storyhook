@@ -24,9 +24,9 @@
 
 use std::collections::BTreeMap;
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -68,6 +68,40 @@ const CHANGE_TOKEN_POLL: Duration = Duration::from_millis(250);
 
 /// How often a background thread looks up to see whether it should stop.
 const SHUTDOWN_CHECK: Duration = Duration::from_millis(250);
+
+/// How many requests this daemon routes at once (SH-173).
+///
+/// Derived, not chosen: [`crate::api::dispatch::MAX_RUNNING`] (4) dashboard
+/// dispatches may run at once, and each one's `story.sh` makes several
+/// nested `story` CLI calls that arrive at `hook_depth` 0 (a dispatch child
+/// sets nothing that would mark it otherwise), so up to four of them can
+/// occupy four dispatchers simultaneously. Plus a dashboard tab's own data
+/// fetch, an interactive CLI command, and a health probe — one each. 4 + 4 =
+/// 8. Falling short does not fail loudly: it silently starves the dashboard
+/// behind the CLI, or the reverse, whichever arrives second — enforced at
+/// compile time below, since both operands are constants.
+///
+/// [`crate::store::sqlite::DEFAULT_POOL_SIZE`] is tied to this constant for
+/// the same reason: falling short there does not fail either, it silently
+/// re-runs every connection pragma on every request past the idle cap.
+const DISPATCHERS: usize = 8;
+
+// Both relations above are pure compile-time facts, so they are enforced at
+// compile time rather than left to a test somebody has to remember to run.
+const _: () = assert!(DISPATCHERS > crate::api::dispatch::MAX_RUNNING);
+const _: () = assert!(crate::store::sqlite::DEFAULT_POOL_SIZE == DISPATCHERS + 2);
+
+/// [`DISPATCHERS`], overridable via `STORYHOOK_DISPATCHERS` so a test can
+/// prove the hook-depth lane below is unconditional without needing eight
+/// real concurrent commands to do it — the same shape [`heartbeat_interval`]
+/// already uses to let a suite drive a production interval down.
+fn dispatchers() -> usize {
+    std::env::var("STORYHOOK_DISPATCHERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DISPATCHERS)
+}
 
 /// Everything the accept loop needs, shared by every listener.
 struct Serving<'a, S: Store> {
@@ -142,14 +176,23 @@ where
     // *previous* daemon left behind (SH-173).
     serving.inflight.harvest_stale();
 
-    // One job channel and one dispatch thread for the whole daemon, no matter
-    // how many listeners are bound (SH-173) — a rendezvous channel, so a
-    // worker's `send` blocks until dispatch is ready for the next job, which
-    // is what keeps at most one job in flight to the store at a time.
+    // One job channel for the whole daemon, no matter how many listeners are
+    // bound — a rendezvous channel, so a worker's `send` blocks until a
+    // dispatcher is ready for the next job, which is what keeps at most
+    // `dispatchers()` jobs in flight to the store at a time (SH-173).
     let (jobs_tx, jobs_rx) = mpsc::sync_channel::<Job>(0);
+    let jobs_rx = Mutex::new(jobs_rx);
+    // A request whose envelope names `hook_depth > 0` never queues behind the
+    // pool above: it is nested inside an event hook a pool thread is already
+    // running, so if enough of them queued for the pool at once they could
+    // occupy every dispatcher and deadlock waiting on each other.
+    // `hook_depth` caps nesting at one, so this lane can never recurse — an
+    // unbounded channel, because back-pressure here would reintroduce the
+    // deadlock this lane exists to remove.
+    let (nested_tx, nested_rx) = mpsc::channel::<Job>();
 
     // Every background thread lives inside this scope, which is what lets the
-    // change-token poller and the dispatcher borrow the store rather than
+    // change-token poller and every dispatcher borrow the store rather than
     // being handed a raw pointer to it. The scope joins them on the way out,
     // so the accept loop signals `stop` before it returns and the joins take
     // one poll interval rather than forever.
@@ -168,7 +211,14 @@ where
         }
         {
             let serving = &serving;
-            scope.spawn(move || dispatch(serving, jobs_rx));
+            let jobs_rx = &jobs_rx;
+            for _ in 0..dispatchers() {
+                scope.spawn(move || dispatch(serving, jobs_rx));
+            }
+        }
+        {
+            let serving = &serving;
+            scope.spawn(move || nested_lane(scope, serving, nested_rx));
         }
 
         ready();
@@ -176,9 +226,10 @@ where
         for (server, loopback) in servers {
             let serving = &serving;
             let jobs_tx = jobs_tx.clone();
-            scope.spawn(move || accept_loop(serving, server, loopback, jobs_tx));
+            let nested_tx = nested_tx.clone();
+            scope.spawn(move || accept_loop(serving, server, loopback, jobs_tx, nested_tx));
         }
-        accept_loop(&serving, primary.0, primary.1, jobs_tx);
+        accept_loop(&serving, primary.0, primary.1, jobs_tx, nested_tx);
         stop.store(true, Ordering::Relaxed);
     });
     Ok(())
@@ -389,13 +440,13 @@ enum Verdict {
 /// now ties up one detached thread, never the thread every other client's
 /// command is queued behind.
 ///
-/// `jobs_tx` is shared with every other bound listener's accept loop (SH-173)
-/// — it is built once, in [`serve`], rather than one channel and one
-/// [`dispatch`] thread per listener. Before this split, a machine with a
-/// tailnet interface bound *two* listeners and therefore had two threads
-/// already serving the store concurrently, by accident of interface count
-/// rather than by design; one channel means one place SH-173's dispatch pool
-/// has to reason about.
+/// `jobs_tx` and `nested_tx` are shared with every other bound listener's
+/// accept loop — each is built once, in [`serve`], rather than one channel
+/// and one [`dispatch`] thread per listener. Before this split, a machine
+/// with a tailnet interface bound *two* listeners and therefore had two
+/// threads already serving the store concurrently, by accident of interface
+/// count rather than by design; one channel per lane means one place the
+/// [`DISPATCHERS`] pool has to reason about.
 ///
 /// **What this does not bound.** `tiny_http` exposes no way to configure an
 /// accepted socket — a request's body reader is an opaque `Box<dyn Read>`
@@ -412,11 +463,13 @@ fn accept_loop<S: Store>(
     server: Server,
     loopback: bool,
     jobs_tx: mpsc::SyncSender<Job>,
+    nested_tx: mpsc::Sender<Job>,
 ) {
     let token: Arc<str> = Arc::from(serving.token.as_str());
 
     for request in server.incoming_requests() {
         let jobs_tx = jobs_tx.clone();
+        let nested_tx = nested_tx.clone();
         let bus = serving.bus.clone();
         let token = Arc::clone(&token);
         let trusted_hosts = serving.trusted_hosts.clone();
@@ -429,12 +482,43 @@ fn accept_loop<S: Store>(
                 &token,
                 bus,
                 jobs_tx,
+                nested_tx,
                 &trusted_hosts,
                 &env,
                 &dispatch_registry,
             )
         });
     }
+}
+
+/// The one field `worker` peeks from an as-yet-unparsed `/api/v1/invoke`
+/// body, to decide which lane a request takes.
+///
+/// The envelope (`crate::api::wire::WireRequest`) stays the single source of
+/// truth for *behaviour* — this peek decides only *scheduling*, so a
+/// disagreement between the two (a malformed body this parses leniently but
+/// the real parse inside `rpc::invoke` refuses) is a scheduling
+/// suboptimality, never a correctness bug: the job is misrouted to the wrong
+/// lane, not misinterpreted once it gets there.
+#[derive(serde::Deserialize, Default)]
+struct Nesting {
+    #[serde(default)]
+    hook_depth: u32,
+}
+
+/// Whether `body` is a request nested inside an event hook.
+///
+/// A malformed or absent `hook_depth` reads as `false` — the ordinary
+/// pool, never the unbounded lane — because misrouting a genuinely nested
+/// request to the pool costs a queueing delay this design already accepts
+/// elsewhere, while misrouting an ordinary request to the unbounded lane
+/// would let a client bypass the pool's back-pressure by sending malformed
+/// JSON.
+fn is_nested_invoke(path: &str, body: &str) -> bool {
+    path == "/api/v1/invoke"
+        && serde_json::from_str::<Nesting>(body)
+            .map(|n| n.hook_depth > 0)
+            .unwrap_or(false)
 }
 
 /// Handles one accepted connection's request — everything that touches the
@@ -455,6 +539,7 @@ fn worker(
     token: &str,
     bus: ChangeBus,
     jobs: mpsc::SyncSender<Job>,
+    nested_jobs: mpsc::Sender<Job>,
     trusted_hosts: &[String],
     env: &Environment,
     dispatch_registry: &Arc<crate::api::dispatch::DispatchRegistry>,
@@ -509,6 +594,15 @@ fn worker(
         String::new()
     };
 
+    // A request nested inside an event hook must never queue behind the
+    // dispatcher pool: a hook runs *inside* a dispatcher, so if enough of
+    // them fired `story` back into this daemon at once, their nested calls
+    // could occupy every remaining dispatcher and deadlock waiting on each
+    // other. `hook_depth` caps nesting at one, so this lane can never
+    // recurse — structurally deadlock-free, the same move `GET /api/events`
+    // and the dispatch-endpoint intercept above already make (SH-173).
+    let nested = is_nested_invoke(&path, &body);
+
     let (reply_tx, reply_rx) = mpsc::channel::<Verdict>();
     let job = Job {
         method,
@@ -518,8 +612,13 @@ fn worker(
         loopback,
         reply: reply_tx,
     };
-    if jobs.send(job).is_err() {
-        // The dispatch thread is gone — the daemon is exiting. Answer rather
+    let sent = if nested {
+        nested_jobs.send(job).map_err(|_| ())
+    } else {
+        jobs.send(job).map_err(|_| ())
+    };
+    if sent.is_err() {
+        // Every dispatcher is gone — the daemon is exiting. Answer rather
         // than leaving the peer to time out against a socket that will never
         // write anything.
         finish(
@@ -545,89 +644,160 @@ fn worker(
     }
 }
 
-/// The one thread that owns the store. Every [`Job`] a [`worker`] hands off is
-/// routed here, serially — exactly as the whole accept loop used to run — but
-/// nothing peer-paced happens on this thread any more, so a slow or stalled
-/// *client* can no longer make the *dispatcher* slow for everyone else.
-fn dispatch<S: Store>(serving: &Serving<'_, S>, jobs: mpsc::Receiver<Job>) {
-    for job in jobs {
-        // Opened for every job; `rpc::invoke` names an RPC job once its
-        // envelope has parsed (SH-144's own reasoning for publishing where it
-        // does). A REST job is named here, generically, the moment it is
-        // known to be one: there is no per-request `cwd` on that surface the
-        // way an RPC envelope carries one, so it gets the ordinary deadline
-        // rather than one widened by a project's own hook configuration.
-        let entry = serving.inflight.enter();
-        let surface = rpc::Surface {
-            store: serving.store,
-            env: &serving.env,
-            token: &serving.token,
-            hello: &serving.hello,
-            entry: &entry,
+/// One of [`DISPATCHERS`] threads that own the store between them. Every
+/// [`Job`] the pool's channel carries is routed by [`route_job`] on whichever
+/// dispatcher happens to be free — nothing peer-paced happens on any of
+/// these threads, so a slow or stalled *client* can no longer make a
+/// *dispatcher* slow for everyone else.
+///
+/// `jobs` is behind a [`Mutex`] because [`mpsc::Receiver`] is not `Sync`:
+/// only one dispatcher is ever inside `recv()` at a time, but that dequeue is
+/// the only moment the lock is held, so it is never held across a job's
+/// actual routing. A fixed pool needs nothing more elaborate — no idle
+/// tracking, no retirement — because there is nothing elastic to track.
+fn dispatch<S: Store>(serving: &Serving<'_, S>, jobs: &Mutex<mpsc::Receiver<Job>>) {
+    loop {
+        let job = {
+            let jobs = jobs.lock().unwrap_or_else(PoisonError::into_inner);
+            jobs.recv()
         };
-        let segments = path_segments(&job.path);
-        if let Some(answer) = rpc::route(
-            &surface,
-            &segments,
-            &job.method,
-            &job.headers,
-            &job.body,
-            job.loopback,
-        ) {
-            let verdict = match answer {
-                rpc::Answer::Reply(reply) => Verdict::Reply(reply),
-                rpc::Answer::Shutdown(reply) => {
-                    // Tell every connected browser to reconnect *before*
-                    // answering, so a client that is about to lose its stream
-                    // knows why.
-                    serving.bus.publish(Change::Reload);
-                    Verdict::Shutdown {
-                        reply,
-                        env: serving.env.clone(),
-                    }
-                }
-            };
-            // Closed before the reply is sent, matching the property SH-144
-            // relies on: the record changes exactly when the daemon finishes
-            // something, not a moment after its client already knows that.
-            drop(entry);
-            let _ = job.reply.send(verdict);
-            continue;
+        match job {
+            Ok(job) => route_job(serving, job),
+            // The channel closed: every sender is gone, which means `serve`
+            // is tearing down. Nothing left to route.
+            Err(_) => return,
         }
-        // A fixed name: a browser never polls this record the way
-        // `HttpInvoker::send` does, so nothing depends on it being unique
-        // across concurrent dashboard requests — only on it never colliding
-        // with a real client's own request id, which no CLI-generated UUID
-        // ever will.
-        entry.name(crate::daemon::lifecycle::CurrentRequest {
-            request_id: "dashboard".to_string(),
-            command: "dashboard".to_string(),
-            project: None,
-            pid: std::process::id(),
-            started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            served_deadline_secs: crate::daemon::lifecycle::SERVED_DEADLINE.as_secs(),
-        });
-
-        let routed = rest::route(
-            serving.store,
-            &serving.env,
-            &job.method,
-            &job.path,
-            &job.headers,
-            &job.body,
-            &serving.trusted_hosts,
-        );
-        drop(entry);
-        // Published here, at the request boundary: the write has committed and
-        // its transaction is over, so a subscriber woken by this can read what
-        // just happened rather than what was there before it.
-        match &routed.changed {
-            Some(Changed::Project(slug)) => serving.bus.publish(Change::Project(slug.clone())),
-            Some(Changed::Catalog) => serving.bus.publish(Change::Catalog),
-            None => {}
-        }
-        let _ = job.reply.send(Verdict::Reply(routed.reply));
     }
+}
+
+/// Feeds every request nested inside an event hook its own thread,
+/// unconditionally — never through [`DISPATCHERS`]' shared channel, and
+/// never sharing one thread across nested requests either, because a second
+/// hook's own nested call must not queue behind a first one's.
+///
+/// Bounded by construction rather than by a limit: a nested request can only
+/// exist inside a dispatcher that is already running a hook
+/// (`hook_depth` caps nesting at one — [`crate::service::Ctx::hooks_enabled`]),
+/// so at most [`DISPATCHERS`] of these can ever be alive at once.
+///
+/// Lives inside `serve`'s own [`thread::scope`] — recursive scoped spawning
+/// is sound (`&'scope Scope<'scope, 'env>` is `Send + Sync`, and each spawn
+/// is a fresh OS thread rather than stack recursion) — which is what a
+/// detached `worker` thread cannot do for itself: it has no `'scope` to
+/// spawn into, only a channel to hand the job to something that does.
+fn nested_lane<'scope, S: Store>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    serving: &'scope Serving<'_, S>,
+    jobs: mpsc::Receiver<Job>,
+) {
+    for job in jobs {
+        scope.spawn(move || route_job(serving, job));
+    }
+}
+
+/// Routes one [`Job`] to its answer and sends the answer back — the body
+/// every dispatcher runs, whether pooled ([`dispatch`]) or ad hoc
+/// ([`nested_lane`]).
+///
+/// The whole thing runs inside `catch_unwind`. [`thread::scope`] re-panics in
+/// its caller once every spawned thread is joined if any of them panicked,
+/// so an uncaught panic here would take down the whole daemon — a pooled
+/// dispatcher's *loop* would also simply stop, shrinking the pool by one for
+/// the life of the process. Caught, `job` (and its `reply` sender) drops
+/// during the unwind without answering, which `worker`'s own
+/// `reply_rx.recv()` already turns into a 503 — the same fallback a closed
+/// channel gets on shutdown, and an honest one: the daemon does not know
+/// whether the work it was routing completed.
+fn route_job<S: Store>(serving: &Serving<'_, S>, job: Job) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        route_job_inner(serving, job)
+    }))
+    .is_err()
+    {
+        eprintln!(
+            "storyhook daemon: a dispatcher panicked while routing a request; the \
+             client sees a 503 and the daemon keeps running"
+        );
+    }
+}
+
+fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
+    // Opened for every job; `rpc::invoke` names an RPC job once its
+    // envelope has parsed (SH-144's own reasoning for publishing where it
+    // does). A REST job is named here, generically, the moment it is
+    // known to be one: there is no per-request `cwd` on that surface the
+    // way an RPC envelope carries one, so it gets the ordinary deadline
+    // rather than one widened by a project's own hook configuration.
+    let entry = serving.inflight.enter();
+    let surface = rpc::Surface {
+        store: serving.store,
+        env: &serving.env,
+        token: &serving.token,
+        hello: &serving.hello,
+        entry: &entry,
+    };
+    let segments = path_segments(&job.path);
+    if let Some(answer) = rpc::route(
+        &surface,
+        &segments,
+        &job.method,
+        &job.headers,
+        &job.body,
+        job.loopback,
+    ) {
+        let verdict = match answer {
+            rpc::Answer::Reply(reply) => Verdict::Reply(reply),
+            rpc::Answer::Shutdown(reply) => {
+                // Tell every connected browser to reconnect *before*
+                // answering, so a client that is about to lose its stream
+                // knows why.
+                serving.bus.publish(Change::Reload);
+                Verdict::Shutdown {
+                    reply,
+                    env: serving.env.clone(),
+                }
+            }
+        };
+        // Closed before the reply is sent, matching the property SH-144
+        // relies on: the record changes exactly when the daemon finishes
+        // something, not a moment after its client already knows that.
+        drop(entry);
+        let _ = job.reply.send(verdict);
+        return;
+    }
+    // A fixed name: a browser never polls this record the way
+    // `HttpInvoker::send` does, so nothing depends on it being unique
+    // across concurrent dashboard requests — only on it never colliding
+    // with a real client's own request id, which no CLI-generated UUID
+    // ever will.
+    entry.name(crate::daemon::lifecycle::CurrentRequest {
+        request_id: "dashboard".to_string(),
+        command: "dashboard".to_string(),
+        project: None,
+        pid: std::process::id(),
+        started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        served_deadline_secs: crate::daemon::lifecycle::SERVED_DEADLINE.as_secs(),
+    });
+
+    let routed = rest::route(
+        serving.store,
+        &serving.env,
+        &job.method,
+        &job.path,
+        &job.headers,
+        &job.body,
+        &serving.trusted_hosts,
+    );
+    drop(entry);
+    // Published here, at the request boundary: the write has committed and
+    // its transaction is over, so a subscriber woken by this can read what
+    // just happened rather than what was there before it.
+    match &routed.changed {
+        Some(Changed::Project(slug)) => serving.bus.publish(Change::Project(slug.clone())),
+        Some(Changed::Catalog) => serving.bus.publish(Change::Catalog),
+        None => {}
+    }
+    let _ = job.reply.send(Verdict::Reply(routed.reply));
 }
 
 /// Serves one `GET /api/events` connection for its entire lifetime, on its own
@@ -772,4 +942,42 @@ fn project_sequences<S: Store>(store: &S) -> BTreeMap<String, i64> {
             Ok(seqs)
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `hook_depth` is peeked from the body only for `/api/v1/invoke`; every
+    /// other path is never nested, whatever its body says.
+    #[test]
+    fn only_invoke_requests_can_be_nested() {
+        assert!(!is_nested_invoke("/api/repos", r#"{"hook_depth":1}"#));
+        assert!(!is_nested_invoke("/api/v1/hello", r#"{"hook_depth":1}"#));
+    }
+
+    /// The ordinary case — no hook in progress — never takes the unbounded
+    /// lane.
+    #[test]
+    fn a_top_level_invoke_is_not_nested() {
+        assert!(!is_nested_invoke("/api/v1/invoke", r#"{"hook_depth":0}"#));
+        assert!(!is_nested_invoke("/api/v1/invoke", r#"{}"#));
+    }
+
+    /// The one case the lane exists for.
+    #[test]
+    fn an_invoke_from_inside_a_hook_is_nested() {
+        assert!(is_nested_invoke("/api/v1/invoke", r#"{"hook_depth":1}"#));
+    }
+
+    /// A malformed body reads as *not* nested — the pool, never the
+    /// unbounded lane — because misrouting a genuinely nested request to the
+    /// pool costs a queueing delay; misrouting an ordinary one to the
+    /// unbounded lane would let malformed JSON bypass the pool's
+    /// back-pressure entirely.
+    #[test]
+    fn a_malformed_body_defaults_to_the_ordinary_pool() {
+        assert!(!is_nested_invoke("/api/v1/invoke", "{ not json"));
+        assert!(!is_nested_invoke("/api/v1/invoke", ""));
+    }
 }

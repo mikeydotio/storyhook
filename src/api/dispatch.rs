@@ -10,24 +10,27 @@
 //!
 //! # Off the store thread, on purpose
 //!
-//! [`crate::daemon::serve::dispatch`] is the single thread that owns the
-//! store, fed by a rendezvous channel of capacity zero — every other
-//! request queues behind whichever [`crate::api::rest::route`] or
-//! [`crate::api::rpc::route`] call is in flight. A dispatch takes 15-35
-//! seconds even on the happy path (worktree creation, then waiting for
-//! claude's TUI to accept a pasted prompt), and it gets there by making
-//! several of its own `story` CLI calls — each of which, since store
-//! isolation landed, reaches this *same* daemon over its own
-//! `/api/v1/invoke` connection. Answering a dispatch request on the store
-//! thread would therefore deadlock on the first nested call: the request
-//! occupying that thread would be waiting on a child that is waiting on
-//! that same thread.
+//! [`crate::daemon::serve::dispatch`] runs on a fixed pool of
+//! `crate::daemon::serve::DISPATCHERS` threads that own the store between
+//! them — every request beyond that many queues behind whichever
+//! [`crate::api::rest::route`] or [`crate::api::rpc::route`] call is in
+//! flight on the rest. A dispatch takes 15-35 seconds even on the happy path
+//! (worktree creation, then waiting for claude's TUI to accept a pasted
+//! prompt), and it gets there by making several of its own `story` CLI
+//! calls — each of which, since store isolation landed, reaches this *same*
+//! daemon over its own `/api/v1/invoke` connection, at `hook_depth` 0 (a
+//! dispatch child sets nothing that would mark it otherwise). Answering a
+//! dispatch request on a pool thread would therefore risk deadlock: with
+//! [`MAX_RUNNING`] dispatches each occupying one pool thread, their nested
+//! calls would have nowhere left to run.
 //!
 //! So this module is intercepted in [`crate::daemon::serve::worker`],
 //! before a `Job` is ever built — the same place `GET /api/events` is
-//! answered in full for the same reason. The subprocess itself runs on its
-//! own detached thread, tracked in a [`DispatchRegistry`] that a `GET`
-//! polls; nothing here ever touches `Serving::store`.
+//! answered in full for the same reason, and the same shape
+//! `crate::daemon::serve`'s hook-depth lane generalizes for every *nested*
+//! request rather than only this one. The subprocess itself runs on its own
+//! detached thread, tracked in a [`DispatchRegistry`] that a `GET` polls;
+//! nothing here ever touches `Serving::store`.
 //!
 //! # A second gate beyond the dashboard's own
 //!
@@ -77,7 +80,12 @@ const DISPATCH_TIMEOUT: Duration = Duration::from_secs(180);
 /// Not a defense against an unauthenticated caller — the token gate already
 /// closes that door — but against a token holder's own accidents: a
 /// retried click, or several dashboard tabs open on the same project.
-const MAX_RUNNING: usize = 4;
+///
+/// `pub(crate)` so `daemon::serve::DISPATCHERS` can be derived against it —
+/// each running dispatch's `story.sh` makes several nested `story` CLI calls
+/// that arrive at `hook_depth` 0, so up to this many can occupy that many
+/// dispatchers simultaneously, and the pool must exceed it.
+pub(crate) const MAX_RUNNING: usize = 4;
 
 /// How many finished records the registry keeps.
 const RETAIN_FINISHED: usize = 32;
