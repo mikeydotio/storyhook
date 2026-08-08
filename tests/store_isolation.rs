@@ -918,6 +918,58 @@ fn neutralizes_the_store_path(line: &str) -> bool {
     trimmed.starts_with("unset STORYHOOK_STORE_PATH") || exports(trimmed, "STORYHOOK_STORE_PATH")
 }
 
+/// Whether `line` pins `$STORYHOOK_DAEMON_ADDR` to the daemon's ephemeral-port
+/// contract, rather than leaving it to default to the shared port 3456.
+fn pins_the_daemon_to_an_ephemeral_port(line: &str) -> bool {
+    exports(line, "STORYHOOK_DAEMON_ADDR") && line.contains("127.0.0.1:0")
+}
+
+/// The tracked shell scripts that export `$STORYHOOK_DATA_DIR`, paired with
+/// their contents.
+///
+/// Shared by every test in this module that needs "every harness that isolates
+/// the data directory" — the set this file's isolation invariants are pinned
+/// against — so that set is derived once rather than re-scanned, and possibly
+/// re-diverged, per test.
+fn data_dir_harnesses(root: &Path) -> Vec<(String, String)> {
+    let listed = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["ls-files", "-z", "--", "*.sh"])
+        .output()
+        .expect("listing this repository's tracked shell scripts");
+    assert!(
+        listed.status.success(),
+        "`git ls-files` failed, so this scan proved nothing: {}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+
+    let harnesses: Vec<(String, String)> = listed
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|path| {
+            let relative = std::str::from_utf8(path).expect("a UTF-8 path").to_string();
+            let text = std::fs::read_to_string(root.join(&relative))
+                .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
+            text.lines()
+                .any(|line| exports(line, "STORYHOOK_DATA_DIR"))
+                .then_some((relative, text))
+        })
+        .collect();
+
+    // A scan that matches nothing passes every assertion a caller builds on top
+    // of it, which would make a broken pattern indistinguishable from a clean
+    // tree.
+    assert!(
+        harnesses.len() >= 3,
+        "this scan is supposed to find every shell harness that isolates the \
+         data directory, and it found {}: {harnesses:?}. The pattern is broken, \
+         not the harnesses.",
+        harnesses.len()
+    );
+    harnesses
+}
+
 /// A harness that isolates `$STORYHOOK_DATA_DIR` and stops there has not
 /// isolated anything.
 ///
@@ -938,45 +990,13 @@ fn neutralizes_the_store_path(line: &str) -> bool {
 #[test]
 fn every_harness_that_isolates_the_data_dir_neutralizes_the_store_path() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let listed = std::process::Command::new("git")
-        .current_dir(root)
-        .args(["ls-files", "-z", "--", "*.sh"])
-        .output()
-        .expect("listing this repository's tracked shell scripts");
-    assert!(
-        listed.status.success(),
-        "`git ls-files` failed, so this test proved nothing: {}",
-        String::from_utf8_lossy(&listed.stderr)
-    );
+    let harnesses = data_dir_harnesses(root);
 
-    let mut harnesses = Vec::new();
-    let mut gaps = Vec::new();
-    for path in listed
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|entry| !entry.is_empty())
-    {
-        let relative = std::str::from_utf8(path).expect("a UTF-8 path");
-        let text = std::fs::read_to_string(root.join(relative))
-            .unwrap_or_else(|e| panic!("reading {relative}: {e}"));
-        if !text.lines().any(|line| exports(line, "STORYHOOK_DATA_DIR")) {
-            continue;
-        }
-        harnesses.push(relative.to_string());
-        if !text.lines().any(neutralizes_the_store_path) {
-            gaps.push(relative.to_string());
-        }
-    }
-
-    // A scan that matches nothing passes every assertion below it, which would
-    // make a broken pattern indistinguishable from a clean tree.
-    assert!(
-        harnesses.len() >= 3,
-        "this scan is supposed to find every shell harness that isolates the \
-         data directory, and it found {}: {harnesses:?}. The pattern is broken, \
-         not the harnesses.",
-        harnesses.len()
-    );
+    let gaps: Vec<String> = harnesses
+        .iter()
+        .filter(|(_, text)| !text.lines().any(neutralizes_the_store_path))
+        .map(|(relative, _)| relative.clone())
+        .collect();
     assert!(
         gaps.is_empty(),
         "{gaps:?} export STORYHOOK_DATA_DIR without neutralizing \
@@ -984,5 +1004,65 @@ fn every_harness_that_isolates_the_data_dir_neutralizes_the_store_path() {
          runs whatever these scripts start against their own store, and nothing \
          says so. Add `unset STORYHOOK_STORE_PATH` beside the data-directory \
          export."
+    );
+}
+
+/// Every tracked shell script that isolates `$STORYHOOK_DATA_DIR` also contains
+/// the daemon it spawns: an ephemeral `$STORYHOOK_DAEMON_ADDR` and a
+/// `$STORYHOOK_PARENT_PID` to die with.
+///
+/// The same shape of defect `every_harness_that_isolates_the_data_dir_
+/// neutralizes_the_store_path` closes, one variable pair over (SH-136, filed
+/// while SH-131 was counting a different list and found this one stale too). A
+/// harness that skips `STORYHOOK_DAEMON_ADDR=127.0.0.1:0` lets its daemon bind
+/// the shared port 3456 — a developer's own dashboard, on any machine where it
+/// happened to be free. One that skips `STORYHOOK_PARENT_PID` spawns a daemon
+/// that does not know to die with the run that started it, which is not
+/// hypothetical: a leaked daemon once cost 78 of 139 tests in a later run.
+/// CLAUDE.md hand-enumerated these harnesses in prose instead of deriving them,
+/// and the count silently drifted — four, then five, then six — every time a
+/// harness was added. A derived set cannot drift the same way.
+///
+/// Green on arrival, deliberately: every harness this scan finds today already
+/// pins both variables, so there is no regression to catch. What it buys is a
+/// fence, not a fix — a script added or edited later that isolates the data
+/// directory without also containing its daemon fails here instead of leaking
+/// one onto a developer's machine.
+#[test]
+fn every_harness_that_isolates_the_data_dir_also_contains_its_daemon() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let harnesses = data_dir_harnesses(root);
+
+    let unpinned: Vec<String> = harnesses
+        .iter()
+        .filter(|(_, text)| !text.lines().any(pins_the_daemon_to_an_ephemeral_port))
+        .map(|(relative, _)| relative.clone())
+        .collect();
+    assert!(
+        unpinned.is_empty(),
+        "{unpinned:?} export STORYHOOK_DATA_DIR without pinning \
+         STORYHOOK_DAEMON_ADDR to 127.0.0.1:0. A daemon this harness spawns binds \
+         the shared port 3456 instead of an ephemeral one — the same port a \
+         developer's own dashboard may be using. Add \
+         `export STORYHOOK_DAEMON_ADDR=\"${{STORYHOOK_DAEMON_ADDR:-127.0.0.1:0}}\"` \
+         beside the data-directory export."
+    );
+
+    let orphanable: Vec<String> = harnesses
+        .iter()
+        .filter(|(_, text)| {
+            !text
+                .lines()
+                .any(|line| exports(line, "STORYHOOK_PARENT_PID"))
+        })
+        .map(|(relative, _)| relative.clone())
+        .collect();
+    assert!(
+        orphanable.is_empty(),
+        "{orphanable:?} export STORYHOOK_DATA_DIR without exporting \
+         STORYHOOK_PARENT_PID. A daemon this harness spawns does not know to die \
+         with the run that started it and can outlive it, poisoning every later \
+         run on the machine. Add `export STORYHOOK_PARENT_PID=\"$$\"` beside the \
+         data-directory export."
     );
 }
