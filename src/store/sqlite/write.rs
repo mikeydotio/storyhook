@@ -148,6 +148,7 @@ pub(super) fn set_prefix(
 const PROJECT_SCOPED_TABLES: &[(&str, &str)] = &[
     ("github_bases", "project_id"),
     ("story_commit_links", "project_id"),
+    ("story_pr_links", "project_id"),
     ("story_relations", "project_id"),
     ("story_labels", "project_id"),
     ("stories", "project_id"),
@@ -250,6 +251,7 @@ fn verify_project_is_gone(conn: &Connection, project: ProjectId) -> Result<(), S
 const STORY_SCOPED_TABLES: &[(&str, &str)] = &[
     ("github_bases", "story_no = ?2"),
     ("story_commit_links", "story_no = ?2"),
+    ("story_pr_links", "story_no = ?2"),
     ("story_relations", "(story_no = ?2 OR other_no = ?2)"),
     ("story_labels", "story_no = ?2"),
     ("stories", "story_no = ?2"),
@@ -570,6 +572,7 @@ fn append(
             "appending an event",
         )?;
         project_commit_link(conn, project, story, event, source)?;
+        project_pr_link(conn, project, story, event)?;
     }
     Ok(EventSeq::new(
         head.get() + i64::try_from(events.len()).expect("an append fits in i64"),
@@ -661,6 +664,129 @@ fn project_commit_link(
         conn.execute(statement, params![project.get(), story.get(), sha]),
         "recording a commit link",
     )?;
+    Ok(())
+}
+
+/// Projects a `StoryPrLinked`/`StoryPrUnlinked`/`StoryPrMerged`/`StoryPrClosed`
+/// event into `story_pr_links` (SH-49).
+///
+/// Reads the raw event's `kind` and JSON payload directly, like
+/// [`project_commit_link`], so unknown-kind replay still projects correctly and
+/// so `append_raw_events` — the path `story migrate` and `story import-project`
+/// take — projects the link too.
+///
+/// **Every other kind, and every kind this binary has never heard of, is
+/// untouched** — this reads the `kind` column rather than the payload's
+/// meaning, and a payload that fails to parse or is missing a field is skipped
+/// rather than rejected, for the same "a payload it cannot read is not an
+/// error" reason [`project_commit_link`] documents.
+///
+/// Three different write shapes for the four kinds: `StoryPrLinked` **upserts**
+/// (a user may re-link the same PR to toggle `close_on_merge`, which
+/// `story_commit_links`' pure-insert model has no need for), `StoryPrUnlinked`
+/// **deletes** by `url`, and `StoryPrMerged`/`StoryPrClosed` **update** the
+/// existing row's `status`.
+fn project_pr_link(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+    event: &RawEvent,
+) -> Result<(), StoreError> {
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload) else {
+        return Ok(());
+    };
+    let str_field = |name: &str| {
+        payload
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let bool_field = |name: &str| payload.get(name).and_then(serde_json::Value::as_bool);
+    let number_field = |name: &str| {
+        payload
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| i64::try_from(n).ok())
+    };
+
+    match event.kind.as_str() {
+        "StoryPrLinked" => {
+            let (Some(owner), Some(repo), Some(number), Some(url), Some(close_on_merge)) = (
+                str_field("owner"),
+                str_field("repo"),
+                number_field("number"),
+                str_field("url"),
+                bool_field("close_on_merge"),
+            ) else {
+                return Ok(());
+            };
+            sql(
+                conn.execute(
+                    "INSERT INTO story_pr_links \
+                         (project_id, story_no, owner, repo, number, url, close_on_merge, \
+                          status, linked_at, last_checked_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, NULL) \
+                     ON CONFLICT (project_id, story_no, owner, repo, number) DO UPDATE SET \
+                         url = excluded.url, \
+                         close_on_merge = excluded.close_on_merge, \
+                         status = 'open', \
+                         linked_at = excluded.linked_at, \
+                         last_checked_at = NULL",
+                    params![
+                        project.get(),
+                        story.get(),
+                        owner,
+                        repo,
+                        number,
+                        url,
+                        i64::from(close_on_merge),
+                        event.at
+                    ],
+                ),
+                "linking a pull request",
+            )?;
+        }
+        "StoryPrUnlinked" => {
+            let Some(url) = str_field("url") else {
+                return Ok(());
+            };
+            sql(
+                conn.execute(
+                    "DELETE FROM story_pr_links \
+                     WHERE project_id = ?1 AND story_no = ?2 AND url = ?3",
+                    params![project.get(), story.get(), url],
+                ),
+                "unlinking a pull request",
+            )?;
+        }
+        "StoryPrMerged" => {
+            let Some(url) = str_field("url") else {
+                return Ok(());
+            };
+            sql(
+                conn.execute(
+                    "UPDATE story_pr_links SET status = 'merged', last_checked_at = ?4 \
+                     WHERE project_id = ?1 AND story_no = ?2 AND url = ?3",
+                    params![project.get(), story.get(), url, event.at],
+                ),
+                "recording a merged pull request",
+            )?;
+        }
+        "StoryPrClosed" => {
+            let Some(url) = str_field("url") else {
+                return Ok(());
+            };
+            sql(
+                conn.execute(
+                    "UPDATE story_pr_links SET status = 'closed', last_checked_at = ?4 \
+                     WHERE project_id = ?1 AND story_no = ?2 AND url = ?3",
+                    params![project.get(), story.get(), url, event.at],
+                ),
+                "recording a closed pull request",
+            )?;
+        }
+        _ => {}
+    }
     Ok(())
 }
 

@@ -105,6 +105,11 @@ pub fn find_mapping_by_issue(
 /// would admit that and `evilgithub.com` besides. GitHub Enterprise needs a
 /// host-derived API base, which is its own story rather than a looser match
 /// here.
+///
+/// A private duplicate of [`crate::domain::pr_url`]'s own copy of this same
+/// literal — that module is ungated and this one is not, and threading a
+/// shared constant across the feature boundary is not worth it for a value
+/// that will never change.
 const GITHUB_HOST: &str = "github.com";
 
 /// Parse a GitHub remote URL into owner/repo, or refuse it.
@@ -158,6 +163,16 @@ pub fn parse_github_url(url: &str) -> Option<GithubRepo> {
         repo: repo.to_string(),
     })
 }
+
+/// Parses a GitHub pull request web URL into `(owner, repo, number)`, or
+/// refuses it (SH-49).
+///
+/// Re-exported from [`crate::domain::pr_url`] rather than defined here: that
+/// module is ungated, so that `story link-pr`/`unlink-pr` work whether or not
+/// the `github-sync` feature is compiled in. See its own documentation for
+/// the grammar. Kept as `github::sync_state::parse_pr_url` too, so nothing
+/// that already imports it from here needs to change.
+pub use crate::domain::pr_url::parse_pr_url;
 
 /// Detect owner/repo from this repository's `origin`.
 ///
@@ -461,4 +476,7 @@ mod tests {
         assert!(parse_github_url("/srv/git/widgets.git").is_none());
         assert!(parse_github_url("file:///srv/git/widgets.git").is_none());
     }
+
+    // `parse_pr_url`'s own tests moved with it to
+    // `crate::domain::pr_url` — see that module.
 }

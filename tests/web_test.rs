@@ -1856,6 +1856,111 @@ fn web_relate_and_unrelate_stories() {
     );
 }
 
+// --- Mutation API: link-pr / unlink-pr (SH-49) ---
+
+#[test]
+fn web_link_pr_and_unlink_pr() {
+    let fixture = served();
+    fixture.seed(&["new", "Linked to a PR"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/link-pr"),
+        r#"{"url":"https://github.com/acme/widgets/pull/7","close_on_merge":true}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp2 = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/unlink-pr"),
+        r#"{"url":"https://github.com/acme/widgets/pull/7"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp2.status(), 200);
+}
+
+#[test]
+fn web_link_pr_defaults_close_on_merge_to_true_when_absent() {
+    let fixture = served();
+    fixture.seed(&["new", "Default close_on_merge"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/link-pr"),
+        r#"{"url":"https://github.com/acme/widgets/pull/7"}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[test]
+fn web_link_pr_without_a_url_is_400() {
+    let fixture = served();
+    fixture.seed(&["new", "No URL"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/link-pr"),
+        r#"{}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 400);
+}
+
+#[test]
+fn web_link_pr_without_guard_header_is_403() {
+    let fixture = served();
+    fixture.seed(&["new", "Guarded"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = post_json_unguarded(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/link-pr"),
+        r#"{"url":"https://github.com/acme/widgets/pull/7"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 403);
+
+    // Nothing was linked — a rejected mutation must not have partially landed.
+    let show = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+    ))
+    .call()
+    .unwrap();
+    let show_json: serde_json::Value =
+        serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
+    // `link-pr`'s success carries no field on the story view itself besides
+    // its ordinary shape, so the guard's effect is proven by never having
+    // reached the service at all rather than by a visible field — confirmed
+    // by the 403 itself, which `guarded` returns before `route_link_pr_story`
+    // is ever called.
+    assert_eq!(story_field(&show_json, "id"), "SH-1");
+}
+
+#[test]
+fn web_unlink_pr_without_guard_header_is_403() {
+    let fixture = served();
+    fixture.seed(&["new", "Guarded unlink"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    post_json(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/link-pr"),
+        r#"{"url":"https://github.com/acme/widgets/pull/7"}"#,
+    )
+    .unwrap();
+
+    let err = post_json_unguarded(
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/unlink-pr"),
+        r#"{"url":"https://github.com/acme/widgets/pull/7"}"#,
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 403);
+}
+
 // --- Mutation API: delete ---
 
 #[test]

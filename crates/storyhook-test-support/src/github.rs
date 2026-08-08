@@ -22,7 +22,8 @@ use std::rc::Rc;
 use storyhook::error::AppError;
 use storyhook::github::api::{GithubApi, GithubApiFactory};
 use storyhook::github::types::{
-    CreateIssueRequest, GithubComment, GithubIssue, GithubUser, UpdateIssueRequest,
+    CreateIssueRequest, GithubComment, GithubIssue, GithubUser, PullRequestStatus,
+    UpdateIssueRequest,
 };
 
 /// One call the engine made against the fake, in the order it made them.
@@ -44,6 +45,7 @@ pub enum RecordedCall {
         issue_number: u64,
         body: String,
     },
+    GetPullRequest(u64),
 }
 
 struct FakeGithubApiState {
@@ -52,6 +54,8 @@ struct FakeGithubApiState {
     issues: Vec<GithubIssue>,
     comments: BTreeMap<u64, Vec<GithubComment>>,
     recorded: Vec<RecordedCall>,
+    /// Pull requests seeded via `seed_pull_request`, keyed by number.
+    pull_requests: BTreeMap<u64, PullRequestStatus>,
 }
 
 impl FakeGithubApiState {
@@ -62,6 +66,7 @@ impl FakeGithubApiState {
             issues: Vec::new(),
             comments: BTreeMap::new(),
             recorded: Vec::new(),
+            pull_requests: BTreeMap::new(),
         }
     }
 }
@@ -189,6 +194,18 @@ impl FakeGithubApiFactory {
             .iter()
             .find(|i| i.number == number)
             .cloned()
+    }
+
+    /// Seeds a pull request's merge/close status (SH-49), for
+    /// `get_pull_request` to answer with.
+    pub fn seed_pull_request(&self, number: u64, state: &str, merged: bool) {
+        self.state.borrow_mut().pull_requests.insert(
+            number,
+            PullRequestStatus {
+                state: state.to_string(),
+                merged,
+            },
+        );
     }
 }
 
@@ -323,5 +340,15 @@ impl GithubApi for FakeGithubApi {
             .or_default()
             .push(comment.clone());
         Ok(comment)
+    }
+
+    fn get_pull_request(&self, number: u64) -> Result<PullRequestStatus, AppError> {
+        let mut s = self.state.borrow_mut();
+        s.recorded.push(RecordedCall::GetPullRequest(number));
+        s.pull_requests.get(&number).cloned().ok_or_else(|| {
+            AppError::NotFound(format!(
+                "GitHub resource not found (HTTP 404): pull request #{number}"
+            ))
+        })
     }
 }

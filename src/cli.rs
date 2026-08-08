@@ -163,6 +163,9 @@ Usage:
   story hooks install|uninstall|list|test <event_type>
   story commit-sync [--since <duration>]
   story github-sync [<id>] [--dry-run] [--resolve local|remote]
+  story link-pr <id> <url> [--no-close-on-merge]    (link a GitHub pull request to a story)
+  story unlink-pr <id> <url>
+  story pr-check [<id>]                             (requires the github-sync feature)
   story scaffold agents-md|claude-md|cursor-rules
   story help [<command>] [--compact] [--all]
   story plugin install|uninstall <target>
@@ -475,6 +478,30 @@ pub enum Invocation {
         /// the same question as `strategy` and must be given together with
         /// it, or not at all.
         mode: Option<SetupMode>,
+    },
+    /// `story link-pr <id> <url> [--no-close-on-merge]` — links a GitHub pull
+    /// request to a story (SH-49). Never touches GitHub: parsing a URL and
+    /// recording a link needs no network access, so this arm runs in every
+    /// build.
+    LinkPr {
+        id: String,
+        url: String,
+        /// Whether merging this pull request should close the story.
+        /// Defaults to `true`; `--no-close-on-merge` clears it.
+        close_on_merge: bool,
+    },
+    /// `story unlink-pr <id> <url>` — the inverse of [`LinkPr`](Self::LinkPr).
+    UnlinkPr {
+        id: String,
+        url: String,
+    },
+    /// `story pr-check [<id>]` — asks GitHub about every (or, with an id, one
+    /// story's) open linked pull request, closing a story whose merged link
+    /// asked to be closed on merge. Feature-gated behind `github-sync`, like
+    /// [`GithubSync`](Self::GithubSync): this is the one PR-link operation
+    /// that spends a GitHub credential.
+    PrCheck {
+        id: Option<String>,
     },
     HelpTopic {
         topic: String,
@@ -1341,6 +1368,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         ],
     },
     VerbFlags {
+        verb: "link-pr",
+        subcommand: None,
+        flags: &[bare("no-close-on-merge")],
+    },
+    VerbFlags {
         verb: "decompose",
         subcommand: None,
         flags: &[bare("stdin"), bare("dry-run")],
@@ -1710,6 +1742,9 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "scaffold" => parse_scaffold(args),
         "commit-sync" | "sync-git" => parse_commit_sync(args),
         "github-sync" => parse_github_sync(args),
+        "link-pr" => parse_link_pr(args),
+        "unlink-pr" => parse_unlink_pr(args),
+        "pr-check" => parse_pr_check(args),
         "plugin" => parse_plugin(args),
         "web" => parse_web(args),
         "daemon" => parse_daemon(args),
@@ -3090,6 +3125,44 @@ fn parse_github_sync(args: &[String]) -> Result<Invocation, AppError> {
         resolve,
         strategy,
         mode,
+    })
+}
+
+fn parse_link_pr(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story link-pr <id> <url> [--no-close-on-merge]";
+    if args.len() < 3 || args.len() > 4 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    let close_on_merge = match args.get(3).map(String::as_str) {
+        None => true,
+        Some("--no-close-on-merge") => false,
+        Some(_) => return Err(AppError::Usage(usage.to_string())),
+    };
+    Ok(Invocation::LinkPr {
+        id: args[1].clone(),
+        url: args[2].clone(),
+        close_on_merge,
+    })
+}
+
+fn parse_unlink_pr(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 3 {
+        return Err(AppError::Usage(
+            "usage: story unlink-pr <id> <url>".to_string(),
+        ));
+    }
+    Ok(Invocation::UnlinkPr {
+        id: args[1].clone(),
+        url: args[2].clone(),
+    })
+}
+
+fn parse_pr_check(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() > 2 {
+        return Err(AppError::Usage("usage: story pr-check [<id>]".to_string()));
+    }
+    Ok(Invocation::PrCheck {
+        id: args.get(1).cloned(),
     })
 }
 
@@ -4630,6 +4703,106 @@ mod tests {
                     mode: Some(SetupMode::Manual),
                 }
             );
+        }
+    }
+
+    /// `story link-pr` / `story unlink-pr` / `story pr-check` — SH-49.
+    mod pr_link {
+        use super::super::{Invocation, parse_invocation};
+
+        const URL: &str = "https://github.com/acme/widgets/pull/7";
+
+        fn parse(args: &[&str]) -> Result<Invocation, crate::error::AppError> {
+            parse_invocation(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+        }
+
+        #[test]
+        fn link_pr_defaults_close_on_merge_to_true() {
+            assert_eq!(
+                parse(&["link-pr", "SH-1", URL]).expect("parses"),
+                Invocation::LinkPr {
+                    id: "SH-1".to_string(),
+                    url: URL.to_string(),
+                    close_on_merge: true,
+                }
+            );
+        }
+
+        #[test]
+        fn link_pr_no_close_on_merge_flips_the_default() {
+            assert_eq!(
+                parse(&["link-pr", "SH-1", URL, "--no-close-on-merge"]).expect("parses"),
+                Invocation::LinkPr {
+                    id: "SH-1".to_string(),
+                    url: URL.to_string(),
+                    close_on_merge: false,
+                }
+            );
+        }
+
+        #[test]
+        fn link_pr_with_no_arguments_is_a_usage_error() {
+            let error = parse(&["link-pr"]).expect_err("refuses");
+            assert!(
+                error.to_string().contains("usage: story link-pr"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn link_pr_with_only_an_id_is_a_usage_error() {
+            assert!(parse(&["link-pr", "SH-1"]).is_err());
+        }
+
+        #[test]
+        fn link_pr_with_an_unknown_flag_is_a_usage_error() {
+            assert!(parse(&["link-pr", "SH-1", URL, "--bogus"]).is_err());
+        }
+
+        #[test]
+        fn link_pr_with_too_many_arguments_is_a_usage_error() {
+            assert!(parse(&["link-pr", "SH-1", URL, "--no-close-on-merge", "extra"]).is_err());
+        }
+
+        #[test]
+        fn unlink_pr_parses_id_and_url() {
+            assert_eq!(
+                parse(&["unlink-pr", "SH-1", URL]).expect("parses"),
+                Invocation::UnlinkPr {
+                    id: "SH-1".to_string(),
+                    url: URL.to_string(),
+                }
+            );
+        }
+
+        #[test]
+        fn unlink_pr_with_wrong_argument_count_is_a_usage_error() {
+            assert!(parse(&["unlink-pr"]).is_err());
+            assert!(parse(&["unlink-pr", "SH-1"]).is_err());
+            assert!(parse(&["unlink-pr", "SH-1", URL, "extra"]).is_err());
+        }
+
+        #[test]
+        fn pr_check_with_no_id_checks_every_story() {
+            assert_eq!(
+                parse(&["pr-check"]).expect("parses"),
+                Invocation::PrCheck { id: None }
+            );
+        }
+
+        #[test]
+        fn pr_check_with_an_id_checks_one_story() {
+            assert_eq!(
+                parse(&["pr-check", "SH-1"]).expect("parses"),
+                Invocation::PrCheck {
+                    id: Some("SH-1".to_string()),
+                }
+            );
+        }
+
+        #[test]
+        fn pr_check_with_too_many_arguments_is_a_usage_error() {
+            assert!(parse(&["pr-check", "SH-1", "extra"]).is_err());
         }
     }
 }
