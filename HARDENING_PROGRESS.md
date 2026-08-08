@@ -171,7 +171,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-164** — labels are sometimes concatenated
 - [x] **SH-165** — an epic with in-progress children should read as in-progress
 - [ ] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118*
-- [ ] **SH-66** — `context --format json` double-encodes
+- [x] **SH-66** — `context --format json` double-encodes
 - [x] **SH-42** — project selector dropdown
 - [ ] **SH-43** — archive
 - [ ] **SH-49** — linked PRs
@@ -6058,4 +6058,78 @@ to before. The Web dashboard is the one consumer, and this is new behavior
 for it, not a fix to broken behavior.
 
 **PR:** #172, merged as `ab31992`. Branch verified deleted, `main`
+fast-forwarded cleanly.
+
+### SH-66 — done
+
+**Outcome:** `story context --format json --json` (and the `load-context`
+alias) no longer double-encodes. `Invocation::Context` returned
+`Response::Message(json_string)` for the JSON form, and the global `--json`
+renderer wraps a `Message` as an escaped string in the envelope's `message`
+field — so both flags together produced
+`{"result":"ok","message":"{\n  \"blocked_count\": 0,…"}"`, a document a
+consumer had to parse twice. Switched that one arm to
+`Response::RawJson(document)`, which already existed and already bypasses
+envelope wrapping — the identical fix W0b made for `story export --json`
+(`d272a7b`), left un-applied here on purpose at the time because nothing
+parsed it and moving a golden snapshot mid-programme wasn't worth it. The
+markdown form (`context` with no `--format json`) is untouched: still
+`Response::Message`, still wrapped as an ordinary string under `--json`,
+still suppressed by `--quiet` — pinned by a new test rather than left to
+implication.
+
+**Picked from the Medium queue, not High.** By the time this story was
+picked, every unmarked High-queue line was done or ⚠; SH-68 was the one
+remaining High item and carried a live-session mark. Per START HERE step 1,
+`story list --state in-progress` was re-run rather than trusted from the
+file: it showed **SH-167** already `in-progress` with no ⚠ yet on it, and a
+live tmux window (`storyhook:5`) plus worktree confirmed a real session had
+it — the file's marks lag the tracker by however long since the last sweep.
+Skipped to SH-66, the next unclaimed Medium line, without touching SH-167.
+Also noted in passing: SH-167's story now carries a second comment (no
+`[git]` tag, dated after this run's start) redirecting its scope toward a
+bare-story-id-inference feature well beyond its filed acceptance criteria.
+Not this story's concern — it belongs to whichever session is actually
+holding SH-167 — but flagged here in case that session reads this file
+before its own `story show`.
+
+**Deliberate `--quiet` decision, same question the export fix answered.**
+`RawJson` renders ahead of the `--quiet` check, so `story context --format
+json --quiet` now emits the document where it used to emit nothing. Judged
+correct for the same reason export was: the JSON body *is* the result a
+caller asked for, and silently emitting nothing is the same silent-data-loss
+shape the double-encoding was. Pinned by
+`tests/story_context.rs::context_json_is_not_suppressed_by_quiet`.
+
+**Red→green.** Reproduced first against a scratch project
+(`story load-context --format json --json` showed the escaped-string
+envelope) before touching any code. Four new tests in `tests/story_context.rs`
+— the flagged form is the document itself and byte-identical to the
+un-flagged form, for both `context` and `load-context`; the `--quiet`
+decision; and the markdown form's `--json`/`--quiet` behaviour is
+unchanged — plus `tests/golden_cli.rs::context_json_envelope_shape`, a new
+pinned contract mirroring `export_envelope_shape`. `golden_cli__narrative_json
+.snap` moved (`context --format json --json`'s entry lost its `message`/
+`result` envelope) and `context_json_envelope_shape`'s snapshot was created,
+both via a deliberate `INSTA_UPDATE=always` scoped to just those two test
+names — the gate itself runs `INSTA_UPDATE=no`. `plugin/claude-code/
+references/cli-reference.md`'s two bullets documenting `export` and `context
+--format json` separately (because their behaviour diverged) merged into
+one, since it no longer does.
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace,
+all-targets) clean, full Rust suite green, plugin harness 24/24, e2e 13/13,
+clean working tree after, no orphan daemons. One background run, `Monitor`-
+watched with a 120-second log-growth stall bound; log grew from 504 bytes to
+~218KB across the run, no stall. One orphan daemon found *before* the gate
+started, left over from this story's own manual reproduction commands run
+outside the harness (`STORYHOOK_DATA_DIR` pointed at a scratch dir directly,
+which still spawns a real daemon) — killed and confirmed clear by
+`scripts/check-no-orphan-servers.sh` before `make test` ran, not caused by
+and not surviving the gate itself.
+
+**Semver: patch.** A bug fix with no interface change — `Response::RawJson`
+already existed and this story only changes which existing arm returns it.
+
+**PR:** #174, merged as `5c142a5`. Branch verified deleted, `main`
 fast-forwarded cleanly.
