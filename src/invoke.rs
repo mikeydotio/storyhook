@@ -41,8 +41,8 @@ use crate::service::{
     CatalogService, Clock, ConfigService, Ctx, DeleteOutcome, FieldEdits, GitService,
     GroupingService, ImportBatch, InitOptions, InitOutcome, IntegrityService, ListFilters,
     NewStoryInput, PhaseCleared, PointerUpdate, ProjectService, QueryService, RelationOutcome,
-    RelationService, ReopenOutcome, SessionService, SetPrefixOutcome, SettingsService,
-    StateListing, StoryService, SystemService, TransferService, migrate, session, system, transfer,
+    RelationService, SessionService, SetPrefixOutcome, SettingsService, StateListing, StoryService,
+    SystemService, TransferService, migrate, session, system, transfer,
 };
 use crate::store::{ProjectId, ReadOps, Store};
 
@@ -179,6 +179,7 @@ impl InvokeRequest {
                 | ProjectAction::Settings(_) => {}
             },
             Invocation::Purge { force, .. } => *force = true,
+            Invocation::Reopen { force, .. } => *force = true,
             _ => {}
         }
         self
@@ -449,10 +450,27 @@ pub fn dispatch<S: Store>(
                 )))
             }
         }
-        Invocation::Reopen { id, force } => match StoryService::new(ctx).reopen(&id, force)? {
-            ReopenOutcome::Reopened(_) => ctx.story_view(&id),
-            ReopenOutcome::Aborted(message) => Ok(Response::Message(message)),
-        },
+        // The same two-step `Purge` above is: an unforced reopen of a
+        // soft-deleted story answers with what it would undelete and writes
+        // nothing. An ordinarily-closed story (`reopen_plan` answers `None`)
+        // needs no confirmation at all, so it goes straight through.
+        Invocation::Reopen { id, force } => {
+            let service = StoryService::new(ctx);
+            let plan = if force {
+                None
+            } else {
+                service.reopen_plan(&id)?
+            };
+            match plan {
+                Some(plan) => Ok(Response::ConfirmationRequired(Box::new(
+                    ConfirmationPlan::Undelete(plan),
+                ))),
+                None => {
+                    service.reopen(&id)?;
+                    ctx.story_view(&id)
+                }
+            }
+        }
         Invocation::Relate {
             a,
             relation,

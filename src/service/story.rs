@@ -19,7 +19,7 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
-use crate::output::PurgePlan;
+use crate::output::{PurgePlan, UndeletePlan};
 use crate::store::{EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryRow, WriteOps};
 
 use super::{Ctx, append_and_fold, project_prefix, resolve_open_story, resolve_story};
@@ -73,15 +73,6 @@ pub struct FieldEdits {
     pub story_type: Option<String>,
     /// A new description.
     pub description: Option<String>,
-}
-
-/// What [`StoryService::reopen`] did.
-#[derive(Clone, Debug)]
-pub enum ReopenOutcome {
-    /// The story is open again.
-    Reopened(Box<StorySnapshot>),
-    /// The story was soft-deleted and the operator declined the undelete.
-    Aborted(String),
 }
 
 /// The story lifecycle, over one project in one store.
@@ -562,11 +553,42 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         Ok(message)
     }
 
+    /// Everything an undelete of `id` would need to confirm, or `None` if
+    /// `id` is closed but was never soft-deleted — an ordinary reopen needs no
+    /// confirmation at all. Writes nothing.
+    ///
+    /// The first half of the two-step [`purge_plan`](Self::purge_plan)
+    /// already established: read before anything is asked, so the question
+    /// can travel to whichever process has a terminal. A service running
+    /// inside the daemon has none — [`reopen`](Self::reopen) prompting from
+    /// here directly, as it once did, meant `story reopen` could never
+    /// actually ask and always refused (SH-154).
+    pub fn reopen_plan(&self, id: &str) -> Result<Option<UndeletePlan>, AppError> {
+        let project = self.ctx.project();
+        Ok(self.ctx.store().read(|tx| {
+            let prefix = project_prefix(tx, project)?;
+            let (story_no, row) = resolve_story(tx, project, &prefix, id)?;
+            if !row.archived {
+                return Err(AppError::Validation(format!("story `{id}` is already open")).into());
+            }
+            if !row.deleted {
+                return Ok(None);
+            }
+            Ok(Some(UndeletePlan {
+                id: story_no.to_id(&prefix),
+                title: row.snapshot.title.clone(),
+                deleted_reason: row.snapshot.deleted_reason.clone(),
+            }))
+        })?)
+    }
+
     /// Reopens a closed story into the project's default open state.
     ///
-    /// Reopening a *deleted* story is an undelete, and is refused without
-    /// `force` so a stray `reopen` cannot quietly restore something somebody
-    /// meant to remove.
+    /// Unconditional — it does not ask whether a soft-deleted story should be
+    /// restored. By the time this runs that question is already settled:
+    /// either [`reopen_plan`](Self::reopen_plan) found nothing to ask, or the
+    /// caller already holds a `Yes` to the plan it returned. Mirrors
+    /// [`purge`](Self::purge), the same split for the same reason.
     ///
     /// This is a pure append. The legacy path rewrote the story's event log to
     /// strip its closure markers — history a store whose events are append-only
@@ -574,30 +596,18 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
     /// [`crate::domain::fold_story`] now retracts those markers when a story
     /// moves back into an open state, so the same observable result comes from
     /// adding one event instead of removing three.
-    pub fn reopen(&self, id: &str, force: bool) -> Result<ReopenOutcome, AppError> {
+    pub fn reopen(&self, id: &str) -> Result<StorySnapshot, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
-
-        let (deleted, deleted_reason) = self.ctx.store().read(|tx| {
-            let prefix = project_prefix(tx, project)?;
-            let (_, row) = resolve_story(tx, project, &prefix, id)?;
-            if !row.archived {
-                return Err(AppError::Validation(format!("story `{id}` is already open")).into());
-            }
-            Ok((row.deleted, row.snapshot.deleted_reason.clone()))
-        })?;
-
-        if deleted && !force && !confirm_undelete(id, deleted_reason.as_deref())? {
-            return Ok(ReopenOutcome::Aborted(format!(
-                "reopen aborted: `{id}` was not undeleted"
-            )));
-        }
 
         let (before, snapshot) = self.ctx.store().write(|tx| {
             let prefix = project_prefix(&*tx, project)?;
             let ordered = tx.states(project)?;
             let states = state_map(&ordered);
             let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
+            if !row.archived {
+                return Err(AppError::Validation(format!("story `{id}` is already open")).into());
+            }
             let target = default_open_state(&ordered)?;
             let snapshot = append_and_fold(
                 tx,
@@ -625,7 +635,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
                 "to_state": &snapshot.state,
             }),
         );
-        Ok(ReopenOutcome::Reopened(Box::new(snapshot)))
+        Ok(snapshot)
     }
 
     /// The read-modify-write every single-event edit of an open story shares:
@@ -1208,34 +1218,4 @@ fn surviving_claims(
         }
     }
     Ok(claims.into_iter().collect())
-}
-
-/// Asks whether a soft-deleted story really should be restored.
-///
-/// Without a terminal there is nobody to ask, so the answer is an error naming
-/// `--force` rather than a silent yes or a silent no.
-fn confirm_undelete(id: &str, reason: Option<&str>) -> Result<bool, AppError> {
-    use std::io::{IsTerminal, Write};
-
-    let reason = reason.unwrap_or("no reason given");
-    if !std::io::stdin().is_terminal() {
-        return Err(AppError::Validation(format!(
-            "story `{id}` was deleted (reason: {reason}); re-run with --force to undelete"
-        )));
-    }
-
-    println!("story `{id}` was deleted (reason: {reason}).");
-    print!("Reopen (undelete) this deleted story? [y/N] ");
-    std::io::stdout()
-        .flush()
-        .map_err(|e| AppError::Storage(format!("failed to write prompt: {e}")))?;
-
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .map_err(|e| AppError::Storage(format!("failed to read confirmation: {e}")))?;
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
 }

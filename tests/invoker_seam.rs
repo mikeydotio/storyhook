@@ -877,8 +877,15 @@ fn every_interactive_prompt_is_in_the_allowlist() {
     ///   `IsTerminal` decision for every prompt in the program.
     /// * `src/invoke.rs` — `Ctx`'s envelope-stdin fallback, documented as
     ///   deliberate for the TUI and in-process callers.
-    /// * `src/service/story.rs` — `confirm_undelete` prompts from the *service*
-    ///   layer, so `story reopen` can never ask and always refuses (SH-154).
+    ///
+    /// `src/service/story.rs` was the third entry, and the third lost:
+    /// `confirm_undelete` prompted from the *service* layer, which runs inside
+    /// the daemon and has no terminal, so `story reopen` of a soft-deleted
+    /// story could never actually ask and always hard-refused. The prompt
+    /// moved to `main.rs`'s `confirm`, in the same `Response::
+    /// ConfirmationRequired` shape `delete`/`purge`/`set-prefix` already use —
+    /// `StoryService::reopen_plan` computes what an undelete would restore and
+    /// returns it as a plan (SH-154).
     ///
     /// `src/github/conflict.rs` was the fourth entry this list ever held, and
     /// the first it lost: its `.interact().unwrap_or(2)` chose Skip for the
@@ -893,7 +900,7 @@ fn every_interactive_prompt_is_in_the_allowlist() {
     /// moved to the one process that has a terminal, in
     /// `src/service/github_setup.rs`, built to `questionnaire.rs`'s shape
     /// below and so never a candidate for this list at all (SH-153).
-    const ALLOWED: [&str; 3] = ["src/main.rs", "src/invoke.rs", "src/service/story.rs"];
+    const ALLOWED: [&str; 2] = ["src/main.rs", "src/invoke.rs"];
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
@@ -935,11 +942,11 @@ fn every_interactive_prompt_is_in_the_allowlist() {
     );
 
     // Asserted so that *removing* a violation is also a deliberate edit here:
-    // the list is a ledger of one filed defect (SH-154) plus two legitimate,
-    // documented sites, and it should only ever get shorter.
+    // the list is a ledger of two legitimate, documented sites — SH-154
+    // closed the last filed exemption — and it should only ever get shorter.
     assert_eq!(
         ALLOWED.len(),
-        3,
+        2,
         "the allowlist changed; each entry is a filed exemption, so adding one needs a story \
          and removing one needs the defect to be gone"
     );

@@ -875,18 +875,29 @@ fn route_unblock_story<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Reply {
 /// optional `"force": true` in the JSON body undeletes a soft-deleted story,
 /// mirroring the CLI's `story reopen <id> --force`; absent or `false` performs
 /// the guarded (non-force) reopen. An empty body is treated as `{}`.
+///
+/// Unforced, on a soft-deleted story, this answers `409` carrying the same
+/// [`UndeletePlan`](crate::output::UndeletePlan) the terminal prompt is drawn
+/// from — [`route_delete_repo`]'s pattern, not [`reply_with`]'s, because
+/// `reply_with` always answers with the status its caller hands it and this
+/// route cannot know in advance whether the story it is about to reopen was
+/// deleted (SH-154).
 fn route_reopen_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
     (|| -> Result<Reply, AppError> {
         let obj = parse_json_object(body)?;
         let force = get_bool(&obj, "force");
-        Ok(reply_with(
+        let response = dispatch(
             ctx,
-            200,
             Invocation::Reopen {
                 id: id.to_string(),
                 force,
             },
-        ))
+        )?;
+        let status = match response {
+            Response::ConfirmationRequired(_) => 409,
+            _ => 200,
+        };
+        Ok(json_reply(status, render_response(&response, true, false)))
     })()
     .unwrap_or_else(|e| error_reply(&e))
 }

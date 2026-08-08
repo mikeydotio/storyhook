@@ -1611,10 +1611,18 @@ fn web_reopen_archived_story() {
 /// that the web route didn't plumb through at all, so a soft-deleted story
 /// could never be undeleted via the API — only the CLI's `--force` reached
 /// it. Without `force` (an empty JSON body), reopening a deleted story must
-/// fail the same guarded-undelete check the CLI enforces, surfaced as a 422
-/// (`AppError::Validation`), and leave the story untouched.
+/// leave the story untouched.
+///
+/// **Updated for SH-154.** The guarded-undelete check used to be a hard
+/// refusal from inside the service layer (422, `AppError::Validation`) —
+/// which was itself a defect: a service running inside the daemon has no
+/// terminal to prompt at, so the check always refused regardless of who was
+/// asking or how. It now answers `Response::ConfirmationRequired` (409), the
+/// same two-step `delete`/`purge`/`set-prefix` already give the dashboard, so
+/// a browser client can draw its own confirmation modal instead of just
+/// failing.
 #[test]
-fn web_reopen_deleted_story_without_force_is_422() {
+fn web_reopen_deleted_story_without_force_is_409_confirmation_required() {
     let fixture = served();
     fixture.seed(&["new", "Story"]);
     fixture.seed(&["delete", "SH-1", "created in error"]);
@@ -1626,7 +1634,7 @@ fn web_reopen_deleted_story_without_force_is_422() {
         "",
     )
     .unwrap_err();
-    assert_eq!(status_of(err), 422);
+    assert_eq!(status_of(err), 409);
 
     let show = ureq::get(format!(
         "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
@@ -1681,12 +1689,17 @@ fn web_reopen_malformed_json_is_400() {
 /// `Invocation::Reopen` without the `force` field `story reopen --force`
 /// added on the CLI side, which failed to compile at all. The fix passes
 /// `force: false`, so this route must keep behaving like an un-forced CLI
-/// `story reopen`: reopening a *soft-deleted* story is rejected with a clear
-/// error rather than silently undeleting it (see `app.rs`'s `Invocation::
+/// `story reopen`: reopening a *soft-deleted* story requires confirmation
+/// rather than silently undeleting it (see `invoke.rs`'s `Invocation::
 /// Reopen` handler) — and, since the server has no TTY to prompt at, this
-/// must fail cleanly rather than hang waiting on stdin confirmation.
+/// must answer cleanly rather than hang waiting on stdin confirmation.
+///
+/// **Updated for SH-154**: "a clear error" was itself the defect that story
+/// fixed — see `web_reopen_deleted_story_without_force_is_409_confirmation_required`
+/// just above. What must still be true, and is all this test checks now, is
+/// that nothing gets silently undeleted and nothing hangs.
 #[test]
-fn web_reopen_soft_deleted_story_is_rejected_without_force() {
+fn web_reopen_soft_deleted_story_requires_confirmation_without_force() {
     let fixture = served();
     fixture.seed(&["new", "Story"]);
 
@@ -1709,9 +1722,18 @@ fn web_reopen_soft_deleted_story_is_rejected_without_force() {
         other => panic!("expected status code error, got: {other}"),
     };
     assert_eq!(
-        status, 422,
-        "soft-deleted reopen must be rejected, not silently undeleted or hung"
+        status, 409,
+        "soft-deleted reopen must ask for confirmation, not silently undelete or hang"
     );
+
+    let show = ureq::get(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1"
+    ))
+    .call()
+    .unwrap();
+    let show_json: serde_json::Value =
+        serde_json::from_str(&show.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&show_json, "deleted"), true, "not undeleted");
 }
 
 // --- Mutation API: PATCH multi-field ---
