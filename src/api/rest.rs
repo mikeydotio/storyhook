@@ -34,7 +34,7 @@ use crate::api::http::{
     json_reply, parse_json_object, path_segments, require_str, text_reply, to_json,
 };
 use crate::cli::{Invocation, ProjectAction, StateAction};
-use crate::domain::Priority;
+use crate::domain::{Priority, default_open_state, default_type};
 use crate::env::Environment;
 use crate::error::AppError;
 use crate::invoke::dispatch;
@@ -635,16 +635,22 @@ fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
 }
 
 /// The `meta` object describing the project's configuration — states in
-/// configured order (which the board's columns must follow), types, members, and
-/// the fixed priority/relation vocabularies — so the frontend never has to
-/// hardcode anything project-specific.
+/// configured order (which the board's columns must follow), types, members,
+/// the fixed priority/relation vocabularies, and the default state/type a new
+/// story should preselect (SH-44) — so the frontend never has to hardcode
+/// anything project-specific.
 fn meta_json<R: ReadOps>(
     tx: &R,
     project: ProjectId,
     data: &crate::output::ReportData,
 ) -> Result<serde_json::Value, AppError> {
-    let states: Vec<serde_json::Value> = tx
-        .states(project)?
+    let state_defs = tx.states(project)?;
+    // The same pure selection `service::story::default_open_state` delegates
+    // to for `story new`'s own default — computed from the identical ordered
+    // `Vec` before it is reshaped into `states` below, so the two can't drift
+    // apart by reading the catalog differently.
+    let default_state_slug = default_open_state(&state_defs).map(|s| s.slug);
+    let states: Vec<serde_json::Value> = state_defs
         .into_iter()
         .map(|s| {
             serde_json::json!({
@@ -656,8 +662,9 @@ fn meta_json<R: ReadOps>(
         })
         .collect();
 
-    let types: Vec<serde_json::Value> = tx
-        .types(project)?
+    let type_defs = tx.types(project)?;
+    let default_type_slug = default_type(&type_defs).map(|t| t.slug);
+    let types: Vec<serde_json::Value> = type_defs
         .into_iter()
         .map(|t| {
             serde_json::json!({ "slug": t.slug, "description": t.description, "emoji": t.emoji })
@@ -694,6 +701,7 @@ fn meta_json<R: ReadOps>(
         "priorities": priorities,
         "relations": RELATIONS,
         "labels": labels,
+        "defaults": { "state": default_state_slug, "type": default_type_slug },
     }))
 }
 
