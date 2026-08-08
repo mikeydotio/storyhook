@@ -1300,7 +1300,12 @@ tbody tr:hover { background: var(--bg-sunken); }
       if (!was) { result.entered.push(id); return; }
       var a = was.story, b = newById[id].story;
       var fields = [];
-      if (a.state !== b.state) { result.moved.push({ id: id, from: a.state, to: b.state }); fields.push("state"); }
+      // Column membership is `display_state || state` (SH-165) — comparing
+      // literal `state` alone would miss an epic's card moving columns
+      // purely because a child's state changed, and silently skip its
+      // move/flash animation.
+      var aSlug = was.display_state || a.state, bSlug = newById[id].display_state || b.state;
+      if (aSlug !== bSlug) { result.moved.push({ id: id, from: aSlug, to: bSlug }); fields.push("state"); }
       if (a.priority !== b.priority) fields.push("priority");
       if (a.assignee !== b.assignee) fields.push("assignee");
       if (a.title !== b.title) fields.push("title");
@@ -1573,7 +1578,10 @@ tbody tr:hover { background: var(--bg-sunken); }
     var ready = readySet(), blocked = blockedSet();
     var byState = {};
     stories.forEach(function(v) {
-      var slug = v.story.state;
+      // `display_state` overrides the column an epic's card lands in — e.g.
+      // an epic sitting in `todo` with an active child shows in `in-progress`
+      // (SH-165) — without touching the story's own literal `state`.
+      var slug = v.display_state || v.story.state;
       (byState[slug] = byState[slug] || []).push(v);
     });
 
@@ -1834,7 +1842,15 @@ tbody tr:hover { background: var(--bg-sunken); }
       var id = e.dataTransfer.getData("text/plain");
       if (!id) return;
       var current = findStory(id);
-      if (!current || current.story.state === targetSlug) return;
+      if (!current) return;
+      // Compare against the column the card is actually *sitting in*
+      // (`display_state`, when it overrides `state` — SH-165), not the
+      // literal `state` alone: otherwise re-dropping a display-promoted
+      // epic on the column it already visually occupies would silently
+      // persist a real, unintended state write instead of the no-op the
+      // user sees on screen.
+      var currentSlug = current.display_state || current.story.state;
+      if (currentSlug === targetSlug) return;
       moveStory(id, targetSlug, isClosed);
     });
   }
