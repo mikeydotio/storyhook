@@ -73,6 +73,51 @@ fn export_and_import_roundtrip() {
         .stdout(predicate::str::contains("SH-3"));
 }
 
+/// SH-70, at the CLI surface: `--legacy-links` has to reach `parse_import_
+/// project` from real argv, thread through to the store, and `story doctor`
+/// has to print what the store now knows about it — three layers the
+/// dispatch-level tests in `tests/service_transfer.rs` do not exercise
+/// end-to-end.
+#[test]
+fn import_project_legacy_links_projects_a_comment_and_doctor_reports_it() {
+    let dir = TestEnv::shared().project().build();
+    story(dir.path())
+        .args(["new", "Synced before kind #18"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["comment", "SH-1", "[git] a04a8c4: an old link record"])
+        .assert()
+        .success();
+
+    let output = story(dir.path()).args(["export"]).assert().success();
+    let export_json = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+
+    let dir2 = scratch_dir();
+    let export_file = dir2.path().join("export.json");
+    std::fs::write(&export_file, &export_json).unwrap();
+
+    story(dir2.path())
+        .args([
+            "import-project",
+            export_file.to_str().unwrap(),
+            "--legacy-links",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported project with 1 stories"));
+
+    story(dir2.path())
+        .args(["doctor"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("a04a8c4").and(predicate::str::contains(
+                "not from a `StoryCommitLinked` event",
+            )),
+        );
+}
+
 #[test]
 fn export_import_roundtrips_description() {
     let dir = TestEnv::shared().project().build();

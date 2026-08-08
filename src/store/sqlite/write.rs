@@ -614,11 +614,12 @@ fn append(
 /// Works on [`RawEvent`] rather than a decoded [`StoryEvent`] so that
 /// `append_raw_events` — the path `story migrate` and `story import-project`
 /// take — projects the link too. *Which* of the two shapes it projects for them
-/// is the caller's [`LinkSource`]: `migrate` replays a legacy tree and passes
-/// `Replayed`, `import-project` restores a document through the same primitive
-/// and passes `Live`. This comment named only `Replayed` until SH-67, which is
-/// how it came to describe a behaviour `import-project` has never had (SH-70 is
-/// whether it should).
+/// is the caller's [`LinkSource`]: `migrate` replays a legacy tree and always
+/// passes `Replayed`, because its input is legacy by construction.
+/// `import-project` restores a document through the same primitive and passes
+/// `Replayed` only when the operator's `--legacy-links` flag asserts this
+/// specific document predates kind #18 — `Live` otherwise (SH-70), since an
+/// export document, unlike a legacy tree, carries no such guarantee on its own.
 fn project_commit_link(
     conn: &Connection,
     project: ProjectId,

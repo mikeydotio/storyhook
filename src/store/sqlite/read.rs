@@ -558,6 +558,42 @@ pub(super) fn commit_linked(
     Ok(found != 0)
 }
 
+/// Every `story_commit_links` row with no backing `StoryCommitLinked` event.
+/// See [`ReadOps::unbacked_commit_links`](crate::store::ReadOps::unbacked_commit_links).
+///
+/// A row backed by a real kind-18 event always carries that event's own
+/// `sha` field verbatim (`project_commit_link`'s `is_link_record` branch never
+/// truncates it), so an exact match against the event's `payload` is the
+/// whole test — no length heuristic needed.
+pub(super) fn unbacked_commit_links(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<(StoryNo, String)>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare_cached(
+            "SELECT scl.story_no, scl.sha FROM story_commit_links scl \
+             WHERE scl.project_id = ?1 \
+               AND NOT EXISTS ( \
+                 SELECT 1 FROM events e \
+                 WHERE e.project_id = scl.project_id \
+                   AND e.story_no = scl.story_no \
+                   AND e.kind = ?2 \
+                   AND json_extract(e.payload, '$.sha') = scl.sha \
+               ) \
+             ORDER BY scl.story_no, scl.sha",
+        ),
+        "preparing unbacked commit links",
+    )?;
+    let rows = sql(
+        stmt.query_map(
+            params![project.get(), crate::domain::KIND_STORY_COMMIT_LINKED],
+            |row| Ok((StoryNo::new(row.get(0)?), row.get::<_, String>(1)?)),
+        ),
+        "reading unbacked commit links",
+    )?;
+    collect(rows, "reading unbacked commit links")
+}
+
 const PR_LINK_COLUMNS: &str =
     "owner, repo, number, url, close_on_merge, status, linked_at, last_checked_at";
 
