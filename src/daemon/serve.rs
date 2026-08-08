@@ -28,7 +28,6 @@
 //! already taken" failure mode in production and the "which port did the test
 //! get" guessing game in the suite.
 
-use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -47,7 +46,7 @@ use crate::daemon::lifecycle::Hello;
 use crate::daemon::tailnet::{TailnetBind, tailnet_identity};
 use crate::env::Environment;
 use crate::error::AppError;
-use crate::store::{ReadOps, Store};
+use crate::store::Store;
 
 /// How often a heartbeat is published to every connected client. A server-side
 /// write failure prunes a connection that vanished without a clean close, and a
@@ -200,6 +199,12 @@ where
     let connection_slots = http1::ConnectionSlots::production();
 
     let stop = Arc::new(AtomicBool::new(false));
+    // Baselined here, before any listener has accepted a request and before
+    // the poller below starts — the same "read the baseline before anything
+    // can write" ordering `serving.inflight.harvest_stale()` relies on for
+    // its own reason, so a write that landed before this daemon started is
+    // history, never news.
+    let watcher = crate::daemon::watch::ChangeWatcher::new(store);
     let serving = Serving {
         store,
         env: env.clone(),
@@ -248,7 +253,8 @@ where
         }
         {
             let (bus, stop) = (bus.clone(), Arc::clone(&stop));
-            scope.spawn(move || poll_change_token(store, &bus, &stop));
+            let watcher = watcher.clone();
+            scope.spawn(move || poll_change_token(store, &watcher, &bus, &stop));
         }
         {
             let stop = Arc::clone(&stop);
@@ -1032,56 +1038,19 @@ fn heartbeat(bus: &ChangeBus, stop: &AtomicBool) {
     }
 }
 
-/// Watches the store's change token and reports what moved when it changes.
-///
-/// The token is the cheap trigger — one pragma per tick, whatever the store
-/// holds. Only when it moves does this do any real work, and then it asks the
-/// sharper question: which projects' histories grew? Those get a precise
-/// [`Change::Project`], so a write this daemon did not serve reaches a browser as
-/// the same event one it did serve does.
-///
-/// **A change it cannot attribute becomes a [`Change::Resync`].** Editing a
-/// state definition appends no story event, so nothing's sequence moves and the
-/// only honest answer is "something changed, refetch". Guessing at a project
-/// would be worse than the resync: a dashboard showing something untrue is the
-/// failure this whole feed exists to prevent.
-fn poll_change_token<S: Store>(store: &S, bus: &ChangeBus, stop: &AtomicBool) {
-    let mut last = store.change_token().ok();
-    let mut seqs = project_sequences(store);
+/// Watches the store's change token on a schedule and reports what moved
+/// when it changes — [`ChangeWatcher::notice`](crate::daemon::watch::ChangeWatcher::notice)'s
+/// attribution, run here as this daemon's only caller of it so far
+/// (SH-202 wires a second one, at the request boundary).
+fn poll_change_token<S: Store>(
+    store: &S,
+    watcher: &crate::daemon::watch::ChangeWatcher,
+    bus: &ChangeBus,
+    stop: &AtomicBool,
+) {
     while !stop.load(Ordering::Relaxed) {
         thread::sleep(CHANGE_TOKEN_POLL);
-        let Ok(token) = store.change_token() else {
-            continue;
-        };
-        if last == Some(token) {
-            continue;
-        }
-        last = Some(token);
-
-        let fresh = project_sequences(store);
-        // A change nobody is listening for is still a change: the baseline has
-        // to move, or the first client to connect — which has just fetched
-        // everything — would be told to refetch it again.
-        if bus.subscriber_count() == 0 {
-            seqs = fresh;
-            continue;
-        }
-
-        let mut attributed = false;
-        for (slug, seq) in &fresh {
-            if seqs.get(slug) != Some(seq) {
-                bus.publish(Change::Project(slug.clone()));
-                attributed = true;
-            }
-        }
-        if fresh.len() != seqs.len() {
-            bus.publish(Change::Catalog);
-            attributed = true;
-        }
-        if !attributed {
-            bus.publish(Change::Resync);
-        }
-        seqs = fresh;
+        watcher.notice(store, bus);
     }
 }
 
@@ -1272,22 +1241,6 @@ fn tailnet_reprobe<'scope, S: Store, L>(
         });
         return;
     }
-}
-
-/// Each project's slug and the head of its change feed.
-///
-/// An unreadable store yields an empty map rather than an error: the poller is
-/// a background safety net, and a transient read failure must not end it.
-fn project_sequences<S: Store>(store: &S) -> BTreeMap<String, i64> {
-    store
-        .read(|tx| {
-            let mut seqs: BTreeMap<String, i64> = BTreeMap::new();
-            for project in tx.projects()? {
-                seqs.insert(project.slug, tx.max_global_seq(project.id)?.get());
-            }
-            Ok(seqs)
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
