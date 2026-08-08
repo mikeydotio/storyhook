@@ -1767,11 +1767,25 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             let raw = std::fs::read_to_string(resolve_against(root, &file))
                 .map_err(|e| AppError::Storage(format!("failed to read {file}: {e}")))?;
             let export: ProjectExport = serde_json::from_str(&raw)?;
-            let imported =
+            let outcome =
                 transfer::import_project(store, root, &Clock::Fixed(now.to_string()), &export)?;
-            Ok(Response::Message(format!(
-                "imported project with {imported} stories"
-            )))
+            let message = format!("imported project with {} stories", outcome.stories);
+            if outcome.skipped_remotes.is_empty() {
+                Ok(Response::Message(message))
+            } else {
+                let warnings = outcome
+                    .skipped_remotes
+                    .iter()
+                    .map(|skipped| {
+                        format!(
+                            "`{}` is already registered to project `{}`; not re-registered by \
+                             this restore",
+                            skipped.url, skipped.holder
+                        )
+                    })
+                    .collect();
+                Ok(Response::MessageWithWarnings(message, warnings))
+            }
         }
         other => Err(not_yet_ported(&other)),
     }

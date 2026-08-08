@@ -228,6 +228,7 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
         types: Vec::new(),
         members: Vec::new(),
         settings: None,
+        remotes: Vec::new(),
         stories: Vec::new(),
     };
 

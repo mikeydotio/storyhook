@@ -19,11 +19,11 @@
 //!
 //! # What the round trip does *not* carry, and why that is written here
 //!
-//! An export document holds states, types, members, stories and the project's
-//! settings. It does **not** hold `project.toml`'s `created_at`, the `next-id`
-//! counter's burned numbers, `projects.uuid`, or the registered origins — those
-//! ride beside the envelope during a migration and have nowhere to sit on the
-//! way back.
+//! An export document holds states, types, members, stories, the project's
+//! settings and its registered origins. It does **not** hold `project.toml`'s
+//! `created_at`, the `next-id` counter's burned numbers, or `projects.uuid` —
+//! those ride beside the envelope during a migration and have nowhere to sit
+//! on the way back.
 //!
 //! **Settings were on that list until SH-133, and the reason given for it was
 //! false.** The note here said widening the document would move bytes in a
@@ -38,6 +38,20 @@
 //! and a rollback started silently restoring `sync.auto_transition` to its
 //! default — which is `true`, so the one setting whose purpose is stopping
 //! `commit-sync` came back switched on.
+//!
+//! **Registered origins joined the document at SH-138, and the round trip
+//! above still does not carry them past `ProjectExport`.** The document holds
+//! them because the store-side restore (`service::transfer::import_project`,
+//! what `story import-project` actually runs) is the *primary* consumer now
+//! that `story export > backup.json` is the documented backup — a project
+//! whose only remote is a bare repository with no working checkout anywhere
+//! has no other record of it. But the legacy tree this file rebuilds has
+//! nowhere to put them: `project.toml` has never had a table for a registered
+//! origin, before or after the rearchitecture, so `storage::export_project`
+//! always answers an empty list and `storage::import_project` never looks at
+//! the field. That is not a leftover gap of the kind SH-133 closed — it is the
+//! same shape as `github.sync` below, a carry this leg of the round trip
+//! structurally cannot make.
 //!
 //! `github.sync` is the one thing the document deliberately does not carry even
 //! though it could. `src/service/transfer.rs`'s `ExportedSettings` says why: a
@@ -261,6 +275,44 @@ fn a_projects_settings_survive_the_round_trip() {
         .expect("the rebuilt tree must carry the settings");
     assert_eq!(settings.auto_transition(), Some(false));
     assert_eq!(settings.stale_threshold(), Some("21d"));
+}
+
+#[test]
+fn a_projects_registered_origins_reach_the_document_but_not_a_rebuilt_legacy_tree() {
+    // The document carries them (SH-138) because the store-side restore —
+    // `story import-project`, the documented backup's other half — is the
+    // primary consumer. This leg of the two-way door cannot follow: a legacy
+    // tree has never had anywhere to write one, before or after the
+    // rearchitecture, the same shape as `github.sync` below it.
+    let (_tree, root) = custom_config_tree();
+    let (_store_dir, store, _report) = migrate(&root);
+    let project = store
+        .read(|tx| Ok(tx.projects()?.first().expect("one project").id))
+        .expect("reading");
+    let url =
+        storyhook::domain::remote::RemoteUrl::normalize("https://github.com/acme/widgets.git")
+            .expect("the fixture url should normalize");
+    store
+        .write(|tx| tx.link_remote(project, &url, "2026-01-01T00:00:00Z"))
+        .expect("registering an origin");
+
+    let document = export(&store);
+    assert_eq!(
+        document.remotes.len(),
+        1,
+        "the document must carry the registration"
+    );
+    assert_eq!(document.remotes[0].normalized, "github.com/acme/widgets");
+
+    let (_dir, rebuilt) = rebuild_legacy_tree(&document);
+    assert!(
+        storage::export_project(&rebuilt)
+            .expect("re-exporting the rebuilt tree")
+            .remotes
+            .is_empty(),
+        "a legacy tree has no table for a registered origin, so re-exporting it must not \
+         invent one"
+    );
 }
 
 /// **The preventative, not the instance.** SH-133 was one setting that could not
