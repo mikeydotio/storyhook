@@ -110,7 +110,12 @@ impl Routed {
 }
 
 /// Whether a method can change anything.
-fn mutating(method: &Method) -> bool {
+///
+/// `pub(crate)`: [`crate::api::admission`] needs the identical rule to
+/// decide whether a request must pass [`crate::api::http::mutation_guard_ok`]
+/// before its token — one definition, so the two can never disagree about
+/// which methods count as mutating.
+pub(crate) fn mutating(method: &Method) -> bool {
     matches!(method, Method::Post | Method::Patch | Method::Delete)
 }
 

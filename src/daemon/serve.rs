@@ -371,12 +371,21 @@ where
 /// matter how `pub` its signature is; see that feature's doc in `Cargo.toml`.
 ///
 /// `port` may be 0, in which case the kernel picks; `ready` is told every
-/// address actually bound, loopback and tailnet alike. Three things only the
-/// server itself can report, and which no probe from outside can establish:
-/// *which* address it got, that the address is its own — a caller that merely
+/// address actually bound, loopback and tailnet alike, plus the token this
+/// call minted for itself. Three things about the address only the server
+/// itself can report, and which no probe from outside can establish: *which*
+/// address it got, that the address is its own — a caller that merely
 /// connects to a port cannot tell this server apart from some other process
 /// holding it — and whether the best-effort tailnet bind succeeded, which is
 /// what a caller must not guess by probing the machine (SH-110).
+///
+/// The token is real (`lifecycle::mint_token`, not an empty placeholder) —
+/// every `/api/**` route requires one since SH-187, and [`crate::api::rpc::token_ok`] fails
+/// closed on an empty `expected` on purpose, so an empty string here would
+/// admit nothing a test could ever authenticate. It lives only in this
+/// process's memory and in `ready`'s argument: no portfile, no pidfile, none
+/// of production's ceremony, matching every other way this seam differs
+/// from [`super::lifecycle::run`].
 #[cfg(feature = "test-seam")]
 pub fn bind_and_serve<S: Store, F>(
     store: &S,
@@ -385,27 +394,21 @@ pub fn bind_and_serve<S: Store, F>(
     ready: F,
 ) -> Result<(), AppError>
 where
-    F: FnOnce(BoundAddress),
+    F: FnOnce(BoundAddress, String),
 {
     let (listeners, bound) = bind_listeners(port)?;
     eprintln!("Storyhook dashboard: http://127.0.0.1:{}", bound.port());
     let mut trusted_hosts = bound.trusted_hosts();
     trusted_hosts.extend(crate::api::http::trusted_hosts_from_env());
-    // No portfile and no real token: nothing this test seam serves reaches
-    // `/api/v1/*`, so an empty `token` is never presented, let alone checked.
-    // It is *not* a control-surface guard in its own right — `token_ok`'s
-    // constant-time comparison admits an explicit empty offered header
-    // against an empty expected one — so the thing actually keeping this
-    // function out of a real deployment is the `test-seam` gate above, not
-    // this string.
+    let token = crate::daemon::lifecycle::mint_token();
     serve(
         store,
         env,
         listeners,
         trusted_hosts,
         ChangeBus::new(),
-        String::new(),
-        move || ready(bound),
+        token.clone(),
+        move || ready(bound, token),
         |_| {},
     )
 }
@@ -727,6 +730,28 @@ fn worker(
 
     let segments = path_segments(&path);
     if let Some(reply) = rpc::admission(&segments, &headers, token, loopback) {
+        finish(request, reply);
+        return;
+    }
+
+    // Every other `/api/**` route's own gate (SH-187): the CSRF/DNS-rebinding
+    // guard for a mutation, the bearer token for everything, on both
+    // listeners. Checked here, ahead of the SSE and dispatch branches below
+    // (and so ahead of `dispatch::intercept`'s own, narrower copy of the
+    // same two checks — harmless, deliberate redundancy that keeps that
+    // module's own test suite, which calls `intercept` directly, exercising
+    // real logic rather than dead code), for the identical reason
+    // `rpc::admission` runs first: an unauthenticated peer must never reach
+    // even a read, let alone make this daemon wait on a body it has no
+    // right to send.
+    if let Some(reply) = crate::api::admission::admission(
+        &segments,
+        &method,
+        query.as_deref(),
+        &headers,
+        trusted_hosts,
+        token,
+    ) {
         finish(request, reply);
         return;
     }
