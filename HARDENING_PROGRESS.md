@@ -120,6 +120,12 @@ destructively touch the real store outside SH-132's sanctioned procedure.
 
 ## Backlog
 
+**Queue exhausted as of SH-218 (2026-08-08) — every line below is checked.**
+Do not read "no unchecked line" as "nothing to do": `story summary` shows 41
+open/41 ready stories, well past the ~34 this queue was built from. Step 1 of
+your next cycle is a resync — re-derive this list from `story list --ready
+--json`, as its own PR, per the 2026-08-07 precedent and the SH-218 log entry
+below — not a pick against a list that stopped tracking reality.
 
 ### Critical
 
@@ -193,7 +199,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-168** — do not show the green ready status labels
 - [x] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
 - [x] **SH-183** — `story migrate` refuses a bad state slug but accepts a bad type slug · *filed by SH-134's chair, correcting a claim in that council's own verdict*
-- [ ] **SH-218** — the drawer's async detail-fetch re-render can silently wipe unsaved input · *filed by SH-168's e2e test*
+- [x] **SH-218** — the drawer's async detail-fetch re-render can silently wipe unsaved input · *filed by SH-168's e2e test*
 
 ### What was on the old list and is now done
 
@@ -7614,3 +7620,96 @@ assertions confirmed by name in the log), `cargo build`, plugin harness
 no schema, API, or CLI surface added, removed, or changed shape. Not bumped
 here, matching this run's standing practice of deferring the bump to a
 later batch (VERSION is still `v2.0.0` after every story merged so far).
+
+### SH-218 — done
+
+**Picked from the Low queue** (first and, as it turned out, last unchecked
+line). `story list --state in-progress` showed only the epic SH-112.
+
+**The bug, exactly as filed.** `renderDrawer()` (`src/web_dashboard.html`)
+`clear(body)`s and rebuilds the whole drawer body on every call, and it is
+called far more often than the story's own title suggests: not just the
+async detail fetch `openDrawer()` fires, but every `handleMutationSuccess`
+(any field mutation elsewhere in the drawer) and every dispatch-state change
+(`startDispatch`/`pollDispatch`/`finishDispatch`). Any of those landing while
+the user was mid-edit in an uncontrolled field — block-reason, description,
+title, the label/relationship-id inputs, a comment draft — silently threw
+the typed text away, since the field is rebuilt from server-truth `st`, not
+from whatever the user had typed. The filed failure mode (a Block click
+no-oping against a freshly emptied input) is one instance of that.
+
+**Chose the general fix over the narrow one, without a fresh council.** The
+story named three candidate directions — controlled/preserved inputs, skip
+the redundant render, or don't re-render an actively-edited field — without
+picking one; on their own, options 2 and 3 only close the *detail-fetch*
+window the title describes, leaving the dispatch-poll and mutation-success
+re-renders (verified above to hit the exact same `clear(body)`) still able to
+wipe a field. Capture-and-restore, keyed by focus rather than by call site,
+is a strict superset that closes all of them with one change at the one
+shared origin (`renderDrawer()`) rather than three narrower patches at each
+caller — an engineering completeness argument, not a values tradeoff, so no
+council: nothing here weighs competing legitimate outcomes the way SH-140's
+or SH-182's calls did.
+
+**The fix.** `captureDrawerFocus`/`restoreDrawerFocus` snapshot the focused
+drawer-body field's value and caret by a new `data-field` attribute (DOM
+identity can't survive a rebuild-from-scratch) before `clear(body)`, and
+reapply both once the new field exists. Tagged six fields: title,
+description, block-reason, label-add, relationship-id, comment. Left the
+four `buildFieldGrid` selects (state/priority/assignee/type) untagged on
+purpose — they fire their mutation immediately on `change`, so there is
+nothing pending to lose, only a cosmetic revert-then-reconcile already
+covered by the mutation response's own re-render.
+
+**Sibling caught by reading, not filed separately.** Title and description
+already save on blur; the `blur` a browser fires on an element detached from
+the document (the whole basis of `clear(body)`'s teardown) would have
+autosaved whatever the user had typed so far, every time an unrelated
+re-render landed mid-edit — real data corruption (a partial title persisted)
+on real per-keystroke typing, not just this story's "silently discarded"
+framing. A module-scope `drawerRerendering` flag, true only for the
+synchronous `clear(body)` call, guards both blur handlers against firing on
+that forced blur while leaving a genuine user blur untouched. Fixed inline
+rather than filed — directly adjacent to the exact lines already being
+touched, not a distant finding.
+
+**Tests:** two new Playwright specs, `e2e/specs/drawer-detail-race.spec.ts`,
+both driven by `page.route()` delaying the detail GET rather than real
+network timing (the story's own comment: sub-100ms locally, unreliable to
+hit without help). One reproduces the filed case verbatim — type a block
+reason mid-fetch, confirm it survives the re-render, confirm Block still
+works. The other exercises the sibling fix: edit the title mid-fetch,
+confirm the edit survives, then blur for real and assert `patches` (every
+title PATCH the route intercepted) is `[newTitle]` exactly — one save, the
+right one, not a duplicate from the forced blur.
+
+**Gate:** `make test` green, supervised (log-growth watchdog, 10s poll, 120s
+stall threshold, no stall hit): fmt, clippy `-D warnings`, 1024 lib tests,
+every integration file green, `cargo build` ×2, plugin harness 25/25, e2e
+**38/38** (36 prior + both new specs), `check-no-orphan-servers.sh postlude`
+silent (clean).
+
+**Landed as two PRs, not one — a process miss, recorded so it doesn't repeat
+silently.** #208 carried the fix and tests and was merged before this log
+entry existed, breaking step 8's "same PR" instruction (only possible when
+the docs commit is written *before* step 6's merge, which this run's own
+pace did not leave room for here). This entry lands on its own branch/PR
+instead, the same fallback SH-64 used (PR #206) — a real, precedented
+pattern in this file, not a novel excuse.
+
+**Semver: patch.** A client-side rendering bug fix — no schema, API, or CLI
+surface changed. Not bumped, same deferred-batch practice as every story
+above.
+
+**Phase 2 queue exhausted.** Every line in Critical/High/Medium/Low is now
+checked — this was the last one. The backlog is not empty, though:
+`story summary` reports 41 open, all 41 ready, 0 blocked as of this entry,
+against the ~34 this file's queue started from — new stories (SH-187,
+SH-188, SH-196, SH-198, and others filed in passing through this run) were
+never added to the checklist above. Per this file's own 2026-08-07 "Queue
+resync" precedent (line ~4707), that re-derivation is a resync pass in its
+own right, done *before* picking, not something to rush onto the tail of the
+story that happened to empty the queue. **Next session's step 1 is that
+resync**, not a pick — re-derive the queue from `story list --ready --json`
+against every currently-open story, landed as its own PR, same as last time,
+before anything is claimed.
