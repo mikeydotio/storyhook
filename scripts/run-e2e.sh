@@ -117,8 +117,13 @@ init_git_repo() {
   # filter gets pruned rather than silently hiding every story in whatever
   # project it's carried into.
   "$story_bin" state add review --super OPEN >/dev/null
+  # SH-208's own dispatch target -- a third story, distinct from the two
+  # above, so Dispatch Auto's e2e test claims and worktrees a story neither
+  # the plain-Dispatch test nor the saved-token test has already touched.
+  "$story_bin" new "Roll out the new onboarding flow" --json | jq -r '.story.story.id' >"$data_root/alpha-auto-story-id"
 )
 alpha_story_id="$(cat "$data_root/alpha-story-id")"
+alpha_auto_story_id="$(cat "$data_root/alpha-auto-story-id")"
 (
   cd "$seed_dir/beta"
   init_git_repo
@@ -178,6 +183,7 @@ echo "run-e2e.sh: dashboard live at $base_url" >&2
 export DASHBOARD_DISPATCH_TOKEN
 DASHBOARD_DISPATCH_TOKEN="$("$story_bin" daemon token | head -n1)"
 export DASHBOARD_ALPHA_STORY_ID="$alpha_story_id"
+export DASHBOARD_ALPHA_AUTO_STORY_ID="$alpha_auto_story_id"
 export DASHBOARD_ALPHA_CHECKOUT="$seed_dir/alpha"
 
 # --- Run the suite.

@@ -528,12 +528,18 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="create-description""#));
     assert!(body.contains(r#"id="create-priority""#));
     assert!(body.contains(r#"id="create-labels-field""#));
-    // Dispatch's token modal (SH-50) -- the Dispatch button itself is built
-    // by JS only for an open story in a project with a checkout, so it
-    // never appears in this static markup; the modal it opens does.
+    // Dispatch's token modal (SH-50) -- the Dispatch (and, since SH-208,
+    // Dispatch Auto) buttons themselves are built by JS only for an open
+    // story in a project with a checkout, so they never appear as HTML
+    // `id="..."` attributes in this static markup; the modal they open
+    // does. Their ids are still pinned here, as the JS *source* text the
+    // single embedded <script> carries -- the same idiom already used below
+    // for typeGlyph/buildTypeBadge, JS-only constructs with no static tag.
     assert!(body.contains(r#"id="token-modal""#));
     assert!(body.contains(r#"id="token-input""#));
     assert!(body.contains(r#"id="token-submit""#));
+    assert!(body.contains(r#"id: "dispatch-btn""#));
+    assert!(body.contains(r#"id: "dispatch-auto-btn""#));
     // Multi-repo screens (#20): the header's project selector (SH-42), home
     // dashboard, settings
     assert!(body.contains(r#"id="projsel-btn""#));
