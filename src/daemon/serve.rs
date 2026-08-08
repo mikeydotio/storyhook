@@ -69,14 +69,20 @@ pub(crate) fn heartbeat_interval() -> Duration {
 
 /// How often the daemon asks the store whether somebody else has written to it.
 ///
-/// This is the safety net rather than the mechanism, now that [`route_job_inner`]
-/// calls [`ChangeWatcher::notice`](crate::daemon::watch::ChangeWatcher::notice)
-/// at the request boundary for both routes it can answer — `rest::route` and
-/// `rpc::route`'s `POST /api/v1/invoke` alike (SH-202) — so a write this daemon
-/// itself serves is published the instant it commits, whichever surface
-/// answered it. This poll catches only the writes that boundary never saw at
-/// all: a `story tui` session on the same store, a second machine, a `sqlite3`
-/// prompt. One pragma per tick, so the interval can be short without mattering.
+/// This is the safety net rather than the mechanism, now that
+/// [`route_job_inner`]'s RPC arm calls
+/// [`ChangeWatcher::notice`](crate::daemon::watch::ChangeWatcher::notice) at
+/// the request boundary too (SH-202) — so a write over `POST /api/v1/invoke`,
+/// the only way an ordinary `story` command reaches the store, is published
+/// the instant it commits, the same as a REST-served write already was via
+/// `rest::route`'s own precise `Changed` signal. (The REST arm does not also
+/// call `notice()` — SH-202's own council record found that doing so could
+/// attribute an unrelated out-of-band commit to the wrong response and
+/// collide with `ChangeBus`'s coalescing window; see `daemon::bus`'s module
+/// doc and SH-216.) This poll catches only the writes that boundary never saw
+/// at all: a `story tui` session on the same store, a second machine, a
+/// `sqlite3` prompt. One pragma per tick, so the interval can be short
+/// without mattering.
 ///
 /// Overridable via `STORYHOOK_CHANGE_POLL_MS`, the same seam
 /// [`heartbeat_interval`] and [`dispatchers`] already use — set high enough in
@@ -1091,8 +1097,8 @@ fn heartbeat(bus: &ChangeBus, stop: &AtomicBool) {
 
 /// Watches the store's change token on a schedule and reports what moved
 /// when it changes — [`ChangeWatcher::notice`](crate::daemon::watch::ChangeWatcher::notice)'s
-/// attribution, run as the safety net beside [`route_job_inner`]'s own calls
-/// at the request boundary, sharing `watcher`'s baseline with them so a
+/// attribution, run as the safety net beside [`route_job_inner`]'s own RPC-arm
+/// call at the request boundary, sharing `watcher`'s baseline with it so a
 /// commit both notice is attributed once, by whichever notices it first
 /// (SH-202).
 ///

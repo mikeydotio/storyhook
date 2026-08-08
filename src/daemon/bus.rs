@@ -1,23 +1,39 @@
 //! The daemon's change feed.
 //!
 //! Every connected `/api/events` client subscribes here, and everything that
-//! changes the store publishes here. Two publishers, deliberately — though
-//! only one of them reaches every write:
+//! changes the store publishes here. Several publishers, deliberately:
 //!
 //! 1. **The request boundary**, immediately after a mutating request commits.
 //!    Not inside the transaction — a subscriber woken while the writer still
 //!    holds the write lock would re-read the *previous* state, which is the
-//!    stale-dashboard bug in a new costume. **Only wired up for the
-//!    dashboard's own REST mutation routes** (`daemon/serve.rs`'s `dispatch()`,
-//!    the `rest::route` arm) — an ordinary `story` command's write, over
-//!    `POST /api/v1/invoke`, does not reach this publisher at all (filed as
-//!    SH-202; this is a documentation-accuracy note, not a fix).
-//! 2. **[`poll_data_version`]**, a low-frequency safety net over SQLite's
-//!    `PRAGMA data_version`, which changes whenever *another connection*
-//!    commits. That is how a write this daemon did not serve — a `story tui`
-//!    session, a second machine's rsync — reaches a browser that the daemon
-//!    never heard about. Until SH-202 is fixed, it is also the *only* way an
-//!    ordinary `story` command's own write reaches one.
+//!    stale-dashboard bug in a new costume. Covers both routes
+//!    `daemon::serve::route_job_inner` dispatches to: the dashboard's own REST
+//!    mutation routes publish a precise `Changed` signal they already compute
+//!    (`rest::route`'s `Routed::changed`); `POST /api/v1/invoke` — the *only*
+//!    way an ordinary `story` command reaches the store — carries no such
+//!    signal of its own, so it calls
+//!    [`crate::daemon::watch::ChangeWatcher::notice`] instead, the same
+//!    store-wide diff `poll_change_token` below runs on a schedule (SH-202).
+//!    **Deliberately not called from the REST arm too** — every mutating REST
+//!    route already has exhaustive `Changed` coverage by construction, and a
+//!    `notice()` call there was found, empirically, to risk attributing an
+//!    unrelated out-of-band commit to the wrong response and colliding with
+//!    the coalescing window below (SH-202's own council record; the surviving
+//!    hazard is filed as SH-216).
+//! 2. **`poll_change_token`** (`daemon::serve`), a low-frequency safety net
+//!    over SQLite's `PRAGMA data_version`, which changes whenever *another
+//!    connection* commits. That is how a write this
+//!    daemon did not serve at its own request boundary at all — a `story tui`
+//!    session on the same store, a second machine, a `sqlite3` prompt —
+//!    reaches a browser the daemon never heard the write from.
+//! 3. **A dashboard dispatch's completion** (`crate::api::dispatch`), so a tab
+//!    watching a `script --project … dispatch` run sees the story it moved
+//!    without polling that endpoint itself.
+//! 4. **[`Change::Ping`]**, on a fixed interval, purely to let a client detect
+//!    a connection that died without a clean close (SH-145).
+//! 5. **[`Change::Reload`]**, once, immediately before this daemon answers a
+//!    shutdown request — so a client about to lose its stream reconnects on
+//!    purpose rather than after its own retry timer expires.
 //!
 //! This replaces a filesystem watcher, and it is strictly more reliable than
 //! one. The watcher observed a directory of story files and provably missed

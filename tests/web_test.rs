@@ -3804,13 +3804,14 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
 /// Every other `sse_*` test in this file mutates through `Served::seed`
 /// (an in-process `dispatch`, bypassing the daemon's HTTP surface entirely)
 /// or through the dashboard's own REST routes (`rest::route`, published at
-/// the request boundary by `dispatch()` in `daemon/serve.rs`). Neither is
-/// what a real `story` command does: since SH-114 every CLI write goes
-/// through `rpc::route`'s `POST /api/v1/invoke`, which — unlike
-/// `rest::route` — publishes nothing at the request boundary and leaves the
-/// change feed to notice the write only via `poll_change_token`'s 250ms
-/// safety-net poll. This test is the one that actually exercises that path,
-/// running the real daemon subprocess and a real `story new` alongside it.
+/// the request boundary by `route_job_inner` in `daemon/serve.rs`). Neither
+/// is what a real `story` command does: since SH-114 every CLI write goes
+/// through `rpc::route`'s `POST /api/v1/invoke`. This test is the one that
+/// actually exercises that path, running the real daemon subprocess and a
+/// real `story new` alongside it — but it does not distinguish *which*
+/// publisher carried the write (the request boundary or the safety-net
+/// poll); `sse_delivers_a_cli_write_with_the_safety_net_poll_disabled`
+/// below (SH-202) is the one that isolates the boundary.
 #[test]
 fn sse_delivers_repo_changed_for_a_cli_write_through_the_daemon() {
     let _sse_guard = sse_test_lock();
