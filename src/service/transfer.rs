@@ -525,6 +525,7 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     flagged_reasons: Vec::new(),
                     stale_info: None,
                     progress: None,
+                    display_state: None,
                 });
             }
             Ok(views)
