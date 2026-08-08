@@ -406,6 +406,11 @@ pub enum Invocation {
     Export,
     ImportProject {
         file: String,
+        /// The operator's assertion that `file` predates event kind #18, so
+        /// its `[git] <sha>: <subject>` comments are legacy link records
+        /// rather than prose a user typed (SH-70). `false` leaves them as
+        /// prose, unchanged from before this field existed.
+        legacy_links: bool,
     },
     /// Move a legacy `.storyhook` tree into the store.
     ///
@@ -1381,6 +1386,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         verb: "migrate",
         subcommand: None,
         flags: &[bare("dry-run")],
+    },
+    VerbFlags {
+        verb: "import-project",
+        subcommand: None,
+        flags: &[bare("legacy-links")],
     },
     VerbFlags {
         verb: "load-context",
@@ -2584,14 +2594,25 @@ fn parse_decompose(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_import_project(args: &[String]) -> Result<Invocation, AppError> {
-    if args.len() != 2 {
-        return Err(AppError::Usage(
-            "usage: story import-project <file>".to_string(),
-        ));
+    let usage = "usage: story import-project <file> [--legacy-links]";
+    let mut file = None;
+    let mut legacy_links = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--legacy-links" => {
+                legacy_links = true;
+                index += 1;
+            }
+            _ if file.is_none() && !args[index].starts_with("--") => {
+                file = Some(args[index].clone());
+                index += 1;
+            }
+            _ => return Err(AppError::Usage(usage.to_string())),
+        }
     }
-    Ok(Invocation::ImportProject {
-        file: args[1].clone(),
-    })
+    let file = file.ok_or_else(|| AppError::Usage(usage.to_string()))?;
+    Ok(Invocation::ImportProject { file, legacy_links })
 }
 
 /// `story migrate [<path>] [--dry-run]`.

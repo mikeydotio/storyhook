@@ -288,6 +288,23 @@ pub trait ReadOps {
         sha: &str,
     ) -> Result<bool, StoreError>;
 
+    /// Every `story_commit_links` row in this project with no backing
+    /// `StoryCommitLinked` (kind #18) event — i.e. every link recovered from a
+    /// `[git]`-shaped comment (schema migration 2's backfill, `story migrate`,
+    /// or an `import-project --legacy-links` restore) rather than from the
+    /// event itself.
+    ///
+    /// The store cannot tell whether such a row is a genuine pre-#18 link or a
+    /// live comment misclassified by a `--legacy-links` restore — that is
+    /// exactly the ambiguity [`LinkSource`] exists to close at write time, and
+    /// this reads what already landed rather than reopening it. `story
+    /// doctor`'s advisory (SH-70) is the only caller; it reports, and neither
+    /// it nor this can auto-fix a row it did not write.
+    fn unbacked_commit_links(
+        &self,
+        project: ProjectId,
+    ) -> Result<Vec<(StoryNo, String)>, StoreError>;
+
     /// One story's read-model row.
     fn story(&self, project: ProjectId, story: StoryNo) -> Result<Option<StoryRow>, StoreError>;
 

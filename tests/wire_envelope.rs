@@ -1096,6 +1096,7 @@ fn invocation_corpus() -> Vec<Invocation> {
         Invocation::Export,
         Invocation::ImportProject {
             file: "export.json".to_string(),
+            legacy_links: true,
         },
         Invocation::Context {
             format: Some("json".to_string()),
