@@ -13,12 +13,13 @@ assert_cmd = { workspace = true }
 # route, and the signal number is worth naming rather than spelling `9`.
 libc = "0.2"
 serde_json = { workspace = true }
-# The `fault-injection` feature is requested here, not in the root
-# manifest's `default`, so that `cargo test` builds a storyhook with the
-# store's crash points live while `cargo build`/`--release` do not. Cargo's
-# v2 resolver keeps dev-dependency features out of non-test builds, and
-# this crate is a dev-dependency of storyhook.
-storyhook = { path = "../..", features = ["fault-injection"] }
+# The `fault-injection` and `test-seam` features are requested here, not in
+# the root manifest's `default`, so that `cargo test` builds a storyhook with
+# the store's crash points and `bind_and_serve` (SH-148) live while
+# `cargo build`/`--release` do not. Cargo's v2 resolver keeps dev-dependency
+# features out of non-test builds, and this crate is a dev-dependency of
+# storyhook.
+storyhook = { path = "../..", features = ["fault-injection", "test-seam"] }
 tempfile = { workspace = true }
 
 [dev-dependencies]

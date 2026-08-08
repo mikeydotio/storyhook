@@ -321,7 +321,17 @@ where
     Ok(())
 }
 
-/// Binds loopback (and the tailnet interface, when there is one) and serves.
+/// Binds loopback (and the tailnet interface, when there is one) and serves —
+/// the harness's sanctioned test seam, not a production entry point (SH-148).
+///
+/// The only production entry point is [`super::lifecycle::run`], which claims
+/// the pidfile lock, mints a real token, writes the portfile, and runs the
+/// startup backup. This function skips all four: it exists solely for
+/// `storyhook-test-support`'s `try_serve_on`, which needs a dashboard serving
+/// a store that is already open, in-process, without any of that daemon
+/// lifecycle ceremony. Gated behind the `test-seam` feature — never in
+/// `default` — so it does not exist in a build that lacks the feature, no
+/// matter how `pub` its signature is; see that feature's doc in `Cargo.toml`.
 ///
 /// `port` may be 0, in which case the kernel picks; `ready` is told every
 /// address actually bound, loopback and tailnet alike. Three things only the
@@ -330,6 +340,7 @@ where
 /// connects to a port cannot tell this server apart from some other process
 /// holding it — and whether the best-effort tailnet bind succeeded, which is
 /// what a caller must not guess by probing the machine (SH-110).
+#[cfg(feature = "test-seam")]
 pub fn bind_and_serve<S: Store, F>(
     store: &S,
     env: &Environment,
@@ -343,9 +354,13 @@ where
     eprintln!("Storyhook dashboard: http://127.0.0.1:{}", bound.port());
     let mut trusted_hosts = bound.trusted_hosts();
     trusted_hosts.extend(crate::api::http::trusted_hosts_from_env());
-    // No portfile and no token: this entry point serves the dashboard for a
-    // caller that already has a store open, and an empty token is one no
-    // request can present, so the control surface refuses every one.
+    // No portfile and no real token: nothing this test seam serves reaches
+    // `/api/v1/*`, so an empty `token` is never presented, let alone checked.
+    // It is *not* a control-surface guard in its own right — `token_ok`'s
+    // constant-time comparison admits an explicit empty offered header
+    // against an empty expected one — so the thing actually keeping this
+    // function out of a real deployment is the `test-seam` gate above, not
+    // this string.
     serve(
         store,
         env,
