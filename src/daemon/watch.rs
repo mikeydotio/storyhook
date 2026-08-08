@@ -138,7 +138,7 @@ fn project_sequences<S: Store>(store: &S) -> BTreeMap<String, i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{StoryEvent, TypeDef};
+    use crate::domain::StoryEvent;
     use crate::store::{ExpectedSeq, NewProject, ProjectId, SqliteStore, StoryNo, WriteOps};
     use std::time::Duration;
 
@@ -228,28 +228,22 @@ mod tests {
     /// reported, honestly, as "something changed."
     #[test]
     fn an_unattributable_change_is_a_resync() {
-        let (_dir, store) = store();
+        let (dir, store) = store();
         let project = a_project(&store, "existing");
         let watcher = ChangeWatcher::new(&store);
         let bus = ChangeBus::new();
         let subscriber = bus.subscribe();
 
         // A configuration write: it moves `PRAGMA data_version` without
-        // touching anything `project_sequences` can see move. A type catalog
-        // edit rather than a state one — `WriteOps::put_states` may be
-        // called in exactly one module outside `src/store/`
-        // (`tests/state_set_funnel.rs`), and this test is not it.
-        store
-            .write(|tx| {
-                tx.put_types(
-                    project,
-                    &[TypeDef {
-                        slug: "spike".into(),
-                        description: None,
-                        emoji: None,
-                    }],
-                )
-            })
+        // touching anything `project_sequences` can see move. Through
+        // `ConfigService::add_type` rather than `WriteOps::put_types`
+        // directly — `tests/type_slug_call_sites.rs` allowlists every raw
+        // writer of story types, and a test fixture manufacturing a change
+        // is not one of the allowed reasons a real service gets to be.
+        let env = crate::env::Environment::at(dir.path());
+        let ctx = crate::service::Ctx::new(&store, project, dir.path(), env);
+        crate::service::config::ConfigService::new(&ctx)
+            .add_type("spike", None, None)
             .expect("a configuration write");
 
         watcher.notice(&store, &bus);
