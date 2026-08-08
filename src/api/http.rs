@@ -134,6 +134,9 @@ pub fn status_for(error: &AppError) -> u16 {
         AppError::GithubAuth(_) | AppError::GithubApi(_) => 502,
         AppError::SyncConflict(_) => 409,
         AppError::StateConflict(..) => 409,
+        // Built from one or more failed GitHub calls, same as GithubApi —
+        // the aggregate form of the same upstream-failure shape.
+        AppError::SyncErrors(_) => 502,
     }
 }
 

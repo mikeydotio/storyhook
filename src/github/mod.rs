@@ -71,11 +71,28 @@ impl SyncReport {
     /// [`AppError::SyncConflict`] carries the same text out through
     /// `render_error`, which exits 8, answers HTTP 409, and — unlike a
     /// `Response` — cannot be erased by `--quiet`.
+    ///
+    /// **A per-story error is a failure too, one field along in the same
+    /// struct (SH-159).** It used to answer exit 0 for the same reason a
+    /// conflict once did: the "Errors (N):" section named the broken stories
+    /// inside a "GitHub sync complete." message. A conflict and an error are
+    /// different failure modes — one is a question nobody answered, the other
+    /// may be transient and may be one story out of forty — but a caller that
+    /// polls only the exit code cannot tell "everything synced" from
+    /// "something did not" either way. [`AppError::SyncErrors`] closes that
+    /// gap the same way `SyncConflict` did, at its own exit code (10) so a
+    /// caller can still tell the two failure modes apart. Conflicts keep
+    /// priority when both are present, unchanged from SH-152: an unresolved
+    /// disagreement is the one thing this run cannot make progress on by
+    /// retrying, so it is the more actionable of the two to surface first.
     fn outcome(&self) -> Result<Response, AppError> {
-        if self.conflicts.is_empty() {
-            return Ok(Response::Message(self.to_message()));
+        if !self.conflicts.is_empty() {
+            return Err(AppError::SyncConflict(self.to_message()));
         }
-        Err(AppError::SyncConflict(self.to_message()))
+        if !self.errors.is_empty() {
+            return Err(AppError::SyncErrors(self.to_message()));
+        }
+        Ok(Response::Message(self.to_message()))
     }
 
     fn to_message(&self) -> String {
@@ -1404,7 +1421,8 @@ mod mode_word_tests {
     }
 }
 
-/// What a run answers with when it met a conflict nobody had decided — SH-152.
+/// What a run answers with when it met a conflict nobody had decided — SH-152
+/// — or a per-story error it could not apply — SH-159.
 #[cfg(test)]
 mod outcome_tests {
     use super::*;
@@ -1501,5 +1519,47 @@ mod outcome_tests {
             panic!("a clean run answers with a message");
         };
         assert!(message.contains("GitHub sync complete."), "{message}");
+    }
+
+    /// SH-159: a per-story error is not a footnote to a success either. Exit
+    /// 10 rather than 0, with the same reasoning SH-152 applied to conflicts —
+    /// a script that treated the old exit 0 as "every story synced" was
+    /// wrong and had no way to find out.
+    #[test]
+    fn an_unapplied_story_is_an_error_not_a_message() {
+        let mut report = SyncReport::new();
+        report.pushed.push("SH-9".to_string());
+        report
+            .errors
+            .push(("SH-1".to_string(), "404 not found".to_string()));
+
+        let error = report
+            .outcome()
+            .expect_err("a per-story error must not answer with a success");
+        let AppError::SyncErrors(detail) = error else {
+            panic!("a per-story error is a SyncErrors: {error}");
+        };
+        assert_eq!(AppError::SyncErrors(String::new()).exit_code(), 10);
+        assert!(detail.contains("SH-1"), "{detail}");
+        assert!(detail.contains("404 not found"), "{detail}");
+        // What did land is still reported, same as a conflict's refusal.
+        assert!(detail.contains("SH-9"), "{detail}");
+    }
+
+    /// An unresolved conflict is more actionable than a possibly-transient
+    /// error, so it keeps priority when a run has both — unchanged from
+    /// SH-152's ordering.
+    #[test]
+    fn a_conflict_takes_priority_over_an_error_when_a_run_has_both() {
+        let mut report = report_with_a_conflict();
+        report
+            .errors
+            .push(("SH-3".to_string(), "rate limited".to_string()));
+
+        let error = report.outcome().expect_err("a conflict still refuses");
+        assert!(
+            matches!(error, AppError::SyncConflict(_)),
+            "a conflict outranks an error: {error}"
+        );
     }
 }

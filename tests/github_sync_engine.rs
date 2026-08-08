@@ -427,7 +427,7 @@ fn an_error_syncing_one_story_does_not_abort_the_rest_of_the_sync() {
         .save_config(&config)
         .expect("seeding the broken mapping");
 
-    let response = run_sync_with(
+    let error = run_sync_with(
         &storage,
         &fake,
         Some(&token()),
@@ -437,14 +437,20 @@ fn an_error_syncing_one_story_does_not_abort_the_rest_of_the_sync() {
         None,
         None,
     )
-    .expect("one story's error must not fail the whole sync");
+    .expect_err(
+        "one story's error must still fail the run's exit code (SH-159), even though \
+         processing continues past it -- that's the point of the next two assertions",
+    );
 
-    let Response::Message(message) = response else {
-        panic!("{response:?}");
+    let AppError::SyncErrors(detail) = error else {
+        panic!("a per-story sync error must answer with SyncErrors: {error}");
     };
-    assert!(message.contains(&broken_id), "{message}");
-    assert!(message.contains("Errors"), "{message}");
+    assert!(detail.contains(&broken_id), "{detail}");
+    assert!(detail.contains("Errors"), "{detail}");
 
+    // Processing the rest of the batch is unaffected by the error becoming
+    // fatal to the *exit code* -- the healthy story still pushed, proven
+    // against the fake's own record rather than the returned `Result`.
     let created = fake.created_issues();
     assert_eq!(
         created.len(),

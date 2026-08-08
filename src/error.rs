@@ -21,6 +21,8 @@ pub enum AppError {
     GithubApi(String),
     #[error("sync conflict: {0}")]
     SyncConflict(String),
+    #[error("sync errors: {0}")]
+    SyncErrors(String),
     #[error("state conflict: expected `{0}`, was `{1}`")]
     StateConflict(String, String), // (expected, actual)
 }
@@ -36,6 +38,7 @@ impl AppError {
             Self::GithubApi(_) => 7,
             Self::SyncConflict(_) => 8,
             Self::StateConflict(..) => 9,
+            Self::SyncErrors(_) => 10,
         }
     }
 
@@ -67,6 +70,7 @@ impl AppError {
             Self::GithubAuth(detail) => Self::GithubAuth(joined(detail)),
             Self::GithubApi(detail) => Self::GithubApi(joined(detail)),
             Self::SyncConflict(detail) => Self::SyncConflict(joined(detail)),
+            Self::SyncErrors(detail) => Self::SyncErrors(joined(detail)),
             conflict @ Self::StateConflict(..) => conflict,
         }
     }
@@ -112,6 +116,7 @@ pub enum WireError {
     GithubAuth { detail: String },
     GithubApi { detail: String },
     SyncConflict { detail: String },
+    SyncErrors { detail: String },
     StateConflict { expected: String, actual: String },
 }
 
@@ -145,6 +150,9 @@ impl From<&AppError> for WireError {
             AppError::SyncConflict(detail) => Self::SyncConflict {
                 detail: detail.clone(),
             },
+            AppError::SyncErrors(detail) => Self::SyncErrors {
+                detail: detail.clone(),
+            },
             AppError::StateConflict(expected, actual) => Self::StateConflict {
                 expected: expected.clone(),
                 actual: actual.clone(),
@@ -171,6 +179,7 @@ impl From<WireError> for AppError {
             WireError::GithubAuth { detail } => Self::GithubAuth(detail),
             WireError::GithubApi { detail } => Self::GithubApi(detail),
             WireError::SyncConflict { detail } => Self::SyncConflict(detail),
+            WireError::SyncErrors { detail } => Self::SyncErrors(detail),
             WireError::StateConflict { expected, actual } => Self::StateConflict(expected, actual),
         }
     }
@@ -245,6 +254,7 @@ mod tests {
             AppError::GithubAuth("ga".into()),
             AppError::GithubApi("gp".into()),
             AppError::SyncConflict("sc".into()),
+            AppError::SyncErrors("se".into()),
             AppError::StateConflict("todo".into(), "done".into()),
         ] {
             let before = error.exit_code();

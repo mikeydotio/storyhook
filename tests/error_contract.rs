@@ -71,21 +71,23 @@ fn forms_may_run_together(variant: &str) -> bool {
 
 /// Every variant reachable through the CLI.
 ///
-/// `SyncConflict` is absent for a reason that changed with SH-152 and is worth
-/// stating precisely. It used to be constructed nowhere at all. It is now what
-/// `github-sync` answers with when a merge conflict is left undecided — but
-/// provoking one here needs a live GitHub issue that disagrees with a local
-/// story reached through this file's `provoke: fn(&TestEnv, bool) ->
-/// std::process::Output`, i.e. a real `story` subprocess. SH-158 gave
-/// `GithubClient` a trait seam (`github::api::GithubApi`), which is what makes
-/// `SyncConflict` provokable *in-process*, calling `github::run_sync_with`
-/// directly against a fake the way `github::outcome_tests` and the tests
-/// beside it do — but nothing wires that seam into the subprocess this file's
-/// rows spawn, so it stays *reachable* and not *provokable here*, which is
-/// what [`UNPROVOKABLE`] means. Its exit code is held by
-/// [`unreachable_variants_still_hold_their_exit_codes`], its refusal text by
+/// `SyncConflict` and `SyncErrors` are absent for a reason that changed with
+/// SH-152 (`SyncConflict`) and SH-159 (`SyncErrors`) and is worth stating
+/// precisely. `SyncConflict` used to be constructed nowhere at all; it is now
+/// what `github-sync` answers with when a merge conflict is left undecided.
+/// `SyncErrors` is what it answers with when one or more individual stories
+/// failed to sync. Provoking either here needs a live GitHub issue reached
+/// through this file's `provoke: fn(&TestEnv, bool) -> std::process::Output`,
+/// i.e. a real `story` subprocess. SH-158 gave `GithubClient` a trait seam
+/// (`github::api::GithubApi`), which is what makes both variants provokable
+/// *in-process*, calling `github::run_sync_with` directly against a fake the
+/// way `github::outcome_tests` and the tests beside it do — but nothing wires
+/// that seam into the subprocess this file's rows spawn, so both stay
+/// *reachable* and not *provokable here*, which is what [`UNPROVOKABLE`]
+/// means. Their exit codes are held by
+/// [`unreachable_variants_still_hold_their_exit_codes`], their refusal text by
 /// `github::outcome_tests`, and [`the_table_covers_every_variant`] is what
-/// stops it being forgotten.
+/// stops either being forgotten.
 fn cases() -> Vec<Case> {
     let mut cases = vec![
         Case {
@@ -435,9 +437,10 @@ fn every_error_variant_holds_its_contract() {
 
 /// The exit codes themselves, asserted directly on the enum.
 ///
-/// Covers `SyncConflict`, which no test can provoke offline, and gives every
-/// other variant a second, invocation-independent witness: if a refactor
-/// renumbers a code, this fails even for a variant whose trigger has moved.
+/// Covers `SyncConflict` and `SyncErrors`, which no test can provoke offline,
+/// and gives every other variant a second, invocation-independent witness: if
+/// a refactor renumbers a code, this fails even for a variant whose trigger
+/// has moved.
 #[test]
 fn unreachable_variants_still_hold_their_exit_codes() {
     let expected = [
@@ -451,6 +454,7 @@ fn unreachable_variants_still_hold_their_exit_codes() {
         (AppError::GithubApi(String::new()), 7),
         (AppError::SyncConflict(String::new()), 8),
         (AppError::StateConflict(String::new(), String::new()), 9),
+        (AppError::SyncErrors(String::new()), 10),
     ];
     for (error, code) in &expected {
         assert_eq!(
@@ -469,11 +473,12 @@ fn unreachable_variants_still_hold_their_exit_codes() {
 /// which list it belongs in.
 #[test]
 fn the_table_covers_every_variant() {
-    /// Raised by `github-sync` on an undecided conflict (SH-152), but not
-    /// reproducible in this file: it needs a GitHub issue that disagrees with a
-    /// local story, and the API client has no test seam. Move it into [`cases`]
-    /// with a real invocation once one exists.
-    const UNPROVOKABLE: &[&str] = &["SyncConflict"];
+    /// Raised by `github-sync` on an undecided conflict (SH-152) or a
+    /// per-story sync failure (SH-159), but neither is reproducible in this
+    /// file: both need a GitHub issue reached through the API client, which
+    /// has no test seam wired into the subprocess this file spawns. Move
+    /// either into [`cases`] with a real invocation once one exists.
+    const UNPROVOKABLE: &[&str] = &["SyncConflict", "SyncErrors"];
     /// Compiled out with `--no-default-features`, so they cannot be required.
     const FEATURE_GATED: &[&str] = &["GithubAuth", "GithubApi"];
 
@@ -488,6 +493,7 @@ fn the_table_covers_every_variant() {
         AppError::GithubApi(String::new()),
         AppError::SyncConflict(String::new()),
         AppError::StateConflict(String::new(), String::new()),
+        AppError::SyncErrors(String::new()),
     ];
     let covered: Vec<&str> = cases().iter().map(|case| case.variant).collect();
 
@@ -527,6 +533,7 @@ fn variant_name(error: &AppError) -> &'static str {
         AppError::GithubApi(_) => "GithubApi",
         AppError::SyncConflict(_) => "SyncConflict",
         AppError::StateConflict(..) => "StateConflict",
+        AppError::SyncErrors(_) => "SyncErrors",
     }
 }
 
