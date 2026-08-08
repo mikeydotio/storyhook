@@ -10,30 +10,23 @@
 //!
 //! # Ordering is a compatibility contract
 //!
-//! Every ordering in this file reproduces the legacy one exactly, **including
-//! a known defect the golden corpus freezes**:
+//! Every id-list this file returns sorts by story *number*
+//! ([`domain::story_number`]), not by the lexicographic order of the id
+//! string — `list`, `search`, `epic list` and `phase show` via
+//! [`sort_story_views`], `graph`'s roots/leaves/blocked-chain/parallel-groups
+//! and `handoff`'s created/updated/closed sections via a direct sort at the
+//! same call sites (SH-64; both used to iterate a map keyed by the id string
+//! instead, `SH-1, SH-10, SH-11, SH-2, …`). `context`'s blocked list picked up
+//! the same fix in passing — same file, same root cause, no separate story.
 //!
-//! * `list`, `search`, `epic list` and `phase show` sort by story *number*;
-//!   `graph` and `handoff` sort *lexicographically* (`SH-1, SH-10, SH-11,
-//!   SH-2, …`), because they iterate a map keyed by the id string. That split
-//!   is SH-64, still open.
-//! * `handoff` iterates open stories then archived ones, each in id order,
-//!   because the legacy path concatenated a directory listing with a
-//!   `ORDER BY id ASC` query.
+//! `graph`'s `critical_path` is the one exception, deliberately: it is a
+//! dependency *chain*, not a roster, and resorting it by id would replace the
+//! path it reports with a different, meaningless one.
 //!
-//! `next`, `summary`, `report` and `context`'s ready lists are **not** part of
-//! that contract: they rank by [`domain::ready_order`](crate::domain::ready_order)
-//! (priority, then story number), a total order the legacy comparator did not
-//! have (SH-63). Reproducing a defect deliberately, as the two above still
-//! are, is different from reproducing one that has no defined answer to
-//! reproduce — two stories tying on both of the legacy keys got whichever
-//! order a `BTreeMap` happened to iterate them in, which was never a contract
-//! anyone could rely on.
-//!
-//! Reproducing a defect is deliberate. The golden corpus pins the current
-//! bytes; normalising an ordering here would move those bytes in a wave whose
-//! entire claim is that it moves none. The wave that flips the default owns
-//! deciding which of the remaining two becomes numeric.
+//! `next`, `summary`, `report` and `context`'s ready lists rank by
+//! [`domain::ready_order`](crate::domain::ready_order) (priority, then story
+//! number) instead of bare story number — a total order the legacy comparator
+//! did not have (SH-63).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -108,10 +101,11 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
 
     /// Every story in the project, keyed by id.
     ///
-    /// A `BTreeMap`, so iterating it is **lexicographic** by id — which is
-    /// where `graph`, `doctor`, and every part of `context` and `summary`
-    /// *except their ready list* get their ordering. The ready list is
-    /// [`domain::ready_order`] instead (SH-63).
+    /// A `BTreeMap`, so iterating it is lexicographic by id — `doctor` reads
+    /// it for lookups and issue detection, where order is not observable.
+    /// Every place order *is* observable (`graph`, `context`, `summary`) sorts
+    /// its output explicitly instead of relying on this map's own iteration
+    /// order (SH-63, SH-64).
     pub fn story_map(&self) -> Result<BTreeMap<String, StorySnapshot>, AppError> {
         story_map(self.tx, self.project)
     }
@@ -389,14 +383,17 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                     })
                     .count();
                 let ends = |wanted: &str| -> Vec<String> {
-                    open.iter()
+                    let mut ids: Vec<String> = open
+                        .iter()
                         .filter(|story| {
                             !story.relationships.iter().any(|relation| {
                                 relation.relation == wanted && open_neighbour(&relation.other_id)
                             })
                         })
                         .map(|story| story.id.clone())
-                        .collect()
+                        .collect();
+                    ids.sort_by_key(|id| domain::story_number(id));
+                    ids
                 };
 
                 GraphView {
@@ -424,11 +421,13 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
                 if !stories.contains_key(id) {
                     return Err(AppError::NotFound(format!("story `{id}` not found")));
                 }
+                let mut blocked: Vec<String> = graph.blocked_chain(id).into_iter().collect();
+                blocked.sort_by_key(|id| domain::story_number(id));
                 GraphView {
                     critical_path: None,
                     blocked_chain: Some(BlockedChainView {
                         source: id.clone(),
-                        blocked: graph.blocked_chain(id).into_iter().collect(),
+                        blocked,
                     }),
                     parallel_groups: None,
                     overview: None,
@@ -467,12 +466,13 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             *type_counts.entry(type_label(&view.story)).or_default() += 1;
         }
 
-        let blocked: Vec<&StoryView> = views
+        let mut blocked: Vec<&StoryView> = views
             .iter()
             .filter(|view| {
                 view.story.superstate == SuperState::Open && !is_ready(&view.story, &stories)
             })
             .collect();
+        blocked.sort_by_key(|view| domain::story_number(&view.story.id));
         let mut ready: Vec<&StoryView> = views
             .iter()
             .filter(|view| is_ready(&view.story, &stories))
@@ -551,10 +551,9 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
 
     /// `story handoff` — what changed in the last window, as Markdown.
     ///
-    /// Note the iteration order: open stories first, then archived ones, each
-    /// in **lexicographic** id order. That is the legacy concatenation of a
-    /// directory listing and an `ORDER BY id ASC`, reproduced rather than
-    /// repaired.
+    /// Each of the three sections below sorts by story number, not by the
+    /// legacy directory-listing order `all_stories_legacy_order` still walks
+    /// to build them (SH-64).
     pub fn handoff(&self, since: Option<&str>) -> Result<String, AppError> {
         let duration = match since {
             Some(raw) => parse_duration(raw).ok_or_else(|| {
@@ -577,6 +576,9 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             } else {
                 updated.push(story);
             }
+        }
+        for bucket in [&mut created, &mut updated, &mut closed] {
+            bucket.sort_by_key(|story: &StorySnapshot| domain::story_number(&story.id));
         }
 
         let mut body = String::from("# Session Handoff\n\n");
@@ -606,7 +608,10 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     // --- internals ---------------------------------------------------------
 
     /// Every story, open ones first and then archived ones, each in
-    /// lexicographic id order — `storage::load_all_snapshots`'s order.
+    /// lexicographic id order — `storage::load_all_snapshots`'s order. Both
+    /// callers re-sort what they take from this before it becomes visible
+    /// output: `search` numerically via [`sort_story_views`], `handoff`
+    /// per-bucket (SH-64). This traversal order is otherwise unobserved.
     fn all_stories_legacy_order(&self) -> Result<Vec<StorySnapshot>, AppError> {
         let mut all = Vec::new();
         for archived in [false, true] {
@@ -904,10 +909,19 @@ fn rollup(views: &[StoryView], stories: &BTreeMap<String, StorySnapshot>) -> Sum
     }
 }
 
-/// The dependency graph's parallel groups, as plain vectors.
+/// The dependency graph's parallel groups, as plain vectors — each group
+/// sorted by story number, and the groups themselves ordered by their
+/// lowest-numbered member, rather than by [`DependencyGraph`]'s internal
+/// `BTreeSet<String>` iteration (SH-64).
 fn collect_groups(groups: Vec<impl IntoIterator<Item = String>>) -> Vec<Vec<String>> {
-    groups
+    let mut groups: Vec<Vec<String>> = groups
         .into_iter()
-        .map(|group| group.into_iter().collect())
-        .collect()
+        .map(|group| {
+            let mut members: Vec<String> = group.into_iter().collect();
+            members.sort_by_key(|id| domain::story_number(id));
+            members
+        })
+        .collect();
+    groups.sort_by_key(|members| members.first().map(|id| domain::story_number(id)));
+    groups
 }
