@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { seedToken } from "./support";
 
 /**
  * Exercises the dashboard's header project selector against a real daemon
@@ -23,6 +24,7 @@ import { test, expect } from "@playwright/test";
  */
 
 test.beforeEach(async ({ page }) => {
+  await seedToken(page);
   await page.goto("/");
 });
 
