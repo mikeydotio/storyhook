@@ -141,9 +141,6 @@ $ story handoff
 ## Created (11)
 
 - SH-1 Design the storage engine [todo]
-- SH-10 Ship the CLI shim [todo]
-- SH-11 Audit error codes [todo]
-- SH-12 Harden concurrent writes [todo]
 - SH-2 Define the Store trait [todo]
 - SH-3 Implement the SQLite engine [in-progress]
 - SH-4 Write the migration runner [review]
@@ -151,12 +148,15 @@ $ story handoff
 - SH-6 Benchmark the rebuild path [todo]
 - SH-7 Document the data layer [todo]
 - SH-9 Add the daemon transport [todo]
+- SH-10 Ship the CLI shim [todo]
+- SH-11 Audit error codes [todo]
+- SH-12 Harden concurrent writes [todo]
 
 ## Closed (3)
 
+- SH-8 Retire the JSONL reader [done]
 - SH-13 Old approach: file-per-story [done]
 - SH-14 Prototype the archive format [done]
-- SH-8 Retire the JSONL reader [done]
 
 
 
@@ -166,9 +166,6 @@ $ story handoff --since 7d
 ## Created (11)
 
 - SH-1 Design the storage engine [todo]
-- SH-10 Ship the CLI shim [todo]
-- SH-11 Audit error codes [todo]
-- SH-12 Harden concurrent writes [todo]
 - SH-2 Define the Store trait [todo]
 - SH-3 Implement the SQLite engine [in-progress]
 - SH-4 Write the migration runner [review]
@@ -176,12 +173,15 @@ $ story handoff --since 7d
 - SH-6 Benchmark the rebuild path [todo]
 - SH-7 Document the data layer [todo]
 - SH-9 Add the daemon transport [todo]
+- SH-10 Ship the CLI shim [todo]
+- SH-11 Audit error codes [todo]
+- SH-12 Harden concurrent writes [todo]
 
 ## Closed (3)
 
+- SH-8 Retire the JSONL reader [done]
 - SH-13 Old approach: file-per-story [done]
 - SH-14 Prototype the archive format [done]
-- SH-8 Retire the JSONL reader [done]
 
 
 
@@ -191,9 +191,6 @@ $ story handoff --since 2h
 ## Created (11)
 
 - SH-1 Design the storage engine [todo]
-- SH-10 Ship the CLI shim [todo]
-- SH-11 Audit error codes [todo]
-- SH-12 Harden concurrent writes [todo]
 - SH-2 Define the Store trait [todo]
 - SH-3 Implement the SQLite engine [in-progress]
 - SH-4 Write the migration runner [review]
@@ -201,9 +198,12 @@ $ story handoff --since 2h
 - SH-6 Benchmark the rebuild path [todo]
 - SH-7 Document the data layer [todo]
 - SH-9 Add the daemon transport [todo]
+- SH-10 Ship the CLI shim [todo]
+- SH-11 Audit error codes [todo]
+- SH-12 Harden concurrent writes [todo]
 
 ## Closed (3)
 
+- SH-8 Retire the JSONL reader [done]
 - SH-13 Old approach: file-per-story [done]
 - SH-14 Prototype the archive format [done]
-- SH-8 Retire the JSONL reader [done]
