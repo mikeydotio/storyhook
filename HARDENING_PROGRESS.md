@@ -139,9 +139,9 @@ open, unblocked work, not a filing default to ignore.
 
 - **SH-112** — the server-owned epic · *re-derived 2026-08-08 from `story show SH-112`'s
   relationships (`story graph` carries no edge for `parent-of`, so it will not surface
-  this): still 14 children. SH-150 closed since the 2026-08-07 re-derivation, leaving
-  two open — **SH-187** and **SH-188**, both `in-progress` (⚠) and both now queued
-  below, in the new None section. Closes when those two do. Never worked directly.*
+  this): still 14 children. SH-150 closed since the 2026-08-07 re-derivation. SH-187
+  closed the same day (log entry below); **SH-188** is the one child still open. Closes
+  when that one does. Never worked directly.*
 
 ### High
 
@@ -244,7 +244,7 @@ this queue has carried a section for them; see the 2026-08-08 resync note
 above.*
 
 - [ ] **SH-186** — `web_test::a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving` fails on at least one dev machine
-- ⚠ **SH-187** — the dashboard's mutation guard is not authentication — any tailnet peer can write with two headers · *filed under the SH-112 epic; in-progress in another session as of 2026-08-08 (worktree `SH-187`, branch `fix/sh-187-dashboard-token-auth`)*
+- [x] **SH-187** — the dashboard's mutation guard is not authentication — any tailnet peer can write with two headers
 - ⚠ **SH-188** — event hooks already let a browser-reachable story mutation run `sh -c` in the project checkout · *filed under the SH-112 epic; in-progress in another session as of 2026-08-08 (worktree `SH-188`)*
 - [ ] **SH-198** — `GithubClient::get_timeline` is dead code — zero call sites in `src/` or `tests/` · *filed by SH-158*
 - [ ] **SH-199** — move the New Comment field to above the comments list
@@ -7827,3 +7827,78 @@ comment. Nothing is currently held for an answer.
 test` run — this PR is `HARDENING_PROGRESS.md` only. Landed on its own
 branch, same as the 2026-08-07 precedent (#143) and the SH-64/SH-218 log-only
 fallback (#206/#209).
+
+### SH-187 — done
+
+**Dispatched directly, not picked from this queue.** Unlike the entries above,
+this session started already pointed at SH-187 (`.claude/worktrees/SH-187`, spun up
+before the 2026-08-08 resync even added the None section) rather than self-selecting
+from the backlog — worth naming so this entry doesn't misrepresent how the story was
+claimed.
+
+**Outcome:** merged. The dashboard's mutation guard (`X-Storyhook` + a trusted `Host`)
+was never a credential — SH-50's own authorization review named this as finding F1 and
+filed it here rather than deciding it. This story decided it: every `/api/**` route,
+reads included, now requires the daemon's bearer token on both listeners, the same
+requirement SH-50 built for `.../dispatch` alone, generalized. New `src/api/admission.rs`
+gate, wired ahead of routing in `worker()`; `rpc::token_ok` hardened to fail closed on
+an empty configured token, which is what let the harness's test seam
+(`bind_and_serve`) switch from an empty placeholder to a real minted-per-server one.
+Full design, the three shapes weighed, and the decision: `docs/spec/dashboard-
+authorization.md`.
+
+**Scope grew once during planning, by design, not drift.** SH-187's own filed text
+asked only about the write surface; the plan (posted to the story before implementation,
+per this file's autonomy rule) brought reads into scope too — a tailnet peer reading
+every story in every project, or subscribing to the live-change feed, had no gate at
+all, and the review found no principled reason a read deserves less protection than a
+write on the same surface. Recorded as a deliberate scope decision in the design doc,
+not silently absorbed.
+
+**No council needed.** The plan was posted and stood as the decision; nothing
+downstream required a second, contested call — the guard-before-token ordering on a
+mutation was settled by matching `dispatch::intercept`'s own already-shipped
+precedent (traced directly, not guessed), and the `?token=` query-parameter scope
+(`/api/events` only) followed directly from `EventSource`'s own API limits.
+
+**A rebase mid-flight caught a real gap, not a false one.** SH-218's own PR (#208,
+merged while this story was in progress) added a ninth e2e spec
+(`drawer-detail-race.spec.ts`) after this branch had already wired its token-seeding
+helper into the other eight. Rebasing onto `origin/main` brought the new file in
+without it, and `make test`'s e2e leg caught the resulting timeout immediately — the
+same bootstrap-time token gate this story added was, correctly, blocking a spec that
+had never been taught about it. Fixed in its own small commit rather than folded into
+an earlier one.
+
+**Tests:** 12 new unit tests in `admission.rs` (guard-then-token ordering, the
+query-token path scoped to one route, a wrong token, an unconfigured token admitting
+nothing even against an equally-empty offered header) plus a dedicated `token_ok`
+regression test in `rpc.rs`; 6 new integration tests in `tests/web_test.rs`, each
+paired with a positive control per this file's own established house rule
+(`assert_the_listener_accepts_a_trusted_host`); `tests/tailnet_rebind.rs`'s late-bind
+mutation carries the token now; a stray `X-Storyhook-Dashboard` header (never the real
+guard header) in an existing test was silently passing under a loose `(400..500)`
+assertion — tightened to send the real header and assert the exact 422. The DOM-marker
+test gained assertions for the token header and the query-token `EventSource`
+construction.
+
+**Gate:** `make test` green — fmt, clippy `-D warnings`, the full Rust suite (136 test
+binaries, 0 failures), plugin harness 25/25, e2e 38/38 (including the rewritten
+`dispatch.spec.ts`, which now drives the bootstrap-time token modal for real against a
+live daemon) — run twice end to end (once before the SH-218 rebase surfaced the ninth
+spec, once after fixing it), no orphan daemons either time.
+
+**Semver: minor.** A new authentication requirement on every dashboard route is a
+user-facing behavior change (every existing browser session now needs `story daemon
+token` entered once) — not a bug fix, and not a breaking removal of a documented
+capability, since the write surface's own token requirement was already precedented by
+SH-50. Not bumped here, same deferred-batch practice as every story above; VERSION is
+still `v2.0.0`.
+
+**PR:** #211, merged as `4c56a25` (`gh pr view` confirmed `MERGED`). Unlike SH-64/SH-218,
+`Closes SH-187` in the commit body did *not* auto-close the story: `story show` after
+the merge still reported `in-progress` — this worktree's own commit-sync hook never
+fires on a GitHub-side merge the way a local `git merge`/`git pull` would, since no
+commit ever lands in *this* checkout. Closed explicitly instead
+(`story move SH-187 done`), confirmed via `story show`. Branch verified deleted
+(`git ls-remote --heads origin` empty for it).
