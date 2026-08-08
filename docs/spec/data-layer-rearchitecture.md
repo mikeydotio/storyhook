@@ -565,11 +565,62 @@ only remaining second writer is `story tui`, and moving it onto `/api/v1/invoke`
 
 **What survives.** `StoreInvoker` and the `Invoker` trait, because `StoreInvoker` is the
 *executor* rather than a transport: the daemon runs a client's request through it
-(`src/api/rpc.rs`), and so does the TUI (`src/tui/app.rs`). `HttpInvoker` is the CLI's only
-door.
+(`src/api/rpc.rs`), and, until SH-150, so did the TUI directly. `HttpInvoker` is now every
+client's only door — see below.
 
 Design of record for the decision: `.council/sh114-daemon-only-shape/DECISION.md`, clauses
 D1–D8, unanimous.
+
+### The TUI became a client too (SH-150, 2026-08-07)
+
+The paragraph above, un-reversed until now, called the TUI's own store handle a consequence
+of "SQLite WAL multi-process access is its design point" — true, and beside the point once
+measured. Three things this design's own target architecture already called for
+(`Target architecture` above puts the TUI behind the Invoker seam; the W5 row says "TUI: bulk
+snapshot + SSE invalidation") had drifted from what shipped, each recorded rather than
+silently kept:
+
+- **The TUI was a second migrator.** `invoke::open_store` runs `Store::migrate` and
+  legacy-registry adoption behind a pre-migration backup, unsupervised by the
+  version/exe/mtime handshake (`daemon::lifecycle::usable`) every other route to the store
+  passes through. An upgraded binary's `story tui` could migrate a store an older daemon was
+  still holding open.
+- **The write path it depended on was untested.** SH-114 gave up
+  `tests/concurrency_soak.rs`'s premise that two supported modes write one store at once —
+  SQLite's multi-process write path (`busy_timeout`, the `BEGIN IMMEDIATE` retry, `SQLITE_BUSY`
+  reaching a user as exit code 4) kept running for the TUI and stopped being exercised by
+  anything.
+- **The move itself was small.** `main_loop`, `dispatch` and `DataStore::load` already took
+  `&dyn Invoker`; production code under `src/tui/` touched the store on five lines total.
+
+**What changed.** `story tui` now resolves the daemon (`daemon::lifecycle::ensure`) before
+opening the alternate screen, reads and writes through `HttpInvoker` — with
+`.announce_waits(false)`, since the daemon-wait notice writes to stderr and inside the
+alternate screen stderr *is* the screen — and subscribes to `GET /api/events`
+(`daemon::subscribe::Subscriber`, a raw-`TcpStream` SSE client rather than `ureq`: the one
+body-deadline `ureq` offers bounds the whole response, wrong for a connection meant to stay
+open all day) before its first snapshot load, preserving SH-140's ordering guarantee — no
+write can land in a gap between "subscribed" and "loaded" — with a subscription proof instead
+of a baseline read. `tests/invoker_seam.rs::the_tui_opens_no_store_of_its_own` pins it, in the
+`the_legacy_write_path_is_gone` idiom.
+
+**What did not change.** `story tui` still resolves its project from `root` alone — it never
+sets `InvokeRequest.project`, so `--project`/`$STORYHOOK_PROJECT` do not apply to it. Real,
+orthogonal to the transport, filed separately rather than folded in here.
+
+**Known cost, measured rather than assumed.** A TUI mutation now costs 2–3 HTTP round trips
+(an undo snapshot, the mutation, a reload) where it used to cost the same number of in-process
+SQLite calls. SH-173 (concurrent dispatch) landed first and removed the amplifier that would
+have made this a queuing hazard. Measured on a 100-story fixture, `story` subprocess included
+(process spawn + connect + one invocation + render — not the bare round trip a long-lived TUI
+process would see, since a `story` binary re-execs on every call and `HttpInvoker::invoke`'s
+`lifecycle::ensure` cannot be called in-process from anything other than the real `story`
+binary — its usability check compares the daemon's recorded executable against the *calling
+process's own*): a `story list` over 100 stories averaged 66.8ms (min 20.2ms, max 146.5ms,
+n=10, warm daemon); one `story move` measured 13.6ms. Against SH-140's in-process baseline for
+the equivalent read (`DataStore::load`, 952–1003 µs), the round trip is roughly two orders of
+magnitude slower in absolute terms and still comfortably sub-100ms — the cost this design
+accepted knowingly, not a surprise found after the fact.
 
 ### `project_paths` was not the answer to "which project is this?" (SH-119, 2026-08-03)
 
