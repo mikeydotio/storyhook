@@ -80,12 +80,18 @@ if [ ! -x "$story_bin" ]; then
   exit 1
 fi
 
-# --- Seed three projects: two with a checkout (switching between them is
-# the whole point of the story), one deliberately unattached so the
-# selector's read-only path — SH-42's defect, see the commit that fixes it —
-# has something to exercise.
+# --- Seed four projects: Alpha/Beta with a checkout (switching between
+# them is the whole point of project-selector.spec.ts and
+# filter-persistence.spec.ts), Gamma deliberately unattached so the
+# selector's read-only path — SH-42's defect, see the commit that fixes it
+# — has something to exercise, and Delta (SH-208) a fourth checked-out
+# project reserved for Dispatch Auto's own dispatch target. Delta exists
+# because Alpha's exact two-story, four-empty-column shape is itself a
+# fixture other specs assert on byte-for-byte (filter-persistence.spec.ts's
+# `0 / 2`, column-visibility.spec.ts's `2 / 2` and its four-empty-columns
+# claim) -- a third Alpha story would silently break both.
 seed_dir="$data_root/seed"
-mkdir -p "$seed_dir/alpha" "$seed_dir/beta"
+mkdir -p "$seed_dir/alpha" "$seed_dir/beta" "$seed_dir/delta"
 
 echo "run-e2e.sh: seeding projects…" >&2
 
@@ -117,13 +123,8 @@ init_git_repo() {
   # filter gets pruned rather than silently hiding every story in whatever
   # project it's carried into.
   "$story_bin" state add review --super OPEN >/dev/null
-  # SH-208's own dispatch target -- a third story, distinct from the two
-  # above, so Dispatch Auto's e2e test claims and worktrees a story neither
-  # the plain-Dispatch test nor the saved-token test has already touched.
-  "$story_bin" new "Roll out the new onboarding flow" --json | jq -r '.story.story.id' >"$data_root/alpha-auto-story-id"
 )
 alpha_story_id="$(cat "$data_root/alpha-story-id")"
-alpha_auto_story_id="$(cat "$data_root/alpha-auto-story-id")"
 (
   cd "$seed_dir/beta"
   init_git_repo
@@ -142,6 +143,17 @@ if [ -z "$gamma_slug" ]; then
   exit 1
 fi
 "$story_bin" --project "$gamma_slug" new "Archived idea" >/dev/null
+(
+  cd "$seed_dir/delta"
+  init_git_repo
+  "$story_bin" project new --prefix DD --name "Delta Project" --no-agents-md >/dev/null
+  # SH-208's own dispatch target, in a project of its own -- Alpha's exact
+  # two-story shape is a fixture filter-persistence.spec.ts and
+  # column-visibility.spec.ts assert on byte-for-byte, so Dispatch Auto's
+  # e2e test gets a project nothing else looks at rather than growing it.
+  "$story_bin" new "Roll out the new onboarding flow" --json | jq -r '.story.story.id' >"$data_root/delta-story-id"
+)
+delta_story_id="$(cat "$data_root/delta-story-id")"
 
 # --- Start the daemon and discover the port it actually bound. `daemon
 # start` blocks until the daemon reports ready (or times out), but its
@@ -183,8 +195,9 @@ echo "run-e2e.sh: dashboard live at $base_url" >&2
 export DASHBOARD_DISPATCH_TOKEN
 DASHBOARD_DISPATCH_TOKEN="$("$story_bin" daemon token | head -n1)"
 export DASHBOARD_ALPHA_STORY_ID="$alpha_story_id"
-export DASHBOARD_ALPHA_AUTO_STORY_ID="$alpha_auto_story_id"
 export DASHBOARD_ALPHA_CHECKOUT="$seed_dir/alpha"
+export DASHBOARD_DELTA_STORY_ID="$delta_story_id"
+export DASHBOARD_DELTA_CHECKOUT="$seed_dir/delta"
 
 # --- Run the suite.
 #
