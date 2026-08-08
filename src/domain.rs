@@ -1404,6 +1404,73 @@ pub fn compute_progress(
     })
 }
 
+/// The state a story moves into when a commit first mentions it, and the same
+/// answer an epic's display state (below) promotes to.
+///
+/// The explicit `active` role wins; failing that, a project with exactly two
+/// OPEN states is assumed to mean "todo, then the other one". The heuristic is
+/// inherited, and it is why `active_state` can answer for a project that has
+/// never configured a role.
+pub fn active_state(states: &[StateDef]) -> Option<StateDef> {
+    if let Some(state) = states
+        .iter()
+        .find(|state| state.role.as_deref() == Some(STATE_ROLE_ACTIVE))
+    {
+        return Some(state.clone());
+    }
+    let open: Vec<&StateDef> = states
+        .iter()
+        .filter(|state| state.super_state == SuperState::Open)
+        .collect();
+    (open.len() == 2).then(|| open[1].clone())
+}
+
+/// The project's first configured OPEN state.
+pub fn default_open_state(states: &[StateDef]) -> Option<StateDef> {
+    states
+        .iter()
+        .find(|state| state.super_state == SuperState::Open)
+        .cloned()
+}
+
+/// The state at which an epic's Web-board card should be shown, when that
+/// differs from its own literal [`StorySnapshot::state`] (SH-165).
+///
+/// Mirrors the guard `GitService::record_commit` already applies before an
+/// auto-transition — the SH-165 council verdict extends it to display
+/// promotion rather than inventing a second rule: only a story parked in the
+/// project's neutral default open state (what [`default_open_state`]
+/// resolves to) is eligible, so a state a human deliberately chose —
+/// `blocked`, or any other custom Open state — is never silently overridden.
+/// Returns `None` when no override applies, meaning the caller should fall
+/// back to the story's own `state`.
+pub fn compute_epic_display_state(
+    story: &StorySnapshot,
+    all_stories: &BTreeMap<String, StorySnapshot>,
+    states: &[StateDef],
+) -> Option<String> {
+    if !has_children(story) {
+        return None;
+    }
+    let default_open = default_open_state(states)?;
+    if story.state != default_open.slug {
+        return None;
+    }
+    let active = active_state(states)?;
+
+    let has_active_child = story
+        .relationships
+        .iter()
+        .filter(|r| r.relation == "parent-of")
+        .any(|r| {
+            all_stories
+                .get(r.other_id.as_str())
+                .is_some_and(|child| child.state == active.slug)
+        });
+
+    has_active_child.then_some(active.slug)
+}
+
 pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnapshot>) -> bool {
     if story.superstate != SuperState::Open {
         return false;
@@ -2368,11 +2435,12 @@ mod tests {
 
     use super::{
         FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges, StateDef,
-        StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, compute_progress,
-        derive_family_relationships, fold_story, has_children, is_ready, last_activity_type,
-        normalize_labels, ready_order, story_number, validate_event_for_append,
-        validate_required_states, validate_state_defs, validate_state_defs_for_write,
-        validate_state_slug, validate_type_slug, with_required_states, would_create_parent_cycle,
+        StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, active_state,
+        compute_epic_display_state, compute_progress, derive_family_relationships, fold_story,
+        has_children, is_ready, last_activity_type, normalize_labels, ready_order, story_number,
+        validate_event_for_append, validate_required_states, validate_state_defs,
+        validate_state_defs_for_write, validate_state_slug, validate_type_slug,
+        with_required_states, would_create_parent_cycle,
     };
 
     #[test]
@@ -4097,6 +4165,206 @@ mod tests {
         let progress = compute_progress(stories.get("SH-1").unwrap(), &stories);
         let p = progress.unwrap();
         assert_eq!(p.children_total, 1);
+    }
+
+    // --- active_state / default_open_state (moved here from service::git by
+    // SH-165, which needed both for compute_epic_display_state below and
+    // found them pure over &[StateDef] with no git dependency) -------------
+
+    #[test]
+    fn an_explicit_active_role_decides_where_a_claimed_story_moves() {
+        let states = [
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, Some(STATE_ROLE_ACTIVE)),
+            state("blocked", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ];
+        assert_eq!(
+            active_state(&states).map(|state| state.slug),
+            Some("in-progress".to_string())
+        );
+    }
+
+    /// The inherited two-OPEN fallback, tested here because it can no longer
+    /// be reached through the CLI.
+    ///
+    /// It answers only for a project with exactly two OPEN states and no role,
+    /// and the required-state floor (SH-125) obliges every project to hold
+    /// `todo`, `in-progress` **and** `blocked` as OPEN — three. So the input
+    /// below is a catalog a conforming project cannot have: it survives for
+    /// data written before the floor, which reaches this code through a read
+    /// rather than through `story state`.
+    #[test]
+    fn two_open_states_and_no_role_means_the_second_one() {
+        let states = [
+            state("todo", SuperState::Open, None),
+            state("doing", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ];
+        assert_eq!(
+            active_state(&states).map(|state| state.slug),
+            Some("doing".to_string())
+        );
+    }
+
+    #[test]
+    fn a_project_with_no_role_and_three_open_states_gets_no_guess() {
+        // What a conforming project looks like when nothing carries the role:
+        // `commit-sync` comments and links, and moves nothing.
+        let states = [
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, None),
+            state("blocked", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ];
+        assert_eq!(active_state(&states), None);
+    }
+
+    #[test]
+    fn one_open_state_and_no_role_gets_no_guess() {
+        let states = [
+            state("todo", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ];
+        assert_eq!(active_state(&states), None);
+    }
+
+    // --- compute_epic_display_state (SH-165) -------------------------------
+
+    /// A project's default `REQUIRED_STATES` set: `todo`/`in-progress` (role
+    /// `active`)/`blocked` all OPEN, `done` CLOSED — what `default_states()`
+    /// (`service::project`) hands every new project.
+    fn conforming_states() -> Vec<StateDef> {
+        vec![
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, Some(STATE_ROLE_ACTIVE)),
+            state("blocked", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ]
+    }
+
+    #[test]
+    fn epic_in_todo_with_an_in_progress_child_is_promoted() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
+        let epic = stories.get("SH-1").unwrap();
+
+        assert_eq!(
+            compute_epic_display_state(epic, &stories, &conforming_states()),
+            Some("in-progress".to_string())
+        );
+    }
+
+    #[test]
+    fn epic_in_todo_with_no_active_child_is_not_promoted() {
+        let stories = sample_story_map(); // every story starts "todo"
+        let epic = stories.get("SH-1").unwrap();
+
+        assert_eq!(
+            compute_epic_display_state(epic, &stories, &conforming_states()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_blocked_epic_is_never_promoted_even_with_an_active_child() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-1").unwrap().state = "blocked".to_string();
+        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
+        let epic = stories.get("SH-1").unwrap();
+
+        assert_eq!(
+            compute_epic_display_state(epic, &stories, &conforming_states()),
+            None,
+            "blocked is a deliberate human signal (SH-126); an active child must not paper over it"
+        );
+    }
+
+    #[test]
+    fn an_epic_already_in_progress_is_not_re_promoted() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-1").unwrap().state = "in-progress".to_string();
+        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
+        let epic = stories.get("SH-1").unwrap();
+
+        assert_eq!(
+            compute_epic_display_state(epic, &stories, &conforming_states()),
+            None,
+            "already showing in-progress, so there is nothing to override"
+        );
+    }
+
+    #[test]
+    fn a_closed_epic_is_never_promoted() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-1").unwrap().state = "done".to_string();
+        stories.get_mut("SH-1").unwrap().superstate = SuperState::Closed;
+        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
+        let epic = stories.get("SH-1").unwrap();
+
+        assert_eq!(
+            compute_epic_display_state(epic, &stories, &conforming_states()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_leaf_story_with_no_children_is_never_promoted() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-4").unwrap().state = "in-progress".to_string();
+        let leaf = stories.get("SH-3").unwrap(); // childless, parked in "todo"
+
+        assert_eq!(
+            compute_epic_display_state(leaf, &stories, &conforming_states()),
+            None
+        );
+    }
+
+    #[test]
+    fn only_direct_children_count_toward_promotion() {
+        let mut stories = sample_story_map();
+        // SH-1 -> SH-2 -> SH-3; only SH-3 (a grandchild of SH-1) goes active.
+        stories.get_mut("SH-3").unwrap().state = "in-progress".to_string();
+        let epic = stories.get("SH-1").unwrap();
+
+        assert_eq!(
+            compute_epic_display_state(epic, &stories, &conforming_states()),
+            None,
+            "SH-3 is SH-2's child, not SH-1's — compute_progress makes the same direct-only cut"
+        );
+    }
+
+    #[test]
+    fn a_custom_active_role_state_is_what_gets_promoted_to() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-2").unwrap().state = "doing".to_string();
+        let epic = stories.get("SH-1").unwrap();
+        let states = [
+            state("todo", SuperState::Open, None),
+            state("doing", SuperState::Open, Some(STATE_ROLE_ACTIVE)),
+            state("done", SuperState::Closed, None),
+        ];
+
+        assert_eq!(
+            compute_epic_display_state(epic, &stories, &states),
+            Some("doing".to_string())
+        );
+    }
+
+    #[test]
+    fn no_active_state_resolvable_means_no_promotion() {
+        let mut stories = sample_story_map();
+        stories.get_mut("SH-2").unwrap().state = "in-progress".to_string();
+        let epic = stories.get("SH-1").unwrap();
+        // Three custom OPEN states, no role configured: active_state() can't guess.
+        let states = [
+            state("todo", SuperState::Open, None),
+            state("in-progress", SuperState::Open, None),
+            state("blocked", SuperState::Open, None),
+            state("done", SuperState::Closed, None),
+        ];
+
+        assert_eq!(compute_epic_display_state(epic, &stories, &states), None);
     }
 
     // --- ready_order / story_number (SH-63) -------------------------------

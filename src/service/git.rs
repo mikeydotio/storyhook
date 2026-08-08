@@ -66,7 +66,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::domain::{StateDef, StoryEvent, SuperState, parse_duration, scan_story_refs, short_sha};
+use crate::domain::{
+    StateDef, StoryEvent, active_state, default_open_state, parse_duration, scan_story_refs,
+    short_sha,
+};
 use crate::error::AppError;
 use crate::store::{ExpectedSeq, ProjectId, ReadOps, Store, StoreError, StoryNo};
 
@@ -392,111 +395,13 @@ fn parse_log(text: &str) -> Vec<Commit> {
     commits
 }
 
-/// The state a story moves into when a commit first mentions it.
-///
-/// The explicit `active` role wins; failing that, a project with exactly two
-/// OPEN states is assumed to mean "todo, then the other one". The heuristic is
-/// inherited, and it is why `active_state` can answer for a project that has
-/// never configured a role.
-fn active_state(states: &[StateDef]) -> Option<StateDef> {
-    if let Some(state) = states
-        .iter()
-        .find(|state| state.role.as_deref() == Some("active"))
-    {
-        return Some(state.clone());
-    }
-    let open: Vec<&StateDef> = states
-        .iter()
-        .filter(|state| state.super_state == SuperState::Open)
-        .collect();
-    (open.len() == 2).then(|| open[1].clone())
-}
-
-/// The project's first configured OPEN state.
-fn default_open_state(states: &[StateDef]) -> Option<StateDef> {
-    states
-        .iter()
-        .find(|state| state.super_state == SuperState::Open)
-        .cloned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    // `active_state` matches the literal `"active"`; the tests name the
-    // constant, so the two agreeing is asserted rather than assumed.
-    use crate::domain::STATE_ROLE_ACTIVE;
 
     /// Builds one `git log` record in the format [`read_log`] asks for.
     fn record(hash: &str, message: &str) -> String {
         format!("{hash}{FIELD_SEPARATOR}{message}\n{RECORD_SEPARATOR}")
-    }
-
-    fn state(slug: &str, super_state: SuperState, role: Option<&str>) -> StateDef {
-        StateDef {
-            slug: slug.to_string(),
-            super_state,
-            role: role.map(str::to_string),
-            description: None,
-        }
-    }
-
-    #[test]
-    fn an_explicit_active_role_decides_where_a_claimed_story_moves() {
-        let states = [
-            state("todo", SuperState::Open, None),
-            state("in-progress", SuperState::Open, Some(STATE_ROLE_ACTIVE)),
-            state("blocked", SuperState::Open, None),
-            state("done", SuperState::Closed, None),
-        ];
-        assert_eq!(
-            active_state(&states).map(|state| state.slug),
-            Some("in-progress".to_string())
-        );
-    }
-
-    /// The inherited two-OPEN fallback, tested here because it can no longer
-    /// be reached through the CLI.
-    ///
-    /// It answers only for a project with exactly two OPEN states and no role,
-    /// and the required-state floor (SH-125) obliges every project to hold
-    /// `todo`, `in-progress` **and** `blocked` as OPEN — three. So the input
-    /// below is a catalog a conforming project cannot have: it survives for
-    /// data written before the floor, which reaches this code through a read
-    /// rather than through `story state`.
-    #[test]
-    fn two_open_states_and_no_role_means_the_second_one() {
-        let states = [
-            state("todo", SuperState::Open, None),
-            state("doing", SuperState::Open, None),
-            state("done", SuperState::Closed, None),
-        ];
-        assert_eq!(
-            active_state(&states).map(|state| state.slug),
-            Some("doing".to_string())
-        );
-    }
-
-    #[test]
-    fn a_project_with_no_role_and_three_open_states_gets_no_guess() {
-        // What a conforming project looks like when nothing carries the role:
-        // `commit-sync` comments and links, and moves nothing.
-        let states = [
-            state("todo", SuperState::Open, None),
-            state("in-progress", SuperState::Open, None),
-            state("blocked", SuperState::Open, None),
-            state("done", SuperState::Closed, None),
-        ];
-        assert_eq!(active_state(&states), None);
-    }
-
-    #[test]
-    fn one_open_state_and_no_role_gets_no_guess() {
-        let states = [
-            state("todo", SuperState::Open, None),
-            state("done", SuperState::Closed, None),
-        ];
-        assert_eq!(active_state(&states), None);
     }
 
     #[test]
