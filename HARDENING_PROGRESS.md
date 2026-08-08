@@ -182,7 +182,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 
 ### Low
 
-- [ ] **SH-136** — the daemon-address harness list is hand-maintained prose · *filed by SH-131*
+- [x] **SH-136** — the daemon-address harness list is hand-maintained prose · *filed by SH-131*
 - [ ] **SH-139** — `RemoteUrl::normalize`'s two explicit non-decisions
 - [ ] **SH-148** — `bind_and_serve` is a `pub` entry point with no production caller
 - [ ] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
@@ -6445,4 +6445,51 @@ left for Mikey's own batched `/semver bump` pass, per this run's standing
 rule.
 
 **PR:** #182, merged as `88b8b38`. Branch verified deleted, `main`
+fast-forwarded cleanly.
+
+### SH-136 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line): the whole
+Medium queue was exhausted or blocked — `story list --state in-progress`
+confirmed SH-167 (no ⚠ mark in this file, but genuinely live, matching every
+prior session's stale-mark experience) and SH-150 (correctly marked ⚠) — so
+this run dropped to Low, where SH-136 led.
+
+**Drift prevention, not a bug fix**, exactly as the story anticipated: all
+five tracked shell harnesses that isolate `$STORYHOOK_DATA_DIR`
+(`scripts/run-tests.sh`, `scripts/capture-baseline.sh`, `scripts/run-e2e.sh`,
+both `plugin/claude-code/tests/{lib.sh,run-tests.sh}`) already pinned
+`STORYHOOK_DAEMON_ADDR=127.0.0.1:0` and exported `STORYHOOK_PARENT_PID`
+correctly. Added `every_harness_that_isolates_the_data_dir_also_contains_
+its_daemon` beside the existing `…_neutralizes_the_store_path` test in
+`tests/store_isolation.rs`, and extracted the shared `data_dir_harnesses()`
+helper both now call, so the same `git ls-files` derivation isn't scanned (or
+re-diverged) twice. Confirmed the new test isn't vacuous by temporarily
+mis-pinning `capture-baseline.sh`'s port to `127.0.0.1:9999`, watching the
+test fail with the expected message, then restoring the file — `git status`
+clean afterward.
+
+`TestEnv` and the four Rust files that `env_clear()` then reinstate via
+`storyhook_test_support::daemon_containment()` were left out of the
+derivation on purpose: they already can't drift the way the shell scripts
+did, since they call one shared function rather than hand-copying two
+literals. Along the way, found `CLAUDE.md`'s own count of those Rust files
+("three") was itself stale by one — `project_burst_refusal.rs` was added the
+day after that bullet was written and never folded in — corrected to four
+in the same edit, since it sat inside the exact bullet this story was
+already rewriting. No council needed: the story's own "What to do" section
+named the derivation to extend, and the Rust-side scope call follows directly
+from CLAUDE.md's existing text distinguishing hand-copied shell literals
+from the one Rust source of truth.
+
+**Gate:** `cargo fmt --all -- --check` and `cargo clippy --workspace
+--all-targets -- -D warnings` clean, then one `make test` run, supervised in
+the background (`Monitor`, 120-second log-growth stall bound) — no stall.
+Full suite green: 134 test-result blocks passed/0 failed, plugin harness
+24/24, e2e 23/23. No orphan daemons before or after.
+
+**Semver: patch.** Test infrastructure and a documentation correction; no
+user-facing or API behavior changed.
+
+**PR:** #184, merged as `6bedcc8`. Branch verified deleted, `main`
 fast-forwarded cleanly.
