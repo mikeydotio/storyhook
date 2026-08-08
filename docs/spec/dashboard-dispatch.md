@@ -308,6 +308,58 @@ after it in a hand-rolled sequence never runs. `story.sh reap <id>` collapses th
 sequence into one call with a fixed, tested order — git work, then the window kill,
 last — so there is no sequence for an agent to get subtly wrong under pressure.
 
+## As built — SH-196 (the version-skew diagnosis)
+
+**The bug this closes was found live, not hypothesized.** Mikey dispatched SH-68 from
+the dashboard on 2026-08-07; the installed `story@storyhook` plugin (0.4.0, cached
+before SH-120/SH-121/SH-151's `--project` rearchitecture) rejected the daemon's own
+`--project <slug> dispatch <id>` invocation with its generic top-level usage error.
+That error is well-formed JSON with `"ok": false`, so `classify()` correctly reported
+`DispatchState::Refused` — the daemon-side classification was never wrong — but a
+refusal indistinguishable from "not ready" or "already claimed" carried no signal that
+the *plugin version* was the actual problem. The immediate instance was fixed by hand
+(a local marketplace + an explicit `claude plugin tag`); the class recurred within a
+day, when SH-208 added `cmd_reap` to `story.sh` and the installed plugin cache did not
+move.
+
+**The fix is a one-line marker, checked as text, never executed.** `story.sh` declares
+`DISPATCH_PROTOCOL=<n>` near its top — the daemon<->script argv contract it implements.
+`resolve_dispatch_script_from` (`src/api/dispatch.rs`) reads that line out of whichever
+candidate it resolves — override, installed plugin, or dev checkout alike, one rule, no
+exemption — and refuses (`check_dispatch_protocol`) if it is older than
+`REQUIRED_DISPATCH_PROTOCOL`, naming the script's path, both numbers, and the exact
+remedy (`story plugin install claude-code` / `claude plugin update story@storyhook`).
+`declared >= required`, not `==`: a script *newer* than the daemon needs must keep
+resolving, so a plugin release is never blocked on a daemon rebuild. Rejected: an exec
+probe (`story.sh --dispatch-protocol`) — it would only echo the same constant at the
+cost of a `bash` spawn on every resolution, and resolution deliberately runs before
+anything about the script is trusted (see "What the daemon does *not* do", above, on
+not pre-checking `bash`/`jq`/`git`/`tmux`). Also rejected: preferring a newer dev-repo
+copy over a stale installed one — Mikey specifically asked (see SH-196's own resolution
+comment) for a plugin release pinned by an explicit tag precisely so active repo edits
+do not move the daemon out from under itself; silently falling through to the dev
+checkout would undo that.
+
+**The dashboard half was the other bug, uncovered doing this one.** `api()`
+(`src/web_dashboard.html`) built its rejection message from a JSON `error` field only —
+but every reply this module sends (`text_reply`) is plain text, so the new "out of
+date" 500, the pre-existing script-not-found 500, and the 429/403 all collapsed to a
+generic `xhr.statusText` ("Internal Server Error"). Fixing the daemon side alone would
+have landed the new diagnosis in a channel nothing reads. `api()` now falls back to the
+trimmed response body when the reply is not JSON. Separately: `refused` and `failed`
+outcomes rendered as the identical red toast, distinguishable only by a 3px border
+color — now prefixed `Dispatch refused —` / `Dispatch failed —`, `#toast-stack` gets
+`role="status" aria-live="polite"`, and an error toast's lifetime is doubled (9s) since
+a remedy sentence needs longer than a confirmation to read.
+
+**Two drift pins, not one.** `tests/plugin_contract.rs` pins `story.sh`'s declared
+`DISPATCH_PROTOCOL` against `REQUIRED_DISPATCH_PROTOCOL` (using
+`declared_dispatch_protocol` itself, made `pub`, rather than a second parser that could
+drift from the real one), and separately pins `plugin.json`'s version against
+`marketplace.json`'s `story` entry — these drifted for real once (`3cbd08a` bumped one
+and forgot the other), which is the literal reason `claude plugin update` answered
+"already at the latest version" during this story's own investigation.
+
 ## Verification
 
 `make test` is the gate. Coverage, by layer:
@@ -319,7 +371,13 @@ last — so there is no sequence for an agent to get subtly wrong under pressure
   `?auto=true` parsing and its 400 on anything else present, and the idempotency
   wrinkle — a second `try_start` for a running story with a *different* `auto`
   reuses the first attempt's handle and still reports the first attempt's mode. Also
-  `src/api/http.rs`'s `request_query`, alongside its sibling `request_path`.
+  `src/api/http.rs`'s `request_query`, alongside its sibling `request_path`. SH-196
+  adds: `declared_dispatch_protocol` against a line-start assignment, a marker-free
+  script, a mention buried in a comment, and a nonexistent path; resolution order
+  (override, installed plugin, dev checkout) each refusing on an under-protocol script
+  and accepting an over-protocol one; and the installed-plugin branch's own first real
+  coverage — a fabricated `installed_plugins.json` under an injected `home`, including
+  last-record-wins and the missing-key/missing-script edge cases.
 - **Integration** (`tests/dispatch_endpoint.rs`): a real daemon subprocess (for a real
   minted token) with `STORYHOOK_DISPATCH_SCRIPT` pointed at a small stub — every guard
   case, the full 202-then-poll round trip, a refusal relayed verbatim, a silent script
@@ -327,6 +385,9 @@ last — so there is no sequence for an agent to get subtly wrong under pressure
   reaching the stub's argv verbatim, `auto` relayed in the record from the 202 through
   every poll, `auto=true` as the second recognized spelling, `auto=0` (or any other
   unrecognized value) as a 400, and the idempotency wrinkle against the real endpoint.
+  SH-196 adds: an unmarked stub (the exact shape of the machine that produced this
+  bug) driven through the real HTTP endpoint, confirming a 500 naming the diagnosis and
+  remedy with no handle ever minted.
 - **Plugin** (`plugin/claude-code/tests/`): `test-dispatch-target-session.sh` (the
   pre-existing named-session path, which had zero coverage before this story) and
   `test-dispatch-create-session.sh` (absent → created; present → not recreated;
@@ -347,4 +408,7 @@ last — so there is no sequence for an agent to get subtly wrong under pressure
   polling to completion, and leaving a real worktree on disk. Self-reap itself is not
   exercised here — no real `claude` binary stands behind the fixture's fake tmux, so no
   agent ever runs to call `reap` — that is `test-reap.sh` and `test-dispatch-auto.sh`'s
-  job, at the layer where it is actually observable.
+  job, at the layer where it is actually observable. SH-196 adds: AC2's own test
+  re-clicks Dispatch on the story it just claimed, hitting `story.sh`'s real
+  already-in-progress guard, and asserts the toast reads `Dispatch refused` with the
+  reason — the one place this suite observes a genuine business refusal end to end.
