@@ -779,10 +779,19 @@ pub fn validate_state_slug(slug: &str) -> Result<(), AppError> {
 /// about what a slug *is*, so the rule lives here and every surface reaching
 /// [`crate::service::ConfigService::add_type`] inherits it.
 ///
-/// Deliberately **not** applied to a slug arriving in an export document or a
-/// legacy tree (SH-134's D3): repairing one means renaming it, and every
-/// `StoryTypeSet` event names the slug it set, so a rename strands the stories
-/// carrying it. Such a slug is reported by `story doctor` instead.
+/// Deliberately **not** applied to a slug arriving through
+/// [`crate::service::TransferService::import_project`] (SH-134's D3):
+/// repairing one there means renaming it, and every `StoryTypeSet` event
+/// names the slug it set, so a rename strands the stories carrying it. Such a
+/// slug is reported by `story doctor` instead.
+///
+/// `story migrate` is the one exception (SH-183): it already refused a legacy
+/// tree over an unaddressable STATE slug at the same call site, so leaving
+/// type slugs unchecked there made the command disagree with itself about the
+/// same shape of problem, and an operator hand-editing that tree to satisfy
+/// the state half already has to retry the command anyway. This refuses
+/// rather than repairs — same reason as above, a rename would strand events —
+/// so a tree carrying one still needs a hand edit before it can migrate.
 pub fn validate_type_slug(slug: &str) -> Result<(), AppError> {
     let invalid = |reason: &str| {
         Err(AppError::Validation(format!(

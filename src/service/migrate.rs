@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::{
     StateDef, StoryEvent, StorySnapshot, fold_story, inverse_relation,
-    validate_state_defs_for_write,
+    validate_state_defs_for_write, validate_type_slug,
 };
 use crate::error::AppError;
 use crate::legacy::{LegacyProject, LegacyStory};
@@ -303,6 +303,21 @@ impl MigrationPlan {
                 "`{}` holds a state set storyhook would refuse to write: {error}",
                 project.root.join(".storyhook/states.toml").display()
             ));
+        }
+
+        // SH-183: `story migrate` already refuses a document for a bad STATE
+        // slug (above), so leaving TYPE slugs unchecked at this one call site
+        // made the same command disagree with itself about the same shape of
+        // problem. Named per offending slug rather than short-circuiting on
+        // the first, matching this function's own rule that every violation
+        // is collected before any is reported.
+        for story_type in &project.types {
+            if let Err(error) = validate_type_slug(&story_type.slug) {
+                refusals.push(format!(
+                    "`{}` holds a type slug storyhook would refuse to write: {error}",
+                    project.root.join(".storyhook/types.toml").display()
+                ));
+            }
         }
 
         let numbers = story_numbers(&project, &prefix, &mut refusals);
