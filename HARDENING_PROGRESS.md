@@ -183,7 +183,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 ### Low
 
 - [x] **SH-136** — the daemon-address harness list is hand-maintained prose · *filed by SH-131*
-- [ ] **SH-139** — `RemoteUrl::normalize`'s two explicit non-decisions
+- [x] **SH-139** — `RemoteUrl::normalize`'s two explicit non-decisions
 - [ ] **SH-148** — `bind_and_serve` is a `pub` entry point with no production caller
 - [ ] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
 - [ ] **SH-70** — pre-#18 import `[git]` comments
@@ -6493,3 +6493,57 @@ user-facing or API behavior changed.
 
 **PR:** #184, merged as `6bedcc8`. Branch verified deleted, `main`
 fast-forwarded cleanly.
+
+### SH-139 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line):
+`story list --state in-progress` showed the Medium queue's one remaining
+unchecked line, SH-167, still live elsewhere (no ⚠ mark in this file, same
+stale-mark situation every prior session has hit), and SH-150 correctly
+marked ⚠. Low was next; SH-139 led it.
+
+**Not a bug fix — both non-decisions turned out to already be decided.**
+Traced `RemoteUrl::normalize` → `classify()` → `network_key()` by hand and
+confirmed by running the two shapes through a scratch binary:
+
+- **IPv6 literal hosts.** `network_key`'s existing rule — never split the
+  authority on a colon, only on the trailing `@` for userinfo — already
+  keeps a bracketed literal and any port whole and case-folded.
+  `https://[::1]/acme/widgets` → `[::1]/acme/widgets`;
+  `ssh://git@[2001:db8::1]:22/acme/widgets` → `[2001:db8::1]:22/acme/widgets`.
+  Correct, just unpinned.
+- **Percent-encoded paths.** Never decoded, by the simple fact that nothing
+  in the path pipeline calls a decoder — `acme%2Fwidgets` stays one segment,
+  case-folded like any other. Decoding would let `%2f` collide with a real
+  `/`, with no way to know whether the source already decoded it once.
+
+Replaced both "does not panic, otherwise undecided" tests with real key
+assertions, added a doc comment on the percent-encoding decision (the IPv6
+one already had one, from the original implementation), and added three
+adjacent edge cases: a port still distinguishes an IPv6 endpoint from the
+bare host, `path_on` correctly treats the bracketed host+port as one token,
+and percent-encoding case-folds the same as the rest of the path.
+
+**Sibling defect found, filed rather than fixed:** tracing IPv6 handling
+through `classify()` turned up that its scp-like `[user@]host:path` branch
+splits on the *first* colon in the whole string, which lands inside a
+bracketed IPv6 literal. Confirmed against the real `git` binary
+(`GIT_TRACE=1 git ls-remote 'git@[::1]:acme/widgets.git'`) that this is
+working, git-supported syntax — and confirmed against storyhook's own
+compiled binary that it normalizes *successfully* to the garbage key
+`[/:1]:acme/widgets` instead of the correct key or a refusal. Different code
+path from `network_key`, different failure shape (wrong answer, not
+undecided) — filed as SH-213 rather than folded into this commit, per the
+two-hats rule. Linked `relates-to` SH-139.
+
+**Gate:** `cargo test --lib domain::remote::` (41/41) during development,
+then one full `make test` run, supervised in the background (log-growth
+heartbeat via `wc -c`, 120-second stall bound, polled every 15s) — no
+stall, exited on its own at 285s. Full suite green: 134 test-result blocks
+passed/0 failed, plugin harness 24/24, e2e 23/23.
+
+**Semver: patch.** Test coverage and documentation; the two decided
+behaviors were already what the code did, so nothing observable changed.
+
+**PR:** #186, merged as `8b6e466`. Branch verified deleted (remote and
+local), `main` fast-forwarded cleanly.
