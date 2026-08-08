@@ -116,6 +116,16 @@ pub fn request_path(url: &str) -> &str {
     url.split('?').next().unwrap_or(url)
 }
 
+/// The query string portion of a request URL (after `?`, if any), raw and
+/// unparsed. Sibling to [`request_path`] — together they cover the two
+/// halves `request.url()` can hold. Needed at all because
+/// [`crate::api::dispatch::intercept`] runs before the request body is ever
+/// read (SH-208's `?auto=1`): a flag that has to be visible before the body
+/// exists cannot travel in one.
+pub fn request_query(url: &str) -> Option<&str> {
+    url.split_once('?').map(|(_, query)| query)
+}
+
 /// Splits a request path into non-empty segments, e.g. `/api/story/SH-1` →
 /// `["api", "story", "SH-1"]`. A bare `/` (or `""`) yields an empty slice.
 pub fn path_segments(path: &str) -> Vec<&str> {
@@ -458,5 +468,37 @@ mod tests {
         assert!(!host_is_trusted("psamathe.evil.com:3456", &hosts));
         assert!(!host_is_trusted("", &hosts));
         assert!(!host_is_trusted("evil.tail983f02.ts.net", &hosts));
+    }
+
+    #[test]
+    fn request_query_extracts_everything_after_the_first_question_mark() {
+        assert_eq!(
+            request_query("/api/repos/x/story/y/dispatch?auto=1"),
+            Some("auto=1")
+        );
+        assert_eq!(
+            request_query("/api/repos/x/story/y/dispatch?a=1&b=2"),
+            Some("a=1&b=2")
+        );
+    }
+
+    #[test]
+    fn request_query_is_none_without_a_question_mark() {
+        assert_eq!(request_query("/api/repos/x/story/y/dispatch"), None);
+    }
+
+    #[test]
+    fn request_query_is_some_empty_string_for_a_bare_trailing_question_mark() {
+        // Distinct from None: the caller asked a question, just an empty
+        // one — a client that sent `?` with nothing after it, not one that
+        // never sent `?` at all.
+        assert_eq!(request_query("/api/repos/x/story/y/dispatch?"), Some(""));
+    }
+
+    #[test]
+    fn request_path_and_request_query_partition_the_url_with_nothing_lost() {
+        let url = "/api/repos/x/story/y/dispatch?auto=1&extra=2";
+        assert_eq!(request_path(url), "/api/repos/x/story/y/dispatch");
+        assert_eq!(request_query(url), Some("auto=1&extra=2"));
     }
 }

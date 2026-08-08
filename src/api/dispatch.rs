@@ -116,6 +116,13 @@ pub struct DispatchRecord {
     pub project: String,
     /// The story id this dispatch was asked to act on.
     pub story: String,
+    /// Whether this dispatch runs `story.sh`'s autonomous charter (SH-208):
+    /// plan approval is still the one human interaction, but everything
+    /// past it — council-voting open questions, merging its own PR, closing
+    /// the story, reclaiming its own worktree — runs unattended. Never
+    /// `skip_serializing_if`, unlike the fields below: this is never
+    /// absent, only ever true or false, for the lifetime of the record.
+    pub auto: bool,
     pub state: DispatchState,
     /// RFC3339, when this record was created.
     pub started_at: String,
@@ -225,7 +232,24 @@ impl DispatchRegistry {
     /// rather than read here so every clock read in this module comes from
     /// the caller's [`Environment`], matching how the rest of the daemon
     /// tells time.
-    fn try_start(&self, project: &str, story: &str, started_at: String) -> StartOutcome {
+    ///
+    /// `auto` is only consulted on the [`Started`](StartOutcome::Started)
+    /// path. A story already running is deduped by story id regardless of
+    /// mode — a repeated `POST` (with or without `?auto=1`) for a story
+    /// already dispatching returns that attempt's own handle rather than
+    /// starting a second script, exactly as it did before SH-208 added a
+    /// second mode. The returned record's `auto` therefore always reports
+    /// which mode is *actually running*, which can disagree with what a
+    /// later, deduped `POST` asked for — a caller that cares must poll
+    /// `auto` on the handle it gets back, not assume it matches its own
+    /// request.
+    fn try_start(
+        &self,
+        project: &str,
+        story: &str,
+        auto: bool,
+        started_at: String,
+    ) -> StartOutcome {
         let mut inner = self.inner.lock().expect("dispatch registry lock");
         if let Some(existing) = inner.running_by_story.get(story) {
             return StartOutcome::AlreadyRunning(existing.clone());
@@ -241,6 +265,7 @@ impl DispatchRegistry {
                     handle: handle.clone(),
                     project: project.to_string(),
                     story: story.to_string(),
+                    auto,
                     state: DispatchState::Running,
                     started_at,
                     finished_at: None,
@@ -346,11 +371,15 @@ fn valid_segment(s: &str) -> bool {
 /// is not answering it), then the token, then whether the handle/method
 /// actually resolve to something. An unauthenticated caller therefore
 /// cannot use this endpoint's responses to learn whether a given handle,
-/// project or story exists.
+/// project or story exists. `query` (SH-208's `?auto=1`) is parsed last of
+/// all, on the `POST` arm only — a malformed value is a 400, but only once
+/// every prior guard has already passed, so it leaks nothing to an
+/// unauthenticated caller either.
 #[allow(clippy::too_many_arguments)]
 pub fn intercept(
     segments: &[&str],
     method: &Method,
+    query: Option<&str>,
     headers: &[Header],
     trusted_hosts: &[String],
     token: &str,
@@ -385,9 +414,44 @@ pub fn intercept(
     }
 
     match (method, segments.len()) {
-        (Method::Post, 6) => Some(handle_post(project, story, env, bus, registry)),
+        (Method::Post, 6) => {
+            let auto = match parse_auto(query) {
+                Ok(auto) => auto,
+                Err(reply) => return Some(reply),
+            };
+            Some(handle_post(project, story, auto, env, bus, registry))
+        }
         (Method::Get, 7) => Some(handle_get(segments[6], registry)),
         _ => Some(text_reply(405, "Method Not Allowed")),
+    }
+}
+
+/// Parses the dispatch endpoint's one query parameter, `auto` (SH-208).
+///
+/// Absent is `false`, not a refusal — a caller that has never heard of
+/// `--auto` (every non-dashboard caller, and the dashboard's own plain
+/// Dispatch button) must see no behavior change. `1` and `true` are the
+/// only recognized "on" spellings; anything else *present* (`auto=0`, a
+/// typo, a stray empty value) is a 400 rather than a silently-accepted
+/// `false` — `?auto=0` quietly reading as attended would be exactly the
+/// kind of mismatch between what a caller asked for and what ran that this
+/// endpoint's own idempotency wrinkle (see [`DispatchRegistry::try_start`])
+/// already asks a caller to be careful about.
+fn parse_auto(query: Option<&str>) -> Result<bool, Reply> {
+    let Some(value) = query.and_then(|query| {
+        query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == "auto").then_some(value)
+        })
+    }) else {
+        return Ok(false);
+    };
+    match value {
+        "1" | "true" => Ok(true),
+        _ => Err(text_reply(
+            400,
+            format!("dispatch: unrecognized `auto` value `{value}` — use `auto=1`"),
+        )),
     }
 }
 
@@ -403,9 +467,11 @@ pub fn intercept(
 /// will refuse outright (not ready, already claimed) — the CLI's own
 /// refusal is relayed verbatim as the record's `payload` once the child
 /// exits, which this endpoint deliberately does not try to predict.
+#[allow(clippy::too_many_arguments)]
 fn handle_post(
     project: &str,
     story: &str,
+    auto: bool,
     env: &Environment,
     bus: &ChangeBus,
     registry: &Arc<DispatchRegistry>,
@@ -414,7 +480,7 @@ fn handle_post(
         Ok(script) => script,
         Err(message) => return text_reply(500, message),
     };
-    match registry.try_start(project, story, env.now()) {
+    match registry.try_start(project, story, auto, env.now()) {
         StartOutcome::AtCapacity => text_reply(
             429,
             format!("{MAX_RUNNING} dispatches are already running — wait for one to finish"),
@@ -427,6 +493,7 @@ fn handle_post(
                 script,
                 project.to_string(),
                 story.to_string(),
+                auto,
                 env.clone(),
                 bus.clone(),
             );
@@ -456,20 +523,22 @@ fn handle_get(handle: &str, registry: &DispatchRegistry) -> Reply {
     }
 }
 
-/// Spawns `script --project <project> dispatch <story>` on a detached
-/// thread and records its outcome when it finishes. Never touches the
-/// store: everything this needs travels in its arguments.
+/// Spawns `script --project <project> dispatch <story> [--auto]` on a
+/// detached thread and records its outcome when it finishes. Never touches
+/// the store: everything this needs travels in its arguments.
+#[allow(clippy::too_many_arguments)]
 fn spawn_dispatch(
     registry: Arc<DispatchRegistry>,
     handle: String,
     script: PathBuf,
     project: String,
     story: String,
+    auto: bool,
     env: Environment,
     bus: ChangeBus,
 ) {
     std::thread::spawn(move || {
-        let (state, payload, error) = run_child(&script, &project, &story, &env);
+        let (state, payload, error) = run_child(&script, &project, &story, auto, &env);
         registry.finish(&handle, &story, state, env.now(), payload, error);
         // Lets an open dashboard tab refresh without polling this endpoint
         // itself — the story moved to in-progress (or didn't), and the
@@ -484,6 +553,7 @@ fn run_child(
     script: &Path,
     project: &str,
     story: &str,
+    auto: bool,
     env: &Environment,
 ) -> (DispatchState, Option<serde_json::Value>, Option<String>) {
     let stdout_file = match tempfile::tempfile() {
@@ -529,7 +599,15 @@ fn run_child(
         .arg("--project")
         .arg(project)
         .arg("dispatch")
-        .arg(story)
+        .arg(story);
+    if auto {
+        // The one argument this endpoint adds to story.sh's own dispatch
+        // argv (SH-208) — everything else about the child is identical
+        // between the two modes; `story.sh` itself is what swaps the
+        // handoff prompt for the autonomous charter on seeing this flag.
+        command.arg("--auto");
+    }
+    command
         // Never inherited from the daemon's own cwd, which a daemon spawned
         // from a since-deleted directory (a build's temp dir, a cleaned-up
         // worktree) can hold indefinitely — bash's own startup calls
@@ -765,6 +843,7 @@ mod tests {
             let reply = intercept(
                 &segments,
                 &Method::Post,
+                None,
                 &[],
                 &[],
                 "tok",
@@ -791,6 +870,7 @@ mod tests {
             intercept(
                 &segments,
                 &Method::Get,
+                None,
                 &[],
                 &[],
                 "tok",
@@ -811,6 +891,7 @@ mod tests {
         let reply = intercept(
             &segments,
             &Method::Post,
+            None,
             &headers(&[("X-Storyhook-Token", "tok")]), // no X-Storyhook, no Host
             &[],
             "tok",
@@ -831,6 +912,7 @@ mod tests {
         let reply = intercept(
             &segments,
             &Method::Post,
+            None,
             &headers(&[
                 ("X-Storyhook", "1"),
                 ("Host", "evil.example"),
@@ -855,6 +937,7 @@ mod tests {
         let reply = intercept(
             &segments,
             &Method::Post,
+            None,
             &headers(GUARD_HEADERS),
             &[],
             "tok",
@@ -877,6 +960,7 @@ mod tests {
         let reply = intercept(
             &segments,
             &Method::Post,
+            None,
             &headers(&h),
             &[],
             "tok",
@@ -909,6 +993,7 @@ mod tests {
         let reply = intercept(
             &segments,
             &Method::Get,
+            None,
             &headers(GUARD_HEADERS),
             &[],
             "tok",
@@ -934,6 +1019,7 @@ mod tests {
         let reply = intercept(
             &segments,
             &Method::Post,
+            None,
             &headers(&h),
             &[],
             "tok",
@@ -956,6 +1042,7 @@ mod tests {
         let reply = intercept(
             &segments,
             &Method::Put,
+            None,
             &headers(&h),
             &[],
             "tok",
@@ -977,14 +1064,39 @@ mod tests {
     #[test]
     fn a_second_start_for_the_same_running_story_reuses_the_handle() {
         let registry = DispatchRegistry::new();
-        let first = match registry.try_start("proj", "SH-1", "t0".to_string()) {
+        let first = match registry.try_start("proj", "SH-1", false, "t0".to_string()) {
             StartOutcome::Started(handle) => handle,
             _ => panic!("first start must succeed"),
         };
-        match registry.try_start("proj", "SH-1", "t1".to_string()) {
+        match registry.try_start("proj", "SH-1", false, "t1".to_string()) {
             StartOutcome::AlreadyRunning(handle) => assert_eq!(handle, first),
             other => panic!("expected AlreadyRunning, story is still running: {other:?}"),
         }
+    }
+
+    /// SH-208's idempotency wrinkle, pinned: a `POST ?auto=1` for a story
+    /// already dispatching (plainly, without `auto`) does not start a
+    /// second, autonomous script — it reuses the running attempt's handle,
+    /// and that handle's own record still reports the mode that is
+    /// *actually running*, not the mode the deduped request asked for.
+    #[test]
+    fn a_second_start_with_a_different_auto_reuses_the_first_attempts_mode() {
+        let registry = DispatchRegistry::new();
+        let first = match registry.try_start("proj", "SH-1", false, "t0".to_string()) {
+            StartOutcome::Started(handle) => handle,
+            _ => panic!("first start must succeed"),
+        };
+        let reused = match registry.try_start("proj", "SH-1", true, "t1".to_string()) {
+            StartOutcome::AlreadyRunning(handle) => handle,
+            other => panic!("expected AlreadyRunning, story is still running: {other:?}"),
+        };
+        assert_eq!(reused, first);
+        let record = registry.get(&reused).expect("just started");
+        assert!(
+            !record.auto,
+            "the reused record must report the FIRST attempt's mode (attended), \
+             not the second, deduped request's"
+        );
     }
 
     impl std::fmt::Debug for StartOutcome {
@@ -1000,7 +1112,7 @@ mod tests {
     #[test]
     fn once_finished_a_story_can_be_started_again() {
         let registry = DispatchRegistry::new();
-        let handle = match registry.try_start("proj", "SH-1", "t0".to_string()) {
+        let handle = match registry.try_start("proj", "SH-1", false, "t0".to_string()) {
             StartOutcome::Started(h) => h,
             other => panic!("expected Started: {other:?}"),
         };
@@ -1012,7 +1124,7 @@ mod tests {
             Some(serde_json::json!({"ok": true})),
             None,
         );
-        match registry.try_start("proj", "SH-1", "t2".to_string()) {
+        match registry.try_start("proj", "SH-1", false, "t2".to_string()) {
             StartOutcome::Started(second) => assert_ne!(second, handle),
             other => panic!("a finished dispatch must not block a fresh one: {other:?}"),
         }
@@ -1022,12 +1134,17 @@ mod tests {
     fn capacity_is_enforced_across_distinct_stories() {
         let registry = DispatchRegistry::new();
         for n in 0..MAX_RUNNING {
-            match registry.try_start(&format!("proj-{n}"), &format!("SH-{n}"), "t".to_string()) {
+            match registry.try_start(
+                &format!("proj-{n}"),
+                &format!("SH-{n}"),
+                false,
+                "t".to_string(),
+            ) {
                 StartOutcome::Started(_) => {}
                 other => panic!("expected room for dispatch {n}: {other:?}"),
             }
         }
-        match registry.try_start("proj-extra", "SH-extra", "t".to_string()) {
+        match registry.try_start("proj-extra", "SH-extra", false, "t".to_string()) {
             StartOutcome::AtCapacity => {}
             other => panic!("expected AtCapacity beyond MAX_RUNNING: {other:?}"),
         }
@@ -1038,12 +1155,15 @@ mod tests {
         let registry = DispatchRegistry::new();
         let mut handles = Vec::new();
         for n in 0..(RETAIN_FINISHED + 3) {
-            let handle =
-                match registry.try_start(&format!("proj-{n}"), &format!("SH-{n}"), "t".to_string())
-                {
-                    StartOutcome::Started(h) => h,
-                    other => panic!("expected Started: {other:?}"),
-                };
+            let handle = match registry.try_start(
+                &format!("proj-{n}"),
+                &format!("SH-{n}"),
+                false,
+                "t".to_string(),
+            ) {
+                StartOutcome::Started(h) => h,
+                other => panic!("expected Started: {other:?}"),
+            };
             registry.finish(
                 &handle,
                 &format!("SH-{n}"),
