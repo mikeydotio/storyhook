@@ -734,6 +734,7 @@ fn error_corpus() -> Vec<AppError> {
         AppError::GithubApi("422 Unprocessable Entity".to_string()),
         AppError::SyncConflict("remote moved SH-1 to `done`".to_string()),
         AppError::StateConflict("todo".to_string(), "in-progress".to_string()),
+        AppError::SyncErrors("SH-1: 404 not found".to_string()),
     ]
 }
 
@@ -752,6 +753,7 @@ fn variant_name(error: &AppError) -> &'static str {
         AppError::GithubApi(_) => "GithubApi",
         AppError::SyncConflict(_) => "SyncConflict",
         AppError::StateConflict(..) => "StateConflict",
+        AppError::SyncErrors(_) => "SyncErrors",
     }
 }
 
@@ -764,7 +766,7 @@ fn the_error_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        10,
+        11,
         "every AppError variant needs a row in `error_corpus`; found {names:?}"
     );
 }
@@ -862,6 +864,7 @@ fn error_variants_travel_under_a_kind_tag() {
             "github_api",
             "sync_conflict",
             "state_conflict",
+            "sync_errors",
         ]
     );
 }
