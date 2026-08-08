@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use tiny_http::{Header, Method};
+use crate::daemon::http1::{Header, Method};
 
 use crate::api::http::{Reply, error_reply, header_value, json_reply, text_reply, to_json};
 use crate::api::wire::{WireRequest, WireResponse};
