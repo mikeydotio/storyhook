@@ -187,7 +187,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-148** — `bind_and_serve` is a `pub` entry point with no production caller
 - [x] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
 - [x] **SH-70** — pre-#18 import `[git]` comments
-- [ ] **SH-44** — web form defaults
+- [x] **SH-44** — web form defaults
 - [ ] **SH-127** — remove the status flash
 - [ ] **SH-128** — column sort options
 - [ ] **SH-168** — do not show the green ready status labels
@@ -6936,3 +6936,104 @@ local; `gh pr merge --delete-branch` handled both, including the local
 checkout switch back to `main`, since this ran in the primary checkout, not
 a worktree). `main` fast-forwarded cleanly, picking up SH-150's PR #164
 (merged moments earlier by another session) along with this one.
+
+### SH-44 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line): all of
+Medium was either checked or SH-167 (confirmed genuinely `in-progress`
+elsewhere via `story list --state in-progress`, no ⚠ mark in this file —
+the same stale-mark pattern every prior session hit, still unresolved).
+Low's first unchecked line was SH-44 itself. Also found and fixed in
+passing: SH-150's own line still carried its ⚠ mark from mid-flight, but
+`story show SH-150` came back `done (CLOSED)` — PR #164 landed while this
+run was elsewhere. Ticked to `[x]`, own commit ahead of this story's work.
+
+**Re-spec, not the title.** The story's title says literal `"todo"`/`"story"`;
+its 2026-07-29 comment overrides that: defaults now come from the project's
+own catalog, spec'd as "what the web form preselects," sourced from the same
+service the CLI uses. `"story"` specifically is wrong to hardcode — SH-157's
+own doc comment on `default_types()` explains it was rejected as a type slug
+because it reads as "a story of type story"; the stock default is `normal`.
+
+**What existed already, once traced.** State-side, the exact rule the story
+asks for — first *configured* OPEN state, not alphabetical — was already
+written twice: `domain::default_open_state` (`Option`-returning, pure,
+already reused by `service::git` and `compute_epic_display_state`) and a
+private `Result`-wrapping duplicate inside `service::story` that `story new`
+actually calls. Type-side, nothing: an omitted `--type` has always left a
+story simply untyped, no default-selection logic anywhere.
+
+**Built:** a sibling `domain::default_type(&[TypeDef]) -> Option<TypeDef>`
+(first configured, mirroring `default_open_state`'s contract exactly).
+`api::rest::meta_json` gains a `defaults: { state, type }` field, computed
+from the identical `Vec<StateDef>`/`Vec<TypeDef>` it already reads before
+reshaping them into `meta.states`/`meta.types` — one read, no second store
+round trip. `service::story::default_open_state` now delegates to
+`domain::default_open_state` instead of reimplementing the scan, so the
+doc comment claiming "the web form and the CLI read the same selection"
+is literally true rather than two implementations agreeing by luck.
+`openCreateModal()` reads `meta.defaults` and sets `#create-state`/
+`#create-type`'s `.value` to it (falling back to the existing blank
+placeholder when a project has none) instead of always defaulting to blank
+— the only behavior change: for type, a story created through the web form
+without touching the selector now gets the project's default type instead
+of landing untyped. State was already defaulted server-side on omission;
+this only makes it visible in the form instead of changing the outcome.
+
+**No council.** Scope was bounded by the story's own comment ("what the web
+form preselects," not new creation semantics) and by SH-157's already-settled
+type-naming precedent — nothing here was a genuine no-obviously-correct-answer
+call.
+
+**Tests:** `domain::tests::default_type_is_the_first_configured_type_not_
+alphabetical` and `..._is_none_for_a_project_with_no_types_configured` (the
+latter's own doc comment names it unreachable through `story type` — floored
+at one type by `ConfigService::remove_type`, the same shape as
+`two_open_states_and_no_role_means_the_second_one` above, tested at the pure
+function for the same reason). `web_serve_api_data_meta_defaults_are_first_
+configured_not_alphabetical` in `tests/web_test.rs`, appending a state and a
+type that sort first alphabetically to prove the API answers from configured
+order. A new e2e spec, `create-story-defaults.spec.ts`: preselection, and a
+full create-submit-verify round trip against a real daemon and browser.
+
+**A test-isolation bug the first e2e run caught, not a code bug.** The
+create-story spec's second test created a real story in the shared "Alpha
+Project" fixture and left it there, which every e2e spec in the same
+`run-e2e.sh` invocation shares one daemon and one seeded project set with —
+`filter-persistence.spec.ts:85` failed on the very next full run, expecting
+Alpha's story count to still be 2. Fixed by having the test delete the story
+it creates before finishing, verified against `web_serve_api_data_excludes_
+deleted_stories` (`tests/web_test.rs`) that a soft-delete really does drop a
+story from `/data`'s count and not just hide it. Re-run confirmed clean.
+
+**Gate, and the flaky-test/contention saga.** `make test`'s first full run
+failed exactly once, on `tests/daemon_timeouts.rs::exchange::a_client_
+behind_a_daemon_that_keeps_finishing_things_keeps_waiting` — the same test
+this run's own freshen summary already named as a known flake ("failed once
+on push … passed clean on isolated rerun"), unrelated to anything this story
+touched. A second full run, contended by an unrelated concurrent session's
+own `make test` (system load average peaked at 13.6, confirmed via `ps`
+showing genuinely CPU-burning `rustc` children rather than a hang, so no
+kill-and-restart), threw two more failures — `column-visibility.spec.ts`'s
+`beforeEach` timing out on `page.goto("/")` and this story's own
+`create-story-defaults` first test racing `#create-state`'s value against a
+slow `/data` fetch — both the first test in their file, both far slower than
+their normal sub-second time, both gone on an immediate re-run of just those
+two specs (2.1s and 1.1s). A third full run, still contended but past the
+worst of it, passed everything except `daemon_timeouts` once more; isolating
+that single test confirmed it green on its own. A fourth full run, after the
+other session's `make test` finished, was clean end to end: fmt, clippy `-D
+warnings`, 1013 unit tests, every integration file, doctests, `cargo build`,
+plugin harness 24/24, e2e 25/25, no orphan daemons pre- or post-run. Not
+logged as a wedge — nothing ever stopped moving, confirmed each time via
+`ps` CPU time before waiting further — but logged anyway, since "a known
+flaky test under heavy unrelated contention" is exactly the kind of noise
+this file's supervision section exists to keep separate from a real defect.
+
+**Semver: minor.** New API field, new preselection behavior, no existing
+contract changed — `meta.defaults` is additive and a client that ignores it
+sees the same response it always has.
+
+**PR:** #195, merged as `0a02e88`. Branch verified deleted (remote and
+local, via `gh pr merge --delete-branch`; `git fetch --prune` confirmed the
+remote ref gone). `main` fast-forwarded cleanly in the primary checkout.
