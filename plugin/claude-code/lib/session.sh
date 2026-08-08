@@ -90,7 +90,7 @@ refuse() {
 }
 
 # ---- helpers ----------------------------------------------------------------
-render_template() {  # render_template <template> <id> [<name>] [<dir>]
+render_template() {  # render_template <template> <id> [<name>] [<dir>] [<reap>]
   # <n>    -> the story id (kept as "n" for parity with the agentics original)
   # <name> -> the resolved window/worktree name; empty when not passed.
   # <dir>  -> the main checkout's absolute path; empty when not passed.
@@ -99,9 +99,15 @@ render_template() {  # render_template <template> <id> [<name>] [<dir>]
   #           story, and one store made that unnecessary. Kept because
   #           STORY_AUTO_PROMPT and STORY_PROMPT are user overrides and
   #           someone's may reference it.
-  local tpl="$1" n="$2" name="${3:-}" dir="${4:-}"
+  # <reap> -> the exact `story.sh reap <id>` command the caller resolved for
+  #           this dispatch (SH-208); empty when not passed. Templated in
+  #           rather than left for the child to reconstruct — an autonomous
+  #           session knows neither this script's own path nor its project's
+  #           slug reliably, and both are needed to self-reap correctly.
+  local tpl="$1" n="$2" name="${3:-}" dir="${4:-}" reap="${5:-}"
   tpl="${tpl//<name>/$name}"
   tpl="${tpl//<dir>/$dir}"
+  tpl="${tpl//<reap>/$reap}"
   printf '%s' "${tpl//<n>/$n}"
 }
 
