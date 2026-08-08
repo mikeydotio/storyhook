@@ -160,7 +160,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-122** — C11 Residual gap
 - [x] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
 - [x] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
-- [ ] **SH-138** — rollback drops a project's registered origins
+- [x] **SH-138** — rollback drops a project's registered origins
 - [ ] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
 - [ ] **SH-146** — the daemon never re-attempts its tailnet bind
 - [ ] **SH-147** — the tailnet probe runs twice on the port-fallback path
@@ -5359,3 +5359,91 @@ permanent-503 wedge a REST-side panic causes (`rpc::invoke` was already
 wrapped; `rest::route` never was); `story daemon status` reporting the
 in-flight set, which the new stalled-client messages now imply more
 strongly than the command itself delivers.
+
+### SH-138 — done
+
+**Outcome:** `ProjectExport` now carries a project's registered git origins,
+and `story import-project` restores them through the existing
+`register_origin` funnel — the only `src/` caller of `WriteOps::link_remote`,
+pinned by `tests/invoker_seam.rs::an_origin_is_registered_in_exactly_one_place`.
+Widening the document did not have to widen that funnel: `OwnedOrigin::explicit`
+is the audited escape hatch already built for exactly this, so the restore
+path answers the same ownership question every other caller does rather than
+opening a second one.
+
+**The genuinely open decision — abort or skip on a collision — went to
+council rather than a guess.** All three seats (software-architect,
+data-engineer, skeptic), researching independently, converged on skip-not-abort
+without seeing each other's work. The single-choice vote then split 3-0 for
+the skeptic's proposal specifically because it was the only one to *verify*
+rather than assert how the skip should surface: reading `src/output.rs`
+during the vote phase, all three found a `warnings: Vec<String>` field
+already wired into the JSON envelope — populated for `Response::Story`,
+hardcoded empty everywhere else, including the `Message` variant a bare
+restore answers with. The architect's own round-1 proposal ("no new warnings
+channel required," fold the skip into `message`'s prose) lost to that finding,
+including the architect's own vote against it. Unanimous, no deliberation
+round needed. Audit trail: `.council/sh-138-rollback-drops-origins/DECISION.md`.
+
+**The story named the wrong leg, the same shape SH-133 hit one story
+earlier.** SH-138's own "Watch out" said widening the document would move
+bytes in a `golden-export.json` compared *literally* — false, for the reason
+SH-133 already recorded: `the_real_trees_export_equals_the_golden_document_
+modulo_the_repairs` parses the fixture and asserts field by field, so an
+absent-when-empty field moves nothing and needed no regeneration. What *is*
+real, and what SH-133's precedent does not cover, is that the legacy-tree leg
+(`storage.rs`) has never had anywhere to put a registered origin at all —
+`project.toml` carries no such table, before or after the rearchitecture, a
+structural gap rather than a leftover one. `migrate_round_trip.rs`'s header
+comment, which listed "the registered origins" among what the round trip
+does not carry at all, was corrected to say the *document* now does, and
+only the legacy-tree leg still cannot — the same shape as `github.sync`
+immediately below it in that same comment.
+
+**Two commits, each independently gate-green — not the usual two hats, since
+neither is a refactor, but a genuine architectural seam.** Commit one is the
+data layer: the document carries remotes, `import_project` restores them,
+skip-not-abort on a collision. Commit two is the CLI layer: routing a skip
+into `Response::MessageWithWarnings`'s structured `warnings` field rather
+than prose. Verified independently rather than assumed: commit one's five
+files were built, then `git stash`-isolated from commit two's four files and
+run through the **whole** `make test` gate on their own — 2784 tests, plugin
+harness 24/24, browser suite 13/13, zero failures — before the stash was
+popped and commit two's files re-applied and gated as the combined whole
+(2785 tests, the one additional dispatch-level test commit two adds).
+
+**Red→green verified in both directions, and the two disarms are disjoint.**
+Blanking the export-side population (`remotes: Vec::new()` in place of
+`tx.project_remotes(project)?...`) fails exactly 3 of the 5 new remote tests:
+the ones asserting what the document itself carries, plus the two round-trip
+tests that need something in it to restore. Blanking the import-side
+registration loop fails the other 3: the ones asserting what the *store*
+holds after a restore, plus the corrupt-document rejection test (nothing runs
+to reject a bad URL if the loop that would parse it never runs). No test
+appears on both lists — the two halves are separately load-bearing, not one
+fix tested twice.
+
+**The story's own "Watch out" turned out to name a real gate, just not the
+one it thought.** The byte-comparison fear was false; the "the legacy leg has
+nowhere to put this" fact was true and had to be written down rather than
+discovered later by someone reading `storage.rs` and wondering why remotes
+were silently absent from a document that otherwise claims to carry them.
+
+**Gate:** `make test` green on the combined diff — **2785 tests, 0
+failures**, plugin harness 24/24, browser suite 13/13 — and separately on
+commit one alone (2784, one fewer by design). No wedge, no stall on either
+run; both supervised with a log-growth heartbeat on a 120-second bound.
+
+**Semver: minor.** `import_project`'s return type widened
+(`Result<usize, _>` → `Result<ImportOutcome, _>`) and `Response` gained a
+variant — both additive to callers matching on `usize`/exhaustively on
+`Response` only if they did not already have a wildcard arm, which every
+existing call site does (`tests/invoker_seam.rs` and `wire_envelope.rs`'s own
+`the_response_corpus_covers_every_variant` guard exist precisely so a new
+variant cannot land uncounted). No removed or incompatible interface.
+
+**Landed as two commits on one PR (#157), merge commit, verified, branch
+deleted.** `main` had moved ahead under this run (SH-173's serial-dispatch
+fix landed via PR #155 while this story was in flight) — `gh pr merge`
+handled the merge against current `main` with no conflicts, since the two
+PRs touch disjoint files.
