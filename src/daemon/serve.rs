@@ -12,7 +12,13 @@
 //! Binding the tailnet interface is also what *grants* trust to its names: the
 //! mutation guard's allowlist gains the tailnet IP and the MagicDNS FQDN only
 //! when the interface they would arrive on is actually being served. Trust
-//! follows bind.
+//! follows bind — whenever that bind happens. A login-time daemon start can
+//! race `tailscaled` coming up and miss its tailnet interface entirely
+//! (SH-146), so [`serve`] retries in the background until one succeeds,
+//! however long that takes; each request's `trusted_hosts` snapshot is read
+//! fresh, so the moment a late bind commits it, the very next request already
+//! sees it. The retry is one-shot: once a bind succeeds, `trusted_hosts` is
+//! never touched again for the rest of this process's life.
 //!
 //! # Listeners are passed in, not opened here
 //!
@@ -23,10 +29,10 @@
 //! get" guessing game in the suite.
 
 use std::collections::BTreeMap;
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -107,7 +113,18 @@ struct Serving<'a, S: Store> {
     store: &'a S,
     env: Environment,
     bus: ChangeBus,
-    trusted_hosts: Vec<String>,
+    /// The mutation guard's allowlist. Set once at construction from
+    /// whatever [`bind_listeners`] earned at startup; [`tailnet_reprobe`]
+    /// is the only thing that ever writes it again, and only once, the
+    /// instant its own late bind succeeds — never touched after that
+    /// (SH-146). A lock rather than a plain field for exactly that one
+    /// possible write; every read takes it for as long as a clone, never
+    /// longer. `Arc`-wrapped (SH-177) so [`accept_loop`]'s handler — which
+    /// `http1::serve_connections` requires to be `'static`, so it cannot
+    /// hold `&Serving` the way [`dispatch`] and [`tailnet_reprobe`] do — can
+    /// still read the live value on every request rather than a snapshot
+    /// frozen when the listener started.
+    trusted_hosts: Arc<RwLock<Vec<String>>>,
     /// The bearer token `/api/v1/*` requires — and, since SH-50,
     /// `/api/repos/*/story/*/dispatch` too.
     token: String,
@@ -136,7 +153,15 @@ struct Serving<'a, S: Store> {
 /// `ready` fires once every background thread is up and the loops are about to
 /// accept, so a caller can treat its return as "answering requests", not merely
 /// "bound".
-pub fn serve<S: Store, F>(
+///
+/// `on_late_tailnet_bind` fires at most once, from the background thread that
+/// retries a tailnet bind `listeners` did not already include (SH-146) — never
+/// from a request thread, so nothing a peer sends can trigger it. It is the
+/// only way a caller finds out a late bind happened at all: `listeners` and
+/// `trusted_hosts` are a snapshot of what was true when `serve` was called,
+/// and everything after that lives inside this function.
+#[allow(clippy::too_many_arguments)]
+pub fn serve<S: Store, F, L>(
     store: &S,
     env: &Environment,
     listeners: Vec<Listener>,
@@ -144,10 +169,18 @@ pub fn serve<S: Store, F>(
     bus: ChangeBus,
     token: String,
     ready: F,
+    on_late_tailnet_bind: L,
 ) -> Result<(), AppError>
 where
     F: FnOnce(),
+    L: Fn(&BoundAddress) + Send + Sync,
 {
+    let has_tailnet = listeners.iter().any(|l| !l.loopback);
+    let loopback_addr = listeners
+        .iter()
+        .find(|l| l.loopback)
+        .and_then(|l| l.listener.local_addr().ok());
+
     if listeners.is_empty() {
         return Err(AppError::Usage(
             "the daemon needs at least one bound listener to serve".to_string(),
@@ -166,7 +199,7 @@ where
         store,
         env: env.clone(),
         bus: bus.clone(),
-        trusted_hosts,
+        trusted_hosts: Arc::new(RwLock::new(trusted_hosts)),
         token,
         hello: Hello {
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -215,6 +248,27 @@ where
         {
             let stop = Arc::clone(&stop);
             scope.spawn(move || watch_parent(&stop));
+        }
+        if !has_tailnet && let Some(loopback_addr) = loopback_addr {
+            let stop = Arc::clone(&stop);
+            let serving = &serving;
+            let on_late_tailnet_bind = &on_late_tailnet_bind;
+            let jobs_tx = jobs_tx.clone();
+            let nested_tx = nested_tx.clone();
+            let slots = Arc::clone(&connection_slots);
+            scope.spawn(move || {
+                tailnet_reprobe(
+                    scope,
+                    serving,
+                    loopback_addr,
+                    http_limits,
+                    slots,
+                    jobs_tx,
+                    nested_tx,
+                    on_late_tailnet_bind,
+                    &stop,
+                )
+            });
         }
         {
             let serving = &serving;
@@ -300,6 +354,7 @@ where
         ChangeBus::new(),
         String::new(),
         move || ready(bound),
+        |_| {},
     )
 }
 
@@ -377,6 +432,13 @@ pub struct Listener {
 ///
 /// A tailnet bind failure is a warning, never fatal: no tailnet is a degraded
 /// dashboard, and a dashboard that refuses to start is a broken one.
+///
+/// The `?` below is load-bearing beyond its own error: it is also what keeps
+/// [`super::lifecycle::bind_preferred`]'s retry from ever probing the tailnet
+/// identity twice (SH-147) — a port-taken failure returns here, before
+/// `probe_and_bind_tailnet` is reached, so the fallback call is the *only*
+/// one that pays the probe's cost. Move the probe ahead of this bind and that
+/// stops being true.
 pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppError> {
     let loopback = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
@@ -397,29 +459,9 @@ pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppErr
     }];
     let mut tailnet = None;
 
-    if let Some(identity) = tailnet_identity() {
-        let tailnet_addr = format!("{}:{}", identity.bind_ip, bound.port());
-        match TcpListener::bind(&tailnet_addr) {
-            Ok(listener) => {
-                eprintln!("Storyhook dashboard (tailnet): http://{tailnet_addr}");
-                // We deliberately bound this interface ourselves, so trust its
-                // identity for mutations too — the same standing as loopback —
-                // without requiring STORYHOOK_WEB_TRUSTED_HOSTS. Trust follows
-                // bind, so a name is never trusted unless the interface it
-                // would arrive on is actually being served. `into_bound` is
-                // where that rule is enforced: it is reachable only from here,
-                // on the success arm.
-                tailnet = Some(identity.into_bound());
-                listeners.push(Listener {
-                    listener,
-                    loopback: false,
-                });
-            }
-            Err(e) => eprintln!(
-                "warning: could not bind tailnet interface {tailnet_addr}: {e}; \
-                 the dashboard is only reachable via localhost"
-            ),
-        }
+    if let Some((listener, bind)) = probe_and_bind_tailnet(bound.port()) {
+        tailnet = Some(bind);
+        listeners.push(listener);
     }
 
     Ok((
@@ -429,6 +471,47 @@ pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppErr
             tailnet,
         },
     ))
+}
+
+/// Probes `tailscale` and, if it names an identity, binds the tailnet
+/// interface on `port` — the same port loopback is already bound to.
+///
+/// `None` covers three cases alike, and deliberately does not distinguish
+/// them: no tailnet on this machine, a probe that missed its deadline, and a
+/// bind that failed (logged here, since this is the only place that knows
+/// which). All three mean the same thing to every caller — no tailnet
+/// listener exists — and [`tailnet_reprobe`] relies on that: it calls this
+/// again later without needing to know which case it was.
+fn probe_and_bind_tailnet(port: u16) -> Option<(Listener, TailnetBind)> {
+    let identity = tailnet_identity()?;
+    let tailnet_addr = format!("{}:{port}", identity.bind_ip);
+    match TcpListener::bind(&tailnet_addr) {
+        Ok(listener) => {
+            eprintln!("Storyhook dashboard (tailnet): http://{tailnet_addr}");
+            // We deliberately bound this interface ourselves, so trust its
+            // identity for mutations too — the same standing as loopback —
+            // without requiring STORYHOOK_WEB_TRUSTED_HOSTS. Trust follows
+            // bind, so a name is never trusted unless the interface it would
+            // arrive on is actually being served. `into_bound` is where that
+            // rule is enforced: it is reachable only from here, on the
+            // success arm.
+            let bind = identity.into_bound();
+            Some((
+                Listener {
+                    listener,
+                    loopback: false,
+                },
+                bind,
+            ))
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: could not bind tailnet interface {tailnet_addr}: {e}; \
+                 the dashboard is only reachable via localhost"
+            );
+            None
+        }
+    }
 }
 
 /// One accepted request, stripped of everything socket-shaped, on its way to
@@ -501,15 +584,19 @@ fn accept_loop<S: Store>(
 ) {
     let token: Arc<str> = Arc::from(serving.token.as_str());
     let bus = serving.bus.clone();
-    let trusted_hosts = serving.trusted_hosts.clone();
+    let trusted_hosts = Arc::clone(&serving.trusted_hosts);
     let env = serving.env.clone();
     let dispatch_registry = Arc::clone(&serving.dispatch_registry);
 
     // One closure per listener, cloned by `http1::serve_connections` once per
     // accepted connection (and, within a kept-alive connection, called again
     // for each request it carries) — every capture here is `Clone`, so the
-    // closure is too, without needing any of them to be `Sync`.
+    // closure is too, without needing any of them to be `Sync`. `trusted_hosts`
+    // is read fresh on every call rather than snapshotted once: a late
+    // tailnet bind (SH-146) can update it for as long as this listener runs,
+    // and the very next request must see it.
     let handler = move |request: Request| {
+        let trusted_hosts = trusted_hosts.read().unwrap_or_else(PoisonError::into_inner);
         worker(
             request,
             loopback,
@@ -848,6 +935,10 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         cwd: std::path::PathBuf::new(),
     });
 
+    let trusted_hosts = serving
+        .trusted_hosts
+        .read()
+        .unwrap_or_else(PoisonError::into_inner);
     let routed = rest::route(
         serving.store,
         &serving.env,
@@ -855,8 +946,9 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         &job.path,
         &job.headers,
         &job.body,
-        &serving.trusted_hosts,
+        &trusted_hosts,
     );
+    drop(trusted_hosts);
     drop(entry);
     // Published here, at the request boundary: the write has committed and
     // its transaction is over, so a subscriber woken by this can read what
@@ -997,6 +1089,171 @@ fn watch_parent(stop: &AtomicBool) {
     }
 }
 
+/// How [`tailnet_reprobe`] paces itself. Four durations rather than four
+/// stray env lookups scattered through the retry loop, and a struct rather
+/// than reading the environment inside [`next_reprobe_delay`] itself so that
+/// function stays a pure, unit-testable calculation over explicit inputs.
+struct ReprobeSchedule {
+    /// The delay before the first retry attempt.
+    initial: Duration,
+    /// The most the exponential backoff climbs to during the aggressive
+    /// phase below.
+    cap: Duration,
+    /// How long the aggressive phase runs (summed delay already waited out,
+    /// not wall-clock spent probing) before falling back to `steady_state`.
+    aggressive_window: Duration,
+    /// The interval once the aggressive phase gives up climbing. Never zero
+    /// and never "stop": a login-time miss must still self-heal whenever
+    /// `tailscaled` finally comes up, however late, so this is a slower
+    /// cadence, not a bounded retry count.
+    steady_state: Duration,
+}
+
+impl ReprobeSchedule {
+    /// Reads every knob from its `STORYHOOK_TAILNET_REPROBE_*_MS` override,
+    /// falling back to the production default. Overridable so a test can
+    /// observe a self-heal without waiting out the production interval —
+    /// the same shape [`heartbeat_interval`] already uses.
+    fn from_env() -> Self {
+        fn ms(name: &str, default: Duration) -> Duration {
+            std::env::var(name)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .map(Duration::from_millis)
+                .unwrap_or(default)
+        }
+        ReprobeSchedule {
+            initial: ms(
+                "STORYHOOK_TAILNET_REPROBE_INITIAL_MS",
+                Duration::from_secs(2),
+            ),
+            cap: ms("STORYHOOK_TAILNET_REPROBE_CAP_MS", Duration::from_secs(60)),
+            aggressive_window: ms(
+                "STORYHOOK_TAILNET_REPROBE_WINDOW_MS",
+                Duration::from_secs(600),
+            ),
+            steady_state: ms(
+                "STORYHOOK_TAILNET_REPROBE_STEADY_MS",
+                Duration::from_secs(300),
+            ),
+        }
+    }
+}
+
+/// The delay before [`tailnet_reprobe`]'s next attempt, given `elapsed` (the
+/// sum of every delay already waited out — not wall-clock time, which also
+/// includes each probe's own duration) and how many attempts have run.
+///
+/// Doubles from `schedule.initial` up to `schedule.cap` for the first
+/// `schedule.aggressive_window` of retrying — long enough to catch
+/// `tailscaled` starting anywhere from a few seconds to a few minutes after
+/// login without hammering it — then falls back to `schedule.steady_state`
+/// forever. Never returns "stop": a background thread doing nothing but this
+/// is unbounded on purpose, because the alternative is a login-time miss
+/// that outlives a hard retry limit and goes back to lasting until restart,
+/// which is the defect this exists to fix (SH-146).
+fn next_reprobe_delay(schedule: &ReprobeSchedule, elapsed: Duration, attempt: u32) -> Duration {
+    if elapsed >= schedule.aggressive_window {
+        return schedule.steady_state;
+    }
+    let scaled = schedule.initial.saturating_mul(1u32 << attempt.min(20));
+    scaled.min(schedule.cap)
+}
+
+/// Sleeps for `total`, checking `stop` every [`SHUTDOWN_CHECK`] rather than
+/// in one long nap — the same chopped-sleep shape [`heartbeat`] uses — so a
+/// shutdown does not have to wait out whatever the current backoff delay is.
+/// Returns `false` if `stop` fired before `total` elapsed, so the caller can
+/// bail immediately rather than going on to probe.
+fn sleep_chopped(total: Duration, stop: &AtomicBool) -> bool {
+    let mut waited = Duration::ZERO;
+    while waited < total {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        let nap = SHUTDOWN_CHECK.min(total - waited);
+        thread::sleep(nap);
+        waited += nap;
+    }
+    !stop.load(Ordering::Relaxed)
+}
+
+/// Retries a tailnet bind [`serve`] did not already have when it started —
+/// SH-146. A login-time daemon start races `tailscaled` coming up, and
+/// before this nothing ever retried a miss: the daemon served loopback only
+/// until somebody restarted it by hand.
+///
+/// Strictly timer-driven, never triggered by request arrival: a probe shells
+/// out to `tailscale`, and tying that to an unauthenticated request would let
+/// any peer that can reach loopback force repeated subprocess spawns — a
+/// self-inflicted local DoS vector for no benefit, since an idle daemon still
+/// needs to self-heal whether or not anyone is asking it anything.
+///
+/// One-shot: the loop returns the instant a bind succeeds and never probes
+/// again for the rest of this process's life. `trusted_hosts` is written
+/// — once — strictly *before* the new listener's `accept_loop` is spawned,
+/// so no request can ever be accepted on an interface the allowlist does not
+/// yet recognize; `host_is_trusted` is default-deny, so the reverse order
+/// would only ever fail safe, but this ordering closes the question rather
+/// than relying on that.
+#[allow(clippy::too_many_arguments)]
+fn tailnet_reprobe<'scope, S: Store, L>(
+    scope: &'scope thread::Scope<'scope, '_>,
+    serving: &'scope Serving<'_, S>,
+    loopback_addr: SocketAddr,
+    limits: http1::Limits,
+    slots: Arc<http1::ConnectionSlots>,
+    jobs_tx: mpsc::SyncSender<Job>,
+    nested_tx: mpsc::Sender<Job>,
+    on_late_tailnet_bind: &'scope L,
+    stop: &AtomicBool,
+) where
+    L: Fn(&BoundAddress) + Send + Sync,
+{
+    let schedule = ReprobeSchedule::from_env();
+    let mut elapsed = Duration::ZERO;
+    let mut attempt = 0u32;
+    loop {
+        let delay = next_reprobe_delay(&schedule, elapsed, attempt);
+        if !sleep_chopped(delay, stop) {
+            return;
+        }
+        elapsed += delay;
+        attempt += 1;
+
+        let Some((listener, bind)) = probe_and_bind_tailnet(loopback_addr.port()) else {
+            continue;
+        };
+
+        {
+            let mut hosts = serving
+                .trusted_hosts
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            hosts.extend(bind.trusted_hosts());
+        }
+
+        let bound = BoundAddress {
+            loopback: loopback_addr,
+            tailnet: Some(bind),
+        };
+        on_late_tailnet_bind(&bound);
+
+        scope.spawn(move || {
+            accept_loop(
+                serving,
+                listener.listener,
+                false,
+                limits,
+                slots,
+                jobs_tx,
+                nested_tx,
+            )
+        });
+        return;
+    }
+}
+
 /// Each project's slug and the head of its change feed.
 ///
 /// An unreadable store yields an empty map rather than an error: the poller is
@@ -1048,5 +1305,112 @@ mod tests {
     fn a_malformed_body_defaults_to_the_ordinary_pool() {
         assert!(!is_nested_invoke("/api/v1/invoke", "{ not json"));
         assert!(!is_nested_invoke("/api/v1/invoke", ""));
+    }
+
+    fn schedule(
+        initial_secs: u64,
+        cap_secs: u64,
+        window_secs: u64,
+        steady_secs: u64,
+    ) -> ReprobeSchedule {
+        ReprobeSchedule {
+            initial: Duration::from_secs(initial_secs),
+            cap: Duration::from_secs(cap_secs),
+            aggressive_window: Duration::from_secs(window_secs),
+            steady_state: Duration::from_secs(steady_secs),
+        }
+    }
+
+    /// SH-146's retry must not hammer `tailscale`: each attempt waits longer
+    /// than the last, starting from the schedule's own initial delay.
+    #[test]
+    fn reprobe_delay_doubles_from_the_initial_delay() {
+        let s = schedule(1, 3600, 3600, 300);
+        assert_eq!(
+            next_reprobe_delay(&s, Duration::ZERO, 0),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            next_reprobe_delay(&s, Duration::from_secs(1), 1),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            next_reprobe_delay(&s, Duration::from_secs(3), 2),
+            Duration::from_secs(4)
+        );
+    }
+
+    /// The backoff must never exceed the configured cap, however many
+    /// attempts have run — an unbounded exponent would eventually overflow
+    /// `Duration` on top of being pointless.
+    #[test]
+    fn reprobe_delay_never_exceeds_the_cap() {
+        let s = schedule(1, 8, 3600, 300);
+        assert_eq!(
+            next_reprobe_delay(&s, Duration::from_secs(7), 3),
+            Duration::from_secs(8)
+        );
+        assert_eq!(
+            next_reprobe_delay(&s, Duration::from_secs(15), 4),
+            Duration::from_secs(8)
+        );
+        assert_eq!(
+            next_reprobe_delay(&s, Duration::from_secs(15), 63),
+            Duration::from_secs(8),
+            "a huge attempt count must not overflow the left shift"
+        );
+    }
+
+    /// Past the aggressive window, the schedule falls back to the steady
+    /// state — and stays there. This is what makes "never a bounded retry
+    /// count" true: a daemon started days before its tailnet ever comes up
+    /// still keeps trying, just slowly.
+    #[test]
+    fn reprobe_delay_falls_back_to_steady_state_past_the_aggressive_window() {
+        let s = schedule(1, 60, 10, 300);
+        assert_eq!(
+            next_reprobe_delay(&s, Duration::from_secs(9), 5),
+            Duration::from_secs(32),
+            "still inside the aggressive window"
+        );
+        assert_eq!(
+            next_reprobe_delay(&s, Duration::from_secs(10), 6),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            next_reprobe_delay(&s, Duration::from_secs(999_999), 999),
+            Duration::from_secs(300),
+            "must keep returning a real delay arbitrarily far into a daemon's life, never \
+             a signal to stop retrying"
+        );
+    }
+
+    /// [`sleep_chopped`] must return promptly once `stop` is already set,
+    /// rather than sleeping out the full duration first — a real backoff
+    /// delay easily exceeds what a shutdown should ever have to wait for.
+    #[test]
+    fn sleep_chopped_returns_immediately_once_stop_is_already_set() {
+        let stop = AtomicBool::new(true);
+        let started = std::time::Instant::now();
+        let completed = sleep_chopped(Duration::from_secs(30), &stop);
+        assert!(
+            !completed,
+            "a pre-stopped sleep must report it did not finish"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "must not sleep at all once stop is already set"
+        );
+    }
+
+    /// The ordinary case: nothing stops it, so the full duration elapses and
+    /// the sleep reports completion.
+    #[test]
+    fn sleep_chopped_completes_when_never_stopped() {
+        let stop = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        let completed = sleep_chopped(Duration::from_millis(20), &stop);
+        assert!(completed);
+        assert!(started.elapsed() >= Duration::from_millis(20));
     }
 }

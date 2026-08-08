@@ -9,7 +9,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use storyhook::daemon::serve::BoundAddress;
@@ -100,8 +101,6 @@ pub fn try_serve_on(
     env: &Environment,
     port: u16,
 ) -> Result<BoundAddress, String> {
-    use std::sync::mpsc;
-
     let (tx, rx) = mpsc::channel::<Result<BoundAddress, String>>();
     let ready_tx = tx.clone();
     let env = env.clone();
@@ -155,6 +154,18 @@ impl DaemonGuard {
     }
 }
 
+/// How long [`DaemonGuard`] gives `story web stop` to finish.
+///
+/// **Chosen, not derived or calibrated**, in the sense [`ACCEPT_DEADLINE`]
+/// documents that phrase for. A guard-armed daemon has no in-flight work of
+/// its own by the time a test drops it, so `web stop`'s graceful wait should
+/// clear in milliseconds; production's own interactive notice for that same
+/// wait ([`SERVED_PATIENCE`](storyhook::daemon::lifecycle::SERVED_PATIENCE),
+/// 10s) is the only other number in play, and this sits above it rather than
+/// racing it. What is being distinguished is "slow" from "never," so the
+/// margin is generous on purpose.
+const STOP_DEADLINE: Duration = Duration::from_secs(15);
+
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
         let mut command = std::process::Command::new(story_binary());
@@ -162,7 +173,8 @@ impl Drop for DaemonGuard {
         for (name, value) in &self.vars {
             command.env(name, value);
         }
-        let _ = command.args(["web", "stop"]).output();
+        command.args(["web", "stop"]);
+        let _ = run_bounded(command, "web stop", STOP_DEADLINE);
     }
 }
 
@@ -287,6 +299,43 @@ pub fn http_status_line(port: u16, timeout: Duration) -> Option<String> {
     Some(line)
 }
 
+/// Runs `cmd`, bounding the whole spawn-wait-collect sequence by `deadline`,
+/// and panics naming `what` if it is not done in time.
+///
+/// [`Command::output`] waits on the child and *then* reads its pipes to
+/// end-of-file — two waits, not one, and the second is unbounded: any
+/// descendant that inherited the pipe and outlives the child holds it exactly
+/// as long as it likes (SH-94, SH-141). Nowhere is that worse than inside a
+/// test [`Drop`]: it runs during unwind, so a test that is already failing
+/// hangs instead of reporting, and the only thing that ever ends it is a
+/// wall-clock timeout several layers up, long after the evidence is gone
+/// (SH-142).
+///
+/// The worker thread is not joined on timeout — it is blocked in a syscall
+/// nothing here can interrupt — so leaving it behind is the price of
+/// reporting the failure at all. It ends when the test binary's process does.
+pub fn run_bounded(mut cmd: Command, what: &str, deadline: Duration) -> Output {
+    let (tx, rx) = mpsc::channel();
+    let label = what.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output());
+    });
+
+    match rx.recv_timeout(deadline) {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => panic!("spawning `{label}`: {e}"),
+        // The last time this fired elsewhere, the child had already exited and
+        // the block was here, in the parent, because a detached daemon was
+        // holding the write end of this pipe. `lsof -p <pid of this test
+        // binary>` names the pipe; searching the other processes for the same
+        // address names whoever holds it — see tests/daemon_fd_hygiene.rs.
+        Err(_) => panic!(
+            "`{label}` did not finish within {deadline:?} — a deadlock rather than \
+             slowness, because every wait inside a `story` command is bounded."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +440,46 @@ mod tests {
         assert!(
             line.as_deref().is_some_and(|l| l.contains("200")),
             "serve() must not return until the server actually answers; got {line:?}"
+        );
+    }
+
+    #[test]
+    fn run_bounded_returns_the_childs_actual_output() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf ok; exit 3"]);
+
+        let out = run_bounded(cmd, "printf ok", Duration::from_secs(5));
+        assert_eq!(out.stdout, b"ok");
+        assert_eq!(out.status.code(), Some(3));
+    }
+
+    /// SH-142: `DaemonGuard`'s `Drop` used to call `.output()` directly, which
+    /// waits on the child and *then* reads its pipes to end-of-file with no
+    /// bound at all. A command that never finishes — standing in for a child
+    /// whose exit does not release the pipe, the SH-94/SH-141 hazard — would
+    /// have hung this test (and, inside a `Drop`, the whole suite) rather than
+    /// failing inside `deadline`.
+    #[test]
+    fn run_bounded_gives_up_on_its_deadline_rather_than_waiting_out_a_hung_command() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 5"]);
+        let deadline = Duration::from_millis(300);
+
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            run_bounded(cmd, "sleep 5", deadline)
+        }));
+        let elapsed = started.elapsed();
+
+        assert!(
+            result.is_err(),
+            "a command that outlives its deadline must be reported, not returned as if \
+             it had finished"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "run_bounded took {elapsed:?} to give up on a {deadline:?} deadline — it waited \
+             out the hung command instead of bounding the wait"
         );
     }
 }
