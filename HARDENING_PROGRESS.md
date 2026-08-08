@@ -167,7 +167,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - ⚠ **SH-150** — the TUI holds its own store handle · *in-progress as of 2026-08-07T20:35 — another session; do not claim*
 - [x] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
 - [x] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
-- [ ] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
+- [x] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
 - [x] **SH-164** — labels are sometimes concatenated
 - [ ] **SH-165** — an epic with in-progress children should read as in-progress
 - [ ] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118*
@@ -5922,3 +5922,68 @@ recorded here rather than silently fixed, since the point of naming the
 convention is that a slip against it is worth one sentence, not a rewrite of
 already-merged history. Both merge commits, both verified, both branches
 deleted.
+
+### SH-159 — done
+
+Picked next off the Medium queue after SH-156. Re-checked `story list --state
+in-progress`: SH-112 (epic, skip), SH-150 (⚠, confirmed, another session),
+SH-167 (in-progress, no ⚠ mark but confirmed live). SH-159 was next,
+unclaimed, and ready.
+
+**The design call the story itself deferred.** `SyncReport.errors` collected
+per-story failures but `SyncReport::outcome()` only ever inspected
+`self.conflicts` (SH-152's fix), so a run where one story hit a 404'd issue
+still answered "GitHub sync complete." at exit 0. The story named this a
+genuine design call rather than an oversight — a conflict is a question
+nobody answered, an error may be transient and may be one story out of
+forty — so per START HERE's autonomy rule, council first.
+
+**Council: unanimous on substance, round 1.** Three independent seats
+(`ux-designer-cli`, `api-designer`, `qa-engineer`) each proposed the same
+design — exit non-zero whenever `errors` is non-empty, via a new
+`AppError::SyncErrors` at exit code 10 — without seeing each other's
+answers. The single-choice vote split 2-1 only over whether to also add a
+`--json` partial-success payload; deliberation converged all three onto the
+no-JSON-change shape once two seats pointed out `to_message()` already
+interleaves successes and errors in one string. Round-2 ranked-choice runoff:
+2-of-3 first place, no elimination needed. Full trail:
+`.council/sh159-partial-sync-error-exit-code/DECISION.md`, recorded as a
+comment on the story.
+
+**Red→green, TDD.** `tests/github_sync_engine.rs`'s existing
+`an_error_syncing_one_story_does_not_abort_the_rest_of_the_sync` (SH-158)
+encoded the bug as intended behavior — `.expect(Ok)` on a run with one broken
+story. Changed to `.expect_err`, matching `AppError::SyncErrors`; failed to
+compile against the not-yet-existing variant (red), green once
+`SyncReport::outcome()` checked `self.errors` after `self.conflicts`. Two new
+unit tests in `github::outcome_tests`: an error alone refuses at exit 10, and
+a conflict still outranks an error when a run has both, unchanged from
+SH-152's priority.
+
+**The exhaustive-match contract absorbed the new variant exactly as it
+absorbed `SyncConflict`:** `tests/error_contract.rs`'s `UNPROVOKABLE` list,
+`variant_name`, and `unreachable_variants_still_hold_their_exit_codes`;
+`tests/wire_envelope.rs`'s `error_corpus`, `variant_name`, and the
+`kind`-tag list. `src/api/http.rs`'s `status_for` maps it to 502, grouped
+with `GithubApi`/`GithubAuth` — the aggregate form of the same
+upstream-call-failed shape, not a 409 like the two conflict variants.
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace,
+all-targets) clean, full Rust suite green, plugin harness 24/0, e2e 13/13,
+clean working tree after, no orphan daemons. `cargo check
+--no-default-features` also compiles. Supervised per this file's rule: a
+background run with a 120-second log-growth stall bound via `Monitor`. No
+stall.
+
+**Semver: minor.** A new flag, no interface removed — but `story github-sync`
+now exits 10 whenever any story failed to sync, even if every other story
+applied cleanly. Any script treating exit 0 as "the sync ran clean" was
+already wrong and now finds out.
+
+**PR:** #170, merged as `b853021`. Branch verified deleted.
+
+**The same sequencing slip as SH-156, again.** Step 8 asks for this log entry
+as its own commit *on the same PR* as the work, and #170 was already merged
+before this entry was written — noted per SH-156's own precedent rather than
+rewriting merged history, landing as its own commit on its own branch/PR
+instead.
