@@ -402,6 +402,13 @@ pub struct Listener {
 ///
 /// A tailnet bind failure is a warning, never fatal: no tailnet is a degraded
 /// dashboard, and a dashboard that refuses to start is a broken one.
+///
+/// The `?` below is load-bearing beyond its own error: it is also what keeps
+/// [`super::lifecycle::bind_preferred`]'s retry from ever probing the tailnet
+/// identity twice (SH-147) — a port-taken failure returns here, before
+/// `probe_and_bind_tailnet` is reached, so the fallback call is the *only*
+/// one that pays the probe's cost. Move the probe ahead of this bind and that
+/// stops being true.
 pub fn bind_listeners(port: u16) -> Result<(Vec<Listener>, BoundAddress), AppError> {
     let loopback = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
