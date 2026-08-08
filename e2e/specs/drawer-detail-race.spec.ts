@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { seedToken } from "./support";
 
 /**
  * Exercises SH-218: openDrawer() renders once synchronously from cached
@@ -19,6 +20,7 @@ import { test, expect } from "@playwright/test";
  */
 
 test.beforeEach(async ({ page }) => {
+  await seedToken(page);
   await page.goto("/");
   await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
   await expect(page.locator("#board-view")).toBeVisible();

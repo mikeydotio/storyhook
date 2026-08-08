@@ -179,21 +179,25 @@ fi
 
 base_url="http://127.0.0.1:$port"
 deadline=$((SECONDS + 15))
-until curl -sf -o /dev/null "$base_url/api/repos"; do
+# `GET /` rather than `GET /api/repos` (SH-187: the latter now requires the
+# daemon's bearer token, which this probe has no reason to carry -- it is
+# asking "is the HTTP server up", not "is it authenticated").
+until curl -sf -o /dev/null "$base_url/"; do
   if [ "$SECONDS" -ge "$deadline" ]; then
-    echo "run-e2e.sh: $base_url never answered GET /api/repos within 15s" >&2
+    echo "run-e2e.sh: $base_url never answered GET / within 15s" >&2
     exit 1
   fi
   sleep 0.2
 done
 echo "run-e2e.sh: dashboard live at $base_url" >&2
 
-# --- Dispatch (SH-50): the token the dashboard's token modal needs, and
-# where AA's dispatch is expected to land, for the spec's own assertions.
-# `daemon token` prints the token on its own first line, then a rotation
-# note on a second -- `head -n1` is the token alone.
-export DASHBOARD_DISPATCH_TOKEN
-DASHBOARD_DISPATCH_TOKEN="$("$story_bin" daemon token | head -n1)"
+# --- The daemon's bearer token (SH-187: every /api/** route requires it,
+# not just dispatch's own since SH-50), and where AA's dispatch is expected
+# to land, for the specs' own assertions. `daemon token` prints the token on
+# its own first line, then a rotation note on a second -- `head -n1` is the
+# token alone.
+export DASHBOARD_TOKEN
+DASHBOARD_TOKEN="$("$story_bin" daemon token | head -n1)"
 export DASHBOARD_ALPHA_STORY_ID="$alpha_story_id"
 export DASHBOARD_ALPHA_CHECKOUT="$seed_dir/alpha"
 export DASHBOARD_DELTA_STORY_ID="$delta_story_id"

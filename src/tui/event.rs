@@ -198,10 +198,13 @@ mod tests {
             .expect("a scratch directory")
     }
 
-    /// A [`DaemonInfo`] naming `port`. `/api/events` carries no version
-    /// handshake and no token check, so only `port` and `token` (sent but
-    /// never verified) are exercised by anything reachable from these tests.
-    fn daemon_at(port: u16) -> DaemonInfo {
+    /// A [`DaemonInfo`] naming `port` and `token`. `/api/events` carries no
+    /// version handshake, so only `port` and `token` are exercised by
+    /// anything reachable from these tests. `token` must be the real one
+    /// `serve()` minted (SH-187: every route requires it now, `/api/events`
+    /// included) rather than a placeholder, or `spawn_change_thread`'s
+    /// connection gets a 401.
+    fn daemon_at(port: u16, token: &str) -> DaemonInfo {
         DaemonInfo {
             pid: std::process::id(),
             port,
@@ -210,7 +213,7 @@ mod tests {
             exe: std::env::current_exe().expect("this test binary"),
             exe_mtime: 0,
             started_at: "2026-01-01T00:00:00Z".to_string(),
-            token: "test-token".to_string(),
+            token: token.to_string(),
             store_path: std::path::PathBuf::new(),
             tailnet: None,
         }
@@ -233,7 +236,7 @@ mod tests {
     /// `PRAGMA data_version` poll `spawn_change_thread` used to run itself —
     /// so a write through the second handle is detected and published onto
     /// the bus exactly as it would be in production, not simulated.
-    fn serve() -> (u16, Environment, SqliteStore, tempfile::TempDir) {
+    fn serve() -> (u16, String, Environment, SqliteStore, tempfile::TempDir) {
         use std::sync::mpsc;
 
         let dir = scratch();
@@ -246,14 +249,19 @@ mod tests {
         let serving_env = env.clone();
         std::thread::spawn(move || {
             let store = store;
-            let _ = crate::daemon::serve::bind_and_serve(&store, &serving_env, 0, move |bound| {
-                let _ = tx.send(bound.port());
-            });
+            let _ = crate::daemon::serve::bind_and_serve(
+                &store,
+                &serving_env,
+                0,
+                move |bound, token| {
+                    let _ = tx.send((bound.port(), token));
+                },
+            );
         });
-        let port = rx
+        let (port, token) = rx
             .recv_timeout(Duration::from_secs(10))
             .expect("the test daemon never became ready");
-        (port, env, writer, dir)
+        (port, token, env, writer, dir)
     }
 
     /// The property the whole thread exists for: a write made by something
@@ -270,8 +278,8 @@ mod tests {
     /// baseline before returning" fix.
     #[test]
     fn a_write_from_elsewhere_reports_a_change() {
-        let (port, env, writer, _dir) = serve();
-        let daemon = daemon_at(port);
+        let (port, token, env, writer, _dir) = serve();
+        let daemon = daemon_at(port, &token);
 
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -329,14 +337,19 @@ mod tests {
         let (ready_tx, ready_rx) = mpsc::channel();
         let serving_env = env.clone();
         std::thread::spawn(move || {
-            let _ = crate::daemon::serve::bind_and_serve(&store, &serving_env, 0, move |bound| {
-                let _ = ready_tx.send(bound.port());
-            });
+            let _ = crate::daemon::serve::bind_and_serve(
+                &store,
+                &serving_env,
+                0,
+                move |bound, token| {
+                    let _ = ready_tx.send((bound.port(), token));
+                },
+            );
         });
-        let port = ready_rx
+        let (port, token) = ready_rx
             .recv_timeout(Duration::from_secs(10))
             .expect("the test daemon never became ready");
-        let daemon = daemon_at(port);
+        let daemon = daemon_at(port, &token);
 
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -355,8 +368,8 @@ mod tests {
     /// second.
     #[test]
     fn a_store_nobody_writes_to_reports_nothing() {
-        let (port, env, _writer, _dir) = serve();
-        let daemon = daemon_at(port);
+        let (port, token, env, _writer, _dir) = serve();
+        let daemon = daemon_at(port, &token);
 
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -382,7 +395,9 @@ mod tests {
         drop(listener); // freed; nothing answers there now
 
         let env = Environment::at("/private/tmp");
-        let daemon = daemon_at(port);
+        // Never validated: nothing is listening on `port` at all, so the
+        // connection itself fails before any token would be checked.
+        let daemon = daemon_at(port, "unreachable");
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let handle = EventSource::spawn_change_thread(&env, &daemon, tx, Arc::clone(&stop));

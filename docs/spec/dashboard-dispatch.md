@@ -154,7 +154,11 @@ who it is. **Decision:** dispatch requires the daemon's bearer token
 (`X-Storyhook-Token`, `rpc::token_ok`'s own constant-time check) in addition, on both
 listeners including loopback — one code path, one test matrix, rather than a loopback
 exemption that would need its own justification. **Pre-existing, wider than this
-story: filed as [SH-187](#follow-up-stories-filed), left undecided.**
+story: filed as [SH-187](#follow-up-stories-filed).**
+>
+> **Resolved by SH-187.** The token requirement this story built for `.../dispatch`
+> alone is now dashboard-wide — every `/api/**` route, reads included, on both
+> listeners. Design of record: [`dashboard-authorization.md`](dashboard-authorization.md).
 
 **F2 — process execution reachable from a browser mutation already existed.** A story
 *move* already reaches `sh -c` through event hooks (`event_hooks.rs:350-357` ←
@@ -241,11 +245,13 @@ on purpose). Both are filed and linked below rather than silently absorbed.
 
 ## Follow-up stories filed
 
-Both live in the storyhook store (`story show <id>` is the source of truth), not in
-this repository's filesystem — there is nothing under `docs/` to link to.
+Both live in the storyhook store (`story show <id>` is the source of truth). SH-187 is
+resolved and has its own design doc, linked below; SH-188 is still open, with nothing
+under `docs/` to link to yet.
 
 - **SH-187** — the dashboard's mutation guard is not authentication; any tailnet peer
-  can write with two headers (F1). Child of SH-112, relates-to SH-50.
+  can write with two headers (F1). Child of SH-112, relates-to SH-50. **Resolved —
+  [`dashboard-authorization.md`](dashboard-authorization.md).**
 - **SH-188** — event hooks already let a browser-reachable story mutation run `sh -c`
   in the project checkout (F2). Child of SH-112, relates-to SH-50.
 

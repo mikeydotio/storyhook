@@ -539,12 +539,27 @@ If the `web-serve` tool is present on your `PATH` (coderig/agentsmith environmen
 
 ### Security
 
-Mutating requests (creating or deleting a project; creating, moving, editing, or deleting a story) require:
+Every dashboard request — reads and writes alike, on both `127.0.0.1` and your tailnet
+IP — requires the daemon's bearer token. Get it with:
+
+```bash
+story daemon token
+```
+
+The dashboard's own page prompts for it on first load and holds it in
+`sessionStorage` (gone when the tab closes; entering it again after a browser restart
+or a daemon restart — the token rotates then — is expected). Anything that can't
+supply it, including a peer on your tailnet that only knows how to forge the checks
+below, is refused.
+
+Mutating requests (creating or deleting a project; creating, moving, editing, or deleting a story) additionally require:
 
 - a same-origin request — the dashboard's own page sets a custom `X-Storyhook` header that a cross-site request cannot replicate without triggering a CORS preflight the server never answers;
 - a `Host` header that resolves to `127.0.0.1`, `localhost`, `::1`, the tailnet IP this instance bound itself, or — when Tailscale MagicDNS is on — this machine's full MagicDNS name (e.g. `host.tailXXXXX.ts.net`) — this is what stops DNS-rebinding, which the header check alone can't catch. The bare short hostname (`host`, without the `.ts.net` suffix) is deliberately *not* trusted: unlike the full name, it can resolve through a DNS search domain that isn't your tailnet's, so trusting it could reopen the exact rebinding this check exists to stop.
 
-Read-only requests (`GET /`, `GET /api/repos`, `GET /api/repos/<id>/data`, `GET /api/repos/<id>/story/<sid>`) have no such restriction — they're reachable (but not writable) from anywhere the socket itself is reachable, i.e. localhost and your tailnet.
+These two checks alone are not authentication — anything that can set two headers directly (a `curl` from any peer your tailnet lets reach the dashboard's bound IP) passes both with no credential at all. They defend a *browser* being tricked into sending a request on a victim's behalf; the token above is what actually establishes who is asking. (Full design and review: [`docs/spec/dashboard-authorization.md`](docs/spec/dashboard-authorization.md).)
+
+`GET /` is the one exception, reachable with no token at all: it serves the dashboard's own page, which is what prompts for the token in the first place. `GET /api/events` (the live-update stream) accepts the token as a `?token=` query parameter as well as a header, since a browser's `EventSource` API cannot set headers — no other route accepts it that way.
 
 If you reverse-proxy the dashboard under a different hostname (e.g. via `web-serve`) and want writes to work there too, set `STORYHOOK_WEB_TRUSTED_HOSTS` to a comma-separated allowlist before starting the server:
 
@@ -552,7 +567,7 @@ If you reverse-proxy the dashboard under a different hostname (e.g. via `web-ser
 STORYHOOK_WEB_TRUSTED_HOSTS=my-tailnet-host story web start
 ```
 
-This only widens the `Host` allowlist for writes — it does not change what the server binds. Only set it to hostnames that are themselves no more exposed than your tailnet.
+This only widens the `Host` allowlist for writes — it does not change what the server binds, and a proxied caller still needs the token like any other caller. Only set it to hostnames that are themselves no more exposed than your tailnet.
 
 ## Automation and scripting
 

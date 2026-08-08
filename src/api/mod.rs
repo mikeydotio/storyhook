@@ -2,6 +2,8 @@
 //!
 //! One daemon serves two listeners over these modules:
 //!
+//! * [`admission`] — the token gate every other `/api/**` route answers
+//!   behind (SH-187), reads and writes alike, on both listeners.
 //! * [`dispatch`] — the dashboard's dispatch endpoint (SH-50): token-gated,
 //!   answered off the store-owning thread, on both listeners.
 //! * [`http`] — the plumbing both share: response shaping, the security
@@ -16,6 +18,7 @@
 //! and "it can", and two listeners that each grew their own copy would
 //! eventually disagree about it.
 
+pub mod admission;
 pub mod dispatch;
 pub mod http;
 pub mod rest;
