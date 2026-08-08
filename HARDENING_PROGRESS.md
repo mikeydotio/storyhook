@@ -184,7 +184,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 
 - [x] **SH-136** — the daemon-address harness list is hand-maintained prose · *filed by SH-131*
 - [x] **SH-139** — `RemoteUrl::normalize`'s two explicit non-decisions
-- [ ] **SH-148** — `bind_and_serve` is a `pub` entry point with no production caller
+- [x] **SH-148** — `bind_and_serve` is a `pub` entry point with no production caller
 - [ ] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
 - [ ] **SH-70** — pre-#18 import `[git]` comments
 - [ ] **SH-44** — web form defaults
@@ -6546,4 +6546,68 @@ passed/0 failed, plugin harness 24/24, e2e 23/23.
 behaviors were already what the code did, so nothing observable changed.
 
 **PR:** #186, merged as `8b6e466`. Branch verified deleted (remote and
+local), `main` fast-forwarded cleanly.
+
+### SH-148 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line):
+`story list --state in-progress` showed the Medium queue's only unchecked
+line (SH-167) still live elsewhere, plus SH-150 (⚠) and the epic SH-112 —
+none claimable. Low was next; SH-148 led it, confirmed `todo` and ready via
+`story list --ready`.
+
+**A real decision, not a mechanical fix — routed through council per the
+autonomy rule.** The story's own body weighed three options (doc-only
+relabel, cfg/feature-gate, or deleting the function and rewiring the test
+fixture onto `lifecycle::run`) with none obviously correct, so this went to
+`council:council-vote` rather than a unilateral call. Full audit trail:
+`.council/sh148-bind-and-serve-entry-point/`.
+
+Read the current code first, since the story predates SH-114/W6: confirmed
+by grep that `bind_and_serve` (src/daemon/serve.rs) still has zero
+production callers — only `main.rs` calls `lifecycle::run` — and that both
+entry points already bottom out in the same `serve()` accept/dispatch/SSE
+core. The only divergence is bootstrap plumbing (pidfile lock, portfile,
+startup backup, real vs. empty token), which `tests/web_test.rs`'s 165
+dashboard-only REST test functions never exercise.
+
+**Panel:** qa-engineer (test-harness cost of rewiring the fixture),
+software-architect (production-entry-point purity, cfg-gating precedent),
+skeptic (whether the story's "drift tax" framing still held post-SH-114).
+Round 1 produced two doc-only proposals and one feature-gate proposal, all
+three independently rejecting the fixture rewrite as disproportionate and
+independently ruling out a `pub(crate)` middle ground — `storyhook-test-support`
+is a separate workspace crate depending on `storyhook` as an ordinary path
+dependency, so `pub(crate)` does not compile across that boundary. The vote
+went 3-0 unanimous for the feature-gate proposal: all three seats, during
+their own verification, read `token_ok` in `src/api/rpc.rs` and confirmed its
+`constant_time_eq` admits an explicit empty offered header against an empty
+expected one — falsifying `bind_and_serve`'s own doc comment claim that "an
+empty token is one no request can present." That finding turned a
+documentation question into one where a structural fix was strictly safer
+at about the same cost, which is why the unanimous vote landed in round 1
+with no deliberation needed.
+
+**Fix:** added a `test-seam` Cargo feature (never in `default`), mirroring
+the existing `fault-injection` feature exactly — `storyhook-test-support`
+requests it in its own manifest, so `cargo test` gets `bind_and_serve` and
+`cargo build`/`--release` do not. Gated the function behind
+`#[cfg(feature = "test-seam")]`, rewrote its doc comment to state plainly
+that it is the harness's sanctioned test seam and not a production entry
+point, and corrected the empty-token comment to stop claiming a security
+property `constant_time_eq` does not actually provide. `cargo check
+--release` confirmed the function no longer exists without the feature;
+`cargo check --workspace --all-targets` confirmed the test build (feature
+on via the dev-dependency) still compiles.
+
+**Gate:** one full `make test` run, supervised in the background via the
+`Monitor` tool (log-growth heartbeat, 120-second stall bound) — no stall,
+exited on its own. Full suite green: 134 test-result blocks passed/0
+failed, plugin harness 24/24, e2e 23/23.
+
+**Semver: patch.** Test infrastructure and a documentation correction — the
+gated function had no caller in any build the version number describes, so
+no user-facing or API behavior changed.
+
+**PR:** #188, merged as `4aeadcc`. Branch verified deleted (remote and
 local), `main` fast-forwarded cleanly.
