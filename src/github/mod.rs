@@ -1304,6 +1304,9 @@ fn remote_snapshot_to_story_snapshot(
         // remote issue is never considered "deleted" for diffing purposes.
         deleted: false,
         deleted_reason: None,
+        // Nor of SH-43's hidden/"Archive" fact — it is a local display
+        // preference with nothing on the GitHub side to diff against.
+        hidden_at: None,
     }
 }
 

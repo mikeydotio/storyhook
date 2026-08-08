@@ -200,6 +200,8 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::SetPriority { id, .. }
         | Invocation::SetLabels { id, .. }
         | Invocation::Reopen { id, .. }
+        | Invocation::Hide { id }
+        | Invocation::Unhide { id }
         | Invocation::Delete { id, .. }
         | Invocation::Purge { id, .. }
         | Invocation::SetFields { id, .. } => vec![id],
@@ -229,6 +231,9 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Project { .. }
         | Invocation::New { .. }
         | Invocation::MemberAdd { .. }
+        // `state` is a state slug, not a story id — same reason `SetState::state`
+        // above is excluded rather than swept in with `id`.
+        | Invocation::HideState { .. }
         | Invocation::State { .. }
         | Invocation::List { .. }
         | Invocation::Search { .. }

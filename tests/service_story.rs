@@ -1456,6 +1456,182 @@ fn a_reopened_story_can_be_edited_again() {
     assert_eq!(after.comments.len(), 1);
 }
 
+// --- hide / unhide / hide-state (SH-43's "Archive") -------------------------
+
+#[test]
+fn hiding_a_closed_story_sets_hidden_at() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "closed, then archived");
+    service.set_state(&story.id, "done", None, None).unwrap();
+
+    let hidden = service.hide(&story.id).expect("archiving");
+    assert!(hidden.hidden_at.is_some());
+    assert_eq!(hidden.superstate, SuperState::Closed);
+}
+
+#[test]
+fn hiding_an_open_story_is_refused() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let story = new_story(&ctx, "still open");
+    let error = StoryService::new(&ctx).hide(&story.id).unwrap_err();
+    assert_eq!(
+        validation_message(error),
+        "story `SH-1` is open; only a closed story can be archived"
+    );
+}
+
+#[test]
+fn hiding_an_already_hidden_story_is_a_no_op() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "archived twice");
+    service.set_state(&story.id, "done", None, None).unwrap();
+    let first = service.hide(&story.id).unwrap();
+
+    let second = service.hide(&story.id).unwrap();
+    assert_eq!(second.hidden_at, first.hidden_at);
+    // No second `StoryHidden` event: the idempotent call appended nothing.
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        [
+            "StoryCreated",
+            "StoryStateChanged",
+            "StoryClosedAndArchived",
+            "StoryHidden"
+        ]
+    );
+}
+
+#[test]
+fn hiding_a_story_that_does_not_exist_is_not_found() {
+    let fixture = ServiceFixture::new();
+    let error = StoryService::new(&fixture.ctx()).hide("SH-1").unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+}
+
+#[test]
+fn unhiding_clears_hidden_at() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "archived then unarchived");
+    service.set_state(&story.id, "done", None, None).unwrap();
+    service.hide(&story.id).unwrap();
+
+    let unhidden = service.unhide(&story.id).expect("unarchiving");
+    assert_eq!(unhidden.hidden_at, None);
+    // Still closed: unhiding is not the same act as reopening.
+    assert_eq!(unhidden.superstate, SuperState::Closed);
+}
+
+#[test]
+fn unhiding_a_story_that_is_not_hidden_is_a_no_op() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "never archived");
+    service.set_state(&story.id, "done", None, None).unwrap();
+
+    service.unhide(&story.id).unwrap();
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        [
+            "StoryCreated",
+            "StoryStateChanged",
+            "StoryClosedAndArchived"
+        ]
+    );
+}
+
+#[test]
+fn reopening_a_hidden_story_clears_hidden_at() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "archived then reopened");
+    service.set_state(&story.id, "done", None, None).unwrap();
+    service.hide(&story.id).unwrap();
+
+    let reopened = service.reopen(&story.id).expect("reopening");
+    assert_eq!(reopened.hidden_at, None);
+    assert_eq!(reopened.superstate, SuperState::Open);
+}
+
+#[test]
+fn hide_state_plan_lists_every_undhidden_story_in_the_state() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let a = new_story(&ctx, "a");
+    let b = new_story(&ctx, "b");
+    let c = new_story(&ctx, "c");
+    service.set_state(&a.id, "done", None, None).unwrap();
+    service.set_state(&b.id, "done", None, None).unwrap();
+    service.set_state(&c.id, "done", None, None).unwrap();
+    service.hide(&c.id).unwrap();
+
+    let plan = service.hide_state_plan("done").expect("previewing");
+    assert_eq!(plan.state, "done");
+    // `c` is already hidden, so the plan does not name it again.
+    assert_eq!(plan.ids, vec!["SH-1".to_string(), "SH-2".to_string()]);
+}
+
+#[test]
+fn hide_state_plan_of_an_open_state_is_refused() {
+    let fixture = ServiceFixture::new();
+    let error = StoryService::new(&fixture.ctx())
+        .hide_state_plan("todo")
+        .unwrap_err();
+    assert_eq!(
+        validation_message(error),
+        "state `todo` is open; only a closed-superstate column can be archived"
+    );
+}
+
+#[test]
+fn hide_state_plan_of_an_undefined_state_is_refused() {
+    let fixture = ServiceFixture::new();
+    let error = StoryService::new(&fixture.ctx())
+        .hide_state_plan("nope")
+        .unwrap_err();
+    assert_eq!(validation_message(error), "state `nope` is not defined");
+}
+
+#[test]
+fn hide_state_archives_every_story_currently_in_the_column() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let a = new_story(&ctx, "a");
+    let b = new_story(&ctx, "b");
+    let open = new_story(&ctx, "still open");
+    service.set_state(&a.id, "done", None, None).unwrap();
+    service.set_state(&b.id, "done", None, None).unwrap();
+
+    let message = service.hide_state("done").expect("archiving the column");
+    assert_eq!(message, "archived 2 stories from `done`");
+    assert!(snapshot(&fixture, &a.id).hidden_at.is_some());
+    assert!(snapshot(&fixture, &b.id).hidden_at.is_some());
+    assert_eq!(snapshot(&fixture, &open.id).hidden_at, None);
+}
+
+#[test]
+fn hide_state_does_not_re_hide_an_already_hidden_story() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let a = new_story(&ctx, "a");
+    service.set_state(&a.id, "done", None, None).unwrap();
+    let first_hide = service.hide(&a.id).unwrap();
+
+    service.hide_state("done").unwrap();
+    assert_eq!(snapshot(&fixture, &a.id).hidden_at, first_hide.hidden_at);
+}
+
 // --- catalogs other than the default ---------------------------------------
 
 #[test]

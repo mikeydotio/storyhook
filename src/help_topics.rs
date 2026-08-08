@@ -1501,6 +1501,83 @@ Examples:
 Related:
   story move <id> <state>  — Transition to a specific state
   story show <id>          — View story details
+  story archive <id>       — Hide a closed story from the primary UI
+"#,
+        );
+
+        m.insert(
+            "archive",
+            r#"story archive <id>
+
+Hide a closed story from the primary UI (the dashboard board/list, and
+the default view here and in the TUI). Refuses an open story — only an
+already-closed one can be archived. Fully reversible: `story unarchive`
+undoes it, and reopening an archived story (`story reopen`/`story move`
+into an open state) clears the archived flag too, since an open story
+cannot read as archived.
+
+Archiving is a display preference layered on top of "closed", not a
+second kind of closing: a story's state and superstate are unchanged.
+
+When to use:
+  To declutter a Done-like column of stories you no longer need to see
+  day to day, without deleting them.
+
+Examples:
+  story archive SH-12
+  story unarchive SH-12
+  story archive-state done --force
+
+Related:
+  story unarchive <id>                     — Reverse an archive
+  story archive-state <state> [--force]    — Archive an entire column at once
+  story reopen <id> [--force]              — Reopen (also un-archives)
+"#,
+        );
+
+        m.insert(
+            "unarchive",
+            r#"story unarchive <id>
+
+Reverses `story archive`: the story reappears in the primary UI. The
+story's state and superstate are unchanged — this does not reopen it.
+
+When to use:
+  To bring back a story you archived by mistake, or want to see again.
+
+Examples:
+  story unarchive SH-12
+
+Related:
+  story archive <id>  — Hide a closed story
+"#,
+        );
+
+        m.insert(
+            "archive-state",
+            r#"story archive-state <state-slug> [--force]
+
+Archives every not-yet-archived story currently in a closed-superstate
+column, in one call — the bulk equivalent of running `story archive` on
+each. Refuses a state that is open, or one that is not defined.
+
+Two-step like `story reopen`/`story purge`: without --force, this
+answers with exactly which stories would be archived and writes
+nothing; at an interactive terminal you'll be prompted to confirm, and
+--force skips the prompt (for scripts/CI, or once you've reviewed the
+preview).
+
+When to use:
+  To clear out an entire Done-like column at once, e.g. at the end of a
+  sprint.
+
+Examples:
+  story archive-state done
+  story archive-state done --force
+
+Related:
+  story archive <id>    — Archive one story
+  story unarchive <id>  — Reverse an archive
 "#,
         );
 
