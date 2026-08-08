@@ -239,6 +239,28 @@ fn a_phases_stories_come_back_in_story_number_order() {
     assert_eq!(listed, ids, "SH-10 must not sort between SH-1 and SH-2");
 }
 
+/// The sibling SH-64 names in the same family as the story-id ordering split
+/// it fixes: `phase list` used to sort by label text, so phase `10` came
+/// before phase `2`.
+#[test]
+fn phases_list_in_numeric_order_not_label_text_order() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = GroupingService::new(&ctx);
+    let ten = new_story(&ctx, "phase ten story");
+    let two = new_story(&ctx, "phase two story");
+    service.assign_phase(&ten, "10").expect("assigning");
+    service.assign_phase(&two, "2").expect("assigning");
+
+    let phases: Vec<String> = service
+        .phases()
+        .expect("listing")
+        .into_iter()
+        .map(|phase| phase.phase)
+        .collect();
+    assert_eq!(phases, ["2", "10"], "`10` must not sort before `2`");
+}
+
 // --- epics -----------------------------------------------------------------
 
 #[test]

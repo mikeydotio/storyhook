@@ -74,21 +74,21 @@ source: tests/golden_cli.rs
   {
     "argv": "story handoff --json",
     "stdout": {
-      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n\n## Closed (3)\n\n- SH-13 Old approach: file-per-story [done]\n- SH-14 Prototype the archive format [done]\n- SH-8 Retire the JSONL reader [done]\n\n",
+      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [todo]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n\n## Closed (3)\n\n- SH-8 Retire the JSONL reader [done]\n- SH-13 Old approach: file-per-story [done]\n- SH-14 Prototype the archive format [done]\n\n",
       "result": "ok"
     }
   },
   {
     "argv": "story handoff --since 7d --json",
     "stdout": {
-      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n\n## Closed (3)\n\n- SH-13 Old approach: file-per-story [done]\n- SH-14 Prototype the archive format [done]\n- SH-8 Retire the JSONL reader [done]\n\n",
+      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [todo]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n\n## Closed (3)\n\n- SH-8 Retire the JSONL reader [done]\n- SH-13 Old approach: file-per-story [done]\n- SH-14 Prototype the archive format [done]\n\n",
       "result": "ok"
     }
   },
   {
     "argv": "story handoff --since 2h --json",
     "stdout": {
-      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n\n## Closed (3)\n\n- SH-13 Old approach: file-per-story [done]\n- SH-14 Prototype the archive format [done]\n- SH-8 Retire the JSONL reader [done]\n\n",
+      "message": "# Session Handoff\n\n## Created (11)\n\n- SH-1 Design the storage engine [todo]\n- SH-2 Define the Store trait [todo]\n- SH-3 Implement the SQLite engine [in-progress]\n- SH-4 Write the migration runner [review]\n- SH-5 Fix the id collision across worktrees [todo]\n- SH-6 Benchmark the rebuild path [todo]\n- SH-7 Document the data layer [todo]\n- SH-9 Add the daemon transport [todo]\n- SH-10 Ship the CLI shim [todo]\n- SH-11 Audit error codes [todo]\n- SH-12 Harden concurrent writes [todo]\n\n## Closed (3)\n\n- SH-8 Retire the JSONL reader [done]\n- SH-13 Old approach: file-per-story [done]\n- SH-14 Prototype the archive format [done]\n\n",
       "result": "ok"
     }
   }
