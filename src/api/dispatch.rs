@@ -721,6 +721,13 @@ fn read_capture(mut file: std::fs::File) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// The daemon<->script argv contract [`resolve_dispatch_script`] requires of
+/// whichever `story.sh` it resolves (SH-196). `plugin/claude-code/bin/
+/// story.sh` declares the contract it implements in its own
+/// `DISPATCH_PROTOCOL` constant; bump both together, and see that
+/// constant's doc comment for the rule on when a bump is actually needed.
+pub const REQUIRED_DISPATCH_PROTOCOL: u32 = 1;
+
 /// Locates `plugin/claude-code/bin/story.sh`, in order:
 ///
 /// 1. `$STORYHOOK_DISPATCH_SCRIPT` — an operator's own override, and how
@@ -739,6 +746,12 @@ fn read_capture(mut file: std::fs::File) -> String {
 /// record with the stderr tail. That failure describes one dispatch
 /// attempt; a script that cannot be found describes this daemon, which is
 /// why only the latter is checked before any record is created.
+///
+/// Whichever candidate is found is also checked against
+/// [`REQUIRED_DISPATCH_PROTOCOL`] before it is returned (SH-196) — a script
+/// that predates the argv shape this daemon invokes it with is exactly as
+/// wrong to run as one that cannot be found at all, and belongs to the same
+/// "describes this daemon, not one dispatch attempt" category above.
 fn resolve_dispatch_script() -> Result<PathBuf, String> {
     resolve_dispatch_script_from(
         std::env::var("STORYHOOK_DISPATCH_SCRIPT").ok(),
@@ -763,7 +776,7 @@ fn resolve_dispatch_script_from(
     if let Some(configured) = configured {
         let path = PathBuf::from(configured);
         return if path.is_file() {
-            Ok(path)
+            check_dispatch_protocol(path)
         } else {
             Err(format!(
                 "STORYHOOK_DISPATCH_SCRIPT names `{}`, which is not a file",
@@ -772,12 +785,12 @@ fn resolve_dispatch_script_from(
         };
     }
     if let Some(path) = home.and_then(|home| installed_plugin_script(&home)) {
-        return Ok(path);
+        return check_dispatch_protocol(path);
     }
     if let Some(root) = dev_root {
         let path = root.join("plugin/claude-code/bin/story.sh");
         if path.is_file() {
-            return Ok(path);
+            return check_dispatch_protocol(path);
         }
     }
     Err(
@@ -785,6 +798,51 @@ fn resolve_dispatch_script_from(
          (`story plugin install <target>`) or set STORYHOOK_DISPATCH_SCRIPT"
             .to_string(),
     )
+}
+
+/// Refuses `path` if its declared `DISPATCH_PROTOCOL` is older than
+/// [`REQUIRED_DISPATCH_PROTOCOL`], naming the path, both numbers, and the
+/// remedy — this is the SH-196 fix itself. Applied uniformly to whichever
+/// candidate [`resolve_dispatch_script_from`] found, an operator's own
+/// `STORYHOOK_DISPATCH_SCRIPT` override included: a stale script is exactly
+/// as wrong to run regardless of how it was located, and one rule here is
+/// one fewer exemption to justify. `declared >= required` (not `==`) so a
+/// script that is merely *newer* than this daemon needs keeps resolving —
+/// a plugin release must never have to wait on a daemon rebuild.
+fn check_dispatch_protocol(path: PathBuf) -> Result<PathBuf, String> {
+    let declared = declared_dispatch_protocol(&path);
+    if declared >= REQUIRED_DISPATCH_PROTOCOL {
+        return Ok(path);
+    }
+    Err(format!(
+        "the dispatch script at `{}` implements dispatch protocol {declared}, but this \
+         storyhook needs at least {REQUIRED_DISPATCH_PROTOCOL} -- the installed story \
+         plugin is out of date. Update it with `story plugin install claude-code` (or \
+         `claude plugin update story@storyhook`), then retry.",
+        path.display()
+    ))
+}
+
+/// Reads `path`'s own declared `DISPATCH_PROTOCOL=<n>` line — the constant
+/// `plugin/claude-code/bin/story.sh` itself defines near its top — without
+/// executing it. A `bash -c` probe would only echo this same constant at the
+/// cost of a process spawn on every resolution, and resolution deliberately
+/// runs before anything about the script is trusted (see
+/// [`resolve_dispatch_script`]'s own note on not pre-checking
+/// `bash`/`jq`/`git`/`tmux`). Only a line whose *first* non-whitespace
+/// characters are the exact assignment counts — a mention inside a comment
+/// (`# see DISPATCH_PROTOCOL=1 above`) does not. `0` for a script that
+/// predates the marker entirely, or whose declaration this cannot parse —
+/// both read the same to a caller: "not new enough."
+fn declared_dispatch_protocol(path: &Path) -> u32 {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    contents
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("DISPATCH_PROTOCOL="))
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// `story@storyhook`'s installed path under `home`, from Claude Code's own
@@ -1239,9 +1297,18 @@ mod tests {
         file
     }
 
+    /// A minimal but *valid* `story.sh` stand-in: everything a resolution
+    /// test needs, and nothing more — including the marker
+    /// `check_dispatch_protocol` now requires, so these tests keep
+    /// exercising resolution order rather than tripping the protocol check
+    /// that has its own tests, below.
+    const FAKE_STORY_SH: &str = "#!/usr/bin/env bash\nDISPATCH_PROTOCOL=1\n";
+
     #[test]
     fn resolve_dispatch_script_honours_the_env_override() {
-        let script = tempfile::NamedTempFile::new().expect("a scratch file");
+        let mut script = tempfile::NamedTempFile::new().expect("a scratch file");
+        std::io::Write::write_all(&mut script, FAKE_STORY_SH.as_bytes())
+            .expect("write fixture content");
         let resolved = resolve_dispatch_script_from(
             Some(script.path().to_string_lossy().into_owned()),
             None,
@@ -1262,7 +1329,7 @@ mod tests {
 
     /// Writes `home/.claude/plugins/installed_plugins.json` naming one
     /// `story@storyhook` install record per `install_dirs`, and a real
-    /// `bin/story.sh` under each — the shape `installed_plugin_script`
+    /// [`FAKE_STORY_SH`] under each — the shape `installed_plugin_script`
     /// expects. Returns `home` (kept alive for the caller) and the install
     /// directories in the same order they were given.
     fn fake_installed_plugin_home(install_dirs: &[&str]) -> tempfile::TempDir {
@@ -1272,7 +1339,7 @@ mod tests {
             .map(|dir| {
                 let install_dir = home.path().join(dir);
                 std::fs::create_dir_all(install_dir.join("bin")).expect("mkdir install/bin");
-                std::fs::write(install_dir.join("bin/story.sh"), "#!/usr/bin/env bash\n")
+                std::fs::write(install_dir.join("bin/story.sh"), FAKE_STORY_SH)
                     .expect("write fake story.sh");
                 serde_json::json!({"installPath": install_dir.to_string_lossy()})
             })
@@ -1318,7 +1385,9 @@ mod tests {
     #[test]
     fn resolve_dispatch_script_prefers_the_env_override_over_an_installed_plugin() {
         let home = fake_installed_plugin_home(&["plugins/cache/storyhook/story/0.5.0"]);
-        let override_script = tempfile::NamedTempFile::new().expect("a scratch file");
+        let mut override_script = tempfile::NamedTempFile::new().expect("a scratch file");
+        std::io::Write::write_all(&mut override_script, FAKE_STORY_SH.as_bytes())
+            .expect("write fixture content");
         let resolved = resolve_dispatch_script_from(
             Some(override_script.path().to_string_lossy().into_owned()),
             Some(home.path().to_path_buf()),
@@ -1334,7 +1403,7 @@ mod tests {
         std::fs::create_dir_all(dev_root.path().join("plugin/claude-code/bin"))
             .expect("mkdir dev checkout script dir");
         let dev_script = dev_root.path().join("plugin/claude-code/bin/story.sh");
-        std::fs::write(&dev_script, "#!/usr/bin/env bash\n").expect("write dev story.sh");
+        std::fs::write(&dev_script, FAKE_STORY_SH).expect("write dev story.sh");
         let resolved = resolve_dispatch_script_from(
             None,
             Some(home.path().to_path_buf()),
@@ -1381,5 +1450,117 @@ mod tests {
             resolved.is_err(),
             "an install record whose script is missing on disk must not resolve"
         );
+    }
+
+    /// Writes `content` to a fresh scratch file and returns both the file's
+    /// path and the directory guard that must outlive it -- a script
+    /// [`declared_dispatch_protocol`] can read back, distinct from
+    /// [`capture_of`] (a `File` handle for `classify`, unrelated to a path
+    /// on disk). Bind the guard as `let (_guard, path) = ...` so the scratch
+    /// directory is not removed out from under the path before the test
+    /// finishes reading it.
+    fn script_with_content(content: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = storyhook_test_support::scratch_dir();
+        let path = dir.path().join("story.sh");
+        std::fs::write(&path, content).expect("write scratch script");
+        (dir, path)
+    }
+
+    #[test]
+    fn declared_dispatch_protocol_reads_a_line_start_assignment() {
+        let (_guard, path) =
+            script_with_content("#!/usr/bin/env bash\nDISPATCH_PROTOCOL=3\nset -euo pipefail\n");
+        assert_eq!(declared_dispatch_protocol(&path), 3);
+    }
+
+    #[test]
+    fn declared_dispatch_protocol_is_zero_for_a_script_with_no_marker() {
+        let (_guard, path) = script_with_content("#!/usr/bin/env bash\nset -euo pipefail\n");
+        assert_eq!(declared_dispatch_protocol(&path), 0);
+    }
+
+    #[test]
+    fn declared_dispatch_protocol_ignores_a_mention_inside_a_comment() {
+        // Only a line whose first non-whitespace characters are the exact
+        // assignment counts -- a passing reference in prose must not be
+        // mistaken for the real declaration.
+        let (_guard, path) = script_with_content(
+            "#!/usr/bin/env bash\n# see DISPATCH_PROTOCOL=1 in the header above\n",
+        );
+        assert_eq!(declared_dispatch_protocol(&path), 0);
+    }
+
+    #[test]
+    fn declared_dispatch_protocol_is_zero_for_a_nonexistent_path() {
+        assert_eq!(
+            declared_dispatch_protocol(Path::new("/no/such/story.sh")),
+            0
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_script_refuses_a_script_older_than_required() {
+        let (_guard, path) = script_with_content("#!/usr/bin/env bash\nDISPATCH_PROTOCOL=0\n");
+        let resolved =
+            resolve_dispatch_script_from(Some(path.to_string_lossy().into_owned()), None, None);
+        let message = resolved.expect_err("a script declaring an older protocol must be refused");
+        assert!(message.contains(&path.display().to_string()));
+        assert!(message.contains("dispatch protocol 0"));
+        assert!(message.contains(&REQUIRED_DISPATCH_PROTOCOL.to_string()));
+        assert!(message.contains("out of date"));
+        assert!(message.contains("story plugin install claude-code"));
+    }
+
+    #[test]
+    fn resolve_dispatch_script_refuses_a_script_with_no_marker_at_all() {
+        // The exact shape of the machine that produced SH-196: an installed
+        // plugin cut before this protocol existed carries no marker line.
+        let (_guard, path) = script_with_content("#!/usr/bin/env bash\nset -euo pipefail\n");
+        let resolved =
+            resolve_dispatch_script_from(Some(path.to_string_lossy().into_owned()), None, None);
+        assert!(resolved.is_err());
+    }
+
+    #[test]
+    fn resolve_dispatch_script_accepts_a_script_newer_than_required() {
+        // Forward-compatible on purpose: a plugin release must never have
+        // to wait on a daemon rebuild just because it moved the protocol
+        // number forward.
+        let (_guard, path) = script_with_content(&format!(
+            "#!/usr/bin/env bash\nDISPATCH_PROTOCOL={}\n",
+            REQUIRED_DISPATCH_PROTOCOL + 1
+        ));
+        let resolved =
+            resolve_dispatch_script_from(Some(path.to_string_lossy().into_owned()), None, None);
+        assert_eq!(resolved.expect("a newer script must still resolve"), path);
+    }
+
+    #[test]
+    fn resolve_dispatch_script_applies_the_protocol_check_to_an_installed_plugin_too() {
+        // Not just the override: an installed plugin resolved from a real
+        // installed_plugins.json is checked the same way -- this is the
+        // exact resolution path SH-196's own bug traveled.
+        let home = storyhook_test_support::scratch_dir();
+        let install_dir = home.path().join("plugins/cache/storyhook/story/0.4.0");
+        std::fs::create_dir_all(install_dir.join("bin")).expect("mkdir install/bin");
+        std::fs::write(
+            install_dir.join("bin/story.sh"),
+            "#!/usr/bin/env bash\nset -euo pipefail\n",
+        )
+        .expect("write a pre-protocol fake story.sh");
+        let manifest_dir = home.path().join(".claude/plugins");
+        std::fs::create_dir_all(&manifest_dir).expect("mkdir manifest dir");
+        std::fs::write(
+            manifest_dir.join("installed_plugins.json"),
+            serde_json::json!({
+                "plugins": {"story@storyhook": [{"installPath": install_dir.to_string_lossy()}]}
+            })
+            .to_string(),
+        )
+        .expect("write installed_plugins.json");
+        let resolved = resolve_dispatch_script_from(None, Some(home.path().to_path_buf()), None);
+        let message =
+            resolved.expect_err("an installed plugin predating the marker must be refused");
+        assert!(message.contains("out of date"));
     }
 }
