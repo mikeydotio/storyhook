@@ -154,6 +154,18 @@ impl DaemonGuard {
     }
 }
 
+/// How long [`DaemonGuard`] gives `story web stop` to finish.
+///
+/// **Chosen, not derived or calibrated**, in the sense [`ACCEPT_DEADLINE`]
+/// documents that phrase for. A guard-armed daemon has no in-flight work of
+/// its own by the time a test drops it, so `web stop`'s graceful wait should
+/// clear in milliseconds; production's own interactive notice for that same
+/// wait ([`SERVED_PATIENCE`](storyhook::daemon::lifecycle::SERVED_PATIENCE),
+/// 10s) is the only other number in play, and this sits above it rather than
+/// racing it. What is being distinguished is "slow" from "never," so the
+/// margin is generous on purpose.
+const STOP_DEADLINE: Duration = Duration::from_secs(15);
+
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
         let mut command = std::process::Command::new(story_binary());
@@ -161,7 +173,8 @@ impl Drop for DaemonGuard {
         for (name, value) in &self.vars {
             command.env(name, value);
         }
-        let _ = command.args(["web", "stop"]).output();
+        command.args(["web", "stop"]);
+        let _ = run_bounded(command, "web stop", STOP_DEADLINE);
     }
 }
 
@@ -438,5 +451,35 @@ mod tests {
         let out = run_bounded(cmd, "printf ok", Duration::from_secs(5));
         assert_eq!(out.stdout, b"ok");
         assert_eq!(out.status.code(), Some(3));
+    }
+
+    /// SH-142: `DaemonGuard`'s `Drop` used to call `.output()` directly, which
+    /// waits on the child and *then* reads its pipes to end-of-file with no
+    /// bound at all. A command that never finishes — standing in for a child
+    /// whose exit does not release the pipe, the SH-94/SH-141 hazard — would
+    /// have hung this test (and, inside a `Drop`, the whole suite) rather than
+    /// failing inside `deadline`.
+    #[test]
+    fn run_bounded_gives_up_on_its_deadline_rather_than_waiting_out_a_hung_command() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 5"]);
+        let deadline = Duration::from_millis(300);
+
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            run_bounded(cmd, "sleep 5", deadline)
+        }));
+        let elapsed = started.elapsed();
+
+        assert!(
+            result.is_err(),
+            "a command that outlives its deadline must be reported, not returned as if \
+             it had finished"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "run_bounded took {elapsed:?} to give up on a {deadline:?} deadline — it waited \
+             out the hung command instead of bounding the wait"
+        );
     }
 }
