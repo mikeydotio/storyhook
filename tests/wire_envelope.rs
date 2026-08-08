@@ -95,6 +95,7 @@ fn view(story: StorySnapshot) -> StoryView {
         flagged_reasons: Vec::new(),
         stale_info: None,
         progress: None,
+        display_state: None,
     }
 }
 
@@ -154,6 +155,7 @@ fn maximal_view() -> StoryView {
             children_done: 2,
             children_total: 5,
         }),
+        display_state: Some("in-progress".to_string()),
     }
 }
 
