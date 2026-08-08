@@ -191,7 +191,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-127** — remove the status flash
 - [x] **SH-128** — column sort options
 - [x] **SH-168** — do not show the green ready status labels
-- [ ] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
+- [x] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
 - [ ] **SH-183** — `story migrate` refuses a bad state slug but accepts a bad type slug · *filed by SH-134's chair, correcting a claim in that council's own verdict*
 - [ ] **SH-218** — the drawer's async detail-fetch re-render can silently wipe unsaved input · *filed by SH-168's e2e test*
 
@@ -7455,3 +7455,81 @@ origin --delete` for the now-merged branch (the remote delete `gh` never
 reached), both verified gone. Story closed via `story move SH-168 done`
 (the commit body named SH-168 without a `Closes` keyword, so commit-sync
 linked it but didn't auto-close it).
+
+### SH-64 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line), matching
+Freshen's own handoff summary. `story list --state in-progress` showed only
+the epic SH-112 — no stale ⚠ marks to re-sweep this time.
+
+**Outcome:** merged. `story graph`'s roots, leaves, blocked-chain and
+parallel-groups, and `story handoff`'s created/updated/closed sections, now
+sort by story *number* — `service/query.rs`'s own module doc already named
+this exact remaining scope (`graph` and `handoff`, "SH-64, still open") once
+SH-63 closed the ready-list half of the original defect, so there was no
+ambiguity left to resolve. `graph`'s `critical_path` is untouched on purpose:
+it is a dependency chain, not a roster, and resorting it by id would report a
+different, meaningless path instead of the actual longest chain.
+
+**Two siblings fixed in passing, not filed separately** — same file, same
+one-line cause as the story's own scope, zero risk (neither moved a byte of
+the existing golden corpus, confirmed before touching either):
+
+1. `context`'s blocked list carried the identical unsorted-`BTreeMap` defect,
+   one function above the ready list SH-63 had already fixed — the ready list
+   got a `.sort_by(ready_order)` call and the blocked list next to it did not.
+   The golden fixture's three blocked stories (`SH-3`, `SH-6`, `SH-9`) happen
+   to already read numerically by coincidence (no blocked story past `SH-9`),
+   so this was invisible without a bespoke test — added one.
+2. `story phase list` sorted phases by label text (`10` before `2`), which
+   SH-64's own story text named directly: "a sibling in the same family...
+   whoever unifies id ordering should decide this one at the same time." The
+   grouping service's own doc comment recorded it as a deliberate *port*
+   decision (reproduce the legacy behavior faithfully, W2b), not a fresh
+   judgment call — so fixing it now is closing out a decision the story
+   already pre-made, not making a new one.
+
+**No council.** Every decision here was already settled by evidence already
+in the repository, not by a fresh trade-off: the query.rs module doc pinned
+graph/handoff as the exact remaining scope, the story's own text pre-approved
+the phase-list sibling, and the context/blocked-list fix has one correct
+answer (match the ready list one line above it, the same pattern SH-63 used).
+Nothing here weighed competing designs against each other.
+
+**`collect_groups`** (parallel groups) needed two sorts, not one: each
+group's members by story number, and — since a "lowest-numbered story leads"
+convention has to pick *which* group is first too — the groups themselves by
+their lowest member. Verified via the new
+`graph_parallel_groups_sort_members_and_groups_by_story_number` test rather
+than by inspection alone, since eyeballing a `Vec<BTreeSet<String>>` reorder
+is exactly the kind of thing eyeballing gets wrong.
+
+**Tests:** two pinned tests renamed and flipped from asserting the
+lexicographic defect to asserting the numeric fix
+(`handoff_lists_open_stories_then_archived_ones_each_in_numeric_id_order`,
+`graph_reports_roots_and_leaves_in_numeric_id_order`), plus four new ones
+straddling the `SH-9`/`SH-10` boundary:
+`graph_blocked_chain_reports_in_numeric_id_order`,
+`graph_parallel_groups_sort_members_and_groups_by_story_number`,
+`context_lists_blocked_stories_in_numeric_id_order` (`tests/service_query.rs`),
+and `phases_list_in_numeric_order_not_label_text_order`
+(`tests/service_grouping.rs`). Golden CLI corpus regenerated
+(`INSTA_UPDATE=always`) for `graph_human`/`graph_json`/`narrative_human`/
+`narrative_json`; every diff inspected by hand and confirmed as pure
+reordering with no other byte moved — the 14-story fixture's `SH-10`
+`SH-11`/`SH-12` stories are exactly what makes the fix visible there. The
+`GRAPH`/`NARRATIVE` `KNOWN-DEFECT` comments in `tests/golden_cli.rs` are
+retired along with the defect.
+
+**Gate:** `make test` green, supervised with a log-growth watchdog (200s
+stall threshold, no stall hit): fmt, clippy `-D warnings`, full Rust suite
+across every crate, doctests, `cargo build`, plugin harness 25/25, e2e 36/36,
+no orphan daemons pre- or post-run.
+
+**Semver: patch.** Output-ordering fix on existing commands — no schema, API,
+or CLI surface added, removed, or changed shape.
+
+**PR:** #205, merged as `ce90d2e` (`gh pr view` confirmed `MERGED`).
+`Closes SH-64` in the commit body auto-closed the story on merge, confirmed
+via `story show`. Branch verified deleted both sides (`git fetch --prune`
+showed the remote ref pruned).
