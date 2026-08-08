@@ -7197,3 +7197,127 @@ done` (the commit body named SH-128 without a `Closes` keyword, so
 commit-sync linked it but didn't auto-close it). Branch verified deleted
 (remote and local; `gh pr merge --delete-branch` plus a clean `git pull
 --ff-only` on `main` confirmed the remote ref gone and history bisectable).
+
+### SH-167 — done
+
+**Outcome:** README's command reference and Quick start documented an
+id-first grammar (`story SH-1 assign mikey`, `story SH-1 is done`, `story <a>
+<relationship> <b>`) that `dispatch` has never accepted — every one of those
+lines exited 2 with `unknown command`. Verified by running rather than by
+reading `cli.rs`, per the story's own acceptance criteria: `story SH-167`
+exits 2 today; `story show 167` resolves. Rewrote the reference to the CLI's
+real verb-first grammar and added `tests/readme_command_reference.rs`, which
+extracts every `story ...` line from README's fenced blocks and runs it
+through the real `cli::split_global_flags` → `cli::parse_invocation`
+pipeline, plus a cross-check that every `dispatch` verb literal appears
+somewhere in the reference. Landed as two commits: docs first (the reference
++ its test, no behavior change), then the behavior fix the investigation
+surfaced.
+
+**The comment reopening this story asked for behavior that already existed —
+verified, not assumed, before answering.** "Ensure bare numbers are accepted
+IFF invoked from a project's registered path" reads as a request to *add*
+path-based resolution. `story show 167` from this checkout already resolves;
+`story show 167` from `/private/tmp` already refuses at exit 3, naming both
+ways out, before any id is even read (`StoreInvoker::resolve_project`,
+`src/invoke.rs`). What resolves a directory is the committed `.storyhook.toml`
+pointer walk or the registered git origin — `project_paths`, the literal
+"registered path" index, was deleted in schema v8 specifically because
+SH-112's epic wanted nothing about the filesystem to be *required*. Mikey's
+first read of "registered path" pointed at `story project link checkout`
+instead, which was the real gap: that verb records `checkout_path` and
+nothing else, so a directory *deliberately* linked still could not answer
+"which project is this" on its own.
+
+**The Relationships section was a second instance of the same defect class,
+found rather than assumed.** `domain::relation_edges` accepts nine inputs;
+README listed sixteen, twelve of which have never existed (`precedes`,
+`conflicts-with`, `starts-before`, …) and omitted four real ones (`blocks`,
+`blocked-by`, `duplicate-of`, `related-to`). Quick start's own "Relate
+stories" example used two of the fictional ones. Test 3/4 in the new suite
+source-scan `domain::relation_edges`'s match arms the same way Test 2
+source-scans `dispatch`'s, so a relationship type added later without a
+README update fails the same way a verb would.
+
+**The expansion algorithm's real cost was in what it deliberately does not
+promise.** A naive powerset over every `[optional]` group is wrong before
+it is expensive: `story update [--check] [--force]` declares those two
+mutually exclusive, so "include every optional" manufactures an argv the
+parser is *right* to refuse, which the test would have misreported as a
+documentation bug. The fix — emit the bare form, then one optional at a
+time, never combined — makes a mutual exclusion unreachable by construction,
+at the cost of a stated, narrower promise: this proves every documented
+*token* parses in some legal context, not that every *combination* does
+(`tests/cli_grammar.rs`'s job). Two real greps found during iteration confirm
+the promise held where it mattered: `story project new`'s own usage string
+shows `--prefix` bracketed even though any other flag makes it required, and
+`story set <id>` has no valid all-optionals-omitted form at all — both
+rewritten in the reference itself (prefix required, `set`'s fields as a
+required one-of-many `(a | b | …)` group) rather than papered over in the
+test.
+
+**The behavior fix's hardest call was what NOT to do when a checkout already
+claims a different project.** `tests/project_path_hygiene.rs` already pinned
+exit 0 for that shape before this story started — refusing would have broken
+a standing test, and overwriting would silently steal a *committed* file out
+from under every other clone on their next pull. The rule written down:
+`checkout_path` is machine-local and many-to-one (a monorepo tree may be
+several projects' work directory); `.storyhook.toml` is repository-global
+and one-to-one. `link checkout` always records the first and only ever
+writes the second where the directory is unclaimed or already names this
+same project — never as an overwrite. `set_prefix`'s existing
+`update_checkout_pointer` had already half-established this shape (treating
+"registered checkout, no pointer" as a failure worth reporting); the new
+`PointerOutcome` enum on `GitLinkService::link_checkout` generalizes it
+rather than duplicating `project::PointerUpdate`, which is shaped for
+`set_prefix` specifically.
+
+**No `--no-pointer` escape hatch, on SH-119's own precedent.** SH-119 deleted
+`InitOptions::pointer` because a `false` there "made an unreachable project
+expressible." A flag suppressing the write on `link checkout` would
+reintroduce the identical state under a different name. The genuine case
+such a flag would serve — a directory storyhook cannot write into — is
+already served without one: the write is best-effort, degrades to
+`PointerOutcome::Unwritable`, exit 0, checkout still recorded, reported by
+name.
+
+**`unlink checkout` was already asymmetric with `link checkout` before this
+story; the asymmetry just grew a second reason.** It already reported
+"nothing on disk was changed" for the no-op case. It now also never deletes
+a pointer `link checkout` (or an earlier `project new`) wrote — the file is
+committed and may carry user-authored `[plugin]`/`[hooks]` tables storyhook
+has promised in writing never to touch, and unlink answers "where does this
+*machine* run repo-side work," not a statement about the repository's
+identity.
+
+**Found and filed rather than fixed: SH-215.** Manually walking every
+rewritten reference line against a real scratch store (the acceptance
+criteria's own "verified by running it" standard) turned up `story export`'s
+help topic claiming a plain JSON array while its real output is a full
+project-snapshot object — `story import` on `story export`'s own output
+fails immediately. Unrelated to README's grammar (README never claims the
+two round-trip), in a different file, and not this story's to fix mid-flight
+— the same "found while, not X's to fix" call SH-167 itself was filed under
+against SH-118.
+
+**Gate:** `make test` green on both commits — the whole suite, plugin
+harness 24/24, browser suite 13/13 (e2e's Node/Playwright toolchain was
+bootstrapped fresh in this worktree via `make e2e-install` first, a one-time
+step the Makefile documents as not being part of `test` itself). The new
+`tests/readme_command_reference.rs` (6 tests) and the rewritten
+`tests/project_link.rs` (26, seven new) and `tests/project_path_hygiene.rs`
+(8) all green; `tests/checkout_path_readers.rs`'s structural pin needed only
+its `git_links.rs` reason string refreshed, not a new file added to the
+allowlist — the resolver still never reads `checkout_path`.
+
+**Semver: minor.** `CheckoutLink` gained a field (`pointer: PointerOutcome`)
+and `GitLinkService` gained a new public type — additive; no existing field
+or variant removed. The `link checkout`/`unlink checkout` CLI output text
+changed, which is a message-format change rather than an interface one.
+
+**Landed as three commits on one PR (#200), merge commit.** This story ran
+from a linked worktree, so per this repo's own standing rule the version
+bump and deploy are left for later, from `main`. `main` moved twice under
+this run (SH-127, SH-128, and others landed while this story was in
+flight); each rebase onto `origin/main` produced exactly one conflict, in
+this same append-only log, resolved by keeping both entries in order.
