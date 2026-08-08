@@ -25,8 +25,9 @@
 //! the daemon's own write mutex. The assertions below are kept — a lock held too
 //! long is still a lock held too long — but assertion 2 is now about a mutex
 //! rather than about a file lock, and nothing in this suite drives two processes
-//! at one store any more. The only thing that still can is `story tui`, which
-//! holds its own store handle; making it a client is SH-150.
+//! at one store any more. `story tui` was the last thing that still could,
+//! holding its own store handle; SH-150 made it a client too, so there is no
+//! second writer left to test.
 //!
 //! # The four things it asserts
 //!

@@ -164,7 +164,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
 - [x] **SH-146** — the daemon never re-attempts its tailnet bind
 - [x] **SH-147** — the tailnet probe runs twice on the port-fallback path
-- ⚠ **SH-150** — the TUI holds its own store handle · *in-progress as of 2026-08-07T20:35 — another session; do not claim*
+- ⚠ **SH-150** — the TUI holds its own store handle · *implementation complete, PR #164 open, pending merge from `main` — see the Log entry above*
 - [x] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
 - [x] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
 - [x] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
@@ -6676,3 +6676,151 @@ PR — same sequencing reality as SH-148, SH-156 and SH-170's own entries: the
 merge SHA above cannot be written into a commit that predates the merge it
 names, so the log entry follows as its own commit on its own branch/PR rather
 than the literal same-PR reading of step 8.
+### SH-150 — implementation complete, PR open
+
+**Outcome:** `story tui` reaches the store only through the daemon, the last
+verb that did not since SH-114. It opens no `SqliteStore` of its own — no
+second migrator, no second writer on SQLite's multi-process path, which
+`concurrency_soak.rs` stopped exercising when SH-114 collapsed the CLI to
+one transport and nothing since had covered. Live updates come from the
+daemon's own change feed (`GET /api/events`) rather than a `PRAGMA
+data_version` poll on a store handle of its own.
+
+**The decision this story existed to make, made by convergence rather than
+by vote.** The design of record already put the TUI behind the Invoker seam
+(target architecture diagram, the W5 plan row) and the shipped code had
+departed from it, with the departure recorded in `src/tui/event.rs`'s own
+doc comment. Four independent facts, each verified against the tree before
+writing a line of code, pointed the same way: the design of record already
+said so; `invoke::open_store` made the TUI a second, unsupervised migrator
+(no version/exe/mtime handshake); the multi-process write path it depended
+on had gone untested since SH-114; and the move itself touched five
+production lines, since `main_loop`, `dispatch` and `DataStore::load` were
+already `&dyn Invoker`. No council — the four facts converged without a
+vote being needed, and the plan posted to the story before implementation
+records the reasoning that would have gone into one.
+
+**A change-feed client had to be written from nothing: `src/daemon/subscribe.rs`.**
+Raw `TcpStream`, not `ureq` — the one body deadline `ureq` offers
+(`timeout_recv_body`) bounds the *whole* response, wrong for a connection
+meant to stay open all day, where a per-read deadline is what a
+heartbeat-driven watchdog needs. Own hand-rolled chunked-transfer decoder
+(`Connection::advance`, a small state machine — `ChunkState::Size` /
+`ChunkState::Body`) rather than a byte-search, because a read timeout can
+land mid-chunk and the partial bytes must survive to the next call rather
+than being discarded and silently corrupting the next frame's boundary.
+`Change::from_sse` is the wire decoder, the literal inverse of the existing
+`to_sse`, round-trip tested for all five variants.
+
+**The reconnect design went through two shapes, and the second one is the
+one that actually works.** The first called `daemon::lifecycle::ensure` on
+every reconnect — spawn-if-needed, the same call every CLI command already
+makes. It is wrong for a subscriber for a reason the integration test
+exposed rather than an inspection: `lifecycle::ensure`'s usability check
+(`is_this_binary`) asks "is the *calling process* the same executable as
+the one in the portfile" — right for a CLI command about to run work
+through it, and *catastrophically* wrong for a passive subscriber, which
+compares itself against whatever process happens to host it. A daemon
+integration test (`tests/change_feed_subscriber.rs`, driven from the test
+binary itself, deliberately not from a `story` subprocess) reproduced it
+directly: the reconnect tried to spawn a daemon by re-executing the *test
+binary* with daemon flags, which exited immediately (status 101) with no
+useful diagnosis, over and over, for the whole test's duration. Fixed by
+having `Subscriber::daemon_info` re-read the portfile and check liveness
+(`lifecycle::read_info` + `is_live`) rather than ask `lifecycle::ensure` at
+all — a subscriber is never a legitimate candidate to spawn a daemon; the
+next real command through `HttpInvoker` already owns that job. Caught
+before merge because the reproduction was end-to-end (a real daemon,
+stopped and respawned by a real `story` subprocess) rather than only at the
+unit level, where the same call would have looked correct in isolation.
+
+**A second defect the same test found: `Change::Ping` was never filtered.**
+The design says "a heartbeat is proof of life, not a change" in three
+places (the module doc, `EventSource`'s doc, `poll`'s doc) and the code
+returned it to the caller as `Some(Change::Ping)` regardless — every 20
+seconds in production, every open TUI would have reloaded on nothing. The
+same debugging pass that found the reconnect bug also caught this one:
+`Change::Reload` (published by the daemon ahead of a restart) was arriving
+on the *old* connection and being accepted as a generic "something
+changed," masking the fact that no genuine reconnect had happened yet.
+Fixed by matching on the decoded `Change` explicitly in `poll`'s connected
+branch: `Ping` is proof of life only, `Reload` forces an immediate
+reconnect (rather than waiting for the connection to die on its own, the
+same thing `web_dashboard.html`'s `EventSource` does with the same event),
+everything else is returned. Both defects were live only because the
+integration test drove a *real* daemon restart rather than asserting
+against a mocked feed — the unit-level tests in `subscribe.rs` alone would
+not have found either.
+
+**Two commits landed as one working step rather than the originally-planned
+two.** The EventSource-onto-the-subscriber change and the store-handle
+removal were meant to be separable commits, but `EventSource::new`'s new
+signature (`&DaemonInfo`) requires its one caller, `tui::app::run`, to
+already have resolved one — which only becomes true once `run` calls
+`daemon::lifecycle::ensure` itself, which is the store-handle-removal
+commit's own first line. Keeping history bisectable took priority over the
+originally planned commit boundary: `tui::run` gained the `ensure` call
+(still using `StoreInvoker` for data) as part of the `EventSource` commit,
+so every commit still compiles and passes `make test`, and the `HttpInvoker`
+swap landed as its own commit immediately after.
+
+**Measured, not assumed** — the plan's own risk register asked for a
+before/after number rather than a guess. `HttpInvoker`'s `lifecycle::ensure`
+cannot be called in-process from anything other than the real `story`
+binary (the same `is_this_binary` mismatch the reconnect bug hit), so the
+comparison is `story` subprocess timing, not a bare function call: on a
+100-story fixture, `story list` averaged 66.8ms (min 20.2ms, max 146.5ms,
+n=10, warm daemon, process spawn included) and one `story move` measured
+13.6ms — against SH-140's in-process `DataStore::load` baseline of
+952–1003 µs. Two orders of magnitude slower in absolute terms, still
+comfortably sub-100ms, and the amplifier that would have made this a
+queuing hazard (the daemon dispatching one request at a time) was already
+removed by SH-173 landing first.
+
+**Pinned by a source-grep test** in the `the_legacy_write_path_is_gone`
+idiom, `tests/invoker_seam.rs::the_tui_opens_no_store_of_its_own`: no file
+under `src/tui/` may name `open_store` — narrow on purpose, since the
+in-crate `#[cfg(test)]` fixtures in `app.rs`/`data.rs`/`event.rs` that open
+a `SqliteStore` directly to build a project (matching `tests/tui_integration.rs`
+and `tests/tui_undo.rs`, which keep `StoreInvoker` deliberately) are not the
+store handle this story removed.
+
+**Not fixed here, named rather than silently left:** `story tui` still
+resolves its project from `root` alone and never sets
+`InvokeRequest.project`, so `--project`/`$STORYHOOK_PROJECT` do not apply to
+it — real, orthogonal to the transport, a separate story. The TUI's own
+client-side read-then-write windows (undo/redo's snapshot-then-restore,
+label edits diffed against a cached snapshot) remain unguarded by CAS,
+unchanged in kind by this story but made more visible by it — the spec's
+claim that "CAS stays load-bearing for TUI read-then-write" was not true of
+the client even before this story, only of the service layer beneath it.
+`tests/tui_undo.rs` still builds its fixtures with `tempfile::tempdir()`
+under a `TODO(rearch)` SH-140 left when it migrated the other three.
+
+**Gate:** `make test` green — plan posted to SH-150 before implementation
+began, per this project's own working agreement.
+
+**A third defect, not in the code: `git stash` is shared across every linked
+worktree of one repository.** Mid-session, isolating a commit meant stashing
+this worktree's remaining uncommitted work; the pop that followed pulled in
+another session's in-progress, uncommitted `SH-177` work instead (a
+concurrent `git stash` from `.claude/worktrees/SH-177`, landed on the same
+shared stack while this one sat pushed) — `src/daemon/http1/`, `Cargo.toml`,
+four `api/*.rs` files, all foreign to this story. Caught before anything was
+committed: the commit already made (`3b09c94`) was verified clean via
+`git show --stat`, `SH-177`'s own worktree was confirmed to still hold its
+work intact and untouched, and the mixed-in files' timestamps and byte
+content were confirmed identical to `SH-177`'s copy before touching
+anything further. `git stash list` still held this session's own stash,
+correctly named and unmixed, one entry down; `git reset --hard HEAD` (safe
+only because `SH-177`'s copy was independently confirmed intact) followed
+by popping that correctly-identified entry recovered cleanly, verified by
+diffing the recovered `app.rs` against a pre-incident backup. Nothing of
+either story's work was lost. Global `CLAUDE.md` now forbids `git stash`
+inside any worktree for exactly this reason.
+
+**Stopped after the PR, not after the merge — linked worktree.** This
+session ran in `.claude/worktrees/SH-150`; per this repo's own rule,
+versioning and deployment (and the merge itself, in the letter of the
+worktree policy) happen from `main`, not here. PR reference and merge left
+for the next step.

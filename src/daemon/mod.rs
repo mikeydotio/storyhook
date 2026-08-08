@@ -13,6 +13,9 @@
 //!   deadline and cap a peer socket is held to (SH-177).
 //! * [`lifecycle`] — the portfile, the pidfile lock, and auto-spawn.
 //! * [`serve`] — the listeners and the accept loop.
+//! * [`subscribe`] — a client for [`bus`]'s change feed: what
+//!   [`crate::tui::event::EventSource`] uses instead of a store handle of its
+//!   own (SH-150).
 //! * [`tailnet`] — this machine's Tailscale identity: the interface the
 //!   dashboard is served on, and the only non-loopback `Host` the mutation guard
 //!   will trust.
@@ -23,4 +26,5 @@ pub mod commands;
 pub mod http1;
 pub mod lifecycle;
 pub mod serve;
+pub mod subscribe;
 pub mod tailnet;
