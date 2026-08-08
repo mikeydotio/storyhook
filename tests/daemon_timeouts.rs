@@ -309,6 +309,7 @@ mod exchange {
                 Some(ExchangeBound::After(DRIVEN)),
                 Duration::from_millis(25),
                 PATIENCE,
+                true,
             )
         });
         let waited = started.elapsed();
@@ -389,6 +390,7 @@ mod exchange {
                 Some(ExchangeBound::After(DRIVEN)),
                 Duration::from_millis(25),
                 PATIENCE,
+                true,
             ));
         });
 
@@ -435,6 +437,7 @@ mod exchange {
                 None,
                 Duration::from_millis(25),
                 PATIENCE,
+                true,
             ));
         });
 
