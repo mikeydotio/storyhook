@@ -174,7 +174,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-66** — `context --format json` double-encodes
 - [x] **SH-42** — project selector dropdown
 - [x] **SH-43** — archive
-- [ ] **SH-49** — linked PRs
+- [x] **SH-49** — linked PRs
 - [ ] **SH-155** — preserve presentation/layout settings
 - [ ] **SH-162** — allow hiding columns
 - [x] **SH-50** — C9 Dispatch button
@@ -6226,4 +6226,82 @@ with a 120-second log-growth stall bound; neither stalled.
 additive and non-breaking.
 
 **PR:** #176, merged as `82d425d`. Branch verified deleted, `main`
+fast-forwarded cleanly.
+
+### SH-49 — done
+
+**Outcome:** `story link-pr <id> <url> [--no-close-on-merge]` / `story
+unlink-pr <id> <url>` / `story pr-check [<id>]` exist. Linking is
+feature-independent (works with no GitHub token and no `github-sync`
+feature — a PR URL is parsed, not fetched); `pr-check` is
+`github-sync`-gated, checks linked pull requests against GitHub, and
+closes a story whose merged link has `close_on_merge: true` (the
+default) in the same transaction as the merge is recorded. Four new
+event kinds (`StoryPrLinked`/`StoryPrUnlinked`/`StoryPrMerged`/
+`StoryPrClosed`) project into a new `story_pr_links` table (migration
+11). REST routes for `link-pr`/`unlink-pr`, guarded the same way every
+other mutating route is.
+
+**Picked from the Medium queue.** SH-167 was still `in-progress`
+elsewhere (`story list --state in-progress`, plus a live tmux window —
+`storyhook:5` — confirmed per this run's own skip rule, third time this
+run has hit it); SH-150 carried its ⚠ mark. SH-66/SH-42/SH-43 above it
+were already done. SH-49 was the next unclaimed line.
+
+**Council before implementing.** This story's own scope has a hard
+architectural fork the acceptance criteria doesn't resolve: the daemon
+has no durable, service-level GitHub credential (tokens travel only
+inside a per-request envelope, because SH-153 deliberately blocked the
+daemon from reading its own ambient environment for one), so "the daemon
+monitors GitHub" as literally written cannot be built without either
+reversing that decision or building a whole credential-storage
+subsystem as a rider. Research first (an `Explore` agent mapping the
+commit-link precedent, `GithubApi`, the daemon's background-thread
+shape, and the credential gap), then a 3-seat council
+(software-architect, security-researcher, data-engineer) per this run's
+autonomy rule. Round one split 0-1-2 on schema richness; one
+deliberation round converged all three members onto the same shape
+(structured `owner/repo/number` key, `StoryPrClosed` as a fourth kind)
+after the security-researcher recognized that shape made their own
+cross-repo-spoofing check cheaper to enforce than a raw-URL key would
+have; round two's ranked-choice runoff was unanimous (3/3) for the
+proposal that additionally made two things mandatory rather than
+optional — re-validating the configured remote on *every* `pr-check`
+call, not just at link time, and routing the new REST endpoints through
+the existing CSRF/DNS-rebinding guard. Full audit trail in
+`.council/sh49-linked-prs/`; verdict recorded as a comment on SH-49 and
+not re-litigated. **SH-212** filed for the deferred daemon-side
+unattended-polling half, scoped around the credential gap the council
+identified.
+
+**A generator deviation caught and fixed before landing.** The first
+implementation pass gated the entire `pr_link` module — including
+`link`/`unlink`, which the council's verdict is explicit need no network
+access — behind the `github-sync` cargo feature, silently contradicting
+"linking is feature-independent" with a `Usage` error in a
+`--no-default-features` build. Caught on review (the generator itself
+flagged it as a deviation with its reasoning, which is what made it
+visible rather than silently accepted), root-caused to `parse_pr_url`'s
+natural home being inside the already-gated `github` module, and fixed
+surgically rather than by restructuring the crate-wide feature boundary:
+`parse_pr_url` moved to an ungated `src/domain/pr_url.rs` (re-exported
+from `github::sync_state` for backward compatibility), the cross-repo
+check reads the configured remote straight off `ProjectSettings`'s raw
+JSON column instead of the gated `GithubSyncConfig` type, and `check`/
+`run_check` — the only part that legitimately needs the feature — moved
+into a sibling `src/service/pr_check.rs`, gated on its own. Verified
+with `cargo build`/`clippy --no-default-features --lib`, which the first
+pass had never run.
+
+**Gate:** one `make test` run, supervised in the background with a
+120-second log-growth stall bound (`Monitor`, polling every 15s); log
+grew steadily from empty to ~223KB across the Rust/plugin-harness legs
+and on into the e2e leg, no stall. Full suite green: 1003 unit/
+integration tests, plugin harness 24/24, e2e 13/13. No orphan daemons
+before or after.
+
+**Semver: minor.** New CLI verbs, new REST endpoints, new event kinds —
+additive and non-breaking.
+
+**PR:** #178, merged as `722b43b`. Branch verified deleted, `main`
 fast-forwarded cleanly.
