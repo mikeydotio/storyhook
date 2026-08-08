@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{
-    Attach, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction, Invocation,
-    NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction, StateAction,
-    StoreAction, TypeAction, WebAction,
+    AbandonedAction, Attach, DaemonAction, EpicAction, HELP_TEXT, HistoryAction, HooksAction,
+    Invocation, NewProjectRequest, PhaseAction, PluginAction, ProjectAction, SettingsAction,
+    StateAction, StoreAction, TypeAction, WebAction,
 };
 use crate::domain::{FieldEdit, ImportStory, StateChanges, SuperState, TypeChanges, TypeDef};
 use crate::env::Environment;
@@ -596,6 +596,7 @@ pub fn dispatch<S: Store>(
                         let mut advice = orphan_advice(&orphans);
                         advice.extend(origin_advice(&origins));
                         advice.extend(backup_advice(ctx)?);
+                        advice.extend(abandoned_advice(ctx.env()));
                         Ok(Response::Issues(advice))
                     }
                     issues => Err(AppError::Integrity(issues.join("\n"))),
@@ -701,6 +702,7 @@ pub fn dispatch<S: Store>(
         } => dispatch_project_show(ctx),
         Invocation::Web { .. }
         | Invocation::Daemon { .. }
+        | Invocation::DoctorAbandoned { .. }
         | Invocation::Store { .. }
         | Invocation::Update { .. }
         | Invocation::ImportProject { .. }
@@ -1159,7 +1161,9 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
                 info.pid
             )))
         }
-        DaemonAction::Stop => crate::daemon::commands::stop(&env).map(Response::Message),
+        DaemonAction::Stop { force } => {
+            crate::daemon::commands::stop(&env, force).map(Response::Message)
+        }
         DaemonAction::Status => crate::daemon::commands::status(&env).map(Response::Message),
         DaemonAction::Install => crate::daemon::commands::install(&env).map(Response::Message),
         DaemonAction::Uninstall => crate::daemon::commands::uninstall(&env).map(Response::Message),
@@ -1168,6 +1172,73 @@ fn dispatch_daemon(action: DaemonAction) -> Result<Response, AppError> {
             "`story daemon --serve` is handled before dispatch".to_string(),
         )),
     }
+}
+
+/// `story doctor abandoned …` — the ledger [`ledger_abandoned`](crate::daemon::lifecycle::ledger_abandoned)
+/// writes, reviewed and triaged by hand.
+fn dispatch_doctor_abandoned(action: AbandonedAction) -> Result<Response, AppError> {
+    let env = Environment::from_process(None)?;
+    match action {
+        AbandonedAction::List => {
+            let ledger = crate::daemon::lifecycle::read_abandoned(&env);
+            Ok(Response::Message(abandoned_ledger_message(&ledger)))
+        }
+        AbandonedAction::Clear { request_id } => {
+            let changed = crate::daemon::lifecycle::clear_abandoned(&env, request_id.as_deref());
+            Ok(Response::Message(match request_id {
+                Some(id) if changed => format!("forgot the abandoned `{id}`."),
+                Some(id) => format!("no abandoned entry named `{id}`; nothing changed."),
+                None if changed => "forgot every abandoned entry.".to_string(),
+                None => "the abandoned-work ledger was already empty.".to_string(),
+            }))
+        }
+    }
+}
+
+/// What `story doctor abandoned` prints: every entry, with the recovery this
+/// codebase can actually recommend for its kind of work — `github-sync` may
+/// have made partial progress against GitHub itself and is safest re-run;
+/// anything else changed local data at most, and `story show`/`story list`
+/// answer whether it landed.
+fn abandoned_ledger_message(ledger: &[crate::daemon::lifecycle::AbandonedRequest]) -> String {
+    if ledger.is_empty() {
+        return "no abandoned commands.".to_string();
+    }
+    let mut body = format!(
+        "{} abandoned command{}, each one this daemon started but never confirmed \
+         finishing:\n\n",
+        ledger.len(),
+        if ledger.len() == 1 { "" } else { "s" }
+    );
+    for entry in ledger {
+        let recovery = if entry.request.command == "github-sync" {
+            "may have made partial progress against GitHub itself; re-running it is safe \
+             and picks up where it left off"
+        } else {
+            "may or may not have written locally; `story show`/`story list` on the story \
+             it named answers whether it landed"
+        };
+        body.push_str(&format!(
+            "  {}  `{}`{}\n    started {}, abandoned {}\n    {}\n    {}\n\n",
+            entry.request.request_id,
+            entry.request.command,
+            entry
+                .request
+                .project
+                .as_ref()
+                .map(|p| format!(" on `{p}`"))
+                .unwrap_or_default(),
+            entry.request.started_at,
+            entry.abandoned_at,
+            entry.reason,
+            recovery,
+        ));
+    }
+    body.push_str(
+        "`story doctor abandoned clear <request-id>` forgets one once you have checked \
+         it; `--all` forgets every entry above.",
+    );
+    body
 }
 
 /// `story update` — self-update, which touches no project data at all.
@@ -1497,6 +1568,7 @@ pub fn needs_no_store(invocation: &Invocation) -> bool {
         invocation,
         Invocation::Daemon { .. }
             | Invocation::Web { .. }
+            | Invocation::DoctorAbandoned { .. }
             | Invocation::Store {
                 action: StoreAction::New { .. }
             }
@@ -1551,6 +1623,9 @@ pub fn dispatch_without_store(invocation: Invocation) -> Result<Response, AppErr
         // one command a user reaches for when nothing is working.
         Invocation::Web { action } => dispatch_web(action),
         Invocation::Daemon { action } => dispatch_daemon(action),
+        // Reads and writes one file under the daemon's own state directory
+        // — no project, no store, exactly like the daemon commands above.
+        Invocation::DoctorAbandoned { action } => dispatch_doctor_abandoned(action),
         // `main` answers this one before a store is ever opened, for the
         // reasons on [`create_store`]. Reaching here means a caller went round
         // the front door, and the honest answer is that no store this arm could
@@ -1827,6 +1902,7 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Summary
         | Invocation::Report { .. }
         | Invocation::Doctor { .. }
+        | Invocation::DoctorAbandoned { .. }
         | Invocation::Show { .. }
         | Invocation::Comment { .. }
         | Invocation::Assign { .. }
@@ -2049,6 +2125,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Plugin { .. } => "plugin",
         Invocation::Web { .. } => "web",
         Invocation::Daemon { .. } => "daemon",
+        Invocation::DoctorAbandoned { .. } => "doctor-abandoned",
         Invocation::Store { .. } => "store",
         Invocation::SessionStart => "session-start",
         Invocation::Update { .. } => "update",
@@ -2177,7 +2254,7 @@ impl HttpInvoker {
         poll: std::time::Duration,
         patience: std::time::Duration,
     ) -> Result<Result<Response, AppError>, Transport> {
-        use crate::daemon::lifecycle::{self, Verdict};
+        use crate::daemon::lifecycle::{self, Observed, Verdict};
         use std::sync::mpsc;
         use std::time::Instant;
 
@@ -2194,8 +2271,13 @@ impl HttpInvoker {
         });
 
         let started = Instant::now();
-        let mut seen: Option<lifecycle::CurrentRequest> = None;
+        let mut seen: Vec<lifecycle::CurrentRequest> = Vec::new();
         let mut changed_at = started;
+        // Set the instant this client's own request_id is first observed in
+        // the set, and never reset while it stays there — the clock row 2/3
+        // of `verdict`'s table bounds *my own* served time by, independent of
+        // whatever else the daemon is or is not also finishing (SH-173).
+        let mut mine_seen_at: Option<Instant> = None;
         let mut announced = false;
 
         loop {
@@ -2211,26 +2293,38 @@ impl HttpInvoker {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
 
-            let current = lifecycle::read_current(env);
-            if current != seen {
-                seen = current.clone();
+            let inflight = lifecycle::read_inflight(env);
+            if inflight != seen {
+                seen = inflight;
                 changed_at = Instant::now();
+            }
+            if mine_seen_at.is_none() && seen.iter().any(|r| r.request_id == request.request_id) {
+                mine_seen_at = Some(Instant::now());
             }
             if !announced && started.elapsed() >= patience {
                 announced = true;
-                announce_waiting_on(seen.as_ref());
+                announce_waiting_on(&seen);
             }
-            match lifecycle::verdict(
-                seen.as_ref(),
-                changed_at.elapsed(),
-                started.elapsed(),
-                bound,
-            ) {
+
+            let observed = Observed {
+                mine: &request.request_id,
+                inflight: &seen,
+                mine_for: mine_seen_at.map(|at| at.elapsed()),
+                since_change: changed_at.elapsed(),
+                total: started.elapsed(),
+            };
+            match lifecycle::verdict(&observed, bound) {
                 Verdict::Wait => {}
-                Verdict::GiveUp(record) => {
-                    return Err(Transport::Sent(stalled_message(
+                Verdict::GiveUpMine(record) => {
+                    return Err(Transport::Sent(stalled_message_mine(
                         &record,
-                        &request.request_id,
+                        changed_at.elapsed(),
+                        env,
+                    )));
+                }
+                Verdict::GiveUpQueued(records) => {
+                    return Err(Transport::Sent(stalled_message_queued(
+                        &records,
                         changed_at.elapsed(),
                         env,
                     )));
@@ -2269,26 +2363,36 @@ impl HttpInvoker {
 /// command and for anything under `--json`, so an unconditional line here would
 /// break a contract the suite already holds. A pipe gets silence and the same
 /// exit code it always got.
-fn announce_waiting_on(current: Option<&crate::daemon::lifecycle::CurrentRequest>) {
+fn announce_waiting_on(inflight: &[crate::daemon::lifecycle::CurrentRequest]) {
     use std::io::IsTerminal;
     if !std::io::stderr().is_terminal() {
         return;
     }
-    match current {
-        Some(record) => eprintln!(
-            "storyhook: waiting for the daemon to finish `{}`. It runs one command at a \
-             time, so yours may be queued behind it; `story daemon status` answers \
-             without asking it.",
-            record.command
-        ),
-        None => eprintln!(
+    if inflight.is_empty() {
+        eprintln!(
             "storyhook: waiting for the daemon. `story daemon status` answers without \
              asking it."
-        ),
+        );
+        return;
     }
+    let names = inflight
+        .iter()
+        .map(|r| format!("`{}`", r.command))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let plural = if inflight.len() == 1 {
+        ("one command".to_string(), "it")
+    } else {
+        (format!("{} commands", inflight.len()), "them")
+    };
+    eprintln!(
+        "storyhook: waiting for the daemon. It is running {} ({names}); yours may be \
+         queued behind {}. `story daemon status` answers without asking it.",
+        plural.0, plural.1,
+    );
 }
 
-/// What the user is told when the daemon stops finishing things.
+/// What the user is told when the daemon stops finishing **my own** command.
 ///
 /// Three rules, each of which cost this council an argument.
 ///
@@ -2303,43 +2407,72 @@ fn announce_waiting_on(current: Option<&crate::daemon::lifecycle::CurrentRequest
 ///
 /// And it **refuses the remedy its neighbour gives**. The `Transport::Sent`
 /// message below recommends `story show` or `story list`; both are invocations,
-/// both go back through the very queue that is not moving, and following the
-/// advice buys another deadline of silence per attempt. Correct for a dropped
-/// connection, actively wrong here.
-fn stalled_message(
+/// both go back through the same queue, and following the advice buys another
+/// deadline of silence per attempt. Correct for a dropped connection, actively
+/// wrong here.
+fn stalled_message_mine(
     record: &crate::daemon::lifecycle::CurrentRequest,
-    mine: &str,
     stalled_for: std::time::Duration,
     env: &Environment,
 ) -> String {
-    // Two different facts, so two different sentences. Telling a user their own
-    // command is "either that command or behind it" is noise; telling them a
-    // stranger's command is the thing they are behind is the whole diagnosis.
-    let whose = if record.request_id == mine {
-        format!("your `{}`", record.command)
-    } else {
-        format!(
-            "`{}` — not your command, and storyhook runs one at a time, so yours is \
-             behind it",
-            record.command
-        )
-    };
     format!(
-        "the storyhook daemon has been running {whose} for {}s without finishing \
-         anything.\n\n  the daemon    pid {}, since {}\n  its log       {}\n\n\
+        "the storyhook daemon has been running your `{}` for {}s without finishing \
+         it.\n\n  the daemon    pid {}, since {}\n  its log       {}\n\n\
          This command may or may not have run — storyhook will not repeat it, because \
          repeating a write it cannot prove failed is worse than reporting this.\n\n\
          `story daemon status` and that log answer without going through the daemon's \
          queue; `story show` and `story list` do not, and would wait behind the same \
-         command. If it is stuck rather than slow, `story daemon stop` gives up after \
+         work. If it is stuck rather than slow, `story daemon stop` gives up after \
          {}s without killing anything, so `kill {}` is the way out — the next `story` \
          command starts a fresh daemon.",
+        record.command,
         stalled_for.as_secs(),
         record.pid,
         record.started_at,
         env.daemon_log().display(),
         crate::daemon::lifecycle::CONTROL_DEADLINE.as_secs(),
         record.pid,
+    )
+}
+
+/// What the user is told when the daemon stops finishing **somebody else's**
+/// work this client is only queued behind.
+///
+/// Same three rules as [`stalled_message_mine`] — see its doc. A distinct
+/// function rather than a shared one with a branch inside, because the two
+/// tell a genuinely different story: "your own command has not finished" and
+/// "you are behind other people's work, and none of it is finishing" are
+/// different diagnoses, not one diagnosis with two subjects.
+fn stalled_message_queued(
+    records: &[crate::daemon::lifecycle::CurrentRequest],
+    stalled_for: std::time::Duration,
+    env: &Environment,
+) -> String {
+    // Every record in the set was named by this one daemon process, so they
+    // share a pid — any of them names the process to kill.
+    let pid = records.first().map_or(0, |r| r.pid);
+    let names = records
+        .iter()
+        .map(|r| format!("`{}`", r.command))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let them = if records.len() == 1 { "it" } else { "them" };
+    format!(
+        "the storyhook daemon has been running {names} — not your command, and yours \
+         is queued behind {them} — for {}s without finishing anything.\n\n  \
+         the daemon    pid {}\n  its log       {}\n\n\
+         This command may or may not have run — storyhook will not repeat it, because \
+         repeating a write it cannot prove failed is worse than reporting this.\n\n\
+         `story daemon status` and that log answer without going through the daemon's \
+         queue; `story show` and `story list` do not, and would wait behind the same \
+         work. If it is stuck rather than slow, `story daemon stop` gives up after \
+         {}s without killing anything, so `kill {}` is the way out — the next `story` \
+         command starts a fresh daemon.",
+        stalled_for.as_secs(),
+        pid,
+        env.daemon_log().display(),
+        crate::daemon::lifecycle::CONTROL_DEADLINE.as_secs(),
+        pid,
     )
 }
 
@@ -3089,6 +3222,31 @@ fn backup_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppError> {
          backup of it does not include."
             .to_string(),
     ])
+}
+
+/// What `story doctor` says when the abandoned-command ledger is not empty
+/// (SH-173).
+///
+/// Advisory rather than an integrity failure, for the same reason
+/// [`backup_advice`] is: an abandoned command *may* have landed — a forced
+/// shutdown does not roll anything back, it only stops confirming — so a
+/// non-zero exit here would tell a script something is broken when the most
+/// likely truth is that nothing is. `story doctor abandoned` is where the
+/// detail and the recovery advice live; this is only the pointer to it, kept
+/// brief so a machine that has never forced a shutdown never sees it grow.
+fn abandoned_advice(env: &Environment) -> Vec<String> {
+    let ledger = crate::daemon::lifecycle::read_abandoned(env);
+    if ledger.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "{} command{} the daemon abandoned rather than confirmed finishing — most likely \
+         from `story daemon stop --force`, or a crash. `story doctor abandoned` lists each \
+         with a recovery suggestion; `story doctor abandoned clear` forgets one once you \
+         have checked it.",
+        ledger.len(),
+        if ledger.len() == 1 { "" } else { "s" }
+    )]
 }
 
 /// What `story doctor` says about a project whose checkout knows an origin the

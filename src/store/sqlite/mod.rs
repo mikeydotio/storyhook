@@ -93,11 +93,16 @@ fn ensure_wal(conn: &Connection, deadline: Duration) -> Result<String, StoreErro
 /// How many idle connections the pool keeps.
 ///
 /// A cap on *idle* connections, not on concurrency: a read that arrives when
-/// the pool is empty opens its own connection rather than waiting, so the pool
-/// can never deadlock a caller. Eight is chosen to comfortably exceed the
-/// daemon's request concurrency while keeping the process's open file handles
-/// countable.
-const DEFAULT_POOL_SIZE: usize = 8;
+/// the pool is empty opens its own connection rather than waiting, so the
+/// pool can never deadlock a caller — falling short of the daemon's request
+/// concurrency does not fail loudly, it silently re-runs every connection
+/// pragma (including `ensure_wal`'s read) on every request past the idle
+/// cap. Eight is `crate::daemon::serve::DISPATCHERS` (also 8) plus two: one
+/// per dispatcher, plus the change-token poller, plus one of margin. `store`
+/// does not depend on `daemon`, so the relation is pinned by a test in
+/// `daemon::serve` rather than written here as an expression — but a change
+/// to either constant that breaks it will fail that test.
+pub(crate) const DEFAULT_POOL_SIZE: usize = 10;
 
 /// The busy timeout, matching the legacy project lock's five-second deadline.
 const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);

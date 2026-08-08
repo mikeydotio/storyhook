@@ -39,7 +39,7 @@ struct DaemonGuard<'a>(&'a TestEnv);
 
 impl Drop for DaemonGuard<'_> {
     fn drop(&mut self) {
-        let _ = lifecycle::stop(&self.0.environment());
+        let _ = lifecycle::stop(&self.0.environment(), lifecycle::StopMode::Force);
     }
 }
 
@@ -217,6 +217,162 @@ fn stopping_nothing_says_so_and_succeeds() {
         .assert()
         .success()
         .stdout(predicates::str::contains("not running"));
+}
+
+/// An unforced `daemon stop` waits for in-flight work to finish rather than
+/// abandoning it — the whole point of the default not being `--force`.
+///
+/// The fixture holds a request open with a 2s hook; `daemon stop` must not
+/// return before that hook does, and the daemon must actually be gone once
+/// it does return (drained, not merely told to drain).
+#[test]
+fn an_unforced_stop_waits_for_in_flight_work_to_finish() {
+    use std::io::Write;
+
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("PB").build();
+    let _guard = DaemonGuard(&env);
+
+    std::fs::create_dir_all(project.path().join(".storyhook")).expect("the hooks directory");
+    let mut hooks = std::fs::File::create(project.path().join(".storyhook/hooks.toml"))
+        .expect("writing hooks.toml");
+    hooks
+        .write_all(
+            b"[settings]\ntimeout_seconds = 60\n\n\
+              [on_comment]\ncommand = \"sleep 2\"\ntimeout_seconds = 60\n",
+        )
+        .expect("writing the hook");
+    drop(hooks);
+    env.story(project.path())
+        .args(["new", "a story"])
+        .assert()
+        .success();
+
+    let mut slow = env.raw_story(project.path());
+    let mut child = slow
+        .args(["comment", "PB-1", "trip the hook"])
+        .spawn()
+        .expect("spawning the slow command");
+
+    let environment = env.environment();
+    wait_for(
+        "the daemon to publish the slow comment as in flight",
+        || {
+            lifecycle::read_inflight(&environment)
+                .iter()
+                .any(|r| r.command == "comment")
+        },
+    );
+
+    let started = Instant::now();
+    env.story(project.path())
+        .args(["daemon", "stop"])
+        .assert()
+        .success();
+    let waited = started.elapsed();
+
+    assert!(
+        waited >= Duration::from_secs(2),
+        "an unforced stop must wait for the 2s hook to finish, not abandon it: took {waited:?}"
+    );
+    assert!(
+        !lifecycle::is_live(&environment),
+        "the daemon must actually be gone once stop returns"
+    );
+    child.wait().expect("the slow command finishes");
+}
+
+/// `daemon stop --force` does not wait for a hook that outlives its grace
+/// period — it signals the daemon directly once that period elapses.
+///
+/// The fixture's hook sleeps far longer than `FORCE_GRACE`, so a `--force`
+/// stop that waited for it would time this test out; one that behaves
+/// correctly returns within a few seconds of the grace period regardless.
+#[test]
+fn a_forced_stop_kills_a_daemon_that_is_still_draining() {
+    use std::io::Write;
+
+    let env = TestEnv::isolated();
+    let project = env.project().prefix("PB").build();
+    let _guard = DaemonGuard(&env);
+
+    std::fs::create_dir_all(project.path().join(".storyhook")).expect("the hooks directory");
+    let mut hooks = std::fs::File::create(project.path().join(".storyhook/hooks.toml"))
+        .expect("writing hooks.toml");
+    hooks
+        .write_all(
+            b"[settings]\ntimeout_seconds = 60\n\n\
+              [on_comment]\ncommand = \"sleep 60\"\ntimeout_seconds = 60\n",
+        )
+        .expect("writing the hook");
+    drop(hooks);
+    env.story(project.path())
+        .args(["new", "a story"])
+        .assert()
+        .success();
+
+    let mut slow = env.raw_story(project.path());
+    let mut child = slow
+        .args(["comment", "PB-1", "trip the hook"])
+        .spawn()
+        .expect("spawning the slow command");
+
+    let environment = env.environment();
+    wait_for(
+        "the daemon to publish the slow comment as in flight",
+        || {
+            lifecycle::read_inflight(&environment)
+                .iter()
+                .any(|r| r.command == "comment")
+        },
+    );
+
+    let started = Instant::now();
+    env.story(project.path())
+        .args(["daemon", "stop", "--force"])
+        .assert()
+        .success();
+    let waited = started.elapsed();
+
+    assert!(
+        waited < Duration::from_secs(10),
+        "a forced stop must not wait for a 60s hook: took {waited:?}"
+    );
+    assert!(
+        !lifecycle::is_live(&environment),
+        "the daemon must actually be gone once a forced stop returns"
+    );
+    // The killed daemon's socket closes underneath it — this client fails
+    // fast rather than waiting out its own deadline. Its exact error is not
+    // this test's concern, only that it is reaped rather than left running.
+    let _ = child.wait();
+
+    // What --force abandoned is not just gone — it is ledgered, and `story
+    // doctor abandoned` is how a human reviews and clears it.
+    let listing = env
+        .story(project.path())
+        .args(["doctor", "abandoned"])
+        .output()
+        .expect("listing abandoned commands");
+    let listing_text = String::from_utf8_lossy(&listing.stdout);
+    assert!(
+        listing_text.contains("comment"),
+        "the killed comment must appear in the abandoned ledger: {listing_text}"
+    );
+
+    env.story(project.path())
+        .args(["doctor", "abandoned", "clear", "--all"])
+        .assert()
+        .success();
+    let cleared = env
+        .story(project.path())
+        .args(["doctor", "abandoned"])
+        .output()
+        .expect("listing again after clearing");
+    assert!(
+        String::from_utf8_lossy(&cleared.stdout).contains("no abandoned"),
+        "clearing --all must actually empty the ledger"
+    );
 }
 
 /// The backups are reported by `daemon status` rather than by `doctor`: a
@@ -710,7 +866,7 @@ fn a_running_command_is_published_and_retracted() {
     let environment = env.environment();
     let mut seen = None;
     for _ in 0..100 {
-        if let Some(record) = lifecycle::read_current(&environment) {
+        if let Some(record) = lifecycle::read_inflight(&environment).into_iter().next() {
             seen = Some(record);
             break;
         }
@@ -736,8 +892,48 @@ fn a_running_command_is_published_and_retracted() {
     // And it is retracted, which is a signal in its own right: a client's clock
     // resets on the record disappearing exactly as on it changing.
     wait_for("the record to be retracted", || {
-        lifecycle::read_current(&environment).is_none()
+        lifecycle::read_inflight(&environment).is_empty()
     });
+}
+
+/// A record a `kill -9`'d daemon left behind does not poison the next one.
+///
+/// Nothing writes `daemon.current.json` on an abnormal exit's way out — there
+/// is no way out to run code on — so a killed daemon can leave the file
+/// naming a command that finished long before this test's daemon ever
+/// started. Without a harvest at startup, the next client to wait on this new
+/// daemon would read that frozen record, wait out its deadline, and be told a
+/// command it never ran "may or may not have run".
+#[test]
+fn a_record_a_killed_daemon_left_behind_does_not_survive_the_next_ones_start() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let environment = env.environment();
+
+    std::fs::create_dir_all(environment.daemon_state_dir()).expect("the daemon's state directory");
+    lifecycle::publish_inflight(
+        &environment,
+        &[lifecycle::CurrentRequest {
+            request_id: "stale-from-a-killed-daemon".to_string(),
+            command: "github-sync".to_string(),
+            project: Some("stale-project".to_string()),
+            pid: 1,
+            started_at: "2020-01-01T00:00:00Z".to_string(),
+            served_deadline_secs: lifecycle::SYNC_SERVED_DEADLINE.as_secs(),
+            cwd: std::path::PathBuf::from("/"),
+        }],
+    );
+    assert!(
+        !lifecycle::read_inflight(&environment).is_empty(),
+        "the fixture must actually plant a stale record before starting a daemon"
+    );
+
+    start(&env);
+
+    wait_for(
+        "the stale record to be cleared by the new daemon's own start",
+        || lifecycle::read_inflight(&environment).is_empty(),
+    );
 }
 
 /// **The daemon log is 0600, the same as every other daemon file that
@@ -746,7 +942,7 @@ fn a_running_command_is_published_and_retracted() {
 /// It carries the daemon's whole stderr for its whole life, and since SH-153
 /// that can include a GitHub token surfaced in a diagnostic — an
 /// `eprintln!` this process never audited for what it prints, because nothing
-/// in it expects to be handling a secret. `publish_current` and the pidfile
+/// in it expects to be handling a secret. `publish_inflight` and the pidfile
 /// were already 0600; the log was `File::create`'s 0644 until this test
 /// pinned the fix.
 #[cfg(unix)]
