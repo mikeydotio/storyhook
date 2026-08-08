@@ -64,7 +64,8 @@ const ALLOWED: &[(&str, &str)] = &[
     ),
     (
         "src/service/git_links.rs",
-        "link and unlink read the previous value to report the path they displaced",
+        "link and unlink read the previous value to report the path they displaced; link also \
+         reads it to decide the pointer-file plan, but resolves nothing by it (SH-167)",
     ),
 ];
 
