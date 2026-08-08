@@ -142,8 +142,13 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// transaction, so a client cannot observe a catalog from one instant and
     /// stories from another.
     pub fn project_snapshot(&self) -> Result<ProjectSnapshotView, AppError> {
+        let project = self
+            .tx
+            .project(self.project)?
+            .ok_or_else(|| AppError::Storage(format!("project {} does not exist", self.project)))?;
         Ok(ProjectSnapshotView {
-            prefix: super::project_prefix(self.tx, self.project)?,
+            slug: project.slug,
+            prefix: project.prefix,
             states: self.tx.states(self.project)?,
             members: self.tx.members(self.project)?,
             stories: self

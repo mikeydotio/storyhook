@@ -340,6 +340,10 @@ pub struct GraphOverview {
 /// for rows nothing displays.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectSnapshotView {
+    /// The project's slug — what a daemon change event names
+    /// (`Change::Project`, `src/daemon/bus.rs`), so a client holding this
+    /// snapshot can tell its own project's activity from everyone else's.
+    pub slug: String,
     /// The project's story-id prefix.
     pub prefix: String,
     /// The state catalog, in configured order — which is the order a board
