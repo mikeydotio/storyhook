@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use storyhook::domain::{Priority, StateDef, StorySnapshot, SuperState};
 use storyhook::error::AppError;
-use storyhook::service::{Clock, Ctx, FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
+use storyhook::service::{Clock, Ctx, FieldEdits, NewStoryInput, StoryService};
 use storyhook::store::{ReadOps, SqliteStore, Store, StoryNo, StoryQuery};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
 
@@ -1328,11 +1328,7 @@ fn reopening_a_closed_story_returns_it_to_the_default_open_state() {
     let story = new_story(&ctx, "back from the dead");
     service.set_state(&story.id, "done", None, None).unwrap();
 
-    let outcome = service.reopen(&story.id, false).expect("reopening");
-    let reopened = match outcome {
-        ReopenOutcome::Reopened(snapshot) => *snapshot,
-        ReopenOutcome::Aborted(message) => panic!("unexpectedly aborted: {message}"),
-    };
+    let reopened = service.reopen(&story.id).expect("reopening");
     assert_eq!(reopened.state, "todo");
     assert_eq!(reopened.superstate, SuperState::Open);
     assert_eq!(reopened.closed_at, None);
@@ -1355,7 +1351,7 @@ fn reopening_preserves_the_whole_event_log() {
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "history kept");
     service.set_state(&story.id, "done", None, None).unwrap();
-    service.reopen(&story.id, false).unwrap();
+    service.reopen(&story.id).unwrap();
 
     assert_eq!(
         event_kinds(&fixture, &story.id),
@@ -1373,9 +1369,16 @@ fn reopening_an_open_story_is_refused() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let story = new_story(&ctx, "already open");
-    let error = StoryService::new(&ctx)
-        .reopen(&story.id, false)
-        .unwrap_err();
+    let error = StoryService::new(&ctx).reopen(&story.id).unwrap_err();
+    assert_eq!(validation_message(error), "story `SH-1` is already open");
+}
+
+#[test]
+fn reopen_plan_of_an_open_story_is_refused() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let story = new_story(&ctx, "already open");
+    let error = StoryService::new(&ctx).reopen_plan(&story.id).unwrap_err();
     assert_eq!(validation_message(error), "story `SH-1` is already open");
 }
 
@@ -1383,41 +1386,58 @@ fn reopening_an_open_story_is_refused() {
 fn reopening_a_story_that_does_not_exist_is_not_found() {
     let fixture = ServiceFixture::new();
     let error = StoryService::new(&fixture.ctx())
-        .reopen("SH-1", false)
+        .reopen("SH-1")
         .unwrap_err();
     assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
 }
 
+/// SH-154: `confirm_undelete` used to answer this from inside `reopen`
+/// itself, by reading stdin — which runs inside the daemon and never has a
+/// terminal, so it always errored naming `--force` regardless of who was
+/// asking or from where. `reopen_plan` is the fix: a plain read that hands
+/// back what an undelete would restore, so the question can travel to
+/// whichever process — `main.rs` — actually has a terminal to ask it at.
 #[test]
-fn undeleting_without_force_and_without_a_terminal_names_the_remedy() {
+fn reopen_plan_of_a_deleted_story_returns_what_it_would_undelete() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "deleted");
     service.delete(&story.id, "an error").unwrap();
 
-    let error = service.reopen(&story.id, false).unwrap_err();
-    let message = validation_message(error);
-    assert!(
-        message.contains("was deleted (reason: an error)"),
-        "{message}"
-    );
-    assert!(message.contains("--force"), "{message}");
+    let plan = service
+        .reopen_plan(&story.id)
+        .expect("reading the plan")
+        .expect("a deleted story has a plan");
+    assert_eq!(plan.id, "SH-1");
+    assert_eq!(plan.title, "deleted");
+    assert_eq!(plan.deleted_reason.as_deref(), Some("an error"));
+}
+
+/// The sibling of the plan test above: an ordinary closed story (never
+/// deleted) needs no confirmation at all, so `reopen_plan` answers `None`
+/// rather than a plan nobody should be asked to confirm.
+#[test]
+fn reopen_plan_of_an_ordinarily_closed_story_is_none() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "just closed");
+    service.set_state(&story.id, "done", None, None).unwrap();
+
+    let plan = service.reopen_plan(&story.id).expect("reading the plan");
+    assert!(plan.is_none(), "{plan:?}");
 }
 
 #[test]
-fn undeleting_with_force_restores_the_story_and_keeps_the_audit_comment() {
+fn reopening_a_deleted_story_restores_it_and_keeps_the_audit_comment() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "undeleted");
     service.delete(&story.id, "an error").unwrap();
 
-    let outcome = service.reopen(&story.id, true).expect("force reopening");
-    let reopened = match outcome {
-        ReopenOutcome::Reopened(snapshot) => *snapshot,
-        ReopenOutcome::Aborted(message) => panic!("unexpectedly aborted: {message}"),
-    };
+    let reopened = service.reopen(&story.id).expect("reopening");
     assert!(!reopened.deleted);
     assert_eq!(reopened.deleted_reason, None);
     assert_eq!(reopened.superstate, SuperState::Open);
@@ -1431,7 +1451,7 @@ fn a_reopened_story_can_be_edited_again() {
     let service = StoryService::new(&ctx);
     let story = new_story(&ctx, "usable again");
     service.set_state(&story.id, "done", None, None).unwrap();
-    service.reopen(&story.id, false).unwrap();
+    service.reopen(&story.id).unwrap();
     let after = service.comment(&story.id, "still here").expect("editing");
     assert_eq!(after.comments.len(), 1);
 }
@@ -1648,7 +1668,7 @@ fn reopening_fires_a_state_change_hook_from_closed() {
     let story = new_story(&ctx, "reopened");
     service.set_state(&story.id, "done", None, None).unwrap();
     record_all_hooks(&fixture);
-    service.reopen(&story.id, false).unwrap();
+    service.reopen(&story.id).unwrap();
 
     let payload: serde_json::Value = serde_json::from_str(
         std::fs::read_to_string(fixture.cwd().join("hooks.log"))

@@ -165,7 +165,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-146** — the daemon never re-attempts its tailnet bind
 - [x] **SH-147** — the tailnet probe runs twice on the port-fallback path
 - ⚠ **SH-150** — the TUI holds its own store handle · *in-progress as of 2026-08-07T20:35 — another session; do not claim*
-- [ ] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
+- [x] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
 - [ ] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
 - [ ] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
 - [x] **SH-164** — labels are sometimes concatenated
@@ -5762,3 +5762,91 @@ running.
 **Semver: patch.** A bug fix with no interface change — `src/daemon/http1`
 is a private implementation detail of the daemon; every route, every
 response shape, and the CLI surface are unchanged.
+
+### SH-154 — done · confirmation moved to the client, two wire bugs caught along the way
+
+Picked next off the Medium queue (first unchecked, non-⚠, non-⏸ line) after SH-147.
+Re-checked `story list --state in-progress`: SH-112 (epic, skip), SH-150 (⚠, correctly
+marked, another session). SH-167 and SH-208 turned up in-progress too — SH-167's marker in
+this file is still stale, as SH-147's entry already noted — but both sit later in the queue
+than SH-154, so neither changed the pick.
+
+**Read whole, comment included** — the story's own comment named the exact fix direction:
+move the question to `main.rs` in the `Response::ConfirmationRequired` shape `project deinit`
+and `story purge` already use, since a prompt below the seam can never work once the daemon
+is the only thing that runs the service layer. Two independent doc comments elsewhere in the
+tree — `main.rs`'s `confirm()` and `tests/project_delete.rs`'s file header, both predating
+this story — had already spelled out the corollary: a typed-token gate is the wrong weight
+for "reopen this deleted story," which is what `story delete` undoes again, so the terminal
+should ask a plain `[y/N]` here and reserve the typed token for the genuinely irreversible
+plans. That is what shipped: `ConfirmationPlan::requires_typed_confirmation()` answers
+`false` only for the new `Undelete` variant.
+
+**Reproduced first, the way a pty test can and a piped one cannot.** `story_delete.rs`
+already had a regression test proving an unforced reopen of a deleted story fails naming
+`--force` under piped (non-TTY) stdin — but that test cannot tell "refuses because there is
+no terminal" from "refuses no matter what," which is exactly the distinction this story is
+about. Two new tests in `tests/pty_interactive.rs`, run against the unfixed code first, made
+the distinction: run under a real `openpty`, `story reopen <deleted-id>` still hard-refused
+naming `--force` and never printed a prompt — proof that the daemon's own stdin, not the
+client's terminal, was what `confirm_undelete` was asking, and a real terminal on the client
+side changes nothing while the question is asked in the wrong process. Both tests went green
+after the fix with no other change to their expectations.
+
+**The service split in two, mirroring `purge_plan`/`purge`.** `StoryService::reopen_plan`
+reads whether `id` is closed-and-deleted and returns an `UndeletePlan` if so, `None` for an
+ordinary closed reopen (which has never needed confirmation and still doesn't);
+`StoryService::reopen` dropped its `force` parameter entirely and just performs the state
+change unconditionally — by the time it runs, `invoke.rs` has already either found nothing to
+ask or holds a `Yes` to what `reopen_plan` returned. `ReopenOutcome` (its `Aborted` variant's
+only producer) went with it; `reopen` now returns the `StorySnapshot` directly, same as
+`purge` returns its own summary directly. `confirm_undelete` — 25 lines of `std::io::stdin`
+in the service layer — is gone, and `tests/invoker_seam.rs`'s `every_interactive_prompt_is_
+in_the_allowlist` allowlist drops from three entries to two, `src/service/story.rs` no longer
+among them. That test's own count assertion is what makes the drop a deliberate, reviewed
+edit rather than a silent one.
+
+**Two bugs the fix could not compile around, only run around — both caught by tests written
+for a different reason.** `InvokeRequest::forced()` matched `Invocation::Purge` explicitly
+and fell through `_ => {}` for everything else, `Invocation::Reopen` included — unnoticed
+until `tests/daemon_invoke.rs::reopen_refuses_and_then_undeletes_over_the_wire` (written to
+mirror the existing `purge_refuses_and_then_deletes_over_the_wire`, which documents exactly
+this risk in its own doc comment) sent a forced retry and got the identical plan back a
+second time instead of an undelete. Separately, `route_reopen_story` built its `Reply` with
+`reply_with(ctx, 200, ..)`, which answers the status its caller hands it regardless of what
+the invocation actually returns — so a browser's unforced reopen of a deleted story would
+have come back `200 OK` carrying a `confirmation-required` body, indistinguishable from
+success to anything that only checked the status code. `tests/web_test.rs`'s two existing
+tests for this path (pinned to the old, also-wrong 422) caught it the moment their expected
+status changed to 409 and the real response was still 200. Fixed to match
+`route_delete_repo`'s pattern: 409 when `dispatch` answers `ConfirmationRequired`, 200
+otherwise. Neither bug would have been caught by `cargo check` — both are exactly the "does
+the wire round-trip actually work" class of defect `daemon_invoke.rs` and `web_test.rs` exist
+to catch, not a new class either file needed inventing.
+
+**One gap left deliberately open, filed rather than built: SH-210.** The dashboard's
+`Reopen` button now gets a proper `409` with an `UndeletePlan` it could draw a confirmation
+modal from — but nothing draws one. `runFieldMutation`'s generic `.catch(toastError)` reads
+`err.body.error`, which a `ConfirmationRequired` response never carries, so the user sees a
+bare "Conflict" toast. `deleteProject`/`showDeleteConfirm` is the existing pattern for a
+409-with-plan confirmation, but it targets a `settings-delete` DOM slot built for the Settings
+screen; the story drawer's `Reopen` button has no equivalent landing spot, and building one is
+a small piece of frontend design rather than a copy of the existing modal. Out of charter for
+a story labeled `daemon, layering`; filed at low priority with the gap, the existing pattern
+to follow, and why it isn't a straight port, and related to SH-154 so the connection isn't
+lost.
+
+**Gate:** one full `make test` run, green (fmt, clippy `-D warnings`, the whole Rust suite,
+`cargo build`, plugin harness 24/24, browser suite 13/13) — supervised in the background,
+first against a 120-second log-growth stall bound calibrated for the test-execution phase (a
+false-positive stall against the cold `--workspace --all-targets` compile, which is
+legitimately silent far longer than that with no per-file progress output), then re-supervised
+against rustc's own CPU time as a second heartbeat once the compile was confirmed to be doing
+real work rather than wedged. Ran clean to completion; no restart needed either time, only a
+wider window the second time.
+
+**Semver: none suggested.** Same precedent as SH-146/SH-147 — no mid-loop bumps; left for
+Mikey's own batched `/semver bump` pass.
+
+**Landed as two commits on PR #167 (the fix, then this log entry), merge commit, verified,
+branch deleted.**
