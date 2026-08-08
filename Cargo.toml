@@ -58,6 +58,16 @@ github-sync = []
 # instead of behind a flag nothing remembers to pass.
 fault-injection = []
 
+# Gates `daemon::serve::bind_and_serve` (SH-148): a thin, in-process wrapper
+# around the same `serve()` accept loop the real daemon uses, built for one
+# caller — `storyhook-test-support`'s `try_serve_on` — which spins up a
+# dashboard for a test without the pidfile lock, portfile, or startup backup a
+# real daemon needs. NEVER in `default`: with the feature off, the function
+# does not exist, so it cannot be reached from a release build no matter how
+# `pub` its signature is. Same mechanism and same reasoning as
+# `fault-injection` above, applied to a test seam instead of a crash point.
+test-seam = []
+
 # Keep each object file's debug info inside a single `.dwp`-style package next to
 # the artifact instead of leaving the compiler's per-CGU `.o` files loose in
 # `target/debug/deps/`. On macOS the unpacked default accumulates: this workspace
