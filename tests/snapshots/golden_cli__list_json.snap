@@ -8,6 +8,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "display_state": "in-progress",
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -320,6 +321,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "display_state": "in-progress",
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -707,6 +709,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "display_state": "in-progress",
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -1182,6 +1185,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "display_state": "in-progress",
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -1458,6 +1462,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "display_state": "in-progress",
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -1777,6 +1782,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "display_state": "in-progress",
           "progress": {
             "children_done": 0,
             "children_total": 3
@@ -2089,6 +2095,7 @@ source: tests/golden_cli.rs
       "result": "ok",
       "stories": [
         {
+          "display_state": "in-progress",
           "progress": {
             "children_done": 0,
             "children_total": 3

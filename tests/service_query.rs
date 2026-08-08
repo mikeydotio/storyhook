@@ -382,6 +382,50 @@ fn search_returns_bare_views_with_no_cross_story_facts() {
 }
 
 #[test]
+fn an_epic_in_todo_with_an_active_child_shows_a_promoted_display_state() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_story(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    RelationService::new(&ctx)
+        .relate(&epic, "parent-of", &child, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_state(&child, "in-progress", None, None)
+        .expect("moving the child");
+
+    let shown = query(&fixture, |service| service.show(&epic));
+    assert_eq!(
+        shown.story.state, "todo",
+        "the epic's own state is untouched"
+    );
+    assert_eq!(shown.display_state.as_deref(), Some("in-progress"));
+}
+
+#[test]
+fn a_blocked_epic_keeps_its_display_state_even_with_an_active_child() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let epic = new_story(&ctx, "epic");
+    let child = new_story(&ctx, "child");
+    RelationService::new(&ctx)
+        .relate(&epic, "parent-of", &child, false)
+        .expect("relating");
+    StoryService::new(&ctx)
+        .set_state(&epic, "blocked", None, None)
+        .expect("blocking the epic");
+    StoryService::new(&ctx)
+        .set_state(&child, "in-progress", None, None)
+        .expect("moving the child");
+
+    let shown = query(&fixture, |service| service.show(&epic));
+    assert_eq!(
+        shown.display_state, None,
+        "blocked is a deliberate signal (SH-126); an active child must not override it"
+    );
+}
+
+#[test]
 fn next_offers_leaves_only_and_honours_count_and_phase() {
     let fixture = ServiceFixture::new();
     let ctx = fixture.ctx();

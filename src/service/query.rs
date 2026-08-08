@@ -39,9 +39,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::GraphMode;
 use crate::domain::{
-    self, DependencyGraph, Priority, StorySnapshot, SuperState, compute_integrity_issues,
-    compute_progress, derive_family_relationships, has_children, is_ready, last_activity_type,
-    parse_duration,
+    self, DependencyGraph, Priority, StorySnapshot, SuperState, compute_epic_display_state,
+    compute_integrity_issues, compute_progress, derive_family_relationships, has_children,
+    is_ready, last_activity_type, parse_duration,
 };
 use crate::error::AppError;
 use crate::output::{
@@ -767,6 +767,14 @@ pub fn story_views(
         .filter_map(|story| compute_progress(story, &stories).map(|p| (story.id.clone(), p)))
         .collect();
 
+    let states = tx.states(project)?;
+    let display_state: BTreeMap<String, String> = stories
+        .values()
+        .filter_map(|story| {
+            compute_epic_display_state(story, &stories, &states).map(|s| (story.id.clone(), s))
+        })
+        .collect();
+
     let mut views = Vec::with_capacity(stories.len());
     for story in stories.into_values() {
         let id = story.id.clone();
@@ -788,6 +796,7 @@ pub fn story_views(
             flagged_reasons,
             stale_info: None,
             progress: progress.get(&id).cloned(),
+            display_state: display_state.get(&id).cloned(),
         });
     }
     Ok(views)
@@ -826,6 +835,7 @@ fn bare_view(story: StorySnapshot) -> StoryView {
         flagged_reasons: Vec::new(),
         stale_info: None,
         progress: None,
+        display_state: None,
     }
 }
 
