@@ -298,6 +298,15 @@ button { cursor: pointer; }
 .fdd-option:hover { background: var(--bg-sunken); }
 .fdd-option input { accent-color: var(--accent); }
 .filter-toggle { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--fg-muted); user-select: none; }
+.board-sort { display: flex; align-items: center; gap: 0.3125rem; }
+.board-sort-label { font-size: 0.75rem; color: var(--fg-faint); }
+.board-sort-btn {
+  display: inline-flex; align-items: center; gap: 0.25rem; border: 1px solid var(--border);
+  background: var(--bg-raised); color: var(--fg-muted); font-size: 0.75rem; border-radius: 9999px;
+  padding: 0.1875rem 0.5625rem; cursor: pointer;
+}
+.board-sort-btn:hover { color: var(--accent); }
+.board-sort-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .filter-count { font-size: 0.75rem; color: var(--fg-faint); margin-left: auto; }
 .filter-clear { font-size: 0.75rem; color: var(--accent); background: none; border: none; text-decoration: none; }
 .filter-clear:hover { text-decoration: underline; }
@@ -617,6 +626,11 @@ tbody tr:hover { background: var(--bg-sunken); }
     <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
     <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
     <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
+    <div class="board-sort" id="board-sort" role="group" aria-label="Board sort order">
+      <span class="board-sort-label">Sort</span>
+      <button type="button" class="board-sort-btn" data-key="priority" id="boardsort-priority">Priority<span class="sort-arrow" id="boardsort-arrow-priority"></span></button>
+      <button type="button" class="board-sort-btn" data-key="order" id="boardsort-order">Order<span class="sort-arrow" id="boardsort-arrow-order"></span></button>
+    </div>
     <span class="filter-count" id="filter-count"></span>
     <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
   </div>
@@ -792,18 +806,18 @@ tbody tr:hover { background: var(--bg-sunken); }
       return raw ? JSON.parse(raw) : null;
     } catch (e) { return null; } // storage disabled, or a shape from an older build
   }
-  /** Mirrors the live `state.filter`/`state.sort`/`state.hiddenColumns` to
-   * sessionStorage. Also how "Clear filters" un-persists filters: it resets
-   * `state.filter` to `defaultFilter()` first and then calls this, rather
-   * than removing the storage entry outright — a removal would also drop
-   * the persisted `state.sort` and `state.hiddenColumns`, neither of which
-   * Clear Filters has ever touched (SH-162: hidden columns are a board
-   * layout preference, the same category as sort order, not a story
-   * filter). */
+  /** Mirrors the live `state.filter`/`state.sort`/`state.boardSort`/
+   * `state.hiddenColumns` to sessionStorage. Also how "Clear filters"
+   * un-persists filters: it resets `state.filter` to `defaultFilter()` first
+   * and then calls this, rather than removing the storage entry outright —
+   * a removal would also drop the persisted `state.sort`/`state.boardSort`/
+   * `state.hiddenColumns`, none of which Clear Filters has ever touched
+   * (SH-162: hidden columns are a board layout preference, the same
+   * category as sort order, not a story filter). */
   function savePersistedFilters() {
     try {
       sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({
-        filter: state.filter, sort: state.sort, hiddenColumns: state.hiddenColumns
+        filter: state.filter, sort: state.sort, boardSort: state.boardSort, hiddenColumns: state.hiddenColumns
       }));
     } catch (e) { /* nothing to do -- filters just won't carry over this time */ }
   }
@@ -844,6 +858,14 @@ tbody tr:hover { background: var(--bg-sunken); }
     // `pruneCarriedFilters()`.
     filter: (persistedFilters && persistedFilters.filter) || defaultFilter(),
     sort: (persistedFilters && persistedFilters.sort) || { col: "updated", dir: -1 },
+    // Board-only (SH-128): which of "priority"/"order" cards within a
+    // column are sorted by, and its direction. Same persistence category as
+    // `sort` above (a sort-order preference, not a story filter) per this
+    // block's own SH-155 comment, so it lives in the same sessionStorage
+    // bundle rather than `hideEmptyColumns`'s durable-cross-project
+    // localStorage. Default matches the story's own spec: priority
+    // descending (most urgent first).
+    boardSort: (persistedFilters && persistedFilters.boardSort) || { key: "priority", dir: -1 },
     // Board-only (SH-162): state slugs whose column is hidden regardless of
     // card count. Per-repo vocabulary, like `filter.states` — sessionStorage
     // and pruned in `pruneCarriedFilters()`, not localStorage, for the same
@@ -1831,6 +1853,15 @@ tbody tr:hover { background: var(--bg-sunken); }
       savePersistedFilters();
       renderView();
     });
+    document.querySelectorAll(".board-sort-btn").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        var key = btn.dataset.key;
+        if (state.boardSort.key === key) state.boardSort.dir *= -1;
+        else { state.boardSort.key = key; state.boardSort.dir = 1; }
+        savePersistedFilters();
+        renderView();
+      });
+    });
     document.addEventListener("click", closeAllPopovers);
     document.addEventListener("keydown", function(e) { if (e.key === "Escape") closeAllPopovers(); });
   }
@@ -1838,6 +1869,60 @@ tbody tr:hover { background: var(--bg-sunken); }
   // ============================================================
   // RENDER: BOARD
   // ============================================================
+
+  // SH-128: card ordering within a column. `PRIORITY_URGENCY` is
+  // deliberately its own table rather than a reuse of `PRIORITY_ORDER`
+  // above — that one is an ascending-severity index (critical=0) tuned for
+  // the List view's generic `dir` multiplier, and reusing it here would
+  // make `dir: -1` ("descending") put `none` first, backwards from what
+  // "priority descending" means to a user. Higher number here means more
+  // urgent, so `dir: -1` sorts critical first as SH-128's default expects.
+  var PRIORITY_URGENCY = { none: 0, low: 1, medium: 2, high: 3, critical: 4 };
+  function priorityUrgency(p) {
+    return PRIORITY_URGENCY[p] !== undefined ? PRIORITY_URGENCY[p] : 0;
+  }
+
+  /** Mirrors `domain::story_number` (src/domain.rs) exactly, including its
+   * strict-parse fallback: the id's second `-`-separated segment must be
+   * *entirely* digits, or the id sorts last, same as an id with no such
+   * segment at all. `parseInt` alone would accept a partial match like
+   * "9x" that Rust's `str::parse::<u64>` rejects, which would silently
+   * diverge board sort from the CLI's already-established convention this
+   * mirrors (council decision, SH-128). */
+  function storyNumber(id) {
+    var raw = String(id).split("-")[1];
+    return raw !== undefined && /^\d+$/.test(raw) ? parseInt(raw, 10) : Number.MAX_SAFE_INTEGER;
+  }
+
+  /** Board card comparator (SH-128). Mirrors `domain::ready_order`'s shape
+   * — primary key, then story number, then the id string as a final
+   * tiebreak — but keyed by whichever of "priority"/"order" the user has
+   * selected via `state.boardSort`, with the other one demoted to a fixed
+   * ascending secondary sort (spec'd by the story itself, not affected by
+   * the primary key's own direction toggle). */
+  function boardCardCompare(a, b) {
+    var sa = a.story, sb = b.story;
+    var dir = state.boardSort.dir;
+    var idFallback = sa.id < sb.id ? -1 : sa.id > sb.id ? 1 : 0;
+    if (state.boardSort.key === "priority") {
+      var byPriority = (priorityUrgency(sa.priority) - priorityUrgency(sb.priority)) * dir;
+      if (byPriority !== 0) return byPriority;
+      return (storyNumber(sa.id) - storyNumber(sb.id)) || idFallback;
+    }
+    var byOrder = (storyNumber(sa.id) - storyNumber(sb.id)) * dir;
+    return byOrder !== 0 ? byOrder : idFallback;
+  }
+
+  /** Reflects `state.boardSort` onto the two board-sort buttons: which one
+   * is active, and its direction glyph — mirrors `renderList`'s handling of
+   * `.sort-arrow` for the List view's `<th>` sort. */
+  function syncBoardSortButtons() {
+    ["priority", "order"].forEach(function(key) {
+      var active = state.boardSort.key === key;
+      $("boardsort-" + key).classList.toggle("active", active);
+      $("boardsort-arrow-" + key).textContent = active ? (state.boardSort.dir === 1 ? "▲" : "▼") : "";
+    });
+  }
 
   /** Renders the board via a *keyed reconcile* rather than tearing down and
    * rebuilding every column/card: existing card nodes are found by
@@ -1876,6 +1961,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       return true;
     });
     ensureColumnShells(container, states);
+    syncBoardSortButtons();
 
     var reduceMotion = prefersReducedMotion();
     // FLIP "First": capture every card's rect before anything moves.
@@ -1894,9 +1980,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       var column = findColumnBySlug(container, stateDef.slug);
       if (!column) return;
       var isClosed = stateDef.super_state === "CLOSED";
-      var cards = (byState[stateDef.slug] || []).slice().sort(function(a, b) {
-        return (b.story.updated_at || "").localeCompare(a.story.updated_at || "");
-      });
+      var cards = (byState[stateDef.slug] || []).slice().sort(boardCardCompare);
       column.querySelector(".column-count").textContent = String(cards.length);
       reconcileColumnCards(column.querySelector(".column-cards"), cards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById);
     });
