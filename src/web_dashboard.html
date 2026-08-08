@@ -613,8 +613,10 @@ tbody tr:hover { background: var(--bg-sunken); }
     <div class="fdd" id="fdd-assignees"></div>
     <div class="fdd" id="fdd-types"></div>
     <div class="fdd" id="fdd-states"></div>
+    <div class="fdd" id="fdd-columns"></div>
     <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
     <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
+    <label class="filter-toggle"><input type="checkbox" id="toggle-hide-empty-columns"> Hide empty columns</label>
     <span class="filter-count" id="filter-count"></span>
     <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
   </div>
@@ -790,14 +792,19 @@ tbody tr:hover { background: var(--bg-sunken); }
       return raw ? JSON.parse(raw) : null;
     } catch (e) { return null; } // storage disabled, or a shape from an older build
   }
-  /** Mirrors the live `state.filter`/`state.sort` to sessionStorage. Also
-   * how "Clear filters" un-persists filters: it resets `state.filter` to
-   * `defaultFilter()` first and then calls this, rather than removing the
-   * storage entry outright — a removal would also drop the persisted
-   * `state.sort`, which Clear Filters has never touched. */
+  /** Mirrors the live `state.filter`/`state.sort`/`state.hiddenColumns` to
+   * sessionStorage. Also how "Clear filters" un-persists filters: it resets
+   * `state.filter` to `defaultFilter()` first and then calls this, rather
+   * than removing the storage entry outright — a removal would also drop
+   * the persisted `state.sort` and `state.hiddenColumns`, neither of which
+   * Clear Filters has ever touched (SH-162: hidden columns are a board
+   * layout preference, the same category as sort order, not a story
+   * filter). */
   function savePersistedFilters() {
     try {
-      sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({ filter: state.filter, sort: state.sort }));
+      sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({
+        filter: state.filter, sort: state.sort, hiddenColumns: state.hiddenColumns
+      }));
     } catch (e) { /* nothing to do -- filters just won't carry over this time */ }
   }
 
@@ -837,6 +844,19 @@ tbody tr:hover { background: var(--bg-sunken); }
     // `pruneCarriedFilters()`.
     filter: (persistedFilters && persistedFilters.filter) || defaultFilter(),
     sort: (persistedFilters && persistedFilters.sort) || { col: "updated", dir: -1 },
+    // Board-only (SH-162): state slugs whose column is hidden regardless of
+    // card count. Per-repo vocabulary, like `filter.states` — sessionStorage
+    // and pruned in `pruneCarriedFilters()`, not localStorage, for the same
+    // reason SH-155 kept `filter.states` session-scoped: a hidden-column
+    // slug that happens to also exist in the next project would silently
+    // hide an unrelated column there.
+    hiddenColumns: (persistedFilters && persistedFilters.hiddenColumns) || [],
+    // Board-only (SH-162): collapses any column with zero *currently
+    // visible* cards (i.e. after `state.filter` is applied). Unlike
+    // `hiddenColumns` this carries no per-repo vocabulary — "empty" means
+    // the same thing in any project — so it's a durable cross-project
+    // preference like `showArchived` above, not a session/prune value.
+    hideEmptyColumns: localStorage.getItem("storyhook.hideEmptyColumns") === "true",
     drawerId: null,
     drawerDetail: null,
     pending: {},
@@ -1046,10 +1066,18 @@ tbody tr:hover { background: var(--bg-sunken); }
       state.filter[key] = kept;
     });
 
+    // `hiddenColumns` (SH-162) is state-slug vocabulary too, and lives
+    // outside `state.filter` — pruned the same way for the same reason.
+    var keptColumns = state.hiddenColumns.filter(function(v) { return validStates[v]; });
+    if (keptColumns.length !== state.hiddenColumns.length) dropped = true;
+    state.hiddenColumns = keptColumns;
+
     Object.keys(FILTER_DROPDOWNS).forEach(function(key) {
       var container = $(FILTER_DROPDOWNS[key].container);
       if (container) delete container.dataset.fingerprint;
     });
+    var columnsContainer = $("fdd-columns");
+    if (columnsContainer) delete columnsContainer.dataset.fingerprint;
 
     if (dropped) toast("Some filters didn't carry over to this project", "info");
     savePersistedFilters();
@@ -1579,6 +1607,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     buildFilterDropdown("assignees", assigneeOpts);
     buildFilterDropdown("types", typeOpts);
     buildFilterDropdown("states", m.states.map(function(s) { return { value: s.slug, label: s.slug }; }));
+    buildColumnsDropdown(m.states);
   }
 
   var openFilterDropdown = null;
@@ -1671,6 +1700,73 @@ tbody tr:hover { background: var(--bg-sunken); }
     });
   }
 
+  /** The "Columns" popover (SH-162): same checkbox-popover shape as
+   * `buildFilterDropdown`, but inverted — a *checked* box means the column
+   * is shown, so it toggles membership in `state.hiddenColumns` (unchecked
+   * adds the slug, checked removes it) rather than `state.filter`. Kept as
+   * its own function rather than folded into `FILTER_DROPDOWNS` because it
+   * backs a different state field with different persistence (see
+   * `state.hiddenColumns`'s own comment) and isn't reset by Clear Filters. */
+  function buildColumnsDropdown(states) {
+    var container = $("fdd-columns");
+    var fingerprint = states.map(function(s) { return s.slug; }).join(" ");
+    if (container.dataset.fingerprint === fingerprint) { syncColumnsDropdownLabel(); return; }
+    container.dataset.fingerprint = fingerprint;
+    clear(container);
+
+    var btn = el("button", { type: "button", class: "fdd-btn" }, [
+      "Columns", el("span", { class: "fdd-caret" }, ["▾"])
+    ]);
+    var panel = el("div", { class: "fdd-panel" }, []);
+    panel.hidden = true;
+
+    states.forEach(function(stateDef) {
+      var checkbox = el("input", { type: "checkbox", value: stateDef.slug });
+      checkbox.checked = state.hiddenColumns.indexOf(stateDef.slug) === -1;
+      checkbox.addEventListener("change", function() {
+        var idx = state.hiddenColumns.indexOf(stateDef.slug);
+        if (!checkbox.checked && idx === -1) state.hiddenColumns.push(stateDef.slug);
+        else if (checkbox.checked && idx !== -1) state.hiddenColumns.splice(idx, 1);
+        syncColumnsDropdownLabel();
+        savePersistedFilters();
+        renderView();
+      });
+      var row = el("label", { class: "fdd-option" }, [checkbox, stateDef.slug]);
+      panel.appendChild(row);
+    });
+
+    btn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      var willOpen = panel.hidden;
+      closeAllPopovers();
+      if (willOpen) {
+        panel.hidden = false;
+        btn.classList.add("active");
+        openFilterDropdown = "columns";
+      }
+    });
+    panel.addEventListener("click", function(e) { e.stopPropagation(); });
+
+    container.appendChild(btn);
+    container.appendChild(panel);
+    syncColumnsDropdownLabel();
+  }
+
+  /** The badge count is how many columns are hidden, not how many are
+   * shown — matching every `FILTER_DROPDOWNS` label's "how many
+   * restrictions are active" convention. */
+  function syncColumnsDropdownLabel() {
+    var container = $("fdd-columns");
+    if (!container) return;
+    var btn = container.querySelector(".fdd-btn");
+    if (!btn) return;
+    var count = state.hiddenColumns.length;
+    clear(btn);
+    btn.appendChild(document.createTextNode("Columns" + (count ? " (" + count + ")" : "")));
+    btn.appendChild(el("span", { class: "fdd-caret" }, ["▾"]));
+    btn.classList.toggle("active", count > 0 || openFilterDropdown === "columns");
+  }
+
   function bindFilterBar() {
     $("search-input").addEventListener("input", function() {
       state.filter.text = this.value;
@@ -1686,6 +1782,12 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("toggle-archived").addEventListener("change", function() {
       state.showArchived = this.checked;
       localStorage.setItem("storyhook.showArchived", String(this.checked));
+      renderView();
+    });
+    $("toggle-hide-empty-columns").checked = state.hideEmptyColumns;
+    $("toggle-hide-empty-columns").addEventListener("change", function() {
+      state.hideEmptyColumns = this.checked;
+      localStorage.setItem("storyhook.hideEmptyColumns", String(this.checked));
       renderView();
     });
     $("filter-clear").addEventListener("click", function() {
@@ -1730,7 +1832,16 @@ tbody tr:hover { background: var(--bg-sunken); }
       (byState[slug] = byState[slug] || []).push(v);
     });
 
-    var states = meta().states;
+    // SH-162: a column is on the board unless it's explicitly hidden, or
+    // "Hide empty columns" is on and it has no cards among `stories` —
+    // which is already the filtered/searched set `renderView()` passed in,
+    // so "empty" means empty *given the current filters*, matching what a
+    // user looking at the board actually sees.
+    var states = meta().states.filter(function(s) {
+      if (state.hiddenColumns.indexOf(s.slug) !== -1) return false;
+      if (state.hideEmptyColumns && !(byState[s.slug] && byState[s.slug].length)) return false;
+      return true;
+    });
     ensureColumnShells(container, states);
 
     var reduceMotion = prefersReducedMotion();
