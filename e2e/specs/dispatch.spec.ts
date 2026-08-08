@@ -14,12 +14,16 @@ import { test, expect } from "@playwright/test";
  *
  * Fixtures, from `scripts/run-e2e.sh`:
  *
- *   - "Alpha Project" (prefix AA) — has a checkout, three stories: "Wire up
- *     the auth flow" (id in `DASHBOARD_ALPHA_STORY_ID`, plain Dispatch),
- *     "Fix the flaky upload test" (the saved-token test), and "Roll out the
- *     new onboarding flow" (id in `DASHBOARD_ALPHA_AUTO_STORY_ID`, Dispatch
- *     Auto — SH-208) — three because each dispatches for real and claims
- *     the story, so no two tests can share one.
+ *   - "Alpha Project" (prefix AA) — has a checkout, two stories: "Wire up
+ *     the auth flow" (id in `DASHBOARD_ALPHA_STORY_ID`, plain Dispatch) and
+ *     "Fix the flaky upload test" (the saved-token test) — each dispatches
+ *     for real and claims the story, so no two tests can share one.
+ *   - "Delta Project" (prefix DD) — has a checkout, one story ("Roll out
+ *     the new onboarding flow", id in `DASHBOARD_DELTA_STORY_ID`), reserved
+ *     for Dispatch Auto's own test (SH-208). A project of its own rather
+ *     than a third Alpha story: Alpha's exact two-story, four-empty-column
+ *     shape is a fixture filter-persistence.spec.ts and
+ *     column-visibility.spec.ts assert on byte-for-byte.
  *   - "Gamma Archive" (prefix GA) — `--no-attach`: no checkout on this
  *     machine, one story ("Archived idea") added purely so this file can
  *     open its drawer and confirm Dispatch is absent (AC1)
@@ -51,8 +55,9 @@ function requiredEnv(name: string): string {
 
 const DISPATCH_TOKEN = requiredEnv("DASHBOARD_DISPATCH_TOKEN");
 const ALPHA_STORY_ID = requiredEnv("DASHBOARD_ALPHA_STORY_ID");
-const ALPHA_AUTO_STORY_ID = requiredEnv("DASHBOARD_ALPHA_AUTO_STORY_ID");
 const ALPHA_CHECKOUT = requiredEnv("DASHBOARD_ALPHA_CHECKOUT");
+const DELTA_STORY_ID = requiredEnv("DASHBOARD_DELTA_STORY_ID");
+const DELTA_CHECKOUT = requiredEnv("DASHBOARD_DELTA_CHECKOUT");
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
@@ -156,7 +161,7 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
   );
   await page.reload();
 
-  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await page.locator(".repo-card-name", { hasText: "Delta Project" }).click();
   await page
     .locator(".card-title", { hasText: "Roll out the new onboarding flow" })
     .click();
@@ -179,7 +184,7 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
 
   const toast = page.locator("#toast-stack .toast.success");
   await expect(toast).toBeVisible({ timeout: 20_000 });
-  await expect(toast).toContainText(ALPHA_AUTO_STORY_ID);
+  await expect(toast).toContainText(DELTA_STORY_ID);
   // story.sh's own auto_note names the session autonomous in `display`,
   // relayed verbatim into the toast -- the one place this spec can observe
   // the daemon actually forwarded `--auto` all the way to the script.
@@ -189,9 +194,9 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
   await expect(dispatchAutoButton).toHaveText("Dispatch Auto");
 
   const worktreePath = join(
-    ALPHA_CHECKOUT,
+    DELTA_CHECKOUT,
     ".claude/worktrees",
-    ALPHA_AUTO_STORY_ID,
+    DELTA_STORY_ID,
   );
   expect(
     existsSync(worktreePath),
