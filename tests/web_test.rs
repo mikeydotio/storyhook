@@ -3850,6 +3850,57 @@ fn sse_delivers_repo_changed_for_a_cli_write_through_the_daemon() {
         .success();
 }
 
+/// SH-202: the request boundary itself — not the safety-net poll — must
+/// carry a CLI write to an open dashboard tab.
+///
+/// The test above (SH-145) proves the promise end to end but not which
+/// publisher keeps it: the 250ms `poll_change_token` safety net was, before
+/// this story, the *only* thing that ever noticed an `/api/v1/invoke` write,
+/// so a regression that silently dropped the request-boundary publish would
+/// pass it too. This test closes that gap by setting
+/// `STORYHOOK_CHANGE_POLL_MS` far longer than the test's own timeout, so the
+/// safety net cannot tick even once during the run — if `event: repo-changed`
+/// still arrives promptly, the request boundary carried it alone.
+#[test]
+fn sse_delivers_a_cli_write_with_the_safety_net_poll_disabled() {
+    let _sse_guard = sse_test_lock();
+    let env = TestEnv::isolated();
+    let dir = scratch_dir();
+    let port = reserve_port();
+    let _daemon = DaemonGuard::new(&env, dir.path());
+
+    env.story(dir.path())
+        .env("STORYHOOK_CHANGE_POLL_MS", "600000")
+        .args(["web", "start", "--port", &port.to_string()])
+        .assert()
+        .success();
+    wait_for_server(port);
+
+    env.story(dir.path())
+        .args(["project", "new", "--prefix", "SH", "--no-agents-md"])
+        .assert()
+        .success();
+
+    let mut sse = connect_sse(port);
+
+    env.story(dir.path())
+        .args(["new", "Carried by the request boundary alone"])
+        .assert()
+        .success();
+
+    let received = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
+    assert!(
+        received.contains("event: repo-changed"),
+        "a story created via `story new` must reach an open dashboard tab even with the \
+         safety-net poll unable to fire during this test, got: {received}"
+    );
+
+    env.story(dir.path())
+        .args(["web", "stop"])
+        .assert()
+        .success();
+}
+
 /// Holding an SSE connection open must not stall the accept loop: an
 /// ordinary request made while the connection is live still returns
 /// promptly, proving the `GET /api/events` handoff to its own thread (see
