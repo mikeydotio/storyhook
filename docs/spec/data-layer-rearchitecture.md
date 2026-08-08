@@ -663,3 +663,46 @@ runs.
 
 Design of record for the decision: `.council/sh151-origin-ownership-and-resolution/DECISION.md`,
 clauses D2 and R1–R4.
+
+### The change feed's request boundary did not cover every route (SH-202, 2026-08-08)
+
+The W5 row above and `daemon::bus`'s own module doc described the change feed as having a
+request-boundary publisher that fires "immediately after a mutating request commits" — stated
+as covering `route_job_inner`'s dispatch as a whole. It covered exactly one of its two arms.
+`rest::route`, the dashboard's own REST mutation surface, computed and published a precise
+`Changed` signal at the boundary. `rpc::route`'s `POST /api/v1/invoke` — the *only* way an
+ordinary `story` command has reached the store since SH-114 — answered and returned without
+ever touching the bus. Every CLI write reached an open dashboard tab only via
+`poll_change_token`'s 250ms `PRAGMA data_version` safety-net poll, the mechanism its own doc
+comment named a fallback. Harmless in practice (confirmed by SH-145's own CLI-write SSE test)
+but a false design claim, and a real latency and robustness gap under the poller's own
+documented subscriber-count edge cases.
+
+**The fix.** `poll_change_token`'s own attribution — read the change token, and if it moved,
+diff each project's `global_seq` against a baseline to publish `Change::Project` /
+`Change::Catalog`, falling back to `Change::Resync` when nothing is attributable — moved into
+a new `ChangeWatcher` (`daemon::watch`), shared via one baseline mutex between the poller and
+`route_job_inner`'s RPC arm, which now calls it once after an invoke answers and before the
+reply is sent. A commit both notice is attributed once, not twice.
+
+**REST does not also call it, reversing the plan approved before implementation.** The
+original design had both `route_job_inner` arms call the shared watcher, for doc-accuracy
+uniformity and to stop the poller redundantly re-publishing a REST change ~250ms later.
+Empirically, joining REST caused two existing integration tests to fail deterministically:
+an out-of-band change (an in-process store write bypassing the daemon — a `story tui` session,
+a second machine — the exact scenario the safety net exists for) discovered incidentally by
+the shared diff can publish first and get retained by `ChangeBus`'s *leading-edge* 200ms
+coalescing, silently dropping a later, genuinely relevant precise publish for the same
+project. Every mutating REST route already has exhaustive `Changed` coverage by construction,
+so joining it to the diff added no coverage and only this hazard. A 3-member council
+(software-architect and qa-engineer delivered independently and agreed; api-designer
+abstained) confirmed narrowing the fix to the RPC arm alone, matching this story's own
+originally-scoped suggested fix. Design of record:
+`.council/rest-arm-join-shared-change-watcher-boundary/DECISION.md` (gitignored, local to the
+worktree that ran it — not carried into `main`).
+
+**What survives as a known, filed gap.** The coalescing defect the council surfaced —
+`ChangeBus::publish` dedups purely by `Change` value equality within its window, blind to
+cause — is not fixed by narrowing the trigger to the RPC arm; it is only made unlikely rather
+than removed, since the RPC arm's own `notice()` call can still incidentally discover and
+publish an unrelated project's change. Filed as SH-216, out of this story's scope.
