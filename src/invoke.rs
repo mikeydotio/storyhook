@@ -471,6 +471,26 @@ pub fn dispatch<S: Store>(
                 }
             }
         }
+        Invocation::Hide { id } => {
+            StoryService::new(ctx).hide(&id)?;
+            ctx.story_view(&id)
+        }
+        Invocation::Unhide { id } => {
+            StoryService::new(ctx).unhide(&id)?;
+            ctx.story_view(&id)
+        }
+        // The same two-step `Purge`/`Reopen` shape above: an unforced call
+        // answers with what it would archive and writes nothing.
+        Invocation::HideState { state, force } => {
+            let service = StoryService::new(ctx);
+            if force {
+                service.hide_state(&state).map(Response::Message)
+            } else {
+                Ok(Response::ConfirmationRequired(Box::new(
+                    ConfirmationPlan::HideState(service.hide_state_plan(&state)?),
+                )))
+            }
+        }
         Invocation::Relate {
             a,
             relation,
@@ -1955,6 +1975,9 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::SetPriority { .. }
         | Invocation::SetLabels { .. }
         | Invocation::Reopen { .. }
+        | Invocation::Hide { .. }
+        | Invocation::Unhide { .. }
+        | Invocation::HideState { .. }
         | Invocation::Delete { .. }
         | Invocation::Purge { .. }
         | Invocation::BulkUpdate { .. }
@@ -2143,6 +2166,9 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::SetPriority { .. } => "set-priority",
         Invocation::SetLabels { .. } => "set-labels",
         Invocation::Reopen { .. } => "reopen",
+        Invocation::Hide { .. } => "hide",
+        Invocation::Unhide { .. } => "unhide",
+        Invocation::HideState { .. } => "hide-state",
         Invocation::Delete { .. } => "delete",
         Invocation::Purge { .. } => "purge",
         Invocation::BulkUpdate { .. } => "bulk-update",

@@ -115,6 +115,25 @@ pub struct UndeletePlan {
     pub deleted_reason: Option<String>,
 }
 
+/// What a bulk "Archive" on a CLOSED-superstate column would hide, read
+/// before anything is (SH-43).
+///
+/// The dry-run half of the two-phase preview/commit contract the council
+/// mandated: every surface (web, CLI, TUI) confirms off the exact same
+/// `ids` this plan names, then passes them back to commit, rather than each
+/// surface recomputing "what's in this column right now" independently
+/// between the two calls — which could hide a story nobody confirmed if
+/// another change landed the story into this state in between.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HideStatePlan {
+    /// The state slug the button was pressed on — what the person confirming
+    /// sees named back to them.
+    pub state: String,
+    /// Every story currently in `state` and not already hidden, in the same
+    /// order `hide_state` will archive them.
+    pub ids: Vec<String>,
+}
+
 /// What `story project set-prefix` would rewrite, read before anything is.
 ///
 /// Unlike [`DeletePlan`] and [`PurgePlan`] this is not a plan to destroy
@@ -175,6 +194,9 @@ pub enum ConfirmationPlan {
     SetPrefix(SetPrefixPlan),
     /// `story reopen` of a soft-deleted story — the undelete (SH-154).
     Undelete(UndeletePlan),
+    /// A bulk "Archive" of every story in a CLOSED-superstate column
+    /// (SH-43).
+    HideState(HideStatePlan),
 }
 
 impl ConfirmationPlan {
@@ -191,6 +213,7 @@ impl ConfirmationPlan {
             Self::Purge(plan) => &plan.id,
             Self::SetPrefix(plan) => &plan.new_prefix,
             Self::Undelete(plan) => &plan.id,
+            Self::HideState(plan) => &plan.state,
         }
     }
 
@@ -214,6 +237,12 @@ impl ConfirmationPlan {
                 plan.old_prefix, plan.slug, plan.new_prefix
             ),
             Self::Undelete(plan) => format!("this would restore deleted story `{}`", plan.id),
+            Self::HideState(plan) => format!(
+                "this would archive {} stor{} currently in `{}`",
+                plan.ids.len(),
+                if plan.ids.len() == 1 { "y" } else { "ies" },
+                plan.state
+            ),
         }
     }
 
@@ -225,9 +254,11 @@ impl ConfirmationPlan {
     /// it. [`Self::Undelete`] is not — `story delete` undoes it again — so
     /// one keystroke is the right weight and a typed token would be the
     /// wrong one. The weight of the gate matches the weight of the act.
+    /// [`Self::HideState`] is the same weight as [`Self::Undelete`] for the
+    /// same reason: `story unhide` undoes it, story by story.
     #[must_use]
     pub fn requires_typed_confirmation(&self) -> bool {
-        !matches!(self, Self::Undelete(_))
+        !matches!(self, Self::Undelete(_) | Self::HideState(_))
     }
 }
 
@@ -968,6 +999,7 @@ pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
         ConfirmationPlan::Purge(plan) => render_purge_plan(plan),
         ConfirmationPlan::SetPrefix(plan) => render_set_prefix_plan(plan),
         ConfirmationPlan::Undelete(plan) => render_undelete_plan(plan),
+        ConfirmationPlan::HideState(plan) => render_hide_state_plan(plan),
     }
 }
 
@@ -981,6 +1013,26 @@ pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
 pub fn render_undelete_plan(plan: &UndeletePlan) -> String {
     let reason = plan.deleted_reason.as_deref().unwrap_or("no reason given");
     format!("{} — {}\n  deleted: {reason}\n", plan.id, plan.title)
+}
+
+/// The warning the bulk column "Archive" action prints before it hides.
+///
+/// Lists every id by name — the same list `hide_state` will be called with
+/// to commit — so the person confirming (or a script reading `--json`) is
+/// looking at exactly what is about to disappear from the board, not a bare
+/// count.
+#[must_use]
+pub fn render_hide_state_plan(plan: &HideStatePlan) -> String {
+    let mut body = format!(
+        "`{}` — {} stor{} will be archived:\n",
+        plan.state,
+        plan.ids.len(),
+        if plan.ids.len() == 1 { "y" } else { "ies" },
+    );
+    for id in &plan.ids {
+        body.push_str(&format!("  {id}\n"));
+    }
+    body
 }
 
 /// The warning `story project set-prefix` prints before it asks.
@@ -1220,6 +1272,14 @@ fn render_story(view: &StoryView) -> String {
 
     if let Some(closed_at) = &story.closed_at {
         body.push_str(&format!("closed_at: {closed_at}\n"));
+    }
+
+    // "archived", not "hidden": the internal fact is named `hidden` to stay
+    // clear of the store's unrelated, load-bearing `archived` derivation
+    // (`closed_at`-is-set), but the word a user reads for this feature is
+    // "Archive" everywhere — see `StoryEvent::StoryHidden`'s doc comment.
+    if let Some(hidden_at) = &story.hidden_at {
+        body.push_str(&format!("archived: {hidden_at}\n"));
     }
 
     if let Some(reason) = &story.deleted_reason {

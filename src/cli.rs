@@ -176,6 +176,9 @@ Usage:
   story label <id> <labels-csv>
   story unlabel <id> <labels-csv>
   story reopen <id> [--force]
+  story archive <id>                               (hide a closed story from the primary UI)
+  story unarchive <id>
+  story archive-state <state-slug> [--force]        (archive every story in a closed column)
   story delete <id> "<reason>"
   story purge <id> [--force]                       (permanently remove a deleted story)
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
@@ -352,6 +355,23 @@ pub enum Invocation {
     },
     Reopen {
         id: String,
+        force: bool,
+    },
+    /// Hides a closed story from the primary UI — the "Archive" action
+    /// (SH-43). Refuses an open story; reversed by [`Unhide`](Self::Unhide).
+    Hide {
+        id: String,
+    },
+    /// The inverse of [`Hide`](Self::Hide) — "Unarchive".
+    Unhide {
+        id: String,
+    },
+    /// Archives every story in a CLOSED-superstate column — the dashboard's
+    /// bulk "Archive" button, and its CLI equivalent (SH-43). Two-step like
+    /// [`Purge`](Self::Purge)/[`Reopen`](Self::Reopen): an unforced call
+    /// answers with what it would hide and writes nothing.
+    HideState {
+        state: String,
         force: bool,
     },
     Delete {
@@ -1271,6 +1291,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[bare("force")],
     },
     VerbFlags {
+        verb: "archive-state",
+        subcommand: None,
+        flags: &[bare("force")],
+    },
+    VerbFlags {
         verb: "report",
         subcommand: None,
         flags: &[bare("html")],
@@ -1699,6 +1724,9 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "label" => parse_label(args),
         "unlabel" => parse_unlabel(args),
         "reopen" => parse_reopen_verb(args),
+        "archive" => parse_hide(args),
+        "unarchive" => parse_unhide(args),
+        "archive-state" => parse_hide_state(args),
         "delete" => parse_delete_verb(args),
         "purge" => parse_purge_verb(args),
         "set" => parse_set(args),
@@ -3500,6 +3528,46 @@ fn parse_purge_verb(args: &[String]) -> Result<Invocation, AppError> {
         }
     }
     Ok(Invocation::Purge { id, force })
+}
+
+/// `story archive <id>` — the "Archive" action (SH-43).
+fn parse_hide(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage("usage: story archive <id>".to_string()));
+    }
+    Ok(Invocation::Hide {
+        id: args[1].clone(),
+    })
+}
+
+/// `story unarchive <id>` — the inverse of [`parse_hide`].
+fn parse_unhide(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage("usage: story unarchive <id>".to_string()));
+    }
+    Ok(Invocation::Unhide {
+        id: args[1].clone(),
+    })
+}
+
+/// `story archive-state <state> [--force]` — the CLOSED-superstate column's
+/// bulk "Archive" (SH-43). Shaped like [`parse_reopen_verb`]/
+/// [`parse_purge_verb`]: unforced answers with what it would hide and writes
+/// nothing.
+fn parse_hide_state(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story archive-state <state> [--force]";
+    if args.len() < 2 {
+        return Err(AppError::Usage(usage.to_string()));
+    }
+    let state = args[1].clone();
+    let mut force = false;
+    for arg in &args[2..] {
+        match arg.as_str() {
+            "--force" => force = true,
+            _ => return Err(AppError::Usage(usage.to_string())),
+        }
+    }
+    Ok(Invocation::HideState { state, force })
 }
 
 fn parse_delete_verb(args: &[String]) -> Result<Invocation, AppError> {

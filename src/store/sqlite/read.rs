@@ -29,7 +29,7 @@ const PROJECT_COLUMNS: &str =
 
 const STORY_COLUMNS: &str = "story_no, head_seq, title, state, superstate, priority, story_type, \
      assignee, awaiting, deleted, archived, created_at, updated_at, closed_at, description, \
-     snapshot";
+     hidden_at, snapshot";
 
 fn sql<T>(result: Result<T, rusqlite::Error>, context: &str) -> Result<T, StoreError> {
     result.map_err(|e| StoreError::from_sqlite(e, context))
@@ -488,6 +488,7 @@ struct RawStoryRow {
     updated_at: String,
     closed_at: Option<String>,
     description: Option<String>,
+    hidden_at: Option<String>,
     snapshot: String,
 }
 
@@ -508,7 +509,8 @@ fn raw_story_from_row(row: &Row<'_>) -> Result<RawStoryRow, rusqlite::Error> {
         updated_at: row.get(12)?,
         closed_at: row.get(13)?,
         description: row.get(14)?,
-        snapshot: row.get(15)?,
+        hidden_at: row.get(15)?,
+        snapshot: row.get(16)?,
     })
 }
 
@@ -529,6 +531,7 @@ fn hydrate(raw: RawStoryRow, labels: Vec<String>) -> Result<StoryRow, StoreError
         updated_at: raw.updated_at,
         closed_at: raw.closed_at,
         description: raw.description,
+        hidden_at: raw.hidden_at,
         labels,
         snapshot: serde_json::from_str(&raw.snapshot)?,
     })
@@ -608,6 +611,13 @@ pub(super) fn stories(
     }
     if let Some(deleted) = query.deleted {
         filter!(deleted, " AND deleted = ?{}");
+    }
+    if let Some(hidden) = query.hidden {
+        text.push_str(if hidden {
+            " AND hidden_at IS NOT NULL"
+        } else {
+            " AND hidden_at IS NULL"
+        });
     }
     if let Some(label) = &query.label {
         filter!(

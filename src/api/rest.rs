@@ -249,6 +249,12 @@ fn route_project<S: Store>(
             (Method::Post, "reopen") => guarded(headers, trusted_hosts, body, |b| {
                 route_reopen_story(ctx, id, b)
             }),
+            (Method::Post, "archive") => {
+                guarded_no_body(headers, trusted_hosts, || route_hide_story(ctx, id))
+            }
+            (Method::Post, "unarchive") => {
+                guarded_no_body(headers, trusted_hosts, || route_unhide_story(ctx, id))
+            }
             (Method::Post, _) => text_reply(404, "Not found"),
             _ => text_reply(405, "Method not allowed"),
         },
@@ -272,6 +278,12 @@ fn route_project<S: Store>(
             }),
             Method::Delete => guarded(headers, trusted_hosts, body, |b| {
                 route_delete_state(ctx, slug, b)
+            }),
+            _ => text_reply(405, "Method not allowed"),
+        },
+        ["states", slug, "archive"] => match method {
+            Method::Post => guarded(headers, trusted_hosts, body, |b| {
+                route_hide_state(ctx, slug, b)
             }),
             _ => text_reply(405, "Method not allowed"),
         },
@@ -916,6 +928,44 @@ fn route_delete_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply
                 reason,
             },
         ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `POST /api/repos/{id}/story/{story}/archive` — the "Archive" action
+/// (SH-43). Refuses an open story.
+fn route_hide_story<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Reply {
+    reply_with(ctx, 200, Invocation::Hide { id: id.to_string() })
+}
+
+/// `POST /api/repos/{id}/story/{story}/unarchive` — the inverse of
+/// [`route_hide_story`].
+fn route_unhide_story<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Reply {
+    reply_with(ctx, 200, Invocation::Unhide { id: id.to_string() })
+}
+
+/// `POST /api/repos/{id}/states/{slug}/archive` — the CLOSED-superstate
+/// column's bulk "Archive" button (SH-43). Body `{"force": bool}`, absent
+/// treated as `false`. Shaped exactly like [`route_reopen_story`]: an
+/// unforced call answers `409` carrying the
+/// [`HideStatePlan`](crate::output::HideStatePlan) the confirmation modal
+/// reads its count and id list from; `force: true` commits.
+fn route_hide_state<S: Store>(ctx: &Ctx<'_, S>, slug: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let force = get_bool(&obj, "force");
+        let response = dispatch(
+            ctx,
+            Invocation::HideState {
+                state: slug.to_string(),
+                force,
+            },
+        )?;
+        let status = match response {
+            Response::ConfirmationRequired(_) => 409,
+            _ => 200,
+        };
+        Ok(json_reply(status, render_response(&response, true, false)))
     })()
     .unwrap_or_else(|e| error_reply(&e))
 }

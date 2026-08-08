@@ -19,8 +19,10 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
-use crate::output::{PurgePlan, UndeletePlan};
-use crate::store::{EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryRow, WriteOps};
+use crate::output::{HideStatePlan, PurgePlan, UndeletePlan};
+use crate::store::{
+    EventSeq, ExpectedSeq, ProjectId, ReadOps, Store, StoryNo, StoryQuery, StoryRow, WriteOps,
+};
 
 use super::{Ctx, append_and_fold, project_prefix, resolve_open_story, resolve_story};
 
@@ -638,6 +640,127 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         Ok(snapshot)
     }
 
+    /// Hides a closed story from the primary UI — the "Archive" action
+    /// (SH-43). Reversible: [`unhide`](Self::unhide) undoes it.
+    ///
+    /// Refuses an open story rather than silently no-op-ing: hiding is only
+    /// ever a display fact layered on top of a story that is already closed,
+    /// and a caller asking to archive an open one has almost certainly named
+    /// the wrong story. Idempotent on an already-hidden one, matching
+    /// [`reopen`](Self::reopen)'s "already open" shape in reverse — no event
+    /// is appended for a fact already true.
+    pub fn hide(&self, id: &str) -> Result<StorySnapshot, AppError> {
+        let now = self.ctx.now();
+        let project = self.ctx.project();
+        Ok(self.ctx.store().write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let states = tx.state_map(project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
+            if row.superstate != SuperState::Closed {
+                return Err(AppError::Validation(format!(
+                    "story `{id}` is open; only a closed story can be archived"
+                ))
+                .into());
+            }
+            if row.snapshot.hidden_at.is_some() {
+                return Ok(row.snapshot);
+            }
+            Ok(append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &[StoryEvent::StoryHidden { at: now.clone() }],
+            )?)
+        })?)
+    }
+
+    /// The inverse of [`hide`](Self::hide) — the "Unarchive" action.
+    /// Idempotent on a story that is not hidden.
+    pub fn unhide(&self, id: &str) -> Result<StorySnapshot, AppError> {
+        let now = self.ctx.now();
+        let project = self.ctx.project();
+        Ok(self.ctx.store().write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let states = tx.state_map(project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
+            if row.snapshot.hidden_at.is_none() {
+                return Ok(row.snapshot);
+            }
+            Ok(append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &[StoryEvent::StoryUnhidden { at: now.clone() }],
+            )?)
+        })?)
+    }
+
+    /// Everything a bulk "Archive" of `state_slug`'s column would hide, read
+    /// before anything is (SH-43). Writes nothing.
+    ///
+    /// The dry-run half of the two-phase preview/commit contract the SH-43
+    /// council mandated: [`hide_state`](Self::hide_state) must be called back
+    /// with exactly the `ids` this returns, so every surface confirms off the
+    /// same data rather than each recomputing "what's in this column"
+    /// independently between the two calls.
+    pub fn hide_state_plan(&self, state_slug: &str) -> Result<HideStatePlan, AppError> {
+        let project = self.ctx.project();
+        Ok(self.ctx.store().read(|tx| {
+            let prefix = project_prefix(tx, project)?;
+            let rows = archivable_occupants(tx, project, state_slug)?;
+            let ids = rows.iter().map(|row| row.story_no.to_id(&prefix)).collect();
+            Ok(HideStatePlan {
+                state: state_slug.to_string(),
+                ids,
+            })
+        })?)
+    }
+
+    /// Archives every story currently in `state_slug` — the CLOSED-superstate
+    /// column's bulk "Archive" button, committing what
+    /// [`hide_state_plan`](Self::hide_state_plan) previewed.
+    ///
+    /// Re-reads the column's current occupants inside the write transaction
+    /// rather than being handed the previewed id list, mirroring
+    /// [`purge`](Self::purge)/[`reopen`](Self::reopen)'s `force` half: a
+    /// caller that skipped confirmation gets acted on against state as it is
+    /// *now*, in one atomic transaction, rather than against a snapshot that
+    /// could have gone stale between two calls.
+    pub fn hide_state(&self, state_slug: &str) -> Result<String, AppError> {
+        let project = self.ctx.project();
+        let now = self.ctx.now();
+        let archived = self.ctx.store().write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let states = tx.state_map(project)?;
+            let rows = archivable_occupants(&*tx, project, state_slug)?;
+            let mut archived = Vec::with_capacity(rows.len());
+            for row in rows {
+                append_and_fold(
+                    tx,
+                    project,
+                    row.story_no,
+                    &prefix,
+                    &states,
+                    ExpectedSeq::Exact(row.head_seq),
+                    &[StoryEvent::StoryHidden { at: now.clone() }],
+                )?;
+                archived.push(row.story_no);
+            }
+            Ok(archived)
+        })?;
+        Ok(format!(
+            "archived {} stor{} from `{state_slug}`",
+            archived.len(),
+            if archived.len() == 1 { "y" } else { "ies" }
+        ))
+    }
+
     /// The read-modify-write every single-event edit of an open story shares:
     /// resolve, refuse if closed, build the batch from the story as it reads
     /// *inside* the transaction, append, fold, and write the snapshot back.
@@ -713,6 +836,30 @@ fn state_map(states: &[StateDef]) -> BTreeMap<String, StateDef> {
         .iter()
         .map(|state| (state.slug.clone(), state.clone()))
         .collect()
+}
+
+/// Every not-yet-hidden story in `state_slug`, after confirming `state_slug`
+/// is defined and its superstate is CLOSED.
+///
+/// Shared by [`StoryService::hide_state_plan`] and [`StoryService::hide_state`]
+/// so the rule for which column can be archived and which of its occupants
+/// qualify is stated once — the same reason [`state_transition_events`] is
+/// the sole place a state-transition batch is built.
+fn archivable_occupants(
+    tx: &impl ReadOps,
+    project: ProjectId,
+    state_slug: &str,
+) -> Result<Vec<StoryRow>, AppError> {
+    let states = tx.state_map(project)?;
+    let def = states
+        .get(state_slug)
+        .ok_or_else(|| AppError::Validation(format!("state `{state_slug}` is not defined")))?;
+    if def.super_state != SuperState::Closed {
+        return Err(AppError::Validation(format!(
+            "state `{state_slug}` is open; only a closed-superstate column can be archived"
+        )));
+    }
+    Ok(tx.stories(project, &StoryQuery::all().state(state_slug).hidden(false))?)
 }
 
 /// The event batch that moves a story into `target`.
