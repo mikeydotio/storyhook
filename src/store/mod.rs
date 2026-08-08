@@ -86,7 +86,7 @@ pub use rebuild::{
 };
 pub use sqlite::{SqliteReadTx, SqliteStore, SqliteWriteTx, StoreConfig};
 pub use types::{
-    DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, ProjectRecord,
+    DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord,
     ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
     StoredPayload, StoryQuery, StoryRow, StorySort, UnknownEventDiagnostic, partition_known,
 };
@@ -318,6 +318,23 @@ pub trait ReadOps {
         project: ProjectId,
         story: StoryNo,
     ) -> Result<Option<StorySnapshot>, StoreError>;
+
+    /// This story's still-`open` linked pull requests (SH-49), in
+    /// `(owner, repo, number)` order.
+    ///
+    /// `story pr-check <id>`'s read: only `open` links are worth asking
+    /// GitHub about again, so `merged`/`closed` rows are excluded rather than
+    /// filtered by the caller.
+    fn open_pr_links_for_story(
+        &self,
+        project: ProjectId,
+        story: StoryNo,
+    ) -> Result<Vec<PrLink>, StoreError>;
+
+    /// Every still-`open` linked pull request across the whole project,
+    /// paired with the story number that owns it — `story pr-check`'s
+    /// project-wide read, when no story id is given.
+    fn open_pr_links(&self, project: ProjectId) -> Result<Vec<(StoryNo, PrLink)>, StoreError>;
 }
 
 /// Everything that can be written inside a transaction.

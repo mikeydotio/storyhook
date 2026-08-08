@@ -204,11 +204,15 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Unhide { id }
         | Invocation::Delete { id, .. }
         | Invocation::Purge { id, .. }
-        | Invocation::SetFields { id, .. } => vec![id],
+        | Invocation::SetFields { id, .. }
+        // `url` is a pull request URL, not a story id — excluded the same way
+        // `Relate::relation` is.
+        | Invocation::LinkPr { id, .. }
+        | Invocation::UnlinkPr { id, .. } => vec![id],
 
         Invocation::Relate { a, b, .. } => vec![a, b],
         Invocation::BulkUpdate { updates } => updates.iter_mut().map(|(id, _)| id).collect(),
-        Invocation::GithubSync { id, .. } => id.iter_mut().collect(),
+        Invocation::GithubSync { id, .. } | Invocation::PrCheck { id } => id.iter_mut().collect(),
 
         Invocation::Phase { action } => match action {
             PhaseAction::Add { id, .. } | PhaseAction::Remove { id } => vec![id],
@@ -324,6 +328,30 @@ mod tests {
                     resolve: Some(ConflictSide::Local),
                     strategy: None,
                     mode: None,
+                },
+                1,
+            ),
+            (
+                "link-pr",
+                Invocation::LinkPr {
+                    id: "1".into(),
+                    url: "https://github.com/acme/widgets/pull/7".into(),
+                    close_on_merge: true,
+                },
+                1,
+            ),
+            (
+                "unlink-pr",
+                Invocation::UnlinkPr {
+                    id: "1".into(),
+                    url: "https://github.com/acme/widgets/pull/7".into(),
+                },
+                1,
+            ),
+            (
+                "pr-check",
+                Invocation::PrCheck {
+                    id: Some("1".into()),
                 },
                 1,
             ),

@@ -26,6 +26,14 @@ pub mod prefix;
 /// the same reason [`ConflictSide`](crate::cli::ConflictSide) lives in `cli`.
 pub mod secret;
 
+/// Parses a GitHub pull request URL — the one piece of `story link-pr`
+/// GitHub knowledge that must work with the `github-sync` feature off.
+///
+/// Here rather than under `github` for the same reason [`secret`] is: `src/
+/// github` is gated and `PrLinkService::link`/`unlink` are not, by design
+/// (SH-49, `.council/sh49-linked-prs/DECISION.md`).
+pub mod pr_url;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportStory {
     pub title: String,
@@ -444,6 +452,59 @@ pub enum StoryEvent {
     StoryUnhidden {
         at: String,
     },
+    /// Links a GitHub pull request to a story (SH-49).
+    ///
+    /// Purely a projection source: `fold_story` leaves every field of
+    /// [`StorySnapshot`] alone except `updated_at`, the same way every event
+    /// touches it. The linkage itself lives in the store's `story_pr_links`
+    /// table — see `store::sqlite::write::project_pr_link` — because a link is
+    /// keyed on `(owner, repo, number)`, not on anything the folded snapshot
+    /// renders, and because re-linking the same PR (to toggle
+    /// `close_on_merge`) is an upsert the table can enforce as a primary-key
+    /// constraint the way `StoryCommitLinked` enforces "one link per commit".
+    ///
+    /// `close_on_merge` defaults to `true` at the CLI/REST boundary — "link a
+    /// PR" means "and close this story when it merges" unless the caller says
+    /// otherwise.
+    StoryPrLinked {
+        at: String,
+        /// The pull request's web URL, exactly as given — the identity a
+        /// [`StoryPrUnlinked`](Self::StoryPrUnlinked) matches against.
+        url: String,
+        /// The repository owner, case-folded (see
+        /// `github::sync_state::parse_pr_url`).
+        owner: String,
+        /// The repository name, case-folded.
+        repo: String,
+        /// The pull request number.
+        number: u64,
+        /// Whether merging this PR should close the story.
+        close_on_merge: bool,
+    },
+    /// Unlinks a previously-linked pull request, by its URL.
+    StoryPrUnlinked {
+        at: String,
+        url: String,
+    },
+    /// Records that a linked pull request merged.
+    ///
+    /// Appended by `story pr-check`, alongside a state-transition batch in the
+    /// same transaction when the link's `close_on_merge` is set and the story
+    /// is still open — see `PrLinkService::check`.
+    StoryPrMerged {
+        at: String,
+        url: String,
+    },
+    /// Records that a linked pull request closed **without** merging.
+    ///
+    /// Distinct from [`StoryPrMerged`](Self::StoryPrMerged) because GitHub
+    /// reports `merged` and `state` as two independent fields — a PR can be
+    /// `state=closed, merged=false` — and a story must not be auto-closed for
+    /// work that was abandoned rather than shipped.
+    StoryPrClosed {
+        at: String,
+        url: String,
+    },
 }
 
 /// The `kind` tag [`StoryEvent::StoryCommitLinked`] serializes with.
@@ -510,7 +571,7 @@ pub fn git_link_sha(text: &str) -> Option<&str> {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 20] = [
+pub const EVENT_KINDS: [&str; 24] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
@@ -531,6 +592,10 @@ pub const EVENT_KINDS: [&str; 20] = [
     KIND_STORY_COMMIT_LINKED,
     "StoryHidden",
     "StoryUnhidden",
+    "StoryPrLinked",
+    "StoryPrUnlinked",
+    "StoryPrMerged",
+    "StoryPrClosed",
 ];
 
 /// Whether `kind` is an event this binary can decode.
@@ -566,6 +631,10 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryCommitLinked { .. } => KIND_STORY_COMMIT_LINKED,
         StoryEvent::StoryHidden { .. } => "StoryHidden",
         StoryEvent::StoryUnhidden { .. } => "StoryUnhidden",
+        StoryEvent::StoryPrLinked { .. } => "StoryPrLinked",
+        StoryEvent::StoryPrUnlinked { .. } => "StoryPrUnlinked",
+        StoryEvent::StoryPrMerged { .. } => "StoryPrMerged",
+        StoryEvent::StoryPrClosed { .. } => "StoryPrClosed",
     }
 }
 
@@ -631,6 +700,10 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryCommitLinked { .. } => "comment",
             StoryEvent::StoryHidden { .. } => "hidden",
             StoryEvent::StoryUnhidden { .. } => "unhidden",
+            StoryEvent::StoryPrLinked { .. } => "linked",
+            StoryEvent::StoryPrUnlinked { .. } => "unlinked",
+            StoryEvent::StoryPrMerged { .. } => "pr-merged",
+            StoryEvent::StoryPrClosed { .. } => "pr-closed",
         })
         .unwrap_or("unknown")
 }
@@ -1248,6 +1321,18 @@ pub fn fold_story(
             }
             StoryEvent::StoryUnhidden { at } => {
                 hidden_at = None;
+                updated_at = Some(at.clone());
+            }
+            // Projection-only, like `StoryCommitLinked`: the linkage itself
+            // lives in `story_pr_links`, queried separately through
+            // `ReadOps::open_pr_links_for_story`/`open_pr_links`. Unlike
+            // `StoryCommitLinked` these carry nothing this struct renders (no
+            // comment, no field), so the only trace left on the snapshot is
+            // `updated_at` — the same touch every event on a story makes.
+            StoryEvent::StoryPrLinked { at, .. }
+            | StoryEvent::StoryPrUnlinked { at, .. }
+            | StoryEvent::StoryPrMerged { at, .. }
+            | StoryEvent::StoryPrClosed { at, .. } => {
                 updated_at = Some(at.clone());
             }
         }
@@ -3348,6 +3433,65 @@ mod tests {
         .unwrap();
 
         assert_eq!(story.hidden_at, None);
+    }
+
+    /// `StoryPrLinked`/`StoryPrUnlinked`/`StoryPrMerged`/`StoryPrClosed` are
+    /// projection-only: the linkage lives in `story_pr_links`, not on the
+    /// folded snapshot. Every field but `updated_at` — which every event
+    /// touches — must come through unchanged.
+    #[test]
+    fn fold_story_pr_events_touch_only_updated_at() {
+        let events = vec![
+            StoryEvent::StoryCreated {
+                at: "2026-03-13T00:00:00Z".to_string(),
+                title: "Linked to a PR".to_string(),
+                state: "todo".to_string(),
+            },
+            StoryEvent::StoryPrLinked {
+                at: "2026-03-13T00:01:00Z".to_string(),
+                url: "https://github.com/acme/widgets/pull/7".to_string(),
+                owner: "acme".to_string(),
+                repo: "widgets".to_string(),
+                number: 7,
+                close_on_merge: true,
+            },
+        ];
+        let story = fold_story("SH-1", &events, &state_map()).unwrap();
+        assert_eq!(story.updated_at, "2026-03-13T00:01:00Z");
+        assert!(story.comments.is_empty());
+        assert_eq!(story.state, "todo");
+        assert_eq!(story.superstate, SuperState::Open);
+
+        let mut with_unlink = events.clone();
+        with_unlink.push(StoryEvent::StoryPrUnlinked {
+            at: "2026-03-13T00:02:00Z".to_string(),
+            url: "https://github.com/acme/widgets/pull/7".to_string(),
+        });
+        let story = fold_story("SH-1", &with_unlink, &state_map()).unwrap();
+        assert_eq!(story.updated_at, "2026-03-13T00:02:00Z");
+        assert!(story.comments.is_empty());
+
+        let mut with_merged = events.clone();
+        with_merged.push(StoryEvent::StoryPrMerged {
+            at: "2026-03-13T00:03:00Z".to_string(),
+            url: "https://github.com/acme/widgets/pull/7".to_string(),
+        });
+        let story = fold_story("SH-1", &with_merged, &state_map()).unwrap();
+        assert_eq!(story.updated_at, "2026-03-13T00:03:00Z");
+        assert!(story.comments.is_empty());
+        assert_eq!(
+            story.state, "todo",
+            "the fold does not transition state itself"
+        );
+
+        let mut with_closed = events;
+        with_closed.push(StoryEvent::StoryPrClosed {
+            at: "2026-03-13T00:04:00Z".to_string(),
+            url: "https://github.com/acme/widgets/pull/7".to_string(),
+        });
+        let story = fold_story("SH-1", &with_closed, &state_map()).unwrap();
+        assert_eq!(story.updated_at, "2026-03-13T00:04:00Z");
+        assert!(story.comments.is_empty());
     }
 
     #[test]

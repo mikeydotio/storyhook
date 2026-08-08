@@ -1254,6 +1254,24 @@ fn invocation_corpus() -> Vec<Invocation> {
             strategy: Some(SetupStrategy::MatchTitles),
             mode: Some(SetupMode::Off),
         },
+        Invocation::LinkPr {
+            id: "SH-1".to_string(),
+            url: "https://github.com/acme/widgets/pull/7".to_string(),
+            close_on_merge: true,
+        },
+        Invocation::LinkPr {
+            id: "SH-1".to_string(),
+            url: "https://github.com/acme/widgets/pull/7".to_string(),
+            close_on_merge: false,
+        },
+        Invocation::UnlinkPr {
+            id: "SH-1".to_string(),
+            url: "https://github.com/acme/widgets/pull/7".to_string(),
+        },
+        Invocation::PrCheck {
+            id: Some("SH-1".to_string()),
+        },
+        Invocation::PrCheck { id: None },
         Invocation::HelpTopic {
             topic: "states".to_string(),
         },
@@ -1409,6 +1427,9 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Scaffold { .. } => "Scaffold",
         Invocation::CommitSync { .. } => "CommitSync",
         Invocation::GithubSync { .. } => "GithubSync",
+        Invocation::LinkPr { .. } => "LinkPr",
+        Invocation::UnlinkPr { .. } => "UnlinkPr",
+        Invocation::PrCheck { .. } => "PrCheck",
         Invocation::HelpTopic { .. } => "HelpTopic",
         Invocation::HelpCompact => "HelpCompact",
         Invocation::HelpAll => "HelpAll",
@@ -1435,7 +1456,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        56,
+        59,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

@@ -20,8 +20,8 @@ use crate::domain::{Member, StateDef, StoryEvent, StorySnapshot, TypeDef};
 use crate::store::error::StoreError;
 use crate::store::ids::{EventSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::types::{
-    FeedEvent, ProjectRecord, ProjectRemoteRecord, ProjectSettings, RelationEdge, StoredEvent,
-    StoredPayload, StoryQuery, StoryRow, StorySort, parse_priority, parse_superstate,
+    FeedEvent, PrLink, ProjectRecord, ProjectRemoteRecord, ProjectSettings, RelationEdge,
+    StoredEvent, StoredPayload, StoryQuery, StoryRow, StorySort, parse_priority, parse_superstate,
 };
 
 const PROJECT_COLUMNS: &str =
@@ -556,6 +556,83 @@ pub(super) fn commit_linked(
         )
         .map_err(|e| StoreError::from_sqlite(e, "reading a commit link"))?;
     Ok(found != 0)
+}
+
+const PR_LINK_COLUMNS: &str =
+    "owner, repo, number, url, close_on_merge, status, linked_at, last_checked_at";
+
+fn pr_link_from_row(row: &Row<'_>) -> Result<PrLink, rusqlite::Error> {
+    Ok(PrLink {
+        owner: row.get(0)?,
+        repo: row.get(1)?,
+        number: row.get(2)?,
+        url: row.get(3)?,
+        close_on_merge: row.get::<_, i64>(4)? != 0,
+        status: row.get(5)?,
+        linked_at: row.get(6)?,
+        last_checked_at: row.get(7)?,
+    })
+}
+
+/// This story's still-`open` linked pull requests. See
+/// [`ReadOps::open_pr_links_for_story`](crate::store::ReadOps::open_pr_links_for_story).
+pub(super) fn open_pr_links_for_story(
+    conn: &Connection,
+    project: ProjectId,
+    story: StoryNo,
+) -> Result<Vec<PrLink>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare(&format!(
+            "SELECT {PR_LINK_COLUMNS} FROM story_pr_links \
+             WHERE project_id = ?1 AND story_no = ?2 AND status = 'open' \
+             ORDER BY owner, repo, number"
+        )),
+        "preparing an open-PR-links-for-story read",
+    )?;
+    let rows = sql(
+        stmt.query_map(params![project.get(), story.get()], pr_link_from_row),
+        "reading open PR links for a story",
+    )?;
+    collect(rows, "reading open PR links for a story")
+}
+
+/// Every still-`open` linked pull request across the project. See
+/// [`ReadOps::open_pr_links`](crate::store::ReadOps::open_pr_links).
+pub(super) fn open_pr_links(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<(StoryNo, PrLink)>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare(&format!(
+            "SELECT story_no, {PR_LINK_COLUMNS} FROM story_pr_links \
+             WHERE project_id = ?1 AND status = 'open' \
+             ORDER BY story_no, owner, repo, number"
+        )),
+        "preparing an open-PR-links read",
+    )?;
+    let rows = sql(
+        stmt.query_map(params![project.get()], |row| {
+            let story_no: i64 = row.get(0)?;
+            Ok((StoryNo::new(story_no), pr_link_from_row_offset(row, 1)?))
+        }),
+        "reading open PR links",
+    )?;
+    collect(rows, "reading open PR links")
+}
+
+/// [`pr_link_from_row`], for a query whose columns start at `offset` rather
+/// than `0` — [`open_pr_links`] prepends `story_no`.
+fn pr_link_from_row_offset(row: &Row<'_>, offset: usize) -> Result<PrLink, rusqlite::Error> {
+    Ok(PrLink {
+        owner: row.get(offset)?,
+        repo: row.get(offset + 1)?,
+        number: row.get(offset + 2)?,
+        url: row.get(offset + 3)?,
+        close_on_merge: row.get::<_, i64>(offset + 4)? != 0,
+        status: row.get(offset + 5)?,
+        linked_at: row.get(offset + 6)?,
+        last_checked_at: row.get(offset + 7)?,
+    })
 }
 
 pub(super) fn story(

@@ -39,6 +39,9 @@ pub mod grouping;
 pub mod history;
 pub mod integrity;
 pub mod migrate;
+#[cfg(feature = "github-sync")]
+pub mod pr_check;
+pub mod pr_link;
 pub mod project;
 pub mod query;
 pub mod questionnaire;
@@ -74,6 +77,7 @@ pub use github::{GithubSyncService, RealGithubApiFactory, StoreSyncStorage};
 pub use grouping::{GroupingService, PhaseCleared};
 pub use integrity::IntegrityService;
 pub use migrate::{MigrationPlan, MigrationReport};
+pub use pr_link::PrLinkService;
 pub use project::{
     DeleteOutcome, InitOptions, InitOutcome, OriginOutcome, PointerUpdate, ProjectPointer,
     ProjectService, SetPrefixOutcome,
