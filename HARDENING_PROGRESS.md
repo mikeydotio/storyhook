@@ -163,7 +163,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-138** — rollback drops a project's registered origins
 - [x] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
 - [x] **SH-146** — the daemon never re-attempts its tailnet bind
-- [ ] **SH-147** — the tailnet probe runs twice on the port-fallback path
+- [x] **SH-147** — the tailnet probe runs twice on the port-fallback path
 - ⚠ **SH-150** — the TUI holds its own store handle · *in-progress as of 2026-08-07T20:35 — another session; do not claim*
 - [ ] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
 - [ ] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
@@ -5589,3 +5589,66 @@ Mikey's own batched `/semver bump` pass.
 
 **Landed as two commits on PR #161 (the fix, then this log entry), merge commit, verified,
 branch deleted.**
+
+### SH-147 — done · not reproduced · measured and guarded instead
+
+Picked next off the Medium queue (first unchecked, non-⚠, non-⏸ line) after SH-146.
+Re-checked `story list --state in-progress` before claiming: SH-112 (epic, skip), SH-150
+(⚠, correctly marked, another session). SH-167, SH-177 and SH-208 turned up in-progress
+too but sit later in the queue than SH-147, so they didn't change the pick; SH-167's marker
+in this file is stale (not ⚠ despite being in-progress elsewhere) but irrelevant here — worth
+a resync next time someone's picking near it.
+
+**The story's own premise was speculative** — filed during SH-110's council vote, against
+line numbers `bind_preferred` no longer has, ending in "Not reproduced -- file to measure."
+Reproduce-before-fix means that measurement came first. Reading `bind_listeners`
+(`src/daemon/serve.rs`) shows it binds loopback *before* it ever calls `tailnet_identity()`,
+and returns `Err` the instant that bind fails — exactly the branch `bind_preferred`'s
+fallback (`src/daemon/lifecycle.rs`) takes when the preferred port is taken. So the retry
+only ever runs on a path that never reached the probe the first time, and a call that does
+reach the probe cannot fail afterward, so it never retries either. `git log -p` back to
+`c4365c3`, `bind_listeners`' first version, shows this ordering has never been otherwise —
+there is no earlier regression to find.
+
+**Confirmed empirically, and confirmed the confirmation.** `tests/tailnet_probe_budget.rs`
+occupies the preferred port with a held `TcpListener`, shims `tailscale` to count every
+`status --json` invocation into a file, starts the daemon on that port, and asserts exactly
+one probe once it falls back. Green immediately. To make sure that green meant something,
+the story's alleged defect was reproduced on purpose — a one-line insertion forcing a second
+probe ahead of `bind_preferred`'s match arm — and the test went red (`probed ... 2 times`),
+then the insertion was reverted. A green test that cannot go red proves nothing; this one
+can.
+
+**No code fix — a documented, tested invariant instead.** Doc comments on `bind_preferred`
+and `bind_listeners` now name the load-bearing ordering explicitly and point at the new
+test, so a refactor that reorders the probe ahead of the loopback bind trips CI instead of
+silently reintroducing the double probe SH-147 described. The ticket's own suggested
+assertion (`2 * TAILNET_PROBE_TIMEOUT < SPAWN_DEADLINE`) was not added as written — the
+"2x" in it was the unmeasured part, and the true margin the code guarantees is 1x, not 2x;
+asserting the wrong multiplier would have pinned a false sense of the danger rather than the
+real one.
+
+**A sibling, not from this story: SH-209 filed.** The pre-push hook's own `make test` re-run
+hit `an_unforced_stop_waits_for_in_flight_work_to_finish` failing by 46ms
+(`took 1.95428025s` against an `assert!(waited >= Duration::from_secs(2))`) under
+`--test-threads=4` contention — unrelated to this branch's doc-only diff and a brand new,
+independent test file. Passed 4/4 standalone immediately after, and a full supervised
+`make test` re-run passed clean, this test included, before pushing. Filed rather than
+fixed blind: same shape of fragility as SH-140 (a hairline wall-clock margin that only shows
+under parallel load), mirrored — SH-140's assertions demanded speed, this one demands
+elapsed duration, and `waited` here only ever measures what's left of the hook's sleep after
+an already-nonzero `wait_for()` latency, so the margin was thin by construction. Left open
+at low priority with the mechanism recorded, for whoever picks it up next.
+
+**Gate:** two full `make test` runs, both green (fmt, clippy `-D warnings`, the whole Rust
+suite, `cargo build`, plugin harness 24/24, browser suite 13/13) — the first before pushing,
+the second because the pre-push hook's own re-run hit SH-209's flake and a same-tree rerun
+was the fastest way to tell "transient" from "caused by this diff." Both supervised in the
+background with a log-growth heartbeat on a 120-second stall bound (`Monitor`, 20s poll); no
+stall, no restart either time.
+
+**Semver: none suggested.** Same precedent as SH-146 — no mid-loop bumps; left for Mikey's
+own batched `/semver bump` pass.
+
+**Landed as one commit on PR #162 (test + docs; no behavior change, so no second commit to
+split it from), merge commit, verified, branch deleted.**
