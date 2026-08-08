@@ -186,7 +186,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-139** — `RemoteUrl::normalize`'s two explicit non-decisions
 - [x] **SH-148** — `bind_and_serve` is a `pub` entry point with no production caller
 - [x] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
-- [ ] **SH-70** — pre-#18 import `[git]` comments
+- [x] **SH-70** — pre-#18 import `[git]` comments
 - [ ] **SH-44** — web form defaults
 - [ ] **SH-127** — remove the status flash
 - [ ] **SH-128** — column sort options
@@ -6824,3 +6824,115 @@ session ran in `.claude/worktrees/SH-150`; per this repo's own rule,
 versioning and deployment (and the merge itself, in the letter of the
 worktree policy) happen from `main`, not here. PR reference and merge left
 for the next step.
+
+### SH-70 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line):
+`story list --state in-progress` showed SH-112 (epic, skip), SH-150 (⚠,
+correctly marked — landed as PR #164 while this story was mid-flight, per its
+own log entry above) and SH-167 (in-progress in another session, no ⚠ mark in
+this file, matching every prior session's stale-mark experience). Low's first
+unchecked line was SH-70 itself, confirmed `todo` and ready via `story list
+--ready`.
+
+**Read the story's own residue trail**, which named its own resolution:
+`import-project` restoring a *pre-#18* export document left `[git] <sha>:
+<subject>` comments as prose instead of link records, so the first
+`commit-sync` after a restore re-links every one of them — small and
+self-healing per the story's own "Extent" section, but wrong. SH-67's
+comment on `project_commit_link` (`src/store/sqlite/write.rs`) named this
+exact question as the thing it deliberately left open: it moved
+`import-project` onto `append_raw_events` for an unrelated reason (carrying
+an undecodable event kind through a restore verbatim) but kept
+`LinkSource::Live` hardcoded, so the legacy-comment projection path SH-67
+unlocked for `migrate` never actually fired for a restore.
+
+**Why this needed a council rather than a direct fix.** An export document
+carries no per-event provenance — nothing in it says whether a `[git]`-shaped
+comment is a genuine pre-#18 link `commit-sync` once wrote as prose, or a
+live comment a user typed that merely matches the shape. `migrate` never
+faces this ambiguity because its whole input domain (an old `.storyhook`
+tree) is legacy by construction; a restore's input can be any export, old or
+current. The obvious shortcut — treat a story with zero `StoryCommitLinked`
+events as legacy — was checked against the existing regression test
+`a_restore_still_does_not_claim_a_git_comment_as_a_link` (`tests/
+service_transfer.rs`) before it went anywhere: that test's own fixture *is*
+exactly that shape (a modern project with one comment and no real links), and
+its comment says outright that it exists to catch this story being "answered
+by accident." Any heuristic keyed on absence-of-kind-18-events flips that
+test's assertion, i.e. resolves the story by reopening the exact hole kind
+#18 was built to close. That is a genuine, no-obviously-correct-answer design
+tradeoff — council territory per this run's autonomy rule.
+
+**Council:** yes — 3 seats (`data-engineer`, `software-architect`,
+`qa-engineer`), all landing independently on the same core mechanism in round
+1 (a `--legacy-links` flag threaded into the existing `LinkSource` type), but
+split 0-1-2 on emphasis; one deliberation round converged them fully, and the
+ranked-choice runoff was unanimous 3/3 for the most code-verified proposal —
+the one that checked the `INSERT` vs. `ON CONFLICT DO NOTHING` asymmetry in
+`project_commit_link` directly rather than asserting it, and specified the
+doctor-advisory wiring point and the mixed-provenance fixture concretely.
+Verdict recorded verbatim as a comment on SH-70; audit trail at
+`.council/sh70-import-project-git-link-source/` (gitignored, per this
+project's `.gitignore`).
+
+**Built:** `Invocation::ImportProject` gains `legacy_links: bool`;
+`parse_import_project` accepts `--legacy-links`, off by default.
+`transfer::import_project` takes the same bool and picks
+`LinkSource::Replayed`/`Live` accordingly — default path untouched, byte for
+byte. Paired with a new store-pure advisory: `ReadOps::unbacked_commit_links`
+(a join of `story_commit_links` against `events`, no `cwd`/`git` needed) backs
+`legacy_link_advice` in `src/invoke.rs`, wired into `story doctor`'s existing
+advisory list alongside `pointer_origin_advice` et al. — it flags any commit
+link with no backing `StoryCommitLinked` event, regardless of how it got
+there, so a `--legacy-links` restore that misjudged a document is visible
+rather than silently trusted. No `--fix` repair, same reasoning as
+`pointer_origin_advice`: there is no default that is obviously right.
+
+**A gap the council didn't have to litigate, but the flag-registration table
+did:** `story import-project` had no entry in `src/cli.rs`'s `VerbFlags`
+table, so SH-62's pre-dispatch unknown-flag gate — which runs *ahead* of
+every verb parser and fails closed on an undeclared verb — refused
+`--legacy-links` before `parse_import_project` ever saw it. Caught by
+`tests/unknown_flag_sweep.rs`'s existing table-driven sweep (which already
+covered `import-project` with a nonsense flag) plus the new CLI-level test in
+`tests/story_export.rs`, not by the dispatch-level tests in
+`service_transfer.rs` — those call `transfer::import_project` and
+`invoke::dispatch` directly, underneath the gate. Fixed with one `VerbFlags`
+entry, `bare("legacy-links")`, matching `migrate`'s `--dry-run` precedent.
+
+**Tests:** four new. `a_legacy_links_restore_projects_a_pre_18_comment_into_a_link`
+(the flag projects a genuine legacy comment). The council's own
+mixed-provenance fixture,
+`a_legacy_links_restore_promotes_and_surfaces_both_a_genuine_and_a_lookalike_comment`
+— one document, two `[git]`-shaped comments, one meant as genuine pre-#18
+history and one meant as a live-era lookalike, both promoted under the flag
+(it is document-wide, not per-comment) and both surfaced by
+`unbacked_commit_links` and by `story doctor`'s rendered output. The
+pre-existing `a_restore_still_does_not_claim_a_git_comment_as_a_link` needed
+no behavior change, only a comment update pointing at the new tests — proof
+the default path is untouched. `import_project_legacy_links_projects_a_
+comment_and_doctor_reports_it` in `tests/story_export.rs` closes the loop at
+the real CLI binary: flag parsing from actual argv, through the store,
+through `story doctor`'s stdout.
+
+**Gate:** `make test` red once — `cargo fmt --all -- --check` caught one
+un-formatted multi-line predicate chain in the new CLI test, fixed with
+`cargo fmt --all` and rerun. Green after: fmt, clippy `-D warnings`, the full
+Rust suite (unit + integration + doctests), `cargo build`, plugin harness
+24/24, e2e 23/23, no orphan daemons pre- or post-run. Supervised with a
+process-CPU-time heartbeat rather than log-byte-growth after the first
+attempt gave two false "stall" reads from output buffering during a slow
+`dsymutil` step and a `cargo test | tail` pipe that buffers until EOF —
+worth naming because both looked identical to a real wedge from the log
+alone, and `ps`-level CPU time was what told them apart.
+
+**Semver: minor.** `import-project` gains a new opt-in flag and `story
+doctor` gains a new advisory case — both additive, no existing behavior
+changes.
+
+**PR:** #192, merged as `503c0bc`. Branch verified deleted (remote and
+local; `gh pr merge --delete-branch` handled both, including the local
+checkout switch back to `main`, since this ran in the primary checkout, not
+a worktree). `main` fast-forwarded cleanly, picking up SH-150's PR #164
+(merged moments earlier by another session) along with this one.
