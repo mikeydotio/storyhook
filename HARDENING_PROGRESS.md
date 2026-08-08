@@ -164,7 +164,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
 - [x] **SH-146** — the daemon never re-attempts its tailnet bind
 - [x] **SH-147** — the tailnet probe runs twice on the port-fallback path
-- ⚠ **SH-150** — the TUI holds its own store handle · *in-progress as of 2026-08-07T20:35 — another session; do not claim*
+- ⚠ **SH-150** — the TUI holds its own store handle · *implementation complete, PR #164 open, pending merge from `main` — see the Log entry above*
 - [x] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
 - [x] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
 - [x] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
