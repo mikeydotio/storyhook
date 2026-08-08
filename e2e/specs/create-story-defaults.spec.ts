@@ -4,7 +4,9 @@ import { test, expect } from "@playwright/test";
  * Exercises SH-44: the "+ New" create-story modal preselects the project's
  * own first-configured OPEN state and first-configured type, sourced from
  * `meta.defaults` (`src/api/rest.rs::meta_json`) rather than a hardcoded
- * `"todo"`/`"story"` guess.
+ * `"todo"`/`"story"` guess. Also exercises SH-127: creating a story no
+ * longer flashes a success toast -- the new card's own "entering" animation
+ * is the confirmation (council verdict: .council/sh127-status-flash-scope/).
  *
  * Fixtures, from `scripts/run-e2e.sh`:
  *
@@ -31,6 +33,37 @@ test("the create-story modal preselects the project's first-configured state and
 
   await expect(page.locator("#create-state")).toHaveValue("todo");
   await expect(page.locator("#create-type")).toHaveValue("normal");
+});
+
+test("creating a story shows no success toast (SH-127) -- the card's own entrance animation is the confirmation", async ({
+  page,
+}) => {
+  const title = "A story that should not flash a toast";
+
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  await page.locator("#create-title").fill(title);
+  await page.locator("#create-submit").click();
+
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+  const card = page.locator(".column[data-state=\"todo\"] .card", {
+    hasText: title,
+  });
+  await expect(card).toBeVisible();
+  await expect(page.locator("#toast-stack .toast.success")).toHaveCount(0);
+
+  // Cleanup, same pattern as the sibling test below.
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
+  await page
+    .locator('input[placeholder="Reason for deletion (required)"]')
+    .fill("e2e cleanup");
+  await page
+    .locator("#drawer-footer button", { hasText: "Confirm delete" })
+    .click();
+  await expect(card).not.toBeVisible();
 });
 
 test("submitting without touching state or type creates a story with the preselected defaults", async ({
