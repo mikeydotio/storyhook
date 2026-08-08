@@ -1,29 +1,40 @@
-//! Reproduces SH-172: an unauthenticated peer that opens a loopback
-//! connection and never satisfies the `Content-Length` it declared must not
-//! stop the daemon answering everyone else.
+//! Reproduces SH-172 and SH-177: a peer that opens a loopback connection and
+//! never satisfies the `Content-Length` (or `Transfer-Encoding: chunked`) it
+//! declared must not stop the daemon answering everyone else, and must not
+//! be able to grow the daemon's thread and file-descriptor count without
+//! bound.
 //!
-//! # The mechanism, established before any fix was written
+//! # SH-172 — off the dispatch thread
 //!
-//! Confirmed against `tiny_http` 0.12.0's own source (`src/request.rs:194-213`
-//! in the vendored crate) and reproduced against a real daemon before this
-//! file existed: a body of at most 1024 bytes with no `Expect: 100-continue`
-//! is read to completion on the connection's own `tiny_http` pool thread,
-//! before the request ever reaches this daemon's own accept loop. A body of
-//! more than 1024 bytes is wrapped in a lazy `EqualReader` instead, and this
-//! daemon's own body-reading code — synchronous and peer-paced — blocks
-//! whichever thread calls it, with no socket deadline available to bound that
-//! block (see `serve::accept_loop`'s doc comment on why, and SH-177 for the
-//! successor story that tracks it). The fix here is not a deadline: it is
-//! moving that blocking read off the one thread every client's command is
-//! queued behind, onto a thread of its own per connection.
+//! Before SH-172, admission (the `X-Storyhook-Token` check) ran *after* the
+//! body was read, on the single thread that also routed every other client's
+//! command — so one peer that declared a body and never sent it wedged the
+//! whole daemon solid, credential or not. The fix: `rpc::admission` runs from
+//! the request head alone, before any body is read, and every request gets
+//! its own thread so a stalled peer blocks only that thread.
 //!
-//! **It is a body-size class, not a connection count.** Twenty connections
-//! held at exactly 1024 bytes never touch the daemon at all; one connection
-//! held at 1025 wedges a serial dispatcher solid. The story's own probe (2
-//! connections: safe; 12: wedged) reads as a threshold only because none of
-//! its first two connections crossed 1024 bytes.
+//! # SH-177 — bounding that one thread
+//!
+//! SH-172 left the *credentialed* case open: a peer that presents a valid
+//! token, declares a body, and never finishes sending it still ties up one
+//! thread and one file descriptor **forever** — the daemon's original
+//! transport (`tiny_http` 0.12) gave no way to reach an accepted socket to
+//! set a deadline on it, and `Server::from_listener` owned its whole accept
+//! loop internally. `src/daemon/http1` (this daemon's own connection layer,
+//! replacing `tiny_http`) closes this two ways: every read and write on a
+//! peer socket is bound in wall-clock time by `http1::PEER_IO_TIMEOUT`, and
+//! every listener shares one `http1::ConnectionSlots` cap
+//! (`http1::MAX_CONNECTIONS`, overridable here via
+//! `STORYHOOK_MAX_CONNECTIONS`) — so even a peer that opens connections
+//! faster than they time out cannot grow the daemon past that ceiling.
+//!
+//! The tests below that hold a stalled peer without a valid token exercise
+//! the SH-172 invariant (refused before its body is ever read, so its body
+//! size never matters). [`stalled_connections_past_the_cap_are_refused_without_growing_the_daemon`]
+//! exercises SH-177 directly: an *authenticated* peer that stalls mid-body,
+//! which does reach the daemon's body-reading code, is still bounded.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
@@ -73,6 +84,29 @@ fn hold_stalled_invoke(port: u16, content_length: usize, sent: &[u8]) -> TcpStre
     s
 }
 
+/// Like [`hold_stalled_invoke`], but with a valid bearer token — so the
+/// connection clears `rpc::admission` and its body read genuinely blocks on
+/// the daemon's own thread, rather than being refused before the body is
+/// ever touched. This is the shape SH-177's own consequence describes: a
+/// credentialed peer that stalls mid-body.
+fn hold_stalled_authenticated_invoke(
+    port: u16,
+    token: &str,
+    content_length: usize,
+    sent: &[u8],
+) -> TcpStream {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    s.set_write_timeout(Some(PROBE_DEADLINE)).ok();
+    let head = format!(
+        "POST /api/v1/invoke HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Storyhook-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\n\r\n"
+    );
+    s.write_all(head.as_bytes()).expect("write head");
+    if !sent.is_empty() {
+        s.write_all(sent).expect("write partial body");
+    }
+    s
+}
+
 /// Times a raw, authenticated `GET /api/v1/hello`, bounded by
 /// [`PROBE_DEADLINE`] so a wedged daemon fails this call rather than hanging
 /// the test.
@@ -97,9 +131,8 @@ fn hello_elapsed(port: u16, token: &str) -> Result<(Duration, u16), String> {
     Ok((t0.elapsed(), status))
 }
 
-/// The smallest reproduction: `tiny_http` buffers <=1024 bytes inline on the
-/// connection's own thread, so 1025 is the smallest body that streams — and
-/// streaming is what reaches this daemon's own read path.
+/// The smallest reproduction: one unauthenticated peer, one declared body
+/// never sent in full.
 #[test]
 fn one_stalled_body_over_the_buffering_threshold_does_not_stop_the_daemon() {
     let env = TestEnv::isolated();
@@ -146,8 +179,9 @@ fn twelve_stalled_connections_do_not_stop_the_daemon() {
 }
 
 /// Pins the corrected mechanism against the discredited count theory: many
-/// connections in the buffered class must never reach the daemon at all, no
-/// matter how many are held at once.
+/// unauthenticated stalled connections, of whatever declared size, must
+/// never block the daemon — there is no connection-count threshold where
+/// this starts failing.
 #[test]
 fn a_body_under_the_buffering_threshold_never_reaches_the_daemon() {
     let env = TestEnv::isolated();
@@ -195,9 +229,9 @@ fn an_unauthenticated_invoke_is_refused_without_its_body() {
     );
 }
 
-/// The other streamed body shape: chunked encoding is never eagerly buffered
-/// by `tiny_http` regardless of size, so a chunked request that never sends
-/// its first chunk is a second, independent way to reach the same read.
+/// The other body shape a request can declare: `Transfer-Encoding: chunked`
+/// with no chunk ever sent is a second, independent way to reach the same
+/// stalled read.
 #[test]
 fn a_chunked_body_that_never_arrives_does_not_stop_the_daemon() {
     let env = TestEnv::isolated();
@@ -222,4 +256,94 @@ fn a_chunked_body_that_never_arrives_does_not_stop_the_daemon() {
         "hello took {elapsed:?} with a stalled chunked body held; the daemon is wedged"
     );
     drop(attacker);
+}
+
+/// SH-177's own fix, exercised end to end: an *authenticated* peer that
+/// stalls mid-body reaches the daemon's blocking body read (unlike every test
+/// above, which is refused before its body is touched at all) and still
+/// cannot grow the daemon past its connection cap. `STORYHOOK_MAX_CONNECTIONS`
+/// lowers the cap so this test fills it with a handful of sockets rather than
+/// the production ceiling's worth.
+///
+/// Thread and file-descriptor counts are the story's own stated consequence
+/// ("grow the daemon's thread count without limit"), but this test proves the
+/// bound at the HTTP level instead of by counting OS resources: a connection
+/// past the cap gets an explicit, immediate `503` rather than being accepted
+/// and also piling up, which is only possible if the cap is in fact holding —
+/// an unbounded accept path cannot produce this response, only silence or an
+/// eventual accept. `http1::conn::tests::a_connection_past_the_cap_gets_no_permit`
+/// pins the counting primitive itself in isolation.
+#[test]
+fn stalled_connections_past_the_cap_are_refused_without_growing_the_daemon() {
+    const CAP: usize = 4;
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = scratch_dir();
+    env.story(dir.path())
+        .args(["daemon", "start"])
+        .env("STORYHOOK_MAX_CONNECTIONS", CAP.to_string())
+        .assert()
+        .success();
+    let info = env
+        .daemon()
+        .expect("a started daemon must publish a portfile");
+
+    // Fill every connection slot with a peer that clears admission and then
+    // stalls forever mid-body.
+    let mut held = Vec::new();
+    for _ in 0..CAP {
+        held.push(hold_stalled_authenticated_invoke(
+            info.port,
+            &info.token,
+            65000,
+            b"x",
+        ));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+
+    // One more connection, with every slot held: refused outright and told
+    // why, not silently accepted alongside the rest. Read the response
+    // head a line at a time rather than in one `read()` call: nothing
+    // guarantees a multi-header response arrives in a single TCP segment,
+    // and under the full suite's load it routinely does not.
+    let mut extra = TcpStream::connect(("127.0.0.1", info.port)).expect("connect");
+    extra.set_read_timeout(Some(PROBE_DEADLINE)).ok();
+    let mut reader = BufReader::new(&mut extra);
+    let mut status_line = String::new();
+    reader
+        .read_line(&mut status_line)
+        .expect("a connection past the cap must be answered, not silently dropped");
+    assert!(
+        status_line.starts_with("HTTP/1.1 503"),
+        "expected 503 once every connection slot is held, got: {status_line}"
+    );
+    let mut saw_retry_after = false;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read header line");
+        if line == "\r\n" || line.is_empty() {
+            break;
+        }
+        if line.to_ascii_lowercase().starts_with("retry-after:") {
+            saw_retry_after = true;
+        }
+    }
+    assert!(
+        saw_retry_after,
+        "a refusal should carry Retry-After so a well-behaved client knows to back off"
+    );
+    drop(reader);
+    drop(extra);
+
+    // Releasing the peers that filled the cap frees their slots — the cap
+    // recovers rather than staying wedged once they are gone.
+    drop(held);
+    std::thread::sleep(Duration::from_millis(200));
+    let (elapsed, status) = hello_elapsed(info.port, &info.token)
+        .expect("hello must answer once the cap has room again");
+    assert_eq!(status, 200);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "hello took {elapsed:?} after the cap should have recovered"
+    );
 }

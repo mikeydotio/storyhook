@@ -36,14 +36,13 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use tiny_http::{Header, Method, Request, Server};
-
 use crate::api::http::{
     Reply, carries_body, finish, path_segments, read_body, request_path, text_reply,
 };
 use crate::api::rest::{self, Changed};
 use crate::api::rpc;
 use crate::daemon::bus::{Change, ChangeBus};
+use crate::daemon::http1::{self, Header, Method, Request};
 use crate::daemon::lifecycle::Hello;
 use crate::daemon::tailnet::{TailnetBind, tailnet_identity};
 use crate::env::Environment;
@@ -119,9 +118,13 @@ struct Serving<'a, S: Store> {
     /// is the only thing that ever writes it again, and only once, the
     /// instant its own late bind succeeds — never touched after that
     /// (SH-146). A lock rather than a plain field for exactly that one
-    /// possible write; every read (there are two call sites) takes it for
-    /// as long as a clone, never longer.
-    trusted_hosts: RwLock<Vec<String>>,
+    /// possible write; every read takes it for as long as a clone, never
+    /// longer. `Arc`-wrapped (SH-177) so [`accept_loop`]'s handler — which
+    /// `http1::serve_connections` requires to be `'static`, so it cannot
+    /// hold `&Serving` the way [`dispatch`] and [`tailnet_reprobe`] do — can
+    /// still read the live value on every request rather than a snapshot
+    /// frozen when the listener started.
+    trusted_hosts: Arc<RwLock<Vec<String>>>,
     /// The bearer token `/api/v1/*` requires — and, since SH-50,
     /// `/api/repos/*/story/*/dispatch` too.
     token: String,
@@ -178,26 +181,25 @@ where
         .find(|l| l.loopback)
         .and_then(|l| l.listener.local_addr().ok());
 
-    let mut servers = Vec::new();
-    for listener in listeners {
-        let loopback = listener.loopback;
-        let server = Server::from_listener(listener.listener, None)
-            .map_err(|e| AppError::Storage(format!("failed to serve a bound listener: {e}")))?;
-        servers.push((server, loopback));
-    }
-
-    let Some(primary) = servers.pop() else {
+    if listeners.is_empty() {
         return Err(AppError::Usage(
             "the daemon needs at least one bound listener to serve".to_string(),
         ));
-    };
+    }
+    let http_limits = http1::Limits::production();
+    // Shared across every listener this daemon binds, so the connection cap
+    // is per daemon rather than per interface (SH-177) — a machine with a
+    // tailnet interface bound has two listeners, and a peer should not be
+    // able to double its share of the cap by splitting connections across
+    // both.
+    let connection_slots = http1::ConnectionSlots::production();
 
     let stop = Arc::new(AtomicBool::new(false));
     let serving = Serving {
         store,
         env: env.clone(),
         bus: bus.clone(),
-        trusted_hosts: RwLock::new(trusted_hosts),
+        trusted_hosts: Arc::new(RwLock::new(trusted_hosts)),
         token,
         hello: Hello {
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -253,11 +255,14 @@ where
             let on_late_tailnet_bind = &on_late_tailnet_bind;
             let jobs_tx = jobs_tx.clone();
             let nested_tx = nested_tx.clone();
+            let slots = Arc::clone(&connection_slots);
             scope.spawn(move || {
                 tailnet_reprobe(
                     scope,
                     serving,
                     loopback_addr,
+                    http_limits,
+                    slots,
                     jobs_tx,
                     nested_tx,
                     on_late_tailnet_bind,
@@ -279,13 +284,38 @@ where
 
         ready();
 
-        for (server, loopback) in servers {
+        let mut listeners = listeners;
+        // The last listener is served on this thread, so `serve`'s caller
+        // blocks for as long as the daemon is up; every other listener (the
+        // tailnet interface, when bound) gets its own thread. Which one is
+        // "last" carries no meaning — every listener runs the identical loop.
+        let primary = listeners.pop().expect("checked non-empty above");
+        for listener in listeners {
             let serving = &serving;
             let jobs_tx = jobs_tx.clone();
             let nested_tx = nested_tx.clone();
-            scope.spawn(move || accept_loop(serving, server, loopback, jobs_tx, nested_tx));
+            let slots = Arc::clone(&connection_slots);
+            scope.spawn(move || {
+                accept_loop(
+                    serving,
+                    listener.listener,
+                    listener.loopback,
+                    http_limits,
+                    slots,
+                    jobs_tx,
+                    nested_tx,
+                )
+            });
         }
-        accept_loop(&serving, primary.0, primary.1, jobs_tx, nested_tx);
+        accept_loop(
+            &serving,
+            primary.listener,
+            primary.loopback,
+            http_limits,
+            connection_slots,
+            jobs_tx,
+            nested_tx,
+        );
         stop.store(true, Ordering::Relaxed);
     });
     Ok(())
@@ -517,19 +547,24 @@ enum Verdict {
     },
 }
 
-/// Runs the request-accept loop for one bound server.
+/// Runs the request-accept loop for one bound listener.
 ///
-/// This loop does exactly one thing: pop a request off `tiny_http`'s queue and
-/// hand it to a fresh [`worker`] thread. It is the only part of request
-/// handling that must never block, because `tiny_http`'s
-/// [`Server::incoming_requests`] is itself a single shared queue — if this
-/// loop stalled, every listener sharing it would too.
+/// This loop does exactly one thing: hand each accepted connection to
+/// [`http1::serve_connections`], which owns it — deadlines, the connection
+/// cap, and parsing — for as long as it stays open, calling [`worker`] once
+/// per request the connection carries. Accepting itself must never block on
+/// a peer, and it never does: [`TcpListener::accept`] only ever waits on the
+/// *next* connection arriving, never on anything a peer already connected
+/// controls the pace of.
 ///
 /// Everything peer-paced — reading a head, reading a body, writing a reply —
-/// happens on a worker, one per request, never here and never on
+/// happens inside `http1`, one connection per thread, never here and never on
 /// [`dispatch`]. That split is the fix for SH-172: a peer that stalls mid-body
-/// now ties up one detached thread, never the thread every other client's
-/// command is queued behind.
+/// ties up one thread, never the thread every other client's command is
+/// queued behind. `http1`'s own deadlines and connection cap are the fix for
+/// SH-177: that one tied-up thread cannot survive past `PEER_IO_TIMEOUT`, and
+/// an attacker cannot grow the daemon past `MAX_CONNECTIONS` of them at once,
+/// across every listener this daemon binds combined.
 ///
 /// `jobs_tx` and `nested_tx` are shared with every other bound listener's
 /// accept loop — each is built once, in [`serve`], rather than one channel
@@ -538,52 +573,44 @@ enum Verdict {
 /// threads already serving the store concurrently, by accident of interface
 /// count rather than by design; one channel per lane means one place the
 /// [`DISPATCHERS`] pool has to reason about.
-///
-/// **What this does not bound.** `tiny_http` exposes no way to configure an
-/// accepted socket — a request's body reader is an opaque `Box<dyn Read>`
-/// with no accessible file descriptor, and `SO_RCVTIMEO`/`SO_SNDTIMEO` set on
-/// the *listener* are not inherited by sockets `accept(2)` returns (confirmed
-/// against this daemon's own listener on both macOS and — per `accept(2)`'s
-/// documented inheritance list, which omits them — Linux; an earlier version
-/// of this fix assumed otherwise and a test written to pin that assumption is
-/// what caught it before it shipped). So a single stalled worker still blocks
-/// forever in the worst case, tying up one thread and one fd rather than the
-/// whole daemon. Bounding that is SH-177's problem, not this one's.
 fn accept_loop<S: Store>(
     serving: &Serving<'_, S>,
-    server: Server,
+    listener: TcpListener,
     loopback: bool,
+    limits: http1::Limits,
+    slots: Arc<http1::ConnectionSlots>,
     jobs_tx: mpsc::SyncSender<Job>,
     nested_tx: mpsc::Sender<Job>,
 ) {
     let token: Arc<str> = Arc::from(serving.token.as_str());
+    let bus = serving.bus.clone();
+    let trusted_hosts = Arc::clone(&serving.trusted_hosts);
+    let env = serving.env.clone();
+    let dispatch_registry = Arc::clone(&serving.dispatch_registry);
 
-    for request in server.incoming_requests() {
-        let jobs_tx = jobs_tx.clone();
-        let nested_tx = nested_tx.clone();
-        let bus = serving.bus.clone();
-        let token = Arc::clone(&token);
-        let trusted_hosts = serving
-            .trusted_hosts
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let env = serving.env.clone();
-        let dispatch_registry = Arc::clone(&serving.dispatch_registry);
-        thread::spawn(move || {
-            worker(
-                request,
-                loopback,
-                &token,
-                bus,
-                jobs_tx,
-                nested_tx,
-                &trusted_hosts,
-                &env,
-                &dispatch_registry,
-            )
-        });
-    }
+    // One closure per listener, cloned by `http1::serve_connections` once per
+    // accepted connection (and, within a kept-alive connection, called again
+    // for each request it carries) — every capture here is `Clone`, so the
+    // closure is too, without needing any of them to be `Sync`. `trusted_hosts`
+    // is read fresh on every call rather than snapshotted once: a late
+    // tailnet bind (SH-146) can update it for as long as this listener runs,
+    // and the very next request must see it.
+    let handler = move |request: Request| {
+        let trusted_hosts = trusted_hosts.read().unwrap_or_else(PoisonError::into_inner);
+        worker(
+            request,
+            loopback,
+            &token,
+            bus.clone(),
+            jobs_tx.clone(),
+            nested_tx.clone(),
+            &trusted_hosts,
+            &env,
+            &dispatch_registry,
+        )
+    };
+
+    http1::serve_connections(listener, limits, slots, handler);
 }
 
 /// The one field `worker` peeks from an as-yet-unparsed `/api/v1/invoke`
@@ -1174,6 +1201,8 @@ fn tailnet_reprobe<'scope, S: Store, L>(
     scope: &'scope thread::Scope<'scope, '_>,
     serving: &'scope Serving<'_, S>,
     loopback_addr: SocketAddr,
+    limits: http1::Limits,
+    slots: Arc<http1::ConnectionSlots>,
     jobs_tx: mpsc::SyncSender<Job>,
     nested_tx: mpsc::Sender<Job>,
     on_late_tailnet_bind: &'scope L,
@@ -1210,21 +1239,17 @@ fn tailnet_reprobe<'scope, S: Store, L>(
         };
         on_late_tailnet_bind(&bound);
 
-        let server = match Server::from_listener(listener.listener, None) {
-            Ok(server) => server,
-            Err(e) => {
-                // The bind itself succeeded — trust was already granted
-                // above — but tiny_http could not wrap the socket. Nothing
-                // sane retries a `TcpListener::bind` that already succeeded;
-                // logging and stopping matches probe_and_bind_tailnet's own
-                // "warn, never fatal" stance for a tailnet problem.
-                eprintln!(
-                    "warning: bound the tailnet interface but could not start serving it: {e}"
-                );
-                return;
-            }
-        };
-        scope.spawn(move || accept_loop(serving, server, false, jobs_tx, nested_tx));
+        scope.spawn(move || {
+            accept_loop(
+                serving,
+                listener.listener,
+                false,
+                limits,
+                slots,
+                jobs_tx,
+                nested_tx,
+            )
+        });
         return;
     }
 }

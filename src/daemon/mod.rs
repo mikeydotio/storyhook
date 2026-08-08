@@ -9,6 +9,8 @@
 //! * [`bus`] — the change feed every `/api/events` client subscribes to, fed by
 //!   the request boundary and by a `PRAGMA data_version` poller.
 //! * [`commands`] — `story daemon start|stop|status|install|uninstall|token`.
+//! * [`http1`] — the HTTP/1.1 connection layer: parsing, framing, and every
+//!   deadline and cap a peer socket is held to (SH-177).
 //! * [`lifecycle`] — the portfile, the pidfile lock, and auto-spawn.
 //! * [`serve`] — the listeners and the accept loop.
 //! * [`tailnet`] — this machine's Tailscale identity: the interface the
@@ -18,6 +20,7 @@
 pub mod backup;
 pub mod bus;
 pub mod commands;
+pub mod http1;
 pub mod lifecycle;
 pub mod serve;
 pub mod tailnet;
