@@ -654,6 +654,13 @@ macro_rules! impl_read_ops {
                 read::commit_linked(&self.conn, project, story, sha)
             }
 
+            fn unbacked_commit_links(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<(StoryNo, String)>, StoreError> {
+                read::unbacked_commit_links(&self.conn, project)
+            }
+
             fn story(
                 &self,
                 project: ProjectId,

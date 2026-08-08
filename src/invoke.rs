@@ -647,6 +647,7 @@ pub fn dispatch<S: Store>(
                         advice.extend(backup_advice(ctx)?);
                         advice.extend(abandoned_advice(ctx.env()));
                         advice.extend(pointer_origin_advice(ctx)?);
+                        advice.extend(legacy_link_advice(ctx)?);
                         Ok(Response::Issues(advice))
                     }
                     issues => Err(AppError::Integrity(issues.join("\n"))),
@@ -1840,12 +1841,17 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
         // Project-less for the same reason `init` is: `story import-project`
         // into an empty directory is how a backup is restored, so the arm has
         // to be able to create the project it is importing into.
-        Invocation::ImportProject { file } => {
+        Invocation::ImportProject { file, legacy_links } => {
             let raw = std::fs::read_to_string(resolve_against(root, &file))
                 .map_err(|e| AppError::Storage(format!("failed to read {file}: {e}")))?;
             let export: ProjectExport = serde_json::from_str(&raw)?;
-            let outcome =
-                transfer::import_project(store, root, &Clock::Fixed(now.to_string()), &export)?;
+            let outcome = transfer::import_project(
+                store,
+                root,
+                &Clock::Fixed(now.to_string()),
+                &export,
+                legacy_links,
+            )?;
             let message = format!("imported project with {} stories", outcome.stories);
             if outcome.skipped_remotes.is_empty() {
                 Ok(Response::Message(message))
@@ -3352,6 +3358,65 @@ fn abandoned_advice(env: &Environment) -> Vec<String> {
     )]
 }
 
+/// What `story doctor` says about a `story_commit_links` row with no backing
+/// `StoryCommitLinked` event (SH-70's council, `.council/
+/// sh70-import-project-git-link-source/DECISION.md`).
+///
+/// Every such row was projected from a `[git]`-shaped comment rather than from
+/// the event itself: schema migration 2's backfill, a `story migrate` replay,
+/// or an `import-project --legacy-links` restore. The first two are always
+/// correct — their whole input predates kind #18 by construction. The third is
+/// an operator's assertion about one document, and the store cannot verify it
+/// (the ambiguity [`crate::store::LinkSource`]'s doc comment describes — "who
+/// is speaking" does not survive a round trip through an export document). So
+/// this reports every row in the category, regardless of source: most of the
+/// time the answer is "yes, that's right, it's from `migrate` or the
+/// backfill," and this advisory is silence. It only earns its keep on the rare
+/// restore that got `--legacy-links` wrong.
+///
+/// Advisory, never `--fix`-repaired, for the same reason [`pointer_origin_
+/// advice`] is: there is no default that is obviously right, because the store
+/// cannot distinguish "this is a genuine pre-#18 link" from "this was a live
+/// comment a `--legacy-links` restore misclassified." Whoever restored the
+/// document has to say which.
+///
+/// Store-pure, unlike `pointer_origin_advice`:
+/// [`ReadOps::unbacked_commit_links`](crate::store::ReadOps::unbacked_commit_links)
+/// is a join over rows this project already owns, no `cwd` or `git` needed.
+fn legacy_link_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppError> {
+    let found = ctx
+        .store()
+        .read(|tx| tx.unbacked_commit_links(ctx.project()))?;
+    if found.is_empty() {
+        return Ok(Vec::new());
+    }
+    let prefix = ctx
+        .store()
+        .read(|tx| tx.project(ctx.project()))?
+        .map(|project| project.prefix)
+        .unwrap_or_default();
+    let mut lines: Vec<String> = found
+        .iter()
+        .map(|(story_no, sha)| {
+            format!(
+                "`{}` links commit `{sha}` from a `[git]` comment, not from a `StoryCommitLinked` \
+                 event",
+                story_no.to_id(&prefix)
+            )
+        })
+        .collect();
+    lines.push(format!(
+        "{} commit link{} recorded from comment text rather than from event kind #18. This is \
+         expected for a project moved in with `story migrate`, or restored from a genuine \
+         pre-#18 backup with `import-project --legacy-links` — nothing to do. If neither \
+         happened here, one of these may be a live comment a restore misclassified; storyhook \
+         cannot tell the two apart and will not guess which.",
+        found.len(),
+        if found.len() == 1 { "" } else { "s" },
+    ));
+    Ok(lines)
+}
+
 /// What `story doctor` says about a checkout whose pointer file and whose
 /// registered origin name different projects (SH-116, narrowed by SH-151's
 /// council, built here as SH-161).
@@ -3551,6 +3616,7 @@ mod creates_a_project_tests {
         for invocation in [
             Invocation::ImportProject {
                 file: "export.json".to_string(),
+                legacy_links: false,
             },
             Invocation::Migrate {
                 path: None,

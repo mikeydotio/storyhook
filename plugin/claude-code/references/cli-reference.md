@@ -167,12 +167,15 @@ story import stories.json
 cat stories.json | story import
 ```
 
-### `story import-project <file>`
+### `story import-project <file> [--legacy-links]`
 
 Restore a **full project snapshot** (states, types, members, and stories) previously produced by `story export`. This is whole-project migration/backup, not a single-story import — use `story import` for that.
 
+`--legacy-links` asserts that `<file>` predates event kind #18 (`StoryCommitLinked`), so its `[git] <sha>: <subject>` comments are pre-existing commit-link records rather than prose a user typed — and projects them into the store's link table accordingly. Omit it (the default) for a document from a current binary; passing it against one mixes a real user comment shaped like a link into the link table if that comment is present.
+
 ```bash
 story import-project backup.json
+story import-project old-backup.json --legacy-links
 ```
 
 ### `story export`

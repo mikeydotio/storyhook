@@ -599,11 +599,34 @@ pub struct SkippedRemote {
 /// silently dropped: for a project whose only remote is a bare repository with
 /// no working checkout anywhere, this may be the only surviving record of it
 /// (SH-138).
+///
+/// # `legacy_links` — whether a `[git]`-shaped comment is a link record
+///
+/// An export document carries no per-event provenance: nothing in it says
+/// whether a `[git] <sha>: <subject>` comment is a pre-#18 link record
+/// `commit-sync` once wrote as prose, or a live comment a user typed that
+/// merely matches the shape (`LinkSource`'s own doc comment: "cannot be told
+/// from the bytes"). `story migrate` never faces this — its input is always an
+/// old `.storyhook` tree, legacy by construction — but a restore's input can be
+/// any export, old or current, so the operator has to say which this one is.
+/// `false` (the default) leaves every comment as prose, exactly as before this
+/// parameter existed; `true` is the operator's assertion that this specific
+/// document predates kind #18, and projects every matching comment into
+/// `story_commit_links` the same way `migrate` replays a legacy tree
+/// (SH-70). Misjudging it is bounded and loud, not silent: a `StoryCommentAdded`
+/// promoted this way is a `LinkSource::Replayed` legacy shape, which
+/// `ON CONFLICT DO NOTHING`s; a real future `StoryCommitLinked` for that same
+/// sha is a plain primary-key `INSERT` and fails outright rather than silently
+/// losing the link (`project_commit_link`). `story doctor`'s
+/// `legacy_link_advice` surfaces any row this produced that has no backing
+/// `StoryCommitLinked` event, so a wrongly-flagged restore is visible rather
+/// than merely awaited.
 pub fn import_project<S: Store>(
     store: &S,
     root: &std::path::Path,
     clock: &Clock,
     export: &ProjectExport,
+    legacy_links: bool,
 ) -> Result<ImportOutcome, AppError> {
     let now = clock.now();
     let prefix = export
@@ -701,21 +724,25 @@ pub fn import_project<S: Store>(
             // One raw append per story, not one per decodable run: a restore
             // has to write events this build cannot decode, and splitting the
             // history at each of them would be the same call made three times.
-            // `LinkSource::Live` is what `append_events` passed here before
-            // SH-67 and is therefore this path's behaviour unchanged — whether
-            // it *should* be `Replayed` is SH-70, and is a decision this commit
-            // deliberately does not make.
+            // The link source is the caller's `legacy_links` assertion — see
+            // this function's own doc comment for why the document alone
+            // cannot answer the question (SH-70).
             let raw = story
                 .events
                 .iter()
                 .map(ExportedEvent::to_raw)
                 .collect::<Result<Vec<_>, _>>()?;
+            let link_source = if legacy_links {
+                LinkSource::Replayed
+            } else {
+                LinkSource::Live
+            };
             let head = tx.append_raw_events(
                 project,
                 story_no,
                 ExpectedSeq::Exact(EventSeq::ZERO),
                 &raw,
-                LinkSource::Live,
+                link_source,
             )?;
             if story_no.get() > highest.get() {
                 highest = story_no;
