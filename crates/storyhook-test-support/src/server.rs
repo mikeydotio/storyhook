@@ -69,15 +69,36 @@ pub fn reserve_port() -> u16 {
     panic!("no free port in {BAND:?} — is an earlier run's daemon still holding them?");
 }
 
+/// Where a test server answers, and the bearer token every `/api/**` route
+/// on it requires (SH-187).
+///
+/// The token is real, minted fresh per server
+/// ([`storyhook::daemon::serve::bind_and_serve`]) — not an empty
+/// placeholder, since an empty `expected` fails closed
+/// (`crate::api::rpc::token_ok`) and could never authenticate a request
+/// anyway. It never touches disk: no portfile, no pidfile, exactly like
+/// everything else this test seam skips relative to a real daemon.
+pub struct TestServer {
+    pub bound: BoundAddress,
+    pub token: String,
+}
+
+impl TestServer {
+    /// The loopback port both listeners share.
+    pub fn port(&self) -> u16 {
+        self.bound.port()
+    }
+}
+
 /// Starts a dashboard for `store` on an OS-assigned port and returns every
-/// address it bound, once it is serving. The sanctioned way for a test to get a
-/// server: no test picks its own port, and no test waits on anything weaker
-/// than the server's own readiness signal.
+/// address it bound, plus its token, once it is serving. The sanctioned way
+/// for a test to get a server: no test picks its own port, and no test
+/// waits on anything weaker than the server's own readiness signal.
 ///
 /// The store is an [`Arc`] because the server outlives this call: it runs on a
 /// detached thread for the rest of the test binary's life, exactly as the
 /// production daemon runs for the life of its process.
-pub fn serve(store: Arc<SqliteStore>, env: &Environment) -> BoundAddress {
+pub fn serve(store: Arc<SqliteStore>, env: &Environment) -> TestServer {
     try_serve_on(store, env, 0).unwrap_or_else(|e| panic!("starting a test server: {e}"))
 }
 
@@ -100,26 +121,27 @@ pub fn try_serve_on(
     store: Arc<SqliteStore>,
     env: &Environment,
     port: u16,
-) -> Result<BoundAddress, String> {
-    let (tx, rx) = mpsc::channel::<Result<BoundAddress, String>>();
+) -> Result<TestServer, String> {
+    let (tx, rx) = mpsc::channel::<Result<TestServer, String>>();
     let ready_tx = tx.clone();
     let env = env.clone();
     std::thread::spawn(move || {
-        let outcome = storyhook::daemon::serve::bind_and_serve(&*store, &env, port, move |bound| {
-            let _ = ready_tx.send(Ok(bound));
-        });
+        let outcome =
+            storyhook::daemon::serve::bind_and_serve(&*store, &env, port, move |bound, token| {
+                let _ = ready_tx.send(Ok(TestServer { bound, token }));
+            });
         if let Err(e) = outcome {
             let _ = tx.send(Err(e.to_string()));
         }
     });
 
     match rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(bound)) => {
+        Ok(Ok(server)) => {
             // `ready` fires before the accept loops are spawned, so "bound" and
             // "accepting" are genuinely different moments and this wait is not
             // made redundant by the report.
-            wait_for_server(bound.port());
-            Ok(bound)
+            wait_for_server(server.port());
+            Ok(server)
         }
         Ok(Err(e)) => Err(e),
         Err(_) => {
@@ -413,21 +435,33 @@ mod tests {
         let (env_a, store_a, slug_a) = served_project();
         let (env_b, store_b, slug_b) = served_project();
 
-        let port_a = serve(store_a, &env_a.environment()).port();
-        let port_b = serve(store_b, &env_b.environment()).port();
-        assert_ne!(port_a, port_b, "two servers must not share a port");
+        let server_a = serve(store_a, &env_a.environment());
+        let server_b = serve(store_b, &env_b.environment());
+        assert_ne!(
+            server_a.port(),
+            server_b.port(),
+            "two servers must not share a port"
+        );
 
-        let own = ureq::get(format!("http://127.0.0.1:{port_a}/api/repos/{slug_a}/data"))
-            .call()
-            .expect("a server must serve the store it was started with");
+        let own = ureq::get(format!(
+            "http://127.0.0.1:{}/api/repos/{slug_a}/data",
+            server_a.port()
+        ))
+        .header("X-Storyhook-Token", &server_a.token)
+        .call()
+        .expect("a server must serve the store it was started with");
         assert_eq!(own.status(), 200);
 
         // The two fixtures mint the same slug from the same fixture name, so
         // this asks the sharper question: does B answer for A's *project*, or
         // only for the row in its own database?
-        let cross = ureq::get(format!("http://127.0.0.1:{port_b}/api/repos/{slug_b}/data"))
-            .call()
-            .expect("each server answers for its own store");
+        let cross = ureq::get(format!(
+            "http://127.0.0.1:{}/api/repos/{slug_b}/data",
+            server_b.port()
+        ))
+        .header("X-Storyhook-Token", &server_b.token)
+        .call()
+        .expect("each server answers for its own store");
         assert_eq!(cross.status(), 200);
     }
 

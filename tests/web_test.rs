@@ -56,6 +56,11 @@ struct Served {
     bound: BoundAddress,
     /// The project's slug — what a dashboard URL calls a repo id.
     repo_id: String,
+    /// The bearer token every `/api/**` route on this fixture's server
+    /// requires (SH-187). Minted fresh per server by
+    /// `storyhook::daemon::serve::bind_and_serve`, real rather than empty —
+    /// an empty `expected` fails closed (`rpc::token_ok`).
+    token: String,
 }
 
 impl Served {
@@ -146,13 +151,29 @@ impl Served {
             .expect("forgetting the fixture's checkout");
     }
 
-    /// An HTTP client for this fixture.
+    /// An HTTP client for this fixture, authenticated.
     ///
-    /// The one seam every test request flows through, so a credential the
-    /// fixture's server expects (none yet — see SH-187) is attached in
-    /// exactly one place rather than at each of this file's call sites.
+    /// The one seam every test request flows through: middleware attaches
+    /// `X-Storyhook-Token` to every outgoing request, so this file's ~150
+    /// call sites needed no change when the server started requiring one
+    /// (SH-187) — only this method did.
     fn agent(&self) -> ureq::Agent {
-        ureq::Agent::new_with_defaults()
+        let token = self.token.clone();
+        let config = ureq::Agent::config_builder()
+            .middleware(
+                move |mut req: ureq::http::Request<ureq::SendBody>,
+                      next: ureq::middleware::MiddlewareNext|
+                      -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+                    req.headers_mut().insert(
+                        "X-Storyhook-Token",
+                        ureq::http::HeaderValue::from_str(&token)
+                            .expect("the fixture's own token is a valid header value"),
+                    );
+                    next.handle(req)
+                },
+            )
+            .build();
+        ureq::Agent::new_with_config(config)
     }
 }
 
@@ -187,15 +208,16 @@ fn served() -> Served {
     })
     .expect("reading the fixture project");
 
-    let bound = serve(Arc::clone(&store), &environment);
+    let server = serve(Arc::clone(&store), &environment);
     Served {
         env,
         store,
         project,
         dir,
-        port: bound.port(),
-        bound,
+        port: server.bound.port(),
+        bound: server.bound,
         repo_id,
+        token: server.token,
     }
 }
 
@@ -541,10 +563,11 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="create-description""#));
     assert!(body.contains(r#"id="create-priority""#));
     assert!(body.contains(r#"id="create-labels-field""#));
-    // Dispatch's token modal (SH-50) -- the Dispatch (and, since SH-208,
-    // Dispatch Auto) buttons themselves are built by JS only for an open
-    // story in a project with a checkout, so they never appear as HTML
-    // `id="..."` attributes in this static markup; the modal they open
+    // The daemon token modal (SH-50, generalized dashboard-wide by SH-187)
+    // -- the Dispatch (and, since SH-208, Dispatch Auto) buttons themselves
+    // are built by JS only for an open story in a project with a checkout,
+    // so they never appear as HTML `id="..."` attributes in this static
+    // markup; the modal they (and every other authenticated call) can open
     // does. Their ids are still pinned here, as the JS *source* text the
     // single embedded <script> carries -- the same idiom already used below
     // for typeGlyph/buildTypeBadge, JS-only constructs with no static tag.
@@ -567,6 +590,10 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains(r#"id="settings-btn""#));
     // Mutation API call sites carry the CSRF guard header
     assert!(body.contains("X-Storyhook"));
+    // SH-187: every request carries the daemon token too, and the SSE
+    // stream (which can't set headers) carries it as a query parameter.
+    assert!(body.contains("X-Storyhook-Token"));
+    assert!(body.contains(r#""/api/events?token=""#));
     // Statuses editor (SH-41): its own styles, the settings-table entry
     // point, and the four calls that reach the states API.
     assert!(body.contains(".status-row"));
@@ -767,11 +794,17 @@ fn web_serve_post_returns_405() {
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    let err = fixture
-        .agent()
-        .post(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
-        .send(&[] as &[u8])
-        .unwrap_err();
+    // Authenticated and guarded, so this actually reaches routing rather
+    // than being refused before it: an unauthenticated POST here is 403
+    // (SH-187's admission gate runs first, the same reasoning
+    // rpc::admission documents for the identical ordering) whether or not
+    // the method would have been allowed.
+    let err = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"),
+        "",
+    )
+    .unwrap_err();
     let status = match err {
         ureq::Error::StatusCode(code) => code,
         other => panic!("expected status code error, got: {other}"),
@@ -2286,6 +2319,74 @@ fn web_put_on_story_path_is_405() {
     assert_eq!(status_of(err), 405);
 }
 
+// --- Mutation guard: bearer token (SH-187) ---
+//
+// Every request in the rest of this file already carries the token, via
+// `Served::agent`'s middleware -- these are the ones that deliberately
+// don't, to prove the requirement is real. Each pairs a positive control
+// (the fixture's own agent, which does carry the token) with the rejection,
+// the same house rule the tailnet section below documents at
+// `assert_the_listener_accepts_a_trusted_host`: a 401 proves nothing on its
+// own if nothing here has proven a real request can still succeed.
+
+#[test]
+fn web_read_without_a_token_is_401() {
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let ok = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .expect("the positive control failed: an authenticated read must succeed here");
+    assert_eq!(ok.status(), 200, "the positive control must return 200");
+
+    let err = ureq::get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap_err();
+    assert_eq!(status_of(err), 401);
+}
+
+#[test]
+fn web_mutation_without_a_token_is_401() {
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    // The CSRF guard headers are present and correct -- only the token is
+    // missing -- so a 401 here proves the token is checked in its own
+    // right, not merely as a side effect of the guard failing.
+    let err = ureq::post(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
+    ))
+    .header("X-Storyhook", "1")
+    .content_type("application/json")
+    .send(r#"{"state":"in-progress"}"#)
+    .unwrap_err();
+    assert_eq!(status_of(err), 401);
+
+    // And the story must not have moved.
+    let data = fixture
+        .agent()
+        .get(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let data_json: serde_json::Value =
+        serde_json::from_str(&data.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(data_json["stories"][0]["story"]["state"], "todo");
+}
+
+#[test]
+fn web_root_is_served_without_a_token() {
+    let fixture = served();
+
+    let resp = ureq::get(format!("http://127.0.0.1:{}/", fixture.port))
+        .call()
+        .expect("the SPA shell must load with no token, so it can bootstrap the token prompt");
+    assert_eq!(resp.status(), 200);
+}
+
 // --- Mutation guard: security headers on writes ---
 
 #[test]
@@ -3474,6 +3575,32 @@ fn web_serve_binds_tailnet_ip_when_available() {
     assert_eq!(json["summary"]["total_open"], 1);
 }
 
+/// The tailnet listener needs the token too (SH-187) -- being an allowed
+/// `Host` never was, and still is not, a substitute for a credential.
+#[test]
+fn web_serve_tailnet_read_without_a_token_is_401() {
+    let fixture = served();
+    let Some(bind) = fixture.bound.tailnet.clone() else {
+        return skip_no_tailnet_listener();
+    };
+    fixture.seed(&["new", "Reachable via tailnet"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    wait_for_addr(&format!("{}:{port}", bind.ip()));
+    let tailnet_url = format!("http://{}:{port}/api/repos/{repo_id}/data", bind.ip());
+
+    // Positive control: the same URL, with the token, succeeds.
+    let ok = fixture
+        .agent()
+        .get(&tailnet_url)
+        .call()
+        .unwrap_or_else(|e| panic!("the positive control failed: {e}"));
+    assert_eq!(ok.status(), 200, "the positive control must return 200");
+
+    let err = ureq::get(&tailnet_url).call().unwrap_err();
+    assert_eq!(status_of(err), 401);
+}
+
 #[test]
 fn web_serve_tailnet_ip_is_auto_trusted_for_mutations() {
     let fixture = served();
@@ -3724,6 +3851,77 @@ fn sse_test_lock() -> std::sync::MutexGuard<'static, ()> {
     SSE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Opens a raw `GET /api/events` connection with `request_line` as the exact
+/// request text, and returns just the HTTP status line -- enough to prove
+/// admission, without the rest of `connect_sse`'s work of reading past the
+/// whole response head for a test that goes on to consume the stream.
+fn sse_status_line(port: u16, request_line: &str) -> String {
+    use std::io::{BufRead, BufReader, Write};
+
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+        .expect("connecting to /api/events");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    write!(stream, "{request_line}").expect("writing the SSE request line");
+    let mut line = String::new();
+    BufReader::new(stream)
+        .read_line(&mut line)
+        .expect("reading the SSE status line");
+    line
+}
+
+/// `EventSource` cannot set headers, so `/api/events` is the one route that
+/// also accepts the token as `?token=` -- and, like every other route
+/// (SH-187), refuses a request with neither.
+#[test]
+fn sse_without_a_token_is_401() {
+    let _sse_guard = sse_test_lock();
+    let fixture = served();
+
+    // Positive control: the same route, header token present, succeeds --
+    // or the 401 below would prove nothing.
+    let ok = sse_status_line(
+        fixture.port,
+        &format!(
+            "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Storyhook-Token: {}\r\n\
+             Connection: close\r\n\r\n",
+            fixture.token
+        ),
+    );
+    assert!(
+        ok.contains("200"),
+        "the positive control must return 200, got: {ok:?}"
+    );
+
+    let refused = sse_status_line(
+        fixture.port,
+        "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        refused.contains("401"),
+        "expected a 401 status line, got: {refused:?}"
+    );
+}
+
+#[test]
+fn sse_accepts_the_token_as_a_query_parameter() {
+    let _sse_guard = sse_test_lock();
+    let fixture = served();
+
+    let line = sse_status_line(
+        fixture.port,
+        &format!(
+            "GET /api/events?token={} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            fixture.token
+        ),
+    );
+    assert!(
+        line.contains("200"),
+        "expected a 200 status line, got: {line:?}"
+    );
+}
+
 /// Connecting and immediately mutating the registered repo delivers a
 /// `repo-changed` event carrying that repo's id — the core "live" path.
 #[test]
@@ -3732,7 +3930,7 @@ fn sse_delivers_repo_changed_on_story_mutation() {
     let fixture = served();
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    let mut sse = connect_sse(port);
+    let mut sse = connect_sse(port, &fixture.token);
     fixture.seed(&["new", "Live update smoke test"]);
 
     let received = read_sse_until(&mut sse, "event: repo-changed", Duration::from_secs(8));
@@ -3757,7 +3955,7 @@ fn sse_delivers_repo_changed_on_state_configuration_change() {
     let fixture = served();
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    let mut sse = connect_sse(port);
+    let mut sse = connect_sse(port, &fixture.token);
     post_json(
         &fixture,
         &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/states"),
@@ -3788,7 +3986,7 @@ fn sse_coalesces_rapid_mutations_within_debounce_window() {
 
     fixture.seed(&["new", "Debounce target"]);
 
-    let mut sse = connect_sse(port);
+    let mut sse = connect_sse(port, &fixture.token);
     const MUTATIONS: usize = 6;
     // Mutate in-process rather than by spawning `story` subprocesses:
     // subprocess spawn latency is too variable under the CPU load this whole
@@ -3828,7 +4026,7 @@ fn sse_disconnect_does_not_break_server_for_other_clients() {
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
     {
-        let _first = connect_sse(port); // subscribes, then drops at end of this block
+        let _first = connect_sse(port, &fixture.token); // subscribes, then drops at end of this block
     }
     // Give the dropped connection's writer thread a moment to notice the
     // closed socket and unsubscribe.
@@ -3843,7 +4041,7 @@ fn sse_disconnect_does_not_break_server_for_other_clients() {
     assert_eq!(resp.status(), 200);
 
     // And a fresh SSE subscriber must still receive live events.
-    let mut second = connect_sse(port);
+    let mut second = connect_sse(port, &fixture.token);
     fixture.seed(&["new", "After disconnect"]);
     let received = read_sse_until(&mut second, "event: repo-changed", Duration::from_secs(8));
     assert!(
@@ -3865,7 +4063,7 @@ fn sse_detects_runtime_repo_registration_and_serves_it() {
     let (dir_b, slug_b) = fixture.add_project();
     fixture.deregister();
 
-    let mut sse = connect_sse(port);
+    let mut sse = connect_sse(port, &fixture.token);
 
     let body =
         serde_json::json!({"path": dir_b.path().to_string_lossy(), "prefix": "RB"}).to_string();
@@ -3921,7 +4119,7 @@ fn sse_one_unreachable_repo_does_not_break_stream_for_others() {
     let broken_id = fixture.repo_id.clone();
     let (dir_healthy, healthy_id) = fixture.add_project();
 
-    let mut sse = connect_sse(port);
+    let mut sse = connect_sse(port, &fixture.token);
 
     // Baseline: confirm the about-to-break project's changes are actually
     // reaching this client before disrupting anything.
@@ -3979,7 +4177,7 @@ fn no_filesystem_watcher_remains() {
     let fixture = served();
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    let mut sse = connect_sse(port);
+    let mut sse = connect_sse(port, &fixture.token);
 
     // Every shape the old watcher reacted to: a file in the repository root, a
     // file in the legacy story directory, and a file in the legacy config
@@ -4034,7 +4232,11 @@ fn sse_heartbeat_ping_arrives_without_any_story_changes() {
         .success();
     wait_for_server(port);
 
-    let mut sse = connect_sse(port);
+    let token = env
+        .daemon()
+        .expect("the started daemon must publish a portfile")
+        .token;
+    let mut sse = connect_sse(port, &token);
     let received = read_sse_until(&mut sse, "event: ping", Duration::from_secs(8));
     assert!(
         received.contains("event: ping"),
@@ -4080,7 +4282,11 @@ fn sse_delivers_repo_changed_for_a_cli_write_through_the_daemon() {
         .assert()
         .success();
 
-    let mut sse = connect_sse(port);
+    let token = env
+        .daemon()
+        .expect("the started daemon must publish a portfile")
+        .token;
+    let mut sse = connect_sse(port, &token);
 
     env.story(dir.path())
         .args(["new", "Created through the CLI, not the dashboard"])
@@ -4131,7 +4337,11 @@ fn sse_delivers_a_cli_write_with_the_safety_net_poll_disabled() {
         .assert()
         .success();
 
-    let mut sse = connect_sse(port);
+    let token = env
+        .daemon()
+        .expect("the started daemon must publish a portfile")
+        .token;
+    let mut sse = connect_sse(port, &token);
 
     env.story(dir.path())
         .args(["new", "Carried by the request boundary alone"])
@@ -4161,7 +4371,7 @@ fn sse_connection_does_not_block_other_requests() {
     let fixture = served();
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
 
-    let _sse = connect_sse(port); // held open for the rest of the test
+    let _sse = connect_sse(port, &fixture.token); // held open for the rest of the test
 
     let start = Instant::now();
     let resp = fixture
@@ -4238,13 +4448,16 @@ fn a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving() {
     );
 }
 
-/// Opens a raw `GET /api/events` connection and reads past the response
-/// head (status line + headers, through the blank line that terminates
-/// them), leaving the returned `BufReader` positioned at the start of the
-/// SSE body. A short per-read socket timeout (rather than one long one)
-/// lets `read_sse_until`/`read_sse_until_quiet` poll their own wall-clock
-/// deadline instead of blocking on a single slow `read`.
-fn connect_sse(port: u16) -> std::io::BufReader<std::net::TcpStream> {
+/// Opens a raw `GET /api/events` connection, carrying `token` as the
+/// `X-Storyhook-Token` header (SH-187 -- every route requires one now, and
+/// a raw socket, unlike a real `EventSource`, can set headers same as any
+/// other request), and reads past the response head (status line + headers,
+/// through the blank line that terminates them), leaving the returned
+/// `BufReader` positioned at the start of the SSE body. A short per-read
+/// socket timeout (rather than one long one) lets `read_sse_until`/
+/// `read_sse_until_quiet` poll their own wall-clock deadline instead of
+/// blocking on a single slow `read`.
+fn connect_sse(port: u16, token: &str) -> std::io::BufReader<std::net::TcpStream> {
     use std::io::{BufRead, BufReader, Write};
 
     let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
@@ -4254,7 +4467,8 @@ fn connect_sse(port: u16) -> std::io::BufReader<std::net::TcpStream> {
         .unwrap();
     write!(
         stream,
-        "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"
+        "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Storyhook-Token: {token}\r\n\
+         Connection: keep-alive\r\n\r\n"
     )
     .expect("writing the SSE request line");
 
@@ -4444,21 +4658,24 @@ fn a_project_with_no_checkout_refuses_writes_and_says_why() {
     fixture.deregister();
 
     let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+    // Guarded and authenticated -- this must actually reach `pathless_
+    // refusal` (a 422 naming why) rather than be turned away earlier by the
+    // CSRF guard or the token check, which a wrong header name here would
+    // silently do instead (it did, once: `X-Storyhook-Dashboard` is not the
+    // guard header `mutation_guard_ok` checks for, so this test used to pass
+    // for the wrong reason -- a loose `(400..500)` assertion never told the
+    // two apart).
     let err = fixture
         .agent()
         .post(format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"))
-        .header("X-Storyhook-Dashboard", "1")
+        .header("X-Storyhook", "1")
         .send_json(serde_json::json!({ "title": "Nope" }))
         .expect_err("a write with nowhere to run must be refused");
-
-    let body = match err {
-        ureq::Error::StatusCode(code) => {
-            assert!((400..500).contains(&code), "expected a 4xx, got {code}");
-            String::new()
-        }
-        other => panic!("expected a status error, got {other:?}"),
-    };
-    let _ = body;
+    assert_eq!(
+        status_of(err),
+        422,
+        "expected the pathless-project refusal specifically, not some other 4xx"
+    );
 
     // Nothing was created.
     let data = fixture

@@ -164,6 +164,7 @@ fn a_daemon_that_missed_its_tailnet_bind_self_heals_without_a_restart() {
     let url = format!("http://{ip}:{port}/api/repos/{slug}/story/{story_id}/move");
     let resp = ureq::post(&url)
         .header("X-Storyhook", "1")
+        .header("X-Storyhook-Token", &before.token)
         .content_type("application/json")
         .send(r#"{"state":"in-progress"}"#)
         .unwrap_or_else(|e| {
