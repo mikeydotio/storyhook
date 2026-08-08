@@ -12,9 +12,10 @@ use std::collections::BTreeMap;
 use legacy_support::{
     custom_config_tree, migrate, new_store, plan, real_tree, store_snapshots, tree_contents,
 };
-use storyhook::domain::{StoryEvent, SuperState};
+use storyhook::domain::{StoryEvent, SuperState, TypeDef};
 use storyhook::legacy;
 use storyhook::service::migrate::{MigrationPlan, RepairKind};
+use storyhook::storage;
 use storyhook::store::{ReadOps, Store as _, WriteOps};
 
 /// Builds a plan and returns the refusal message, failing if it succeeded.
@@ -414,6 +415,62 @@ fn a_story_sitting_in_an_undefined_state_is_refused_and_the_catalog_is_named() {
         message.contains("will not guess whether a story in it is finished"),
         "replicating `fold_story`'s refusal is the decision here, and the message has to say \
          why inventing the state would be worse: {message}"
+    );
+}
+
+#[test]
+fn a_type_with_an_unaddressable_slug_is_refused_and_the_catalog_is_named() {
+    let (_tree, root) = custom_config_tree();
+    storage::save_types(
+        &root,
+        &[
+            TypeDef {
+                slug: "story".to_string(),
+                description: None,
+                emoji: None,
+            },
+            TypeDef {
+                slug: "in review".to_string(),
+                description: None,
+                emoji: None,
+            },
+        ],
+    )
+    .expect("save_types writes verbatim, unlike save_states — the asymmetry SH-183 is about");
+    let message = refusal(&root);
+    assert!(message.contains("in review"), "{message}");
+    assert!(message.contains("types.toml"), "{message}");
+    assert!(
+        message.contains("invalid type slug"),
+        "the refusal must say what `validate_type_slug` says, the same rule `story type add` \
+         already enforces: {message}"
+    );
+}
+
+#[test]
+fn every_unaddressable_type_slug_is_named_not_just_the_first() {
+    let (_tree, root) = custom_config_tree();
+    storage::save_types(
+        &root,
+        &[
+            TypeDef {
+                slug: "in review".to_string(),
+                description: None,
+                emoji: None,
+            },
+            TypeDef {
+                slug: "needs/triage".to_string(),
+                description: None,
+                emoji: None,
+            },
+        ],
+    )
+    .expect("save_types writes verbatim, unlike save_states — the asymmetry SH-183 is about");
+    let message = refusal(&root);
+    assert!(
+        message.contains("in review") && message.contains("needs/triage"),
+        "an operator repairing a tracker by hand needs the whole list, not the first slug: \
+         {message}"
     );
 }
 
