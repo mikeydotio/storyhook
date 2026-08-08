@@ -12,8 +12,56 @@ source: tests/golden_cli.rs
   {
     "argv": "story context --format json --json",
     "stdout": {
-      "message": "{\n  \"blocked_count\": 3,\n  \"by_state\": {\n    \"done\": 3,\n    \"in-progress\": 1,\n    \"review\": 1,\n    \"todo\": 9\n  },\n  \"by_type\": {\n    \"bug\": 1,\n    \"chore\": 3,\n    \"epic\": 1,\n    \"normal\": 7,\n    \"spike\": 2\n  },\n  \"closed\": 3,\n  \"open\": 11,\n  \"ready_count\": 8,\n  \"ready_stories\": [\n    {\n      \"id\": \"SH-1\",\n      \"priority\": \"critical\",\n      \"state\": \"todo\",\n      \"title\": \"Design the storage engine\"\n    },\n    {\n      \"id\": \"SH-5\",\n      \"priority\": \"critical\",\n      \"state\": \"todo\",\n      \"title\": \"Fix the id collision across worktrees\"\n    },\n    {\n      \"id\": \"SH-2\",\n      \"priority\": \"high\",\n      \"state\": \"todo\",\n      \"title\": \"Define the Store trait\"\n    },\n    {\n      \"id\": \"SH-12\",\n      \"priority\": \"high\",\n      \"state\": \"todo\",\n      \"title\": \"Harden concurrent writes\"\n    },\n    {\n      \"id\": \"SH-4\",\n      \"priority\": \"medium\",\n      \"state\": \"review\",\n      \"title\": \"Write the migration runner\"\n    }\n  ],\n  \"total_stories\": 14\n}",
-      "result": "ok"
+      "blocked_count": 3,
+      "by_state": {
+        "done": 3,
+        "in-progress": 1,
+        "review": 1,
+        "todo": 9
+      },
+      "by_type": {
+        "bug": 1,
+        "chore": 3,
+        "epic": 1,
+        "normal": 7,
+        "spike": 2
+      },
+      "closed": 3,
+      "open": 11,
+      "ready_count": 8,
+      "ready_stories": [
+        {
+          "id": "SH-1",
+          "priority": "critical",
+          "state": "todo",
+          "title": "Design the storage engine"
+        },
+        {
+          "id": "SH-5",
+          "priority": "critical",
+          "state": "todo",
+          "title": "Fix the id collision across worktrees"
+        },
+        {
+          "id": "SH-2",
+          "priority": "high",
+          "state": "todo",
+          "title": "Define the Store trait"
+        },
+        {
+          "id": "SH-12",
+          "priority": "high",
+          "state": "todo",
+          "title": "Harden concurrent writes"
+        },
+        {
+          "id": "SH-4",
+          "priority": "medium",
+          "state": "review",
+          "title": "Write the migration runner"
+        }
+      ],
+      "total_stories": 14
     }
   },
   {

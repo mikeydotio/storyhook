@@ -653,6 +653,27 @@ fn export_envelope_shape() {
     settings().bind(|| assert_json_golden!("export_envelope_shape", shape));
 }
 
+/// `context --format json --json` emits the same document, un-wrapped —
+/// the same shape as [`export_envelope_shape`], and the fix for the sibling
+/// defect that wave deliberately left alone (SH-66). Snapshotted separately
+/// for the same reason: the absence of wrapping is the contract, not the
+/// payload — `tests/story_context.rs` covers the payload and the `--quiet`
+/// decision.
+#[test]
+fn context_json_envelope_shape() {
+    let raw = stdout_of(&["context", "--format", "json", "--json"]);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("`story context --format json --json` must print JSON");
+    let shape = serde_json::json!({
+        "keys": parsed.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()),
+        "is_the_context_document": parsed.get("total_stories").is_some(),
+        "is_wrapped_in_an_envelope": parsed.get("result").is_some(),
+        "byte_identical_to_unflagged_context":
+            raw == stdout_of(&["context", "--format", "json"]),
+    });
+    settings().bind(|| assert_json_golden!("context_json_envelope_shape", shape));
+}
+
 // ---------------------------------------------------------------------------
 // doctor / phase / config listings / epic
 // ---------------------------------------------------------------------------
