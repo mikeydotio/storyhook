@@ -420,6 +420,17 @@ pub struct SettingView {
 #[serde(rename_all = "snake_case")]
 pub enum Response {
     Message(String),
+    /// A plain-text result plus one or more non-fatal warnings about what it
+    /// did **not** do.
+    ///
+    /// A second variant rather than a field added to [`Message`](Self::Message):
+    /// that variant has dozens of call sites answering with nothing to warn
+    /// about, and widening it would make every one of them decide what to pass.
+    /// The warnings ride in the JSON envelope's own `warnings` field — the same
+    /// one [`StoryView::warnings`] already populates — rather than folded into
+    /// `message`'s prose, so a scripted `--json` caller reads them as data
+    /// instead of having to parse a sentence.
+    MessageWithWarnings(String, Vec<String>),
     Story(Box<StoryView>),
     Stories(Vec<StoryView>, Option<String>),
     Summary(Box<SummaryView>),
@@ -567,6 +578,22 @@ fn render_json(response: &Response) -> String {
             warnings: &[],
             flagged_reasons: &[],
         }),
+        Response::MessageWithWarnings(message, warnings) => {
+            serde_json::to_string_pretty(&JsonEnvelope {
+                result: "ok",
+                message: Some(message),
+                story: None,
+                stories: None,
+                summary: None,
+                graph: None,
+                issues: None,
+                phases: None,
+                settings: None,
+                project: None,
+                warnings,
+                flagged_reasons: &[],
+            })
+        }
         Response::Story(view) => serde_json::to_string_pretty(&JsonEnvelope {
             result: "ok",
             message: None,
@@ -704,6 +731,13 @@ fn render_json(response: &Response) -> String {
 fn render_human(response: &Response) -> String {
     match response {
         Response::Message(message) => format!("{message}\n"),
+        Response::MessageWithWarnings(message, warnings) => {
+            let mut body = format!("{message}\n");
+            for warning in warnings {
+                body.push_str(&format!("warning: {warning}\n"));
+            }
+            body
+        }
         Response::Story(view) => render_story(view),
         Response::Stories(stories, msg) => {
             if stories.is_empty() {

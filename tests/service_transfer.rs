@@ -462,6 +462,49 @@ fn an_unparseable_remote_in_the_document_is_rejected_whole() {
     );
 }
 
+#[test]
+fn the_import_project_arm_reports_a_skipped_remote_as_a_structured_warning() {
+    // The dispatch layer, not just the service function: `invoke.rs` must
+    // route a skip into `Response::MessageWithWarnings`'s `warnings`, not fold
+    // it into `message`'s prose where a scripted `--json` caller would never
+    // see it.
+    let holder = ServiceFixture::new();
+    set_remote(&holder, "https://github.com/acme/widgets.git");
+    let holder_slug = slug_of(&holder);
+
+    let restoring = ServiceFixture::new();
+    create(&restoring, "One");
+    set_remote(&restoring, "https://github.com/acme/widgets.git");
+    let json = document(&export(&restoring));
+
+    let dir = scratch_dir();
+    std::fs::write(dir.path().join("backup.json"), &json).expect("writing the document");
+    let ctx = storyhook::service::Ctx::new(
+        holder.store(),
+        holder.project(),
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
+
+    let response = dispatch(
+        &ctx,
+        Invocation::ImportProject {
+            file: "backup.json".to_string(),
+        },
+    )
+    .expect("importing");
+    let Response::MessageWithWarnings(message, warnings) = response else {
+        panic!("a restore that skips a remote must answer with warnings, not a bare message");
+    };
+    assert!(message.contains("1 stories"), "{message}");
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0].contains("https://github.com/acme/widgets.git")
+            && warnings[0].contains(&holder_slug),
+        "the warning must name both the URL and the project that already holds it: {warnings:?}"
+    );
+}
+
 // --- an event kind this build does not understand (SH-67) -------------------
 
 /// A payload no storyhook has ever written, with its keys deliberately out of

@@ -189,6 +189,24 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         ),
         ("message_empty", Response::Message(String::new())),
         (
+            "message_with_warnings",
+            Response::MessageWithWarnings(
+                "imported project with 3 stories".to_string(),
+                vec![
+                    "`git@github.com:acme/widgets.git` is already registered to project \
+                     `widgets`; not re-registered by this restore"
+                        .to_string(),
+                ],
+            ),
+        ),
+        (
+            "message_with_warnings_empty",
+            Response::MessageWithWarnings(
+                "imported project with 3 stories".to_string(),
+                Vec::new(),
+            ),
+        ),
+        (
             "project_full",
             Response::Project(Box::new(storyhook::output::ProjectView {
                 slug: "storyhook".to_string(),
@@ -581,6 +599,7 @@ fn the_response_corpus_covers_every_variant() {
     fn variant_of(response: &Response) -> &'static str {
         match response {
             Response::Message(_) => "message",
+            Response::MessageWithWarnings(..) => "message_with_warnings",
             Response::Story(_) => "story",
             Response::Stories(..) => "stories",
             Response::Summary(_) => "summary",
@@ -597,8 +616,9 @@ fn the_response_corpus_covers_every_variant() {
         }
     }
 
-    const EVERY_VARIANT: [&str; 14] = [
+    const EVERY_VARIANT: [&str; 15] = [
         "message",
+        "message_with_warnings",
         "story",
         "stories",
         "summary",
@@ -642,6 +662,7 @@ fn the_response_corpus_covers_every_variant() {
 fn response_variants_travel_as_snake_case_keys() {
     let expected = [
         ("message", "message"),
+        ("message_with_warnings", "message_with_warnings"),
         ("story_minimal", "story"),
         ("stories_empty", "stories"),
         ("summary", "summary"),
