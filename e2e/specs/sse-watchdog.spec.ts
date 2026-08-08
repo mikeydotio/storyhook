@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { seedToken } from "./support";
 
 /**
  * SH-145: a dashboard tab must not stay silently stale forever.
@@ -35,6 +36,7 @@ test("a stale connection is replaced without a page reload", async ({
 
   const staleAfterMs = 400;
   const watchdogIntervalMs = 100;
+  await seedToken(page);
   await page.goto(
     `/?sseStaleAfterMs=${staleAfterMs}&sseWatchdogIntervalMs=${watchdogIntervalMs}`,
   );

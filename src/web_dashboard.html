@@ -699,7 +699,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 <div class="modal" id="token-modal" aria-hidden="true">
   <div class="modal-header">Daemon token required</div>
   <div class="modal-body">
-    <p>Dispatching from the dashboard requires the storyhook daemon's bearer token. Run
+    <p>The dashboard requires the storyhook daemon's bearer token. Run
       <code>story daemon token</code> on the machine running the daemon and paste it below.</p>
     <div class="field"><label for="token-input">Token</label>
       <input type="text" id="token-input" autocomplete="off" spellcheck="false"></div>
@@ -974,44 +974,60 @@ tbody tr:hover { background: var(--bg-sunken); }
   // API
   // ============================================================
 
-  /** Issues a guarded mutation request. Always sets the CSRF header and JSON
-   * content type; resolves with the parsed body on 2xx, rejects with
-   * {status, message} otherwise. `opts.headers` adds extra headers (the
-   * dispatch endpoint's bearer token, SH-50); `opts.timeoutMs` overrides the
-   * default 10s. */
+  /** Issues an authenticated request. Always sets the CSRF header, JSON
+   * content type, and the daemon's bearer token; resolves with the parsed
+   * body on 2xx, rejects with {status, message} otherwise. `opts.headers`
+   * adds extra headers; `opts.timeoutMs` overrides the default 10s.
+   *
+   * A 401 means the stored token (see AUTHENTICATION, above) is missing or
+   * stale. Handled here once, for every caller: clear it, open the modal,
+   * and -- if the user saves a fresh one -- retry this exact request
+   * transparently, so a 401 costs a caller nothing but latency. If the
+   * user dismisses the modal instead, the promise rejects with status 401
+   * like any other failure. */
   function api(method, path, body, opts) {
     opts = opts || {};
     return new Promise(function(resolve, reject) {
-      var xhr = new XMLHttpRequest();
-      xhr.open(method, path, true);
-      xhr.setRequestHeader("X-Storyhook", "1");
-      xhr.setRequestHeader("Content-Type", "application/json");
-      if (opts.headers) {
-        Object.keys(opts.headers).forEach(function(name) {
-          xhr.setRequestHeader(name, opts.headers[name]);
-        });
-      }
-      xhr.timeout = opts.timeoutMs || 10000;
-      xhr.onreadystatechange = function() {
-        if (xhr.readyState !== 4) return;
-        var parsed = null;
-        try { parsed = JSON.parse(xhr.responseText); } catch (e) { /* non-JSON error body */ }
-        if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(parsed || {});
-        } else {
-          var message = (parsed && parsed.error) || xhr.statusText || ("HTTP " + xhr.status);
-          reject({ status: xhr.status, message: message, body: parsed });
+      function attempt() {
+        var xhr = new XMLHttpRequest();
+        xhr.open(method, path, true);
+        xhr.setRequestHeader("X-Storyhook", "1");
+        xhr.setRequestHeader("Content-Type", "application/json");
+        xhr.setRequestHeader("X-Storyhook-Token", getDaemonToken());
+        if (opts.headers) {
+          Object.keys(opts.headers).forEach(function(name) {
+            xhr.setRequestHeader(name, opts.headers[name]);
+          });
         }
-      };
-      xhr.onerror = function() { reject({ status: 0, message: "network error" }); };
-      xhr.ontimeout = function() { reject({ status: 0, message: "request timed out" }); };
-      xhr.send(body ? JSON.stringify(body) : null);
+        xhr.timeout = opts.timeoutMs || 10000;
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState !== 4) return;
+          var parsed = null;
+          try { parsed = JSON.parse(xhr.responseText); } catch (e) { /* non-JSON error body */ }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve(parsed || {});
+          } else if (xhr.status === 401) {
+            clearDaemonToken();
+            openTokenModal(attempt, function() {
+              reject({ status: 401, message: "authentication cancelled" });
+            });
+          } else {
+            var message = (parsed && parsed.error) || xhr.statusText || ("HTTP " + xhr.status);
+            reject({ status: xhr.status, message: message, body: parsed });
+          }
+        };
+        xhr.onerror = function() { reject({ status: 0, message: "network error" }); };
+        xhr.ontimeout = function() { reject({ status: 0, message: "request timed out" }); };
+        xhr.send(body ? JSON.stringify(body) : null);
+      }
+      attempt();
     });
   }
 
   function fetchData() {
     var xhr = new XMLHttpRequest();
     xhr.open("GET", apiBase() + "/data", true);
+    xhr.setRequestHeader("X-Storyhook-Token", getDaemonToken());
     xhr.timeout = 8000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
@@ -1040,6 +1056,13 @@ tbody tr:hover { background: var(--bg-sunken); }
         } catch (e) {
           state.fetchOk = false;
         }
+      } else if (xhr.status === 401) {
+        // The stored token is stale (the daemon restarted, minting a new
+        // one) or was never set. The next poll tick retries on its own; the
+        // modal gives the user a way to fix it sooner.
+        state.fetchOk = false;
+        clearDaemonToken();
+        openTokenModal(fetchData);
       } else {
         state.fetchOk = false;
       }
@@ -1106,11 +1129,13 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   /** GET /api/repos — the registry list backing the repo-select, home
    * cards, and settings table. Independent of the per-repo `fetchData()`
-   * above; `onDone` (optional) runs after the request settles either way,
-   * used by `bootstrap()` to decide the initial screen. */
+   * above; `onDone` (optional) runs once the request settles with a real
+   * answer -- used by `bootstrap()` to decide the initial screen, which a
+   * stale `state.repos` from a 401 must not be allowed to drive. */
   function fetchReposOnce(onDone) {
     var xhr = new XMLHttpRequest();
     xhr.open("GET", "/api/repos", true);
+    xhr.setRequestHeader("X-Storyhook-Token", getDaemonToken());
     xhr.timeout = 8000;
     xhr.onreadystatechange = function() {
       if (xhr.readyState !== 4) return;
@@ -1122,6 +1147,14 @@ tbody tr:hover { background: var(--bg-sunken); }
         } catch (e) {
           state.reposFetchOk = false;
         }
+      } else if (xhr.status === 401) {
+        // Reprompt and retry the whole call once a fresh token is saved,
+        // rather than running `onDone` (and rendering) against a response
+        // that never arrived.
+        state.reposFetchOk = false;
+        clearDaemonToken();
+        openTokenModal(function() { fetchReposOnce(onDone); });
+        return;
       } else {
         state.reposFetchOk = false;
       }
@@ -1164,34 +1197,100 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   // ============================================================
+  // AUTHENTICATION (SH-187)
+  // ============================================================
+  //
+  // Every `/api/**` request carries the daemon's bearer token, on every
+  // listener including loopback -- the ordinary X-Storyhook/Host guard
+  // alone is not authentication (see docs/spec/dashboard-authorization.md).
+  // `api()`, `fetchData()` and `fetchReposOnce()` are the three request
+  // paths in this file, and all three attach it below; `connectEvents()`'s
+  // `EventSource` can't set headers, so it carries the token as `?token=`
+  // instead -- the one route that accepts it that way. Originally
+  // dispatch-only (SH-50); generalized here to the whole surface.
+
+  var TOKEN_KEY = "storyhookDaemonToken";
+
+  /** The daemon's bearer token, from this tab's sessionStorage -- gone when
+   * the tab closes. Held there rather than in `localStorage` on purpose: no
+   * new stored-token disclosure surface beyond what already existed for any
+   * other data this dashboard renders (SH-50's F5). */
+  function getDaemonToken() {
+    try { return sessionStorage.getItem(TOKEN_KEY) || ""; }
+    catch (e) { return ""; } // storage disabled (private mode, locked-down policy)
+  }
+  function setDaemonToken(token) {
+    try { sessionStorage.setItem(TOKEN_KEY, token); }
+    catch (e) { /* nothing to do -- the token modal will just reappear next time */ }
+  }
+  function clearDaemonToken() {
+    try { sessionStorage.removeItem(TOKEN_KEY); }
+    catch (e) { /* ignore */ }
+  }
+
+  /** The request to retry once a fresh token is saved, or null when the
+   * modal is closed with nothing pending. */
+  var tokenModalCallback = null;
+  /** What to run if the user dismisses the modal instead of saving a token
+   * -- distinct from `tokenModalCallback`, because a caller waiting on the
+   * modal (`api()`'s own retry-on-401, below) needs to hear "the user gave
+   * up" rather than hang forever. */
+  var tokenModalCancelCallback = null;
+
+  function openTokenModal(onSaved, onCancelled) {
+    tokenModalCallback = onSaved || null;
+    tokenModalCancelCallback = onCancelled || null;
+    $("token-input").value = "";
+    $("token-error").textContent = "";
+    $("token-modal-backdrop").hidden = false;
+    requestAnimationFrame(function() {
+      $("token-modal-backdrop").classList.add("open");
+      $("token-modal").classList.add("open");
+      $("token-modal").setAttribute("aria-hidden", "false");
+      $("token-input").focus();
+    });
+  }
+
+  function closeTokenModal() {
+    $("token-modal-backdrop").classList.remove("open");
+    $("token-modal").classList.remove("open");
+    $("token-modal").setAttribute("aria-hidden", "true");
+    setTimeout(function() { $("token-modal-backdrop").hidden = true; }, 150);
+    tokenModalCallback = null;
+  }
+
+  /** Dismisses the modal via Cancel, the backdrop, or Escape -- runs
+   * `tokenModalCancelCallback` rather than leaving a waiting caller (e.g.
+   * `api()`'s retry) hanging forever. */
+  function cancelTokenModal() {
+    var onCancelled = tokenModalCancelCallback;
+    tokenModalCancelCallback = null;
+    closeTokenModal();
+    if (onCancelled) onCancelled();
+  }
+
+  function submitTokenModal() {
+    var value = $("token-input").value.trim();
+    if (!value) { $("token-error").textContent = "The daemon token is required."; return; }
+    setDaemonToken(value);
+    var callback = tokenModalCallback;
+    tokenModalCancelCallback = null;
+    closeTokenModal();
+    if (callback) callback();
+  }
+
+  // ============================================================
   // DISPATCH (SH-50), and Dispatch Auto's ?auto=1 (SH-208)
   // ============================================================
   //
   // POST .../story/<id>/dispatch[?auto=1] returns a handle immediately (the
   // daemon runs the real dispatch script off its own request thread); this
   // polls GET .../story/<id>/dispatch/<handle> every DISPATCH_POLL_MS until
-  // its state leaves "running". Every call carries the daemon's bearer
-  // token from sessionStorage -- the ordinary X-Storyhook/Host guard alone
-  // is not authentication (see docs/spec/dashboard-dispatch.md), so this
-  // endpoint additionally requires it, on every listener including
-  // loopback.
+  // its state leaves "running". Authentication is handled once, for every
+  // request in this file, by `api()` -- see AUTHENTICATION above.
 
-  var DISPATCH_TOKEN_KEY = "storyhookDispatchToken";
   var DISPATCH_POLL_MS = 5000;
   var DISPATCH_MAX_POLLS = 40; // ~200s -- comfortably past the daemon's own 180s dispatch timeout
-
-  function getDispatchToken() {
-    try { return sessionStorage.getItem(DISPATCH_TOKEN_KEY) || ""; }
-    catch (e) { return ""; } // storage disabled (private mode, locked-down policy)
-  }
-  function setDispatchToken(token) {
-    try { sessionStorage.setItem(DISPATCH_TOKEN_KEY, token); }
-    catch (e) { /* nothing to do -- the token modal will just reappear next time */ }
-  }
-  function clearDispatchToken() {
-    try { sessionStorage.removeItem(DISPATCH_TOKEN_KEY); }
-    catch (e) { /* ignore */ }
-  }
 
   /** Whether the project currently open has a checkout on this machine --
    * the same `path` field the home cards and settings table already use to
@@ -1233,22 +1332,17 @@ tbody tr:hover { background: var(--bg-sunken); }
     ];
   }
 
-  /** Starts (or, without a saved token yet, prompts for one and then
-   * starts) a dispatch for `storyId`. `auto` requests the autonomous
+  /** Starts a dispatch for `storyId`. `auto` requests the autonomous
    * charter via `?auto=1` (SH-208). Keyed per-story in `state.dispatches`
    * rather than one global slot, so dispatching a second story while the
    * first is still running is just another entry, matching the daemon's
-   * own support for several concurrent dispatches. */
+   * own support for several concurrent dispatches. No token handling here
+   * -- `api()` prompts for one on a 401 and retries transparently. */
   function startDispatch(storyId, auto) {
-    var token = getDispatchToken();
-    if (!token) {
-      openTokenModal(function() { startDispatch(storyId, auto); });
-      return;
-    }
     state.dispatches[storyId] = { handle: null, timer: null, auto: auto };
     if (state.drawerId === storyId) renderDrawer();
     var path = apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch" + (auto ? "?auto=1" : "");
-    api("POST", path, null, { headers: { "X-Storyhook-Token": token } })
+    api("POST", path, null)
       .then(function(resp) {
         var entry = state.dispatches[storyId];
         if (!entry) return; // superseded somehow -- nothing left to do
@@ -1268,13 +1362,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       .catch(function(err) {
         delete state.dispatches[storyId];
         if (state.drawerId === storyId) renderDrawer();
-        if (err.status === 401) {
-          clearDispatchToken();
-          toast("The daemon rejected that token -- enter it again.", "error");
-          openTokenModal(function() { startDispatch(storyId, auto); });
-        } else {
-          toastError(err);
-        }
+        toastError(err);
       });
   }
 
@@ -1286,9 +1374,8 @@ tbody tr:hover { background: var(--bg-sunken); }
   function pollDispatch(storyId, handle, attempt) {
     var entry = state.dispatches[storyId];
     if (!entry || entry.handle !== handle) return;
-    var token = getDispatchToken();
     var url = apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch/" + encodeURIComponent(handle);
-    api("GET", url, null, { headers: { "X-Storyhook-Token": token } })
+    api("GET", url)
       .then(function(resp) {
         var current = state.dispatches[storyId];
         if (!current || current.handle !== handle) return;
@@ -1309,14 +1396,9 @@ tbody tr:hover { background: var(--bg-sunken); }
       .catch(function(err) {
         var current = state.dispatches[storyId];
         if (!current || current.handle !== handle) return;
-        if (err.status === 401) {
-          clearDispatchToken();
-          finishDispatch(storyId, "error",
-            "The daemon rejected its own token mid-dispatch -- try dispatching " + storyId + " again.");
-          return;
-        }
-        // A transient poll failure (a network blip) retries rather than
-        // giving up on a dispatch that is very possibly still running.
+        // A transient poll failure (a network blip, or the user dismissing
+        // a mid-poll token re-prompt) retries rather than giving up on a
+        // dispatch that is very possibly still running.
         if (attempt + 1 >= DISPATCH_MAX_POLLS) {
           finishDispatch(storyId, "error", "Lost track of the dispatch: " + err.message);
           return;
@@ -1333,42 +1415,6 @@ tbody tr:hover { background: var(--bg-sunken); }
     toast(message, variant);
     if (state.drawerId === storyId) renderDrawer();
     fetchData();
-  }
-
-  // ---- Token modal ----
-
-  /** The dispatch attempt to retry once a token is saved, or null when the
-   * modal is closed with nothing pending. */
-  var tokenModalCallback = null;
-
-  function openTokenModal(onSaved) {
-    tokenModalCallback = onSaved || null;
-    $("token-input").value = "";
-    $("token-error").textContent = "";
-    $("token-modal-backdrop").hidden = false;
-    requestAnimationFrame(function() {
-      $("token-modal-backdrop").classList.add("open");
-      $("token-modal").classList.add("open");
-      $("token-modal").setAttribute("aria-hidden", "false");
-      $("token-input").focus();
-    });
-  }
-
-  function closeTokenModal() {
-    $("token-modal-backdrop").classList.remove("open");
-    $("token-modal").classList.remove("open");
-    $("token-modal").setAttribute("aria-hidden", "true");
-    setTimeout(function() { $("token-modal-backdrop").hidden = true; }, 150);
-    tokenModalCallback = null;
-  }
-
-  function submitTokenModal() {
-    var value = $("token-input").value.trim();
-    if (!value) { $("token-error").textContent = "The daemon token is required."; return; }
-    setDispatchToken(value);
-    var callback = tokenModalCallback;
-    closeTokenModal();
-    if (callback) callback();
   }
 
   // ============================================================
@@ -3963,8 +4009,8 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("create-submit").addEventListener("click", submitCreate);
     $("create-title").addEventListener("keydown", function(e) { if (e.key === "Enter") submitCreate(); });
     $("create-description").addEventListener("input", function() { autoGrowTextarea(this); });
-    $("token-cancel").addEventListener("click", closeTokenModal);
-    $("token-modal-backdrop").addEventListener("click", closeTokenModal);
+    $("token-cancel").addEventListener("click", cancelTokenModal);
+    $("token-modal-backdrop").addEventListener("click", cancelTokenModal);
     $("token-submit").addEventListener("click", submitTokenModal);
     $("token-input").addEventListener("keydown", function(e) { if (e.key === "Enter") submitTokenModal(); });
     $("archive-modal-cancel").addEventListener("click", closeArchiveModal);
@@ -3972,7 +4018,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("drawer-close").addEventListener("click", closeDrawer);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {
-      if (e.key === "Escape") { closeDrawer(); closeCreateModal(); closeTokenModal(); closeArchiveModal(); }
+      if (e.key === "Escape") { closeDrawer(); closeCreateModal(); cancelTokenModal(); closeArchiveModal(); }
     });
   }
 
@@ -4012,7 +4058,12 @@ tbody tr:hover { background: var(--bg-sunken); }
    * would otherwise go unnoticed until the next safety poll. */
   function connectEvents() {
     if (!window.EventSource) return; // no push support — the safety poll alone drives updates
-    var es = new EventSource("/api/events");
+    // EventSource can't set headers, so the token travels as a query
+    // parameter here -- the one route that accepts it that way. If it's
+    // stale, `onerror` below just sees a connection failure (the browser
+    // never surfaces the status code); the safety poll's own `fetchData`/
+    // `fetchReposOnce` calls are what actually detect a 401 and reprompt.
+    var es = new EventSource("/api/events?token=" + encodeURIComponent(getDaemonToken()));
     sse.source = es;
     es.onopen = function() {
       sse.connected = true;
@@ -4093,11 +4144,26 @@ tbody tr:hover { background: var(--bg-sunken); }
   bindListSort();
 
   renderScreen();
-  bootstrap();
-  connectEvents();
-  setInterval(pollTick, SAFETY_POLL_INTERVAL_MS);
-  setInterval(updateFooter, FOOTER_TICK_MS);
-  setInterval(sseWatchdog, SSE_WATCHDOG_INTERVAL_MS);
+
+  /** Starts the app proper: the initial fetch, the live-update channel, and
+   * the safety-net intervals. Held back until a daemon token is on hand
+   * (every `/api/**` route requires one -- nothing here could succeed
+   * without it) rather than firing it and letting the first request's 401
+   * bounce through the modal instead -- one prompt on load beats a
+   * guaranteed failed round-trip first. */
+  function startApp() {
+    bootstrap();
+    connectEvents();
+    setInterval(pollTick, SAFETY_POLL_INTERVAL_MS);
+    setInterval(updateFooter, FOOTER_TICK_MS);
+    setInterval(sseWatchdog, SSE_WATCHDOG_INTERVAL_MS);
+  }
+
+  if (getDaemonToken()) {
+    startApp();
+  } else {
+    openTokenModal(startApp);
+  }
 })();
 </script>
 
