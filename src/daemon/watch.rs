@@ -138,7 +138,7 @@ fn project_sequences<S: Store>(store: &S) -> BTreeMap<String, i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{StateDef, StoryEvent, SuperState};
+    use crate::domain::{StoryEvent, TypeDef};
     use crate::store::{ExpectedSeq, NewProject, ProjectId, SqliteStore, StoryNo, WriteOps};
     use std::time::Duration;
 
@@ -235,16 +235,18 @@ mod tests {
         let subscriber = bus.subscribe();
 
         // A configuration write: it moves `PRAGMA data_version` without
-        // touching anything `project_sequences` can see move.
+        // touching anything `project_sequences` can see move. A type catalog
+        // edit rather than a state one — `WriteOps::put_states` may be
+        // called in exactly one module outside `src/store/`
+        // (`tests/state_set_funnel.rs`), and this test is not it.
         store
             .write(|tx| {
-                tx.put_states(
+                tx.put_types(
                     project,
-                    &[StateDef {
-                        slug: "review".into(),
-                        super_state: SuperState::Open,
-                        role: None,
+                    &[TypeDef {
+                        slug: "spike".into(),
                         description: None,
+                        emoji: None,
                     }],
                 )
             })
