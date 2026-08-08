@@ -29,7 +29,7 @@ its behavior from memory, and do not skip steps it defines.
 |-----------|------|--------|
 | _(empty)_ | List → Pick | **List → Pick** flow below. |
 | `<id>` (e.g. `SH-45`) | View + Offer | **View + Offer** flow below. A bare first token is a story id only if it matches `^[A-Za-z0-9]+-[0-9]+$`; otherwise it is a malformed verb. |
-| `do <id> [--auto]` | Dispatch to a fresh session | **Dispatch** flow below. `--auto` hands the child an autonomous charter: after the one plan approval it runs to completion unattended — council-voting its own open questions, merging its own PR, and closing the story itself. |
+| `do <id> [--auto]` | Dispatch to a fresh session | **Dispatch** flow below. `--auto` hands the child an autonomous charter: after the one plan approval it runs to completion unattended — council-voting its own open questions, merging its own PR, closing the story itself, and (SH-208) then running `story.sh reap <id>` as its very last act to reclaim its own worktree, branch and tmux window. |
 | `view <id>` | Show a story | Run `story.sh view <id>`, show `display`, stop. |
 | `new <description>` | File a story | Read `references/story-new.md` and follow it. |
 | `complete <id>` | Close + clean up | Read `references/story-complete.md` and follow it. |
@@ -111,7 +111,12 @@ in their JSON reports `true` when they did), so there's nothing to migrate by ha
 one and only human interaction. Past that approval, the autonomous charter tells the child to
 resolve ambiguity by `/council-vote` instead of asking, run `make test` before pushing, merge
 its own PR with a merge commit, and close the story itself (or `story block` and stop on a hard
-stop it cannot resolve). See `bin/story.sh`'s `AUTO_PROMPT_TPL` for the exact charter.
+stop it cannot resolve). Once closed, it runs `bin/story.sh reap <id>` as its absolute last
+action (SH-208) — this reclaims the worktree, deletes its branch, and closes the tmux window the
+child was running in; it refuses outright unless the story is closed and the worktree/branch are
+safe to discard (dirty, locked, unmerged or protected all refuse the *whole* reap, nothing
+partial), so a hard stop or an unmerged branch can never lose work. See `bin/story.sh`'s
+`AUTO_PROMPT_TPL` for the exact charter.
 
 ## Notes
 
@@ -138,6 +143,11 @@ stop it cannot resolve). See `bin/story.sh`'s `AUTO_PROMPT_TPL` for the exact ch
   story ID in its PR body and post its plan back via `story comment <id> "..."`.
 - `STORY_DRY_RUN=1` previews the side-effecting verbs without touching anything (used by the
   test suite); you generally won't need it interactively.
+- **`story.sh reap <id>` is not routed above on purpose** — it exists for `--auto`'s own charter
+  to call on itself (see above), not as a verb this skill offers a human. It is safe to run by
+  hand (`bash ${CLAUDE_PLUGIN_ROOT}/bin/story.sh reap <id>`) if an autonomous session closed a
+  story but was killed before it could reap itself: it refuses anything not closed-and-safe, so
+  there's nothing to double-check first.
 - The launch command and handoff prompt are overridable via `STORY_LAUNCH_CMD`/`STORY_PROMPT`,
   the autonomous charter via `STORY_AUTO_PROMPT` (same seam, `--auto` only), and the state
   `complete` closes into via `STORY_DONE_STATE` (see `bin/story.sh`'s config block) for

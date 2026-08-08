@@ -31,7 +31,7 @@ human-readable `display`. The model routes and renders; it never drives `story`,
 `git`, or `tmux` itself. That is what keeps behavior testable: the bash suite
 exercises the real logic, and the prose can't quietly diverge from it.
 
-`bin/story.sh` accepts seven subcommands:
+`bin/story.sh` accepts eight subcommands:
 
 | Subcommand | Verb it backs |
 |---|---|
@@ -40,6 +40,7 @@ exercises the real logic, and the prose can't quietly diverge from it.
 | `dispatch <id> [--auto]` | `/story do` |
 | `create --title …` | `/story new` |
 | `complete <plan\|execute> <id>` | `/story complete` |
+| `reap <id>` | not routed by the skill (SH-208) — the `--auto` charter's own final act; see below |
 | `capture <id>` | `/story capture` |
 | `doctor` | `/story doctor` |
 
@@ -110,8 +111,14 @@ Worth knowing before changing anything here:
 - **An `--auto` session closes with a plain `story move`, never `/story
   complete`.** `complete` asks a confirming question — fatal to an unattended
   run — and would try to remove the very worktree the auto session is
-  standing in; teardown stays a later `/story complete <id>` from the main
-  checkout, same as the attended path.
+  standing in. Once closed, it runs `story.sh reap <id>` as its own last act
+  (SH-208): reclaims the worktree and branch, then kills the tmux window it
+  was running in. `reap` refuses outright unless the story is closed and the
+  worktree/branch are both safe to discard — nothing partial, matching
+  `complete`'s own "never forces anything" rule above but all-or-nothing
+  rather than best-effort, since nobody is watching to read a partial
+  result. The attended path is unchanged: teardown there still stays a later
+  `/story complete <id>` from the main checkout.
 
 ## Environment
 

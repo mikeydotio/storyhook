@@ -14,14 +14,31 @@ import { test, expect } from "@playwright/test";
  *
  * Fixtures, from `scripts/run-e2e.sh`:
  *
- *   - "Alpha Project" (prefix AA) — has a checkout, story "Wire up the auth
- *     flow" (id in `DASHBOARD_ALPHA_STORY_ID`)
+ *   - "Alpha Project" (prefix AA) — has a checkout, two stories: "Wire up
+ *     the auth flow" (id in `DASHBOARD_ALPHA_STORY_ID`, plain Dispatch) and
+ *     "Fix the flaky upload test" (the saved-token test) — each dispatches
+ *     for real and claims the story, so no two tests can share one.
+ *   - "Delta Project" (prefix DD) — has a checkout, one story ("Roll out
+ *     the new onboarding flow", id in `DASHBOARD_DELTA_STORY_ID`), reserved
+ *     for Dispatch Auto's own test (SH-208). A project of its own rather
+ *     than a third Alpha story: Alpha's exact two-story, four-empty-column
+ *     shape is a fixture filter-persistence.spec.ts and
+ *     column-visibility.spec.ts assert on byte-for-byte.
  *   - "Gamma Archive" (prefix GA) — `--no-attach`: no checkout on this
  *     machine, one story ("Archived idea") added purely so this file can
  *     open its drawer and confirm Dispatch is absent (AC1)
  *
  * `DASHBOARD_DISPATCH_TOKEN` is the daemon's real bearer token, read via
  * `story daemon token`, exactly as an operator would.
+ *
+ * Dispatch Auto's own test does not (and cannot, without a real `claude`
+ * binary standing behind the fixture's fake tmux) prove the autonomous
+ * charter itself runs — that the prompt text and dispatch argv differ under
+ * `--auto` is `plugin/claude-code/tests/test-dispatch-auto.sh`'s job, and
+ * that a closed story's self-reap works is `test-reap.sh`'s. What this file
+ * proves is the one thing only a browser can: the button reaches the real
+ * endpoint with `?auto=1`, the real `story.sh` really runs, and a real
+ * worktree lands on disk.
  */
 
 function requiredEnv(name: string): string {
@@ -39,12 +56,14 @@ function requiredEnv(name: string): string {
 const DISPATCH_TOKEN = requiredEnv("DASHBOARD_DISPATCH_TOKEN");
 const ALPHA_STORY_ID = requiredEnv("DASHBOARD_ALPHA_STORY_ID");
 const ALPHA_CHECKOUT = requiredEnv("DASHBOARD_ALPHA_CHECKOUT");
+const DELTA_STORY_ID = requiredEnv("DASHBOARD_DELTA_STORY_ID");
+const DELTA_CHECKOUT = requiredEnv("DASHBOARD_DELTA_CHECKOUT");
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 
-test("Dispatch is absent for a story in a project with no checkout (AC1)", async ({
+test("Dispatch and Dispatch Auto are both absent for a story in a project with no checkout (AC1)", async ({
   page,
 }) => {
   await page.locator(".repo-card-name", { hasText: "Gamma Archive" }).click();
@@ -52,13 +71,30 @@ test("Dispatch is absent for a story in a project with no checkout (AC1)", async
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
   // The footer's other actions (Delete, and Reopen once closed) are always
-  // there; Dispatch specifically must not be, since Gamma has no checkout.
-  await expect(
-    page.locator("#drawer-footer button", { hasText: "Dispatch" }),
-  ).toHaveCount(0);
+  // there; the two dispatch buttons specifically must not be, since Gamma
+  // has no checkout.
+  await expect(page.locator("#dispatch-btn")).toHaveCount(0);
+  await expect(page.locator("#dispatch-auto-btn")).toHaveCount(0);
   await expect(
     page.locator("#drawer-footer button", { hasText: "Delete" }),
   ).toBeVisible();
+});
+
+test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await page
+    .locator(".card-title", { hasText: "Wire up the auth flow" })
+    .click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+
+  // SH-208: Dispatch, then Dispatch Auto, then Delete pushed to the
+  // trailing edge by its own margin-left:auto -- DOM order is append
+  // order, so this is the real, load-bearing assertion for "leading edge".
+  const footerButtons = page.locator("#drawer-footer button");
+  await expect(footerButtons).toHaveCount(3);
+  await expect(footerButtons.nth(0)).toHaveId("dispatch-btn");
+  await expect(footerButtons.nth(1)).toHaveId("dispatch-auto-btn");
+  await expect(footerButtons.nth(2)).toHaveText("Delete");
 });
 
 test("Dispatch prompts for the daemon token, then runs a real dispatch (AC2)", async ({
@@ -72,9 +108,7 @@ test("Dispatch prompts for the daemon token, then runs a real dispatch (AC2)", a
     .click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
-  const dispatchButton = page.locator("#drawer-footer button", {
-    hasText: "Dispatch",
-  });
+  const dispatchButton = page.locator("#dispatch-btn");
   await expect(dispatchButton).toBeVisible();
   await dispatchButton.click();
 
@@ -89,6 +123,11 @@ test("Dispatch prompts for the daemon token, then runs a real dispatch (AC2)", a
   // under a second); the toast lands only after at least one 5s poll cycle.
   await expect(dispatchButton).toBeDisabled();
   await expect(dispatchButton).toHaveText("Dispatching…");
+  // The OTHER button disables too (the daemon dedupes a second POST by
+  // story, not by mode), but keeps its own idle label -- nothing is
+  // actually dispatching autonomously.
+  await expect(page.locator("#dispatch-auto-btn")).toBeDisabled();
+  await expect(page.locator("#dispatch-auto-btn")).toHaveText("Dispatch Auto");
 
   const toast = page.locator("#toast-stack .toast.success");
   await expect(toast).toBeVisible({ timeout: 20_000 });
@@ -102,6 +141,63 @@ test("Dispatch prompts for the daemon token, then runs a real dispatch (AC2)", a
   // The real side effect: story.sh actually created the worktree, via the
   // same script and the same git commands the CLI's own `/story do` uses.
   const worktreePath = join(ALPHA_CHECKOUT, ".claude/worktrees", ALPHA_STORY_ID);
+  expect(
+    existsSync(worktreePath),
+    `expected a real worktree at ${worktreePath}`,
+  ).toBe(true);
+});
+
+test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)", async ({
+  page,
+}) => {
+  test.setTimeout(45_000);
+
+  // Seeded directly rather than driven through the token modal again --
+  // that flow is AC2's own test; this one is scoped to Dispatch Auto's own
+  // behavior. sessionStorage survives the reload below.
+  await page.evaluate(
+    (token) => window.sessionStorage.setItem("storyhookDispatchToken", token),
+    DISPATCH_TOKEN,
+  );
+  await page.reload();
+
+  await page.locator(".repo-card-name", { hasText: "Delta Project" }).click();
+  await page
+    .locator(".card-title", { hasText: "Roll out the new onboarding flow" })
+    .click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+
+  const dispatchAutoButton = page.locator("#dispatch-auto-btn");
+  await expect(dispatchAutoButton).toBeVisible();
+
+  const dispatchRequest = page.waitForRequest(
+    (req) => req.method() === "POST" && req.url().includes("/dispatch?auto=1"),
+  );
+  await dispatchAutoButton.click();
+  await dispatchRequest;
+
+  await expect(dispatchAutoButton).toBeDisabled();
+  await expect(dispatchAutoButton).toHaveText("Dispatching (auto)…");
+  // The plain button disables too, but stays labeled for its own mode.
+  await expect(page.locator("#dispatch-btn")).toBeDisabled();
+  await expect(page.locator("#dispatch-btn")).toHaveText("Dispatch");
+
+  const toast = page.locator("#toast-stack .toast.success");
+  await expect(toast).toBeVisible({ timeout: 20_000 });
+  await expect(toast).toContainText(DELTA_STORY_ID);
+  // story.sh's own auto_note names the session autonomous in `display`,
+  // relayed verbatim into the toast -- the one place this spec can observe
+  // the daemon actually forwarded `--auto` all the way to the script.
+  await expect(toast).toContainText(/utonomous/);
+
+  await expect(dispatchAutoButton).toBeEnabled();
+  await expect(dispatchAutoButton).toHaveText("Dispatch Auto");
+
+  const worktreePath = join(
+    DELTA_CHECKOUT,
+    ".claude/worktrees",
+    DELTA_STORY_ID,
+  );
   expect(
     existsSync(worktreePath),
     `expected a real worktree at ${worktreePath}`,
@@ -129,9 +225,7 @@ test("a saved token is not asked for again on a second dispatch", async ({
     .click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
 
-  const dispatchButton = page.locator("#drawer-footer button", {
-    hasText: "Dispatch",
-  });
+  const dispatchButton = page.locator("#dispatch-btn");
   await dispatchButton.click();
 
   // No modal this time -- the saved token goes straight onto the request.

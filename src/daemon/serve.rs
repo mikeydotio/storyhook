@@ -37,7 +37,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::api::http::{
-    Reply, carries_body, finish, path_segments, read_body, request_path, text_reply,
+    Reply, carries_body, finish, path_segments, read_body, request_path, request_query, text_reply,
 };
 use crate::api::rest::{self, Changed};
 use crate::api::rpc;
@@ -688,7 +688,9 @@ fn worker(
 ) {
     let mut request = request;
     let method = request.method().clone();
-    let path = request_path(request.url()).to_string();
+    let url = request.url().to_string();
+    let path = request_path(&url).to_string();
+    let query = request_query(&url).map(str::to_string);
     let headers = request.headers().to_vec();
 
     let segments = path_segments(&path);
@@ -710,6 +712,7 @@ fn worker(
     if let Some(reply) = crate::api::dispatch::intercept(
         &segments,
         &method,
+        query.as_deref(),
         &headers,
         trusted_hosts,
         token,

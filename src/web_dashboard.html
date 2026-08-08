@@ -1143,16 +1143,17 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   // ============================================================
-  // DISPATCH (SH-50)
+  // DISPATCH (SH-50), and Dispatch Auto's ?auto=1 (SH-208)
   // ============================================================
   //
-  // POST .../story/<id>/dispatch returns a handle immediately (the daemon
-  // runs the real dispatch script off its own request thread); this polls
-  // GET .../story/<id>/dispatch/<handle> every DISPATCH_POLL_MS until its
-  // state leaves "running". Every call carries the daemon's bearer token
-  // from sessionStorage -- the ordinary X-Storyhook/Host guard alone is not
-  // authentication (see docs/spec/dashboard-dispatch.md), so this endpoint
-  // additionally requires it, on every listener including loopback.
+  // POST .../story/<id>/dispatch[?auto=1] returns a handle immediately (the
+  // daemon runs the real dispatch script off its own request thread); this
+  // polls GET .../story/<id>/dispatch/<handle> every DISPATCH_POLL_MS until
+  // its state leaves "running". Every call carries the daemon's bearer
+  // token from sessionStorage -- the ordinary X-Storyhook/Host guard alone
+  // is not authentication (see docs/spec/dashboard-dispatch.md), so this
+  // endpoint additionally requires it, on every listener including
+  // loopback.
 
   var DISPATCH_TOKEN_KEY = "storyhookDispatchToken";
   var DISPATCH_POLL_MS = 5000;
@@ -1179,36 +1180,68 @@ tbody tr:hover { background: var(--bg-sunken); }
     return !!(repo && repo.path);
   }
 
-  /** The drawer footer's Dispatch button, or its disabled "Dispatching…"
-   * state while `st.id` has an entry in `state.dispatches`. */
-  function dispatchButton(st) {
-    var inFlight = !!state.dispatches[st.id];
-    return el("button", {
-      class: "btn btn-primary",
-      disabled: inFlight,
-      onClick: function() { startDispatch(st.id); }
-    }, [inFlight ? "Dispatching…" : "Dispatch"]);
+  /** The drawer footer's two dispatch buttons (SH-208): plain Dispatch
+   * (attended, unchanged since SH-50) and Dispatch Auto (the autonomous
+   * charter -- after the one plan-approval prompt in the tmux window, it
+   * runs to closure unattended and reclaims its own worktree when done).
+   * Both disable together while `st.id` has ANY entry in
+   * `state.dispatches` -- the daemon dedupes a second POST by STORY, not
+   * by mode (see DispatchRegistry::try_start's own doc comment), so
+   * letting the other button stay clickable would invite a click that
+   * silently does nothing new. Only the button matching what is actually
+   * running switches to its "Dispatching…" text; the other keeps its
+   * ordinary idle label, just greyed out. */
+  function dispatchButtons(st) {
+    var entry = state.dispatches[st.id];
+    var inFlight = !!entry;
+    var runningAuto = inFlight && entry.auto;
+    return [
+      el("button", {
+        id: "dispatch-btn",
+        class: "btn btn-primary",
+        disabled: inFlight,
+        onClick: function() { startDispatch(st.id, false); }
+      }, [inFlight && !runningAuto ? "Dispatching…" : "Dispatch"]),
+      el("button", {
+        id: "dispatch-auto-btn",
+        class: "btn",
+        disabled: inFlight,
+        title: "Runs unattended past the one plan-approval prompt in the new tmux window -- council-votes its own open questions, merges its own PR, closes this story, and reclaims its own worktree and window when done.",
+        onClick: function() { startDispatch(st.id, true); }
+      }, [inFlight && runningAuto ? "Dispatching (auto)…" : "Dispatch Auto"])
+    ];
   }
 
   /** Starts (or, without a saved token yet, prompts for one and then
-   * starts) a dispatch for `storyId`. Keyed per-story in `state.dispatches`
+   * starts) a dispatch for `storyId`. `auto` requests the autonomous
+   * charter via `?auto=1` (SH-208). Keyed per-story in `state.dispatches`
    * rather than one global slot, so dispatching a second story while the
    * first is still running is just another entry, matching the daemon's
    * own support for several concurrent dispatches. */
-  function startDispatch(storyId) {
+  function startDispatch(storyId, auto) {
     var token = getDispatchToken();
     if (!token) {
-      openTokenModal(function() { startDispatch(storyId); });
+      openTokenModal(function() { startDispatch(storyId, auto); });
       return;
     }
-    state.dispatches[storyId] = { handle: null, timer: null };
+    state.dispatches[storyId] = { handle: null, timer: null, auto: auto };
     if (state.drawerId === storyId) renderDrawer();
-    api("POST", apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch", null,
-        { headers: { "X-Storyhook-Token": token } })
+    var path = apiBase() + "/story/" + encodeURIComponent(storyId) + "/dispatch" + (auto ? "?auto=1" : "");
+    api("POST", path, null, { headers: { "X-Storyhook-Token": token } })
       .then(function(resp) {
         var entry = state.dispatches[storyId];
         if (!entry) return; // superseded somehow -- nothing left to do
         entry.handle = resp.dispatch && resp.dispatch.handle;
+        // The daemon's own record is the authority on which mode is
+        // actually running -- a repeated POST for a story already
+        // dispatching can be answered with a DIFFERENT mode than this call
+        // asked for (the idempotency wrinkle DispatchRegistry::try_start
+        // documents), and the button labels must reflect what is really
+        // happening, not what this click hoped for.
+        if (resp.dispatch && typeof resp.dispatch.auto === "boolean") {
+          entry.auto = resp.dispatch.auto;
+        }
+        if (state.drawerId === storyId) renderDrawer();
         pollDispatch(storyId, entry.handle, 0);
       })
       .catch(function(err) {
@@ -1217,7 +1250,7 @@ tbody tr:hover { background: var(--bg-sunken); }
         if (err.status === 401) {
           clearDispatchToken();
           toast("The daemon rejected that token -- enter it again.", "error");
-          openTokenModal(function() { startDispatch(storyId); });
+          openTokenModal(function() { startDispatch(storyId, auto); });
         } else {
           toastError(err);
         }
@@ -2640,16 +2673,19 @@ tbody tr:hover { background: var(--bg-sunken); }
     if (isClosed && !st.hidden_at) {
       footer.appendChild(el("button", { class: "btn", onClick: function() { renderArchiveConfirm(st); } }, ["Archive"]));
     }
+    // SH-208: Dispatch (and Dispatch Auto) sit at the LEADING edge of the
+    // footer -- appended before Delete, which is what its own
+    // margin-left:auto is what pushes to the trailing edge. SH-50's own
+    // gate is unchanged: only for an open story in a project with a
+    // checkout on this machine, since a dispatch is exactly the kind of
+    // write that has nowhere to go without one. Reopen and Dispatch never
+    // compete for the leading edge -- a closed story never renders Dispatch.
+    if (!isClosed && currentRepoHasCheckout()) {
+      dispatchButtons(st).forEach(function(btn) { footer.appendChild(btn); });
+    }
     footer.appendChild(el("button", { class: "btn btn-danger", style: "margin-left:auto", onClick: function() {
       renderDeleteConfirm(st);
     } }, ["Delete"]));
-    // SH-50: only for an open story in a project with a checkout on this
-    // machine -- the same lookup that grays out writes elsewhere for a
-    // checkout-less project, since a dispatch is exactly the kind of write
-    // that has nowhere to go without one.
-    if (!isClosed && currentRepoHasCheckout()) {
-      footer.appendChild(dispatchButton(st));
-    }
   }
 
   function renderDeleteConfirm(st) {

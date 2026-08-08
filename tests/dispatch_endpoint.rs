@@ -100,6 +100,22 @@ fn post_dispatch(
         .send_empty()
 }
 
+/// A guarded, tokened POST to the dispatch endpoint, with `query` appended
+/// verbatim (e.g. `"auto=1"`) — SH-208's one query parameter.
+fn post_dispatch_query(
+    info: &DaemonInfo,
+    token: &str,
+    project: &str,
+    story: &str,
+    query: &str,
+) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    ureq::post(format!("{}?{query}", dispatch_url(info, project, story)))
+        .header("X-Storyhook", "1")
+        .header("Host", "127.0.0.1")
+        .header("X-Storyhook-Token", token)
+        .send_empty()
+}
+
 /// A guarded, tokened GET against a dispatch handle.
 fn get_dispatch(
     info: &DaemonInfo,
@@ -260,6 +276,10 @@ fn a_successful_stub_is_relayed_as_ok_with_its_payload() {
     assert_eq!(record["payload"]["ok"], true);
     assert_eq!(record["payload"]["id"], "SH-1");
     assert!(record["finished_at"].is_string());
+    assert_eq!(
+        accepted["dispatch"]["auto"], false,
+        "a plain POST (no ?auto=1) must default to attended"
+    );
 }
 
 #[test]
@@ -373,6 +393,103 @@ fn the_project_and_story_reach_the_script_verbatim() {
         .expect("argv echoed back");
     assert!(argv.contains("--project scad-caliper"));
     assert!(argv.contains("dispatch CAL-12"));
+    assert!(
+        !argv.contains("--auto"),
+        "a plain dispatch's argv must not carry --auto"
+    );
+}
+
+/// SH-208: `?auto=1` is the one extra argument this endpoint ever adds to
+/// story.sh's own dispatch argv, appended after the story id.
+#[test]
+fn auto_equals_1_appends_auto_to_the_scripts_argv_and_is_relayed_in_the_record() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub();
+    let info = start_with_stub(&env, stub.path(), "echo-args");
+
+    let resp = post_dispatch_query(&info, &info.token, "scad-caliper", "CAL-12", "auto=1")
+        .expect("dispatch accepted");
+    let accepted = body_json(resp);
+    assert_eq!(
+        accepted["dispatch"]["auto"], true,
+        "the 202 record must already report auto:true, before the script even runs"
+    );
+    let handle = accepted["dispatch"]["handle"]
+        .as_str()
+        .expect("a handle")
+        .to_string();
+
+    let record = poll_until_finished(&info, &info.token, "scad-caliper", "CAL-12", &handle);
+    assert_eq!(record["auto"], true);
+    let argv = record["payload"]["argv"]
+        .as_str()
+        .expect("argv echoed back");
+    assert!(argv.contains("dispatch CAL-12 --auto"));
+}
+
+/// `auto=true` is the other recognized spelling (the dashboard sends `1`;
+/// this is the human-typable form a `curl` caller would reach for).
+#[test]
+fn auto_equals_true_is_also_accepted() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub();
+    let info = start_with_stub(&env, stub.path(), "ok");
+
+    let resp = post_dispatch_query(&info, &info.token, "proj", "SH-1", "auto=true")
+        .expect("dispatch accepted");
+    assert_eq!(body_json(resp)["dispatch"]["auto"], true);
+}
+
+/// A caller who typed `?auto=0` expecting attended must be told they got it
+/// wrong rather than silently downgraded — see `parse_auto`'s own doc
+/// comment for why this is a 400 and not a quiet `false`.
+#[test]
+fn an_unrecognized_auto_value_is_400() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub();
+    let info = start_with_stub(&env, stub.path(), "ok");
+
+    let err = post_dispatch_query(&info, &info.token, "proj", "SH-1", "auto=0")
+        .expect_err("auto=0 must be rejected, not silently treated as attended");
+    assert_eq!(status_of(&err), 400);
+}
+
+/// The idempotency wrinkle: a story already dispatching (attended) is not
+/// restarted in autonomous mode by a `?auto=1` POST that loses the race —
+/// it reuses the running attempt's handle, and that handle's record still
+/// reports the mode that is *actually running*.
+#[test]
+fn a_repeated_post_with_a_different_auto_reuses_the_first_attempts_mode() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_stub();
+    let info = start_with_stub(&env, stub.path(), "slow");
+
+    let first = body_json(
+        post_dispatch(&info, &info.token, "proj", "SH-1").expect("first dispatch accepted"),
+    );
+    assert_eq!(first["dispatch"]["auto"], false);
+    let first_handle = first["dispatch"]["handle"]
+        .as_str()
+        .expect("a handle")
+        .to_string();
+
+    let second = body_json(
+        post_dispatch_query(&info, &info.token, "proj", "SH-1", "auto=1")
+            .expect("second dispatch accepted"),
+    );
+    assert_eq!(
+        second["dispatch"]["handle"].as_str(),
+        Some(first_handle.as_str()),
+        "a story already dispatching must not spawn a second, autonomous script"
+    );
+    assert_eq!(
+        second["dispatch"]["auto"], false,
+        "the reused record must report the FIRST attempt's mode, not the second request's"
+    );
 }
 
 #[test]

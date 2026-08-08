@@ -81,6 +81,15 @@ set -euo pipefail
 # shellcheck source=../lib/session.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/session.sh"
 
+# This script's own absolute path, resolved ONCE here — before dispatch or
+# reap ever `cd`s anywhere — because `${BASH_SOURCE[0]}` alone can be
+# relative to whatever cwd this process started in, and every later
+# directory change (enter_checkout, the dispatch worktree) would make a
+# late resolution answer for the wrong place. This is what the autonomous
+# charter's `<reap>` placeholder (SH-208) expands to: the exact script an
+# unattended session must call back into to reclaim its own worktree.
+SELF_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
 # ---- config (all env-overridable) -------------------------------------------
 STORY="${STORY_BIN:-story}"
 # Launch command, run INSIDE the worktree dispatch already created — must NOT
@@ -107,7 +116,7 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # means the worktree and the main checkout are the same project, and telling an
 # autonomous agent to `cd` elsewhere for every write was friction bought with a
 # defect that no longer exists.
-AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with \`story show <n> --json\` (its comments carry the discussion history). This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision without a single obvious answer, convene \`/council-vote\` instead of asking, and record the outcome as a comment on <n>. Run the full local suite with \`make test\` and confirm it passes before pushing; the pre-push hook enforces it. Open a pull request whose body references story <n>, comment the PR link on <n>, then merge it yourself with \`gh pr merge --merge\` -- a merge commit, the only method this org allows -- verify the merge actually landed, and delete the source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once the merge lands, judge from your own record of the work whether <n> is genuinely complete: default to closing it with \`story move <n> done\` (or the CLOSED-superstate state this project uses, if not \`done\`), and do not run \`/story complete\`, which asks a question and would try to reclaim the worktree you are standing in. If your own output shows further PRs or testing are still needed, leave <n> open and comment naming exactly what remains. If you hit a hard stop a council vote cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run \`story block <n> \"<reason>\"\`, leave the PR open and this worktree intact, and stop. Never merge past a hard stop.}"
+AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with \`story show <n> --json\` (its comments carry the discussion history). This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision without a single obvious answer, convene \`/council-vote\` instead of asking, and record the outcome as a comment on <n>. Run the full local suite with \`make test\` and confirm it passes before pushing; the pre-push hook enforces it. Open a pull request whose body references story <n>, comment the PR link on <n>, then merge it yourself with \`gh pr merge --merge\` -- a merge commit, the only method this org allows -- verify the merge actually landed, and delete the source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once the merge lands, judge from your own record of the work whether <n> is genuinely complete: default to closing it with \`story move <n> done\` (or the CLOSED-superstate state this project uses, if not \`done\`) -- a closed story cannot be commented on again, so say everything worth recording BEFORE that move, not after. Once <n> is closed, run \`<reap>\` as your absolute last action -- it reclaims this worktree, deletes its branch, and then closes this very tmux window, so nothing you do after it can be observed. Never run \`/story complete\` yourself: it asks a question, and a session with nobody left to answer it cannot survive one. If your own output shows further PRs or testing are still needed, leave <n> open, comment naming exactly what remains, and do not run \`<reap>\` -- it refuses a story that is not yet closed, but do not rely on that refusal. If you hit a hard stop a council vote cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run \`story block <n> \"<reason>\"\`, leave the PR open and this worktree intact, and stop. Never merge past a hard stop, and never run \`<reap>\` after a hard stop.}"
 # Extra clause a caller appends to the handoff prompt (daemon-caller seam).
 # Appended VERBATIM with a single space separator, AFTER <n>/<name> templating.
 PROMPT_EXTRA="${STORY_PROMPT_EXTRA:-}"
@@ -572,9 +581,15 @@ cmd_dispatch() {
 
   local prompt_tpl="$PROMPT_TPL"
   [ -n "$auto" ] && prompt_tpl="$AUTO_PROMPT_TPL"
-  local launch_cmd prompt
+  # The autonomous charter's own last act (SH-208): the exact `reap` command
+  # for THIS story, in THIS project, via THIS script -- an unattended session
+  # cannot reliably reconstruct any of the three on its own, so it is handed
+  # the literal command rather than instructions to improvise one. A no-op
+  # substitution for the attended template, which never references <reap>.
+  local launch_cmd prompt reap_cmd
+  reap_cmd="bash \"$SELF_PATH\" --project \"$PROJECT_SLUG\" reap \"$id\""
   launch_cmd=$(render_template "$LAUNCH_TPL" "$id" "$wname" "$dir")
-  prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir")
+  prompt=$(render_template "$prompt_tpl" "$id" "$wname" "$dir" "$reap_cmd")
   [ -n "$PROMPT_EXTRA" ] && prompt="$prompt $PROMPT_EXTRA"
 
   # Surfaced in both the dry-run and real result so the skill can warn the
@@ -583,7 +598,7 @@ cmd_dispatch() {
   # stalls the unattended run forever.
   local auto_note=""
   if [ -n "$auto" ]; then
-    auto_note=" Autonomous (--auto): choose auto-accept edits at the plan-approval prompt, or a later permission prompt can stall the unattended run. From there it runs to completion on its own -- council-voting its open questions, merging its own PR, and closing $id itself."
+    auto_note=" Autonomous (--auto): choose auto-accept edits at the plan-approval prompt, or a later permission prompt can stall the unattended run. From there it runs to completion on its own -- council-voting its open questions, merging its own PR, closing $id itself, and reclaiming its own worktree, branch and window once it does."
   fi
 
   local ignore_status
@@ -1558,6 +1573,149 @@ cmd_complete() {
   esac
 }
 
+# cmd_reap <story-id> — reclaim a CLOSED story's worktree and branch, then
+# close its tmux window (SH-208). The autonomous charter's own last act:
+# unlike `story.sh complete`, which is a QUESTION a human answers (plan
+# previews, execute acts), this is a COMMAND with nothing left to negotiate
+# -- the charter has already closed the story and merged its PR by the time
+# it runs this, so the only question left is whether it is SAFE to discard
+# the workspace, never whether to.
+#
+# There is deliberately no "record what happened" step: a closed story
+# cannot be commented on (`resolve_open_story`, src/service/mod.rs -- a
+# story is immutable once archived, no exception for reap's own kind of
+# write), so unlike `dispatch`'s claim-rollback notes this verb has nowhere
+# durable left to report to. Its exit JSON is the only record, which is why
+# the tmux window -- the one thing that could still observe it -- is killed
+# LAST: destructive git work happens first, so nothing is ever left pending
+# when the window dies out from under this process.
+#
+# Preflight is a HARD, ALL-OR-NOTHING refusal, not partial best-effort like
+# `complete`: unless the story is CLOSED and the worktree/branch are BOTH
+# safe to discard, NOTHING is touched -- no worktree, no branch, no window.
+# `complete` is human-supervised interactive cleanup, where a partial result
+# ("removed the worktree, left the unmerged branch") is useful information
+# for someone still there to read it. `reap` is machine-triggered
+# self-destruction with nobody watching; silently discarding a worktree
+# while leaving unmerged work orphaned would be a defect no one would see
+# happen. This is also what makes an autonomous hard stop (`story block`,
+# which leaves the story open) structurally unable to reach the destructive
+# half of this verb -- the charter's own prose telling it "never reap past a
+# hard stop" is backed by a gate that does not trust the prose alone.
+#
+# `current` is deliberately NOT a veto here, unlike `_story_worktree_status`'s
+# use in `complete`. There it protects an interactive human's shell from
+# having its cwd vanish out from under it. Here, by the time this runs,
+# `_complete_prepare`'s own `enter_checkout` has already `cd`d this PROCESS
+# to the main checkout -- `git worktree remove` sees an ordinary linked
+# worktree, not its own cwd, regardless of where the invoking shell (the
+# agent's own tmux pane) still stands. Killing that pane's window in the
+# last step is what makes it safe for the agent's shell to have been
+# standing there when this was called.
+cmd_reap() {
+  local id="${1:-}"
+  [ -n "$id" ] || fail "usage: story.sh reap <story-id>"
+  shift
+  [ "$#" -eq 0 ] || fail "usage: story.sh reap <story-id>"
+
+  _complete_prepare "$id"
+  id="$CMP_ID"
+
+  if [ "$CMP_SUPER" != "CLOSED" ]; then
+    refuse "not-closed" "story.sh reap: $id is not closed (state \`$CMP_STATE\`) -- refusing to reclaim a worktree for a story that isn't done."
+  fi
+  case "$CMP_WT_STATUS" in
+    dirty)  refuse "dirty-worktree" "story.sh reap: $id's worktree ($CMP_WT_PATH) has uncommitted changes -- refusing to discard them. Clean or commit them, then reap again." ;;
+    locked) refuse "locked-worktree" "story.sh reap: $id's worktree ($CMP_WT_PATH) is locked -- refusing to reclaim it." ;;
+  esac
+  case "$CMP_BR_STATUS" in
+    protected) refuse "protected-branch" "story.sh reap: $id's branch ($CMP_WT_BRANCH) is protected -- refusing to delete it." ;;
+    unmerged)  refuse "unmerged-branch" "story.sh reap: $id's branch ($CMP_WT_BRANCH) is not merged into \`$CMP_DEFAULT\` -- refusing to discard unmerged work." ;;
+  esac
+
+  if [ -n "$DRY_RUN" ]; then
+    local -a commands=()
+    if [ "$CMP_WT_STATUS" != "missing" ]; then
+      commands+=("git worktree remove $CMP_WT_PATH" "git worktree prune")
+    fi
+    [ "$CMP_BR_STATUS" = "deletable" ] && commands+=("git branch -d $CMP_WT_BRANCH")
+    commands+=("tmux kill-window -t <window of $CMP_WNAME>")
+    local cmds_json
+    cmds_json=$(printf '%s\n' "${commands[@]}" | jq -R -s 'split("\n")|map(select(length>0))')
+    jq -n --arg id "$id" --argjson cmds "$cmds_json" '
+      {
+        ok: true, dry_run: true, id: $id, commands: $cmds,
+        display: ("[story] DRY RUN reap: would reclaim " + $id + "'"'"'s worktree and branch, and close its tmux window.")
+      }'
+    return 0
+  fi
+
+  # Scalar booleans, deliberately NOT named removed_wt/removed_bl -- those
+  # names are cmd_complete_execute's own ARRAYS, and reusing them (even as
+  # properly `local`-scoped scalars) reads as a collision to static analysis
+  # and to the next person grepping this file.
+  local reaped_wt=false reaped_br=false wt_fail="" br_fail=""
+
+  if [ "$CMP_WT_STATUS" != "missing" ]; then
+    if git worktree remove "$CMP_WT_PATH" >/dev/null 2>&1; then
+      # No --force: git itself refuses a dirty or current worktree (moot
+      # here -- dirty already refused above, and this process has already
+      # left "current" behind), and that veto is a feature, not an
+      # obstacle to route around.
+      git worktree prune >/dev/null 2>&1 || true
+      reaped_wt=true
+    else
+      wt_fail="git worktree remove refused for $CMP_WT_PATH"
+    fi
+  fi
+  if [ "$CMP_BR_STATUS" = "deletable" ]; then
+    if delete_merged_local_branch "$CMP_WT_BRANCH" "$CMP_DEFAULT"; then
+      reaped_br=true
+    else
+      br_fail="could not delete branch $CMP_WT_BRANCH"
+    fi
+  fi
+
+  local display="[story] reap $id: "
+  if [ "$reaped_wt" = true ]; then
+    display="${display}removed worktree \`$CMP_WT_PATH\`, "
+  else
+    display="${display}worktree already gone, "
+  fi
+  if [ "$reaped_br" = true ]; then
+    display="${display}deleted branch \`$CMP_WT_BRANCH\`."
+  else
+    display="${display}branch already gone."
+  fi
+  [ -n "$wt_fail" ] && display="$display $wt_fail."
+  [ -n "$br_fail" ] && display="$display $br_fail."
+
+  # Best-effort, LAST: pane_for_window / display-message / kill-window all
+  # swallow their own errors already (no tmux, no such window), so nothing
+  # here needs its own guard past "was a pane found at all". Mirrors
+  # cmd_doctor's own window/pane fallback.
+  local pane window
+  pane=$(pane_for_window "$CMP_WNAME") || pane=""
+  if [ -n "$pane" ]; then
+    window=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null || printf '')
+    if [ -n "$window" ]; then
+      tmux kill-window -t "$window" 2>/dev/null || true
+    else
+      tmux kill-window -t "$pane" 2>/dev/null || true
+    fi
+  fi
+
+  jq -n --arg id "$id" --argjson rwt "$reaped_wt" --argjson rbr "$reaped_br" \
+        --arg wtfail "$wt_fail" --arg brfail "$br_fail" --arg display "$display" '
+    {
+      ok: true, id: $id,
+      removed: { worktree: $rwt, branch: $rbr }
+    }
+    + (if $wtfail == "" then {} else {worktree_error: $wtfail} end)
+    + (if $brfail == "" then {} else {branch_error: $brfail} end)
+    + { display: $display }'
+}
+
 # ---- router -----------------------------------------------------------------
 
 # `--project <slug>` is story.sh's own global option, stripped here and
@@ -1588,10 +1746,11 @@ done
 case "${1:-}" in
   dispatch) shift; cmd_dispatch "$@" ;;
   complete) shift; cmd_complete "$@" ;;
+  reap)     shift; cmd_reap "$@" ;;
   view)     shift; cmd_view "$@" ;;
   list)     shift; cmd_list "$@" ;;
   create)   shift; cmd_create "$@" ;;
   doctor)   shift; cmd_doctor "$@" ;;
   capture)  shift; cmd_capture "$@" ;;
-  *)        fail "usage: story.sh <list | view <story-id> | dispatch <story-id> | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | doctor | capture <story-id>>" ;;
+  *)        fail "usage: story.sh <list | view <story-id> | dispatch <story-id> [--auto] | create --title <t> [--description-file <p>] | complete <plan|execute> <story-id> | reap <story-id> | doctor | capture <story-id>>" ;;
 esac
