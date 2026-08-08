@@ -1419,7 +1419,11 @@ pub enum ExchangeBound {
 /// docstring names as the reason it could only be calibrated, not derived.
 #[must_use]
 pub fn served_deadline(command: &str, cwd: &Path) -> Duration {
-    if command == "github-sync" {
+    // `pr-check` gets the same long, hook-independent bound as `github-sync`:
+    // its cost is O(linked pull requests) × a per-call client bound, not a
+    // function of any one project's hooks, for the identical reason
+    // `github-sync`'s own duration is set off this machine (SH-144).
+    if command == "github-sync" || command == "pr-check" {
         return SYNC_SERVED_DEADLINE;
     }
     let allowance = crate::event_hooks::max_configured_timeout(cwd).unwrap_or(Duration::ZERO);
@@ -2128,7 +2132,9 @@ mod tests {
         assert_eq!(SERVED_DEADLINE, Duration::from_secs(120));
     }
 
-    /// Only `github-sync` gets the long bound, with no hooks configured.
+    /// Only `github-sync` and `pr-check` get the long bound, with no hooks
+    /// configured — the two commands whose cost is a function of GitHub API
+    /// calls rather than of any one project's hooks.
     ///
     /// There is no longer a matching "nothing is ever unbounded" half:
     /// [`served_deadline`] returns a bare [`Duration`], so an unbounded
@@ -2138,6 +2144,10 @@ mod tests {
     fn only_github_sync_gets_the_long_bound_with_no_hooks_configured() {
         assert_eq!(
             served_deadline("github-sync", Path::new("/")),
+            SYNC_SERVED_DEADLINE
+        );
+        assert_eq!(
+            served_deadline("pr-check", Path::new("/")),
             SYNC_SERVED_DEADLINE
         );
         for command in [

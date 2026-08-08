@@ -695,6 +695,33 @@ pub fn dispatch<S: Store>(
         Invocation::CommitSync { since } => GitService::new(ctx)
             .commit_sync(since.as_deref())
             .map(Response::Message),
+        Invocation::LinkPr {
+            id,
+            url,
+            close_on_merge,
+        } => {
+            crate::service::PrLinkService::new(ctx).link(&id, &url, close_on_merge)?;
+            ctx.story_view(&id)
+        }
+        Invocation::UnlinkPr { id, url } => {
+            crate::service::PrLinkService::new(ctx).unlink(&id, &url)?;
+            ctx.story_view(&id)
+        }
+        Invocation::PrCheck { id } => {
+            #[cfg(feature = "github-sync")]
+            {
+                crate::service::PrLinkService::new(ctx).check(id.as_deref())
+            }
+            #[cfg(not(feature = "github-sync"))]
+            {
+                let _ = id;
+                Err(AppError::Usage(
+                    "pr-check requires the `github-sync` feature. \
+                     Rebuild with: cargo install storyhook --features github-sync"
+                        .to_string(),
+                ))
+            }
+        }
         Invocation::Export => TransferService::new(ctx)
             .export()
             .and_then(|export| Ok(serde_json::to_string_pretty(&export)?))
@@ -1952,7 +1979,10 @@ pub fn reads_stdin(invocation: &Invocation) -> bool {
 #[must_use]
 pub fn needs_github_token(invocation: &Invocation) -> bool {
     match invocation {
-        Invocation::GithubSync { .. } => true,
+        Invocation::GithubSync { .. } | Invocation::PrCheck { .. } => true,
+        // `LinkPr`/`UnlinkPr` never call GitHub — a PR URL is parsed, not
+        // fetched — so they spend no credential, unlike `PrCheck` above.
+        Invocation::LinkPr { .. } | Invocation::UnlinkPr { .. } => false,
         // Everything else, listed rather than defaulted. See above.
         Invocation::Help
         | Invocation::Project { .. }
@@ -2188,6 +2218,9 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Scaffold { .. } => "scaffold",
         Invocation::CommitSync { .. } => "commit-sync",
         Invocation::GithubSync { .. } => "github-sync",
+        Invocation::LinkPr { .. } => "link-pr",
+        Invocation::UnlinkPr { .. } => "unlink-pr",
+        Invocation::PrCheck { .. } => "pr-check",
         Invocation::HelpTopic { .. } => "help-topic",
         Invocation::HelpCompact => "help-compact",
         Invocation::HelpAll => "help-all",

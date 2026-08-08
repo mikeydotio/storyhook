@@ -341,6 +341,31 @@ pub struct StoryRow {
     pub snapshot: StorySnapshot,
 }
 
+/// A pull request linked to a story, as a row of `story_pr_links` (SH-49).
+///
+/// A projection of `StoryPrLinked`/`StoryPrMerged`/`StoryPrClosed` — see
+/// `store::sqlite::write::project_pr_link` — keyed on `(owner, repo, number)`
+/// rather than on the story, so it lives beside [`StoryRow`] rather than on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrLink {
+    /// The repository owner, case-folded.
+    pub owner: String,
+    /// The repository name, case-folded.
+    pub repo: String,
+    /// The pull request number.
+    pub number: u64,
+    /// The pull request's URL, as linked.
+    pub url: String,
+    /// Whether merging this PR should close the story.
+    pub close_on_merge: bool,
+    /// `open`, `merged`, or `closed` — see the schema's CHECK.
+    pub status: String,
+    /// When this PR was linked.
+    pub linked_at: String,
+    /// When `story pr-check` last looked at this link, if it ever has.
+    pub last_checked_at: Option<String>,
+}
+
 /// A relation edge as stored: both ends are numbers within one project.
 ///
 /// Story *ids* (`SH-1`) are a rendering concern. Keeping the store in numbers

@@ -535,6 +535,34 @@ story github-sync SH-1 --resolve remote
 story github-sync --mode manual   # turn sync back on / repair a stuck mode
 ```
 
+### `story link-pr <id> <url> [--no-close-on-merge]`
+
+Link a GitHub pull request to a story, by its web URL (`https://github.com/<owner>/<repo>/pull/<number>`). Needs no GitHub token — the URL is parsed, not fetched — so this works whether or not a `github-sync` remote is configured, and in a build without the `github-sync` feature.
+
+`close_on_merge` defaults to true: `story pr-check` closes the story once this pull request merges. If the project has a configured `github-sync` remote and the URL's `owner/repo` disagrees with it, a `close_on_merge: true` link is refused — pass `--no-close-on-merge` for a deliberate cross-repository bookmark, which nothing can auto-close.
+
+Re-linking a URL a story already links updates its `close_on_merge` flag rather than erroring.
+
+```bash
+story link-pr SH-1 https://github.com/acme/widgets/pull/42
+story link-pr SH-1 https://github.com/acme/widgets/pull/42 --no-close-on-merge
+```
+
+### `story unlink-pr <id> <url>`
+
+Remove a previously-linked pull request from a story, by the same URL it was linked with. Needs no GitHub token, same as `link-pr`.
+
+### `story pr-check [<id>]`
+
+Check a story's linked pull requests against GitHub — one story, or every open story project-wide with no `<id>`. Requires `STORYHOOK_GITHUB_TOKEN` and a configured `github-sync` remote (`story github-sync` sets one up).
+
+A merged pull request whose link has `close_on_merge: true` closes the story, in the same transaction as the merge is recorded. A pull request closed without merging is recorded but never closes anything. A link whose `owner/repo` no longer matches the project's *currently* configured remote is skipped, not acted on — the remote may have been repointed since the link was made.
+
+```bash
+story pr-check
+story pr-check SH-1
+```
+
 ### `story hooks install|uninstall|list|test <event_type>`
 
 `install`/`uninstall`/`list` manage **git** hooks (`post-commit`, `post-merge`, `prepare-commit-msg`) that drive automatic story syncing. `test <event_type>` fires a test **event** hook from the `[hooks]` table of `.storyhook.toml`, falling back to a legacy `.storyhook/hooks.toml` — valid event types are `create`, `state_change`, `close`, `comment`, `priority_change`, `label_change`, `relationship_change` — and requires hooks to be configured already; it errors if none are.
@@ -572,7 +600,7 @@ story doctor --fix
 
 Every command accepts the global `--json` flag and, on success, wraps its payload in a common envelope: `{"result": "ok", ...}`. **Story data is double-nested** — this is the single most common mistake when parsing storyhook output, so read carefully before writing a `jq` selector.
 
-- **Single-story commands** (`show`, `new`, `comment`, `assign`, `move`, `block`, `unblock`, `prioritize`, `label`, `unlabel`, `reopen`, `relate`, `set`) return the story under `.story.story` — e.g. `.story.story.state`, **not** `.story.state`.
+- **Single-story commands** (`show`, `new`, `comment`, `assign`, `move`, `block`, `unblock`, `prioritize`, `label`, `unlabel`, `reopen`, `relate`, `set`, `link-pr`, `unlink-pr`) return the story under `.story.story` — e.g. `.story.story.state`, **not** `.story.state`.
 - **List commands** (`list`, `search`, `import`, `decompose`) return an array under `.stories[]`, where each element is itself the same wrapper — e.g. `.stories[].story.state`, **not** `.stories[].state`.
 - **`story next --json`** is context-dependent:
   - One ready story → `.story.story.state` (same single-story shape as above)
@@ -581,7 +609,7 @@ Every command accepts the global `--json` flag and, on success, wraps its payloa
 - **`story summary --json`** → `.summary.{total_open,total_closed,by_state,by_priority,blocked_count,flagged_count,ready_count,ready_stories}` (`ready_stories` follows the same list shape above)
 - **`story graph --json`** → `.graph.{critical_path,parallel_groups,overview}` with no mode flag; passing `--critical-path`, `--blocked-by <id>`, or `--parallel-groups` populates only that one field
 - **`story doctor --json`** → `.issues[]` (array of strings)
-- **Message-only commands** (`init`, `member add`, `state add/remove`, `handoff`, `commit-sync`, `github-sync`, `hooks *`, `scaffold`) → `.message` (a plain string) when the **global** `--json` flag is passed
+- **Message-only commands** (`init`, `member add`, `state add/remove`, `handoff`, `commit-sync`, `github-sync`, `pr-check`, `hooks *`, `scaffold`) → `.message` (a plain string) when the **global** `--json` flag is passed
 - **`story export`** and **`load-context --format json`** / **`context --format json`** print their document as raw JSON — no envelope. The global `--json` and `--quiet` flags do not change them: `story export`, `story export --json` and `story export --quiet` all emit the same bytes (likewise for `context --format json`), and export's are accepted by `story import-project`
 
 Errors (any command) look like:

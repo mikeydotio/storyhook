@@ -24,10 +24,15 @@
 //! is the test one.
 
 use super::client::GithubClient;
-use super::types::{CreateIssueRequest, GithubComment, GithubIssue, UpdateIssueRequest};
+use super::types::{
+    CreateIssueRequest, GithubComment, GithubIssue, PullRequestStatus, UpdateIssueRequest,
+};
 use crate::error::AppError;
 
-/// The 7 GitHub REST calls the sync engine makes.
+/// The 7 GitHub REST calls the sync engine makes, plus [`get_pull_request`]
+/// (SH-49), the one `story pr-check` makes.
+///
+/// [`get_pull_request`]: GithubApi::get_pull_request
 pub trait GithubApi {
     /// Validates the credential by fetching repository metadata.
     fn validate_token(&self) -> Result<(), AppError>;
@@ -53,6 +58,9 @@ pub trait GithubApi {
 
     /// Creates a comment on an issue.
     fn create_comment(&self, issue_number: u64, body: &str) -> Result<GithubComment, AppError>;
+
+    /// Gets a single pull request's merge/close status by number (SH-49).
+    fn get_pull_request(&self, number: u64) -> Result<PullRequestStatus, AppError>;
 }
 
 impl GithubApi for GithubClient {
@@ -86,6 +94,10 @@ impl GithubApi for GithubClient {
 
     fn create_comment(&self, issue_number: u64, body: &str) -> Result<GithubComment, AppError> {
         self.create_comment(issue_number, body)
+    }
+
+    fn get_pull_request(&self, number: u64) -> Result<PullRequestStatus, AppError> {
+        self.get_pull_request(number)
     }
 }
 
