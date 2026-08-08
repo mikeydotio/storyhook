@@ -188,7 +188,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
 - [x] **SH-70** — pre-#18 import `[git]` comments
 - [x] **SH-44** — web form defaults
-- [ ] **SH-127** — remove the status flash
+- [x] **SH-127** — remove the status flash
 - [ ] **SH-128** — column sort options
 - [ ] **SH-168** — do not show the green ready status labels
 - [ ] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
@@ -7037,3 +7037,76 @@ sees the same response it always has.
 **PR:** #195, merged as `0a02e88`. Branch verified deleted (remote and
 local, via `gh pr merge --delete-branch`; `git fetch --prune` confirmed the
 remote ref gone). `main` fast-forwarded cleanly in the primary checkout.
+
+### SH-127 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line): Medium's
+one remaining line, SH-167, was still `in-progress` elsewhere (confirmed live
+via `story list --state in-progress`, no ⚠ mark in this file — the same
+recurring stale-mark pattern every prior session has hit). `story list
+--state in-progress` also turned up SH-112 (epic, never worked directly) and
+SH-208, neither of which are on this file's queue. Low's first unchecked line
+was SH-127 itself, confirmed ready via `story list --ready`.
+
+**Council: yes.** The story's one-line description names a single concrete
+example — the "SH-18 Created" toast after story creation — but phrases the
+ask as a category ("the status flash", "eg"). `toast()` backs roughly ten
+call sites: some success/info, some error-only with no other feedback
+surface at all. Genuinely no obviously-correct scope, so convened a 3-seat
+council (`ux-designer-web`, `software-architect`, `skeptic`). Full audit
+trail: `.council/sh127-status-flash-scope/` (gitignored, verdict recorded as
+a `story comment`).
+
+**What the council found, and why it moved.** Round 1 split 2-1 toward
+deleting all success/info toasts and keeping every `toastError()` call
+(deleting error feedback entirely was rejected outright by all three seats —
+for most mutations, the toast is the *only* failure signal that exists).
+Deliberation converged the two dissenting seats onto a rule — delete a
+toast iff `diffSnapshots()` actually renders the change it announces — which
+derived the "keep reopened/archived/project/dispatch toasts" carve-outs as a
+consequence rather than a guess, but also concluded "story deleted" should go
+alongside "story created," since both looked equally diff-tracked. The
+skeptic seat's revision rebutted that symmetry with a fact neither original
+proposal had checked: a card's *exit* from the board is driven by a
+different, generic function, `removeUnclaimedCards`, which fades out any
+card absent from the current render — deleted, archived, or merely filtered
+out — with an identical animation and no distinguishing signal, unlike
+creation's unambiguous `entered` diff. Both other seats verified this against
+the actual code before the final vote (one found `diffSnapshots`' own
+`result.exited` value is computed but never consumed anywhere in the file,
+directly falsifying their own revised proposal), and reversed. Final
+ranked-choice runoff: 3-0, remove only the literal "created" toast.
+
+Also load-bearing: the *reopened* toast's own in-repo comment
+(`web_dashboard.html:2627-2631`) turned out to cite `SH-43`'s own council
+dissent — a prior binding requirement that reopening a hidden story must say
+so explicitly, precisely to prevent the same "silent state change reads as
+confusing" failure this story was raising for creation. Deleting it, as both
+round-1 proposals initially intended, would have reintroduced an
+already-litigated bug.
+
+**Built:** `submitCreate()`'s `toast(id + " created", "success")` call
+deleted from `src/web_dashboard.html`; the modal close and `fetchData()`
+refetch are unchanged, so the new card still appears via its own entrance
+animation. Every other `toast()`/`toastError()` call site is untouched.
+
+**Tests:** one new e2e case in `create-story-defaults.spec.ts` — creates a
+story, asserts the card appears and `#toast-stack .toast.success` has zero
+count. Ran the full `create → assert → delete` round trip against a real
+daemon and browser, same pattern the file's existing tests already use.
+
+**Gate:** `make test` green on the first full run, supervised with a
+log-growth heartbeat (no stall): fmt, clippy `-D warnings`, full Rust suite,
+`cargo build`, plugin harness 24/24, e2e 26/26 (23 pre-existing + this
+story's new case + two others that had landed on `main` from a concurrent
+session's PR #194 mid-run), no orphan daemons pre- or post-run.
+
+**Semver: patch.** UI-only removal of one redundant toast call; no API,
+schema, or CLI surface changed.
+
+**PR:** #197, merged as `65bf92a`, `Closes SH-127` in the commit body —
+auto-closed the story on merge, confirmed via `story show`. Branch verified
+deleted (remote and local; `gh pr merge --delete-branch` plus `git fetch
+--prune` confirmed the remote ref gone). Picked up PR #194
+(`worktree-SH-208`'s dispatch-button work, merged by a concurrent session
+mid-run) as a fast-forward, not a conflict — `main` still bisectable.
