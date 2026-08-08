@@ -120,21 +120,28 @@ destructively touch the real store outside SH-132's sanctioned procedure.
 
 ## Backlog
 
-**Queue exhausted as of SH-218 (2026-08-08) — every line below is checked.**
-Do not read "no unchecked line" as "nothing to do": `story summary` shows 41
-open/41 ready stories, well past the ~34 this queue was built from. Step 1 of
-your next cycle is a resync — re-derive this list from `story list --ready
---json`, as its own PR, per the 2026-08-07 precedent and the SH-218 log entry
-below — not a pick against a list that stopped tracking reality.
+**Resynced 2026-08-08, before picking anything** — per the 2026-08-07
+precedent (line ~4713 of the Log) and the SH-218 entry that called this
+resync in advance. Every checkbox below was cross-checked against a fresh
+`story show <id>`; every previously-listed story really is `done (CLOSED)`
+except the epic, so none were stale. What was stale was the list's
+*coverage*: `story list --ready --json` reports 41 open/41 ready/0 blocked
+against the ~34 this queue was built from, so 40 stories that were filed
+during the run — mostly in passing, off other stories' councils and
+investigations — had never been added. They're added below, unchecked, in
+each priority's queue, ordered `story list --ready --json`'s own return
+order within a priority (which is not meaningfully different from age,
+since nothing here has been manually reordered). A new **None** section
+follows Low: eleven ready stories carry `priority: none` and are real,
+open, unblocked work, not a filing default to ignore.
 
 ### Critical
 
-- **SH-112** — the server-owned epic · *re-derived 2026-08-07 from `story show SH-112`'s
+- **SH-112** — the server-owned epic · *re-derived 2026-08-08 from `story show SH-112`'s
   relationships (`story graph` carries no edge for `parent-of`, so it will not surface
-  this): 14 children. SH-113–SH-122 and SH-50 are all done. Three remain open —
-  **SH-150** (below, medium) and **SH-187**, **SH-188** (priority `none`, filed under
-  this epic but not queued below — see their own `story show`). Closes when those three
-  do. Never worked directly.*
+  this): still 14 children. SH-150 closed since the 2026-08-07 re-derivation, leaving
+  two open — **SH-187** and **SH-188**, both `in-progress` (⚠) and both now queued
+  below, in the new None section. Closes when those two do. Never worked directly.*
 
 ### High
 
@@ -159,6 +166,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
 - [x] **SH-145** — the dashboard does not live-update a state change until reload
 - [x] **SH-68** — `sync.mode = auto` is accepted and does nothing · *closed by another session; ⚠ mark was stale as of 2026-08-08*
+- ⚠ **SH-196** — dashboard dispatch fails silently-ish when the installed plugin script predates `--project` · *in-progress in another session as of 2026-08-08 (worktree `SH-196`); added by the 2026-08-08 resync*
 
 ### Medium
 
@@ -185,6 +193,17 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-162** — allow hiding columns
 - [x] **SH-50** — C9 Dispatch button
 - [x] **SH-157** — visually indicate story types · *closed by another session*
+- [ ] **SH-169** — add a "Referenced By" field for commits, comments and PRs that mention a story, so the comments list stops filling with `[git]` noise like SH-63's own
+- [ ] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8)*
+- [ ] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses
+- [ ] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
+- [ ] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one
+- [ ] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition
+- [ ] **SH-181** — `story doctor` reports 10 malformed labels on the real store: a CSV label stored as one label instead of split
+- [ ] **SH-189** — `story export` is not a complete backup of a github-synced project · *`github.sync` and `github_bases` were deliberately excluded by SH-133; nothing replaces them*
+- [ ] **SH-190** — a restored project can be unreachable from its own checkout · *`transfer::import_project` mints a fresh `projects.uuid` the old `.storyhook.toml` pointer no longer matches*
+- [ ] **SH-192** — `RemoteUrl`: a host literally named `local` with an empty port collides with the local-path key space, contradicting the module's own "never collide" claim
+- [ ] **SH-193** — the daemon forwards its whole inherited environment to `sh`, `bash` and `claude`
 
 ### Low
 
@@ -200,6 +219,41 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
 - [x] **SH-183** — `story migrate` refuses a bad state slug but accepts a bad type slug · *filed by SH-134's chair, correcting a claim in that council's own verdict*
 - [x] **SH-218** — the drawer's async detail-fetch re-render can silently wipe unsaved input · *filed by SH-168's e2e test*
+- [ ] **SH-176** — remove the pre-SH-166 legacy worktree-name fallback (`legacy_wname()`) now that dispatched names are the bare id
+- [ ] **SH-179** — GitHub sync can rename a comma-bearing remote label on push
+- [ ] **SH-184** — `TransferService::export` refuses the whole project when a single story's id will not parse, instead of skipping just that story
+- [ ] **SH-185** — `doctor` names an undecodable event but not its severity, exit code or JSON shape · *residue of SH-67*
+- [ ] **SH-191** — github-sync's setup wizard's "Import all" branch can duplicate a local story its own unmapped-branch guard would otherwise catch
+- [ ] **SH-194** — the interactive-prompt allowlist cannot tell a live exemption from a stale one
+- [ ] **SH-195** — `reserve_port()` has a bind-then-release TOCTOU window a leaked or contending daemon can exploit
+- [ ] **SH-197** — right-click actions on a story card should be overridable (Copy ID/URL/Description, Dispatch, Dispatch in Auto mode, Set Status, Delete)
+- [ ] **SH-205** — dashboard drag-into-Blocked and `story block` should capture a reason, not leave it blank · *the deliberately-deferred half of SH-126's council verdict*
+- [ ] **SH-206** — the `story:story` skill's router references a missing `references/story-complete.md`
+- [ ] **SH-207** — `story relate`/`unrelate` refuses whenever either side is closed, even for the inverse edge a living story is asserting
+- [ ] **SH-209** — `daemon_lifecycle::an_unforced_stop_waits_for_in_flight_work_to_finish` has a hairline timing margin under parallel load
+- [ ] **SH-210** — the dashboard's Reopen button shows a bare "Conflict" toast for a soft-deleted story instead of the confirmation modal SH-154 already made possible
+- [ ] **SH-211** — `story doctor` cannot detect a hidden-but-open story
+- [ ] **SH-212** — the daemon should unattended-poll GitHub for merged PRs and auto-close their stories · *deferred out of SH-49 by council verdict*
+- [ ] **SH-213** — scp-like syntax with a bracketed IPv6 host normalizes to a garbage key instead of a correct one or a refusal
+- [ ] **SH-216** — `ChangeBus` leading-edge coalescing can silently drop a later, causally-unrelated publish for the same slug
+
+### None
+
+*Priority `none` — filed without a triage pass, not without value. First time
+this queue has carried a section for them; see the 2026-08-08 resync note
+above.*
+
+- [ ] **SH-186** — `web_test::a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving` fails on at least one dev machine
+- ⚠ **SH-187** — the dashboard's mutation guard is not authentication — any tailnet peer can write with two headers · *filed under the SH-112 epic; in-progress in another session as of 2026-08-08 (worktree `SH-187`, branch `fix/sh-187-dashboard-token-auth`)*
+- ⚠ **SH-188** — event hooks already let a browser-reachable story mutation run `sh -c` in the project checkout · *filed under the SH-112 epic; in-progress in another session as of 2026-08-08 (worktree `SH-188`)*
+- [ ] **SH-198** — `GithubClient::get_timeline` is dead code — zero call sites in `src/` or `tests/` · *filed by SH-158*
+- [ ] **SH-199** — move the New Comment field to above the comments list
+- [ ] **SH-200** — list blocking stories on a story card, with a status light matching each blocker's own column
+- [ ] **SH-203** — show a status light next to any web UI mention of another story
+- [ ] **SH-204** — make the add-label field in the story editor behave like the one in the new-story popup (commit-on-comma/tab-out); force labels lowercase on every label-setting route, retroactively
+- [ ] **SH-215** — `story export`'s help topic and `story import`'s help topic disagree with export's actual output shape
+- [ ] **SH-217** — render markdown in a story's body description in the web interface, switching to plain text while the field is focused for editing
+- [ ] **SH-219** — the `--auto` dispatch flag and `/story:do` skill should signal council-vote for scope/direction questions when the plugin is installed
 
 ### What was on the old list and is now done
 
@@ -7713,3 +7767,63 @@ story that happened to empty the queue. **Next session's step 1 is that
 resync**, not a pick — re-derive the queue from `story list --ready --json`
 against every currently-open story, landed as its own PR, same as last time,
 before anything is claimed.
+
+### Queue resync — 2026-08-08, before picking a story
+
+**Larger than the 2026-08-07 resync**, per the SH-218 entry above that called
+this one in advance: that one re-derived a single epic's children and fixed
+three stale marks; this one re-derives the whole queue's coverage.
+
+**Every existing checkbox re-verified first**, not trusted. Ran `story show
+<id>` against all 52 previously-listed ids (Critical through Low, including
+the epic) and diffed state against the checkbox: every one is genuinely
+`done (CLOSED)` except **SH-112**, the epic, which is `in-progress` by
+design and was never checked to begin with. No stale marks found this time —
+unlike 2026-08-07 (two false negatives) and SH-126 (one newly-stale mark),
+this run's own checked lines held.
+
+**Coverage was the actual drift.** `story list --ready --json` returned 41
+stories against 41 open, 0 blocked — matching `story summary` exactly, so
+"ready" and "open" are the same set right now. Diffing those 41 ids against
+every id anywhere in the Backlog section (checked or not, including the "old
+list" appendix) found **40 with no line at all** — every ready story except
+SH-112, which the Critical section already carried: 1 High (SH-196), 11
+Medium (SH-169, SH-170, SH-174, SH-175, SH-178, SH-180, SH-181, SH-189,
+SH-190, SH-192, SH-193), 17 Low (SH-176, SH-179, SH-184, SH-185, SH-191,
+SH-194, SH-195, SH-197, SH-205, SH-206, SH-207, SH-209, SH-210, SH-211,
+SH-212, SH-213, SH-216), and 11 at `priority: none` (SH-186, SH-187, SH-188,
+SH-198, SH-199, SH-200, SH-203, SH-204, SH-215, SH-217, SH-219). All 40
+added above, unchecked, each described from its own `story show`
+title/description rather than guessed from the id.
+
+**None priority never had a section before.** Eleven ready, unblocked
+stories carry it — SH-198 and SH-187/SH-188 were already name-checked in
+this file's prose (the SH-158 and SH-112 entries) as "filed but not queued,"
+which is exactly the gap a resync exists to close. Added as its own `###
+None` section after Low, same list semantics as every other priority
+(checkbox, ⚠, ⏸), not folded into Low — priority `none` and priority `low`
+are not the same claim about a story, and merging them would have erased
+that distinction silently.
+
+**SH-112's own note updated in place**, not just left to the new None
+section: SH-150 (the third open child as of 2026-08-07) closed since, so the
+epic now depends on exactly SH-187 and SH-188.
+
+**In-progress cross-check**, same method as every prior resync:
+`story list --state in-progress --json` returned exactly four —
+SH-112 (epic, expected), SH-187, SH-188, SH-196. The last three are real
+worktrees (`.claude/worktrees/SH-187` on `fix/sh-187-dashboard-token-auth`,
+`.claude/worktrees/SH-188`, `.claude/worktrees/SH-196`), not stale story
+state, so all three landed with a ⚠ mark from the start rather than a
+checkbox — the first time a newly-added line has carried one, since every
+prior resync's ⚠ finds were corrections to *existing* lines.
+
+**No `⏸` marks found or added.** Checked every ready story's `awaiting`
+field (all null) and grepped every comment for an unresolved question
+addressed to Mikey; the one hit (SH-196) is marked `RESOLVED` in its own
+comment. Nothing is currently held for an answer.
+
+**Not a pick.** No story moved to `in-progress`, no code touched, no `make
+test` run — this PR is `HARDENING_PROGRESS.md` only. Landed on its own
+branch, same as the 2026-08-07 precedent (#143) and the SH-64/SH-218 log-only
+fallback (#206/#209).
