@@ -1010,6 +1010,35 @@ fn web_serve_api_data_meta_has_types_priorities_relations_members() {
 }
 
 #[test]
+fn web_serve_api_data_meta_defaults_are_first_configured_not_alphabetical() {
+    let fixture = served();
+    // Append a state and a type that would sort first alphabetically, so a
+    // defaulting rule keyed on sorted (e.g. BTreeMap-derived) order would
+    // pick them instead of the project's actual first-configured state/type
+    // (SH-44) — the same trap `web_serve_api_data_meta_states_are_ordered`
+    // above guards for `meta.states` itself.
+    fixture.seed(&["state", "add", "aaa-earlier", "--super", "OPEN"]);
+    fixture.seed(&["type", "add", "aaa-earlier"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = ureq::get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(
+        json["meta"]["defaults"]["state"], "todo",
+        "default state must be the first *configured* OPEN state, not alphabetical"
+    );
+    assert_eq!(
+        json["meta"]["defaults"]["type"], "normal",
+        "default type must be the first *configured* type, not alphabetical"
+    );
+}
+
+#[test]
 fn web_meta_includes_sorted_unique_labels() {
     let fixture = served();
     fixture.seed(&["new", "A", "--labels", "web,bug"]);

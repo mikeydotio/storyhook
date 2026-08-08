@@ -3607,14 +3607,22 @@ tbody tr:hover { background: var(--bg-sunken); }
     autoGrowTextarea($("create-description"));
     $("create-error").textContent = "";
     var m = meta();
+    // SH-44: preselect the project's own first-configured state/type — read
+    // off `meta.defaults`, the same selection `story new` applies server-side
+    // (`src/api/rest.rs::meta_json`), so this can't drift into a hardcoded
+    // guess. Falls back to the blank placeholder when a project has none
+    // (only reachable on legacy data — see `domain::default_type`'s doc).
+    var defaults = m.defaults || {};
     clear($("create-state"));
     $("create-state").appendChild(el("option", { value: "" }, ["Default state"]));
     m.states.filter(function(s) { return s.super_state === "OPEN"; }).forEach(function(s) {
       $("create-state").appendChild(el("option", { value: s.slug }, [s.slug]));
     });
+    $("create-state").value = defaults.state || "";
     clear($("create-type"));
     $("create-type").appendChild(el("option", { value: "" }, [typeLabel(null)]));
     m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [typeLabel(t.slug)])); });
+    $("create-type").value = defaults.type || "";
     clear($("create-priority"));
     $("create-priority").appendChild(el("option", { value: "" }, ["Default priority"]));
     m.priorities.forEach(function(p) { $("create-priority").appendChild(el("option", { value: p }, [p])); });
