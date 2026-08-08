@@ -441,11 +441,10 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// `story context` — the agent-facing project briefing, as Markdown or as
     /// a JSON document.
     ///
-    /// The JSON form is returned as a *string* rather than a typed value, and
-    /// deliberately so: the global `--json` flag then wraps it as an escaped
-    /// string in the envelope's `message` field. That is a defect the export
-    /// wave fixed for `story export` and left alone here, because the golden
-    /// corpus freezes the wrapped form and no consumer parses it.
+    /// The JSON form is returned as a *string* rather than a typed value:
+    /// `invoke::dispatch` wraps it in [`Response::RawJson`](crate::output::Response::RawJson),
+    /// which prints it as-is regardless of the global `--json`/`--quiet`
+    /// flags, the same fix the export wave made for `story export` (SH-66).
     pub fn context(&self, json: bool) -> Result<String, AppError> {
         let views = self.story_views(false)?;
         let stories = view_map(&views);

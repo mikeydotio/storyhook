@@ -1,0 +1,18 @@
+---
+source: tests/golden_cli.rs
+---
+{
+  "byte_identical_to_unflagged_context": true,
+  "is_the_context_document": true,
+  "is_wrapped_in_an_envelope": false,
+  "keys": [
+    "blocked_count",
+    "by_state",
+    "by_type",
+    "closed",
+    "open",
+    "ready_count",
+    "ready_stories",
+    "total_stories"
+  ]
+}
