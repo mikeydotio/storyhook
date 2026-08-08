@@ -15,7 +15,7 @@
 
 use std::io::{self, Read, Write};
 
-use tiny_http::{Header, Method, Request, Response};
+use crate::daemon::http1::{Header, Method, Request, Response};
 
 use crate::error::AppError;
 use crate::output::render_error;
@@ -42,7 +42,7 @@ fn content_type_header(value: &str) -> Header {
     Header::from_bytes("Content-Type", value).unwrap()
 }
 
-/// A fully-formed HTTP response, decoupled from `tiny_http`'s request type so
+/// A fully-formed HTTP response, decoupled from the connection layer's request type so
 /// routing decisions stay pure and easy to reason about (and test) apart from
 /// the network layer. Every `Reply` — success or error — flows through
 /// [`finish`], which attaches the security headers exactly once, in exactly
@@ -151,8 +151,8 @@ pub fn error_reply(error: &AppError) -> Reply {
 
 // --- Mutation guard (CSRF / DNS-rebinding) ---
 
-/// Looks up a header's value by name (case-insensitive), as `tiny_http`
-/// itself compares header field names.
+/// Looks up a header's value by name (case-insensitive), as
+/// `crate::daemon::http1` itself compares header field names.
 pub fn header_value<'a>(headers: &'a [Header], name: &'static str) -> Option<&'a str> {
     headers
         .iter()

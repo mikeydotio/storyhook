@@ -56,8 +56,8 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::daemon::http1::{Header, Method};
 use serde::Serialize;
-use tiny_http::{Header, Method};
 use wait_timeout::ChildExt;
 
 use crate::api::http::{Reply, mutation_guard_ok, text_reply};
