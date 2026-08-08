@@ -1,47 +1,48 @@
-# Handoff — SH-173 done, this worktree has nothing left in it
+# Handoff — SH-177 done, this worktree has nothing left in it
 
-**SH-173 is done.** Nine commits, each green on `make test`, PR open from
-this worktree. The run itself is described by
-[`HARDENING_PROGRESS.md`](HARDENING_PROGRESS.md) — read its **SH-173** entry
+**SH-177 is done.** Three commits, a merge reconciling against `main`'s
+concurrent SH-146/SH-147 tailnet-reprobe work, each state green on
+`make test`, PR #165 merged, branch deleted. The run itself is described by
+[`HARDENING_PROGRESS.md`](HARDENING_PROGRESS.md) — read its **SH-177** entry
 (the last one in the file) for what changed and why; that is the process,
 this file is only what comes next.
 
 ## There is nothing to take over here
 
-This worktree was created for SH-173 alone. Once the PR merges and the
-branch is deleted (verify the merge landed first — never assume), this
-directory's job is done. There is no in-progress work, no open question, no
-partial commit waiting on a decision.
+This worktree was created for SH-177. The PR merged and the branch is
+deleted (verified via `gh pr view`'s `mergedAt` before deleting — never
+assumed). There is no in-progress work, no open question, no partial commit
+waiting on a decision.
 
 ## What's next, if you're picking up fresh
 
 `story next` currently leads with **SH-196** (`high`, `dashboard, dispatch`)
 — the dashboard's dispatch endpoint failing silently-ish when the installed
-plugin script predates the daemon's `--project` flag by nine commits. Filed
-during the github-sync/setup story (see this file's entry above SH-173's in
-`HARDENING_PROGRESS.md`), reproduced exactly, worked around there by cutting
-a local plugin release; the underlying code-level defect (a version-skewed
-plugin fails with a generic usage message instead of a clear diagnosis) is
-still open.
+plugin script predates the daemon's `--project` flag. Unchanged since the
+last story that touched this worktree; still open.
 
-Named successors from SH-173 itself, each filed as its own story rather than
-folded into that one:
-
-- The `ChangeBus` 200ms coalescing window, which two dispatch threads and the
-  250ms change-token poller already raced before SH-173 touched either.
-- `rest::route`'s missing `catch_unwind` — a REST-side panic now kills one of
-  `DISPATCHERS` dispatchers rather than the whole daemon's only one, but
-  still wedges that one permanently rather than being caught the way
-  `rpc::invoke` already is.
-- `story daemon status` reporting the in-flight set, since the client-facing
-  stalled-command messages now imply more than the status command delivers.
+No successors were filed out of SH-177 itself — the story's two named
+redesign triggers (replace `tiny_http`, or add a connection cap) both landed
+together, since investigation found the cap alone could never have closed
+the gap on its own (see the HARDENING_PROGRESS.md entry).
 
 Otherwise: `story load-context` or `story summary` for the live backlog.
+
+## A note for the next session in *any* worktree
+
+`git stash` is shared across every worktree of this repository — pushing and
+popping within one worktree can silently apply or drop another worktree's
+staged changes if a push happens on the same stack in the interim. Hit this
+during SH-177's own landing (recovered cleanly; documented in its
+HARDENING_PROGRESS.md entry). `CLAUDE.md` now says so directly: never `git
+stash` inside a worktree.
 
 ## Gate
 
 `make test`, supervised in the background with **log growth as the
 heartbeat** and a stall bound — not a fixed wall-clock guess. Budget roughly
-40–50s per run on this machine. Do **not** push with
-`SKIP_PREPUSH_TESTS=1`. Never bump the version or deploy from a linked
-worktree — land the PR and let `main` handle both.
+5–10 minutes per run on this machine when other sessions are also running
+gates concurrently (port-reservation tests can flake under that contention;
+confirm with an immediate clean re-run before treating a failure as real).
+Do **not** push with `SKIP_PREPUSH_TESTS=1`. Never bump the version or
+deploy from a linked worktree — land the PR and let `main` handle both.
