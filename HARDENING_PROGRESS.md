@@ -170,7 +170,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
 - [x] **SH-164** — labels are sometimes concatenated
 - [x] **SH-165** — an epic with in-progress children should read as in-progress
-- [ ] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118*
+- [x] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118; box was stale — story confirmed `done (CLOSED)`, PR #200 merged as `5af74e2`, logged below at 2026-08-08*
 - [x] **SH-66** — `context --format json` double-encodes
 - [x] **SH-42** — project selector dropdown
 - [x] **SH-43** — archive
@@ -192,7 +192,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-128** — column sort options
 - [x] **SH-168** — do not show the green ready status labels
 - [x] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
-- [ ] **SH-183** — `story migrate` refuses a bad state slug but accepts a bad type slug · *filed by SH-134's chair, correcting a claim in that council's own verdict*
+- [x] **SH-183** — `story migrate` refuses a bad state slug but accepts a bad type slug · *filed by SH-134's chair, correcting a claim in that council's own verdict*
 - [ ] **SH-218** — the drawer's async detail-fetch re-render can silently wipe unsaved input · *filed by SH-168's e2e test*
 
 ### What was on the old list and is now done
@@ -7533,3 +7533,84 @@ or CLI surface added, removed, or changed shape.
 `Closes SH-64` in the commit body auto-closed the story on merge, confirmed
 via `story show`. Branch verified deleted both sides (`git fetch --prune`
 showed the remote ref pruned).
+
+### SH-167 — box was stale, corrected in passing
+
+Before picking a new story: `story list --state in-progress` showed only the
+epic SH-112, but the Medium queue's SH-167 line was still unchecked. `story
+show SH-167` read `done (CLOSED)`, and `git log` confirmed its merge commit
+(`5af74e2`, PR #200) already on `main`. Ticked the box; no other action
+needed — this is the same class of drift as SH-68's stale `⚠` mark two
+entries above SH-64's, just the opposite direction (unmarked but done, not
+marked but stale).
+
+### SH-183 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line once
+SH-167's stale box was corrected). `story list --state in-progress` showed
+only the epic SH-112.
+
+**The asymmetry, confirmed before touching anything:** `MigrationPlan::build`
+(`src/service/migrate.rs:297`) ran `validate_state_defs_for_write` over a
+legacy tree's `states.toml` and refused a bad slug, but nothing equivalent
+ever ran over `types.toml` — `storage::save_types` (unlike `save_states`)
+writes verbatim with no validation, confirmed by reading both functions
+side by side. After SH-134, `ConfigService::add_type` already refuses an
+unaddressable type slug on the live path, so `story migrate` was the widest
+remaining door into the store for one, and it disagreed with itself about
+whether the two catalogs answer to the same rule.
+
+**Took Option 1** of the three the story laid out: extended the preflight to
+collect a type-slug refusal per offending type, alongside the existing
+state-slug one, naming `types.toml` and every bad slug rather than just the
+first (`Refusals` already collects rather than short-circuits — matching the
+module's own stated rule that an operator wants the whole list). Option 2
+(stop refusing bad state slugs, to match the type door) would have widened an
+existing door on evidence the story didn't ask to reopen; Option 3 (leave the
+asymmetry, document why) treats "we forgot one call site" as a considered
+design, which the story's own "why it matters" section already argued
+against.
+
+**No fresh council.** The story's own text named the smaller-change option
+and the reason ("Option 1 is the smaller change and matches the operator's
+existing experience of that command") — the filer is SH-134's own council
+chair, so this is a considered recommendation, not an unweighed list, and
+nothing here trades off competing designs the story hadn't already resolved.
+Same shape as SH-64's "no council" call: the evidence already in the
+repository pinned the decision.
+
+**Doc comment updated, not just the code.** `validate_type_slug`'s doc in
+`src/domain.rs` said flatly that the rule is "not applied to a slug arriving
+in an export document or a legacy tree" — true of `TransferService::
+import_project` (still untouched, per the story's explicit "not part of
+this"), now false of `story migrate`. Rewrote it to name `import_project`
+specifically as the exception that stands, and add `story migrate` as the one
+legacy-tree path that now enforces the rule, with the reasoning (state and
+type refusing at the same call site is what SH-183 fixed) so the next reader
+does not read the old blanket claim and revert this.
+
+**Tests:** two new, `tests/service_migrate.rs`, both red before the fix
+(`MigrationPlan::build` did not error) and green after:
+`a_type_with_an_unaddressable_slug_is_refused_and_the_catalog_is_named`
+(single bad slug, mirrors the existing state-slug test immediately above it)
+and `every_unaddressable_type_slug_is_named_not_just_the_first` (two bad
+slugs, both named — the multi-violation guarantee `Refusals` is supposed to
+give). Both built their tree via `custom_config_tree()` +
+`storage::save_types` directly, which writes unvalidated, unlike
+`save_states` — the exact gap the story is about, so the fixture reaches it
+without a raw-JSONL workaround. Checked the one sibling call site that could
+have been affected and confirmed it was not: `tests/doctor.rs`'s
+`doctor_reports_an_unaddressable_type_slug_and_cannot_fix_it` writes a bad
+type slug straight into the store (post-import shape), never through
+`story migrate`, so it is untouched and still passed in the full run.
+
+**Gate:** `make test` green, supervised with a log-growth watchdog (15s
+poll, 120s stall threshold, no stall hit): fmt, clippy `-D warnings`, full
+Rust suite (1024+ lib tests, every integration file including the new
+assertions confirmed by name in the log), `cargo build`, plugin harness
+25/25, e2e 36/36, `check-no-orphan-servers.sh postlude` clean.
+
+**Semver: patch.** A validation refusal added to one command's error path —
+no schema, API, or CLI surface added, removed, or changed shape. Not bumped
+here, matching this run's standing practice of deferring the bump to a
+later batch (VERSION is still `v2.0.0` after every story merged so far).
