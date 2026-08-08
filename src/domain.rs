@@ -1576,6 +1576,15 @@ pub fn default_open_state(states: &[StateDef]) -> Option<StateDef> {
         .cloned()
 }
 
+/// The project's first configured type — what a new story should be typed as
+/// when nothing more specific is asked for. `None` for an empty catalog,
+/// which `story type` no longer produces (`ConfigService::remove_type`
+/// floors a project at one) but which this pure function still needs an
+/// honest answer for.
+pub fn default_type(types: &[TypeDef]) -> Option<TypeDef> {
+    types.first().cloned()
+}
+
 /// The state at which an epic's Web-board card should be shown, when that
 /// differs from its own literal [`StorySnapshot::state`] (SH-165).
 ///
@@ -2578,10 +2587,10 @@ mod tests {
 
     use super::{
         FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges, StateDef,
-        StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, active_state,
-        compute_epic_display_state, compute_progress, derive_family_relationships, fold_story,
-        has_children, is_ready, last_activity_type, normalize_labels, ready_order, story_number,
-        validate_event_for_append, validate_required_states, validate_state_defs,
+        StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef, active_state,
+        compute_epic_display_state, compute_progress, default_type, derive_family_relationships,
+        fold_story, has_children, is_ready, last_activity_type, normalize_labels, ready_order,
+        story_number, validate_event_for_append, validate_required_states, validate_state_defs,
         validate_state_defs_for_write, validate_state_slug, validate_type_slug,
         with_required_states, would_create_parent_cycle,
     };
@@ -4566,6 +4575,40 @@ mod tests {
             state("done", SuperState::Closed, None),
         ];
         assert_eq!(active_state(&states), None);
+    }
+
+    // --- default_type (SH-44) -----------------------------------------------
+
+    fn type_def(slug: &str) -> TypeDef {
+        TypeDef {
+            slug: slug.to_string(),
+            description: None,
+            emoji: None,
+        }
+    }
+
+    #[test]
+    fn default_type_is_the_first_configured_type_not_alphabetical() {
+        // "bug" sorts after "normal"/"epic" alphabetically but is configured
+        // first here, mirroring default_open_state's own configured-order
+        // contract (see two_open_states_and_no_role_means_the_second_one above).
+        let types = [type_def("bug"), type_def("epic"), type_def("normal")];
+        assert_eq!(
+            default_type(&types).map(|t| t.slug),
+            Some("bug".to_string())
+        );
+    }
+
+    /// `ConfigService::remove_type` floors a project at one type, the same
+    /// way `REQUIRED_STATES` floors the state catalog — so this shape is
+    /// unreachable through `story type`, only through a read over data
+    /// written before that floor existed. Tested here, at the pure function,
+    /// for the same reason `two_open_states_and_no_role_means_the_second_one`
+    /// above is: the contract must still hold for a catalog the write path no
+    /// longer produces.
+    #[test]
+    fn default_type_is_none_for_a_project_with_no_types_configured() {
+        assert_eq!(default_type(&[]), None);
     }
 
     // --- compute_epic_display_state (SH-165) -------------------------------

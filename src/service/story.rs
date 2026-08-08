@@ -895,16 +895,15 @@ pub(crate) fn state_transition_events(
 
 /// The project's default open state: the first *configured* one that is OPEN.
 ///
-/// Takes the ordered state list rather than the slug-keyed map on purpose. The
-/// map is a `BTreeMap`, so iterating it walks the slugs alphabetically — which
-/// for the default catalog would make `in-progress` the default open state
-/// instead of `todo`. Configured order is the contract; only the fold wants the
-/// map.
+/// Delegates to [`crate::domain::default_open_state`] — the same pure
+/// selection the dashboard's `meta.defaults.state` (`src/api/rest.rs`) reads
+/// off the identical ordered `Vec<StateDef>`, so a new story's actual default
+/// and the web form's preselected one cannot drift apart (SH-44). This
+/// wrapper only adds the validation error a creation path needs when a
+/// project somehow has no OPEN state at all — the dashboard, which is
+/// display-only, is content with `None`.
 fn default_open_state(states: &[StateDef]) -> Result<StateDef, AppError> {
-    states
-        .iter()
-        .find(|state| state.super_state == SuperState::Open)
-        .cloned()
+    crate::domain::default_open_state(states)
         .ok_or_else(|| AppError::Validation("project has no OPEN-mapped default state".to_string()))
 }
 
