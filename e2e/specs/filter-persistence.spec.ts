@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { seedToken } from "./support";
 
 /**
  * Exercises SH-155: the filter bar and sort column carry over across a
@@ -25,6 +26,7 @@ import { test, expect } from "@playwright/test";
  */
 
 test.beforeEach(async ({ page }) => {
+  await seedToken(page);
   await page.goto("/");
 });
 

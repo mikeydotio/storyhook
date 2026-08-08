@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
+import { requiredEnv, seedToken } from "./support";
 
 /**
  * Exercises the dashboard's Dispatch button (SH-50) against a real daemon
@@ -28,8 +29,11 @@ import { test, expect } from "@playwright/test";
  *     machine, one story ("Archived idea") added purely so this file can
  *     open its drawer and confirm Dispatch is absent (AC1)
  *
- * `DASHBOARD_DISPATCH_TOKEN` is the daemon's real bearer token, read via
- * `story daemon token`, exactly as an operator would.
+ * `DASHBOARD_TOKEN` (`./support.ts`) is the daemon's real bearer token, read
+ * via `story daemon token`, exactly as an operator would -- required on
+ * every request since SH-187, not just dispatch's own. Every test but the
+ * one that exercises the modal itself seeds it before navigating, the same
+ * way an already-authenticated browser tab would carry it.
  *
  * Dispatch Auto's own test does not (and cannot, without a real `claude`
  * binary standing behind the fixture's fake tmux) prove the autonomous
@@ -41,31 +45,23 @@ import { test, expect } from "@playwright/test";
  * worktree lands on disk.
  */
 
-function requiredEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(
-      `${name} is not set — run this suite through scripts/run-e2e.sh, which starts an ` +
-        "isolated daemon, seeds the fixtures and exports the dispatch-specific variables " +
-        "this spec needs.",
-    );
-  }
-  return value;
-}
-
-const DISPATCH_TOKEN = requiredEnv("DASHBOARD_DISPATCH_TOKEN");
+const DASHBOARD_TOKEN = requiredEnv("DASHBOARD_TOKEN");
 const ALPHA_STORY_ID = requiredEnv("DASHBOARD_ALPHA_STORY_ID");
 const ALPHA_CHECKOUT = requiredEnv("DASHBOARD_ALPHA_CHECKOUT");
 const DELTA_STORY_ID = requiredEnv("DASHBOARD_DELTA_STORY_ID");
 const DELTA_CHECKOUT = requiredEnv("DASHBOARD_DELTA_CHECKOUT");
 
-test.beforeEach(async ({ page }) => {
-  await page.goto("/");
-});
+// No shared `beforeEach` here, unlike this suite's other spec files: the
+// "prompts for the daemon token" test below deliberately navigates with NO
+// token seeded, since that is the one thing it exercises. Every other test
+// seeds it itself, first thing, the same way an already-authenticated
+// browser tab would carry it in.
 
 test("Dispatch and Dispatch Auto are both absent for a story in a project with no checkout (AC1)", async ({
   page,
 }) => {
+  await seedToken(page);
+  await page.goto("/");
   await page.locator(".repo-card-name", { hasText: "Gamma Archive" }).click();
   await page.locator(".card-title", { hasText: "Archived idea" }).click();
   await expect(page.locator("#drawer")).toHaveClass(/open/);
@@ -81,6 +77,8 @@ test("Dispatch and Dispatch Auto are both absent for a story in a project with n
 });
 
 test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
+  await seedToken(page);
+  await page.goto("/");
   await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
   await page
     .locator(".card-title", { hasText: "Wire up the auth flow" })
@@ -97,10 +95,21 @@ test("Dispatch sits at the leading edge, before Delete", async ({ page }) => {
   await expect(footerButtons.nth(2)).toHaveText("Delete");
 });
 
-test("Dispatch prompts for the daemon token, then runs a real dispatch (AC2)", async ({
+test("the dashboard prompts for the daemon token at load, then a dispatch runs with no second prompt (AC2)", async ({
   page,
 }) => {
   test.setTimeout(45_000);
+
+  // No token seeded: SH-187 requires one for every `/api/**` route, so the
+  // app's own bootstrap sequence -- not a Dispatch click -- is what surfaces
+  // the modal now. `bootstrap()` never gets to fetch the repo list until
+  // this resolves.
+  await page.goto("/");
+  await expect(page.locator("#token-modal")).toHaveClass(/open/);
+  await page.locator("#token-input").fill(DASHBOARD_TOKEN);
+  await page.locator("#token-submit").click();
+  await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
+  await expect(page.locator("#home-view")).toBeVisible();
 
   await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
   await page
@@ -112,14 +121,9 @@ test("Dispatch prompts for the daemon token, then runs a real dispatch (AC2)", a
   await expect(dispatchButton).toBeVisible();
   await dispatchButton.click();
 
-  // No token saved yet in this fresh browser context -- the modal opens
-  // rather than the request going out.
-  await expect(page.locator("#token-modal")).toHaveClass(/open/);
-  await page.locator("#token-input").fill(DISPATCH_TOKEN);
-  await page.locator("#token-submit").click();
-  await expect(page.locator("#token-modal")).not.toHaveClass(/open/);
-
-  // The button goes non-interactive immediately (the POST's 202 lands well
+  // The token is already on hand from the bootstrap prompt above -- no
+  // second modal, straight to a running dispatch. The button goes
+  // non-interactive immediately (the POST's 202 lands well
   // under a second); the toast lands only after at least one 5s poll cycle.
   await expect(dispatchButton).toBeDisabled();
   await expect(dispatchButton).toHaveText("Dispatching…");
@@ -152,14 +156,10 @@ test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)",
 }) => {
   test.setTimeout(45_000);
 
-  // Seeded directly rather than driven through the token modal again --
-  // that flow is AC2's own test; this one is scoped to Dispatch Auto's own
-  // behavior. sessionStorage survives the reload below.
-  await page.evaluate(
-    (token) => window.sessionStorage.setItem("storyhookDispatchToken", token),
-    DISPATCH_TOKEN,
-  );
-  await page.reload();
+  // Seeded directly rather than driven through the token modal -- that flow
+  // is AC2's own test; this one is scoped to Dispatch Auto's own behavior.
+  await seedToken(page);
+  await page.goto("/");
 
   await page.locator(".repo-card-name", { hasText: "Delta Project" }).click();
   await page
@@ -212,12 +212,9 @@ test("a saved token is not asked for again on a second dispatch", async ({
   // Dispatching Alpha's other story reuses a token already in this tab's
   // sessionStorage -- Playwright starts each test with a fresh context, so
   // this seeds it directly rather than depending on the previous test
-  // having run first. sessionStorage survives a same-origin reload.
-  await page.evaluate(
-    (token) => window.sessionStorage.setItem("storyhookDispatchToken", token),
-    DISPATCH_TOKEN,
-  );
-  await page.reload();
+  // having run first.
+  await seedToken(page);
+  await page.goto("/");
 
   await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
   await page

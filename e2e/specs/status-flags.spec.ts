@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { seedToken } from "./support";
 
 /**
  * Exercises SH-168: the board and list views no longer decorate a "ready"
@@ -22,6 +23,7 @@ import { test, expect } from "@playwright/test";
  */
 
 test.beforeEach(async ({ page }) => {
+  await seedToken(page);
   await page.goto("/");
   await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
   await expect(page.locator("#board-view")).toBeVisible();

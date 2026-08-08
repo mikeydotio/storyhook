@@ -323,7 +323,16 @@ fn compatible(request: &WireRequest) -> Result<(), AppError> {
 /// a mismatch takes, over loopback, to recover 128 bits a byte at a time — is
 /// remote, but the defence costs one loop and the alternative is having to
 /// argue that it is remote.
+///
+/// An empty `expected` always fails, even against an equally-empty offered
+/// header: every real caller of this function passes a token
+/// [`lifecycle::mint_token`] minted, which is never empty, so an empty
+/// `expected` only ever means "unconfigured" — fail closed rather than let
+/// that state authenticate anything.
 pub(crate) fn token_ok(headers: &[Header], expected: &str) -> bool {
+    if expected.is_empty() {
+        return false;
+    }
     let Some(offered) = header_value(headers, TOKEN_HEADER) else {
         return false;
     };
@@ -577,6 +586,16 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"ab"));
         assert!(constant_time_eq(b"", b""));
+    }
+
+    #[test]
+    fn token_ok_rejects_an_empty_expected_token_even_against_an_empty_offered_one() {
+        // constant_time_eq("", "") alone would call this a match; token_ok
+        // must not, because an empty `expected` only ever means the daemon
+        // was never configured with a real one.
+        let empty_offered = vec![header(TOKEN_HEADER, "")];
+        assert!(!token_ok(&empty_offered, ""));
+        assert!(!token_ok(&[], ""));
     }
 
     fn scratch_env() -> (tempfile::TempDir, Environment) {

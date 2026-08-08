@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { seedToken } from "./support";
 
 /**
  * Exercises SH-162: a "Columns" filter-bar dropdown picks which board
@@ -25,6 +26,7 @@ import { test, expect } from "@playwright/test";
  */
 
 test.beforeEach(async ({ page }) => {
+  await seedToken(page);
   await page.goto("/");
 });
 

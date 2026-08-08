@@ -435,11 +435,13 @@ mod tests {
             .expect("a scratch directory")
     }
 
-    /// A [`DaemonInfo`] naming `port`, with every other field a value that
-    /// will never plausibly be checked here: `/api/events` carries no version
-    /// handshake and no token check, only [`Subscriber`]'s own use of `port`
-    /// and `token` (the latter sent but never verified) is exercised.
-    fn daemon_at(port: u16) -> DaemonInfo {
+    /// A [`DaemonInfo`] naming `port` and `token`, with every other field a
+    /// value that will never plausibly be checked here: `/api/events`
+    /// carries no version handshake, only [`Subscriber`]'s own use of `port`
+    /// and `token` is exercised. `token` must be the real one `serve()`
+    /// minted (SH-187: every route requires it now, `/api/events` included)
+    /// rather than a placeholder, or `connect()` gets a 401.
+    fn daemon_at(port: u16, token: &str) -> DaemonInfo {
         DaemonInfo {
             pid: std::process::id(),
             port,
@@ -448,7 +450,7 @@ mod tests {
             exe: std::env::current_exe().expect("this test binary"),
             exe_mtime: 0,
             started_at: "2026-01-01T00:00:00Z".to_string(),
-            token: "test-token".to_string(),
+            token: token.to_string(),
             store_path: std::path::PathBuf::new(),
             tailnet: None,
         }
@@ -466,7 +468,13 @@ mod tests {
     /// instance of it from the type system's point of view, so the two
     /// `SqliteStore`s do not unify. `bind_and_serve` is what that helper
     /// wraps; called directly here, everything stays the same crate instance.
-    fn serve() -> (u16, Environment, Arc<SqliteStore>, tempfile::TempDir) {
+    fn serve() -> (
+        u16,
+        String,
+        Environment,
+        Arc<SqliteStore>,
+        tempfile::TempDir,
+    ) {
         use std::sync::mpsc;
 
         let dir = scratch();
@@ -482,21 +490,21 @@ mod tests {
                 &*serving_store,
                 &serving_env,
                 0,
-                move |bound| {
-                    let _ = tx.send(bound.port());
+                move |bound, token| {
+                    let _ = tx.send((bound.port(), token));
                 },
             );
         });
-        let port = rx
+        let (port, token) = rx
             .recv_timeout(Duration::from_secs(10))
             .expect("the test server never became ready");
-        (port, env, store, dir)
+        (port, token, env, store, dir)
     }
 
     #[test]
     fn connect_blocks_until_the_daemon_confirms_the_subscription() {
-        let (port, _env, _store, _dir) = serve();
-        let daemon = daemon_at(port);
+        let (port, token, _env, _store, _dir) = serve();
+        let daemon = daemon_at(port, &token);
         // The subscriber's own `env` only matters for a reconnect, which
         // this test never triggers.
         let env = Environment::at("/private/tmp");
@@ -508,8 +516,8 @@ mod tests {
     fn a_write_made_after_connecting_is_reported() {
         use crate::store::{Store as _, WriteOps as _};
 
-        let (port, env, store, _dir) = serve();
-        let daemon = daemon_at(port);
+        let (port, token, env, store, _dir) = serve();
+        let daemon = daemon_at(port, &token);
         let mut subscriber = Subscriber::new(env, daemon, Duration::from_secs(20));
         subscriber.connect().expect("connecting to the change feed");
 

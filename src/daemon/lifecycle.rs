@@ -620,7 +620,13 @@ pub fn claim_pidfile(env: &Environment) -> Result<File, AppError> {
 /// A v4 UUID's 122 random bits come from the operating system's CSPRNG, which is
 /// what a bearer token needs and the only property that matters here. Written in
 /// simple form so it can go in a header without escaping.
-fn mint_token() -> String {
+///
+/// `pub(crate)`: [`super::serve::bind_and_serve`] (the `test-seam`-gated
+/// harness entry point) needs one too, now that SH-187 makes every `/api/**`
+/// route require a real token — an empty one, which that seam used to pass,
+/// can no longer authenticate anything ([`crate::api::rpc::token_ok`] fails
+/// closed on it).
+pub(crate) fn mint_token() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
