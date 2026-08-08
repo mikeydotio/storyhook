@@ -55,7 +55,12 @@ use crate::store::{ReadOps, Store};
 /// `sseWatchdog` treats as the same thing when no write ever fails (SH-145).
 /// Overridable via `STORYHOOK_SSE_HEARTBEAT_MS` so integration tests do not have
 /// to wait out the production interval.
-fn heartbeat_interval() -> Duration {
+///
+/// `pub(crate)` rather than private: [`crate::daemon::subscribe`] derives its
+/// watchdog from this same constant, so the client and server sides of the
+/// feed cannot drift apart the way `web_dashboard.html`'s separately-declared
+/// `SSE_STALE_AFTER_MS` did before SH-145.
+pub(crate) fn heartbeat_interval() -> Duration {
     std::env::var("STORYHOOK_SSE_HEARTBEAT_MS")
         .ok()
         .and_then(|s| s.parse().ok())
