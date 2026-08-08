@@ -1692,10 +1692,11 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             let raw = std::fs::read_to_string(resolve_against(root, &file))
                 .map_err(|e| AppError::Storage(format!("failed to read {file}: {e}")))?;
             let export: ProjectExport = serde_json::from_str(&raw)?;
-            let imported =
+            let outcome =
                 transfer::import_project(store, root, &Clock::Fixed(now.to_string()), &export)?;
             Ok(Response::Message(format!(
-                "imported project with {imported} stories"
+                "imported project with {} stories",
+                outcome.stories
             )))
         }
         other => Err(not_yet_ported(&other)),
