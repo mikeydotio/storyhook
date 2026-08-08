@@ -3698,7 +3698,12 @@ tbody tr:hover { background: var(--bg-sunken); }
     api("POST", apiBase() + "/story", body)
       .then(function(resp) {
         closeCreateModal();
-        toast((resp.story && resp.story.story.id) + " created", "success");
+        // SH-127: no success toast here -- the new card's own "entering"
+        // animation (reconcileColumnCards, driven by diffSnapshots'
+        // `entered` classification) already confirms the creation in
+        // place, unlike e.g. a deletion, whose exit animation is shared
+        // with plain filtering and so still needs the toast to
+        // disambiguate (council: .council/sh127-status-flash-scope/).
         fetchData();
       })
       .catch(function(err) { $("create-error").textContent = err.message; });
