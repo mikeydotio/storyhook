@@ -664,6 +664,16 @@ pub fn preferred_port(env: &Environment) -> u16 {
 /// being a startup failure at all. The portfile is authoritative about where the
 /// daemon actually is, so nothing downstream needs the preferred port to have
 /// been available.
+///
+/// The tailnet probe inside [`super::serve::bind_listeners`] runs **at most
+/// once** here, never twice (SH-147, filed speculatively against a `2 *
+/// TAILNET_PROBE_TIMEOUT` inside [`SPAWN_DEADLINE`] and not reproduced): the
+/// fallback below only runs when the first call's loopback bind already
+/// failed, and `bind_listeners` returns before it ever reaches the probe on
+/// that path. That ordering is load-bearing — reorder `bind_listeners` so the
+/// probe can run before its loopback bind is known to have succeeded, and a
+/// taken preferred port starts spending two probes inside one spawn window.
+/// `tests/tailnet_probe_budget.rs` pins it.
 pub fn bind_preferred(
     env: &Environment,
 ) -> Result<(Vec<super::serve::Listener>, super::serve::BoundAddress), AppError> {
@@ -708,6 +718,7 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
     }
 
     let bus = crate::daemon::bus::ChangeBus::new();
+    let (info_for_late_bind, env_for_late_bind) = (info.clone(), env.clone());
     super::serve::serve(
         store,
         env,
@@ -716,6 +727,21 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
         bus,
         info.token.clone(),
         || {},
+        // Fires at most once (SH-146), from the background thread that binds
+        // a tailnet interface this daemon missed at startup. Without this the
+        // portfile would keep reading `tailnet: None` forever after a silent
+        // self-heal, so `story daemon status`/`address` — reading the same
+        // file — would still report the daemon as loopback-only.
+        move |bound: &super::serve::BoundAddress| {
+            let mut info = info_for_late_bind.clone();
+            info.tailnet = bound.tailnet.clone();
+            if let Err(e) = write_info(&env_for_late_bind, &info) {
+                eprintln!(
+                    "warning: bound the tailnet interface but could not update the daemon \
+                     portfile: {e}"
+                );
+            }
+        },
     )
 }
 

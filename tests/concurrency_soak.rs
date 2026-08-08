@@ -47,11 +47,10 @@
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
 use std::time::Duration;
 
 use storyhook::store::{ProjectId, ReadOps, SqliteStore, Store, StoryQuery, diff_read_model};
-use storyhook_test_support::{TestEnv, project_id_at, scratch_dir};
+use storyhook_test_support::{TestEnv, project_id_at, run_bounded, scratch_dir};
 
 /// How many clients run at once.
 ///
@@ -110,52 +109,11 @@ const ROUNDS: usize = 3;
 const DEADLINE: Duration =
     Duration::from_secs(storyhook::daemon::lifecycle::SPAWN_LOCK_DEADLINE.as_secs() + 15);
 
-/// Runs a command with a deadline, and fails loudly rather than hanging.
-///
-/// A deadlocked suite reports nothing useful: it is killed by a timeout several
-/// layers up, long after the evidence is gone. This one names the command that
-/// stopped.
-fn run_bounded(mut cmd: Command, what: &str) -> Output {
-    // The deadline covers spawning, waiting *and* collecting the output, which
-    // is one bound rather than two on purpose. Waiting on the process and then
-    // reading its pipes leaves the second half unbounded — and a pipe outlives
-    // the process that was handed it, so "the child exited" is not "the read
-    // will return". A `make test` run stalled for twelve minutes inside exactly
-    // that shape.
-    //
-    // The worker thread is not joined on timeout: it is blocked in a syscall
-    // nothing here can interrupt, and leaving it is the price of reporting the
-    // failure at all. The process ends at the end of the run.
-    let (tx, rx) = mpsc::channel();
-    let label = what.to_string();
-    std::thread::spawn(move || {
-        let _ = tx.send(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output());
-    });
-
-    match rx.recv_timeout(DEADLINE) {
-        Ok(Ok(output)) => output,
-        Ok(Err(e)) => panic!("spawning `{label}`: {e}"),
-        // Naming the two known causes is worth more than naming the symptom, and
-        // the label says which one to look at first. The last time this fired,
-        // the child had already exited and the block was here, in the parent,
-        // because a detached daemon was holding the write end of this pipe.
-        // `lsof -p <pid of this test binary>` names the pipe; searching the
-        // other processes for the same address names whoever holds it. That
-        // took four hours to work out once and takes thirty seconds with this
-        // sentence.
-        Err(_) => panic!(
-            "`{label}` did not finish within {DEADLINE:?} — a deadlock rather than \
-             slowness, because every wait inside a `story` command is bounded. \
-             If the label says `local`: somebody is holding the other end of this \
-             thread's pipe. Run `lsof` on this test binary, then on the `story` \
-             daemons, and match the pipe address; see tests/daemon_fd_hygiene.rs. \
-             The spawn lock used to be the other suspect and is no longer one: \
-             it is bounded by `SPAWN_LOCK_DEADLINE`, which is strictly shorter \
-             than this deadline, so a client stuck there fails with its own \
-             message before this fires (SH-143)."
-        ),
-    }
-}
+// `run_bounded` itself now lives in `storyhook_test_support` (SH-142), which
+// gained a second caller that needed the exact same spawn-wait-collect bound:
+// `DaemonGuard`'s own `story web stop` reap, in that crate's `server.rs`. This
+// file keeps its own `DEADLINE` — the two callers' legitimate wait times don't
+// share a bound, only the shape that enforces one does.
 
 /// Asserts a client command succeeded, and that it did not succeed *by* telling
 /// the user about lock contention.
@@ -268,6 +226,7 @@ fn eight_concurrent_clients_under_load_lose_nothing() {
                     let out = run_bounded(
                         client_command(env, root, &["new", &title, "--json"]),
                         &format!("new ({index}/{round})"),
+                        DEADLINE,
                     );
                     assert_clean(&out, &format!("story new ({index}/{round})"));
                     let id = minted_id(&out);
@@ -275,12 +234,14 @@ fn eight_concurrent_clients_under_load_lose_nothing() {
                     let out = run_bounded(
                         client_command(env, root, &["comment", &id, "seen under load", "--json"]),
                         &format!("comment ({index}/{round})"),
+                        DEADLINE,
                     );
                     assert_clean(&out, &format!("story comment ({index}/{round})"));
 
                     let out = run_bounded(
                         client_command(env, root, &["move", &id, "in-progress", "--json"]),
                         &format!("move ({index}/{round})"),
+                        DEADLINE,
                     );
                     assert_clean(&out, &format!("story move ({index}/{round})"));
                 }
@@ -341,6 +302,7 @@ fn concurrent_relation_writes_leave_a_symmetric_graph() {
                 let out = run_bounded(
                     client_command(env, root, &["relate", a, "blocks", b, "--json"]),
                     &format!("relate ({index})"),
+                    DEADLINE,
                 );
                 assert_clean(&out, &format!("story relate ({index})"));
             });
@@ -472,6 +434,7 @@ fn readers_run_through_a_write_storm_without_seeing_a_partial_story() {
                             &["new", &format!("storm {index}/{round}"), "--json"],
                         ),
                         &format!("storm writer ({index})"),
+                        DEADLINE,
                     );
                     assert_clean(&out, &format!("storm writer ({index})"));
                 }
@@ -485,6 +448,7 @@ fn readers_run_through_a_write_storm_without_seeing_a_partial_story() {
                     let out = run_bounded(
                         client_command(env, reader_cwd, &["list", "--json"]),
                         &format!("storm reader ({})", index + 1),
+                        DEADLINE,
                     );
                     assert_clean(&out, &format!("storm reader ({})", index + 1));
                     // Every story the reader sees must be whole: a title and a

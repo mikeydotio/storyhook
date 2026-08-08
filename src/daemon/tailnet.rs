@@ -12,6 +12,13 @@
 //! successful `TcpListener::bind` can produce one. Everything with authority —
 //! what is trusted, what is advertised — hangs off the second, so neither can
 //! be answered from a probe alone.
+//!
+//! A bind does not have to happen at startup to count: a login-time daemon
+//! start can race `tailscaled` coming up and miss the interface entirely, so
+//! `crate::daemon::serve` retries in the background until one succeeds
+//! (SH-146). What stays true either way is that trust is decided **once**,
+//! by whichever `TcpListener::bind` first succeeds — never re-evaluated, and
+//! never granted for a bind that has not actually happened yet.
 
 use std::process::Command;
 use std::sync::mpsc;
