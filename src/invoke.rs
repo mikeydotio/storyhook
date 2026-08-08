@@ -1694,10 +1694,23 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
             let export: ProjectExport = serde_json::from_str(&raw)?;
             let outcome =
                 transfer::import_project(store, root, &Clock::Fixed(now.to_string()), &export)?;
-            Ok(Response::Message(format!(
-                "imported project with {} stories",
-                outcome.stories
-            )))
+            let message = format!("imported project with {} stories", outcome.stories);
+            if outcome.skipped_remotes.is_empty() {
+                Ok(Response::Message(message))
+            } else {
+                let warnings = outcome
+                    .skipped_remotes
+                    .iter()
+                    .map(|skipped| {
+                        format!(
+                            "`{}` is already registered to project `{}`; not re-registered by \
+                             this restore",
+                            skipped.url, skipped.holder
+                        )
+                    })
+                    .collect();
+                Ok(Response::MessageWithWarnings(message, warnings))
+            }
         }
         other => Err(not_yet_ported(&other)),
     }
