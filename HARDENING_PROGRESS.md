@@ -166,7 +166,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-147** — the tailnet probe runs twice on the port-fallback path
 - ⚠ **SH-150** — the TUI holds its own store handle · *in-progress as of 2026-08-07T20:35 — another session; do not claim*
 - [x] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
-- [ ] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
+- [x] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
 - [ ] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
 - [x] **SH-164** — labels are sometimes concatenated
 - [ ] **SH-165** — an epic with in-progress children should read as in-progress
@@ -5850,3 +5850,75 @@ Mikey's own batched `/semver bump` pass.
 
 **Landed as two commits on PR #167 (the fix, then this log entry), merge commit, verified,
 branch deleted.**
+
+### SH-156 — done · not reproduced, one class of explanation ruled out
+
+Picked next off the Medium queue after SH-154. Re-checked `story list --state
+in-progress`: SH-112 (epic, skip), SH-150 (⚠, confirmed, another session),
+SH-167 (in-progress despite carrying no ⚠ mark in this file — trusted
+`story list` over the stale mark, per START HERE's own instruction, and
+skipped it). SH-156 was next, unclaimed, and ready.
+
+**A diagnosis story, not a reproduction-then-fix story** — the acceptance
+criteria's own second branch allows closing on "shown not to exist," and nine
+days of investigation by the time SH-117 filed this had already exhausted the
+cheap theories (probe binary, daemon warm-up, `git config` subprocess). What
+was left to try was scale and a structural argument, not another guess.
+
+**Reproduction, pushed past what SH-117 measured.** Over 100 runs across five
+shapes: a single test alone, the whole file at `--test-threads=1` (50 reps)
+and at `=4`, wrapped through the real `scripts/run-tests.sh` gate, and
+immediately preceded by `daemon_wedge`+`concurrency_soak`+`crash_matrix` to
+manufacture the contention a real `make test` position carries. Top time
+across all of it: 5.7s. Zero instances anywhere near the reported 7-10s.
+
+**One class of explanation eliminated by reading rather than running.** Every
+daemon-lifecycle wait on the spawn path — `SPAWN_DEADLINE`, `await_healthy` —
+is hard-capped at 5s and *errors* past it. A daemon stuck coming up cannot
+produce a slow **pass**; it produces a failure this suite has never shown.
+That confines any real gap to the harness's own unbounded `expect` loop, and
+further, to the three of seven tests here whose first prompt
+(`ask_about_a_new_project`) is printed before the client opens a store at
+all — the daemon-dependent four (`project delete`, `reopen`) were never in
+play for a *first-byte* stall. Also checked and eliminated: the spawn lock is
+keyed per-store (`env.daemon_spawn_lock()` hangs off `store.key()`), so four
+concurrent pty tests spawning daemons for four different isolated stores
+cannot queue behind one lock — ruling out the obvious concurrent-contention
+story for the `--test-threads=4` shape.
+
+**Leading theory, left unconfirmed rather than asserted.** SH-117's
+measurement (2026-08-02) landed one day after `target/debug/deps` reached
+~200k loose `.o` files and stalled `FSEventStreamStart` machine-wide under a
+global lock — a mechanism this repository already proved costs exactly this
+shape of delay (intermittent, multi-second, everything-instrumentable still
+fast) on a *different* test file (SH-53, `web_test.rs`'s dashboard-readiness
+stall). Fixed the day before SH-117's measurement
+(`chore(build): pack split debuginfo`, 2026-07-28), and its precondition was
+absent throughout this investigation — 4,430 entries, zero loose `.o`s.
+Consistent with non-reproduction; not proof, since the conditions could not
+be recreated on demand without deliberately re-bloating a shared build
+directory, which was judged not worth the disk churn for a theory the
+timeline already supports circumstantially.
+
+**`EXPECT_TIMEOUT` stays at 30s.** Nothing was fixed, so nothing comes down —
+the second acceptance branch was satisfied instead: the doc comment now names
+this investigation's ruled-out and leading-theory findings in place of the
+original bare, unconfirmed measurements, so the next person who hits this
+does not re-run the same three theories SH-117 and this story both already
+closed.
+
+**Gate:** one full `make test` run, green (fmt, clippy `-D warnings`, 131 Rust
+test binaries `ok` / 0 failed, plugin harness 24/24, browser suite 13/13) —
+supervised in the background with a 60-second heartbeat and a 120-second
+log-growth stall bound. No stall, no restart.
+
+**Semver: none suggested.** Doc-comment-only change, no behavior to version.
+
+**Landed as two commits on two PRs: the investigation and comment update on
+PR #168 (merged first, before this log entry was written), this log entry
+following on its own branch/PR** — the sequencing SH-154's own entry warned
+against repeating went unnoticed until after PR #168 was already merged;
+recorded here rather than silently fixed, since the point of naming the
+convention is that a slip against it is worth one sentence, not a rewrite of
+already-merged history. Both merge commits, both verified, both branches
+deleted.
