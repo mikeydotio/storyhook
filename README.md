@@ -263,6 +263,9 @@ story prioritize <id> <level>
 story label <id> <labels-csv>
 story unlabel <id> <labels-csv>
 story reopen <id> [--force]
+story archive <id>
+story unarchive <id>
+story archive-state <slug> [--force]
 story delete <id> "<reason>"
 story purge <id> [--force]
 story set <id> (--title "<title>" | --state <slug> | --priority <level> | --assignee <member> | --labels "<csv>" | --blocked "<reason>" | --unblocked | --json "<json>" | --type <slug> | --description "<text>")  # at least one; combine as many as you like
@@ -324,6 +327,9 @@ story scaffold agents-md|claude-md|cursor-rules
 story commit-sync [--since <duration>]
 story sync-git [--since <duration>]           # alias of commit-sync
 story github-sync [<id>] [--dry-run] [--resolve local|remote] [--strategy import-all|match-titles|push-only|future-only] [--mode manual|off]
+story link-pr <id> <url> [--no-close-on-merge]
+story unlink-pr <id> <url>
+story pr-check [<id>]
 story plugin install <target>
 story plugin uninstall <target>
 
