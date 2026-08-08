@@ -22,6 +22,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::domain::remote::{OwnedOrigin, RemoteUrl};
 use crate::domain::{
     ImportStory, Member, Priority, StateDef, StoryEvent, SuperState, TypeDef, fold_story,
     normalize_labels, relation_edges,
@@ -35,7 +36,10 @@ use crate::store::{
     StoredEvent, StoredPayload, StoryNo, StoryQuery, WriteOps, partition_known,
 };
 
-use super::project::{DEFAULT_PREFIX, ProjectPointer, read_pointer, unique_slug, write_pointer};
+use super::project::{
+    DEFAULT_PREFIX, ProjectPointer, Registration, read_pointer, register_origin, unique_slug,
+    write_pointer,
+};
 use super::state_set::write_states_repairing;
 use super::{Clock, Ctx, append_and_fold, project_prefix};
 
@@ -68,8 +72,52 @@ pub struct ProjectExport {
     /// The settings a user wrote, absent when they wrote none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<ExportedSettings>,
+    /// The project's registered git origins, empty when it has none.
+    ///
+    /// Unlike `github.sync` (see [`ExportedSettings`]), this is a full carry:
+    /// there is no partial-registration hazard a missing counterpart table can
+    /// create, and the alternative — recovering an origin from a checkout's own
+    /// `git config --get remote.origin.url` — is not universally available. A
+    /// project whose only remote is a bare repository with no working checkout
+    /// anywhere, or whose checkout has since been deleted, has no other record
+    /// of it; a rollback dropping this silently is the loss, not a symmetry
+    /// with `project_paths`, which a checkout can always re-derive by walking
+    /// its directories.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remotes: Vec<ExportedRemote>,
     /// Every story, open ones first.
     pub stories: Vec<ExportedStory>,
+}
+
+/// A git origin an export document carries — the wire form of
+/// [`ProjectRemoteRecord`](crate::store::ProjectRemoteRecord).
+///
+/// Not that store type directly, for the same reason [`ExportedSettings`] is
+/// not `store::ProjectSettings`: `store/types.rs` owns no wire format. Here the
+/// two shapes happen to carry the same three fields — there is no column this
+/// document must deliberately withhold, the way `ProjectSettings::github_sync`
+/// is withheld from [`ExportedSettings`] — but the type stays distinct so a
+/// future store-only column does not silently become part of this document's
+/// contract by inheriting `Serialize`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExportedRemote {
+    /// The identity key project selection matches on — see
+    /// [`RemoteUrl::key`](crate::domain::remote::RemoteUrl::key).
+    pub normalized: String,
+    /// The URL exactly as it was registered.
+    pub raw: String,
+    /// RFC3339 timestamp of the registration.
+    pub registered_at: String,
+}
+
+impl From<crate::store::ProjectRemoteRecord> for ExportedRemote {
+    fn from(record: crate::store::ProjectRemoteRecord) -> Self {
+        Self {
+            normalized: record.normalized,
+            raw: record.raw,
+            registered_at: record.registered_at,
+        }
+    }
 }
 
 /// The project settings an export document carries.
@@ -400,6 +448,11 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     stored.sync_auto_transition,
                     stored.doctor_stale_threshold,
                 ),
+                remotes: tx
+                    .project_remotes(project)?
+                    .into_iter()
+                    .map(ExportedRemote::from)
+                    .collect(),
                 stories: open,
             })
         })?)
@@ -484,6 +537,26 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
     }
 }
 
+/// What [`import_project`] did, beyond the story count the caller already
+/// knew to expect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportOutcome {
+    /// How many stories the document carried.
+    pub stories: usize,
+    /// Every remote the document named that this restore did **not**
+    /// register, because another project already holds it.
+    pub skipped_remotes: Vec<SkippedRemote>,
+}
+
+/// One origin [`import_project`] left unregistered, and who already holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkippedRemote {
+    /// The URL exactly as the document carried it.
+    pub url: String,
+    /// The slug of the project that already holds it.
+    pub holder: String,
+}
+
 /// Materializes the project an export document describes, at `root`.
 ///
 /// Not a [`TransferService`] method, and not [`Ctx`]-shaped, for the same
@@ -511,12 +584,26 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
 /// SH-119 deleted the recorded-path index: `story list` in the directory the
 /// restore landed in would refuse, and a second `import-project` there would mint
 /// a *second* project rather than meeting the refusal above.
+///
+/// # A remote already held elsewhere does not fail the restore
+///
+/// A story's whole history is the payload this transaction exists to protect
+/// atomically; a registered origin is one of six auxiliary categories riding
+/// alongside it, and the store's unique index on `project_remotes.normalized`
+/// makes "another project already holds this URL" an ordinary outcome rather
+/// than a corruption signal (SH-115's migration header). Failing a
+/// several-hundred-story restore over one stale or reclaimed origin would make
+/// the recovery path itself unreliable in a case it must anticipate — so a
+/// collision is skipped, not fatal, and named in [`ImportOutcome`] instead of
+/// silently dropped: for a project whose only remote is a bare repository with
+/// no working checkout anywhere, this may be the only surviving record of it
+/// (SH-138).
 pub fn import_project<S: Store>(
     store: &S,
     root: &std::path::Path,
     clock: &Clock,
     export: &ProjectExport,
-) -> Result<usize, AppError> {
+) -> Result<ImportOutcome, AppError> {
     let now = clock.now();
     let prefix = export
         .prefix
@@ -528,7 +615,7 @@ pub fn import_project<S: Store>(
     // lock for as long as the disk takes.
     let existing_pointer = read_pointer(&root)?;
 
-    let uuid = store.write(|tx| {
+    let (uuid, skipped_remotes) = store.write(|tx| {
         let existing = match &existing_pointer {
             Some(pointer) => tx.project_by_uuid(&pointer.uuid)?,
             None => None,
@@ -576,6 +663,25 @@ pub fn import_project<S: Store>(
         }
         apply_settings(tx, project, export.settings.as_ref())?;
 
+        let mut skipped_remotes = Vec::new();
+        for remote in &export.remotes {
+            let url = RemoteUrl::normalize(&remote.raw).map_err(|error| {
+                AppError::Validation(format!("remote `{}` does not parse: {error}", remote.raw))
+            })?;
+            match register_origin(
+                tx,
+                project,
+                &OwnedOrigin::explicit(url),
+                &remote.registered_at,
+            )? {
+                Registration::Recorded => {}
+                Registration::HeldBy(holder) => skipped_remotes.push(SkippedRemote {
+                    url: remote.raw.clone(),
+                    holder,
+                }),
+            }
+        }
+
         let states = slug_map(&tx.states(project)?);
         let mut highest = StoryNo::new(0);
         // Two passes over the stories, because a story's relations name other
@@ -622,7 +728,7 @@ pub fn import_project<S: Store>(
             tx.put_story(project, &snapshot, head)?;
         }
         tx.reserve_story_no(project, highest)?;
-        Ok(uuid)
+        Ok((uuid, skipped_remotes))
     })?;
 
     // Never overwritten, for the reason `story project new` never overwrites
@@ -633,7 +739,10 @@ pub fn import_project<S: Store>(
         write_pointer(&root, &ProjectPointer::new(uuid, prefix.clone()))?;
     }
 
-    Ok(export.stories.len())
+    Ok(ImportOutcome {
+        stories: export.stories.len(),
+        skipped_remotes,
+    })
 }
 
 /// The `prefix` field an export document carries.

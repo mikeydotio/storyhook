@@ -6,6 +6,7 @@
 //! makes the flip a two-way door.
 
 use storyhook::cli::Invocation;
+use storyhook::domain::remote::RemoteUrl;
 use storyhook::domain::{ImportRelationship, ImportStory};
 use storyhook::error::AppError;
 use storyhook::invoke::dispatch;
@@ -286,6 +287,221 @@ fn a_restore_does_not_blank_a_setting_the_document_does_not_carry() {
     assert!(
         has_github,
         "a column the document does not carry must survive a restore that writes the ones it does"
+    );
+}
+
+// --- a project's registered origins (SH-138) --------------------------------
+
+/// Registers `raw_url` against `fixture`'s project, straight into the store.
+fn set_remote(fixture: &ServiceFixture, raw_url: &str) {
+    let url = RemoteUrl::normalize(raw_url).expect("the fixture url should normalize");
+    fixture
+        .store()
+        .write(|tx| tx.link_remote(fixture.project(), &url, "2026-01-01T00:00:00Z"))
+        .expect("registering the origin");
+}
+
+/// Every origin registered against `project`, normalized keys only.
+fn remotes_of(store: &SqliteStore, project: storyhook::store::ProjectId) -> Vec<String> {
+    store
+        .read(|tx| tx.project_remotes(project))
+        .expect("reading remotes")
+        .into_iter()
+        .map(|record| record.normalized)
+        .collect()
+}
+
+/// `fixture`'s project's own slug, read back from the store.
+fn slug_of(fixture: &ServiceFixture) -> String {
+    fixture
+        .store()
+        .read(|tx| {
+            Ok(tx
+                .projects()?
+                .into_iter()
+                .find(|p| p.id == fixture.project()))
+        })
+        .expect("reading")
+        .expect("the fixture's project exists")
+        .slug
+}
+
+#[test]
+fn an_export_carries_a_projects_registered_remotes() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "One");
+    set_remote(&fixture, "https://github.com/acme/widgets.git");
+
+    let exported = export(&fixture);
+    assert_eq!(exported.remotes.len(), 1);
+    let remote = &exported.remotes[0];
+    assert_eq!(remote.normalized, "github.com/acme/widgets");
+    assert_eq!(remote.raw, "https://github.com/acme/widgets.git");
+    assert_eq!(remote.registered_at, "2026-01-01T00:00:00Z");
+}
+
+#[test]
+fn a_project_with_no_remotes_writes_no_remotes_key_at_all() {
+    // "Nothing is registered" must have exactly one encoding, the same rule
+    // `ExportedSettings` already follows — otherwise the second lap of the
+    // round trip (and the golden-document comparison) fails on a difference
+    // that carries no information.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "One");
+
+    let json = document(&export(&fixture));
+    assert!(
+        !json.contains("\"remotes\""),
+        "no registrations is an absent key, never an emitted `[]`: {json}"
+    );
+    let parsed: ProjectExport = serde_json::from_str(&json).expect("re-parsing");
+    assert!(parsed.remotes.is_empty());
+}
+
+#[test]
+fn a_restore_registers_the_remotes_the_document_carries() {
+    let fixture = ServiceFixture::new();
+    create(&fixture, "One");
+    set_remote(&fixture, "https://github.com/acme/widgets.git");
+    set_remote(&fixture, "https://github.com/acme/widgets-docs.git");
+
+    let exported = export(&fixture);
+    let (store, dir) = empty_store();
+    let outcome =
+        transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    assert!(outcome.skipped_remotes.is_empty());
+
+    let project = restored_project(&store, dir.path()).id;
+    let mut normalized = remotes_of(&store, project);
+    normalized.sort();
+    assert_eq!(
+        normalized,
+        ["github.com/acme/widgets", "github.com/acme/widgets-docs"]
+    );
+}
+
+#[test]
+fn a_restore_skips_a_remote_already_held_by_another_project_but_still_restores_the_stories() {
+    // The origin is an auxiliary fact riding beside the payload a restore
+    // exists to protect: a URL reclaimed by another project between backup
+    // and restore must not sink an otherwise-clean restore of every story.
+    let holder = ServiceFixture::new();
+    set_remote(&holder, "https://github.com/acme/widgets.git");
+    let holder_slug = slug_of(&holder);
+
+    let restoring = ServiceFixture::new();
+    let id = create(&restoring, "One");
+    set_remote(&restoring, "https://github.com/acme/widgets.git");
+    set_remote(&restoring, "https://github.com/acme/other.git");
+    let exported = export(&restoring);
+    assert_eq!(exported.remotes.len(), 2, "both registrations travel");
+
+    let dir = scratch_dir();
+    let outcome = transfer::import_project(holder.store(), dir.path(), &Clock::System, &exported)
+        .expect("the restore must still succeed");
+
+    assert_eq!(
+        outcome.skipped_remotes.len(),
+        1,
+        "exactly the colliding remote is skipped: {:?}",
+        outcome.skipped_remotes
+    );
+    assert_eq!(
+        outcome.skipped_remotes[0].url,
+        "https://github.com/acme/widgets.git"
+    );
+    assert_eq!(outcome.skipped_remotes[0].holder, holder_slug);
+
+    // The story that has nothing to do with the collision still restored.
+    let project = restored_project(holder.store(), dir.path()).id;
+    assert_eq!(
+        holder
+            .store()
+            .read(|tx| tx.stories(project, &StoryQuery::all()))
+            .expect("reading stories")
+            .into_iter()
+            .map(|row| row.snapshot.id)
+            .collect::<Vec<_>>(),
+        vec![id]
+    );
+
+    // The non-colliding remote registered normally...
+    assert_eq!(
+        remotes_of(holder.store(), project),
+        ["github.com/acme/other"]
+    );
+    // ...and the collided one still belongs to its original holder, untouched.
+    assert_eq!(
+        remotes_of(holder.store(), holder.project()),
+        ["github.com/acme/widgets"]
+    );
+}
+
+#[test]
+fn an_unparseable_remote_in_the_document_is_rejected_whole() {
+    let (store, dir) = empty_store();
+    let mut exported = export(&ServiceFixture::new());
+    exported
+        .remotes
+        .push(storyhook::service::transfer::ExportedRemote {
+            normalized: "garbage".to_string(),
+            raw: String::new(),
+            registered_at: "2026-01-01T00:00:00Z".to_string(),
+        });
+
+    let error = transfer::import_project(&store, dir.path(), &Clock::System, &exported)
+        .expect_err("an empty raw URL cannot normalize");
+    assert!(
+        matches!(error, AppError::Validation(_)),
+        "a corrupt document is a validation error, not a partial write: {error:?}"
+    );
+    assert_eq!(
+        store.read(|tx| tx.projects()).expect("listing").len(),
+        0,
+        "the whole transaction must roll back, including the project row it would have created"
+    );
+}
+
+#[test]
+fn the_import_project_arm_reports_a_skipped_remote_as_a_structured_warning() {
+    // The dispatch layer, not just the service function: `invoke.rs` must
+    // route a skip into `Response::MessageWithWarnings`'s `warnings`, not fold
+    // it into `message`'s prose where a scripted `--json` caller would never
+    // see it.
+    let holder = ServiceFixture::new();
+    set_remote(&holder, "https://github.com/acme/widgets.git");
+    let holder_slug = slug_of(&holder);
+
+    let restoring = ServiceFixture::new();
+    create(&restoring, "One");
+    set_remote(&restoring, "https://github.com/acme/widgets.git");
+    let json = document(&export(&restoring));
+
+    let dir = scratch_dir();
+    std::fs::write(dir.path().join("backup.json"), &json).expect("writing the document");
+    let ctx = storyhook::service::Ctx::new(
+        holder.store(),
+        holder.project(),
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
+
+    let response = dispatch(
+        &ctx,
+        Invocation::ImportProject {
+            file: "backup.json".to_string(),
+        },
+    )
+    .expect("importing");
+    let Response::MessageWithWarnings(message, warnings) = response else {
+        panic!("a restore that skips a remote must answer with warnings, not a bare message");
+    };
+    assert!(message.contains("1 stories"), "{message}");
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0].contains("https://github.com/acme/widgets.git")
+            && warnings[0].contains(&holder_slug),
+        "the warning must name both the URL and the project that already holds it: {warnings:?}"
     );
 }
 
@@ -755,14 +971,14 @@ fn a_project_round_trips_through_export_and_import_byte_for_byte() {
     let first = document(&export(&fixture));
 
     let (store, dir) = empty_store();
-    let count = transfer::import_project(
+    let outcome = transfer::import_project(
         &store,
         dir.path(),
         &Clock::Fixed("2026-01-01T00:00:00Z".to_string()),
         &serde_json::from_str(&first).expect("parsing the document"),
     )
     .expect("importing");
-    assert_eq!(count, 3);
+    assert_eq!(outcome.stories, 3);
 
     let project = restored_project(&store, dir.path());
     let ctx = storyhook::service::Ctx::new(
@@ -879,6 +1095,7 @@ fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
         types: storyhook_test_support::default_types(),
         members: Vec::new(),
         settings: None,
+        remotes: Vec::new(),
         stories: Vec::new(),
     };
     export

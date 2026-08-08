@@ -824,6 +824,11 @@ pub fn export_project(root: &Path) -> Result<ProjectExport, AppError> {
                 .as_ref()
                 .and_then(|doctor| doctor.stale_threshold.clone()),
         ),
+        // A legacy tree has never had anywhere to record a registered origin —
+        // `project.toml` carries no such table, before or after the
+        // rearchitecture — so this leg of the export always answers empty. The
+        // store-side restore is the one that carries them; see `ExportedRemote`.
+        remotes: Vec::new(),
         states,
         types,
         members,
