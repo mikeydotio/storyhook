@@ -23,7 +23,14 @@ use storyhook_test_support::{TestEnv, scratch_dir};
 
 /// A dispatch-stub `story.sh`. Argv is exactly what the daemon invokes:
 /// `--project <slug> dispatch <story-id>`, so `$4` is the story id.
+///
+/// Declares `DISPATCH_PROTOCOL=1` (SH-196) so this stub keeps resolving
+/// under `resolve_dispatch_script_from`'s protocol check, which applies to
+/// `STORYHOOK_DISPATCH_SCRIPT` the same as any other resolution source —
+/// see `a_script_below_the_required_protocol_is_refused_before_any_handle_exists`
+/// for the deliberately-unmarked negative case.
 const STUB_SCRIPT: &str = r#"#!/usr/bin/env bash
+DISPATCH_PROTOCOL=1
 set -u
 case "${DISPATCH_STUB_MODE:-ok}" in
   ok)
@@ -45,13 +52,18 @@ case "${DISPATCH_STUB_MODE:-ok}" in
 esac
 "#;
 
-/// Writes the stub to a fresh temp file and returns it — kept alive by the
+/// Writes `content` to a fresh temp file and returns it — kept alive by the
 /// caller for as long as the daemon that was pointed at it might still run.
-fn write_stub() -> tempfile::NamedTempFile {
+fn write_script(content: &str) -> tempfile::NamedTempFile {
     let mut file = tempfile::NamedTempFile::new().expect("a scratch file for the stub script");
-    file.write_all(STUB_SCRIPT.as_bytes())
+    file.write_all(content.as_bytes())
         .expect("writing the stub script");
     file
+}
+
+/// Writes [`STUB_SCRIPT`] to a fresh temp file.
+fn write_stub() -> tempfile::NamedTempFile {
+    write_script(STUB_SCRIPT)
 }
 
 /// Stops whatever daemon `env` is running, even if the test panics first —
@@ -502,4 +514,59 @@ fn an_unknown_handle_is_404() {
     let err = get_dispatch(&info, &info.token, "proj", "SH-1", "no-such-handle")
         .expect_err("a handle that was never minted must 404");
     assert_eq!(status_of(&err), 404);
+}
+
+/// A script that predates `DISPATCH_PROTOCOL` entirely -- the exact shape of
+/// the machine that produced SH-196: an installed plugin cached before the
+/// daemon's own argv contract existed.
+const UNMARKED_SCRIPT: &str = r#"#!/usr/bin/env bash
+set -u
+printf '{"ok":true,"id":"%s","display":"stub dispatched %s"}\n' "$4" "$4"
+"#;
+
+#[test]
+fn a_script_below_the_required_protocol_is_refused_before_any_handle_exists() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let stub = write_script(UNMARKED_SCRIPT);
+    let info = start_with_stub(&env, stub.path(), "ok");
+
+    // http_status_as_error(false): the default "non-2xx is an Err" behavior
+    // discards the body (ureq::Error::StatusCode carries only the code, as
+    // every other error-body assertion in this tree already works around --
+    // see web_test.rs's web_serve_error_reply_uses_standard_envelope), and
+    // the whole point of this test is the body's diagnosis.
+    let resp = ureq::post(dispatch_url(&info, "proj", "SH-1"))
+        .header("X-Storyhook", "1")
+        .header("Host", "127.0.0.1")
+        .header("X-Storyhook-Token", &info.token)
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .send_empty()
+        .expect("the request itself must succeed even though the daemon refuses it");
+    assert_eq!(
+        resp.status(),
+        500,
+        "a version-skewed script must be refused, not run blind (SH-196)"
+    );
+    let body = resp
+        .into_body()
+        .read_to_string()
+        .expect("reading the response body");
+    assert!(
+        body.contains("out of date"),
+        "the 500 must name the real diagnosis, not a generic failure: {body}"
+    );
+    assert!(
+        body.contains("story plugin install claude-code"),
+        "the 500 must name the remedy: {body}"
+    );
+
+    // No handle was ever minted -- confirmed the same way an_unknown_handle_is_404
+    // confirms it: any id polls 404, because try_start() is never reached
+    // when resolve_dispatch_script() fails first.
+    let poll_err = get_dispatch(&info, &info.token, "proj", "SH-1", "no-such-handle")
+        .expect_err("no handle exists to have been minted");
+    assert_eq!(status_of(&poll_err), 404);
 }

@@ -75,6 +75,27 @@
 # rather than reading the caller's (SH-120).
 set -euo pipefail
 
+# The daemon<->script argv contract this file implements (SH-196). The
+# dashboard's dispatch endpoint (src/api/dispatch.rs) invokes this script as
+# `story.sh --project <slug> dispatch <id> [--auto]`; before SH-196, a daemon
+# and a script that disagreed about that contract failed by relaying this
+# script's own generic top-level usage error as a well-formed business
+# refusal -- indistinguishable from "not ready" or "already claimed" to
+# whoever read it. resolve_dispatch_script() now reads this line out of
+# whichever story.sh it resolved (override, installed plugin, or dev
+# checkout) and refuses by name, with a clear "plugin is out of date"
+# diagnosis, before running one it does not speak.
+#
+# Bump this only when the *invocation* contract changes for an existing
+# verb -- a new required global flag (like --project itself once did), a
+# renamed or removed verb, a change to the ONE-JSON-object-on-stdout
+# contract above. Do NOT bump it for a new optional flag (--auto), a new
+# verb (`reap`), or any behavior a caller driving the old argv shape
+# wouldn't notice -- resolve_dispatch_script_from()'s check is
+# `declared >= required`, so a script that is merely newer must keep
+# resolving, not start refusing.
+DISPATCH_PROTOCOL=1
+
 # Shared tmux/worktree/pane-readiness mechanics (window/worktree naming,
 # git-safety helpers, the readiness gate, confirmed-send) live in
 # ../lib/session.sh — this plugin's own vendored fork, not agentics'.
