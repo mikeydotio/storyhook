@@ -284,8 +284,15 @@ impl TestEnv {
     /// about bytes on disk. A live daemon answers reads from its own page cache
     /// and keeps a write-ahead log alive that would otherwise be checkpointed
     /// away.
+    ///
+    /// `StopMode::Force`, not the CLI's own graceful default: a test fixture
+    /// must be bounded, and a daemon this call cannot get rid of is exactly
+    /// the shape that should be killed rather than waited on.
     pub fn stop_daemon(&self) {
-        let _ = storyhook::daemon::lifecycle::stop(&self.environment());
+        let _ = storyhook::daemon::lifecycle::stop(
+            &self.environment(),
+            storyhook::daemon::lifecycle::StopMode::Force,
+        );
     }
 }
 

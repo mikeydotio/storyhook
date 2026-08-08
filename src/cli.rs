@@ -158,6 +158,7 @@ Usage:
   story phase create <N> ["<title>"]
   story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
   story doctor [--fix]
+  story doctor abandoned [clear (--all | <request-id>)]
   story update [--check] [--force]                 (self-update the story binary)
   story hooks install|uninstall|list|test <event_type>
   story commit-sync [--since <duration>]
@@ -307,6 +308,14 @@ pub enum Invocation {
     },
     Doctor {
         fix: bool,
+    },
+    /// `story doctor abandoned [clear (--all | <request-id>)]` — the ledger
+    /// of commands `story daemon stop --force` or a crashed daemon's own
+    /// successor abandoned mid-flight. Separate from `Doctor` because it
+    /// needs neither a project nor a store: it reads and writes one file
+    /// under the daemon's own state directory.
+    DoctorAbandoned {
+        action: AbandonedAction,
     },
     Show {
         id: String,
@@ -541,7 +550,12 @@ pub enum DaemonAction {
         port: Option<u16>,
     },
     /// Ask the running daemon to shut down.
-    Stop,
+    Stop {
+        /// After a short grace period, signal the daemon's pid directly
+        /// rather than waiting for it to drain on its own. Abandons
+        /// whatever it was still serving.
+        force: bool,
+    },
     /// Report whether one is running, and where.
     Status,
     /// Register a launchd agent so the daemon starts at login.
@@ -552,6 +566,17 @@ pub enum DaemonAction {
     /// puts in `X-Storyhook-Token` to reach `/api/v1/*` or the dashboard's
     /// dispatch endpoint from off-loopback.
     Token,
+}
+
+/// `story doctor abandoned …`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AbandonedAction {
+    /// List every entry in the ledger.
+    List,
+    /// Forget one entry (`Some(request_id)`) or every entry (`None`, from
+    /// `--all`) — a human's confirmation that they reviewed it, not a claim
+    /// about whether the abandoned work actually landed.
+    Clear { request_id: Option<String> },
 }
 
 /// The `story project …` subcommands — a repository's whole lifecycle.
@@ -1256,6 +1281,11 @@ static VERB_FLAGS: &[VerbFlags] = &[
         flags: &[bare("fix")],
     },
     VerbFlags {
+        verb: "doctor",
+        subcommand: Some("abandoned"),
+        flags: &[bare("all")],
+    },
+    VerbFlags {
         verb: "update",
         subcommand: None,
         flags: &[bare("check"), bare("force")],
@@ -1321,10 +1351,14 @@ static VERB_FLAGS: &[VerbFlags] = &[
     },
     // `--serve` is a subcommand spelled as a flag: it is what the spawner
     // execs, never what a user types. Declared, or the daemon cannot start.
+    // `--force` belongs only to `stop`, and `port` only to `start`/`--serve`
+    // — one shared entry rather than per-subcommand ones, matching this
+    // table's existing looseness for `daemon`: `parse_daemon` itself is what
+    // actually refuses a flag on the wrong subcommand.
     VerbFlags {
         verb: "daemon",
         subcommand: None,
-        flags: &[bare("serve"), value("port")],
+        flags: &[bare("serve"), value("port"), bare("force")],
     },
     VerbFlags {
         verb: "web",
@@ -2806,6 +2840,10 @@ fn parse_graph(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() >= 2 && args[1] == "abandoned" {
+        return parse_doctor_abandoned(args);
+    }
+
     if args.len() == 1 {
         return Ok(Invocation::Doctor { fix: false });
     }
@@ -2814,7 +2852,27 @@ fn parse_doctor(args: &[String]) -> Result<Invocation, AppError> {
         return Ok(Invocation::Doctor { fix: true });
     }
 
-    Err(AppError::Usage("usage: story doctor [--fix]".to_string()))
+    Err(AppError::Usage(
+        "usage: story doctor [--fix] | abandoned [clear (--all | <request-id>)]".to_string(),
+    ))
+}
+
+fn parse_doctor_abandoned(args: &[String]) -> Result<Invocation, AppError> {
+    let usage = "usage: story doctor abandoned [clear (--all | <request-id>)]";
+    let action = match &args[2..] {
+        [] => AbandonedAction::List,
+        [clear, target] if clear == "clear" && target == "--all" => {
+            AbandonedAction::Clear { request_id: None }
+        }
+        [clear, id] if clear == "clear" => AbandonedAction::Clear {
+            request_id: Some(id.clone()),
+        },
+        // `clear` with nothing after it is refused rather than treated as
+        // `--all`: forgetting the whole ledger should never be the default
+        // reading of a token a user might have forgotten to finish typing.
+        _ => return Err(AppError::Usage(usage.to_string())),
+    };
+    Ok(Invocation::DoctorAbandoned { action })
 }
 
 fn parse_update(args: &[String]) -> Result<Invocation, AppError> {
@@ -3115,8 +3173,8 @@ fn parse_store(args: &[String]) -> Result<Invocation, AppError> {
 }
 
 fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
-    let usage =
-        "usage: story daemon start [--port <PORT>] | stop | status | install | uninstall | token";
+    let usage = "usage: story daemon start [--port <PORT>] | stop [--force] | status | \
+                 install | uninstall | token";
     if args.len() < 2 {
         return Err(AppError::Usage(usage.to_string()));
     }
@@ -3130,7 +3188,13 @@ fn parse_daemon(args: &[String]) -> Result<Invocation, AppError> {
         "--serve" => DaemonAction::Serve {
             port: parse_port_flag(&args[2..], usage)?,
         },
-        "stop" => DaemonAction::Stop,
+        "stop" => DaemonAction::Stop {
+            force: match &args[2..] {
+                [] => false,
+                [flag] if flag == "--force" => true,
+                _ => return Err(AppError::Usage(usage.to_string())),
+            },
+        },
         "status" => DaemonAction::Status,
         "install" => DaemonAction::Install,
         "uninstall" => DaemonAction::Uninstall,

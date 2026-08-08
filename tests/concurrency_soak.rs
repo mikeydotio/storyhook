@@ -208,7 +208,10 @@ struct DaemonGuard<'a>(&'a TestEnv);
 
 impl Drop for DaemonGuard<'_> {
     fn drop(&mut self) {
-        let _ = storyhook::daemon::lifecycle::stop(&self.0.environment());
+        let _ = storyhook::daemon::lifecycle::stop(
+            &self.0.environment(),
+            storyhook::daemon::lifecycle::StopMode::Force,
+        );
     }
 }
 
