@@ -82,7 +82,7 @@ pub use query::{ListFilters, QueryService};
 pub use relation::{RelationOutcome, RelationService};
 pub use session::SessionService;
 pub use settings::{SettingSpec, SettingsService, registry as settings_registry};
-pub use story::{FieldEdits, NewStoryInput, ReopenOutcome, StoryService};
+pub use story::{FieldEdits, NewStoryInput, StoryService};
 pub use system::SystemService;
 pub use transfer::{ImportBatch, TransferService};
 

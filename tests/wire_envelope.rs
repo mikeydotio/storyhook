@@ -31,7 +31,8 @@ use storyhook::error::{AppError, WireError};
 use storyhook::output::{
     BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
     ProjectSnapshotView, PurgePlan, Response, SetPrefixPlan, SettingKind, SettingSource,
-    SettingView, SetupPlan, StaleInfo, StoryView, SummaryView, render_error, render_response,
+    SettingView, SetupPlan, StaleInfo, StoryView, SummaryView, UndeletePlan, render_error,
+    render_response,
 };
 
 /// The four ways a `Response` can be rendered. Every case in this file is
@@ -502,6 +503,22 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 stories: 47,
                 relationships: 12,
                 github_bases: 3,
+            }))),
+        ),
+        (
+            "confirmation_required_undelete",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Undelete(UndeletePlan {
+                id: "SH-20".to_string(),
+                title: "A story created in error".to_string(),
+                deleted_reason: Some("created in error".to_string()),
+            }))),
+        ),
+        (
+            "confirmation_required_undelete_no_reason",
+            Response::ConfirmationRequired(Box::new(ConfirmationPlan::Undelete(UndeletePlan {
+                id: "SH-20".to_string(),
+                title: "A story created in error".to_string(),
+                deleted_reason: None,
             }))),
         ),
         (

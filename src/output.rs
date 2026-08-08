@@ -90,6 +90,25 @@ pub struct PurgePlan {
     pub retracted: Vec<(String, String)>,
 }
 
+/// What `story reopen` would undelete, read before anything is.
+///
+/// The lightest of [`ConfirmationPlan`]'s three destructive-ish siblings —
+/// deliberately not called a plan to destroy anything, because it isn't one.
+/// Nothing here is irreversible: `story delete` puts the story right back
+/// where it started. That is also why [`ConfirmationPlan::requires_typed_confirmation`]
+/// answers `false` for this variant — the gate's weight matches the act's.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UndeletePlan {
+    /// The story's id — named so the person confirming can tell it is the
+    /// right story, not typed back: see
+    /// [`ConfirmationPlan::requires_typed_confirmation`].
+    pub id: String,
+    /// Its title.
+    pub title: String,
+    /// Why it was soft-deleted, if a reason was recorded.
+    pub deleted_reason: Option<String>,
+}
+
 /// What `story project set-prefix` would rewrite, read before anything is.
 ///
 /// Unlike [`DeletePlan`] and [`PurgePlan`] this is not a plan to destroy
@@ -148,19 +167,24 @@ pub enum ConfirmationPlan {
     Purge(PurgePlan),
     /// `story project set-prefix` — every id this project has ever minted.
     SetPrefix(SetPrefixPlan),
+    /// `story reopen` of a soft-deleted story — the undelete (SH-154).
+    Undelete(UndeletePlan),
 }
 
 impl ConfirmationPlan {
     /// What the user must type, exactly, to go through with this.
     ///
     /// Also what the refusal names, so a caller reading a warning about `X`
-    /// is reading the same `X` they would have had to type.
+    /// is reading the same `X` they would have had to type. [`Self::Undelete`]
+    /// names its id here too, even though nobody types it back — see
+    /// [`Self::requires_typed_confirmation`].
     #[must_use]
     pub fn token(&self) -> &str {
         match self {
             Self::Delete(plan) => &plan.slug,
             Self::Purge(plan) => &plan.id,
             Self::SetPrefix(plan) => &plan.new_prefix,
+            Self::Undelete(plan) => &plan.id,
         }
     }
 
@@ -168,10 +192,11 @@ impl ConfirmationPlan {
     /// terminal prompt that precedes the full plan.
     ///
     /// Factored out because [`Self::Delete`] and [`Self::Purge`] are both
-    /// permanent deletions and [`Self::SetPrefix`] is not — it destroys
-    /// nothing, it makes every id already written down under the old prefix
-    /// stop resolving. A prompt that called that "permanently delete `AGE`"
-    /// would be describing an act that never happens.
+    /// permanent deletions, [`Self::SetPrefix`] destroys nothing — it makes
+    /// every id already written down under the old prefix stop resolving —
+    /// and [`Self::Undelete`] does the opposite of either: it restores. A
+    /// prompt that called any of the three by another's headline would be
+    /// describing an act that never happens.
     #[must_use]
     pub fn headline(&self) -> String {
         match self {
@@ -182,7 +207,21 @@ impl ConfirmationPlan {
                 "this would rename every `{}` id in `{}` to `{}`",
                 plan.old_prefix, plan.slug, plan.new_prefix
             ),
+            Self::Undelete(plan) => format!("this would restore deleted story `{}`", plan.id),
         }
+    }
+
+    /// Whether confirming this plan means typing [`Self::token`] back
+    /// verbatim, or a plain `y`/`yes` is enough.
+    ///
+    /// [`Self::Delete`], [`Self::Purge`] and [`Self::SetPrefix`] are each a
+    /// one-way door, so the gate matches: prove the token was read by typing
+    /// it. [`Self::Undelete`] is not — `story delete` undoes it again — so
+    /// one keystroke is the right weight and a typed token would be the
+    /// wrong one. The weight of the gate matches the weight of the act.
+    #[must_use]
+    pub fn requires_typed_confirmation(&self) -> bool {
+        !matches!(self, Self::Undelete(_))
     }
 }
 
@@ -922,7 +961,20 @@ pub fn render_confirmation_plan(plan: &ConfirmationPlan) -> String {
         ConfirmationPlan::Delete(plan) => render_delete_plan(plan),
         ConfirmationPlan::Purge(plan) => render_purge_plan(plan),
         ConfirmationPlan::SetPrefix(plan) => render_set_prefix_plan(plan),
+        ConfirmationPlan::Undelete(plan) => render_undelete_plan(plan),
     }
+}
+
+/// The warning `story reopen` prints before it undeletes.
+///
+/// Ordered like [`render_purge_plan`]: which story this is — the title is
+/// what lets the person confirming tell it is the right one — and why it was
+/// deleted. The lightest of the four otherwise: nothing here is a body count,
+/// so there is nothing left to enumerate.
+#[must_use]
+pub fn render_undelete_plan(plan: &UndeletePlan) -> String {
+    let reason = plan.deleted_reason.as_deref().unwrap_or("no reason given");
+    format!("{} — {}\n  deleted: {reason}\n", plan.id, plan.title)
 }
 
 /// The warning `story project set-prefix` prints before it asks.
