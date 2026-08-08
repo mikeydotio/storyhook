@@ -708,6 +708,7 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
     }
 
     let bus = crate::daemon::bus::ChangeBus::new();
+    let (info_for_late_bind, env_for_late_bind) = (info.clone(), env.clone());
     super::serve::serve(
         store,
         env,
@@ -716,6 +717,21 @@ pub fn run<S: crate::store::Store>(store: &S, env: &Environment) -> Result<(), A
         bus,
         info.token.clone(),
         || {},
+        // Fires at most once (SH-146), from the background thread that binds
+        // a tailnet interface this daemon missed at startup. Without this the
+        // portfile would keep reading `tailnet: None` forever after a silent
+        // self-heal, so `story daemon status`/`address` — reading the same
+        // file — would still report the daemon as loopback-only.
+        move |bound: &super::serve::BoundAddress| {
+            let mut info = info_for_late_bind.clone();
+            info.tailnet = bound.tailnet.clone();
+            if let Err(e) = write_info(&env_for_late_bind, &info) {
+                eprintln!(
+                    "warning: bound the tailnet interface but could not update the daemon \
+                     portfile: {e}"
+                );
+            }
+        },
     )
 }
 
