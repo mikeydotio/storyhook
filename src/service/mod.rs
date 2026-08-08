@@ -71,7 +71,7 @@ pub use catalog::{
 };
 pub use config::{ConfigService, StateEdit, StateListing};
 pub use git::GitService;
-pub use git_links::{CheckoutLink, GitLinkService, OriginLink};
+pub use git_links::{CheckoutLink, GitLinkService, OriginLink, PointerOutcome};
 #[cfg(feature = "github-sync")]
 pub use github::{GithubSyncService, RealGithubApiFactory, StoreSyncStorage};
 pub use grouping::{GroupingService, PhaseCleared};

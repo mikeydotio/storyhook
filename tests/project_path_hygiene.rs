@@ -236,10 +236,12 @@ fn link_checkout_records_a_checkout_that_moved() {
         "the recorded checkout is the new location: {listed}"
     );
 
-    // And the project is usable from there, with its story — by the pointer file
-    // the move carried, not by anything `link checkout` wrote. Linking a
-    // checkout never touches resolution (D21), which is the whole difference
-    // between the two facts a directory can be recorded as.
+    // And the project is usable from there, with its story — by the pointer
+    // file the move carried, which already named this project with the
+    // matching prefix, so `link checkout` left it untouched rather than
+    // rewriting it (SH-167's `PointerOutcome::AlreadyCorrect`). Resolution
+    // itself still never reads `checkout_path` — only the pointer, which was
+    // already correct here.
     let summary = stdout(&story(&moved, &f.data_home, &["summary"]));
     assert!(
         summary.contains("stories: 1"),
@@ -264,11 +266,13 @@ fn link_checkout_records_a_checkout_that_moved() {
 /// `relink` refused this outright, because it read the pointer file and required
 /// the uuid to match. It had to: it wrote a `project_paths` row, so a mismatch
 /// really would have left one directory resolving to two projects depending on
-/// which door it came in by. `link checkout` writes a column nothing resolves
-/// by, so the same arrangement is merely two projects whose repo-side work runs
-/// in one tree — which is a monorepo, and SH-151's subject.
+/// which door it came in by. `link checkout` never overwrites a *different*
+/// project's identity (SH-167's `PointerOutcome::AnotherProject`) — it only
+/// ever writes a pointer where the directory had none of its own — so the
+/// same arrangement is merely two projects whose repo-side work runs in one
+/// tree, which is a monorepo, and SH-151's subject.
 #[test]
-fn link_checkout_does_not_read_the_pointer_file_it_is_pointed_at() {
+fn link_checkout_leaves_another_projects_pointer_alone() {
     let f = fixture("relink-mismatch");
     let second = real_dir("relink-mismatch-other");
     story(&second, &f.data_home, &["project", "new", "--prefix", "QQ"]);
@@ -314,12 +318,16 @@ fn link_checkout_does_not_read_the_pointer_file_it_is_pointed_at() {
 }
 
 /// A directory with **no pointer file** is linked. This is the capability
-/// `relink` did not have.
+/// `relink` did not have — and, since SH-167, the directory ends up able to
+/// resolve on its own, because linking it is what writes the pointer file
+/// the case above shows `link checkout` will not overwrite once one exists.
 ///
 /// `relink` needed a `.storyhook.toml` in the directory it was pointed at and
 /// answered exit 3 without one — which ruled out exactly the cases that most
 /// need it: a fresh clone, a worktree, a checkout whose pointer was never
-/// committed. `link checkout` asks the directory for nothing.
+/// committed. `link checkout` asks the directory for nothing *to identify
+/// itself* — it does not require a pointer to already be there — but it
+/// leaves one behind for a directory that had none.
 #[test]
 fn link_checkout_accepts_a_directory_with_no_pointer_file() {
     let f = fixture("relink-nopointer");
@@ -348,6 +356,21 @@ fn link_checkout_accepts_a_directory_with_no_pointer_file() {
     assert!(
         listed.contains(&format!("checkout  {}", bare.display())),
         "and it is recorded: {listed}"
+    );
+    assert!(
+        bare.join(".storyhook.toml").is_file(),
+        "an unclaimed directory must get a pointer written into it (SH-167)"
+    );
+    // `fixture()` always mints the checkout project's prefix as `PH` — the
+    // directory resolving on its own, with no `--project` flag, is the point.
+    let ids = stdout(&story(
+        &bare,
+        &f.data_home,
+        &["new", "resolved from the linked checkout"],
+    ));
+    assert!(
+        ids.starts_with("PH-"),
+        "the directory must now resolve on its own: {ids}"
     );
 }
 

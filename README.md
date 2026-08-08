@@ -480,7 +480,9 @@ Behavior:
   the repository's registered git origin. Nothing about the filesystem is ever
   *required*, so a fresh clone at a path storyhook has never seen still finds
   its stories — and a directory that names no project refuses rather than
-  guessing.
+  guessing. `story project link checkout <PATH>` writes `.storyhook.toml` for
+  a directory that has none, so it resolves from then on; it never overwrites
+  one that already names a different project.
 - **Every checkout of a repository is the same project.** Linked worktrees
   included: there is no per-checkout copy to diverge.
 - The story ID counter is per project and monotonic: `SH-1`, `SH-2`, `SH-3`, ...
