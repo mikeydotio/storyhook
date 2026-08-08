@@ -175,7 +175,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-42** — project selector dropdown
 - [x] **SH-43** — archive
 - [x] **SH-49** — linked PRs
-- [ ] **SH-155** — preserve presentation/layout settings
+- [x] **SH-155** — preserve presentation/layout settings
 - [ ] **SH-162** — allow hiding columns
 - [x] **SH-50** — C9 Dispatch button
 - [x] **SH-157** — visually indicate story types · *closed by another session*
@@ -6304,4 +6304,76 @@ before or after.
 additive and non-breaking.
 
 **PR:** #178, merged as `722b43b`. Branch verified deleted, `main`
+fast-forwarded cleanly.
+
+### SH-155 — done
+
+Picked next off the Medium queue (first unchecked, non-⚠, non-⏸ line) after
+SH-49. Re-checked `story list --state in-progress`: SH-167 turned up
+in-progress despite carrying no ⚠ mark in this file (same stale-mark
+situation SH-165's and SH-159's log entries already name — a live tmux
+window under `storyhook:5` confirmed it, not just the story's own state),
+so it stayed skipped and SH-155 was next in line.
+
+**The bug:** `selectRepo()` unconditionally reset `state.filter` and
+`state.sort` on every project switch — set a Critical-priority filter,
+switch projects, it's gone. The function's own doc comment named the
+reason: a state-slug filter that happens to also exist in the new project,
+carried over unvalidated, would silently misfilter rather than just look
+wrong.
+
+**Council: yes** — four genuine judgment calls (which fields carry over,
+whether sort does, what persistence tier "within a given site visit" maps
+to, how Clear Filters and a dropped value should behave), with the
+existing code already flagging a real hazard on one side of it. Round 1
+split 1-0-2 on persistence tier (in-memory vs. `sessionStorage`); during
+deliberation the skeptic seat verified against the actual file that
+`bootstrap()` re-enters `selectRepo()` on every page reload — the same
+function a live switch calls — so a bare in-memory variable can't survive
+that path at all, and separately caught that none of the three round-1
+proposals accounted for `resetFilterDropdownUI()` plus
+`buildFilterDropdown()`'s fingerprint cache silently leaving carried-over
+values unchecked in the UI whenever two projects share a vocabulary — the
+common case. Both findings were code-verified, not asserted; the
+architect seat (who'd voted the opposite way in round 1) confirmed them
+independently and flipped. Round 2: unanimous 3-0. Full trail in
+`.council/sh-155-filter-persistence-across-projects/DECISION.md`; verdict
+recorded as a comment on SH-155, not re-litigated.
+
+**Built to the verdict.** Text search, priority, `showClosed` and sort
+carry over unconditionally; assignees/types/states are pruned against the
+newly-loaded project's own vocabulary once `fetchData()`'s success handler
+has it (`meta()` is empty before then — pruning from `selectRepo()` itself
+would no-op against nothing), with a `toast()` when something was dropped.
+Persisted to `sessionStorage` under one key holding both `filter` and
+`sort`; "Clear filters" resets `state.filter` to a fresh `defaultFilter()`
+first and then calls the same `savePersistedFilters()` every other
+mutation site uses, rather than deleting the storage key outright — a
+literal delete would also drop the persisted sort, which Clear Filters has
+never touched, and the council's proposals never modeled that combined-key
+interaction at the field level. `pruneCarriedFilters()` also deletes each
+filter dropdown container's `dataset.fingerprint` so the next render
+rebuilds their checkboxes unconditionally, closing the desync the skeptic
+seat found.
+
+**5 new e2e specs** (`e2e/specs/filter-persistence.spec.ts`): search
+carries over and still filters the next project's board; Clear Filters
+un-persists so it doesn't resurrect on the switch after; a state filter
+absent from the next project is pruned with a toast rather than silently
+hiding every story there (the scenario the whole design exists for);
+sort order carries over; filters survive a page reload on the same
+project (the `bootstrap()` path the council's persistence-tier finding
+turned on). `scripts/run-e2e.sh` grew one addition — an Alpha-only
+`review` state, deliberately absent from Beta and Gamma — since the
+existing seed data shares one vocabulary across all three projects and
+the pruning path needs a value that provably can't exist in the next one.
+
+**Gate:** one `make test` run, supervised in the background with a
+120-second log-growth stall bound; no stall. Full suite green, including
+all 18 e2e specs (5 new, 13 pre-existing, all passing).
+
+**Semver: minor.** New user-facing behavior (filters/sort persist across a
+switch and a reload), no breaking change.
+
+**PR:** #180, merged as `0b9b8de`. Branch verified deleted, `main`
 fast-forwarded cleanly.
