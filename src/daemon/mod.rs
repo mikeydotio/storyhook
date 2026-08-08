@@ -19,6 +19,8 @@
 //! * [`tailnet`] — this machine's Tailscale identity: the interface the
 //!   dashboard is served on, and the only non-loopback `Host` the mutation guard
 //!   will trust.
+//! * [`watch`] — attributes a store-wide change to specific projects, shared by
+//!   the request boundary and the `data_version` poller (SH-202).
 
 pub mod backup;
 pub mod bus;
@@ -28,3 +30,4 @@ pub mod lifecycle;
 pub mod serve;
 pub mod subscribe;
 pub mod tailnet;
+pub mod watch;

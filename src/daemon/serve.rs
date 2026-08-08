@@ -28,7 +28,6 @@
 //! already taken" failure mode in production and the "which port did the test
 //! get" guessing game in the suite.
 
-use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -47,7 +46,7 @@ use crate::daemon::lifecycle::Hello;
 use crate::daemon::tailnet::{TailnetBind, tailnet_identity};
 use crate::env::Environment;
 use crate::error::AppError;
-use crate::store::{ReadOps, Store};
+use crate::store::Store;
 
 /// How often a heartbeat is published to every connected client. A server-side
 /// write failure prunes a connection that vanished without a clean close, and a
@@ -70,11 +69,32 @@ pub(crate) fn heartbeat_interval() -> Duration {
 
 /// How often the daemon asks the store whether somebody else has written to it.
 ///
-/// This is the safety net rather than the mechanism: a write the daemon serves
-/// is published the instant it commits, and this catches the ones it did not
-/// serve — a `story tui` session, a second machine, a `sqlite3` prompt. One
-/// pragma per tick, so the interval can be short without mattering.
-const CHANGE_TOKEN_POLL: Duration = Duration::from_millis(250);
+/// This is the safety net rather than the mechanism, now that
+/// [`route_job_inner`]'s RPC arm calls
+/// [`ChangeWatcher::notice`](crate::daemon::watch::ChangeWatcher::notice) at
+/// the request boundary too (SH-202) — so a write over `POST /api/v1/invoke`,
+/// the only way an ordinary `story` command reaches the store, is published
+/// the instant it commits, the same as a REST-served write already was via
+/// `rest::route`'s own precise `Changed` signal. (The REST arm does not also
+/// call `notice()` — SH-202's own council record found that doing so could
+/// attribute an unrelated out-of-band commit to the wrong response and
+/// collide with `ChangeBus`'s coalescing window; see `daemon::bus`'s module
+/// doc and SH-216.) This poll catches only the writes that boundary never saw
+/// at all: a `story tui` session on the same store, a second machine, a
+/// `sqlite3` prompt. One pragma per tick, so the interval can be short
+/// without mattering.
+///
+/// Overridable via `STORYHOOK_CHANGE_POLL_MS`, the same seam
+/// [`heartbeat_interval`] and [`dispatchers`] already use — set high enough in
+/// a test, this is what proves the request boundary alone carries a write,
+/// with the safety net not ticking in time to help it.
+fn change_poll_interval() -> Duration {
+    std::env::var("STORYHOOK_CHANGE_POLL_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(250))
+}
 
 /// How often a background thread looks up to see whether it should stop.
 const SHUTDOWN_CHECK: Duration = Duration::from_millis(250);
@@ -118,6 +138,10 @@ struct Serving<'a, S: Store> {
     store: &'a S,
     env: Environment,
     bus: ChangeBus,
+    /// Attributes a store-wide change to specific projects, at the request
+    /// boundary in [`route_job_inner`] (SH-202) and, sharing the same
+    /// baseline, in [`poll_change_token`]'s safety-net poll.
+    watcher: crate::daemon::watch::ChangeWatcher,
     /// The mutation guard's allowlist. Set once at construction from
     /// whatever [`bind_listeners`] earned at startup; [`tailnet_reprobe`]
     /// is the only thing that ever writes it again, and only once, the
@@ -200,10 +224,17 @@ where
     let connection_slots = http1::ConnectionSlots::production();
 
     let stop = Arc::new(AtomicBool::new(false));
+    // Baselined here, before any listener has accepted a request and before
+    // the poller below starts — the same "read the baseline before anything
+    // can write" ordering `serving.inflight.harvest_stale()` relies on for
+    // its own reason, so a write that landed before this daemon started is
+    // history, never news.
+    let watcher = crate::daemon::watch::ChangeWatcher::new(store);
     let serving = Serving {
         store,
         env: env.clone(),
         bus: bus.clone(),
+        watcher: watcher.clone(),
         trusted_hosts: Arc::new(RwLock::new(trusted_hosts)),
         token,
         hello: Hello {
@@ -248,7 +279,8 @@ where
         }
         {
             let (bus, stop) = (bus.clone(), Arc::clone(&stop));
-            scope.spawn(move || poll_change_token(store, &bus, &stop));
+            let watcher = watcher.clone();
+            scope.spawn(move || poll_change_token(store, &watcher, &bus, &stop));
         }
         {
             let stop = Arc::clone(&stop);
@@ -915,6 +947,11 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         &job.body,
         job.loopback,
     ) {
+        // Named ahead of the match, which consumes `answer`: the shutdown
+        // arm below publishes `Change::Reload` itself and the daemon is on
+        // its way out, so it is the one case that skips the ordinary notice
+        // after this match.
+        let is_shutdown = matches!(answer, rpc::Answer::Shutdown(_));
         let verdict = match answer {
             rpc::Answer::Reply(reply) => Verdict::Reply(reply),
             rpc::Answer::Shutdown(reply) => {
@@ -937,6 +974,18 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         // relies on: the record changes exactly when the daemon finishes
         // something, not a moment after its client already knows that.
         drop(entry);
+        // Published here, at the request boundary, for the RPC surface —
+        // `rest::route`'s writes already publish below; this is what makes
+        // `POST /api/v1/invoke`, the only way an ordinary `story` CLI
+        // command reaches the store, do the same (SH-202). `rpc::route`
+        // carries no `Changed` signal the way `rest::route` does, so every
+        // reply pays one `PRAGMA data_version` rather than only a write —
+        // cheap, and the alternative is threading "what changed" through
+        // every one of `StoreInvoker`'s call sites for a surface that never
+        // needed to know.
+        if !is_shutdown {
+            serving.watcher.notice(serving.store, &serving.bus);
+        }
         let _ = job.reply.send(verdict);
         return;
     }
@@ -981,6 +1030,20 @@ fn route_job_inner<S: Store>(serving: &Serving<'_, S>, job: Job) {
         Some(Changed::Catalog) => serving.bus.publish(Change::Catalog),
         None => {}
     }
+    // Deliberately does NOT also call `serving.watcher.notice()` here.
+    // Every mutating REST route is built through `Routed::changing`, so its
+    // `Changed` coverage above is already exhaustive — `notice()`'s
+    // store-wide diff would add no coverage and would risk attributing an
+    // unrelated out-of-band commit to this response, which can consume
+    // `ChangeBus`'s 200ms coalesce window and cause a *later*, genuinely
+    // relevant publish for the same project to be silently dropped
+    // (`ChangeBus::publish` coalesces on the leading edge). Confirmed by two
+    // failing integration tests during SH-202's own implementation; a
+    // council vote (`.council/rest-arm-join-shared-change-watcher-boundary/`)
+    // scoped the fix to the RPC arm alone, which is the gap the story was
+    // actually filed about. The residual cost is exactly today's status
+    // quo: the safety-net poll may re-publish a REST change up to one poll
+    // interval after this precise publish already did.
     let _ = job.reply.send(Verdict::Reply(routed.reply));
 }
 
@@ -1035,56 +1098,32 @@ fn heartbeat(bus: &ChangeBus, stop: &AtomicBool) {
     }
 }
 
-/// Watches the store's change token and reports what moved when it changes.
+/// Watches the store's change token on a schedule and reports what moved
+/// when it changes — [`ChangeWatcher::notice`](crate::daemon::watch::ChangeWatcher::notice)'s
+/// attribution, run as the safety net beside [`route_job_inner`]'s own RPC-arm
+/// call at the request boundary, sharing `watcher`'s baseline with it so a
+/// commit both notice is attributed once, by whichever notices it first
+/// (SH-202).
 ///
-/// The token is the cheap trigger — one pragma per tick, whatever the store
-/// holds. Only when it moves does this do any real work, and then it asks the
-/// sharper question: which projects' histories grew? Those get a precise
-/// [`Change::Project`], so a write this daemon did not serve reaches a browser as
-/// the same event one it did serve does.
-///
-/// **A change it cannot attribute becomes a [`Change::Resync`].** Editing a
-/// state definition appends no story event, so nothing's sequence moves and the
-/// only honest answer is "something changed, refetch". Guessing at a project
-/// would be worse than the resync: a dashboard showing something untrue is the
-/// failure this whole feed exists to prevent.
-fn poll_change_token<S: Store>(store: &S, bus: &ChangeBus, stop: &AtomicBool) {
-    let mut last = store.change_token().ok();
-    let mut seqs = project_sequences(store);
+/// The sleep is chopped into [`SHUTDOWN_CHECK`] naps rather than taken whole,
+/// the same reason [`heartbeat`] does: `thread::scope`'s join should not have
+/// to wait out a whole poll interval on shutdown, whatever
+/// [`change_poll_interval`] is set to.
+fn poll_change_token<S: Store>(
+    store: &S,
+    watcher: &crate::daemon::watch::ChangeWatcher,
+    bus: &ChangeBus,
+    stop: &AtomicBool,
+) {
+    let interval = change_poll_interval();
+    let mut waited = Duration::ZERO;
     while !stop.load(Ordering::Relaxed) {
-        thread::sleep(CHANGE_TOKEN_POLL);
-        let Ok(token) = store.change_token() else {
-            continue;
-        };
-        if last == Some(token) {
-            continue;
+        thread::sleep(SHUTDOWN_CHECK);
+        waited += SHUTDOWN_CHECK;
+        if waited >= interval {
+            waited = Duration::ZERO;
+            watcher.notice(store, bus);
         }
-        last = Some(token);
-
-        let fresh = project_sequences(store);
-        // A change nobody is listening for is still a change: the baseline has
-        // to move, or the first client to connect — which has just fetched
-        // everything — would be told to refetch it again.
-        if bus.subscriber_count() == 0 {
-            seqs = fresh;
-            continue;
-        }
-
-        let mut attributed = false;
-        for (slug, seq) in &fresh {
-            if seqs.get(slug) != Some(seq) {
-                bus.publish(Change::Project(slug.clone()));
-                attributed = true;
-            }
-        }
-        if fresh.len() != seqs.len() {
-            bus.publish(Change::Catalog);
-            attributed = true;
-        }
-        if !attributed {
-            bus.publish(Change::Resync);
-        }
-        seqs = fresh;
     }
 }
 
@@ -1275,22 +1314,6 @@ fn tailnet_reprobe<'scope, S: Store, L>(
         });
         return;
     }
-}
-
-/// Each project's slug and the head of its change feed.
-///
-/// An unreadable store yields an empty map rather than an error: the poller is
-/// a background safety net, and a transient read failure must not end it.
-fn project_sequences<S: Store>(store: &S) -> BTreeMap<String, i64> {
-    store
-        .read(|tx| {
-            let mut seqs: BTreeMap<String, i64> = BTreeMap::new();
-            for project in tx.projects()? {
-                seqs.insert(project.slug, tx.max_global_seq(project.id)?.get());
-            }
-            Ok(seqs)
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
