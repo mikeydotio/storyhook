@@ -759,6 +759,51 @@ tbody tr:hover { background: var(--bg-sunken); }
   var PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3, none: 4 };
 
   // ============================================================
+  // FILTER PERSISTENCE (SH-155)
+  // ============================================================
+  //
+  // Carries the filter bar and sort column across a project switch, within
+  // one tab's lifetime -- sessionStorage, not localStorage, because
+  // `bootstrap()` re-enters `selectRepo()` on every page reload just as a
+  // live project switch does, so only a store that survives a reload but
+  // dies with the tab can deliver "within a given site visit" through that
+  // path. Distinct from `storyhook.view`/`storyhook.showArchived`
+  // (localStorage): those are durable per-user preferences, not in-visit
+  // working state, and reusing localStorage here would collide with that
+  // already-claimed semantic. Per-repo-vocabulary values (assignees, types,
+  // states) are pruned against the freshly-loaded repo once its vocabulary
+  // is known -- see `pruneCarriedFilters()`, called from `fetchData()`.
+
+  var FILTER_STORAGE_KEY = "storyhookFilters";
+
+  /** A fresh, independently-mutable default filter object — never a shared
+   * literal, since `state.filter[key]` arrays are pushed/spliced in place
+   * and two call sites holding the same instance would silently share
+   * mutations. */
+  function defaultFilter() {
+    return { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true };
+  }
+
+  function loadPersistedFilters() {
+    try {
+      var raw = sessionStorage.getItem(FILTER_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; } // storage disabled, or a shape from an older build
+  }
+  /** Mirrors the live `state.filter`/`state.sort` to sessionStorage. Also
+   * how "Clear filters" un-persists filters: it resets `state.filter` to
+   * `defaultFilter()` first and then calls this, rather than removing the
+   * storage entry outright — a removal would also drop the persisted
+   * `state.sort`, which Clear Filters has never touched. */
+  function savePersistedFilters() {
+    try {
+      sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({ filter: state.filter, sort: state.sort }));
+    } catch (e) { /* nothing to do -- filters just won't carry over this time */ }
+  }
+
+  var persistedFilters = loadPersistedFilters();
+
+  // ============================================================
   // STATE
   // ============================================================
 
@@ -786,8 +831,12 @@ tbody tr:hover { background: var(--bg-sunken); }
     // this is the client-local approximation of that; a server-backed
     // per-project preference is future hardening, not this story's scope).
     showArchived: localStorage.getItem("storyhook.showArchived") === "true",
-    filter: { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true },
-    sort: { col: "updated", dir: -1 },
+    // Restored from sessionStorage when this tab already had filters set
+    // this visit (SH-155) — see FILTER PERSISTENCE above. Per-repo-vocabulary
+    // values get pruned once a repo's own vocabulary is known, in
+    // `pruneCarriedFilters()`.
+    filter: (persistedFilters && persistedFilters.filter) || defaultFilter(),
+    sort: (persistedFilters && persistedFilters.sort) || { col: "updated", dir: -1 },
     drawerId: null,
     drawerDetail: null,
     pending: {},
@@ -928,15 +977,24 @@ tbody tr:hover { background: var(--bg-sunken); }
       if (xhr.status === 200) {
         try {
           var parsed = JSON.parse(xhr.responseText);
+          // `state.data` is only ever null right after `selectRepo()` (see
+          // its own comment) — every other caller of `fetchData()` is a
+          // refresh of an already-open repo.
+          var isFirstLoadForRepo = !state.data;
           // Diff against the previous snapshot *before* replacing it, so
           // the next render knows exactly what changed and can animate
-          // accordingly. Skipped on the first load of a repo (`state.data`
-          // still null then — see `selectRepo()`), so opening a repo never
-          // animates every card in as if it had just appeared.
+          // accordingly. Skipped on the first load of a repo, so opening a
+          // repo never animates every card in as if it had just appeared.
           if (state.data) pendingAnimations = diffSnapshots(state.data, parsed, state.pending);
           state.data = parsed;
           state.lastFetchAt = Date.now();
           state.fetchOk = true;
+          // Per-repo-vocabulary filter values (SH-155) can only be
+          // validated once this repo's own vocabulary (`meta()`) is
+          // available, which it now is — and only on the load a repo
+          // switch triggered, not on every subsequent poll of the same
+          // repo's data.
+          if (isFirstLoadForRepo) pruneCarriedFilters();
           renderAll();
         } catch (e) {
           state.fetchOk = false;
@@ -949,6 +1007,52 @@ tbody tr:hover { background: var(--bg-sunken); }
     xhr.ontimeout = function() { state.fetchOk = false; updateConnection(); };
     xhr.onerror = function() { state.fetchOk = false; updateConnection(); };
     xhr.send();
+  }
+
+  /** Drops any carried-over `state.filter` value (SH-155) that doesn't
+   * exist in the repo whose data just loaded — a state or type slug that
+   * happened to also exist in the previous repo, or an assignee who isn't
+   * a member here. `meta()` only reflects this repo's own vocabulary once
+   * `state.data` is set, so this must run from `fetchData()`'s success
+   * path, never from `selectRepo()` itself (see that function's comment).
+   *
+   * Existence alone can't catch a slug that means something different in
+   * each repo (e.g. two projects both have a "review" state for different
+   * pipeline stages) — that's a pre-existing limit of the slug-only
+   * vocabulary model, not something this function can fix.
+   *
+   * Also clears every filter dropdown's fingerprint cache
+   * (`buildFilterDropdown()`) so the next `renderFilterOptions()` rebuilds
+   * their checkboxes unconditionally: without this, a repo switch between
+   * two repos with the *same* vocabulary — the common case, and exactly
+   * the case a carried-over filter is meant to survive — would hit the
+   * cache and leave every checkbox unchecked while `state.filter` still
+   * holds the carried values, silently desyncing the visible UI from what
+   * is actually being filtered. */
+  function pruneCarriedFilters() {
+    var m = meta();
+    var validAssignees = { __unassigned__: true };
+    m.members.forEach(function(mem) { validAssignees[mem.id] = true; });
+    var validTypes = { __untyped__: true };
+    m.types.forEach(function(t) { validTypes[t.slug] = true; });
+    var validStates = {};
+    m.states.forEach(function(s) { validStates[s.slug] = true; });
+    var validSets = { assignees: validAssignees, types: validTypes, states: validStates };
+
+    var dropped = false;
+    ["assignees", "types", "states"].forEach(function(key) {
+      var kept = state.filter[key].filter(function(v) { return validSets[key][v]; });
+      if (kept.length !== state.filter[key].length) dropped = true;
+      state.filter[key] = kept;
+    });
+
+    Object.keys(FILTER_DROPDOWNS).forEach(function(key) {
+      var container = $(FILTER_DROPDOWNS[key].container);
+      if (container) delete container.dataset.fingerprint;
+    });
+
+    if (dropped) toast("Some filters didn't carry over to this project", "info");
+    savePersistedFilters();
   }
 
   /** GET /api/repos — the registry list backing the repo-select, home
@@ -1522,6 +1626,7 @@ tbody tr:hover { background: var(--bg-sunken); }
         if (checkbox.checked && idx === -1) state.filter[key].push(opt.value);
         else if (!checkbox.checked && idx !== -1) state.filter[key].splice(idx, 1);
         syncFilterDropdownLabel(key);
+        savePersistedFilters();
         renderView();
       });
       var row = el("label", { class: "fdd-option" }, [checkbox, opt.label]);
@@ -1569,10 +1674,12 @@ tbody tr:hover { background: var(--bg-sunken); }
   function bindFilterBar() {
     $("search-input").addEventListener("input", function() {
       state.filter.text = this.value;
+      savePersistedFilters();
       renderView();
     });
     $("toggle-closed").addEventListener("change", function() {
       state.filter.showClosed = this.checked;
+      savePersistedFilters();
       renderView();
     });
     $("toggle-archived").checked = state.showArchived;
@@ -1582,10 +1689,11 @@ tbody tr:hover { background: var(--bg-sunken); }
       renderView();
     });
     $("filter-clear").addEventListener("click", function() {
-      state.filter = { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true };
+      state.filter = defaultFilter();
       $("search-input").value = "";
       $("toggle-closed").checked = true;
       resetFilterDropdownUI();
+      savePersistedFilters();
       renderView();
     });
     document.addEventListener("click", closeAllPopovers);
@@ -2082,6 +2190,7 @@ tbody tr:hover { background: var(--bg-sunken); }
         if (col === "labels") return;
         if (state.sort.col === col) state.sort.dir *= -1;
         else { state.sort.col = col; state.sort.dir = 1; }
+        savePersistedFilters();
         renderView();
       });
     });
@@ -2678,20 +2787,21 @@ tbody tr:hover { background: var(--bg-sunken); }
     });
   }
 
-  /** Enters the "repo" screen for `id`, resetting per-repo UI state (filters,
-   * sort, drawer) since it's meaningless — or actively misleading, e.g. a
-   * state-slug filter that happens to also exist in the new repo — once
-   * carried over from a different project's vocabulary. */
+  /** Enters the "repo" screen for `id`. Closes the drawer (meaningless
+   * across a project switch) but, since SH-155, leaves the filter bar and
+   * sort alone: `state.filter`/`state.sort` carry over as-is, and the
+   * search/showClosed controls are synced to whatever they already hold
+   * rather than forced back to defaults. Per-repo-vocabulary filter values
+   * (assignees, types, states) may not exist in the new repo — those are
+   * pruned once its vocabulary is known, in `pruneCarriedFilters()`, called
+   * from `fetchData()`'s first successful load for this repo. */
   function selectRepo(id) {
     closeDrawer();
     state.repoId = id;
     state.screen = "repo";
     state.data = null;
-    state.filter = { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true };
-    state.sort = { col: "updated", dir: -1 };
-    $("search-input").value = "";
-    $("toggle-closed").checked = true;
-    resetFilterDropdownUI();
+    $("search-input").value = state.filter.text;
+    $("toggle-closed").checked = state.filter.showClosed;
     localStorage.setItem("storyhook.repoId", id);
     renderScreen();
     fetchData();
