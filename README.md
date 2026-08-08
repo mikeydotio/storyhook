@@ -14,7 +14,7 @@ It keeps every project's stories in one local SQLite store as an append-only eve
 ## Current capabilities
 
 - Create and show stories
-- Add comments with `story <id> "comment"`
+- Add comments with `story comment <id> "comment"`
 - Assign members
 - Define project states mapped to `OPEN` or `CLOSED`, and edit, reorder, or
   remove them later from the CLI, the web dashboard, or the TUI
@@ -189,28 +189,28 @@ story member add -g mikeyward
 Work the story:
 
 ```bash
-story SH-1 assign mikey
-story SH-1 "Parser skeleton is in place"
-story SH-1 awaits "waiting on command grammar decision"
-story SH-1 awaits --clear
-story SH-1 is in-progress "Hooked up argument routing"
-story SH-1 is done "Merged and verified"
+story assign SH-1 mikey
+story comment SH-1 "Parser skeleton is in place"
+story block SH-1 "waiting on command grammar decision"
+story unblock SH-1
+story move SH-1 in-progress "Hooked up argument routing"
+story move SH-1 done "Merged and verified"
 ```
 
 Relate stories:
 
 ```bash
-story SH-1 parent-of SH-2
-story SH-2 precedes SH-3
-story SH-4 conflicts-with SH-5
-story SH-2 parent-of SH-3 --remove
+story relate SH-1 parent-of SH-2
+story relate SH-2 blocks SH-3
+story relate SH-4 relates-to SH-5
+story unrelate SH-2 parent-of SH-3
 ```
 
 Prioritize, label, and triage:
 
 ```bash
-story SH-1 priority high
-story SH-1 label backend,api
+story prioritize SH-1 high
+story label SH-1 backend,api
 story next
 story summary
 story context
@@ -219,7 +219,7 @@ story context
 Inspect and report:
 
 ```bash
-story SH-1
+story show SH-1
 story list --state todo
 story list --assignee mikey
 story list --flagged
@@ -228,51 +228,125 @@ story doctor
 
 ## Command reference
 
+Every command below is real — checked by `tests/readme_command_reference.rs` against the
+CLI's own parser, not against this page. If it's dispatchable, it's listed here; if it's
+listed here, it parses.
+
 ```text
-story project new --prefix <PREFIX> [--name <NAME>]
-                  [--attach <PATH> | --no-attach] [--no-agents-md]
-story project delete [--force]
+story --help
+story --version
+story help [<topic>] [--all] [--compact]
+story update [--check] [--force]
+
+story project new --prefix <PREFIX> [--name <NAME>] [--attach <PATH> | --no-attach] [--no-agents-md]
+story project show
 story project list
-story project settings list | get <key> | set <key> <value> | unset <key>
-story new <title>
+story project delete [--force]
+story project set-prefix <NEW-PREFIX> [--force]
+story project link origin [<url>]
+story project link checkout [<path>]
+story project unlink origin [<url>]
+story project unlink checkout
+story project settings list
+story project settings get <key>
+story project settings set <key> <value>
+story project settings unset <key>
+
+story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--assignee <member>] [--label <name>] [--labels <csv>]
+story show <id>
+story comment <id> "<text>"
+story assign <id> <member>
+story move <id> <slug> [--if-state <expected>] ["<comment>"]
+story block <id> "<reason>"
+story unblock <id>
+story prioritize <id> <level>
+story label <id> <labels-csv>
+story unlabel <id> <labels-csv>
+story reopen <id> [--force]
+story delete <id> "<reason>"
+story purge <id> [--force]
+story set <id> (--title "<title>" | --state <slug> | --priority <level> | --assignee <member> | --labels "<csv>" | --blocked "<reason>" | --unblocked | --json "<json>" | --type <slug> | --description "<text>")  # at least one; combine as many as you like
+story relate <a> <relationship-type> <b>
+story unrelate <a> <relationship-type> <b>
+story link <a> <relationship-type> <b>        # alias of relate
+story unlink <a> <relationship-type> <b>      # alias of unrelate
+
 story member add "<name <email>>"
 story member add -g <github-handle>
+
 story state list
-story state add <state-slug> --super OPEN|CLOSED [--role active]
-                             [--description "<text>"]
-story state set <state-slug> [--super OPEN|CLOSED] [--role active|none]
-                             [--description "<text>"] [--no-description]
-                             [--move-stories-to <state-slug>]
-story state remove <state-slug> [--move-stories-to <state-slug>]
-story state reorder <state-slug,state-slug,...>
-story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
-           [--label <labels>] [--created-after <date>] [--updated-after <date>]
-           [--blocked] [--ready]
-story next [--count <n>]
+story state add <slug> --super OPEN|CLOSED [--role active] [--description "<text>"]
+story state set <slug> [--super OPEN|CLOSED] [--role active|none] [--description "<text>"] [--no-description] [--move-stories-to <slug>]
+story state remove <slug> [--move-stories-to <slug>]
+story state reorder <slug,slug,...>
+
+story type list
+story type add <slug> [--description "<text>"] [--emoji <glyph>]
+story type set <slug> [--description "<text>"] [--no-description] [--emoji <glyph>] [--no-emoji]
+story type remove <slug>
+
+story phase list
+story phase show <N>
+story phase add <id> <N>
+story phase remove <id>
+story phase create <N> ["<title>"]
+
+story epic list
+story epic show <id>
+story epic create "<title>"
+story epic add <epic-id> <story-id>
+
+story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
+story next [--count <n>] [--phase <N>]
 story summary
+story report [--html]
 story search <query>
-story import [<file>]
-story export
-story import-project <file>
-story context [--format markdown|json]
-story handoff [--since <duration>]
 story graph [--critical-path] [--blocked-by <id>] [--parallel-groups]
+story context [--format markdown|json]
+story load-context [--format markdown|json]   # alias of context
+story handoff [--since <duration>]
+
+story export
+story import [<file>]
+story import-project <file>
+story decompose <file> [--dry-run]
+story decompose --stdin [--dry-run]
+story migrate [<path>] [--dry-run]
+
 story doctor [--fix]
+story doctor abandoned
+story doctor abandoned clear (--all | <request-id>)
+story hooks install
+story hooks uninstall
+story hooks list
+story hooks test <event_type>
+story scaffold agents-md|claude-md|cursor-rules
+story commit-sync [--since <duration>]
+story sync-git [--since <duration>]           # alias of commit-sync
+story github-sync [<id>] [--dry-run] [--resolve local|remote] [--strategy import-all|match-titles|push-only|future-only] [--mode manual|off]
+story plugin install <target>
+story plugin uninstall <target>
+
 story web start [--port <PORT>]
 story web stop
 story web status
-story <id>
-story <id> "<comment>"
-story <id> assign <member-id|handle>
-story <id> is <state-slug> ["<comment>"]
-story <id> awaits "<reason>"
-story <id> awaits --clear
-story <id> priority <critical|high|medium|low|none>
-story <id> label <labels-csv>
-story <id> label --remove <labels-csv>
-story <id> reopen
-story <a> <relationship> <b> [--remove]
+story web open
+story web address
+story daemon start [--port <PORT>]
+story daemon stop [--force]
+story daemon status
+story daemon install
+story daemon uninstall
+story daemon token
+story store new <path>
+story store backup [--label <text>]
+story tui
+story session-start
 ```
+
+Global flags — `--json`, `--quiet`, `--no-hooks`, `--store-path <file>`, `--project <slug>`,
+`--deadline <secs>` — precede the verb and work on any command; see
+[Automation and scripting](#automation-and-scripting).
 
 ### Story ids
 
@@ -351,21 +425,17 @@ longer exists.
 
 ## Relationships
 
-Supported direct relationship inputs:
+Direct relationship inputs `story relate`/`story unrelate` accept — this is the whole set:
 
-- `starts-before` / `starts-after`
-- `starts-with`
-- `finishes-before` / `finishes-after`
-- `finishes-with`
-- `precedes` / `follows`
-- `relieves` / `relieved-by`
-- `conflicts-with`
-- `coincides-with`
-- `parent-of` / `child-of`
-- `relates-to`
+- `blocks` / `blocked-by` — the only dependency edge; a chain of these is what `story graph`
+  walks for critical-path and blocked-by analysis
+- `parent-of` / `child-of` — hierarchy; see the scheduling and single-parent notes below
+- `duplicate-of` — no direction, same edge either way
+- `relates-to` / `related-to` — a plain, undirected link with no scheduling meaning
 - `obviates` / `obviated-by`
 
-Derived, read-only relationships shown on story views:
+Derived, read-only relationships computed from the above and shown on story views — not
+valid input to `relate`:
 
 - `ancestor-of`
 - `descendent-of`
@@ -484,6 +554,13 @@ Global flags:
 
 - `--json` emits a structured JSON response envelope
 - `--quiet` suppresses normal success output
+- `--no-hooks` skips this command's git hooks
+- `--store-path <file>` names the store file for this command, overriding `$STORYHOOK_STORE_PATH`
+  and `$STORYHOOK_DATA_DIR` (see [Storage model](#storage-model))
+- `--project <slug>` names the project for this command, overriding `$STORYHOOK_PROJECT` and the
+  directory-based resolution below
+- `--deadline <secs>` bounds how long this command waits on the daemon before giving up (`0`
+  gives up immediately)
 
 Exit codes:
 
@@ -496,9 +573,9 @@ Exit codes:
 Examples:
 
 ```bash
-story SH-1 --json
+story show SH-1 --json
 story list --flagged --json
-story SH-2 is done --quiet
+story move SH-2 done --quiet
 ```
 
 ### Driving `story` from a test suite
