@@ -7,10 +7,19 @@
 //! belongs to at most one project — so a collision is a loud refusal naming the
 //! holder, and the freed identity becomes claimable the moment it is unlinked.
 //!
-//! A **checkout** is never consulted for resolution at all. It answers where
-//! this project's repo-side work runs, there is at most one, and two projects
-//! may name the same directory: that is a monorepo, not an ambiguity. Nothing
-//! here may ever assert that linking a checkout makes a directory resolve.
+//! A **checkout** is never *consulted* for resolution at all — `checkout_path`
+//! is not, and has never been, a resolver input; `tests/checkout_path_readers.rs`
+//! is what enforces that. It answers where this project's repo-side work
+//! runs, there is at most one, and two projects may name the same directory:
+//! that is a monorepo, not an ambiguity.
+//!
+//! What `link checkout` now *also* does (SH-167) is write the one artifact
+//! that **is** a resolver input: the directory's `.storyhook.toml` pointer
+//! file, when the directory has none of its own. A checkout link is still
+//! never a claim on identity — a directory that already carries a *different*
+//! project's pointer keeps resolving to it, untouched, which is what
+//! `linking_a_checkout_that_names_another_project_leaves_its_pointer_alone`
+//! pins.
 //!
 //! # The omitted URL is where SH-151 started
 //!
@@ -328,7 +337,7 @@ fn unlinking_an_origin_this_project_does_not_hold_refuses_naming_who_does() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn linking_a_checkout_records_it_without_making_it_resolve() {
+fn linking_a_checkout_writes_the_pointer_that_makes_it_resolve() {
     let env = TestEnv::isolated();
     let (dir, slug) = project(&env);
     let elsewhere = scratch_dir_named("checkout-");
@@ -341,8 +350,9 @@ fn linking_a_checkout_records_it_without_making_it_resolve() {
     );
     assert!(out.status.success(), "{}", stderr(&out));
 
-    // The link genuinely landed — asserted first, because without it the
-    // invariant below would hold just as well against a verb that does nothing.
+    // The checkout_path link genuinely landed — asserted first, because
+    // without it the invariant below would hold just as well against a verb
+    // that does nothing.
     let listing = stdout(
         &env.story(dir.path())
             .args(["project", "list"])
@@ -355,16 +365,295 @@ fn linking_a_checkout_records_it_without_making_it_resolve() {
         "`project list` must report the linked checkout:\n{listing}"
     );
 
-    // **The invariant.** A linked checkout answers where work runs, never which
-    // project a directory belongs to. Standing in it must still refuse.
+    // **The invariant this test exists to pin (SH-167).** `link checkout`
+    // writes the pointer that lets a bare story id resolve at the directory
+    // it names, when that directory had none of its own.
+    assert!(
+        stdout(&out).contains("this directory now resolves"),
+        "the report must say the directory now resolves: {}",
+        stdout(&out)
+    );
+    assert!(
+        elsewhere.path().join(".storyhook.toml").is_file(),
+        "linking an unclaimed directory must write its pointer file"
+    );
     let resolved = env
         .story(elsewhere.path())
         .args(["summary"])
         .output()
         .expect("running `story summary`");
     assert!(
-        !resolved.status.success(),
-        "a linked checkout must never make a directory resolve"
+        resolved.status.success(),
+        "a linked checkout with no pointer of its own must now resolve: {}",
+        stderr(&resolved)
+    );
+}
+
+/// Re-running `link checkout` against an already-correct pointer must not
+/// rewrite it — a `story` command that dirties a tracked file on every run is
+/// its own defect class, distinct from whether the link itself is idempotent.
+#[test]
+fn linking_a_checkout_twice_writes_the_pointer_only_once() {
+    let env = TestEnv::isolated();
+    let (dir, slug) = project(&env);
+    let elsewhere = scratch_dir_named("checkout-");
+    let pointer_path = elsewhere.path().join(".storyhook.toml");
+    let target = elsewhere.path().display().to_string();
+
+    let first = scoped(&env, dir.path(), &slug, &["link", "checkout", &target]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    let bytes_after_first =
+        std::fs::read(&pointer_path).expect("the pointer must exist after the first link");
+
+    let second = scoped(&env, dir.path(), &slug, &["link", "checkout", &target]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    let bytes_after_second =
+        std::fs::read(&pointer_path).expect("the pointer must still exist after the second link");
+
+    assert_eq!(
+        bytes_after_first, bytes_after_second,
+        "re-linking an already-correct checkout must not rewrite the pointer"
+    );
+    assert!(
+        stdout(&second).contains("already named this project"),
+        "the report should say nothing needed to change: {}",
+        stdout(&second)
+    );
+}
+
+/// `ProjectPointer`'s `[plugin]`/`[hooks]` tables are user-authored, and
+/// storyhook has promised never to write them (`ProjectPointer`'s own doc
+/// comment). Repairing a stale `prefix` must not disturb them.
+#[test]
+fn linking_a_checkout_preserves_user_authored_plugin_and_hooks_tables() {
+    let env = TestEnv::isolated();
+    let (dir, slug) = project(&env);
+    let uuid = pointer_uuid(&dir.path().join(".storyhook.toml"));
+
+    let elsewhere = scratch_dir_named("checkout-");
+    let pointer_path = elsewhere.path().join(".storyhook.toml");
+    std::fs::write(
+        &pointer_path,
+        format!(
+            "schema = 1\nuuid = \"{uuid}\"\nprefix = \"OLD\"\n\n[plugin]\nenabled = true\n\n\
+             [hooks]\ntimeout_ms = 5000\n"
+        ),
+    )
+    .expect("writing the hand-authored pointer");
+
+    let out = scoped(
+        &env,
+        dir.path(),
+        &slug,
+        &["link", "checkout", &elsewhere.path().display().to_string()],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("repaired")
+            && stdout(&out).contains("`OLD`")
+            && stdout(&out).contains("`SH`"),
+        "the report must name the repair: {}",
+        stdout(&out)
+    );
+
+    let after: toml::Value = toml::from_str(
+        &std::fs::read_to_string(&pointer_path).expect("reading the repaired pointer"),
+    )
+    .expect("the repaired pointer must still be valid TOML");
+    assert_eq!(
+        after["prefix"].as_str(),
+        Some("SH"),
+        "the stale prefix must be repaired: {after:?}"
+    );
+    assert_eq!(after["uuid"].as_str(), Some(uuid.as_str()));
+    assert_eq!(
+        after["plugin"]["enabled"].as_bool(),
+        Some(true),
+        "the [plugin] table must survive a prefix repair: {after:?}"
+    );
+    assert_eq!(
+        after["hooks"]["timeout_ms"].as_integer(),
+        Some(5000),
+        "the [hooks] table must survive a prefix repair: {after:?}"
+    );
+}
+
+/// The uuid a project's own pointer file carries.
+fn pointer_uuid(path: &Path) -> String {
+    let text = std::fs::read_to_string(path).expect("reading the pointer file");
+    let value: toml::Value = toml::from_str(&text).expect("parsing the pointer file");
+    value["uuid"]
+        .as_str()
+        .expect("a pointer file must carry a uuid")
+        .to_string()
+}
+
+/// **The monorepo case (SH-151's shape, SH-167's constraint).** A directory
+/// that already carries a *different* project's pointer keeps resolving to
+/// it — a checkout link records where repo-side work runs, never a claim on
+/// the directory's identity. Refusing here would also contradict
+/// `tests/project_path_hygiene.rs`'s existing pin that this exact shape
+/// succeeds at exit 0.
+#[test]
+fn linking_a_checkout_that_names_another_project_leaves_its_pointer_alone() {
+    let env = TestEnv::isolated();
+    let (dir, slug) = project(&env);
+    let (other_dir, _other_slug) = project(&env);
+    env.story(other_dir.path())
+        .args(["new", "a story only the other project has"])
+        .assert()
+        .success();
+    let other_pointer = std::fs::read_to_string(other_dir.path().join(".storyhook.toml"))
+        .expect("reading the other project's pointer");
+
+    let elsewhere = scratch_dir_named("checkout-");
+    std::fs::write(elsewhere.path().join(".storyhook.toml"), &other_pointer)
+        .expect("planting the other project's pointer");
+
+    let out = scoped(
+        &env,
+        dir.path(),
+        &slug,
+        &["link", "checkout", &elsewhere.path().display().to_string()],
+    );
+    assert!(
+        out.status.success(),
+        "a checkout link is not a claim on identity: {}",
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains("was left alone"),
+        "the report must say the other project's pointer was left alone: {}",
+        stdout(&out)
+    );
+
+    let after = std::fs::read_to_string(elsewhere.path().join(".storyhook.toml"))
+        .expect("reading the pointer after linking");
+    assert_eq!(
+        after, other_pointer,
+        "the other project's pointer must be byte-identical after a checkout link"
+    );
+
+    // The load-bearing half: the directory still resolves to the project its
+    // own pointer names, not to the one that just linked it as a checkout.
+    let listing = stdout(
+        &env.story(elsewhere.path())
+            .args(["list"])
+            .output()
+            .expect("running `story list`"),
+    );
+    assert!(
+        listing.contains("a story only the other project has"),
+        "linking must never switch which project a directory resolves to: {listing}"
+    );
+}
+
+/// A pointer that will not even parse is refused before anything is written —
+/// there is no way to tell "mine, just stale" from "someone else's" through a
+/// syntax error, and guessing wrong in either direction is worse than asking.
+#[test]
+fn linking_a_checkout_with_an_unparseable_pointer_refuses_and_writes_nothing() {
+    let env = TestEnv::isolated();
+    let (dir, slug) = project(&env);
+    let elsewhere = scratch_dir_named("checkout-");
+    std::fs::write(
+        elsewhere.path().join(".storyhook.toml"),
+        "this is not valid toml {{{",
+    )
+    .expect("planting a broken pointer");
+
+    let out = scoped(
+        &env,
+        dir.path(),
+        &slug,
+        &["link", "checkout", &elsewhere.path().display().to_string()],
+    );
+    assert!(!out.status.success(), "an unparseable pointer must refuse");
+    assert_eq!(
+        out.status.code(),
+        Some(5),
+        "a damaged file, not a usage mistake"
+    );
+    assert!(
+        stderr(&out).contains(".storyhook.toml"),
+        "the refusal must name the file: {}",
+        stderr(&out)
+    );
+
+    // A refusal here must not have half-linked: the checkout_path write
+    // happens *after* the pointer is read, so this project's checkout must
+    // still be whatever it was before (its own directory, from `project
+    // new`'s default attach) — never the broken-pointer directory.
+    let listing = stdout(
+        &env.story(dir.path())
+            .args(["project", "list"])
+            .output()
+            .expect("running `story project list`"),
+    );
+    let broken = elsewhere.path().canonicalize().unwrap();
+    assert!(
+        !listing.contains(&broken.display().to_string()),
+        "a refusal must not have recorded the broken-pointer directory as the checkout:\n{listing}"
+    );
+}
+
+/// The pointer write is best-effort: the checkout link itself still succeeds,
+/// and the failure is reported rather than silently swallowed or propagated.
+/// The genuine escape hatch a `--no-pointer` flag would serve — a directory
+/// storyhook cannot write into — is this degraded path, not a flag asking for
+/// the unreachable state SH-119 already deleted a switch to prevent.
+#[test]
+#[cfg(unix)]
+fn linking_a_checkout_reports_a_pointer_it_could_not_write() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Root ignores the permission bits this test relies on to make the
+    // directory unwritable, which would turn the setup below into a no-op.
+    if std::env::var_os("USER").as_deref() == Some(std::ffi::OsStr::new("root")) {
+        eprintln!("skipping: running as root, which ignores directory write permissions");
+        return;
+    }
+
+    let env = TestEnv::isolated();
+    let (dir, slug) = project(&env);
+    let elsewhere = scratch_dir_named("checkout-");
+    std::fs::set_permissions(elsewhere.path(), std::fs::Permissions::from_mode(0o555))
+        .expect("making the directory read-only");
+
+    let out = scoped(
+        &env,
+        dir.path(),
+        &slug,
+        &["link", "checkout", &elsewhere.path().display().to_string()],
+    );
+
+    // Restored before the TempDir's own cleanup runs, or that cleanup fails.
+    std::fs::set_permissions(elsewhere.path(), std::fs::Permissions::from_mode(0o755))
+        .expect("restoring permissions for cleanup");
+
+    assert!(
+        out.status.success(),
+        "the checkout link itself must still succeed even though the pointer could not be \
+         written: {}",
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains("could not be written"),
+        "the report must say the pointer could not be written: {}",
+        stdout(&out)
+    );
+
+    let listing = stdout(
+        &env.story(dir.path())
+            .args(["project", "list"])
+            .output()
+            .expect("running `story project list`"),
+    );
+    let canonical = elsewhere.path().canonicalize().unwrap();
+    assert!(
+        listing.contains(&format!("checkout  {}", canonical.display())),
+        "the checkout_path write does not depend on whether the pointer write succeeded:\n\
+         {listing}"
     );
 }
 
@@ -429,6 +718,63 @@ fn linking_a_checkout_that_is_not_there_refuses_naming_the_path() {
     assert!(stderr(&out).contains("/no/such/dir"), "{}", stderr(&out));
 }
 
+/// **The monorepo case, the other direction.** A subdirectory of a
+/// repository whose root already carries a different project's pointer is
+/// itself unclaimed. Linking a second project's checkout there writes a
+/// pointer for the subdirectory alone — the ancestor walk stops at the
+/// nearest pointer (`src/invoke.rs`'s `resolve_project`), so the
+/// subdirectory now resolves to the project just linked there while the
+/// repository root keeps resolving to the one it already named.
+#[test]
+fn linking_a_subdirectory_of_another_repository_makes_only_that_subdirectory_resolve() {
+    let env = TestEnv::isolated();
+    let (root_dir, _root_slug) = project(&env);
+    env.story(root_dir.path())
+        .args(["new", "a story at the repository root"])
+        .assert()
+        .success();
+
+    let (sub_project_dir, sub_slug) = project(&env);
+    let subdirectory = root_dir.path().join("service-b");
+    std::fs::create_dir_all(&subdirectory).expect("creating the subdirectory");
+
+    let out = scoped(
+        &env,
+        sub_project_dir.path(),
+        &sub_slug,
+        &["link", "checkout", &subdirectory.display().to_string()],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        subdirectory.join(".storyhook.toml").is_file(),
+        "the unclaimed subdirectory must get its own pointer"
+    );
+
+    // The subdirectory resolves to the project just linked there...
+    let sub_listing = stdout(
+        &env.story(&subdirectory)
+            .args(["list"])
+            .output()
+            .expect("running `story list` in the subdirectory"),
+    );
+    assert!(
+        !sub_listing.contains("a story at the repository root"),
+        "the subdirectory must not resolve to the root project's stories: {sub_listing}"
+    );
+
+    // ...and the repository root is completely unaffected.
+    let root_listing = stdout(
+        &env.story(root_dir.path())
+            .args(["list"])
+            .output()
+            .expect("running `story list` at the repository root"),
+    );
+    assert!(
+        root_listing.contains("a story at the repository root"),
+        "the repository root must keep resolving to its own project: {root_listing}"
+    );
+}
+
 #[test]
 fn unlinking_a_checkout_reports_what_went_and_is_safe_when_there_was_none() {
     let env = TestEnv::isolated();
@@ -464,6 +810,65 @@ fn unlinking_a_checkout_reports_what_went_and_is_safe_when_there_was_none() {
             || stdout(&out).contains("unlinked checkout"),
         "{}",
         stdout(&out)
+    );
+}
+
+/// **Never deletes the pointer file (SH-167).** `.storyhook.toml` is
+/// committed to the repository and may carry user-authored `[plugin]`/
+/// `[hooks]` tables; deleting it on unlink would propagate to every other
+/// clone on their next pull, and destroy configuration this service has
+/// promised never to write, let alone remove. `unlink` answers "where does
+/// *this machine* run repo-side work" — it is not a statement about the
+/// repository's identity, so it must not touch the file that carries it.
+#[test]
+fn unlinking_a_checkout_leaves_the_pointer_file_in_place() {
+    let env = TestEnv::isolated();
+    let (dir, slug) = project(&env);
+    let checkout = scratch_dir_named("checkout-");
+    let pointer_path = checkout.path().join(".storyhook.toml");
+
+    scoped(
+        &env,
+        dir.path(),
+        &slug,
+        &["link", "checkout", &checkout.path().display().to_string()],
+    );
+    assert!(
+        pointer_path.is_file(),
+        "fixture: linking must have written the pointer"
+    );
+    let before = std::fs::read(&pointer_path).expect("reading the pointer before unlinking");
+
+    let out = scoped(&env, dir.path(), &slug, &["unlink", "checkout"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("left in place"),
+        "the report must say the pointer was left in place: {}",
+        stdout(&out)
+    );
+
+    assert!(
+        pointer_path.is_file(),
+        "unlinking a checkout must not delete its pointer file"
+    );
+    let after = std::fs::read(&pointer_path).expect("reading the pointer after unlinking");
+    assert_eq!(
+        before, after,
+        "unlinking must not even rewrite the pointer file"
+    );
+
+    // The directory still resolves — the pointer, not the checkout_path
+    // column, is what resolution reads, and unlinking only cleared the latter.
+    let resolved = env
+        .story(checkout.path())
+        .args(["summary"])
+        .output()
+        .expect("running `story summary`");
+    assert!(
+        resolved.status.success(),
+        "the directory must still resolve after its checkout link (not its pointer) is \
+         removed: {}",
+        stderr(&resolved)
     );
 }
 

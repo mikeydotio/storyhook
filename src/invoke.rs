@@ -1004,13 +1004,63 @@ fn dispatch_project_link<S: Store>(
             let replaced = link.replaced.as_ref().map_or_else(String::new, |old| {
                 format!(", replacing `{}`", old.display())
             });
-            Ok(Response::Message(format!(
+            let mut message = format!(
                 "linked checkout `{}` to project `{}`{replaced}\nthis is where repo-side work \
-                 runs for it; it is not used to decide which project you are in",
+                 runs for it",
                 target.display(),
                 link.project
-            )))
+            );
+            message.push('\n');
+            message.push_str(&pointer_outcome_message(&link.pointer));
+            Ok(Response::Message(message))
         }
+    }
+}
+
+/// Reports what [`GitLinkService::link_checkout`] or `unlink_checkout` did to
+/// the directory's `.storyhook.toml`, alongside the `checkout_path` change
+/// its caller already describes.
+fn pointer_outcome_message(pointer: &crate::service::PointerOutcome) -> String {
+    use crate::service::PointerOutcome;
+    match pointer {
+        PointerOutcome::Written(path) => format!(
+            "wrote {} — this directory now resolves bare story ids on its own",
+            path.display()
+        ),
+        PointerOutcome::AlreadyCorrect(path) => {
+            format!(
+                "{} already named this project — nothing changed",
+                path.display()
+            )
+        }
+        PointerOutcome::PrefixRepaired { path, was, now } => format!(
+            "repaired {}: its prefix was `{was}`, now `{now}`",
+            path.display()
+        ),
+        PointerOutcome::AnotherProject { path, uuid, holder } => {
+            let holder = holder.as_deref().map_or_else(
+                || format!("project `{uuid}`, which this store does not have"),
+                |slug| format!("project `{slug}`"),
+            );
+            format!(
+                "{} names {holder} and was left alone — that directory still resolves to it, \
+                 not to this project. A tree can be the work-directory of several projects but \
+                 the pointer of only one.",
+                path.display()
+            )
+        }
+        PointerOutcome::Unwritable { path, reason } => format!(
+            "the checkout is linked, but {} could not be written: {reason}. This directory will \
+             not resolve bare story ids until it exists — write it by hand, or fix what's \
+             blocking it and link again.",
+            path.display()
+        ),
+        PointerOutcome::LeftInPlace(path) => format!(
+            "{} is left in place — it is committed, and other clones resolve by it. Delete it \
+             yourself if this repository should stop naming this project.",
+            path.display()
+        ),
+        PointerOutcome::NoPointer => "no pointer file was here to leave".to_string(),
     }
 }
 
@@ -1034,9 +1084,10 @@ fn dispatch_project_unlink<S: Store>(
             let link = service.unlink_checkout()?;
             Ok(Response::Message(match &link.replaced {
                 Some(path) => format!(
-                    "unlinked checkout `{}` from project `{}`\nnothing on disk was changed",
+                    "unlinked checkout `{}` from project `{}`\n{}",
                     path.display(),
-                    link.project
+                    link.project,
+                    pointer_outcome_message(&link.pointer)
                 ),
                 None => format!("project `{}` had no linked checkout", link.project),
             }))

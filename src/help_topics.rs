@@ -1885,8 +1885,12 @@ Point a project at the checkout it now lives in:
 read a .storyhook.toml in the directory it was pointed at, and refused
 if the uuid there named a different project — which meant it could not
 point a project at a checkout that had never been initialized, or one
-whose pointer file had been lost. `link checkout` records the path
-against the project you name and asks the directory for nothing.
+whose pointer file had been lost. `link checkout` asks the directory
+for nothing to identify itself — it records the path against the
+project you name either way, and if the directory has no pointer file
+of its own, it writes one, so a bare story id resolves there from then
+on. A directory that already names a *different* project keeps its own
+pointer untouched; a checkout link is never a claim on identity.
 
 Related:
   story help project   — The whole project verb group

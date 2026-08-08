@@ -59,6 +59,58 @@ pub struct CheckoutLink {
     /// than only what it wrote. A silent replacement is how somebody discovers
     /// six weeks later that dispatch has been running in the wrong tree.
     pub replaced: Option<PathBuf>,
+    /// What happened to the directory's `.storyhook.toml` — the artifact
+    /// project *resolution* actually reads, as opposed to `checkout_path`
+    /// above, which resolution never does (SH-167).
+    pub pointer: PointerOutcome,
+}
+
+/// What a checkout link or unlink did to the directory's `.storyhook.toml`.
+///
+/// `checkout_path` and the pointer file answer different questions and have
+/// different scopes. `checkout_path` is machine-local and many-to-one — two
+/// projects may legitimately name the same directory as their checkout,
+/// which is a monorepo rather than an ambiguity
+/// (`store::conformance::two_projects_may_name_the_same_checkout`). The
+/// pointer file is committed, repository-global, and one-to-one: a directory
+/// has exactly one identity. So `link checkout` always records the first,
+/// and only ever writes the second when the directory is unclaimed or
+/// already claims this same project — never by overwriting a different
+/// project's identity, which would silently steal it out from under every
+/// other clone on their next pull.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PointerOutcome {
+    /// No pointer file existed; one was written naming this project.
+    Written(PathBuf),
+    /// A pointer file already named this project with the same prefix, so
+    /// nothing needed to change and nothing was written — re-running `link
+    /// checkout` leaves the working tree clean.
+    AlreadyCorrect(PathBuf),
+    /// A pointer file already named this project but with a stale `prefix`,
+    /// now repaired. Any `[plugin]`/`[hooks]` tables it carried came through
+    /// untouched.
+    PrefixRepaired {
+        path: PathBuf,
+        was: String,
+        now: String,
+    },
+    /// The directory's pointer file names a *different* project. Left
+    /// exactly as it was — a checkout link is not a claim on identity, and
+    /// the directory keeps resolving to whichever project its pointer names.
+    AnotherProject {
+        path: PathBuf,
+        uuid: String,
+        holder: Option<String>,
+    },
+    /// The link was recorded in the store; the pointer file itself could not
+    /// be written. The directory will not resolve until it exists.
+    Unwritable { path: PathBuf, reason: String },
+    /// `unlink` only: a pointer file is present and is deliberately left in
+    /// place — it is committed, may carry user-authored configuration, and
+    /// other clones resolve by it.
+    LeftInPlace(PathBuf),
+    /// `unlink` only: there was no pointer file to leave.
+    NoPointer,
 }
 
 /// A project's git associations.
@@ -166,13 +218,35 @@ impl<'ctx, S: Store> GitLinkService<'ctx, S> {
     }
 
     /// Records `path` as where this project's repo-side work runs, replacing
-    /// whatever was recorded before.
+    /// whatever was recorded before — and, unless the directory already
+    /// claims a *different* project, writes or repairs the `.storyhook.toml`
+    /// pointer that lets a bare story id resolve there (SH-167).
     ///
     /// The directory must exist, and that is the only thing checked. It is not
     /// required to be a git repository — a checkout that has not been cloned yet
     /// is a legitimate thing to name ahead of time, and the one consumer fails
     /// loudly on its own — and it is not required to be unique across projects,
     /// because nothing resolves a project by it. See migration 0007's header.
+    ///
+    /// # The pointer file is read before anything is written
+    ///
+    /// A pointer that exists but will not parse refuses here — naming the
+    /// file, via [`read_pointer`](crate::service::project::read_pointer)'s own
+    /// message — before the store is touched at all. There is no way to tell
+    /// "this is mine, just stale" from "this is someone else's" through a
+    /// syntax error, and guessing wrong in either direction is worse than
+    /// asking the caller to look.
+    ///
+    /// # Store write, then pointer write, matching `story project new` and
+    /// `set_prefix`
+    ///
+    /// The store commits first. A failed pointer write after that is reported
+    /// rather than propagated — [`PointerOutcome::Unwritable`] — because
+    /// failing into today's status quo (a recorded checkout with no pointer)
+    /// is better than a pointer-first ordering's failure mode: a store write
+    /// that then fails would strand a `.storyhook.toml` naming a project this
+    /// store does not have, which is `invoke::unresolvable_pointer_refusal`'s
+    /// state.
     pub fn link_checkout(&self, path: &Path) -> Result<CheckoutLink, AppError> {
         if !path.is_dir() {
             return Err(AppError::NotFound(format!(
@@ -182,16 +256,84 @@ impl<'ctx, S: Store> GitLinkService<'ctx, S> {
         }
         let path = crate::env::canonical_ish(path)?;
         let project = self.ctx.project();
-        let slug = self.slug()?;
+        let record = self.project_record()?;
+
+        // Read-before-write, and outside any transaction: a syntax error here
+        // must refuse before the store is touched, which `?` gives for free.
+        let existing_pointer = crate::service::project::read_pointer(&path)?;
+
         let replaced = self.ctx.store().read(|tx| tx.checkout_path(project))?;
         self.ctx
             .store()
             .write(|tx| tx.set_checkout_path(project, Some(&path)))?;
+
+        let pointer = self.reconcile_pointer(&path, &record, existing_pointer)?;
+
         Ok(CheckoutLink {
-            project: slug,
+            project: record.slug,
             path: Some(path),
             replaced,
+            pointer,
         })
+    }
+
+    /// Writes, repairs, or leaves alone the pointer file at `path`, given
+    /// what it already contained (if anything) and this project's identity.
+    /// Never called before the store write it reports alongside has
+    /// committed — see [`link_checkout`](Self::link_checkout)'s ordering note.
+    fn reconcile_pointer(
+        &self,
+        path: &Path,
+        record: &crate::store::ProjectRecord,
+        existing: Option<crate::service::project::ProjectPointer>,
+    ) -> Result<PointerOutcome, AppError> {
+        let pointer_path = crate::service::project::pointer_path(path);
+
+        let Some(mut pointer) = existing else {
+            let fresh = crate::service::project::ProjectPointer::new(
+                record.uuid.clone(),
+                record.prefix.clone(),
+            );
+            return Ok(match crate::service::project::write_pointer(path, &fresh) {
+                Ok(()) => PointerOutcome::Written(pointer_path),
+                Err(error) => PointerOutcome::Unwritable {
+                    path: pointer_path,
+                    reason: error.to_string(),
+                },
+            });
+        };
+
+        if pointer.uuid != record.uuid {
+            let holder = self
+                .ctx
+                .store()
+                .read(|tx| tx.project_by_uuid(&pointer.uuid))?
+                .map(|held| held.slug);
+            return Ok(PointerOutcome::AnotherProject {
+                path: pointer_path,
+                uuid: pointer.uuid,
+                holder,
+            });
+        }
+
+        if pointer.prefix == record.prefix {
+            return Ok(PointerOutcome::AlreadyCorrect(pointer_path));
+        }
+
+        let was = std::mem::replace(&mut pointer.prefix, record.prefix.clone());
+        Ok(
+            match crate::service::project::write_pointer(path, &pointer) {
+                Ok(()) => PointerOutcome::PrefixRepaired {
+                    path: pointer_path,
+                    was,
+                    now: record.prefix.clone(),
+                },
+                Err(error) => PointerOutcome::Unwritable {
+                    path: pointer_path,
+                    reason: error.to_string(),
+                },
+            },
+        )
     }
 
     /// Forgets this project's checkout, reporting what went.
@@ -200,6 +342,14 @@ impl<'ctx, S: Store> GitLinkService<'ctx, S> {
     /// [`unlink_origin`](Self::unlink_origin): there is exactly one checkout
     /// slot, so "there was nothing there" is unambiguous and the caller cannot
     /// have removed the wrong one.
+    ///
+    /// **Never deletes the pointer file (SH-167).** `.storyhook.toml` is
+    /// committed to the repository and may carry user-authored `[plugin]`/
+    /// `[hooks]` tables; deleting it would propagate to every other clone on
+    /// their next pull and destroy configuration this service has promised
+    /// never to write, let alone remove. `story project delete` sets the same
+    /// precedent for the checkout itself: it "never touches the project's own
+    /// files on disk."
     pub fn unlink_checkout(&self) -> Result<CheckoutLink, AppError> {
         let project = self.ctx.project();
         let slug = self.slug()?;
@@ -209,19 +359,33 @@ impl<'ctx, S: Store> GitLinkService<'ctx, S> {
                 .store()
                 .write(|tx| tx.set_checkout_path(project, None))?;
         }
+        let pointer = match &replaced {
+            Some(path) if crate::service::project::pointer_path(path).is_file() => {
+                PointerOutcome::LeftInPlace(crate::service::project::pointer_path(path))
+            }
+            _ => PointerOutcome::NoPointer,
+        };
         Ok(CheckoutLink {
             project: slug,
             path: None,
             replaced,
+            pointer,
         })
+    }
+
+    /// This project's full record — identity, slug and prefix — for the
+    /// pointer reconciliation [`link_checkout`](Self::link_checkout) needs
+    /// beyond the slug [`slug`](Self::slug) alone answers.
+    fn project_record(&self) -> Result<crate::store::ProjectRecord, AppError> {
+        let project = self.ctx.project();
+        self.ctx
+            .store()
+            .read(|tx| tx.project(project))?
+            .ok_or_else(|| AppError::NotFound("this project is no longer in the store".to_string()))
     }
 
     /// This project's slug — how every message here names it.
     fn slug(&self) -> Result<String, AppError> {
-        let project = self.ctx.project();
-        let record = self.ctx.store().read(|tx| tx.project(project))?;
-        record
-            .map(|record| record.slug)
-            .ok_or_else(|| AppError::NotFound("this project is no longer in the store".to_string()))
+        self.project_record().map(|record| record.slug)
     }
 }
