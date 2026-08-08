@@ -725,7 +725,7 @@ tbody tr:hover { background: var(--bg-sunken); }
   </div>
 </div>
 
-<div class="toast-stack" id="toast-stack"></div>
+<div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
 
 <script>
 (function() {
@@ -741,6 +741,10 @@ tbody tr:hover { background: var(--bg-sunken); }
   var SAFETY_POLL_INTERVAL_MS = 25000;
   var FOOTER_TICK_MS = 1000;
   var TOAST_LIFETIME_MS = 4500;
+  // Error/warning toasts often carry a real diagnosis and remedy (SH-196's
+  // whole point) rather than a short confirmation -- the shared lifetime
+  // above is not enough time to read one before it dismisses itself.
+  var TOAST_ERROR_LIFETIME_MS = 9000;
   // How long after a `repo-changed` SSE event to wait before re-fetching,
   // coalescing a burst of individually-debounced server events (e.g. several
   // rapid mutations) into a single re-fetch instead of one per event.
@@ -1012,7 +1016,13 @@ tbody tr:hover { background: var(--bg-sunken); }
               reject({ status: 401, message: "authentication cancelled" });
             });
           } else {
-            var message = (parsed && parsed.error) || xhr.statusText || ("HTTP " + xhr.status);
+            // Not every error body is JSON -- the dispatch endpoint's own
+            // 500/429/403 (src/api/dispatch.rs) are plain text (SH-196), and
+            // without this branch they were discarded in favor of a generic
+            // xhr.statusText ("Internal Server Error"), hiding the actual
+            // diagnosis a caller most needs on exactly those replies.
+            var text = xhr.responseText && xhr.responseText.trim();
+            var message = (parsed && parsed.error) || (!parsed && text) || xhr.statusText || ("HTTP " + xhr.status);
             reject({ status: xhr.status, message: message, body: parsed });
           }
         };
@@ -1186,10 +1196,11 @@ tbody tr:hover { background: var(--bg-sunken); }
     var stack = $("toast-stack");
     var node = el("div", { class: "toast " + (variant || "") }, [message]);
     stack.appendChild(node);
+    var lifetime = (variant === "error") ? TOAST_ERROR_LIFETIME_MS : TOAST_LIFETIME_MS;
     setTimeout(function() {
       node.classList.add("leaving");
       setTimeout(function() { node.remove(); }, 200);
-    }, TOAST_LIFETIME_MS);
+    }, lifetime);
   }
 
   function toastError(err) {
@@ -1391,7 +1402,19 @@ tbody tr:hover { background: var(--bg-sunken); }
           return;
         }
         var display = (record.payload && record.payload.display) || record.error || "Dispatch finished.";
-        finishDispatch(storyId, record.state === "ok" ? "success" : "error", display);
+        // `refused` (a well-formed business refusal -- not ready, already
+        // claimed, a version-skewed plugin) and `failed` (the script itself
+        // never produced a result) used to render as the identical red
+        // toast, distinguishable only by a 3px border color -- named here
+        // instead, since one of them is "try again later" and the other is
+        // "something is actually broken".
+        if (record.state === "ok") {
+          finishDispatch(storyId, "success", display);
+        } else if (record.state === "refused") {
+          finishDispatch(storyId, "error", "Dispatch refused — " + display);
+        } else {
+          finishDispatch(storyId, "error", "Dispatch failed — " + display);
+        }
       })
       .catch(function(err) {
         var current = state.dispatches[storyId];
@@ -1400,7 +1423,7 @@ tbody tr:hover { background: var(--bg-sunken); }
         // a mid-poll token re-prompt) retries rather than giving up on a
         // dispatch that is very possibly still running.
         if (attempt + 1 >= DISPATCH_MAX_POLLS) {
-          finishDispatch(storyId, "error", "Lost track of the dispatch: " + err.message);
+          finishDispatch(storyId, "error", "Dispatch failed — lost track of the dispatch: " + err.message);
           return;
         }
         current.timer = setTimeout(function() { pollDispatch(storyId, handle, attempt + 1); }, DISPATCH_POLL_MS);

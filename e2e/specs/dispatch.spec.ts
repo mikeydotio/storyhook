@@ -149,6 +149,19 @@ test("the dashboard prompts for the daemon token at load, then a dispatch runs w
     existsSync(worktreePath),
     `expected a real worktree at ${worktreePath}`,
   ).toBe(true);
+
+  // A refused dispatch, for free: the dispatch above claimed this exact
+  // story (now in-progress), so a second click hits story.sh's own
+  // already-in-progress guard for real -- a well-formed business refusal,
+  // not a daemon or script failure. Before SH-196's dashboard half, this
+  // and an actual script failure rendered as the identical red toast,
+  // distinguishable only by a 3px border color.
+  await dispatchButton.click();
+  const refusedToast = page.locator("#toast-stack .toast.error", {
+    hasText: "Dispatch refused",
+  });
+  await expect(refusedToast).toBeVisible({ timeout: 20_000 });
+  await expect(refusedToast).toContainText("already in-progress");
 });
 
 test("Dispatch Auto sends ?auto=1 and runs a real autonomous dispatch (SH-208)", async ({
