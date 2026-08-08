@@ -2672,6 +2672,34 @@ macro_rules! store_conformance_suite {
             }
 
             #[test]
+            fn stories_can_be_filtered_by_hidden() {
+                let f = <$fixture>::create();
+                let project = query_fixture(f.store());
+                // Story 5 ("Echo") and 6 ("Foxtrot") are both already closed
+                // (`done`) by `query_fixture`; only 5 is archived here, so the
+                // filter is exercised against a sibling closed-but-unhidden
+                // row rather than only against the open ones.
+                apply(
+                    f.store(),
+                    project,
+                    StoryNo::new(5),
+                    ExpectedSeq::Any,
+                    &[StoryEvent::StoryHidden {
+                        at: "2026-01-01T01:00:00Z".into(),
+                    }],
+                )
+                .unwrap();
+                assert_eq!(
+                    story_numbers(f.store(), project, &StoryQuery::all().hidden(true)),
+                    [5]
+                );
+                assert_eq!(
+                    story_numbers(f.store(), project, &StoryQuery::all().hidden(false)),
+                    [1, 2, 3, 4, 6]
+                );
+            }
+
+            #[test]
             fn stories_can_be_filtered_by_deleted() {
                 let f = <$fixture>::create();
                 let project = query_fixture(f.store());

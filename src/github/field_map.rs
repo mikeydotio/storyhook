@@ -472,6 +472,7 @@ mod tests {
             closed_at: None,
             deleted: false,
             deleted_reason: None,
+            hidden_at: None,
         }
     }
 

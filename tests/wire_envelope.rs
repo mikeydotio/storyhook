@@ -84,6 +84,7 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
         closed_at: None,
         deleted: false,
         deleted_reason: None,
+        hidden_at: None,
     }
 }
 
@@ -136,6 +137,7 @@ fn maximal_view() -> StoryView {
             closed_at: Some("2026-07-28T12:00:00Z".to_string()),
             deleted: true,
             deleted_reason: Some("superseded".to_string()),
+            hidden_at: Some("2026-07-28T13:00:00Z".to_string()),
             superstate: SuperState::Closed,
             state: "done".to_string(),
             ..snapshot("SH-1", "Everything, everywhere")
@@ -1059,6 +1061,16 @@ fn invocation_corpus() -> Vec<Invocation> {
             id: "SH-1".to_string(),
             force: true,
         },
+        Invocation::Hide {
+            id: "SH-1".to_string(),
+        },
+        Invocation::Unhide {
+            id: "SH-1".to_string(),
+        },
+        Invocation::HideState {
+            state: "done".to_string(),
+            force: true,
+        },
         Invocation::Delete {
             id: "SH-1".to_string(),
             reason: "superseded".to_string(),
@@ -1375,6 +1387,9 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::SetPriority { .. } => "SetPriority",
         Invocation::SetLabels { .. } => "SetLabels",
         Invocation::Reopen { .. } => "Reopen",
+        Invocation::Hide { .. } => "Hide",
+        Invocation::Unhide { .. } => "Unhide",
+        Invocation::HideState { .. } => "HideState",
         Invocation::Delete { .. } => "Delete",
         Invocation::Purge { .. } => "Purge",
         Invocation::BulkUpdate { .. } => "BulkUpdate",
@@ -1420,7 +1435,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        53,
+        56,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

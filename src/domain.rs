@@ -293,6 +293,12 @@ pub struct StorySnapshot {
     /// is `true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_reason: Option<String>,
+    /// When the story was hidden from the primary UI via `story hide`, if it
+    /// currently is. `Some` only while [`superstate`](Self::superstate) is
+    /// [`SuperState::Closed`] — [`fold_story`] clears it the moment a story
+    /// reopens, so "hidden implies closed" holds without a schema CHECK.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_at: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -416,6 +422,28 @@ pub enum StoryEvent {
         /// rendered.
         subject: String,
     },
+    /// Hides a CLOSED-superstate story from the primary UI — the "Archive"
+    /// action in `story hide` and the dashboard's per-column Archive button
+    /// (SH-43).
+    ///
+    /// Deliberately not named `archived`: that word is already load-bearing —
+    /// [`StoryRow::archived`](crate::store::types::StoryRow::archived) is
+    /// derived from `closed_at` and tied to it by a schema CHECK, and
+    /// `resolve_open_story` uses it as the "this story cannot be edited"
+    /// test. `hidden` is an orthogonal, reversible display fact: it only ever
+    /// applies on top of an already-closed story, and the fold clears it
+    /// automatically the moment the story's superstate resolves back to OPEN
+    /// (see [`fold_story`]), so "hidden implies closed" holds without a
+    /// schema CHECK against a column a CHECK cannot see (`superstate` is
+    /// itself derived, not stored raw on this event).
+    StoryHidden {
+        at: String,
+    },
+    /// The inverse of [`StoryHidden`](Self::StoryHidden) — the "Unarchive"
+    /// action.
+    StoryUnhidden {
+        at: String,
+    },
 }
 
 /// The `kind` tag [`StoryEvent::StoryCommitLinked`] serializes with.
@@ -482,7 +510,7 @@ pub fn git_link_sha(text: &str) -> Option<&str> {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 18] = [
+pub const EVENT_KINDS: [&str; 20] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
@@ -501,6 +529,8 @@ pub const EVENT_KINDS: [&str; 18] = [
     "StoryClosedAndArchived",
     "StoryDeleted",
     KIND_STORY_COMMIT_LINKED,
+    "StoryHidden",
+    "StoryUnhidden",
 ];
 
 /// Whether `kind` is an event this binary can decode.
@@ -534,6 +564,8 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryClosedAndArchived { .. } => "StoryClosedAndArchived",
         StoryEvent::StoryDeleted { .. } => "StoryDeleted",
         StoryEvent::StoryCommitLinked { .. } => KIND_STORY_COMMIT_LINKED,
+        StoryEvent::StoryHidden { .. } => "StoryHidden",
+        StoryEvent::StoryUnhidden { .. } => "StoryUnhidden",
     }
 }
 
@@ -597,6 +629,8 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             // because of it would be a behaviour change smuggled in under a
             // refactor.
             StoryEvent::StoryCommitLinked { .. } => "comment",
+            StoryEvent::StoryHidden { .. } => "hidden",
+            StoryEvent::StoryUnhidden { .. } => "unhidden",
         })
         .unwrap_or("unknown")
 }
@@ -1021,6 +1055,7 @@ pub fn fold_story(
     let mut closed_at = None;
     let mut deleted = false;
     let mut deleted_reason = None;
+    let mut hidden_at = None;
 
     for event in events {
         match event {
@@ -1207,6 +1242,14 @@ pub fn fold_story(
                     closed_at = Some(at.clone());
                 }
             }
+            StoryEvent::StoryHidden { at } => {
+                hidden_at = Some(at.clone());
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryUnhidden { at } => {
+                hidden_at = None;
+                updated_at = Some(at.clone());
+            }
         }
     }
 
@@ -1251,6 +1294,20 @@ pub fn fold_story(
         (state, superstate)
     };
 
+    // Symmetric with the `deleted`/`closed_at` retraction above, and for the
+    // same reason (SH-130's illegal-tuple class, generalized): `states` is
+    // one fixed, *current* catalog snapshot applied uniformly across the
+    // whole replay, so if the story's resting state has been reclassified
+    // OPEN since a `StoryHidden` event was appended, that event's effect must
+    // not survive the refold. Applying the rule once here, on the final
+    // superstate, covers every path that can produce it — a later
+    // `StoryStateChanged` into an OPEN state, or a state reclassified OPEN
+    // out from under a story that was validly hidden while it was CLOSED —
+    // rather than re-deriving it at each event that can affect superstate.
+    if superstate == SuperState::Open {
+        hidden_at = None;
+    }
+
     Ok(StorySnapshot {
         id: id.to_string(),
         title,
@@ -1269,6 +1326,7 @@ pub fn fold_story(
         closed_at,
         deleted,
         deleted_reason,
+        hidden_at,
     })
 }
 
@@ -3239,6 +3297,138 @@ mod tests {
     }
 
     #[test]
+    fn fold_story_hidden_sets_hidden_at() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Closed then archived".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryHidden {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.hidden_at.as_deref(), Some("2026-03-13T00:02:00Z"));
+        assert_eq!(story.superstate, SuperState::Closed);
+    }
+
+    #[test]
+    fn fold_story_unhidden_clears_hidden_at() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Archived then unarchived".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryHidden {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                },
+                StoryEvent::StoryUnhidden {
+                    at: "2026-03-13T00:03:00Z".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.hidden_at, None);
+    }
+
+    #[test]
+    fn fold_story_reopening_clears_hidden_at() {
+        // Symmetric with `fold_story_reopens_a_closed_story_by_appending_a_move_to_an_open_state`:
+        // reopening a hidden story must not leave it hidden-but-open, the
+        // illegal tuple SH-130 fixed for `archived`/`closed_at`/`superstate`.
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Archived then reopened".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryHidden {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:03:00Z".to_string(),
+                    state: "todo".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert_eq!(story.superstate, SuperState::Open);
+        assert_eq!(story.hidden_at, None);
+    }
+
+    #[test]
+    fn fold_story_reclassifying_the_resting_state_open_clears_hidden_at() {
+        // The generalized SH-130 case: no new event reopens the story, but the
+        // *catalog* passed to the fold reclassifies `done` as OPEN — exactly
+        // what a live reclassification does before re-folding every occupant.
+        // A `StoryHidden` appended while `done` was still CLOSED must not
+        // survive that refold once the story's resting state reads OPEN.
+        let mut states = state_map();
+        states.get_mut("done").unwrap().super_state = SuperState::Open;
+
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "done reclassified OPEN after being archived".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryStateChanged {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryClosedAndArchived {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                    state: "done".to_string(),
+                },
+                StoryEvent::StoryHidden {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                },
+            ],
+            &states,
+        )
+        .unwrap();
+
+        assert_eq!(story.superstate, SuperState::Open);
+        assert_eq!(
+            story.hidden_at, None,
+            "a story cannot read hidden while its superstate reads OPEN"
+        );
+    }
+
+    #[test]
     fn fold_story_move_into_a_closed_state_does_not_reopen() {
         let story = fold_story(
             "SH-1",
@@ -3348,6 +3538,7 @@ mod tests {
             closed_at: None,
             deleted: false,
             deleted_reason: None,
+            hidden_at: None,
         };
 
         assert!(!is_ready(&story, &BTreeMap::new()));
@@ -3518,6 +3709,7 @@ mod tests {
                 closed_at: None,
                 deleted: false,
                 deleted_reason: None,
+                hidden_at: None,
             },
             StorySnapshot {
                 id: "SH-2".to_string(),
@@ -3546,6 +3738,7 @@ mod tests {
                 closed_at: None,
                 deleted: false,
                 deleted_reason: None,
+                hidden_at: None,
             },
             StorySnapshot {
                 id: "SH-3".to_string(),
@@ -3568,6 +3761,7 @@ mod tests {
                 closed_at: None,
                 deleted: false,
                 deleted_reason: None,
+                hidden_at: None,
             },
             StorySnapshot {
                 id: "SH-4".to_string(),
@@ -3587,6 +3781,7 @@ mod tests {
                 closed_at: None,
                 deleted: false,
                 deleted_reason: None,
+                hidden_at: None,
             },
         ];
 
@@ -4388,6 +4583,7 @@ mod tests {
             closed_at: None,
             deleted: false,
             deleted_reason: None,
+            hidden_at: None,
         }
     }
 
@@ -4577,6 +4773,7 @@ mod ready_order_properties {
             closed_at: None,
             deleted: false,
             deleted_reason: None,
+            hidden_at: None,
         }
     }
 

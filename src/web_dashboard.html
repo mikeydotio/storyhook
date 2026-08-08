@@ -320,6 +320,11 @@ button { cursor: pointer; }
 }
 .column-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; flex-shrink: 0; }
 .column-count { margin-left: auto; background: var(--bg-raised); border-radius: 9999px; padding: 0.0625rem 0.4375rem; font-weight: 600; }
+.column-archive-btn {
+  border: none; background: none; color: var(--fg-faint); font-size: 0.6875rem; font-weight: 600;
+  text-transform: none; letter-spacing: normal; padding: 0.0625rem 0.25rem; cursor: pointer;
+}
+.column-archive-btn:hover { color: var(--accent); }
 .column-cards { flex: 1; overflow-y: auto; padding: 0.125rem 0.625rem 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; min-height: 3rem; }
 .column-empty { font-size: 0.75rem; color: var(--fg-faint); text-align: center; padding: 1rem 0; border: 1.5px dashed var(--border); border-radius: var(--radius-sm); }
 
@@ -351,6 +356,7 @@ button { cursor: pointer; }
 .card-flags { display: flex; gap: 0.3125rem; margin-top: 0.375rem; }
 .flag-ready { color: var(--success); }
 .flag-blocked { color: var(--danger); }
+.flag-archived { color: var(--fg-faint); }
 .flag { font-size: 0.6875rem; font-weight: 600; display: inline-flex; align-items: center; gap: 0.1875rem; }
 
 /* ---- List ---- */
@@ -419,6 +425,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 .inline-add input, .inline-add select { flex: 1; padding: 0.3125rem 0.5rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg); font-size: 0.75rem; }
 .banner { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.625rem; border-radius: var(--radius-sm); font-size: 0.8125rem; }
 .banner-blocked { background: var(--danger-soft); color: var(--danger); }
+.banner-archived { background: var(--bg-raised); color: var(--fg-muted); }
 .banner button { margin-left: auto; }
 .comments { display: flex; flex-direction: column; gap: 0.625rem; }
 .comment { background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 0.5rem 0.625rem; font-size: 0.8125rem; }
@@ -445,6 +452,8 @@ tbody tr:hover { background: var(--bg-sunken); }
 .confirm-delete { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
 .confirm-delete input { padding: 0.375rem 0.5rem; border: 1px solid var(--danger); border-radius: var(--radius-sm); background: var(--bg); font-size: 0.8125rem; }
 .confirm-delete-actions { display: flex; gap: 0.5rem; }
+.archive-modal-list { list-style: none; margin: 0.5rem 0 0; padding: 0; max-height: 12rem; overflow-y: auto; font-size: 0.8125rem; font-family: var(--mono); }
+.archive-modal-list li { padding: 0.125rem 0; color: var(--fg-muted); }
 
 /* ---- Modal ---- */
 .modal {
@@ -605,6 +614,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     <div class="fdd" id="fdd-types"></div>
     <div class="fdd" id="fdd-states"></div>
     <label class="filter-toggle"><input type="checkbox" id="toggle-closed" checked> Show closed</label>
+    <label class="filter-toggle"><input type="checkbox" id="toggle-archived"> Show archived</label>
     <span class="filter-count" id="filter-count"></span>
     <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
   </div>
@@ -686,6 +696,20 @@ tbody tr:hover { background: var(--bg-sunken); }
   </div>
 </div>
 
+<div class="backdrop" id="archive-modal-backdrop" hidden></div>
+<div class="modal" id="archive-modal" aria-hidden="true">
+  <div class="modal-header" id="archive-modal-header">Archive column</div>
+  <div class="modal-body">
+    <div id="archive-modal-summary"></div>
+    <ul class="archive-modal-list" id="archive-modal-list"></ul>
+    <div class="modal-error" id="archive-modal-error"></div>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="archive-modal-cancel">Cancel</button>
+    <button type="button" class="btn btn-primary" id="archive-modal-submit">Archive</button>
+  </div>
+</div>
+
 <div class="toast-stack" id="toast-stack"></div>
 
 <script>
@@ -756,6 +780,12 @@ tbody tr:hover { background: var(--bg-sunken); }
     statuses: null,
     data: null,
     view: localStorage.getItem("storyhook.view") === "list" ? "list" : "board",
+    // A display preference, not a per-repo filter: like `view` above, it
+    // persists across repo switches and "Clear filters" (SH-43's council
+    // decision calls for default-off, discoverable, persisted behavior —
+    // this is the client-local approximation of that; a server-backed
+    // per-project preference is future hardening, not this story's scope).
+    showArchived: localStorage.getItem("storyhook.showArchived") === "true",
     filter: { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true },
     sort: { col: "updated", dir: -1 },
     drawerId: null,
@@ -1236,6 +1266,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     return state.data.stories.filter(function(v) {
       var st = v.story;
       if (!f.showClosed && stateSuperstate(st.state) === "CLOSED") return false;
+      if (!state.showArchived && st.hidden_at) return false;
       if (text) {
         var hay = (st.id + " " + st.title + " " + (st.labels || []).join(" ")).toLowerCase();
         if (hay.indexOf(text) === -1) return false;
@@ -1544,6 +1575,12 @@ tbody tr:hover { background: var(--bg-sunken); }
       state.filter.showClosed = this.checked;
       renderView();
     });
+    $("toggle-archived").checked = state.showArchived;
+    $("toggle-archived").addEventListener("change", function() {
+      state.showArchived = this.checked;
+      localStorage.setItem("storyhook.showArchived", String(this.checked));
+      renderView();
+    });
     $("filter-clear").addEventListener("click", function() {
       state.filter = { text: "", priorities: [], assignees: [], types: [], states: [], showClosed: true };
       $("search-input").value = "";
@@ -1633,7 +1670,16 @@ tbody tr:hover { background: var(--bg-sunken); }
         el("div", { class: "column-header" }, [
           el("span", { class: "column-dot", style: "background:" + stateColor(stateDef.slug) }, []),
           stateDef.slug,
-          el("span", { class: "column-count" }, ["0"])
+          el("span", { class: "column-count" }, ["0"]),
+          // Only a CLOSED-superstate column gets one: hiding is layered on
+          // top of a story that is already closed, never on an open one, and
+          // the column shell keeps its literal 1:1 state mapping either way
+          // (SH-126) — this button never changes what the column means, only
+          // which of its cards remain visible.
+          isClosed ? el("button", {
+            class: "column-archive-btn", type: "button", title: "Archive every story in this column",
+            onClick: function() { openArchiveColumn(stateDef.slug); }
+          }, ["Archive"]) : null
         ]),
         el("div", { class: "column-cards" }, [])
       ]);
@@ -1826,6 +1872,10 @@ tbody tr:hover { background: var(--bg-sunken); }
     var flags = el("div", { class: "card-flags" }, []);
     if (blocked[st.id]) flags.appendChild(el("span", { class: "flag flag-blocked" }, ["● blocked"]));
     else if (ready[st.id]) flags.appendChild(el("span", { class: "flag flag-ready" }, ["● ready"]));
+    // Only reachable with "Show archived" on — `filteredStories()` excludes
+    // these by default — but visible then so an archived card mixed back
+    // into a CLOSED column's cards doesn't read as an ordinary closed one.
+    if (st.hidden_at) flags.appendChild(el("span", { class: "flag flag-archived" }, ["🗄 archived"]));
     if (flags.childNodes.length) card.appendChild(flags);
   }
 
@@ -2086,6 +2136,13 @@ tbody tr:hover { background: var(--bg-sunken); }
     body.appendChild(buildFieldGrid(st));
     body.appendChild(buildDescriptionSection(st));
 
+    if (st.hidden_at) {
+      body.appendChild(el("div", { class: "banner banner-archived" }, [
+        "🗄 Archived — hidden from the board until unarchived.",
+        el("button", { class: "btn btn-ghost", onClick: function() { runFieldMutation(st.id, "POST", "unarchive", {}); } }, ["Unarchive"])
+      ]));
+    }
+
     if (st.awaiting) {
       body.appendChild(el("div", { class: "banner banner-blocked" }, [
         "Blocked: " + st.awaiting,
@@ -2345,7 +2402,23 @@ tbody tr:hover { background: var(--bg-sunken); }
     clear(footer);
     var isClosed = stateSuperstate(st.state) === "CLOSED";
     if (isClosed) {
-      footer.appendChild(el("button", { class: "btn", onClick: function() { runFieldMutation(st.id, "POST", "reopen", {}); } }, ["Reopen"]));
+      var wasHidden = !!st.hidden_at;
+      footer.appendChild(el("button", { class: "btn", onClick: function() {
+        // The fold clears `hidden_at` the moment a story reopens (SH-43) —
+        // silently, from the read model's point of view. A story that was
+        // archived reappearing on the board with no explanation is exactly
+        // the confusion the council's dissent flagged, so reopening a hidden
+        // one says so explicitly rather than leaving it to be noticed.
+        runFieldMutation(st.id, "POST", "reopen", {});
+        if (wasHidden) toast(st.id + " reopened — no longer archived", "info");
+      } }, ["Reopen"]));
+    }
+    // "Archive" only applies to a closed, not-yet-hidden story (SH-43); once
+    // hidden, the "Unarchive" action lives on the banner above instead of
+    // duplicating it here — the same split `awaiting`'s banner-vs-form below
+    // already draws.
+    if (isClosed && !st.hidden_at) {
+      footer.appendChild(el("button", { class: "btn", onClick: function() { renderArchiveConfirm(st); } }, ["Archive"]));
     }
     footer.appendChild(el("button", { class: "btn btn-danger", style: "margin-left:auto", onClick: function() {
       renderDeleteConfirm(st);
@@ -2377,6 +2450,23 @@ tbody tr:hover { background: var(--bg-sunken); }
             })
             .catch(toastError);
         } }, ["Confirm delete"])
+      ])
+    ]));
+  }
+
+  /** The confirmation the story text asks for on the detail page's "Archive"
+   * button. Lighter than `renderDeleteConfirm`'s typed-reason form since
+   * archiving is fully reversible via "Unarchive" — a single confirming
+   * click is the right weight, the same rule `ConfirmationPlan::HideState`
+   * applies server-side (`requires_typed_confirmation` is `false` for it). */
+  function renderArchiveConfirm(st) {
+    var footer = $("drawer-footer");
+    clear(footer);
+    footer.appendChild(el("div", { class: "confirm-delete" }, [
+      el("div", {}, ["Archive " + st.id + "? It will be hidden from the board until unarchived."]),
+      el("div", { class: "confirm-delete-actions" }, [
+        el("button", { class: "btn btn-ghost", onClick: function() { renderDrawerFooter(st); } }, ["Cancel"]),
+        el("button", { class: "btn", onClick: function() { runFieldMutation(st.id, "POST", "archive", {}); } }, ["Confirm archive"])
       ])
     ]));
   }
@@ -3349,6 +3439,67 @@ tbody tr:hover { background: var(--bg-sunken); }
       .catch(function(err) { $("create-error").textContent = err.message; });
   }
 
+  /** The bulk "Archive" button on a CLOSED-superstate column's header
+   * (SH-43). The server's two-phase preview/commit contract does the
+   * confirming: this call always runs with `force: false` first, so a 409
+   * carrying the exact id list to archive is the *expected* outcome, not an
+   * error — `showArchiveConfirm` is what turns that into the modal. */
+  function openArchiveColumn(slug) {
+    api("POST", stateApiBase(slug) + "/archive", { force: false })
+      .catch(function(err) {
+        if (err.status === 409 && err.body && err.body.plan) {
+          showArchiveConfirm(err.body.plan);
+        } else {
+          toastError(err);
+        }
+      });
+  }
+
+  function stateApiBase(slug) { return apiBase() + "/states/" + encodeURIComponent(slug); }
+
+  /** Renders the previewed [`HideStatePlan`] — the exact same object the CLI's
+   * confirmation prompt and `--json` answer are drawn from — so the modal
+   * cannot show a count or a list the server did not actually compute. */
+  function showArchiveConfirm(plan) {
+    if (!plan.ids.length) {
+      toast("Nothing to archive in `" + plan.state + "`", "info");
+      return;
+    }
+    $("archive-modal-header").textContent = "Archive `" + plan.state + "`";
+    $("archive-modal-summary").textContent = plan.ids.length +
+      (plan.ids.length === 1 ? " story" : " stories") +
+      " will be archived and hidden from the board until unarchived:";
+    var list = $("archive-modal-list");
+    clear(list);
+    plan.ids.forEach(function(id) { list.appendChild(el("li", {}, [id])); });
+    $("archive-modal-error").textContent = "";
+    $("archive-modal-submit").onclick = function() { submitArchiveColumn(plan.state); };
+
+    $("archive-modal-backdrop").hidden = false;
+    requestAnimationFrame(function() {
+      $("archive-modal-backdrop").classList.add("open");
+      $("archive-modal").classList.add("open");
+      $("archive-modal").setAttribute("aria-hidden", "false");
+    });
+  }
+
+  function closeArchiveModal() {
+    $("archive-modal-backdrop").classList.remove("open");
+    $("archive-modal").classList.remove("open");
+    $("archive-modal").setAttribute("aria-hidden", "true");
+    setTimeout(function() { $("archive-modal-backdrop").hidden = true; }, 150);
+  }
+
+  function submitArchiveColumn(slug) {
+    api("POST", stateApiBase(slug) + "/archive", { force: true })
+      .then(function(resp) {
+        closeArchiveModal();
+        toast(resp.message || ("archived `" + slug + "`"), "success");
+        fetchData();
+      })
+      .catch(function(err) { $("archive-modal-error").textContent = err.message; });
+  }
+
   // ============================================================
   // CONNECTION / FOOTER
   // ============================================================
@@ -3410,10 +3561,12 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("token-modal-backdrop").addEventListener("click", closeTokenModal);
     $("token-submit").addEventListener("click", submitTokenModal);
     $("token-input").addEventListener("keydown", function(e) { if (e.key === "Enter") submitTokenModal(); });
+    $("archive-modal-cancel").addEventListener("click", closeArchiveModal);
+    $("archive-modal-backdrop").addEventListener("click", closeArchiveModal);
     $("drawer-close").addEventListener("click", closeDrawer);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {
-      if (e.key === "Escape") { closeDrawer(); closeCreateModal(); closeTokenModal(); }
+      if (e.key === "Escape") { closeDrawer(); closeCreateModal(); closeTokenModal(); closeArchiveModal(); }
     });
   }
 

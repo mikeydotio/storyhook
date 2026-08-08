@@ -694,8 +694,9 @@ pub(super) fn put_story(
         conn.execute(
             "INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate, \
                  priority, priority_rank, story_type, assignee, awaiting, deleted, archived, \
-                 created_at, updated_at, closed_at, description, snapshot) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18) \
+                 created_at, updated_at, closed_at, description, hidden_at, snapshot) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
+                 ?18, ?19) \
              ON CONFLICT (project_id, story_no) DO UPDATE SET \
                  head_seq = excluded.head_seq, title = excluded.title, state = excluded.state, \
                  superstate = excluded.superstate, priority = excluded.priority, \
@@ -704,7 +705,7 @@ pub(super) fn put_story(
                  deleted = excluded.deleted, archived = excluded.archived, \
                  created_at = excluded.created_at, updated_at = excluded.updated_at, \
                  closed_at = excluded.closed_at, description = excluded.description, \
-                 snapshot = excluded.snapshot",
+                 hidden_at = excluded.hidden_at, snapshot = excluded.snapshot",
             params![
                 project.get(),
                 story.get(),
@@ -723,6 +724,7 @@ pub(super) fn put_story(
                 snapshot.updated_at,
                 snapshot.closed_at,
                 snapshot.description,
+                snapshot.hidden_at,
                 serde_json::to_string(snapshot)?,
             ],
         ),
