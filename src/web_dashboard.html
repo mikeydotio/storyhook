@@ -2428,6 +2428,51 @@ tbody tr:hover { background: var(--bg-sunken); }
   // DRAWER
   // ============================================================
 
+  // True only for the synchronous instant renderDrawer() spends tearing down
+  // the old drawer-body DOM (SH-218). A field the user is mid-edit in gets
+  // detached by that teardown, and browsers fire a real `blur` event on an
+  // element removed from the document -- without this guard, a title/
+  // description edit not yet committed would autosave whatever partial text
+  // had been typed so far, every time an unrelated re-render (the detail
+  // fetch resolving, a field mutation elsewhere, a dispatch poll) happened
+  // to land mid-edit. captureDrawerFocus/restoreDrawerFocus below handle the
+  // sibling half of the same bug: putting the in-progress value back once
+  // the new field exists.
+  var drawerRerendering = false;
+
+  /** Snapshots the drawer-body field the user is actively typing in, if any,
+   * keyed by its `data-field` attribute rather than DOM identity -- every
+   * field is rebuilt from scratch on each render, so nothing here can
+   * survive by reference. Returns null when nothing in `body` has focus, or
+   * the focused element opted out (no `data-field`, e.g. the derived-value
+   * selects in buildFieldGrid, which have nothing unsaved to lose). */
+  function captureDrawerFocus(body) {
+    var active = document.activeElement;
+    if (!active || !body.contains(active)) return null;
+    var field = active.getAttribute("data-field");
+    if (!field) return null;
+    return {
+      field: field,
+      value: active.value,
+      selectionStart: typeof active.selectionStart === "number" ? active.selectionStart : null,
+      selectionEnd: typeof active.selectionEnd === "number" ? active.selectionEnd : null
+    };
+  }
+
+  /** Reapplies a captureDrawerFocus() snapshot to the freshly rebuilt body,
+   * restoring both the in-progress value and the caret so typing can
+   * continue exactly where the re-render interrupted it. */
+  function restoreDrawerFocus(body, captured) {
+    if (!captured) return;
+    var match = body.querySelector('[data-field="' + captured.field + '"]');
+    if (!match) return;
+    match.value = captured.value;
+    match.focus();
+    if (captured.selectionStart !== null && typeof match.setSelectionRange === "function") {
+      match.setSelectionRange(captured.selectionStart, captured.selectionEnd);
+    }
+  }
+
   function openDrawer(id) {
     state.drawerId = id;
     state.drawerDetail = null;
@@ -2467,7 +2512,10 @@ tbody tr:hover { background: var(--bg-sunken); }
     var drawerBadge = buildTypeBadge(st.story_type);
     if (drawerBadge) typeBadgeMount.appendChild(drawerBadge);
     var body = $("drawer-body");
+    var focused = captureDrawerFocus(body);
+    drawerRerendering = true;
     clear(body);
+    drawerRerendering = false;
 
     body.appendChild(buildTitleField(st));
     body.appendChild(buildFieldGrid(st));
@@ -2493,12 +2541,14 @@ tbody tr:hover { background: var(--bg-sunken); }
     body.appendChild(buildRelationshipsSection(st, full));
     body.appendChild(buildCommentsSection(st));
 
+    restoreDrawerFocus(body, focused);
     renderDrawerFooter(st);
   }
 
   function buildTitleField(st) {
-    var input = el("input", { class: "drawer-title", value: st.title });
+    var input = el("input", { class: "drawer-title", value: st.title, dataset: { field: "title" } });
     input.addEventListener("blur", function() {
+      if (drawerRerendering) return;
       var v = input.value.trim();
       if (v && v !== st.title) runFieldMutation(st.id, "PATCH", "", { title: v });
       else input.value = st.title;
@@ -2562,10 +2612,12 @@ tbody tr:hover { background: var(--bg-sunken); }
     var textarea = el("textarea", {
       class: "description-field",
       placeholder: "Add a description…",
-      value: st.description || ""
+      value: st.description || "",
+      dataset: { field: "description" }
     });
     textarea.addEventListener("input", function() { autoGrowTextarea(textarea); });
     textarea.addEventListener("blur", function() {
+      if (drawerRerendering) return;
       var v = textarea.value.trim();
       if (v !== (st.description || "")) runFieldMutation(st.id, "PATCH", "", { description: v });
     });
@@ -2575,7 +2627,7 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   function buildBlockForm(st) {
-    var input = el("input", { type: "text", placeholder: "Reason for blocking…" });
+    var input = el("input", { type: "text", placeholder: "Reason for blocking…", dataset: { field: "block-reason" } });
     var submit = el("button", { class: "btn", onClick: function() {
       if (!input.value.trim()) return;
       runFieldMutation(st.id, "POST", "block", { reason: input.value.trim() });
@@ -2596,7 +2648,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       ]));
     });
     wrap.appendChild(chips);
-    var input = el("input", { type: "text", placeholder: "Add label…" });
+    var input = el("input", { type: "text", placeholder: "Add label…", dataset: { field: "label-add" } });
     input.addEventListener("keydown", function(e) {
       if (e.key !== "Enter" || !input.value.trim()) return;
       api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/labels", { add: [input.value.trim()] })
@@ -2704,7 +2756,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     }
     var m = meta();
     var relationSelect = el("select", {}, m.relations.map(function(r) { return el("option", { value: r }, [r]); }));
-    var idInput = el("input", { type: "text", placeholder: "Story ID (e.g. SH-2)" });
+    var idInput = el("input", { type: "text", placeholder: "Story ID (e.g. SH-2)", dataset: { field: "relationship-id" } });
     var addBtn = el("button", { class: "btn", onClick: function() {
       if (!idInput.value.trim()) return;
       api("POST", apiBase() + "/relate", { a: st.id, relation: relationSelect.value, b: idInput.value.trim() })
@@ -2724,7 +2776,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       ]));
     });
     wrap.appendChild(list);
-    var textarea = el("textarea", { placeholder: "Add a comment…" });
+    var textarea = el("textarea", { placeholder: "Add a comment…", dataset: { field: "comment" } });
     var submit = el("button", { class: "btn", onClick: function() {
       if (!textarea.value.trim()) return;
       api("POST", apiBase() + "/story/" + encodeURIComponent(st.id) + "/comment", { text: textarea.value.trim() })
