@@ -1751,6 +1751,7 @@ dependencies = [
  "crossterm 0.28.1",
  "dialoguer",
  "fs4",
+ "httparse",
  "insta",
  "libc",
  "predicates",
