@@ -104,8 +104,13 @@ wait-timeout = "0.2"
 # nothing left behind after a SIGKILL, and nothing another process can open.
 tempfile = { workspace = true }
 
-# Web dashboard
-tiny_http = "0.12"
+# Web dashboard. `src/daemon/http1` is this crate's own HTTP/1.1 connection
+# layer (SH-177), replacing `tiny_http` — `httparse` does head parsing only;
+# framing, deadlines, the connection cap, and response writing are ours, so a
+# peer socket is never owned by code this crate cannot reach a file
+# descriptor through. Already in `Cargo.lock` via `ureq`'s `ureq-proto`, so
+# this added no new dependency when it landed.
+httparse = "1.10"
 libc = "0.2"
 
 # TUI

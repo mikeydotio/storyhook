@@ -27,7 +27,7 @@
 
 use std::path::PathBuf;
 
-use tiny_http::{Header, Method};
+use crate::daemon::http1::{Header, Method};
 
 use crate::api::http::{
     Reply, error_reply, get_bool, get_str, get_str_array, guarded, guarded_no_body, html_reply,
