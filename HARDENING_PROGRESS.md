@@ -173,7 +173,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [ ] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118*
 - [x] **SH-66** — `context --format json` double-encodes
 - [x] **SH-42** — project selector dropdown
-- [ ] **SH-43** — archive
+- [x] **SH-43** — archive
 - [ ] **SH-49** — linked PRs
 - [ ] **SH-155** — preserve presentation/layout settings
 - [ ] **SH-162** — allow hiding columns
@@ -6132,4 +6132,98 @@ and not surviving the gate itself.
 already existed and this story only changes which existing arm returns it.
 
 **PR:** #174, merged as `5c142a5`. Branch verified deleted, `main`
+fast-forwarded cleanly.
+
+### SH-43 — done
+
+**Outcome:** `story archive <id>` / `story unarchive <id>` / `story
+archive-state <state> [--force]` exist, plus the matching web dashboard
+UI (a per-CLOSED-column "Archive" button with a confirmation modal, an
+"Archive"/"Unarchive" control on the story detail drawer, an "archived"
+card flag, and a client-persisted "Show archived" board filter
+defaulting off) and REST routes. A closed story can now be hidden from
+the primary UI without touching its state or superstate, and reversed.
+
+**Picked from the Medium queue.** SH-167 was confirmed still
+in-progress elsewhere (`story list --state in-progress`, live tmux
+window, per this run's own skip rule) and SH-150 carried its ⚠ mark;
+SH-66 and SH-42 above it were already done. SH-43 was the next
+unclaimed line.
+
+**Re-spec required before implementing.** The story's own 2026-07-29
+comment flagged a real hazard: it asked for an "archived" boolean, but
+`archived` already exists in the store as a fact derived from
+`closed_at` and tied to it by a schema CHECK — `resolve_open_story`
+uses it as the "cannot be edited" test, so it cannot be repurposed.
+**Council, per this run's autonomy rule** (no obviously-correct
+naming/design otherwise): a 3-seat panel (data-engineer,
+software-architect, ux-designer-web) converged independently on the
+same schema shape — an orthogonal nullable `hidden_at` column, no
+CHECK, its own event pair, CLOSED-only at the service layer — but split
+2-1 in round one on whether the UX requirements (count-confirmed bulk
+action, persisted visibility toggle, symmetric unhide) belonged to the
+web surface alone or to the service-layer contract every surface
+shares. Deliberation converged the schema mechanism further (the fold
+auto-clears `hidden_at` on reopen, closing the SH-130-shaped drift for
+this new fact too); round two's ranked-choice runoff picked the
+software-architect's revision — cross-surface interface contracts, not
+web-only conventions — 2-1, Seat 3 (ux-designer-web) ranking it second
+rather than last. Verdict recorded as a comment on SH-43; full audit
+trail in `.council/sh43-archive-hidden-stories/`. Implemented to the
+comment; the vote was not re-run.
+
+**Sibling defect found and fixed while implementing:** three fixtures
+in `tests/store_migrations.rs` (`v8_store_with_renamed_and_retired_type
+_stories` and two inline single-story ones) built a schema-v8-capped
+store and then called `WriteOps::put_story` to seed a story row —
+`put_story` always writes the *current* binary's full column set, which
+now includes `hidden_at`, so all three broke the moment the migration
+existed. Not a bug this story introduced so much as a latent coupling
+migration 10 was the first `stories`-column addition to expose since
+migration 4. Fixed by writing the v8-shape row with raw SQL instead (a
+shared `insert_v8_story_row` helper, mirroring `seed_a_labelled_story`'s
+existing "raw SQL for a schema a service call would refuse" pattern),
+and by rewriting `story_type_updated_head` — which captures a "before"
+snapshot *ahead of* `store.migrate()` — to read its three columns with
+raw SQL rather than through `ReadOps::story`, for the same reason. Two
+new tests (`migration_ten_adds_a_hidden_at_column_that_pre_existing_
+stories_read_as_null`, `migration_ten_leaves_every_other_column_and_
+the_event_log_untouched`) cover the migration itself.
+
+**Manual UI verification caught a false negative.** `web_dashboard.html`
+is compiled in via `include_str!`, so the first Playwright pass against
+an already-running daemon exercised a *stale* binary built before the
+dashboard edits — the "Show archived" toggle and the column Archive
+button were simply absent, which briefly looked like a real bug.
+Rebuilding and restarting the daemon before re-testing confirmed the
+UI: column bulk-archive with its confirmation modal (exact id list,
+correctly excluding an already-archived sibling), single-story archive
+with its inline confirm, unarchive from both the drawer banner and the
+board toggle, and the "3/3 → 1/3" filter count moving correctly as
+stories were archived and revealed.
+
+**Two rounds of orphan cleanup, neither caused by this story's code.**
+Before `make test` could even start, its preflight `check-no-orphan-
+servers` refused: three leftover `story daemon --serve --port 0`
+processes, one of them traced to an earlier Explore subagent's own "I
+built and ran the actual binary to confirm" investigation step in this
+same session, pointed at scratch stores rather than the real one —
+killed and confirmed clear before the gate's first run. That first run
+then went fully green through the e2e suite and failed only the
+*postlude* orphan check on one straggler e2e daemon that had not yet
+exited when the check polled — a teardown-timing flake, not a defect;
+killed, and the whole gate re-run from a clean state for an
+uncontaminated confirmation.
+
+**Gate:** two full `make test` runs. First: 3 pre-existing orphans
+cleared before start; suite, plugin harness (24/24), and e2e (13/13)
+all green; one straggler e2e daemon left by the postlude check, killed
+and cleared. Second, from a fully clean state: identical green result,
+zero orphans before or after. Both `Monitor`-watched in the background
+with a 120-second log-growth stall bound; neither stalled.
+
+**Semver: minor.** New CLI verbs, new REST endpoints, new web UI —
+additive and non-breaking.
+
+**PR:** #176, merged as `82d425d`. Branch verified deleted, `main`
 fast-forwarded cleanly.
