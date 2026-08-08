@@ -147,6 +147,14 @@ pub const MIGRATIONS: &[Migration] = &[
         // CHECK. Migration 5's `events_reject_delete` warning does not apply.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 11,
+        name: "pr_links",
+        sql: include_str!("schema/0011_pr_links.sql"),
+        // `CREATE TABLE` of a new, unreferenced table — nothing is rebuilt, so
+        // migration 5's `events_reject_delete` warning does not apply.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

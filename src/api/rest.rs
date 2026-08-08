@@ -255,6 +255,12 @@ fn route_project<S: Store>(
             (Method::Post, "unarchive") => {
                 guarded_no_body(headers, trusted_hosts, || route_unhide_story(ctx, id))
             }
+            (Method::Post, "link-pr") => guarded(headers, trusted_hosts, body, |b| {
+                route_link_pr_story(ctx, id, b)
+            }),
+            (Method::Post, "unlink-pr") => guarded(headers, trusted_hosts, body, |b| {
+                route_unlink_pr_story(ctx, id, b)
+            }),
             (Method::Post, _) => text_reply(404, "Not found"),
             _ => text_reply(405, "Method not allowed"),
         },
@@ -873,6 +879,50 @@ fn route_block_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply 
             Invocation::SetAwaiting {
                 id: id.to_string(),
                 awaiting,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `POST /api/repos/{id}/story/{story}/link-pr` — links a GitHub pull
+/// request to a story (SH-49). Body: `{"url": "...", "close_on_merge": true}`;
+/// `close_on_merge` defaults to `true` when absent, matching `story link-pr`'s
+/// own default. Never touches GitHub — see `Invocation::LinkPr`'s doc for why
+/// there is no REST route for `pr-check`, which does.
+fn route_link_pr_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let url = require_str(&obj, "url")?.to_string();
+        let close_on_merge = obj
+            .get("close_on_merge")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        Ok(reply_with(
+            ctx,
+            200,
+            Invocation::LinkPr {
+                id: id.to_string(),
+                url,
+                close_on_merge,
+            },
+        ))
+    })()
+    .unwrap_or_else(|e| error_reply(&e))
+}
+
+/// `POST /api/repos/{id}/story/{story}/unlink-pr` — the inverse of
+/// [`route_link_pr_story`]. Body: `{"url": "..."}`.
+fn route_unlink_pr_story<S: Store>(ctx: &Ctx<'_, S>, id: &str, body: &str) -> Reply {
+    (|| -> Result<Reply, AppError> {
+        let obj = parse_json_object(body)?;
+        let url = require_str(&obj, "url")?.to_string();
+        Ok(reply_with(
+            ctx,
+            200,
+            Invocation::UnlinkPr {
+                id: id.to_string(),
+                url,
             },
         ))
     })()

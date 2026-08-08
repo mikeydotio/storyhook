@@ -5,7 +5,8 @@ use ureq::Agent;
 use crate::error::AppError;
 
 use super::types::{
-    CreateIssueRequest, GithubComment, GithubIssue, TimelineEvent, UpdateIssueRequest,
+    CreateIssueRequest, GithubComment, GithubIssue, PullRequestStatus, TimelineEvent,
+    UpdateIssueRequest,
 };
 
 const API_BASE: &str = "https://api.github.com";
@@ -347,6 +348,32 @@ impl GithubClient {
             .map_err(|e| AppError::GithubApi(format!("failed to parse created comment: {e}")))?;
 
         Ok(comment)
+    }
+
+    /// Get a single pull request's merge/close status by number (SH-49).
+    ///
+    /// `GET /repos/{owner}/{repo}/pulls/{number}` — the same shape as
+    /// `get_issue`, since GitHub's REST API treats a pull request as an issue
+    /// with a `pulls` endpoint of its own.
+    pub fn get_pull_request(&self, number: u64) -> Result<PullRequestStatus, AppError> {
+        let path = format!("/repos/{}/{}/pulls/{number}", self.owner, self.repo);
+        let mut response = self
+            .get(&path)
+            .call()
+            .map_err(|e| AppError::GithubApi(e.to_string()))?;
+
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            return Err(self.handle_error_status(status, &mut response));
+        }
+        self.check_rate_limit(&response)?;
+
+        let pr: PullRequestStatus = response
+            .body_mut()
+            .read_json()
+            .map_err(|e| AppError::GithubApi(format!("failed to parse pull request: {e}")))?;
+
+        Ok(pr)
     }
 
     /// Get timeline events for an issue, with optional `since` filter.

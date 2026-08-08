@@ -41,7 +41,7 @@ use crate::store::fault::{FaultPoint, fire};
 use crate::store::ids::{EventSeq, ExpectedSeq, GlobalSeq, ProjectId, StoryNo};
 use crate::store::migrate::{self, MIGRATIONS, Migration, current_schema_version};
 use crate::store::types::{
-    DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, ProjectRecord,
+    DeletedProject, FeedEvent, LinkSource, MigrationReport, NewProject, PrLink, ProjectRecord,
     ProjectRemoteRecord, ProjectSettings, PurgedStory, RawEvent, RelationEdge, StoredEvent,
     StoryQuery, StoryRow,
 };
@@ -692,6 +692,21 @@ macro_rules! impl_read_ops {
                 story: StoryNo,
             ) -> Result<Option<StorySnapshot>, StoreError> {
                 read::github_base(&self.conn, project, story)
+            }
+
+            fn open_pr_links_for_story(
+                &self,
+                project: ProjectId,
+                story: StoryNo,
+            ) -> Result<Vec<PrLink>, StoreError> {
+                read::open_pr_links_for_story(&self.conn, project, story)
+            }
+
+            fn open_pr_links(
+                &self,
+                project: ProjectId,
+            ) -> Result<Vec<(StoryNo, PrLink)>, StoreError> {
+                read::open_pr_links(&self.conn, project)
             }
         }
     };
