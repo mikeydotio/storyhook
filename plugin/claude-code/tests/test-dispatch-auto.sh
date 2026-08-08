@@ -27,7 +27,7 @@ out=$(dry)
 assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
 assert_eq "$(jqf "$out" .auto)" "false" "attended: auto:false"
 assert_eq "$(jqf "$out" .prompt)" "$expected_attended_prompt" "attended: prompt is byte-identical to today's"
-for marker in "AUTONOMOUS" "council-vote" "gh pr merge" "story block" "story move $id"; do
+for marker in "AUTONOMOUS" "council-vote" "gh pr merge" "story block" "story move $id" "reap"; do
   case "$(jqf "$out" .prompt)" in
     *"$marker"*) fail_test "attended: prompt leaked auto-charter marker [$marker]" ;;
   esac
@@ -55,6 +55,17 @@ for marker in \
     *) fail_test "auto: prompt missing charter obligation [$marker]" ;;
   esac
 done
+
+# SH-208: the charter's own last act is a fully-resolved `reap` command, not
+# instructions the child must reconstruct -- this project's own slug, this
+# script's own path, and the story id are all templated in.
+reap_slug=$(slug_for "$repo")
+expected_reap="bash \"$SCRIPT\" --project \"$reap_slug\" reap \"$id\""
+assert_contains "$prompt" "$expected_reap" "auto: prompt carries the exact reap command"
+assert_contains "$prompt" "run \`$expected_reap\` as your absolute last action" \
+  "auto: reap is framed as the session's final act"
+assert_contains "$prompt" "never run \`$expected_reap\` after a hard stop" \
+  "auto: reap is explicitly forbidden past a hard stop"
 
 # The charter used to require every `story` write to be made from the main
 # checkout, and templated its absolute path in to say where that was. It said
@@ -111,7 +122,7 @@ esac
 out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_PROMPT_EXTRA="EXTRA-CLAUSE" \
   bash "$SCRIPT" dispatch "$id" --auto 2>&1)
 case "$(jqf "$out" .prompt)" in
-  *"Never merge past a hard stop. EXTRA-CLAUSE") : ;;
+  *"never run \`$expected_reap\` after a hard stop. EXTRA-CLAUSE") : ;;
   *) fail_test "STORY_PROMPT_EXTRA did not append after the auto charter" ;;
 esac
 

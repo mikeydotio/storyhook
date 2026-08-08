@@ -21,6 +21,14 @@ assert_eq "$(jqf "$out" .ok)" "false" "dispatch with a trailing token: ok:false"
 assert_contains "$(jqf "$out" .display)" "usage" "dispatch with a trailing token: usage message"
 assert_contains "$(jqf "$out" .display)" "--auto" "dispatch with a trailing token: usage names --auto"
 
+out=$(bash "$SCRIPT" reap 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "reap with no id: ok:false"
+assert_contains "$(jqf "$out" .display)" "usage" "reap with no id: usage message"
+
+out=$(bash "$SCRIPT" reap SH-1 junk 2>&1)
+assert_eq "$(jqf "$out" .ok)" "false" "reap with a trailing token: ok:false"
+assert_contains "$(jqf "$out" .display)" "usage" "reap with a trailing token: usage message"
+
 out=$(bash "$SCRIPT" bogus-subcommand 2>&1)
 assert_eq "$(jqf "$out" .ok)" "false" "unknown subcommand: ok:false"
 
@@ -28,7 +36,7 @@ assert_eq "$(jqf "$out" .ok)" "false" "unknown subcommand: ok:false"
 # wrong, so it must name every verb the router actually accepts. Pins the two
 # from drifting apart as verbs are added.
 usage=$(jqf "$(bash "$SCRIPT" bogus-subcommand 2>&1)" .display)
-for verb in list view dispatch create complete doctor capture; do
+for verb in list view dispatch create complete reap doctor capture; do
   assert_contains "$usage" "$verb" "usage: names the \`$verb\` verb"
 done
 

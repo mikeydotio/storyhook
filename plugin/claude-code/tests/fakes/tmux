@@ -11,7 +11,10 @@
 #   display-message   -> print a window id (@1), exit 0
 #   set-window-option -> no-op, exit 0
 #   send-keys         -> mutate the virtual input box (see STATEFUL MODEL below)
-#   kill-window       -> no-op, exit 0
+#   kill-window       -> logs its raw argv to $STATE/kill_window_args.log (one
+#                        line per call, SH-208 -- a test asserting `reap`
+#                        actually closed the right window needs more than
+#                        "didn't crash"), otherwise a no-op, exit 0
 #   capture-pane      -> print pane content selected by $FAKE_TMUX_CAPTURE, then
 #                        append the current input-box row when non-empty (see
 #                        below). DEFAULT (knob unset) is the legacy
@@ -302,7 +305,9 @@ case "${1:-}" in
     fi
     if [ "$del" = true ]; then rm -f "$bfile" 2>/dev/null || true; fi
     ;;
-  kill-window)       : ;;
+  kill-window)
+    printf '%s\n' "$*" >> "$STATE/kill_window_args.log" 2>/dev/null || true
+    ;;
   list-panes)
     # `list-panes -a -F <fmt>` — the `capture` verb enumerates windows→panes. Emit
     # the seeded FAKE_TMUX_PANES (lines of "name<TAB>active<TAB>pane"), or nothing
