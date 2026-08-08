@@ -61,9 +61,11 @@ impl<'ctx, S: Store> GroupingService<'ctx, S> {
 
     /// Every phase the project's labels describe, with its progress rollup.
     ///
-    /// Phases are ordered by their label text, which is what a `BTreeMap` over
-    /// `phase:<n>` has always given: `10` before `2`. Left as it is because it
-    /// is the ordering the dashboard and the CLI already render.
+    /// Ordered by phase *number* (`2` before `10`), not by the label text a
+    /// `BTreeMap` over `phase:<n>` would give (`10` before `2`) — the sibling
+    /// SH-64 named in the same family as the story-id split it fixes. A phase
+    /// label that fails to parse as a number sorts last, same fallback
+    /// [`domain::story_number`](crate::domain::story_number) uses.
     pub fn phases(&self) -> Result<Vec<PhaseView>, AppError> {
         let project = self.ctx.project();
         Ok(self.ctx.store().read(|tx| {
@@ -91,8 +93,17 @@ impl<'ctx, S: Store> GroupingService<'ctx, S> {
                 .find(|state| state.super_state == SuperState::Open)
                 .map_or_else(|| "todo".to_string(), |state| state.slug);
 
-            Ok(grouped
-                .iter()
+            let mut entries: Vec<(&String, &Vec<&StoryView>)> = grouped.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| {
+                let numeric = a
+                    .parse::<u64>()
+                    .unwrap_or(u64::MAX)
+                    .cmp(&b.parse::<u64>().unwrap_or(u64::MAX));
+                numeric.then_with(|| a.cmp(b))
+            });
+
+            Ok(entries
+                .into_iter()
                 .map(|(number, members)| rollup(number, members, &stories, &default_open))
                 .collect())
         })?)

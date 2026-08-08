@@ -2,24 +2,23 @@
 //!
 //! `differential_query.rs` proves the store leg answers what the legacy leg
 //! answers; what it cannot do is pin the *clock* (both legs read the system
-//! one) or afford the twelve-story fixture the ordering defects need to become
-//! visible. Those two things live here.
+//! one) or afford the twelve-story fixture the ordering fixes below need to
+//! become visible. Those two things live here.
 //!
-//! # One ordering below is a DEFECT, deliberately frozen
+//! # Every id list sorts by story number (SH-64)
 //!
-//! `list` and `search` sort by story *number*; `graph` and `handoff` sort
-//! **lexicographically**, so `SH-10` comes before `SH-2`. The golden CLI
-//! corpus freezes the current bytes, so the wave that ports these surfaces
-//! has to reproduce the defect rather than repair it. That test exists so
-//! that a later wave changing it (SH-64) does so on purpose: it will fail,
-//! and its name says what the fix is.
+//! `list` and `search` always sorted by story *number*; `graph` and `handoff`
+//! used to sort **lexicographically** instead (`SH-10` before `SH-2`), because
+//! both iterated a map keyed by the id string rather than sorting their output.
+//! Fixed for both, and for `context`'s blocked list, found carrying the same
+//! defect in passing.
 //!
-//! `summary` and `context`'s ready lists are **not** part of that contract —
-//! they rank by `domain::ready_order` (priority, then story number), a total
-//! order the legacy `priority, created_at` comparator did not have (SH-63).
-//! The lexicographic answer those two used to give was never a promise
-//! anyone could rely on: it was whichever order a `BTreeMap` happened to
-//! iterate two same-second, same-priority stories in.
+//! `summary` and `context`'s ready lists rank by `domain::ready_order`
+//! (priority, then story number) instead of bare story number, a total order
+//! the legacy `priority, created_at` comparator did not have (SH-63). The
+//! lexicographic answer those two used to give was never a promise anyone
+//! could rely on: it was whichever order a `BTreeMap` happened to iterate two
+//! same-second, same-priority stories in.
 
 use storyhook::cli::GraphMode;
 use storyhook::domain::{Priority, StorySnapshot, SuperState};
@@ -137,6 +136,33 @@ fn context_lists_ready_stories_in_numeric_id_order() {
     assert_eq!(listed, ["SH-1", "SH-2", "SH-3", "SH-4", "SH-5"]);
 }
 
+/// `context`'s blocked section carried the same defect as `graph` and
+/// `handoff` — found in passing while fixing those two (SH-64), fixed here
+/// rather than filed, since it is the same file and the same one-line cause.
+#[test]
+fn context_lists_blocked_stories_in_numeric_id_order() {
+    let fixture = ServiceFixture::new();
+    twelve_stories(&fixture);
+    let ctx = fixture.ctx();
+    RelationService::new(&ctx)
+        .relate("SH-1", "blocks", "SH-10", false)
+        .expect("relating");
+    RelationService::new(&ctx)
+        .relate("SH-1", "blocks", "SH-2", false)
+        .expect("relating");
+
+    let body = query(&fixture, |service| service.context(false));
+    let listed: Vec<&str> = body
+        .lines()
+        .skip_while(|line| !line.starts_with("## Blocked"))
+        .skip(1)
+        .take_while(|line| !line.starts_with("## "))
+        .filter_map(|line| line.strip_prefix("- "))
+        .map(|line| line.split(' ').next().unwrap_or_default())
+        .collect();
+    assert_eq!(listed, ["SH-2", "SH-10"]);
+}
+
 /// `story next` is asked twice with nothing changed in between — the exact
 /// shape of the production defect SH-63 was filed against. Every candidate
 /// ties on priority (`None`) *and* was created in the fixture's one pinned
@@ -164,10 +190,14 @@ fn next_orders_same_second_ties_by_story_number_and_agrees_with_itself() {
     );
 }
 
-/// And in `handoff`, which additionally splits open stories from archived ones
-/// because the legacy path concatenated a directory listing with a SQL query.
+/// And in `handoff`, which additionally splits open stories from archived
+/// ones (that split is not the defect; the legacy path concatenated a
+/// directory listing with a SQL query, and grouping open before archived is
+/// kept). Within each group, story number now decides the order, not the id
+/// string: `SH-11` closed before `SH-2` here, so a lexicographic sort would
+/// have listed `SH-11` first in "Closed" — the numeric one lists `SH-2` first.
 #[test]
-fn handoff_lists_open_stories_then_archived_ones_each_lexicographically() {
+fn handoff_lists_open_stories_then_archived_ones_each_in_numeric_id_order() {
     let fixture = ServiceFixture::new();
     twelve_stories(&fixture);
     let ctx = fixture.ctx();
@@ -183,28 +213,81 @@ fn handoff_lists_open_stories_then_archived_ones_each_lexicographically() {
     assert_eq!(
         created,
         [
-            "SH-1", "SH-10", "SH-12", "SH-3", "SH-4", "SH-5", "SH-6", "SH-7", "SH-8", "SH-9"
+            "SH-1", "SH-3", "SH-4", "SH-5", "SH-6", "SH-7", "SH-8", "SH-9", "SH-10", "SH-12"
         ],
-        "open stories, lexicographically"
+        "open stories, by story number"
     );
     assert_eq!(
         closed,
-        ["SH-11", "SH-2"],
-        "archived stories, lexicographically, and after every open one"
+        ["SH-2", "SH-11"],
+        "archived stories, by story number, and after every open one"
     );
 }
 
-/// `graph`'s roots and leaves come off the same lexicographic map.
+/// `graph`'s roots and leaves used to come straight off a lexicographic map;
+/// now they sort by story number like every other id list.
 #[test]
-fn graph_reports_roots_and_leaves_in_lexicographic_id_order() {
+fn graph_reports_roots_and_leaves_in_numeric_id_order() {
     let fixture = ServiceFixture::new();
     twelve_stories(&fixture);
     let view = query(&fixture, |service| service.graph(&GraphMode::Overview));
     let overview = view.overview.expect("an overview");
     assert_eq!(overview.total_open, 12);
     assert_eq!(overview.total_edges, 0);
-    assert_eq!(overview.roots[..3], ["SH-1", "SH-10", "SH-11"]);
+    assert_eq!(overview.roots[..3], ["SH-1", "SH-2", "SH-3"]);
     assert_eq!(overview.roots, overview.leaves);
+}
+
+/// `graph --blocked-by`'s transitive chain, same fix.
+#[test]
+fn graph_blocked_chain_reports_in_numeric_id_order() {
+    let fixture = ServiceFixture::new();
+    twelve_stories(&fixture);
+    let ctx = fixture.ctx();
+    let relations = RelationService::new(&ctx);
+    relations
+        .relate("SH-1", "blocks", "SH-10", false)
+        .expect("relating");
+    relations
+        .relate("SH-1", "blocks", "SH-2", false)
+        .expect("relating");
+    relations
+        .relate("SH-2", "blocks", "SH-11", false)
+        .expect("relating");
+
+    let view = query(&fixture, |service| {
+        service.graph(&GraphMode::BlockedBy("SH-1".to_string()))
+    });
+    let chain = view.blocked_chain.expect("a blocked chain");
+    assert_eq!(chain.blocked, ["SH-2", "SH-10", "SH-11"]);
+}
+
+/// `graph --parallel-groups`: members within a group and the groups
+/// themselves both sort by story number now, not by `BTreeSet<String>`'s own
+/// iteration order.
+#[test]
+fn graph_parallel_groups_sort_members_and_groups_by_story_number() {
+    let fixture = ServiceFixture::new();
+    twelve_stories(&fixture);
+    let ctx = fixture.ctx();
+    RelationService::new(&ctx)
+        .relate("SH-10", "blocks", "SH-2", false)
+        .expect("relating");
+
+    let view = query(&fixture, |service| {
+        service.graph(&GraphMode::ParallelGroups)
+    });
+    let groups = view.parallel_groups.expect("parallel groups");
+    let paired = groups
+        .iter()
+        .find(|group| group.len() > 1)
+        .expect("the related pair forms its own group");
+    assert_eq!(paired, &["SH-2", "SH-10"], "members sort by story number");
+    assert_eq!(
+        groups[0],
+        vec!["SH-1"],
+        "the lowest-numbered group leads, not the lexicographically-first one"
+    );
 }
 
 /// The id half of every `- SH-n title` line under `heading`.

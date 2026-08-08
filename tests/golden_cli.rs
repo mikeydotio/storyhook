@@ -57,9 +57,9 @@ static CORPUS: LazyLock<Project<'static>> = LazyLock::new(build_corpus);
 /// Seeds a project deliberately shaped to trip the things that break.
 ///
 /// **Fourteen stories**, so ids run past `SH-9` — `SH-1` vs `SH-10` is where
-/// lexicographic and numeric ordering diverge, and the corpus records which
-/// commands do which (see the `graph` and `handoff` tables, where today's answer
-/// is a defect).
+/// lexicographic and numeric ordering diverge. Every command in this corpus
+/// sorts by story number (SH-64); this fixture is what makes that visible in
+/// a byte-for-byte snapshot rather than only in a synthetic unit test.
 ///
 /// Coverage: four states including a custom one, all five priorities plus
 /// unset, all five built-in types plus a custom one, labels, `parent-of` and
@@ -569,13 +569,10 @@ fn search_json() {
 // graph
 // ---------------------------------------------------------------------------
 
-// KNOWN-DEFECT (needs a story; ids cannot be minted from this worktree):
-// `graph` sorts its id lists LEXICOGRAPHICALLY — "SH-1, SH-10, SH-11, SH-12,
-// SH-2, …" — while `list`, `search` and `phase show` sort NUMERICALLY via
-// `sort_story_views`. The same lexicographic ordering shows up in `handoff` and
-// in the ready lists of `summary` and `context`. Snapshotted as-is, deliberately:
-// this corpus freezes current behavior, and fixing it here would mix a behavior
-// change into a test-only step. The 14-story fixture exists to make it visible.
+// `graph`'s id lists — roots, leaves, the blocked chain, parallel groups —
+// sort by story NUMBER (SH-64), like `list`, `search` and `phase show` via
+// `sort_story_views`. Only `critical_path` is exempt: it is a dependency
+// chain, not a roster, so it keeps whatever order the traversal found it in.
 const GRAPH: &[&[&str]] = &[
     &["graph"],
     &["graph", "--critical-path"],
