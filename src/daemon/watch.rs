@@ -5,9 +5,17 @@
 //! `daemon::serve` share one watcher against one baseline (SH-202), so a
 //! commit both of them notice publishes exactly once rather than twice:
 //!
-//! * the request boundary, immediately after a request that just wrote
-//!   returns — whichever surface answered it, `rest::route` or
-//!   `rpc::route`'s `POST /api/v1/invoke`;
+//! * the request boundary, immediately after `rpc::route`'s
+//!   `POST /api/v1/invoke` arm answers — the only way an ordinary `story`
+//!   command reaches the store, and the one route that carries no signal of
+//!   its own for what it changed the way `rest::route`'s `Changed` does.
+//!   `rest::route`'s own arm deliberately does **not** also call this: every
+//!   mutating REST route already has exhaustive `Changed` coverage, and
+//!   calling `notice()` there too was found, empirically, to risk attributing
+//!   an unrelated out-of-band commit to the wrong response and colliding with
+//!   [`ChangeBus`]'s coalescing window (SH-202's own council record; the
+//!   surviving hazard — the coalescing window is blind to *cause*, not just
+//!   to this call site — is filed as SH-216).
 //! * `poll_change_token`'s low-frequency `PRAGMA data_version` poll, the
 //!   safety net for a write this daemon did not itself serve — a `story tui`
 //!   session on the same store, a second machine, a `sqlite3` prompt.
