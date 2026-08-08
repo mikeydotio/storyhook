@@ -190,9 +190,10 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-44** — web form defaults
 - [x] **SH-127** — remove the status flash
 - [x] **SH-128** — column sort options
-- [ ] **SH-168** — do not show the green ready status labels
+- [x] **SH-168** — do not show the green ready status labels
 - [ ] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
 - [ ] **SH-183** — `story migrate` refuses a bad state slug but accepts a bad type slug · *filed by SH-134's chair, correcting a claim in that council's own verdict*
+- [ ] **SH-218** — the drawer's async detail-fetch re-render can silently wipe unsaved input · *filed by SH-168's e2e test*
 
 ### What was on the old list and is now done
 
@@ -7321,3 +7322,136 @@ bump and deploy are left for later, from `main`. `main` moved twice under
 this run (SH-127, SH-128, and others landed while this story was in
 flight); each rebase onto `origin/main` produced exactly one conflict, in
 this same append-only log, resolved by keeping both entries in order.
+
+### SH-168 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line): SH-167
+was still `in-progress` elsewhere (`story list --state in-progress` also
+turned up SH-112, the epic, and SH-202 — neither on this file's queue, the
+same recurring pattern every prior session has hit). Low's next unchecked
+line was SH-168 itself, confirmed ready via `story list --ready`.
+
+**Council: yes, two questions.** The story's text ("only show the red
+Blocked status labels. Ready is the default, and needs no decoration, but
+Blocked in an exception and should be visually called out (as it already
+is)") named one mechanism ("labels") but justified it with a broader
+principle ("decoration"), leaving genuinely open whether the fix should also
+touch the list view's green left border and the `flash-ready` transition
+pulse, and whether the CLI's separate `story report --html` static report
+(which renders its own green "Ready" stat card) was in scope. Convened a
+3-seat council (`ux-designer-web`, `software-architect`, `skeptic`). Full
+trail: `.council/sh168-ready-label-scope/` (gitignored, verdict recorded as
+a `story comment`).
+
+**What the council found.** Round 1 split 2-0-1: two seats independently
+proposed removing both the board-card badge and the list-row border while
+keeping the flash (a diff-triggered, self-removing transition cue,
+architecturally distinct from the badge/border's steady-state per-render
+reads — verified directly against `diffSnapshots()`, which only flips
+`ready`/`blocked` on a snapshot-to-snapshot edge), while the third seat
+reached the identical operational conclusion but supported it with a
+citation to SH-127's council as precedent for the transition/decoration
+split. Both other seats independently fact-checked that citation against
+this file and found it unsupported — SH-127 concerned one `toast()` call
+site, never the `flash-priority`/`flash-blocked`/`flash-ready` CSS system —
+and said so in their round-1 votes. In deliberation, all three seats
+converged: the citing seat withdrew it, and the seat who had originally
+proposed removing the flash too (on the theory that badge/border/flash were
+"three copies of one decision") reversed after verifying in code that the
+flash is gated on a transition edge while the badge and border re-derive
+from a flat lookup on every render — not three copies of one decision, but
+one steady-state rule and one orthogonal transition rule. The round-2
+runoff gave Proposal C (skeptic) an outright majority for grounding the
+same scope entirely in direct code verification rather than precedent, and
+for proposing SH-218 (below) be filed rather than the CLI-report gap being
+silently left unaddressed. On the CLI report itself, unanimous: out of
+scope — a structurally separate Rust render path, and the story is labeled
+Web and phrased in live-dashboard terms throughout.
+
+**Built:** `web_dashboard.html:2208-2210` — dropped the `else if
+(ready[st.id])` branch that appended the `● ready` flag chip, leaving only
+the `blocked` branch. `web_dashboard.html:2371` — `populateListRow`'s
+`row.style.borderLeft` ternary no longer has a `ready` arm, so a ready row
+gets no border while a blocked row still gets its red one. Dropped the
+now-orphaned `.flag-ready` CSS rule (line 366) as dead code. Left
+`flash-ready` (the CSS keyframe and `applyChangeFlash`'s transition
+mapping) and `src/output.rs::render_html_report`'s green `Ready`
+stat-card/`.row-ready` rows untouched, per the council's verdict.
+
+**Found in passing, filed rather than fixed: SH-218.** Writing the
+regression test surfaced a real UI race, not a test artifact: `openDrawer()`
+(`web_dashboard.html:2431-2446`) renders the drawer once from cached summary
+data, then fires an async `GET /story/<id>` whose resolution triggers a
+*second* full `renderDrawer()` — which unconditionally rebuilds every
+field, including the block-reason input, from scratch. A `.fill()` landing
+in that window is silently wiped, and a `.click()` on Block that lands after
+the swap hits a fresh empty input, whose own `onClick` guard
+(`if (!input.value.trim()) return;`) then no-ops with no visible error. Hit
+this once in two `make test` runs of the new spec — genuinely racy, not
+flaky infra, confirmed by reading the actual DOM snapshot at the failure
+(the reason textbox held no value). Fixed in the test itself (wait for the
+detail `GET` to resolve before interacting, closing the specific window this
+spec could hit) rather than papered over with a retry, and filed the
+underlying dashboard defect as SH-218 (low priority — the window is normally
+sub-100ms against a local daemon, but Mikey's own workflow reaches this
+dashboard over Tailscale/SSH/Mosh, where GET latency is high enough to make
+the window land on real keystrokes) — out of SH-168's scope to fix mid-flight.
+
+**Tests:** new `e2e/specs/status-flags.spec.ts`, four cases against a real
+daemon and browser: a ready card carries no flag badge, a blocked card
+still carries the red one, a ready list row has no colored border
+(`border-left-width: 0px`), and a blocked list row keeps its red one
+(`border-left-width: 3px`). Creates and deletes its own stories rather than
+touching the "Alpha Project" fixture.
+
+**Supervision wedge — one false-positive, ~2 minutes, logged per the
+run's own rule.** The first `make test` attempt's watchdog killed the
+top-level `make` process after 120 seconds of flat log size during the
+initial `cargo test` compile phase (no incremental cache hit for this edit,
+and cargo prints nothing between one crate's "Compiling" line and its next
+event when output isn't a tty) — a real compile in progress, not a wedge.
+Killing only the top-level pid orphaned `run-tests.sh` and its `cargo test`
+child rather than stopping them (`pkill -P` on the already-dead `make`
+reached nothing), and the orphan finished the entire Rust suite green on
+its own a few minutes later, unsupervised, while `make` itself — the only
+process that would have gone on to run `cargo build`, the plugin harness,
+e2e, and the postlude orphan check — was already dead and could not.
+Recognized the gate as incomplete rather than green, cleaned up
+(`scripts/check-no-orphan-servers.sh check` confirmed nothing left behind),
+and reran `make test` from scratch with a corrected watchdog (180s stall
+threshold, full-tree kill via `pgrep -P` on genuine expiry) — this second
+run hit the real second bug (SH-218's e2e race) instead, fixed it, and the
+third run was fully green in 48.6s of e2e alone. **Lesson for the rule
+itself:** the 120-second stall threshold this run calibrated is sound for
+*test-execution* liveness (a print line every few seconds) but not for the
+*initial compile* phase after an incremental-cache-invalidating edit, which
+can legitimately produce zero log bytes for several minutes; a future
+watchdog on this suite should either wait for the first `running N tests`
+line before arming the strict timeout, or use a longer threshold (~180s
+proved sufficient here) for the pre-test-output phase specifically.
+
+**Gate:** `make test` green on the corrected third run: fmt, clippy `-D
+warnings`, full Rust suite, `cargo build`, plugin harness 25/25, e2e 36/36
+(32 pre-existing + this story's 4 new cases), no orphan daemons pre- or
+post-run (`check-no-orphan-servers.sh check` and the postlude leg both
+clean).
+
+**Semver: patch.** Pure UI decoration removal — no existing API, schema, or
+CLI surface changed, added, or removed.
+
+**PR:** #203, merged as `39c915d` (`gh pr view` confirmed `MERGED` with a
+`mergeCommit`). `gh pr merge --delete-branch`'s *local* cleanup step failed
+immediately after — `fatal: 'main' is already used by worktree at
+.../.claude/worktrees/SH-167` — a transient race, not a real conflict: PRs
+#200 (SH-167) and #202 (SH-202) both merged within moments of this one, and
+that worktree evidently held `main` checked out mid-landing at the exact
+instant `gh` tried to switch this checkout onto it. `git worktree list`
+immediately after showed no such worktree at all (the other session's own
+landing had already moved past that point), so a bare `git checkout main`
+retried a few seconds later succeeded outright with no other intervention
+needed. Finished the cleanup by hand: `git pull --ff-only` (fast-forwarded
+past both concurrent PRs plus this one), `git branch -d` and `git push
+origin --delete` for the now-merged branch (the remote delete `gh` never
+reached), both verified gone. Story closed via `story move SH-168 done`
+(the commit body named SH-168 without a `Closes` keyword, so commit-sync
+linked it but didn't auto-close it).
