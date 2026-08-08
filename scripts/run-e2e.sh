@@ -111,6 +111,12 @@ init_git_repo() {
   "$story_bin" project new --prefix AA --name "Alpha Project" --no-agents-md >/dev/null
   "$story_bin" new "Wire up the auth flow" --json | jq -r '.story.story.id' >"$data_root/alpha-story-id"
   "$story_bin" new "Fix the flaky upload test" >/dev/null
+  # Alpha-only state, deliberately absent from Beta and Gamma: filter-
+  # persistence.spec.ts needs one project's state vocabulary to be a value
+  # the *next* project can't possibly have, to prove a carried-over state
+  # filter gets pruned rather than silently hiding every story in whatever
+  # project it's carried into.
+  "$story_bin" state add review --super OPEN >/dev/null
 )
 alpha_story_id="$(cat "$data_root/alpha-story-id")"
 (
