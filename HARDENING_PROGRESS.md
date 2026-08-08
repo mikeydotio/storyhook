@@ -189,7 +189,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-70** — pre-#18 import `[git]` comments
 - [x] **SH-44** — web form defaults
 - [x] **SH-127** — remove the status flash
-- [ ] **SH-128** — column sort options
+- [x] **SH-128** — column sort options
 - [ ] **SH-168** — do not show the green ready status labels
 - [ ] **SH-64** — story-id ordering · *unblocked by SH-63, which closed below*
 - [ ] **SH-183** — `story migrate` refuses a bad state slug but accepts a bad type slug · *filed by SH-134's chair, correcting a claim in that council's own verdict*
@@ -7110,3 +7110,90 @@ deleted (remote and local; `gh pr merge --delete-branch` plus `git fetch
 --prune` confirmed the remote ref gone). Picked up PR #194
 (`worktree-SH-208`'s dispatch-button work, merged by a concurrent session
 mid-run) as a fast-forward, not a conflict — `main` still bisectable.
+
+### SH-128 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line): Medium's
+one remaining line, SH-167, was still `in-progress` elsewhere (`story list
+--state in-progress` also turned up SH-112, the epic, and SH-202, neither on
+this file's queue — the same recurring pattern every prior session has hit).
+Low's first unchecked line was SH-128 itself, confirmed ready via `story
+list --ready`.
+
+**Council: yes, two questions.** The story's text ("glyph-based buttons in
+the status column header," sort keys "story order" and "priority," priority
+descending default, story order ascending as the secondary sort) left two
+things genuinely open: what "story order" means as a sort key (stories carry
+no numeric sequence field, only a string id and timestamps), and where the
+buttons physically live given sort is necessarily board-wide but the text
+says "column header" (plural columns). Convened a 3-seat council
+(`ux-designer-web`, `software-architect`, `skeptic`). Full trail:
+`.council/sh128-board-sort-options/` (gitignored, verdict recorded as a
+`story comment`).
+
+**What the council found.** Round 1 wasn't a coin flip — two of three seats
+independently surfaced the same fact before voting, which the chair then
+verified directly against the source: `domain::ready_order`/`story_number`
+(`src/domain.rs:1681-1697`) already implements exactly the shape SH-128
+describes — priority, then the id's numeric suffix ascending as a tiebreak
+— landed via SH-63 and used by `next`/`summary`/`report`/`context` as the
+established total order. Its own test,
+`ready_order_ignores_created_at_entirely`, exists specifically because a
+real fixture had `created_at` disagree with numeric id order (SH-1 created
+after SH-2 but numbered lower) — direct evidence against the
+seemingly-reasonable alternative (a `created_at`-based "story order," which
+was the first seat's independent proposal before seeing this). And
+`service/query.rs`'s own SH-64 doc comment confirmed SH-64's scope is the
+CLI's *remaining* lexicographic outliers (`graph`, `handoff`) converging
+toward this same numeric convention — so mirroring it here moves with
+SH-64's eventual fix rather than inventing a competing one for SH-64 to
+reconcile later. Round 1 landed unanimous 3-0 once that fact was in hand
+(even the dissenting-by-construction seat 1, who had proposed `created_at`,
+voted for the numeric proposal) — no deliberation round needed. On
+placement, all three seats converged on one shared pair of buttons in
+`.filter-bar` rather than repeated per column: board sort is one value with
+no per-column identity, matching where every other board-wide toggle already
+lives (Hide empty columns, Show closed/archived), and repeating identical
+buttons across every cramped `.column-header` would force N-way DOM sync for
+no functional gain. Recorded as a documented deviation from the story's
+literal "column header" wording rather than a silent override.
+
+**Built:** `boardCardCompare` replaces the board's hardcoded
+`updated_at`-descending sort in `renderBoard`, driven by new
+`state.boardSort = { key, dir }`. `storyNumber(id)` mirrors
+`domain::story_number`'s strict-parse fallback exactly — a partial numeric
+match like `"9x"` sorts last, same as Rust's `str::parse::<u64>` rejecting
+it, which a bare `parseInt` would have silently gotten wrong. `PRIORITY_
+URGENCY` is a dedicated ranking table rather than a reuse of the existing
+`PRIORITY_ORDER` (tuned for the List view's ascending-severity scale, where
+`dir: -1` would have put `none` first — backwards from what "priority
+descending" means to a user). `state.boardSort` persists the same way
+`state.sort` already does — SH-155's sessionStorage bundle, surviving
+"Clear filters" and carrying the same per-switch rules. Two buttons,
+`#boardsort-priority`/`#boardsort-order`, wired with the List view's own
+click-to-set/click-again-to-flip interaction (`▲`/`▼` glyphs, reusing the
+`sort-arrow` class already established there).
+
+**Tests:** new `e2e/specs/board-sort.spec.ts`, four cases against a real
+daemon and browser: the default (priority descending, most urgent first,
+created out of order to prove the sort actually reorders rather than
+happening to match insertion order), a tied-priority pair broken by story
+order ascending, the Order button's set/flip interaction including its
+arrow-glyph and active-class state, and sort-choice persistence across a
+reload. Creates and deletes its own stories rather than touching the "Alpha
+Project" fixture, whose exact two-story shape other specs assert on
+byte-for-byte per `run-e2e.sh`'s own comment.
+
+**Gate:** `make test` green on the first full run, supervised with a
+log-growth heartbeat (no stall): fmt, clippy `-D warnings`, full Rust suite,
+`cargo build`, plugin harness 25/25, e2e 32/32 (28 pre-existing + this
+story's 4 new cases), no orphan daemons pre- or post-run.
+
+**Semver: minor.** New user-facing board capability (sortable columns); no
+existing API, schema, or CLI surface changed or removed.
+
+**PR:** #199, merged as `4086707`. Story closed via `story move SH-128
+done` (the commit body named SH-128 without a `Closes` keyword, so
+commit-sync linked it but didn't auto-close it). Branch verified deleted
+(remote and local; `gh pr merge --delete-branch` plus a clean `git pull
+--ff-only` on `main` confirmed the remote ref gone and history bisectable).
