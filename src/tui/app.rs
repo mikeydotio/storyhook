@@ -8,7 +8,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use crate::cli::{HistoryAction, Invocation, StateAction};
 use crate::domain::{FieldEdit, StoryEvent, StorySnapshot, SuperState};
 use crate::error::AppError;
-use crate::invoke::{InvokeRequest, Invoker, StoreInvoker};
+use crate::invoke::{HttpInvoker, InvokeRequest, Invoker};
 use crate::output::Response;
 
 use super::action::{Action, UndoEntry, View};
@@ -33,28 +33,32 @@ use super::theme::Theme;
 /// Run the TUI application.
 ///
 /// `root` is the directory the project is resolved from, and nothing else reads
-/// it: every read and every mutation goes through [`Invoker`]. Live updates come
-/// from the daemon's change feed — see [`EventSource`].
+/// it: every read and every mutation goes through [`Invoker`]. `story tui` is
+/// a client of the daemon like every other command since SH-114 — it opens no
+/// store of its own — and live updates come from the daemon's change feed;
+/// see [`EventSource`].
 pub fn run(root: &Path) -> Result<(), AppError> {
     // `None` for the store flag: `main` publishes any `--store-path` into
     // `$STORYHOOK_STORE_PATH` before the TUI is dispatched, so this resolves
     // the store the caller named.
     let environment = crate::env::Environment::from_process(None)?;
-    let event_environment = environment.clone();
     // Resolved here, ahead of the alternate screen, so a daemon that cannot
     // start fails as plain text with a remedy rather than as a message drawn
-    // over whatever the board would have rendered -- and so `EventSource` has
-    // the port it needs to subscribe.
+    // over whatever the board would have rendered. `HttpInvoker::invoke`
+    // resolves it again on every call (a portfile read against an
+    // already-live daemon), but `EventSource` needs the port up front to
+    // subscribe.
     let daemon = crate::daemon::lifecycle::ensure(&environment)?;
-    let store = crate::invoke::open_store(&environment)?;
-    let invoker = StoreInvoker::new(&store, root, environment);
+    // `announce_waits(false)`: the daemon-wait notice writes to stderr, and
+    // inside the alternate screen below, stderr *is* the screen.
+    let invoker = HttpInvoker::new(environment.clone(), root).announce_waits(false);
 
     // Subscribed before the initial load, not after: a write ordered between
     // the two would otherwise be visible to neither the snapshot (too early)
     // nor the feed (subscribed too late to have seen it) -- the same
     // ordering property SH-140 fixed for the store-polling version of this
     // mechanism, kept here by sequencing rather than by a baseline read.
-    let (event_source, rx) = EventSource::new(&event_environment, &daemon);
+    let (event_source, rx) = EventSource::new(&environment, &daemon);
     let data = DataStore::load(&invoker)?;
     let mut state = AppState::new(data);
     let theme = Theme::from_env();
@@ -1354,6 +1358,7 @@ impl Default for DataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::invoke::StoreInvoker;
     use crate::tui::action::View;
     use crate::tui::data::DataStore;
     use crate::tui::focus::{FocusStack, FocusTarget, Modal};
