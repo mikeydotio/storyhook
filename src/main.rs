@@ -482,11 +482,16 @@ enum Confirmed {
     CannotAsk(storyhook::error::AppError),
 }
 
-/// Asks the user to confirm a destructive plan by typing the token it names.
+/// Asks the user to confirm a plan — typing the token it names back for a
+/// one-way door, or a plain `[y/N]` when the plan's own
+/// [`requires_typed_confirmation`](storyhook::output::ConfirmationPlan::requires_typed_confirmation)
+/// says one keystroke is enough.
 ///
-/// A typed token rather than `[y/N]`, because the weight of the gate should
-/// match the weight of the act: one keystroke is right for "reopen this deleted
-/// story" and wrong for "erase every event this project has".
+/// The weight of the gate matches the weight of the act: a typed token is
+/// right for "erase every event this project has" and wrong for "reopen this
+/// deleted story" — the latter is undone by a plain `story delete` again, so
+/// asking for more than one keystroke would be asking the terminal to prove
+/// something the act itself does not require.
 ///
 /// Two cases cannot be asked at all, and both are refusals naming `--force`
 /// rather than assumptions either way:
@@ -501,8 +506,6 @@ enum Confirmed {
 /// successful output, and this is a question.
 fn confirm(plan: &storyhook::output::ConfirmationPlan, json: bool, quiet: bool) -> Confirmed {
     use std::io::{IsTerminal, Write};
-
-    let token = plan.token();
 
     // The refusal carries the *whole* plan, not just the headline counts. A
     // caller being told to re-run with --force is being asked to authorize
@@ -526,14 +529,21 @@ fn confirm(plan: &storyhook::output::ConfirmationPlan, json: bool, quiet: bool) 
 
     let _ = quiet;
     eprint!("{}", storyhook::output::render_confirmation_plan(plan));
-    eprint!("Type `{token}` to confirm: ");
-    let _ = std::io::stderr().flush();
 
     let mut answer = String::new();
-    if std::io::stdin().read_line(&mut answer).is_err() {
-        return Confirmed::No;
-    }
-    if answer.trim() == token {
+    let accepted = if plan.requires_typed_confirmation() {
+        let token = plan.token();
+        eprint!("Type `{token}` to confirm: ");
+        let _ = std::io::stderr().flush();
+        std::io::stdin().read_line(&mut answer).is_ok() && answer.trim() == token
+    } else {
+        eprint!("Reopen (undelete) this deleted story? [y/N] ");
+        let _ = std::io::stderr().flush();
+        std::io::stdin().read_line(&mut answer).is_ok()
+            && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    };
+
+    if accepted {
         Confirmed::Yes
     } else {
         Confirmed::No

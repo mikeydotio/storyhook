@@ -18,7 +18,8 @@
 //! - `--no-hooks` crosses the wire;
 //! - a relative path names a directory relative to the *client's* working
 //!   directory, not the daemon's;
-//! - and the two destructive verbs' confirmation, which happens in the client
+//! - and the confirmation gate `purge`, `project delete`/`set-prefix` and
+//!   `reopen` of a soft-deleted story all share, which happens in the client
 //!   and whose second request has to be recognized on the far side.
 
 use std::time::{Duration, Instant};
@@ -330,4 +331,45 @@ fn purge_refuses_and_then_deletes_over_the_wire() {
             .success(),
         "the story is gone"
     );
+}
+
+/// SH-154's own version of the wire-recognition risk `purge`'s test above
+/// documents: `InvokeRequest::forced()` used to fall through to `_ => {}` for
+/// `Invocation::Reopen`, which nothing would have caught here except this —
+/// the CLI answers "yes", re-sends what it thinks is a forced request, and
+/// without the `forced()` arm the daemon would answer with the identical
+/// plan a second time rather than acting on it.
+#[test]
+fn reopen_refuses_and_then_undeletes_over_the_wire() {
+    let env = TestEnv::isolated();
+    let _guard = DaemonGuard(&env);
+    let dir = project(&env);
+
+    assert!(
+        via_daemon(&env, dir.path(), &["new", "Created in error"])
+            .status
+            .success()
+    );
+    assert!(
+        via_daemon(&env, dir.path(), &["delete", "SH-1", "created in error"])
+            .status
+            .success()
+    );
+
+    // Unforced: a refusal naming --force, with the plan intact and nothing
+    // undeleted.
+    let refusal = via_daemon(&env, dir.path(), &["reopen", "SH-1"]);
+    assert_eq!(refusal.status.code(), Some(2), "{refusal:?}");
+    let stderr = String::from_utf8_lossy(&refusal.stderr);
+    assert!(stderr.contains("--force"), "{stderr}");
+    assert!(
+        stderr.contains("Created in error"),
+        "the plan crossed the wire intact: {stderr}"
+    );
+
+    // Forced: the second request is recognized, and the story is open again —
+    // not asked the same question a second time.
+    let forced = via_daemon(&env, dir.path(), &["reopen", "SH-1", "--force"]);
+    assert_eq!(forced.status.code(), Some(0), "{forced:?}");
+    assert!(String::from_utf8_lossy(&forced.stdout).contains("state: todo"));
 }
