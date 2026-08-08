@@ -328,6 +328,13 @@ pub struct StoryRow {
     pub closed_at: Option<String>,
     /// Column: description.
     pub description: Option<String>,
+    /// Column: when the story was hidden from the primary UI (the "Archive"
+    /// action), if it currently is.
+    ///
+    /// No CHECK ties this to `archived`/`closed_at`/`superstate` — see
+    /// `schema/0010_story_hidden.sql`. `Some` only while `superstate` is
+    /// `CLOSED`; the fold and the service layer are what keep that true.
+    pub hidden_at: Option<String>,
     /// The story's labels, joined in.
     pub labels: Vec<String>,
     /// The folded snapshot, verbatim — comments and all.
@@ -417,6 +424,10 @@ pub struct StoryQuery {
     pub archived: Option<bool>,
     /// Restrict to deleted (`true`) or undeleted (`false`) stories.
     pub deleted: Option<bool>,
+    /// Restrict to hidden (`true`) or unhidden (`false`) stories — the SH-43
+    /// "Archive" fact. Orthogonal to [`archived`](Self::archived): a story
+    /// can be closed and not (yet) hidden, but never hidden while OPEN.
+    pub hidden: Option<bool>,
     /// Result order.
     pub sort: StorySort,
     /// Maximum rows to return.
@@ -483,6 +494,13 @@ impl StoryQuery {
     #[must_use]
     pub fn deleted(mut self, deleted: bool) -> Self {
         self.deleted = Some(deleted);
+        self
+    }
+
+    /// Restricts to hidden or unhidden stories.
+    #[must_use]
+    pub fn hidden(mut self, hidden: bool) -> Self {
+        self.hidden = Some(hidden);
         self
     }
 

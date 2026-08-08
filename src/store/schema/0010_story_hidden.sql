@@ -1,0 +1,26 @@
+-- storyhook store — schema version 10: `stories.hidden_at`, the SH-43
+-- "Archive" fact.
+--
+-- Deliberately not named `archived`: that word is already load-bearing.
+-- `archived` is derived from `closed_at` and tied to it by a schema CHECK
+-- (migration 4), and `resolve_open_story` uses it as the "this story cannot
+-- be edited" test. `hidden` is a different, orthogonal fact — a display
+-- preference layered on top of an already-closed story, set and cleared by
+-- its own `StoryHidden`/`StoryUnhidden` events.
+--
+-- No CHECK ties `hidden_at` to anything. A CHECK expressing "only a CLOSED
+-- story may be hidden" would need to reference `superstate`, and SQLite's
+-- `ALTER TABLE ... ADD COLUMN` cannot add a cross-column CHECK — only the
+-- twelve-step rebuild migration 4 used can. That invariant is enforced where
+-- SH-130's equivalent for `archived` taught this codebase to enforce
+-- reclassification-safe invariants that a CHECK cannot see: at the service
+-- layer (`StoryService::hide` refuses a non-CLOSED story) and in the fold
+-- itself (`fold_story` clears `hidden_at` the moment a story's superstate
+-- resolves back to OPEN, whether by reopening or by the state it rests in
+-- being reclassified).
+--
+-- No rebuild: `ALTER TABLE ... ADD COLUMN` is the whole schema change, so
+-- this migration runs with `foreign_keys_off: false` and migration 5's
+-- `events_reject_delete` warning does not apply.
+
+ALTER TABLE stories ADD COLUMN hidden_at TEXT;

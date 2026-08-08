@@ -1106,6 +1106,49 @@ fn a_migrated_store_has_no_resolution_index_left() {
 /// `project_types` is seeded in raw SQL at the v8 shape (no `emoji` column) —
 /// the same reason `tests/store_schema_fixture.rs` seeds it that way now:
 /// `WriteOps::put_types` assumes the column this migration adds.
+///
+/// Writes one story's read-model row at the v8 column shape (no `hidden_at`,
+/// added by migration 10) — deliberately raw SQL rather than
+/// `WriteOps::put_story`, which always writes the *current* binary's full
+/// column set. Shared by every fixture in this section that needs a v8-shape
+/// `stories` row: one place stating the v8 column list is one place to update
+/// if a future migration adds another `stories` column and this needs a v9,
+/// v10, ... variant.
+fn insert_v8_story_row(
+    conn: &Connection,
+    project: storyhook::store::ProjectId,
+    no: StoryNo,
+    head: storyhook::store::EventSeq,
+    snapshot: &storyhook::domain::StorySnapshot,
+) {
+    use storyhook::store::types::priority_rank;
+    conn.execute(
+        "INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate, \
+         priority, priority_rank, story_type, assignee, awaiting, deleted, archived, \
+         created_at, updated_at, closed_at, description, snapshot) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, 0, ?12, ?13, ?14, ?15, ?16)",
+        rusqlite::params![
+            project.get(),
+            no.get(),
+            head.get(),
+            snapshot.title,
+            snapshot.state,
+            snapshot.superstate.as_str(),
+            snapshot.priority.as_str(),
+            priority_rank(&snapshot.priority),
+            snapshot.story_type,
+            snapshot.assignee,
+            snapshot.awaiting,
+            snapshot.created_at,
+            snapshot.updated_at,
+            snapshot.closed_at,
+            snapshot.description,
+            serde_json::to_string(snapshot).unwrap(),
+        ],
+    )
+    .unwrap();
+}
+
 fn v8_store_with_renamed_and_retired_type_stories(
     dir: &Path,
 ) -> (
@@ -1121,7 +1164,14 @@ fn v8_store_with_renamed_and_retired_type_stories(
     let store = SqliteStore::open(dir.join("store.db")).unwrap();
     store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
 
-    let (project, task_story, story_story, epic_story) = store
+    // Collects each story's read-model row rather than writing it through
+    // `WriteOps::put_story`: that call always writes the *current* binary's
+    // full column set, which since migration 10 includes `hidden_at` — a
+    // column a genuine v8 database does not have. Written below with raw SQL
+    // instead, the same reason `seed_a_labelled_story` and `append_v1_events`
+    // in this file bypass the service/store write path for a fixture that
+    // must stay buildable on a schema older than the code that built it.
+    let (project, rows) = store
         .write(|tx| {
             let project = tx.create_project(&NewProject {
                 uuid: "types".into(),
@@ -1166,34 +1216,38 @@ fn v8_store_with_renamed_and_retired_type_stories(
                     let head =
                         tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
                     let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
-                    tx.put_story(project, &snapshot, head)?;
-                    Ok::<_, storyhook::store::StoreError>(no)
+                    Ok::<_, storyhook::store::StoreError>((no, head, snapshot))
                 };
 
-            let task_no = make_story(
+            let task_row = make_story(
                 "A task-typed story",
                 "2026-01-01T00:00:00Z",
                 "2026-01-01T00:01:00Z",
                 "task",
             )?;
-            let story_no = make_story(
+            let story_row = make_story(
                 "An ordinary story",
                 "2026-01-01T00:00:10Z",
                 "2026-01-01T00:01:10Z",
                 "story",
             )?;
-            let epic_no = make_story(
+            let epic_row = make_story(
                 "An epic",
                 "2026-01-01T00:00:20Z",
                 "2026-01-01T00:01:20Z",
                 "epic",
             )?;
 
-            Ok((project, task_no, story_no, epic_no))
+            Ok((project, [task_row, story_row, epic_row]))
         })
         .unwrap();
 
     let conn = Connection::open(store.path()).unwrap();
+    for (no, head, snapshot) in &rows {
+        insert_v8_story_row(&conn, project, *no, *head, snapshot);
+    }
+    let [(task_story, ..), (story_story, ..), (epic_story, ..)] = rows;
+
     for (position, slug) in [
         (0, "story"),
         (1, "task"),
@@ -1214,14 +1268,29 @@ fn v8_store_with_renamed_and_retired_type_stories(
 
 /// `(story_type, updated_at, head_seq)` for one story, read back through the
 /// store.
+/// `(story_type, updated_at, head_seq)` for one story, read with **raw SQL**
+/// naming only these three columns.
+///
+/// Deliberately not `ReadOps::story`: this helper's whole purpose is to
+/// capture a "before" snapshot *ahead of* `store.migrate()`, while the
+/// database may still be missing a column a later migration adds (SH-43 added
+/// `hidden_at` at v10) — `ReadOps::story` always selects the *current*
+/// binary's full column set and would fail against that older shape. The
+/// three columns here have all existed since v8, so this reads correctly on
+/// either side of any migration boundary this file exercises.
 fn story_type_updated_head(
     store: &SqliteStore,
     project: storyhook::store::ProjectId,
     no: StoryNo,
 ) -> (Option<String>, String, i64) {
-    use storyhook::store::ReadOps;
-    let row = store.read(|tx| tx.story(project, no)).unwrap().unwrap();
-    (row.story_type, row.updated_at, row.head_seq.get())
+    let conn = Connection::open(store.path()).unwrap();
+    conn.query_row(
+        "SELECT story_type, updated_at, head_seq FROM stories \
+         WHERE project_id = ?1 AND story_no = ?2",
+        rusqlite::params![project.get(), no.get()],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )
+    .unwrap()
 }
 
 /// The events recorded for one story, in `seq` order: `(kind, story_type)`.
@@ -1473,7 +1542,7 @@ fn migration_nine_leaves_a_project_with_no_task_stories_and_no_task_type_untouch
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
     store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
 
-    let (project, no) = store
+    let (project, no, head, snapshot) = store
         .write(|tx| {
             let project = tx.create_project(&NewProject {
                 uuid: "clean".into(),
@@ -1509,10 +1578,16 @@ fn migration_nine_leaves_a_project_with_no_task_stories_and_no_task_type_untouch
             let head =
                 tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
             let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
-            tx.put_story(project, &snapshot, head)?;
-            Ok((project, no))
+            Ok((project, no, head, snapshot))
         })
         .unwrap();
+    insert_v8_story_row(
+        &Connection::open(store.path()).unwrap(),
+        project,
+        no,
+        head,
+        &snapshot,
+    );
     let before = story_type_updated_head(&store, project, no);
     let before_global_seq = next_global_seq(&store, project);
 
@@ -1533,7 +1608,7 @@ fn migration_nine_removes_an_unused_task_catalog_entry_without_touching_any_stor
     let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
     store.migrate_with(&migrate::MIGRATIONS[..8]).unwrap();
 
-    let (project, no) = store
+    let (project, no, head, snapshot) = store
         .write(|tx| {
             let project = tx.create_project(&NewProject {
                 uuid: "unused-task".into(),
@@ -1569,11 +1644,11 @@ fn migration_nine_removes_an_unused_task_catalog_entry_without_touching_any_stor
             let head =
                 tx.append_events(project, no, ExpectedSeq::Exact(EventSeq::ZERO), &events)?;
             let snapshot = fold_story(&no.to_id("SH"), &events, &state_map).unwrap();
-            tx.put_story(project, &snapshot, head)?;
-            Ok((project, no))
+            Ok((project, no, head, snapshot))
         })
         .unwrap();
     let conn = Connection::open(store.path()).unwrap();
+    insert_v8_story_row(&conn, project, no, head, &snapshot);
     for (position, slug) in [(0, "story"), (1, "task")] {
         conn.execute(
             "INSERT INTO project_types (project_id, position, slug, description) \
@@ -1600,5 +1675,87 @@ fn migration_nine_removes_an_unused_task_catalog_entry_without_touching_any_stor
         vec![("normal".to_string(), 0)],
         "the `task` row is removed and `story` is renamed to `normal`, \
          even with no story left to retype"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Migration 10: `stories.hidden_at` (SH-43)
+// ---------------------------------------------------------------------------
+
+/// Seeds one v9 project holding one story, straight to the tables — the same
+/// reason `seed_a_labelled_story` does: this file tests the migration
+/// framework, not the service layer, and this fixture must stay buildable on
+/// a schema that predates the column migration 10 adds.
+fn seed_a_v9_story(path: &Path) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, uuid, slug, name, prefix, created_at)
+             VALUES (1, 'u-1', 'proj', 'Proj', 'SH', '2026-01-01T00:00:00Z');
+         INSERT INTO project_states (project_id, position, slug, superstate)
+             VALUES (1, 0, 'todo', 'OPEN'), (1, 1, 'done', 'CLOSED');
+         INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate,
+                              priority, priority_rank, created_at, updated_at, snapshot)
+             VALUES (1, 1, 1, 'A story', 'todo', 'OPEN', 'none', 4,
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');",
+    )
+    .unwrap();
+}
+
+#[test]
+fn migration_ten_adds_a_hidden_at_column_that_pre_existing_stories_read_as_null() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
+    seed_a_v9_story(store.path());
+
+    assert!(
+        Connection::open(store.path())
+            .unwrap()
+            .prepare("SELECT hidden_at FROM stories")
+            .is_err(),
+        "a v9 database must not already have `hidden_at` — otherwise this test \
+         proves nothing about the migration that adds it"
+    );
+
+    store.migrate().unwrap();
+
+    let hidden_at: Option<String> = Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT hidden_at FROM stories WHERE project_id = 1 AND story_no = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        hidden_at, None,
+        "a story that existed before this migration is not retroactively archived"
+    );
+}
+
+#[test]
+fn migration_ten_leaves_every_other_column_and_the_event_log_untouched() {
+    use storyhook::store::ReadOps;
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..9]).unwrap();
+    seed_a_v9_story(store.path());
+    let before = next_global_seq(&store, storyhook::store::ProjectId::new(1));
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        before,
+        next_global_seq(&store, storyhook::store::ProjectId::new(1)),
+        "no data-migrating event is appended — this is a bare `ADD COLUMN`"
+    );
+    let events = store
+        .read(|tx| tx.events_for(storyhook::store::ProjectId::new(1), StoryNo::new(1)))
+        .unwrap();
+    assert!(
+        events.is_empty(),
+        "the pre-existing story was seeded with no events of its own; migration \
+         10 must not have added any"
     );
 }
