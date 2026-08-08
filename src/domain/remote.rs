@@ -488,6 +488,13 @@ fn network_key(authority: &str, path: &str, raw: &str) -> Result<String, Normali
     // IPv6 literal like `[::1]` intact instead of mangled.
     let host = host.to_ascii_lowercase();
 
+    // A percent-encoded segment (`acme%2Fwidgets`) is never decoded — it is
+    // case-folded and kept as literal text, the same as any other segment.
+    // Decoding would let a `%2f` collide with a real `/`, and a host may
+    // itself disagree about whether the escape was already applied once
+    // (double-encoding), so there is no decoding that both sides of a
+    // registration are guaranteed to agree on. Undecoded, the two spellings
+    // are simply different repositories, which is always the safe answer.
     let path = normalize_path_segments(path);
     // Lowercased before the suffix is stripped, so `REPO.GIT` and `repo.git`
     // are the same repository.
@@ -800,24 +807,67 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Explicit non-decisions
+    // IPv6 literal hosts and percent-encoded paths — decided (SH-139)
     //
-    // These assert *only* that nothing panics. They must never be tightened to
-    // assert a particular key: doing so would freeze whatever the first
-    // implementation happened to produce as though somebody had decided it. Both
-    // shapes have their own filed story.
+    // Both shapes reuse rules this module already had rather than earning new
+    // ones: a host is never split on any colon but the one before userinfo,
+    // and a path is never decoded. Pinned here as real keys rather than
+    // "does not panic" so a future edit cannot silently change either answer.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn an_ipv6_literal_host_does_not_panic_and_is_otherwise_undecided() {
-        let _ = RemoteUrl::normalize("https://[::1]/acme/widgets");
-        let _ = RemoteUrl::normalize("ssh://git@[2001:db8::1]:22/acme/widgets");
+    fn an_ipv6_literal_host_is_kept_whole_and_case_folded() {
+        assert_eq!(key("https://[::1]/acme/widgets"), "[::1]/acme/widgets");
+        assert_eq!(
+            key("ssh://git@[2001:db8::1]:22/acme/widgets"),
+            "[2001:db8::1]:22/acme/widgets"
+        );
+        // The literal folds like any other host — same rule, no allowlist.
+        assert_eq!(
+            key("https://[2001:DB8::1]/acme/widgets"),
+            key("https://[2001:db8::1]/acme/widgets")
+        );
     }
 
     #[test]
-    fn a_percent_encoded_path_does_not_panic_and_is_otherwise_undecided() {
-        let _ = RemoteUrl::normalize("https://host.example/acme%2Fwidgets");
-        let _ = RemoteUrl::normalize("https://host.example/acme/wid%67ets");
+    fn a_port_on_an_ipv6_literal_host_still_distinguishes_the_endpoint() {
+        assert_ne!(
+            key("https://[::1]/acme/widgets"),
+            key("https://[::1]:22/acme/widgets")
+        );
+    }
+
+    #[test]
+    fn path_on_an_ipv6_literal_host_treats_the_bracketed_port_as_the_host() {
+        let remote = RemoteUrl::normalize("ssh://git@[2001:db8::1]:22/acme/widgets").unwrap();
+        assert_eq!(remote.path_on("[2001:db8::1]:22"), Some("acme/widgets"));
+        assert_eq!(remote.path_on("[2001:db8::1]"), None);
+    }
+
+    #[test]
+    fn a_percent_encoded_path_segment_is_kept_literal_and_never_decoded() {
+        assert_eq!(
+            key("https://host.example/acme%2Fwidgets"),
+            "host.example/acme%2fwidgets"
+        );
+        assert_eq!(
+            key("https://host.example/acme/wid%67ets"),
+            "host.example/acme/wid%67ets"
+        );
+        // If `%2F` decoded to `/`, this would collide with the two-segment
+        // form below. It must not: decoding is the one thing this grammar
+        // refuses to guess at, because it cannot know whether the source
+        // already decoded it once.
+        assert_ne!(
+            key("https://host.example/acme%2Fwidgets"),
+            key("https://host.example/acme/widgets")
+        );
+        // The escape folds like the rest of the path — same rule, no
+        // exception carved out for `%`.
+        assert_eq!(
+            key("https://host.example/acme%2Fwidgets"),
+            key("https://Host.Example/Acme%2FWidgets")
+        );
     }
 
     // -----------------------------------------------------------------------
