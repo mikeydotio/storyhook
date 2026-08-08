@@ -152,7 +152,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-153** — `Select::interact()` called from the daemon, where there is no terminal
 - [x] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
 - [x] **SH-145** — the dashboard does not live-update a state change until reload
-- ⚠ **SH-68** — `sync.mode = auto` is accepted and does nothing · *in-progress as of 2026-08-07T17:37 — another session; do not claim*
+- [x] **SH-68** — `sync.mode = auto` is accepted and does nothing · *closed by another session; ⚠ mark was stale as of 2026-08-08*
 
 ### Medium
 
@@ -176,7 +176,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-43** — archive
 - [x] **SH-49** — linked PRs
 - [x] **SH-155** — preserve presentation/layout settings
-- [ ] **SH-162** — allow hiding columns
+- [x] **SH-162** — allow hiding columns
 - [x] **SH-50** — C9 Dispatch button
 - [x] **SH-157** — visually indicate story types · *closed by another session*
 
@@ -6376,4 +6376,73 @@ all 18 e2e specs (5 new, 13 pre-existing, all passing).
 switch and a reload), no breaking change.
 
 **PR:** #180, merged as `0b9b8de`. Branch verified deleted, `main`
+fast-forwarded cleanly.
+
+### SH-162 — done
+
+**Outcome:** The board's filter bar gets a "Columns" dropdown (multi-checkbox,
+same popover as Priority/Assignee/Type/State) to pick which state columns are
+shown, plus a "Hide empty columns" toggle that collapses any column with zero
+currently-visible cards.
+
+**Picked from the Medium queue.** SH-167 was still `in-progress` elsewhere —
+`story list --state in-progress` and a live `storyhook:5` tmux window titled
+`SH-167#` both confirmed it, the same stale-mark situation every prior entry
+in this run has hit — so it stayed skipped, same as SH-49/SH-155 before it.
+SH-66/SH-42/SH-43/SH-49/SH-155 above it were already done, making SH-162 the
+next unclaimed line. In passing: **SH-68**'s ⚠ mark (High queue) had also
+gone stale — `story show SH-68` came back `done` — corrected to `[x]` before
+picking, so the next session doesn't re-verify it for nothing.
+
+**No fresh council.** Two axes needed a real decision (where the new
+`hiddenColumns` and `hideEmptyColumns` settings persist, and whether "Clear
+filters" should touch either), but both resolve by direct precedent already
+sitting in this file rather than a fresh coin-flip: `hiddenColumns` is
+state-slug vocabulary exactly like `filter.states`, so SH-155's own verdict
+for that field — sessionStorage, pruned per-project, a "didn't carry over"
+toast — applies unchanged. `hideEmptyColumns` carries no vocabulary at all
+("empty" means the same thing in any project), which is exactly the shape
+`showArchived` already has, so it gets that field's durable-localStorage
+treatment instead. Neither field lives inside `state.filter`, so "Clear
+filters" (which only resets `state.filter`) leaves both alone without any
+special-case code — the same reason `state.sort` already survives Clear
+Filters untouched. Recorded here rather than as a council comment on SH-162
+since no vote was actually run; the reasoning is precedent-matching, not a
+judgment call between defensible alternatives.
+
+**"Empty" means empty after the active filters, live.** `renderBoard()`
+groups the already-filtered story list before computing which columns to
+render, so a column emptied by a search term collapses on the very next
+render when "Hide empty columns" is on — not just a snapshot taken when the
+toggle was flipped. Covered by its own e2e assertion rather than left
+implicit.
+
+**Manual verification** against a scratch daemon/store (`--store-path`,
+`STORYHOOK_DAEMON_ADDR=127.0.0.1:0`) via Playwright, stopped and confirmed
+orphan-free before the gate ran: the Columns dropdown lists every project
+state, unchecking one removes its column and cards from the board without
+moving the filter count, and "Hide empty columns" collapses Alpha's four
+empty default columns down to `todo`.
+
+**5 new e2e specs** (`e2e/specs/column-visibility.spec.ts`): explicit
+hide/unhide leaves the filter count alone; "Hide empty columns" collapses
+and un-collapses, including the live-recollapse case above; a hidden column
+survives a reload on the same project (sessionStorage); a hidden column
+absent from the next project is pruned with the shared toast (reusing
+Alpha's `review` state, the same fixture SH-155's own prune test uses, for
+the same reason — a state slug the *next* project provably lacks); and
+`hideEmptyColumns` carries across a project switch unprompted, proving it's
+durable rather than session-scoped.
+
+**Gate:** one `make test` run, supervised in the background (`Monitor`,
+120-second log-growth stall bound) — no stall, log grew steadily from empty
+to ~227KB. Full suite green: 1003 unit/integration tests, clippy `-D
+warnings` clean, plugin harness 24/24, e2e 23/23 (18 pre-existing + 5 new).
+No orphan daemons before or after.
+
+**Semver: minor.** New user-facing behavior, additive and non-breaking —
+left for Mikey's own batched `/semver bump` pass, per this run's standing
+rule.
+
+**PR:** #182, merged as `88b8b38`. Branch verified deleted, `main`
 fast-forwarded cleanly.
