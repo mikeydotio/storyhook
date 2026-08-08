@@ -573,7 +573,18 @@ pub fn dispatch<S: Store>(
         }
         Invocation::Context { format } => {
             let json = format.as_deref() == Some("json");
-            query(ctx, |service| service.context(json)).map(Response::Message)
+            let document = query(ctx, |service| service.context(json))?;
+            // `RawJson` for the JSON form: the document *is* the result, so the
+            // `--json` envelope has nothing to add, and wrapping it as an
+            // escaped string double-encodes it (SH-66, the `export --json`
+            // fix's sibling defect). The markdown form keeps `Message`, which
+            // `--json` wraps as an ordinary string — correct, since markdown
+            // isn't JSON to begin with.
+            Ok(if json {
+                Response::RawJson(document)
+            } else {
+                Response::Message(document)
+            })
         }
         Invocation::Handoff { since } => {
             query(ctx, |service| service.handoff(since.as_deref())).map(Response::Message)
