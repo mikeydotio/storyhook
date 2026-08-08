@@ -740,15 +740,26 @@ fn read_capture(mut file: std::fs::File) -> String {
 /// attempt; a script that cannot be found describes this daemon, which is
 /// why only the latter is checked before any record is created.
 fn resolve_dispatch_script() -> Result<PathBuf, String> {
-    resolve_dispatch_script_from(std::env::var("STORYHOOK_DISPATCH_SCRIPT").ok())
+    resolve_dispatch_script_from(
+        std::env::var("STORYHOOK_DISPATCH_SCRIPT").ok(),
+        std::env::var("HOME").ok().map(PathBuf::from),
+        crate::plugin::dev_repo_root(),
+    )
 }
 
-/// [`resolve_dispatch_script`]'s logic, with the environment variable read
-/// injected rather than performed here — reading `std::env::var` directly
-/// would make this untestable without mutating process-global state, which
-/// a parallel test run cannot safely do (`cargo test` runs `#[test]`
-/// functions across threads in one process by default).
-fn resolve_dispatch_script_from(configured: Option<String>) -> Result<PathBuf, String> {
+/// [`resolve_dispatch_script`]'s logic, with every environment/filesystem
+/// read injected rather than performed here — reading `std::env::var` or
+/// resolving `$HOME` directly would make this untestable without mutating
+/// process-global state, which a parallel test run cannot safely do
+/// (`cargo test` runs `#[test]` functions across threads in one process by
+/// default). This is also what makes `installed_plugin_script`'s real
+/// behavior against a real `installed_plugins.json` testable at all — before
+/// this, only the `configured` override branch had any coverage (SH-196).
+fn resolve_dispatch_script_from(
+    configured: Option<String>,
+    home: Option<PathBuf>,
+    dev_root: Option<PathBuf>,
+) -> Result<PathBuf, String> {
     if let Some(configured) = configured {
         let path = PathBuf::from(configured);
         return if path.is_file() {
@@ -760,10 +771,10 @@ fn resolve_dispatch_script_from(configured: Option<String>) -> Result<PathBuf, S
             ))
         };
     }
-    if let Some(path) = installed_plugin_script() {
+    if let Some(path) = home.and_then(|home| installed_plugin_script(&home)) {
         return Ok(path);
     }
-    if let Some(root) = crate::plugin::dev_repo_root() {
+    if let Some(root) = dev_root {
         let path = root.join("plugin/claude-code/bin/story.sh");
         if path.is_file() {
             return Ok(path);
@@ -776,15 +787,13 @@ fn resolve_dispatch_script_from(configured: Option<String>) -> Result<PathBuf, S
     )
 }
 
-/// `story@storyhook`'s installed path, from Claude Code's own plugin
-/// manifest, if that path still holds the script. The manifest is a JSON
-/// array of install records per plugin key; the last one wins, matching how
-/// a reinstall of the same scope is recorded (append, never replace-in-place).
-fn installed_plugin_script() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let raw =
-        std::fs::read_to_string(PathBuf::from(home).join(".claude/plugins/installed_plugins.json"))
-            .ok()?;
+/// `story@storyhook`'s installed path under `home`, from Claude Code's own
+/// plugin manifest, if that path still holds the script. The manifest is a
+/// JSON array of install records per plugin key; the last one wins, matching
+/// how a reinstall of the same scope is recorded (append, never
+/// replace-in-place).
+fn installed_plugin_script(home: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(home.join(".claude/plugins/installed_plugins.json")).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let entries = manifest
         .get("plugins")?
@@ -1233,8 +1242,11 @@ mod tests {
     #[test]
     fn resolve_dispatch_script_honours_the_env_override() {
         let script = tempfile::NamedTempFile::new().expect("a scratch file");
-        let resolved =
-            resolve_dispatch_script_from(Some(script.path().to_string_lossy().into_owned()));
+        let resolved = resolve_dispatch_script_from(
+            Some(script.path().to_string_lossy().into_owned()),
+            None,
+            None,
+        );
         assert_eq!(
             resolved.expect("the override names a real file"),
             script.path()
@@ -1243,8 +1255,131 @@ mod tests {
 
     #[test]
     fn resolve_dispatch_script_names_the_bad_path_when_the_override_is_wrong() {
-        let resolved = resolve_dispatch_script_from(Some("/no/such/file".to_string()));
+        let resolved = resolve_dispatch_script_from(Some("/no/such/file".to_string()), None, None);
         let message = resolved.expect_err("a nonexistent override must not silently fall through");
         assert!(message.contains("/no/such/file"));
+    }
+
+    /// Writes `home/.claude/plugins/installed_plugins.json` naming one
+    /// `story@storyhook` install record per `install_dirs`, and a real
+    /// `bin/story.sh` under each — the shape `installed_plugin_script`
+    /// expects. Returns `home` (kept alive for the caller) and the install
+    /// directories in the same order they were given.
+    fn fake_installed_plugin_home(install_dirs: &[&str]) -> tempfile::TempDir {
+        let home = storyhook_test_support::scratch_dir();
+        let records: Vec<serde_json::Value> = install_dirs
+            .iter()
+            .map(|dir| {
+                let install_dir = home.path().join(dir);
+                std::fs::create_dir_all(install_dir.join("bin")).expect("mkdir install/bin");
+                std::fs::write(install_dir.join("bin/story.sh"), "#!/usr/bin/env bash\n")
+                    .expect("write fake story.sh");
+                serde_json::json!({"installPath": install_dir.to_string_lossy()})
+            })
+            .collect();
+        let manifest_dir = home.path().join(".claude/plugins");
+        std::fs::create_dir_all(&manifest_dir).expect("mkdir manifest dir");
+        std::fs::write(
+            manifest_dir.join("installed_plugins.json"),
+            serde_json::json!({"plugins": {"story@storyhook": records}}).to_string(),
+        )
+        .expect("write installed_plugins.json");
+        home
+    }
+
+    #[test]
+    fn resolve_dispatch_script_finds_the_installed_plugin_via_home() {
+        let home = fake_installed_plugin_home(&["plugins/cache/storyhook/story/0.5.0"]);
+        let resolved = resolve_dispatch_script_from(None, Some(home.path().to_path_buf()), None);
+        assert_eq!(
+            resolved.expect("an installed plugin should resolve"),
+            home.path()
+                .join("plugins/cache/storyhook/story/0.5.0/bin/story.sh")
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_script_uses_the_last_install_record_when_several_exist() {
+        // Matches how a reinstall of the same scope is recorded: appended,
+        // never replaced in place (installed_plugin_script's own doc).
+        let home = fake_installed_plugin_home(&[
+            "plugins/cache/storyhook/story/0.4.0",
+            "plugins/cache/storyhook/story/0.5.0",
+        ]);
+        let resolved = resolve_dispatch_script_from(None, Some(home.path().to_path_buf()), None);
+        assert_eq!(
+            resolved.expect("the last record should resolve"),
+            home.path()
+                .join("plugins/cache/storyhook/story/0.5.0/bin/story.sh"),
+            "the newest (last) install record must win, not the first"
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_script_prefers_the_env_override_over_an_installed_plugin() {
+        let home = fake_installed_plugin_home(&["plugins/cache/storyhook/story/0.5.0"]);
+        let override_script = tempfile::NamedTempFile::new().expect("a scratch file");
+        let resolved = resolve_dispatch_script_from(
+            Some(override_script.path().to_string_lossy().into_owned()),
+            Some(home.path().to_path_buf()),
+            None,
+        );
+        assert_eq!(resolved.unwrap(), override_script.path());
+    }
+
+    #[test]
+    fn resolve_dispatch_script_falls_back_to_dev_root_when_no_plugin_is_installed() {
+        let home = storyhook_test_support::scratch_dir();
+        let dev_root = storyhook_test_support::scratch_dir();
+        std::fs::create_dir_all(dev_root.path().join("plugin/claude-code/bin"))
+            .expect("mkdir dev checkout script dir");
+        let dev_script = dev_root.path().join("plugin/claude-code/bin/story.sh");
+        std::fs::write(&dev_script, "#!/usr/bin/env bash\n").expect("write dev story.sh");
+        let resolved = resolve_dispatch_script_from(
+            None,
+            Some(home.path().to_path_buf()),
+            Some(dev_root.path().to_path_buf()),
+        );
+        assert_eq!(resolved.unwrap(), dev_script);
+    }
+
+    #[test]
+    fn resolve_dispatch_script_ignores_a_manifest_missing_the_story_key() {
+        let home = storyhook_test_support::scratch_dir();
+        let manifest_dir = home.path().join(".claude/plugins");
+        std::fs::create_dir_all(&manifest_dir).expect("mkdir manifest dir");
+        std::fs::write(
+            manifest_dir.join("installed_plugins.json"),
+            serde_json::json!({"plugins": {}}).to_string(),
+        )
+        .expect("write installed_plugins.json without a story@storyhook entry");
+        let resolved = resolve_dispatch_script_from(None, Some(home.path().to_path_buf()), None);
+        assert!(
+            resolved.is_err(),
+            "a manifest with no story@storyhook entry must not resolve"
+        );
+    }
+
+    #[test]
+    fn resolve_dispatch_script_ignores_an_install_record_whose_script_is_missing() {
+        let home = storyhook_test_support::scratch_dir();
+        // installPath is named in the manifest but nothing was ever written
+        // under it -- e.g. a manually-edited or corrupted manifest entry.
+        let install_dir = home.path().join("plugins/cache/storyhook/story/0.5.0");
+        let manifest_dir = home.path().join(".claude/plugins");
+        std::fs::create_dir_all(&manifest_dir).expect("mkdir manifest dir");
+        std::fs::write(
+            manifest_dir.join("installed_plugins.json"),
+            serde_json::json!({
+                "plugins": {"story@storyhook": [{"installPath": install_dir.to_string_lossy()}]}
+            })
+            .to_string(),
+        )
+        .expect("write installed_plugins.json naming a script that doesn't exist");
+        let resolved = resolve_dispatch_script_from(None, Some(home.path().to_path_buf()), None);
+        assert!(
+            resolved.is_err(),
+            "an install record whose script is missing on disk must not resolve"
+        );
     }
 }
