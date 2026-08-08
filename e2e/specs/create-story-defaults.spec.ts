@@ -1,0 +1,71 @@
+import { test, expect } from "@playwright/test";
+
+/**
+ * Exercises SH-44: the "+ New" create-story modal preselects the project's
+ * own first-configured OPEN state and first-configured type, sourced from
+ * `meta.defaults` (`src/api/rest.rs::meta_json`) rather than a hardcoded
+ * `"todo"`/`"story"` guess.
+ *
+ * Fixtures, from `scripts/run-e2e.sh`:
+ *
+ *   - "Alpha Project" (prefix AA) — the stock state catalog (todo,
+ *     in-progress, blocked, done) plus an appended `review` OPEN state, and
+ *     the stock, untouched type catalog (normal, epic, bug, chore). Neither
+ *     append changes what sorts *first* in configured order, so Alpha's
+ *     defaults stay `todo`/`normal` — the same values a fresh project would
+ *     have. This spec's job is to prove the modal reads them from the
+ *     catalog rather than assuming they'd always be those values regardless.
+ */
+
+test.beforeEach(async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".repo-card-name", { hasText: "Alpha Project" }).click();
+  await expect(page.locator("#board-view")).toBeVisible();
+});
+
+test("the create-story modal preselects the project's first-configured state and type", async ({
+  page,
+}) => {
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+
+  await expect(page.locator("#create-state")).toHaveValue("todo");
+  await expect(page.locator("#create-type")).toHaveValue("normal");
+});
+
+test("submitting without touching state or type creates a story with the preselected defaults", async ({
+  page,
+}) => {
+  const title = "A story left at its default state and type";
+
+  await page.locator("#new-story-btn").click();
+  await expect(page.locator("#create-modal")).toHaveClass(/open/);
+  await page.locator("#create-title").fill(title);
+  await page.locator("#create-submit").click();
+
+  await expect(page.locator("#create-modal")).not.toHaveClass(/open/);
+
+  const card = page.locator('.column[data-state="todo"] .card', {
+    hasText: title,
+  });
+  await expect(card).toBeVisible();
+  await expect(card.locator(".type-badge")).toHaveAttribute(
+    "aria-label",
+    "Type: normal",
+  );
+
+  // Alpha Project's story count is asserted by other specs (e.g.
+  // filter-persistence.spec.ts's "0 / 2"), all sharing this one seeded
+  // daemon for the whole e2e run — so this test cleans up the story it just
+  // created rather than leaving it behind for the next spec to trip over.
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
+  await page
+    .locator('input[placeholder="Reason for deletion (required)"]')
+    .fill("e2e cleanup");
+  await page
+    .locator("#drawer-footer button", { hasText: "Confirm delete" })
+    .click();
+  await expect(card).not.toBeVisible();
+});
