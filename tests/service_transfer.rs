@@ -123,7 +123,8 @@ fn a_non_default_prefix_is_carried_in_the_document() {
     let (store, dir) = empty_store();
     let mut exported = export(&fixture);
     exported.prefix = Some("API".to_string());
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect("importing");
 
     let project = restored_project(&store, dir.path());
     let ctx = storyhook::service::Ctx::new(
@@ -192,7 +193,8 @@ fn a_restore_keeps_the_settings_the_document_carries() {
 
     let exported = export(&fixture);
     let (store, dir) = empty_store();
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect("importing");
 
     let (auto, threshold, _) = settings_of(&store, restored_project(&store, dir.path()).id);
     assert_eq!(
@@ -243,7 +245,8 @@ fn one_setting_travels_without_dragging_the_other_along() {
     );
 
     let (store, dir) = empty_store();
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect("importing");
     let (auto, threshold, _) = settings_of(&store, restored_project(&store, dir.path()).id);
     assert_eq!(auto, Some(false));
     assert_eq!(threshold, None);
@@ -261,7 +264,7 @@ fn a_restore_does_not_blank_a_setting_the_document_does_not_carry() {
     // the adopt branch is only ever reached with an empty one.
     let empty = ServiceFixture::new();
     let (store, dir) = empty_store();
-    transfer::import_project(&store, dir.path(), &Clock::System, &export(&empty))
+    transfer::import_project(&store, dir.path(), &Clock::System, &export(&empty), false)
         .expect("creating the project to be adopted");
     let project = restored_project(&store, dir.path()).id;
 
@@ -279,7 +282,7 @@ fn a_restore_does_not_blank_a_setting_the_document_does_not_carry() {
     let fixture = ServiceFixture::new();
     create(&fixture, "One");
     set_settings(&fixture, false, "21d");
-    transfer::import_project(&store, dir.path(), &Clock::System, &export(&fixture))
+    transfer::import_project(&store, dir.path(), &Clock::System, &export(&fixture), false)
         .expect("restoring over the adopted project");
 
     let (auto, _, has_github) = settings_of(&store, project);
@@ -367,8 +370,8 @@ fn a_restore_registers_the_remotes_the_document_carries() {
 
     let exported = export(&fixture);
     let (store, dir) = empty_store();
-    let outcome =
-        transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    let outcome = transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect("importing");
     assert!(outcome.skipped_remotes.is_empty());
 
     let project = restored_project(&store, dir.path()).id;
@@ -397,8 +400,9 @@ fn a_restore_skips_a_remote_already_held_by_another_project_but_still_restores_t
     assert_eq!(exported.remotes.len(), 2, "both registrations travel");
 
     let dir = scratch_dir();
-    let outcome = transfer::import_project(holder.store(), dir.path(), &Clock::System, &exported)
-        .expect("the restore must still succeed");
+    let outcome =
+        transfer::import_project(holder.store(), dir.path(), &Clock::System, &exported, false)
+            .expect("the restore must still succeed");
 
     assert_eq!(
         outcome.skipped_remotes.len(),
@@ -449,7 +453,7 @@ fn an_unparseable_remote_in_the_document_is_rejected_whole() {
             registered_at: "2026-01-01T00:00:00Z".to_string(),
         });
 
-    let error = transfer::import_project(&store, dir.path(), &Clock::System, &exported)
+    let error = transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
         .expect_err("an empty raw URL cannot normalize");
     assert!(
         matches!(error, AppError::Validation(_)),
@@ -490,6 +494,7 @@ fn the_import_project_arm_reports_a_skipped_remote_as_a_structured_warning() {
         &ctx,
         Invocation::ImportProject {
             file: "backup.json".to_string(),
+            legacy_links: false,
         },
     )
     .expect("importing");
@@ -619,7 +624,8 @@ fn a_restored_document_holds_the_same_events_at_the_same_positions() {
 
     let exported = export(&fixture);
     let (store, dir) = empty_store();
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect("importing");
     let after = triples(&store, restored_project(&store, dir.path()).id);
 
     assert_eq!(
@@ -641,6 +647,7 @@ fn a_document_carrying_an_unknown_kind_re_exports_byte_for_byte() {
         dir.path(),
         &Clock::Fixed("2026-01-01T00:00:00Z".to_string()),
         &serde_json::from_str(&first).expect("parsing the document"),
+        false,
     )
     .expect("importing");
     let project = restored_project(&store, dir.path()).id;
@@ -680,12 +687,12 @@ fn an_event_the_store_cannot_index_is_refused_by_the_document_reader() {
 
 #[test]
 fn a_restore_still_does_not_claim_a_git_comment_as_a_link() {
-    // SH-67 moved `import-project` onto `append_raw_events`, which is also the
-    // path `story migrate` takes — and migrate's appends *do* project a pre-#18
-    // `[git]` comment into a commit link. The link source is now an argument,
-    // and this restore passes `Live`, so the behaviour is exactly what it was.
-    // Whether a restore *should* replay those links is SH-70, and this test is
-    // what would fail if SH-67 had answered it by accident.
+    // The default path (`legacy_links: false`) must stay exactly what it was
+    // before SH-70: a restore that does not assert its document predates kind
+    // #18 leaves every `[git]`-shaped comment as prose. See
+    // `a_legacy_links_restore_projects_a_pre_18_comment_into_a_link` and
+    // `a_legacy_links_restore_does_not_promote_a_live_comment_sharing_the_shape`
+    // for the flag's own behaviour.
     let fixture = ServiceFixture::new();
     let id = create(&fixture, "Synced before kind #18");
     StoryService::new(&fixture.ctx())
@@ -694,7 +701,8 @@ fn a_restore_still_does_not_claim_a_git_comment_as_a_link() {
 
     let exported = export(&fixture);
     let (store, dir) = empty_store();
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect("importing");
     let project = restored_project(&store, dir.path()).id;
 
     assert!(
@@ -702,6 +710,101 @@ fn a_restore_still_does_not_claim_a_git_comment_as_a_link() {
             .read(|tx| tx.commit_linked(project, StoryNo::new(1), "a04a8c4"))
             .expect("reading the link table"),
         "a `[git]` comment restored through import-project is prose, not a link record"
+    );
+}
+
+// --- `--legacy-links` (SH-70) ------------------------------------------------
+
+#[test]
+fn a_legacy_links_restore_projects_a_pre_18_comment_into_a_link() {
+    let fixture = ServiceFixture::new();
+    let id = create(&fixture, "Synced before kind #18");
+    StoryService::new(&fixture.ctx())
+        .comment(&id, "[git] a04a8c4: an old link record")
+        .expect("commenting");
+
+    let exported = export(&fixture);
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, true)
+        .expect("importing");
+    let project = restored_project(&store, dir.path()).id;
+
+    assert!(
+        store
+            .read(|tx| tx.commit_linked(project, StoryNo::new(1), "a04a8c4"))
+            .expect("reading the link table"),
+        "the operator's `--legacy-links` assertion must project the comment into a link record"
+    );
+}
+
+/// The mixed-provenance case the council's decision named directly: one
+/// document carrying two `[git]`-shaped comments, one meant to represent
+/// genuine pre-#18 history and one meant to represent a live-era comment that
+/// merely matches the shape. `--legacy-links` cannot tell them apart — nothing
+/// can, from the document alone — so both are promoted, and both must surface
+/// through `unbacked_commit_links` (`story doctor`'s `legacy_link_advice`),
+/// since a `--legacy-links` restore is exactly the case that advisory exists
+/// to catch when the operator's assertion was wrong for one comment out of
+/// several.
+#[test]
+fn a_legacy_links_restore_promotes_and_surfaces_both_a_genuine_and_a_lookalike_comment() {
+    let fixture = ServiceFixture::new();
+    let genuine = create(&fixture, "Synced before kind #18");
+    StoryService::new(&fixture.ctx())
+        .comment(&genuine, "[git] a04a8c4: an old link record")
+        .expect("commenting the genuine legacy link");
+    let lookalike = create(&fixture, "Created after kind #18 existed");
+    StoryService::new(&fixture.ctx())
+        .comment(&lookalike, "[git] b13e9f2: pretend a user typed this")
+        .expect("commenting the live-era lookalike");
+
+    let exported = export(&fixture);
+    let (store, dir) = empty_store();
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, true)
+        .expect("importing");
+    let project = restored_project(&store, dir.path()).id;
+
+    assert!(
+        store
+            .read(|tx| tx.commit_linked(project, StoryNo::new(1), "a04a8c4"))
+            .expect("reading the link table"),
+        "the genuine legacy comment must be promoted"
+    );
+    assert!(
+        store
+            .read(|tx| tx.commit_linked(project, StoryNo::new(2), "b13e9f2"))
+            .expect("reading the link table"),
+        "the lookalike is promoted too — the flag is document-wide, not per-comment"
+    );
+
+    let unbacked = store
+        .read(|tx| tx.unbacked_commit_links(project))
+        .expect("reading unbacked commit links");
+    assert_eq!(
+        unbacked,
+        vec![
+            (StoryNo::new(1), "a04a8c4".to_string()),
+            (StoryNo::new(2), "b13e9f2".to_string()),
+        ],
+        "both rows have no backing `StoryCommitLinked` event, so doctor's advisory must \
+         surface both regardless of which one was actually genuine"
+    );
+
+    let ctx = storyhook::service::Ctx::new(
+        &store,
+        project,
+        dir.path(),
+        storyhook::env::Environment::at(dir.path()),
+    );
+    let Response::Issues(issues) =
+        dispatch(&ctx, Invocation::Doctor { fix: false }).expect("running doctor")
+    else {
+        panic!("no other integrity issue exists here; doctor must answer with advisory issues");
+    };
+    let report = issues.join("\n");
+    assert!(
+        report.contains("a04a8c4") && report.contains("b13e9f2"),
+        "the advisory must name both commits doctor cannot vouch for: {report}"
     );
 }
 
@@ -976,6 +1079,7 @@ fn a_project_round_trips_through_export_and_import_byte_for_byte() {
         dir.path(),
         &Clock::Fixed("2026-01-01T00:00:00Z".to_string()),
         &serde_json::from_str(&first).expect("parsing the document"),
+        false,
     )
     .expect("importing");
     assert_eq!(outcome.stories, 3);
@@ -1001,7 +1105,8 @@ fn an_imported_project_continues_numbering_after_its_highest_story() {
     let exported = export(&fixture);
 
     let (store, dir) = empty_store();
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect("importing");
     let project = restored_project(&store, dir.path()).id;
     let ctx = storyhook::service::Ctx::new(
         &store,
@@ -1028,9 +1133,9 @@ fn importing_into_a_project_that_already_holds_stories_is_refused() {
     let exported = export(&fixture);
 
     let (store, dir) = empty_store();
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported)
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
         .expect("the first restore into an empty project");
-    let error = transfer::import_project(&store, dir.path(), &Clock::System, &exported)
+    let error = transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
         .expect_err("a restore must not half-overwrite a live project");
     assert!(
         error.to_string().contains("already holds stories"),
@@ -1048,7 +1153,8 @@ fn a_restore_leaves_the_directory_carrying_the_project_it_restored() {
     let exported = export(&fixture);
 
     let (store, dir) = empty_store();
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported).expect("importing");
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect("importing");
 
     let pointer = storyhook::service::project::read_pointer(dir.path())
         .expect("reading the pointer file")
@@ -1073,9 +1179,9 @@ fn a_restore_into_a_directory_that_already_names_a_project_never_mints_a_second(
     let exported = export(&fixture);
 
     let (store, dir) = empty_store();
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported)
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
         .expect("the first restore");
-    transfer::import_project(&store, dir.path(), &Clock::System, &exported)
+    transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
         .expect("a second restore into an empty project is idempotent, not a second project");
 
     assert_eq!(
@@ -1112,7 +1218,7 @@ fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
             archived: false,
         });
 
-    let error = transfer::import_project(&store, dir.path(), &Clock::System, &export)
+    let error = transfer::import_project(&store, dir.path(), &Clock::System, &export, false)
         .expect_err("a foreign prefix must be rejected");
     assert!(
         error.to_string().contains("does not belong to a project"),

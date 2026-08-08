@@ -233,7 +233,8 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
     };
 
     let root = scratch_dir();
-    transfer::import_project(&store, root.path(), &Clock::System, &document).expect("importing");
+    transfer::import_project(&store, root.path(), &Clock::System, &document, false)
+        .expect("importing");
 
     let restored: Vec<String> = store
         .read(|tx| {
