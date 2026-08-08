@@ -646,6 +646,7 @@ pub fn dispatch<S: Store>(
                         advice.extend(origin_advice(&origins));
                         advice.extend(backup_advice(ctx)?);
                         advice.extend(abandoned_advice(ctx.env()));
+                        advice.extend(pointer_origin_advice(ctx)?);
                         Ok(Response::Issues(advice))
                     }
                     issues => Err(AppError::Integrity(issues.join("\n"))),
@@ -3349,6 +3350,63 @@ fn abandoned_advice(env: &Environment) -> Vec<String> {
         ledger.len(),
         if ledger.len() == 1 { "" } else { "s" }
     )]
+}
+
+/// What `story doctor` says about a checkout whose pointer file and whose
+/// registered origin name different projects (SH-116, narrowed by SH-151's
+/// council, built here as SH-161).
+///
+/// SH-116 wanted this and it was refused: a directory two sibling projects
+/// share legitimately disagrees this way, because only one of them can ever
+/// own the repository's origin, so the other's pointer file "disagreeing"
+/// with it was noise on the exact layout SH-151 was filed to support. SH-151
+/// closed that gap by making ownership a precondition of registration, which
+/// is why this asks the same [`crate::service::project::origin_at`] ownership
+/// question the resolver and the registration path already do: a directory
+/// that does not *own* its origin cannot be one of the two projects the
+/// finding is about, so it is silent, not a false positive.
+///
+/// Advisory rather than an integrity failure, and never repaired by `--fix`:
+/// unlike an unregistered origin, there is no default that is obviously right
+/// — the pointer could be stale, or the registration could be. Whoever is
+/// standing here has to say which.
+///
+/// Store-pure it is not: it reads `cwd`'s pointer file and asks `git`, which
+/// is exactly what keeps it out of [`IntegrityService`], the project-scoped
+/// store-pure half of `doctor`. Paid only when `story doctor` runs, the same
+/// bargain [`StoreInvoker::resolve_project`] documents for why a pointer file
+/// is left to outrank a registered origin at resolution time rather than
+/// reconciling the two on every command.
+fn pointer_origin_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppError> {
+    use crate::domain::remote::RepoOrigin;
+
+    let RepoOrigin::Owned(owned) = crate::service::project::origin_at(ctx.cwd()) else {
+        return Ok(Vec::new());
+    };
+    let Some(pointer) = crate::service::project::pointer_at_or_above(ctx.cwd()) else {
+        return Ok(Vec::new());
+    };
+    let Some(registered) = ctx.store().read(|tx| tx.project_by_remote(owned.url()))? else {
+        return Ok(Vec::new());
+    };
+    if registered.uuid == pointer.uuid {
+        return Ok(Vec::new());
+    }
+
+    let pointer_name = ctx
+        .store()
+        .read(|tx| tx.project_by_uuid(&pointer.uuid))?
+        .map_or(pointer.uuid, |project| project.slug);
+
+    Ok(vec![format!(
+        "`{}` owns the origin `{}`, which is registered to `{}` — but its pointer file names \
+         `{pointer_name}`. This checkout claims two projects, and storyhook will not guess which \
+         one is right: correct the pointer file, or move the registration with `story --project \
+         <slug> project unlink origin` and `project link origin`.",
+        ctx.cwd().display(),
+        owned.url().raw(),
+        registered.slug,
+    )])
 }
 
 /// What `story doctor` says about a project whose checkout knows an origin the

@@ -508,3 +508,139 @@ fn doctor_reports_but_never_registers_an_origin_the_checkout_does_not_own() {
         "the sub-project must hold no origin at all: {service_row}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The pointer/origin mismatch (SH-116, narrowed by SH-151, built as SH-161)
+// ---------------------------------------------------------------------------
+
+/// A repository whose *own* project already holds its origin — the opposite
+/// starting point from [`repository_with_an_unregistered_origin`], which
+/// withdraws the registration `project new` makes automatically. Here it is
+/// left in place, because the mismatch this section is about needs an origin
+/// that genuinely belongs to somebody.
+fn repository_with_a_registered_origin(label: &str) -> (Fixture, String, String) {
+    let f = fixture(label);
+    let origin = format!("https://github.com/acme/{label}.git");
+    git(&f.checkout, &["init", "-q", "-b", "main"]);
+    git(&f.checkout, &["remote", "add", "origin", &origin]);
+    let slug = slug_for(&f, &f.checkout.display().to_string());
+
+    // `project new` ran before the repository existed, exactly as in
+    // `repository_with_an_unregistered_origin` — so the origin the fixture
+    // just gave the checkout still needs registering, same as there.
+    let fixed = story(&f.workdir, &f.data_home, &["doctor", "--fix"]);
+    assert!(
+        stdout(&fixed).contains("registered 1 origin"),
+        "setup: the checkout's own origin must register cleanly: {}",
+        stdout(&fixed)
+    );
+    (f, slug, origin)
+}
+
+/// The finding SH-116 wanted and SH-151 made buildable: a checkout whose
+/// pointer file and whose *registered* origin name different projects.
+///
+/// Built by copying another project's pointer file over the checkout's own —
+/// the shape a stray `.storyhook.toml` copied between clones, or a template
+/// carried into a fresh repository, actually produces. The checkout's git
+/// origin does not move with a file copy, so afterwards the two facts a
+/// directory can be resolved by disagree.
+#[test]
+fn doctor_reports_a_checkout_whose_pointer_and_origin_name_different_projects() {
+    let (f, checkout_slug, origin) = repository_with_a_registered_origin("pointer-origin-mismatch");
+    let workdir_slug = slug_for(&f, &f.workdir.display().to_string());
+
+    std::fs::copy(
+        f.workdir.join(".storyhook.toml"),
+        f.checkout.join(".storyhook.toml"),
+    )
+    .expect("swapping the pointer file");
+
+    let out = story(&f.checkout, &f.data_home, &["doctor"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "advice, not an integrity failure; stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report = stdout(&out);
+    assert!(
+        report.contains(&checkout_slug)
+            && report.contains(&workdir_slug)
+            && report.contains(&origin),
+        "the report must name the project the origin is registered to, the project the pointer \
+         names, and the contested origin: {report}"
+    );
+    assert!(
+        report.contains("claims two projects"),
+        "and say what is wrong with the checkout: {report}"
+    );
+}
+
+/// The one deliberate refusal: `--fix` never picks a side.
+#[test]
+fn doctor_fix_does_not_guess_which_side_of_a_pointer_origin_mismatch_is_wrong() {
+    let (f, _checkout_slug, _origin) =
+        repository_with_a_registered_origin("pointer-origin-mismatch-fix");
+    std::fs::copy(
+        f.workdir.join(".storyhook.toml"),
+        f.checkout.join(".storyhook.toml"),
+    )
+    .expect("swapping the pointer file");
+
+    let fixed = story(&f.checkout, &f.data_home, &["doctor", "--fix"]);
+    assert_eq!(
+        fixed.status.code(),
+        Some(0),
+        "the mismatch is advisory, so --fix must still succeed; stderr={}",
+        String::from_utf8_lossy(&fixed.stderr)
+    );
+
+    let after = stdout(&story(&f.checkout, &f.data_home, &["doctor"]));
+    assert!(
+        after.contains("claims two projects"),
+        "the mismatch must survive --fix — there is no default that is obviously right: {after}"
+    );
+}
+
+/// A checkout that does not *own* its origin is silent, even if its pointer
+/// disagrees with what the enclosing repository's origin resolves to. This is
+/// SH-151's exact false positive: the sub-project layout SH-116 was refused
+/// over. Ownership is the precondition, not the origin's mere presence.
+#[test]
+fn doctor_is_silent_about_a_pointer_mismatch_in_a_checkout_that_does_not_own_its_origin() {
+    let f = fixture("pointer-origin-mismatch-inherited");
+    git(&f.checkout, &["init", "-q", "-b", "main"]);
+    git(
+        &f.checkout,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/mono-pointer.git",
+        ],
+    );
+    let fixed = story(&f.workdir, &f.data_home, &["doctor", "--fix"]);
+    assert!(
+        stdout(&fixed).contains("registered 1 origin"),
+        "setup: {}",
+        stdout(&fixed)
+    );
+
+    // A sub-directory of the checkout, given the workdir's pointer file. It
+    // reports the enclosing repository's origin but does not own it.
+    let sub = f.checkout.join("service-a");
+    std::fs::create_dir_all(&sub).expect("creating the sub-directory");
+    std::fs::copy(
+        f.workdir.join(".storyhook.toml"),
+        sub.join(".storyhook.toml"),
+    )
+    .expect("giving the sub-directory a foreign pointer file");
+
+    let report = stdout(&story(&sub, &f.data_home, &["doctor"]));
+    assert!(
+        !report.contains("claims two projects"),
+        "a non-owning checkout must not be reported — SH-151's whole reason for narrowing this \
+         finding: {report}"
+    );
+}
