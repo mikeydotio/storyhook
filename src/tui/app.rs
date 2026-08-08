@@ -34,22 +34,32 @@ use super::theme::Theme;
 ///
 /// `root` is the directory the project is resolved from, and nothing else reads
 /// it: every read and every mutation goes through [`Invoker`]. Live updates come
-/// from the store's own change token rather than from a watcher over `root` —
-/// see [`EventSource`].
+/// from the daemon's change feed — see [`EventSource`].
 pub fn run(root: &Path) -> Result<(), AppError> {
     // `None` for the store flag: `main` publishes any `--store-path` into
     // `$STORYHOOK_STORE_PATH` before the TUI is dispatched, so this resolves
     // the store the caller named.
     let environment = crate::env::Environment::from_process(None)?;
     let event_environment = environment.clone();
+    // Resolved here, ahead of the alternate screen, so a daemon that cannot
+    // start fails as plain text with a remedy rather than as a message drawn
+    // over whatever the board would have rendered -- and so `EventSource` has
+    // the port it needs to subscribe.
+    let daemon = crate::daemon::lifecycle::ensure(&environment)?;
     let store = crate::invoke::open_store(&environment)?;
     let invoker = StoreInvoker::new(&store, root, environment);
+
+    // Subscribed before the initial load, not after: a write ordered between
+    // the two would otherwise be visible to neither the snapshot (too early)
+    // nor the feed (subscribed too late to have seen it) -- the same
+    // ordering property SH-140 fixed for the store-polling version of this
+    // mechanism, kept here by sequencing rather than by a baseline read.
+    let (event_source, rx) = EventSource::new(&event_environment, &daemon);
     let data = DataStore::load(&invoker)?;
     let mut state = AppState::new(data);
     let theme = Theme::from_env();
 
     let mut term = terminal::init()?;
-    let (event_source, rx) = EventSource::new(&event_environment);
 
     // Get initial terminal size
     if let Ok(size) = term.size() {

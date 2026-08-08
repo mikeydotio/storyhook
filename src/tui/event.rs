@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use crossterm::event::{KeyEvent, MouseEvent};
 
+use crate::daemon::lifecycle::DaemonInfo;
+use crate::daemon::subscribe::Subscriber;
 use crate::env::Environment;
 
 /// Events flowing through the TUI main loop.
@@ -18,17 +20,17 @@ pub enum Event {
     Tick,
 }
 
-/// How often the store is asked whether anything has changed.
-///
-/// One pragma, so the interval can be short without mattering. It is the same
-/// signal, at the same cadence, that the daemon's own change feed is built on.
-const CHANGE_POLL: Duration = Duration::from_millis(250);
+/// How long one [`Subscriber::poll`] call may block before the change thread
+/// re-checks `stop`. Independent of the daemon's own heartbeat interval — this
+/// only bounds shutdown latency, the same role it played when this constant
+/// bounded a `PRAGMA data_version` poll interval instead.
+const POLL_BUDGET: Duration = Duration::from_millis(250);
 
 /// Manages background threads that produce events for the main loop.
 ///
 /// Three threads:
 /// 1. Input: `crossterm::event::poll(100ms)` + `read()`
-/// 2. Change: the store's change token, polled
+/// 2. Change: the daemon's change feed, subscribed to
 /// 3. Tick: a 250ms heartbeat, which drives notification expiry
 pub struct EventSource {
     stop: Arc<AtomicBool>,
@@ -40,29 +42,44 @@ pub struct EventSource {
 impl EventSource {
     /// Create the event source and return the receiver for the main loop.
     ///
-    /// # Why this watches the store rather than the filesystem
+    /// # Why this watches the daemon rather than the filesystem
     ///
     /// It used to run a `notify` watcher over `.storyhook/`, which is where the
     /// data was. The data is in one database now, and a filesystem watcher over
     /// a repository would report a build artifact and miss a story created from
     /// another checkout — the opposite of what it is for.
     ///
-    /// # Why it polls rather than subscribing to the daemon's feed
+    /// # Why this subscribes to the daemon's feed now, having once refused to
     ///
-    /// **A deliberate departure**, recorded because the plan said SSE. The TUI
-    /// holds its own store handle rather than going through the daemon — since
-    /// SH-114 it is the last thing in storyhook that does, and it works with no
-    /// daemon running at all (SH-150). Subscribing to a daemon's feed
-    /// would make a TUI that works today stop updating on a machine where the
-    /// daemon is not up — and it would learn the same fact, one layer further
-    /// away, over a connection that can drop. The change token is what the
-    /// daemon's own safety net polls; this reads it directly.
-    pub fn new(env: &Environment) -> (Self, Receiver<Event>) {
+    /// This function used to poll `PRAGMA data_version` on a connection of its
+    /// own, and the reasoning for that (kept here rather than deleted, because
+    /// the counter-argument is worth being able to check) was:
+    ///
+    /// - *"It works with no daemon running at all."* True when the TUI held
+    ///   its own store handle; no longer relevant once it does not (SH-150) —
+    ///   `story tui` now needs a daemon for every other read and write it
+    ///   makes, the same as every other command since SH-114.
+    /// - *"A connection that can drop learns the same fact one layer further
+    ///   away."* True of a connection that silently goes quiet. [`Subscriber`]
+    ///   is built specifically not to: it watches the daemon's own heartbeat
+    ///   and reconnects rather than staying silent, and a reconnect always
+    ///   costs exactly one [`Event::DataChanged`] — the same "refetch" a
+    ///   missed poll interval never had to announce, only slower to notice.
+    ///
+    /// What it gains: one `PRAGMA` poll per `story` process on the machine —
+    /// the daemon's own [`crate::daemon::serve::poll_change_token`] — instead
+    /// of one per open TUI, and a change reported as soon as the daemon
+    /// publishes it rather than up to [`POLL_BUDGET`] later.
+    ///
+    /// `daemon` is the caller's already-resolved [`DaemonInfo`] — spent on the
+    /// very first connection so this does not pay for a second
+    /// `lifecycle::ensure` on the startup path; see [`Subscriber::new`].
+    pub fn new(env: &Environment, daemon: &DaemonInfo) -> (Self, Receiver<Event>) {
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
 
         let input_handle = Self::spawn_input_thread(tx.clone(), Arc::clone(&stop));
-        let change_handle = Self::spawn_change_thread(env, tx.clone(), Arc::clone(&stop));
+        let change_handle = Self::spawn_change_thread(env, daemon, tx.clone(), Arc::clone(&stop));
         let tick_handle = Self::spawn_tick_thread(tx, Arc::clone(&stop));
 
         let source = Self {
@@ -108,55 +125,44 @@ impl EventSource {
         })
     }
 
-    /// Watches the store for writes made by anything else — another checkout, a
-    /// `story` command in a second terminal, the dashboard.
+    /// Watches the daemon's change feed for writes made by anything else —
+    /// another checkout, a `story` command in a second terminal, the
+    /// dashboard.
     ///
-    /// Opens a connection of its own rather than borrowing the TUI's: this
-    /// thread outlives no scope the store is in, and one extra SQLite handle is
-    /// cheaper than threading a lifetime through the whole interface. A store it
-    /// cannot open means no live updates — the TUI still works, and `r` still
-    /// reloads — so the failure is silent by design rather than by neglect.
+    /// # The one property that must survive every rewrite of this function
+    ///
+    /// **The subscription is established here, on the caller's thread, before
+    /// this function returns — never inside the spawned closure.** This is
+    /// SH-140's fix, carried forward onto a different mechanism: that story's
+    /// bug was a `PRAGMA data_version` baseline read *inside* `thread::spawn`'s
+    /// closure, so a write landing in the gap between spawning and the
+    /// closure actually running was folded into the baseline and could never
+    /// be reported — not late, but never. [`Subscriber::connect`] blocks until
+    /// the daemon's own `bus.subscribe()` has run, which is the equivalent
+    /// guarantee for a push feed: a write ordered after this function returns
+    /// cannot predate the subscription, so it cannot land in an unreportable
+    /// gap. `tui::app::run` depends on this too — it subscribes before it
+    /// loads the initial snapshot, for the same reason.
+    ///
+    /// A daemon this cannot reach at all means no live updates — the TUI
+    /// still works, and `r` still reloads — so that failure is silent by
+    /// design (`Subscriber::connect`'s `Result` is discarded here) rather
+    /// than by neglect: the background thread's own reconnect loop keeps
+    /// trying, and its first success reports one [`Event::DataChanged`].
     fn spawn_change_thread(
         env: &Environment,
+        daemon: &DaemonInfo,
         tx: Sender<Event>,
         stop: Arc<AtomicBool>,
     ) -> JoinHandle<()> {
-        use crate::store::Store as _;
-
-        // **Both the open and the baseline read happen here, on the caller's
-        // thread, and that placement is the whole point.**
-        //
-        // They used to happen inside the spawned closure, which lost writes
-        // (SH-140). `thread::spawn` returns before the closure runs, so a write
-        // committed in the gap was already counted when the baseline was
-        // finally taken — and `PRAGMA data_version` only ever reports what has
-        // happened *since the last read on this connection*. The comparison
-        // below then never differed again, so the change was not reported late,
-        // it could not be reported at all. Taking the baseline before returning
-        // makes the write strictly later than the baseline for every caller.
-        //
-        // The store is moved rather than reopened because the token is
-        // per-connection: a baseline read on one connection says nothing about
-        // another's, so the connection that reads the baseline has to be the
-        // one that goes on polling.
-        let opened = crate::store::SqliteStore::open(env.store_path()).ok();
-        let baseline = opened.as_ref().and_then(|store| store.change_token().ok());
+        let heartbeat = crate::daemon::serve::heartbeat_interval();
+        let mut subscriber = Subscriber::new(env.clone(), daemon.clone(), heartbeat);
+        let _ = subscriber.connect();
 
         thread::spawn(move || {
-            let Some(store) = opened else {
-                return;
-            };
-            let mut last = baseline;
             while !stop.load(Ordering::Relaxed) {
-                thread::sleep(CHANGE_POLL);
-                let Ok(token) = store.change_token() else {
-                    continue;
-                };
-                if last != Some(token) {
-                    last = Some(token);
-                    if tx.send(Event::DataChanged).is_err() {
-                        break;
-                    }
+                if subscriber.poll(POLL_BUDGET).is_some() && tx.send(Event::DataChanged).is_err() {
+                    break;
                 }
             }
         })
@@ -183,7 +189,7 @@ impl Drop for EventSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{Store as _, WriteOps as _};
+    use crate::store::{SqliteStore, Store as _, WriteOps as _};
 
     fn scratch() -> tempfile::TempDir {
         tempfile::Builder::new()
@@ -192,39 +198,86 @@ mod tests {
             .expect("a scratch directory")
     }
 
-    /// The property the whole thread exists for: a write made by something else
-    /// wakes the interface.
+    /// A [`DaemonInfo`] naming `port`. `/api/events` carries no version
+    /// handshake and no token check, so only `port` and `token` (sent but
+    /// never verified) are exercised by anything reachable from these tests.
+    fn daemon_at(port: u16) -> DaemonInfo {
+        DaemonInfo {
+            pid: std::process::id(),
+            port,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol: 1,
+            exe: std::env::current_exe().expect("this test binary"),
+            exe_mtime: 0,
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            token: "test-token".to_string(),
+            store_path: std::path::PathBuf::new(),
+            tailnet: None,
+        }
+    }
+
+    /// Starts an in-process daemon over a fresh store and returns its port,
+    /// environment, and a second store handle for tests to write through —
+    /// standing in for "another checkout, a `story` command in a second
+    /// terminal". The scratch directory is returned too, and must be held for
+    /// the test's whole duration: the server runs on a detached thread that
+    /// keeps reading and writing under it.
     ///
-    /// **This test is also the regression test for SH-140, and what it pins is
-    /// its own determinism.** The write below is ordered after
-    /// `spawn_change_thread` returns and nothing else synchronises the two, so
-    /// the test only passes reliably if the baseline was taken *before* that
-    /// return. While the baseline was read inside the spawned closure, a write
-    /// landing in the gap was folded into it and no change could ever be
-    /// reported — the wait did not expire because five seconds was too short, it
-    /// expired because the event was impossible. That is why this failed once
-    /// under `--test-threads=4`, passed alone in 0.28s, and never reproduced.
-    ///
-    /// The red was demonstrated rather than argued: a 300ms sleep at the top of
-    /// the closure made it fail every run, with the same panic and the same full
-    /// five-second wait as the recorded failure, and the same sleep passes with
-    /// the baseline moved. A delayed thread start can no longer lose the event.
-    #[test]
-    fn a_write_from_elsewhere_reports_a_change() {
+    /// Not `storyhook_test_support::serve`: that helper's signature takes
+    /// this crate's own `SqliteStore`/`Environment`, and a unit test compiled
+    /// as part of *this* crate's `--lib` test target is a second, distinct
+    /// instance of it from the type system's point of view, so the types do
+    /// not unify. `bind_and_serve` is what that helper wraps; called
+    /// directly here, everything stays the same crate instance. The daemon
+    /// this starts includes its own `poll_change_token` thread — the same
+    /// `PRAGMA data_version` poll `spawn_change_thread` used to run itself —
+    /// so a write through the second handle is detected and published onto
+    /// the bus exactly as it would be in production, not simulated.
+    fn serve() -> (u16, Environment, SqliteStore, tempfile::TempDir) {
+        use std::sync::mpsc;
+
         let dir = scratch();
         let env = Environment::at(dir.path());
-        let store = crate::store::SqliteStore::open(env.store_path()).expect("opening the store");
+        let store = SqliteStore::open(env.store_path()).expect("opening the store");
         store.migrate().expect("migrating");
+        let writer = SqliteStore::open(env.store_path()).expect("a second handle");
+
+        let (tx, rx) = mpsc::channel();
+        let serving_env = env.clone();
+        std::thread::spawn(move || {
+            let store = store;
+            let _ = crate::daemon::serve::bind_and_serve(&store, &serving_env, 0, move |bound| {
+                let _ = tx.send(bound.port());
+            });
+        });
+        let port = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the test daemon never became ready");
+        (port, env, writer, dir)
+    }
+
+    /// The property the whole thread exists for: a write made by something
+    /// else wakes the interface.
+    ///
+    /// **This test is also the regression test for SH-140, and what it pins
+    /// is its own determinism** — carried onto a different mechanism after
+    /// SH-150. The write below is ordered strictly after
+    /// `spawn_change_thread` returns, and nothing else synchronises the two,
+    /// so the test only passes reliably if the subscription genuinely exists
+    /// by the time this function returns. `Subscriber::connect` blocks for
+    /// the daemon's own `: connected` frame for exactly this reason — the
+    /// SSE-based equivalent of the store-polling version's "read the
+    /// baseline before returning" fix.
+    #[test]
+    fn a_write_from_elsewhere_reports_a_change() {
+        let (port, env, writer, _dir) = serve();
+        let daemon = daemon_at(port);
 
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let _handle = EventSource::spawn_change_thread(&env, tx, Arc::clone(&stop));
+        let _handle = EventSource::spawn_change_thread(&env, &daemon, tx, Arc::clone(&stop));
 
-        // A second handle stands in for the other process: `data_version` moves
-        // for commits made on a *different* connection, which is exactly the
-        // case this is for.
-        let other = crate::store::SqliteStore::open(env.store_path()).expect("a second handle");
-        other
+        writer
             .write(|tx| {
                 tx.create_project(&crate::store::NewProject {
                     uuid: "tui-event-uuid".into(),
@@ -238,33 +291,29 @@ mod tests {
             .expect("writing from another connection");
 
         let event = rx
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(10))
             .expect("a change must be reported");
         assert!(matches!(event, Event::DataChanged));
         stop.store(true, Ordering::Relaxed);
     }
 
-    /// The other side of the boundary: a write that had already landed when the
-    /// watcher started is history, not news.
+    /// The other side of the boundary: a write that had already landed when
+    /// the daemon started is history, not news.
     ///
-    /// This exists to constrain the fix above, not the original defect. Moving
-    /// the baseline earlier fixes SH-140; so does deleting the baseline and
-    /// starting from `None`, and that "fix" would report a change on the very
-    /// first poll of every TUI launch — a reload a quarter second after start-up
-    /// that nobody asked for, on a store nobody has touched. The two changes are
-    /// indistinguishable to `a_write_from_elsewhere_reports_a_change` and
-    /// opposite here.
+    /// This exists to constrain the fix above, not the original defect.
+    /// Reporting *every* connect as a change would pass
+    /// `a_write_from_elsewhere_reports_a_change` too, and would also reload
+    /// the board a moment after every TUI launch, on a store nobody has
+    /// touched since. The daemon's own `poll_change_token` establishes its
+    /// baseline at start-up (`src/daemon/serve.rs`), before this write is
+    /// made here, which is what makes the distinction hold.
     #[test]
-    fn a_write_that_landed_before_the_watcher_started_is_not_replayed() {
+    fn a_write_that_landed_before_the_daemon_started_is_not_replayed() {
         let dir = scratch();
         let env = Environment::at(dir.path());
-        let store = crate::store::SqliteStore::open(env.store_path()).expect("opening the store");
+        let store = SqliteStore::open(env.store_path()).expect("opening the store");
         store.migrate().expect("migrating");
-
-        // Committed on another connection, exactly as the reported case is, but
-        // *before* the watcher exists to have an opinion about it.
-        let other = crate::store::SqliteStore::open(env.store_path()).expect("a second handle");
-        other
+        store
             .write(|tx| {
                 tx.create_project(&crate::store::NewProject {
                     uuid: "already-there-uuid".into(),
@@ -275,32 +324,43 @@ mod tests {
                 })?;
                 Ok(())
             })
-            .expect("writing before the watcher starts");
+            .expect("writing before the daemon starts");
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let serving_env = env.clone();
+        std::thread::spawn(move || {
+            let _ = crate::daemon::serve::bind_and_serve(&store, &serving_env, 0, move |bound| {
+                let _ = ready_tx.send(bound.port());
+            });
+        });
+        let port = ready_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the test daemon never became ready");
+        let daemon = daemon_at(port);
 
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let _handle = EventSource::spawn_change_thread(&env, tx, Arc::clone(&stop));
+        let _handle = EventSource::spawn_change_thread(&env, &daemon, tx, Arc::clone(&stop));
 
         assert!(
-            rx.recv_timeout(CHANGE_POLL * 3).is_err(),
-            "the write predates the watcher, so it is already in the baseline \
-             and must not be reported as a change"
+            rx.recv_timeout(POLL_BUDGET * 3).is_err(),
+            "the write predates the daemon's own baseline, so it must not be \
+             reported as a change"
         );
         stop.store(true, Ordering::Relaxed);
     }
 
-    /// A quiet store must stay quiet: an interface told to reload every quarter
-    /// second is one that loses your cursor position every quarter second.
+    /// A quiet store must stay quiet: an interface told to reload every
+    /// quarter second is one that loses your cursor position every quarter
+    /// second.
     #[test]
     fn a_store_nobody_writes_to_reports_nothing() {
-        let dir = scratch();
-        let env = Environment::at(dir.path());
-        let store = crate::store::SqliteStore::open(env.store_path()).expect("opening the store");
-        store.migrate().expect("migrating");
+        let (port, env, _writer, _dir) = serve();
+        let daemon = daemon_at(port);
 
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let _handle = EventSource::spawn_change_thread(&env, tx, Arc::clone(&stop));
+        let _handle = EventSource::spawn_change_thread(&env, &daemon, tx, Arc::clone(&stop));
 
         assert!(
             rx.recv_timeout(Duration::from_millis(750)).is_err(),
@@ -309,13 +369,23 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
     }
 
-    /// A store that cannot be opened is not a reason to take the interface down.
+    /// A daemon this cannot reach at all is not a reason to take the
+    /// interface down — the same promise `an_unopenable_store_...` pinned
+    /// before SH-150 moved what the thread watches.
     #[test]
-    fn an_unopenable_store_leaves_the_interface_working() {
-        let env = Environment::at("/proc/definitely/not/a/directory");
+    fn an_unreachable_daemon_leaves_the_interface_working() {
+        // A bound-but-nothing-behind-it port: connections are refused
+        // immediately rather than hanging, so this test stays fast.
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("binding a throwaway listener");
+        let port = listener.local_addr().expect("the bound address").port();
+        drop(listener); // freed; nothing answers there now
+
+        let env = Environment::at("/private/tmp");
+        let daemon = daemon_at(port);
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let handle = EventSource::spawn_change_thread(&env, tx, Arc::clone(&stop));
+        let handle = EventSource::spawn_change_thread(&env, &daemon, tx, Arc::clone(&stop));
         assert!(rx.recv_timeout(Duration::from_millis(250)).is_err());
         stop.store(true, Ordering::Relaxed);
         handle.join().expect("the thread must end rather than hang");
