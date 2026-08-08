@@ -1720,23 +1720,31 @@ Screens:
             relationships, reopen, and delete.
 
 Security:
-  Mutating requests (create/move/edit/delete a story, and anything
-  the Settings screen changes) require a same-origin request (a custom header a
-  cross-site request can't replicate) and a Host header resolving to
-  127.0.0.1/localhost/::1, the tailnet IP this instance bound
-  itself, or — when Tailscale MagicDNS is on — this machine's full
-  MagicDNS name (e.g. host.tailXXXXX.ts.net); this stops
-  DNS-rebinding, which the header check alone can't catch. The bare
-  short hostname (just 'host', without the .ts.net suffix) is
-  deliberately not trusted: unlike the full name, it can resolve
-  through a DNS search domain that isn't your tailnet's, so trusting
-  it could reopen the rebinding this check exists to stop. Read
-  requests are unauthenticated (but still only reachable where the
-  socket is bound — localhost and your tailnet). To allow writes
-  through a reverse proxy under a different hostname (e.g.
-  web-serve), set STORYHOOK_WEB_TRUSTED_HOSTS to a comma-separated
-  allowlist before starting the server — this only widens the Host
-  allowlist for writes, it does not change what the server binds.
+  Every request — reads and writes, on both 127.0.0.1 and your
+  tailnet IP — requires the daemon's bearer token ('story daemon
+  token' prints it). The dashboard's own page prompts for it on first
+  load and holds it in sessionStorage (gone when the tab closes;
+  re-entering it after a daemon restart is expected — the token
+  rotates then). Mutating requests (create/move/edit/delete a story,
+  and anything the Settings screen changes) additionally require a
+  same-origin request (a custom header a cross-site request can't
+  replicate) and a Host header resolving to 127.0.0.1/localhost/::1,
+  the tailnet IP this instance bound itself, or — when Tailscale
+  MagicDNS is on — this machine's full MagicDNS name (e.g.
+  host.tailXXXXX.ts.net); this stops DNS-rebinding, which the header
+  check alone can't catch. The bare short hostname (just 'host',
+  without the .ts.net suffix) is deliberately not trusted: unlike the
+  full name, it can resolve through a DNS search domain that isn't
+  your tailnet's, so trusting it could reopen the rebinding this
+  check exists to stop. GET / is the one route reachable with no
+  token, so it can serve the page that prompts for one; GET
+  /api/events (the live-update stream) also accepts the token as a
+  ?token= query parameter, since a browser's EventSource can't set
+  headers. To allow writes through a reverse proxy under a different
+  hostname (e.g. web-serve), set STORYHOOK_WEB_TRUSTED_HOSTS to a
+  comma-separated allowlist before starting the server — this only
+  widens the Host allowlist for writes, it does not change what the
+  server binds, and a proxied caller still needs the token.
 
 How it works:
   The repo list is the store's own projects table — the same rows the
