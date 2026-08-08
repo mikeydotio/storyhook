@@ -2267,6 +2267,7 @@ pub struct HttpInvoker {
     env: Environment,
     cwd: PathBuf,
     hook_depth: u32,
+    announce_waits: bool,
 }
 
 impl HttpInvoker {
@@ -2276,6 +2277,7 @@ impl HttpInvoker {
             env,
             cwd: cwd.into(),
             hook_depth: 0,
+            announce_waits: true,
         }
     }
 
@@ -2283,6 +2285,21 @@ impl HttpInvoker {
     #[must_use]
     pub fn hook_depth(mut self, hook_depth: u32) -> Self {
         self.hook_depth = hook_depth;
+        self
+    }
+
+    /// Whether a wait past [`crate::daemon::lifecycle::SERVED_PATIENCE`]
+    /// prints `storyhook: waiting for the daemon...` to stderr. On by
+    /// default, matching every ordinary command.
+    ///
+    /// `story tui` turns this off: `announce_waiting_on` writes to stderr
+    /// whenever it is a terminal, and inside the TUI's alternate screen
+    /// stderr *is* the screen — the message would land as garbled text over
+    /// whatever the board was drawing, not as the plain-text notice a
+    /// scripted or piped caller sees.
+    #[must_use]
+    pub fn announce_waits(mut self, announce: bool) -> Self {
+        self.announce_waits = announce;
         self
     }
 
@@ -2349,6 +2366,12 @@ impl HttpInvoker {
     /// `bound` is a parameter rather than a constant so a test can drive it in
     /// milliseconds. A suite that had to outwait 120s to prove a 120s bound
     /// would not be run.
+    ///
+    /// `announce` gates the stderr notice past `patience` — see
+    /// [`Self::announce_waits`]; every existing caller here and in
+    /// `tests/daemon_timeouts.rs` passes `true`, unchanged from before this
+    /// parameter existed.
+    #[allow(clippy::too_many_arguments)]
     pub fn send(
         env: &Environment,
         daemon: &crate::daemon::lifecycle::DaemonInfo,
@@ -2356,6 +2379,7 @@ impl HttpInvoker {
         bound: Option<crate::daemon::lifecycle::ExchangeBound>,
         poll: std::time::Duration,
         patience: std::time::Duration,
+        announce: bool,
     ) -> Result<Result<Response, AppError>, Transport> {
         use crate::daemon::lifecycle::{self, Observed, Verdict};
         use std::sync::mpsc;
@@ -2404,7 +2428,7 @@ impl HttpInvoker {
             if mine_seen_at.is_none() && seen.iter().any(|r| r.request_id == request.request_id) {
                 mine_seen_at = Some(Instant::now());
             }
-            if !announced && started.elapsed() >= patience {
+            if announce && !announced && started.elapsed() >= patience {
                 announced = true;
                 announce_waiting_on(&seen);
             }
@@ -2654,7 +2678,15 @@ impl Invoker for HttpInvoker {
         let patience = crate::daemon::lifecycle::SERVED_PATIENCE;
 
         let daemon = crate::daemon::lifecycle::ensure(&self.env)?;
-        match Self::send(&self.env, &daemon, &wire, bound, poll, patience) {
+        match Self::send(
+            &self.env,
+            &daemon,
+            &wire,
+            bound,
+            poll,
+            patience,
+            self.announce_waits,
+        ) {
             Ok(result) => return result,
             Err(Transport::Sent(detail)) => {
                 // The detail is the whole message when the bound fired — it
@@ -2682,7 +2714,15 @@ impl Invoker for HttpInvoker {
         }
 
         let daemon = crate::daemon::lifecycle::ensure(&self.env)?;
-        match Self::send(&self.env, &daemon, &wire, bound, poll, patience) {
+        match Self::send(
+            &self.env,
+            &daemon,
+            &wire,
+            bound,
+            poll,
+            patience,
+            self.announce_waits,
+        ) {
             Ok(result) => result,
             Err(Transport::NotDelivered(detail) | Transport::Sent(detail)) => {
                 Err(AppError::Storage(format!(

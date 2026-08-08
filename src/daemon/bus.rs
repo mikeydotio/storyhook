@@ -108,6 +108,42 @@ impl Change {
             Change::Reload => "event: reload\ndata: {}\n\n".to_string(),
         }
     }
+
+    /// The inverse of [`Self::to_sse`], for the one caller that is this
+    /// process rather than a browser: [`crate::daemon::subscribe`].
+    ///
+    /// Takes one already-decoded SSE event — everything between two blank
+    /// lines, `event:`/`data:` lines included — not a byte stream; de-chunking
+    /// and frame-splitting are [`crate::daemon::subscribe`]'s job, so that this
+    /// function stays exactly what [`Self::to_sse`] is: pure formatting, with
+    /// no I/O and no partial-read state to get wrong. Unrecognised event names
+    /// answer `None` rather than erroring, because a client running behind the
+    /// daemon it is subscribed to must survive an event name it does not know
+    /// yet, the same way an unknown JSON field would be ignored rather than
+    /// refused.
+    pub fn from_sse(frame: &str) -> Option<Change> {
+        let mut event = None;
+        let mut data = None;
+        for line in frame.lines() {
+            if let Some(rest) = line.strip_prefix("event: ") {
+                event = Some(rest);
+            } else if let Some(rest) = line.strip_prefix("data: ") {
+                data = Some(rest);
+            }
+        }
+        match event? {
+            "ping" => Some(Change::Ping),
+            "repos-changed" => Some(Change::Catalog),
+            "repo-changed" => {
+                let value: serde_json::Value = serde_json::from_str(data?).ok()?;
+                let slug = value.get("repo_id")?.as_str()?;
+                Some(Change::Project(slug.to_string()))
+            }
+            "resync" => Some(Change::Resync),
+            "reload" => Some(Change::Reload),
+            _ => None,
+        }
+    }
 }
 
 /// One subscriber's mailbox.
@@ -420,5 +456,38 @@ mod tests {
             );
         }
         assert!(Change::Project("app".into()).to_sse().contains("\"app\""));
+    }
+
+    #[test]
+    fn every_change_round_trips_through_sse() {
+        for change in [
+            Change::Project("app".into()),
+            Change::Catalog,
+            Change::Resync,
+            Change::Reload,
+            Change::Ping,
+        ] {
+            assert_eq!(
+                Change::from_sse(&change.to_sse()),
+                Some(change.clone()),
+                "{change:?} did not survive encoding and decoding"
+            );
+        }
+    }
+
+    #[test]
+    fn from_sse_ignores_an_event_it_does_not_recognise() {
+        assert_eq!(
+            Change::from_sse("event: some-future-event\ndata: {}\n\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn from_sse_ignores_the_connected_sentinel() {
+        // What `serve_sse` writes before the first real change -- not a
+        // `Change` at all, and `subscribe.rs` must treat it as "the
+        // connection is up" rather than as a change to report.
+        assert_eq!(Change::from_sse("retry: 3000\n: connected\n\n"), None);
     }
 }

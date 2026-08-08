@@ -1028,3 +1028,65 @@ fn the_resolution_index_is_gone() {
         breaches.join("\n  ")
     );
 }
+
+/// `story tui` opens no store of its own (SH-150) — it is a client of the
+/// daemon like every other command, through [`storyhook::invoke::HttpInvoker`].
+///
+/// The assertion is narrow on purpose: `crate::invoke::open_store` is the
+/// specific function that made the TUI a second writer *and* a second
+/// migrator — it runs `Store::migrate` and legacy-registry adoption behind a
+/// pre-migration backup, unsupervised by the version/exe/mtime handshake
+/// every other route to the store passes through
+/// (`daemon::lifecycle::usable`). A grep for it, rather than for
+/// `SqliteStore::open` more broadly, is deliberate: `src/tui/app.rs`,
+/// `src/tui/data.rs` and `src/tui/event.rs` all open a `SqliteStore` directly
+/// in their own `#[cfg(test)]` fixtures — to build a project the same way
+/// `tests/tui_integration.rs` and `tests/tui_undo.rs` do, or (in
+/// `event.rs`'s case) to write from a connection standing in for another
+/// process — and none of that is the store handle this story removed. Same
+/// idiom as `the_legacy_write_path_is_gone`: a grep needs no build graph and,
+/// unlike a visibility change, cannot be satisfied by a re-export.
+#[test]
+fn the_tui_opens_no_store_of_its_own() {
+    use std::path::Path;
+
+    fn sources(dir: &Path, into: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("reading src/tui/") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                sources(&path, into);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = std::fs::read_to_string(&path).expect("reading a source file");
+                into.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+
+    fn code(line: &str) -> &str {
+        line.split_once("//").map_or(line, |(before, _)| before)
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui");
+    let mut files = Vec::new();
+    sources(&root, &mut files);
+    assert!(
+        files.len() > 5,
+        "expected the whole src/tui tree, got {}",
+        files.len()
+    );
+
+    let mut breaches = Vec::new();
+    for (path, text) in &files {
+        for (number, line) in text.lines().enumerate() {
+            if code(line).contains("open_store") {
+                breaches.push(format!("{path}:{}: {}", number + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        breaches.is_empty(),
+        "src/tui/ must reach the store only through Invoker, never by opening one — \
+         found:\n  {}",
+        breaches.join("\n  ")
+    );
+}

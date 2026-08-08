@@ -400,6 +400,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "project_snapshot_empty",
             Response::ProjectSnapshot(Box::new(ProjectSnapshotView {
+                slug: "storyhook".to_string(),
                 prefix: "SH".to_string(),
                 states: Vec::new(),
                 members: Vec::new(),
@@ -409,6 +410,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
         (
             "project_snapshot",
             Response::ProjectSnapshot(Box::new(ProjectSnapshotView {
+                slug: "api".to_string(),
                 prefix: "API".to_string(),
                 states: vec![
                     StateDef {
