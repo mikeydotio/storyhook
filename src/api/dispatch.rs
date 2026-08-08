@@ -834,7 +834,13 @@ fn check_dispatch_protocol(path: PathBuf) -> Result<PathBuf, String> {
 /// (`# see DISPATCH_PROTOCOL=1 above`) does not. `0` for a script that
 /// predates the marker entirely, or whose declaration this cannot parse —
 /// both read the same to a caller: "not new enough."
-fn declared_dispatch_protocol(path: &Path) -> u32 {
+///
+/// `pub` so `tests/plugin_contract.rs` can pin the real
+/// `plugin/claude-code/bin/story.sh` in this repo against
+/// [`REQUIRED_DISPATCH_PROTOCOL`] using the exact same parser this module
+/// runs at resolution time, rather than a second implementation that could
+/// drift from it.
+pub fn declared_dispatch_protocol(path: &Path) -> u32 {
     let Ok(contents) = std::fs::read_to_string(path) else {
         return 0;
     };
