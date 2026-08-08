@@ -129,9 +129,12 @@ place rather than scattering across ad hoc session names.
 - It does not resolve the project's checkout, and does not query the store on the
   request-handling path at all — `story.sh`'s own `story project show --project <slug>`
   (an ordinary nested CLI call) is the sole authority, exactly as the epic specified.
-- It does not expose `--auto`. Every dispatch runs in plan mode; the one human
-  interaction (approving the plan) still belongs to whoever is at the resulting tmux
-  window, not to the dashboard.
+- ~~It does not expose `--auto`.~~ **Reversed by SH-208** (Dispatch Auto): `?auto=1`
+  now reaches `story.sh`'s own `--auto`, unchanged below this endpoint. The one human
+  interaction this bullet describes is still real and still unmoved — plan mode is not
+  optional, and approving the plan still belongs to whoever is at the resulting tmux
+  window — but past that approval, an autonomous dispatch now runs to closure and
+  reclaims its own worktree with nobody watching. F3, below, is re-argued for this.
 - It does not validate `bash`/`jq`/`git`/`tmux` are on `PATH` before spawning — those
   are the script's own dependencies, and its `set -euo pipefail` aborts loudly if one
   is missing, surfacing as a `failed` record with the stderr tail. Only the script's
@@ -165,11 +168,32 @@ first. **Pre-existing, wider than this story: filed as
 **F3 — the residual risk, given F1 and F2 as context.** A peer holding the token who
 can *also* reach the ordinary write surface (F1) can `PATCH` a story's description and
 then dispatch it, influencing some of what an agent's prompt contains — the prompt
-template is fixed (`plugin/claude-code/bin/story.sh:97`), but the story id and title
-it interpolates are not. Mitigated by: the token gate (this story); plan mode only,
-never `--auto` (a human still approves before anything the agent proposes executes);
-and the prompt template itself asking the agent to investigate and post a plan for
-approval, not to act unilaterally.
+template is fixed (`plugin/claude-code/bin/story.sh:97`/`:119`), but the story id and
+title it interpolates are not. Mitigated by: the token gate (this story); plan mode
+only — the launch command is identical in both modes (`LAUNCH_TPL`,
+`claude --permission-mode plan`), so a human still approves before anything the agent
+proposes executes, in attended and autonomous dispatch alike; and the prompt template
+itself asking the agent to investigate and post a plan for approval, not to act
+unilaterally.
+>
+> **Re-argued for SH-208 (Dispatch Auto).** The paragraph above no longer holds "never
+> `--auto`" as a mitigation — `?auto=1` reaches it now. What survives unchanged: the
+> plan-approval gate itself, since `--auto` swaps only the handoff *prompt*, never the
+> *launch command* — a human still approves the plan before the agent's first tool
+> call, autonomous or not. What is now larger: everything **past** that one approval
+> is unilateral, where it previously stopped at "investigate and propose." An
+> autonomous session merges its own PR (`gh pr merge --merge`), closes the story
+> itself, and — the reason this needed a design decision rather than a one-line
+> reversal — reclaims its own worktree, branch and tmux window as its last act
+> (`story.sh reap`, this story). `reap`'s own preflight is the mitigation for *that*
+> half: it refuses outright unless the story is closed and the worktree/branch are
+> both safe to discard (dirty, locked, unmerged, protected all refuse the whole
+> operation, nothing partial — see `story.sh`'s `cmd_reap` for the full guard list), so
+> the worst a compromised or malicious auto-dispatch can do to the workspace itself is
+> what an attended one already could: modify files inside a worktree a human is meant
+> to review via the PR before it merges. The token gate and plan-approval gate are the
+> load-bearing controls on *starting* an autonomous run at all; nothing about `--auto`
+> weakens either.
 
 **F4 — the token's scope and limits, stated plainly.** Minted once per daemon lifetime
 (`lifecycle::mint_token`), not per-user, not rotated except by restart. Its
@@ -246,6 +270,38 @@ hard way: the first real dispatch attempt against the e2e fixtures refused with
 `checkout ... is not a git repository`, `story.sh`'s own message, verbatim, exactly as
 designed to relay.
 
+## As built — SH-208 (Dispatch Auto and self-reap)
+
+**`--auto` travels as a query parameter, not a JSON body field, because of where this
+endpoint answers.** `crate::api::dispatch::intercept` runs in `daemon::serve::worker`
+*before* the request body is ever read (SH-50's own deadlock-avoidance design, above) —
+a flag that has to be known before the body exists cannot travel in one. `?auto=1`
+(also accepting `true`; anything else present is a 400, never a silently-accepted
+`false`) is parsed by `parse_auto`, after every guard, on the `POST` arm only.
+
+**A closed story cannot be commented on — discovered implementing self-reap, not
+during design.** The original plan for `reap`'s "durable record" was a `story comment`
+posted after the destructive cleanup, mirroring `story.sh`'s own claim-rollback notes.
+`resolve_open_story` (`src/service/mod.rs`) refuses any mutation — comment included —
+against an archived story, unconditionally: `story `TST-1` is closed and cannot be
+modified`. There is no flag or escape hatch, and none was added — a closed story being
+immutable is a real invariant this codebase relies on elsewhere, not an oversight to
+route around. `reap` was redesigned around it rather than through it: its exit JSON is
+now its only record, the tmux window (the one thing that could still have observed a
+comment) is killed *last* precisely because there is nothing left to report past that
+point, and the autonomous charter itself was told plainly — a closed story cannot be
+commented on again, so say everything worth recording *before* that move, not after.
+
+**Self-reap needed a deterministic verb, not prose.** The charter could have simply
+told the agent to `git worktree remove` its own worktree, delete its branch, and kill
+its own tmux window as three separate instructions. Rejected: `git worktree remove`
+refuses a dirty tree (correct) but an agent might reach for `--force` under time
+pressure (wrong — deletes the running agent's own cwd out from under it), and
+`tmux kill-window` ends the session that is executing the instruction, so anything
+after it in a hand-rolled sequence never runs. `story.sh reap <id>` collapses the whole
+sequence into one call with a fixed, tested order — git work, then the window kill,
+last — so there is no sequence for an agent to get subtly wrong under pressure.
+
 ## Verification
 
 `make test` is the gate. Coverage, by layer:
@@ -253,17 +309,36 @@ designed to relay.
 - **Unit** (`src/api/dispatch.rs`): route matching (including the not-my-path fallback
   to ordinary REST/RPC), guard ordering (403 before 401 before 404/405, and 401 before
   a handle lookup), the registry's capacity/idempotency/eviction rules, and
-  `classify()`'s three outcomes against canned stdout/stderr.
+  `classify()`'s three outcomes against canned stdout/stderr. SH-208 adds: `?auto=1`/
+  `?auto=true` parsing and its 400 on anything else present, and the idempotency
+  wrinkle — a second `try_start` for a running story with a *different* `auto`
+  reuses the first attempt's handle and still reports the first attempt's mode. Also
+  `src/api/http.rs`'s `request_query`, alongside its sibling `request_path`.
 - **Integration** (`tests/dispatch_endpoint.rs`): a real daemon subprocess (for a real
   minted token) with `STORYHOOK_DISPATCH_SCRIPT` pointed at a small stub — every guard
   case, the full 202-then-poll round trip, a refusal relayed verbatim, a silent script
-  reported as `failed`, and a repeated `POST` reusing one handle.
+  reported as `failed`, and a repeated `POST` reusing one handle. SH-208 adds: `--auto`
+  reaching the stub's argv verbatim, `auto` relayed in the record from the 202 through
+  every poll, `auto=true` as the second recognized spelling, `auto=0` (or any other
+  unrecognized value) as a 400, and the idempotency wrinkle against the real endpoint.
 - **Plugin** (`plugin/claude-code/tests/`): `test-dispatch-target-session.sh` (the
   pre-existing named-session path, which had zero coverage before this story) and
   `test-dispatch-create-session.sh` (absent → created; present → not recreated;
   creation failure → the same worktree/claim rollback a failed `new-window` already
-  does).
+  does). SH-208 adds `test-reap.sh` (every preflight refusal — not-closed, dirty,
+  locked, unmerged, protected — leaves the worktree/branch untouched; `current` is
+  *not* a veto; the happy path actually removes both and kills the resolved tmux
+  window; dry-run previews without touching anything; reaping an already-clean story
+  is a benign no-op) and extends `test-dispatch-auto.sh` with the exact `<reap>`
+  command the auto charter's prompt carries, framed as the session's final action and
+  explicitly forbidden past a hard stop.
 - **End-to-end** (`e2e/specs/dispatch.spec.ts`): the real `story.sh` against the
   plugin's own fake tmux — button absent for a checkout-less project (AC1); present,
   clicked, token prompted for, polled to completion, and a real worktree left on disk
-  (AC2); a saved token not re-prompted for on a second dispatch.
+  (AC2); a saved token not re-prompted for on a second dispatch. SH-208 adds: both
+  dispatch buttons absent for a checkout-less project, Dispatch at the drawer footer's
+  leading edge (DOM order), and Dispatch Auto sending a real `?auto=1` request,
+  polling to completion, and leaving a real worktree on disk. Self-reap itself is not
+  exercised here — no real `claude` binary stands behind the fixture's fake tmux, so no
+  agent ever runs to call `reap` — that is `test-reap.sh` and `test-dispatch-auto.sh`'s
+  job, at the layer where it is actually observable.
