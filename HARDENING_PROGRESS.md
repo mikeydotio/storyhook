@@ -185,7 +185,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-136** — the daemon-address harness list is hand-maintained prose · *filed by SH-131*
 - [x] **SH-139** — `RemoteUrl::normalize`'s two explicit non-decisions
 - [x] **SH-148** — `bind_and_serve` is a `pub` entry point with no production caller
-- [ ] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
+- [x] **SH-161** — `story doctor` cannot report a pointer/origin disagreement · *SH-116 declined to build this; it is the residue*
 - [ ] **SH-70** — pre-#18 import `[git]` comments
 - [ ] **SH-44** — web form defaults
 - [ ] **SH-127** — remove the status flash
@@ -6611,3 +6611,68 @@ no user-facing or API behavior changed.
 
 **PR:** #188, merged as `4aeadcc`. Branch verified deleted (remote and
 local), `main` fast-forwarded cleanly.
+
+### SH-161 — done
+
+**Picked from the Low queue** (first unchecked, non-⚠, non-⏸ line):
+`story list --state in-progress` showed SH-112 (epic), SH-150 (⚠) and SH-167
+(medium, unchecked but in-progress in another session) all unclaimable. Low's
+first unchecked line was SH-161 itself, confirmed `todo` and ready via
+`story list --ready`.
+
+**Read the story's own residue trail first**, since its comment is three
+layers of history rather than a fresh spec: SH-116 asked for this advisory
+and was refused (false positive on a legal two-projects-one-repository
+layout); SH-151 closed that gap by making origin *ownership* a registration
+precondition and narrowed the finding to a buildable predicate — "cwd owns
+the origin, and that origin is registered to a project other than the one
+the nearest pointer names" — but still didn't build it, because the
+predicate needs the filesystem and a `git` subprocess, which the
+project-scoped, store-pure `IntegrityService` does not have. `resolve_project`'s
+own doc comment (src/invoke.rs) independently names the same deferred work:
+"a pointer file outranks a registered origin when the two disagree... so
+`story doctor` reports it where reporting is free instead of the resolver
+paying for it every time." Three independent sources agreeing on one
+predicate is not a decision that needed a council vote — it needed reading.
+
+**Built:** `pointer_origin_advice` (src/invoke.rs), called from
+`Invocation::Doctor`'s advisory list alongside `orphan_advice`/`origin_advice`/
+`backup_advice`/`abandoned_advice`. It reads `cwd`'s pointer file
+(`pointer_at_or_above`) and asks `origin_at` the same ownership question
+registration and resolution already ask; only the `Owned` case is examined —
+`Inherited` (a non-owning sub-directory, SH-151's exact false positive) is
+silent by construction, not by a special case. If the owned origin resolves
+to a *different* project's uuid than the pointer names, one line is added
+naming both projects and the contested origin. Advisory, never `--fix`-repaired:
+unlike an unregistered origin, there is no default that is obviously right
+when a checkout's two identities disagree.
+
+**Tests:** three in `tests/project_path_hygiene.rs`, extending the existing
+origin-backfill fixtures rather than inventing new ones. The mismatch itself
+is built by copying one project's `.storyhook.toml` over a second project's
+own — the shape a stray pointer file copied between clones actually produces,
+not a synthetic one. Confirmed red-before-green by commenting out the call
+site and rerunning: all three failed with the pre-existing advisory text
+(`"has no registered origin"` / nothing at all) rather than the new one.
+Separately confirmed the ownership guard is load-bearing, not incidental: a
+version that also matched `Inherited` origins made the "silent for a
+non-owning checkout" test fail, which is what a false-positive on SH-151's
+exact rejected layout would look like if the guard were ever weakened.
+
+**Gate:** one full `make test` run, backgrounded with a purpose-written
+supervisor script polling the log's byte count every 5 s against a 120-second
+stall bound (the `Monitor` tool's log-growth-heartbeat pattern, hand-rolled
+because the run was started before the supervisor was attached). No stall;
+exited on its own. Full suite green, plugin harness 24/24, e2e 23/23, no
+orphaned daemons pre- or post-run.
+
+**Semver: minor.** `story doctor`'s report gains a new advisory case a user
+can now see that did not exist before — a non-breaking, user-facing addition,
+not a fix to existing behavior.
+
+**PR:** #190, merged as `bb24529`. Branch verified deleted (remote and
+local), `main` fast-forwarded cleanly. This log entry did not land on the same
+PR — same sequencing reality as SH-148, SH-156 and SH-170's own entries: the
+merge SHA above cannot be written into a commit that predates the merge it
+names, so the log entry follows as its own commit on its own branch/PR rather
+than the literal same-PR reading of step 8.
