@@ -169,7 +169,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-156** — a `story` command under a pty stalls 7–10 s in two runs in ten
 - [x] **SH-159** — github-sync reports per-story errors inside a successful message and exits 0
 - [x] **SH-164** — labels are sometimes concatenated
-- [ ] **SH-165** — an epic with in-progress children should read as in-progress
+- [x] **SH-165** — an epic with in-progress children should read as in-progress
 - [ ] **SH-167** — README documents an id-first grammar the CLI has never had · *filed by SH-118*
 - [ ] **SH-66** — `context --format json` double-encodes
 - [x] **SH-42** — project selector dropdown
@@ -5987,3 +5987,75 @@ as its own commit *on the same PR* as the work, and #170 was already merged
 before this entry was written — noted per SH-156's own precedent rather than
 rewriting merged history, landing as its own commit on its own branch/PR
 instead.
+
+### SH-165 — done
+
+**Outcome:** an epic sitting in its project's neutral default state (`todo`)
+with a child in the project's resolved active-work state now shows in the Web
+dashboard's Kanban board under the active-work column, computed rather than
+requiring someone to hand-keep the epic's own `state` in sync with its
+children. `SH-112`, the server-owned epic, was exactly the motivating case:
+its literal state had been kept at `in-progress` by hand this whole run.
+
+**Council: unanimous on substance, round 1.** Three independent seats
+(`software-architect`, `ux-designer-web`, `skeptic`) each proposed the same
+design without seeing each other's answers: promote only from the project's
+neutral default state, never from `blocked` or any other state a human
+deliberately chose — extending `is_ready`'s existing SH-126 refusal to let a
+generic "work is happening" signal override a deliberate `blocked` choice.
+The single-choice vote (Phase 3) went 3-0 to the one proposal (Seat 3,
+`skeptic`) that additionally traced the Web board's actual drop-handler code
+and named a concrete foot-gun the other two proposals hadn't: a display
+promotion changes which column a card *visually* sits in without changing its
+stored `state`, and the drag-and-drop drop guard compared only the literal
+`state` — so re-dropping a promoted card onto the column it already occupies
+would have silently persisted a real, unintended write. Unanimous at Phase 3
+skipped deliberation and the runoff entirely. Full trail:
+`.council/sh-165-epic-in-progress-display/DECISION.md`, recorded as a comment
+on the story.
+
+**Red→green, TDD.** 11 new unit tests for `compute_epic_display_state` in
+`src/domain.rs` (promoted from `todo` with an active child; not promoted with
+no active child, from `blocked`, from an already-active epic, from a closed
+epic, for a childless leaf, for a grandchild rather than a direct child, for
+a project with a custom active-role state, and for a project whose
+active-work state can't be resolved at all) plus the 4 `active_state` tests
+relocated unchanged from `service::git` — all written and run red against the
+not-yet-existing function before it existed, green after. Two new end-to-end
+integration tests in `tests/service_query.rs` drive the real service layer
+(`StoryService`, `RelationService`, `QueryService`) rather than the pure
+function directly, catching the one bug the unit tests couldn't: an earlier
+draft read the field as `v.story.display_state` in the web JS, when the REST
+payload actually puts it as a sibling of `story`, not nested inside it —
+caught by reasoning about `serde_json::to_value(view)`'s shape before it ever
+reached a browser, not by a failing test, but the wire-envelope round-trip
+test (`tests/wire_envelope.rs`) is what would have caught a
+`#[serde(skip_serializing_if)]` without a matching `#[serde(default)]` had
+one been missed.
+
+**The gate caught a real, intended byte change and did its job.** The first
+`make test` run failed loudly and immediately — not a wedge, a named
+snapshot mismatch — because `display_state` now appears in `story show/list/
+summary/epic --json`, and the golden CLI corpus (`tests/golden_cli.rs`)
+freezes exact bytes. `INSTA_UPDATE=always` reviewed as its own deliberate
+commit: the diff across all four snapshot files was exactly one line each,
+`"display_state": "in-progress"` on the fixture's `SH-1` (an epic with `SH-3`
+parent-of'd and moved to `in-progress` — the corpus already contained the
+SH-165 case without anyone having built it for that purpose), nothing else
+touched. Second `make test` run green in full.
+
+**Gate:** `make test` exits 0 — fmt, clippy (`-D warnings`, workspace,
+all-targets) clean, full Rust suite green, plugin harness 24/24, e2e 13/13,
+clean working tree after, no orphan daemons. Supervised per this file's rule:
+two background runs, each under a `Monitor` watch with a 120-second
+log-growth stall bound. No stall in either; the first run's exit was a fast,
+named test failure, not silence, so it never tripped the stall bound at all.
+
+**Semver: minor.** A new optional field on the wire (`StoryView.display_state`,
+`None` when absent), additive and backward compatible — no existing consumer
+reads it, and the CLI's human-rendered output and the TUI are byte-identical
+to before. The Web dashboard is the one consumer, and this is new behavior
+for it, not a fix to broken behavior.
+
+**PR:** #172, merged as `ab31992`. Branch verified deleted, `main`
+fast-forwarded cleanly.
