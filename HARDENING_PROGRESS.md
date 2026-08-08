@@ -161,7 +161,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-126** — WebUI Blocked column · *SH-125 handed it a question about what the column's membership is*
 - [x] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
 - [x] **SH-138** — rollback drops a project's registered origins
-- [ ] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
+- [x] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
 - [ ] **SH-146** — the daemon never re-attempts its tailnet bind
 - [ ] **SH-147** — the tailnet probe runs twice on the port-fallback path
 - ⚠ **SH-150** — the TUI holds its own store handle · *in-progress as of 2026-08-07T20:35 — another session; do not claim*
@@ -5447,3 +5447,55 @@ deleted.** `main` had moved ahead under this run (SH-173's serial-dispatch
 fix landed via PR #155 while this story was in flight) — `gh pr merge`
 handled the merge against current `main` with no conflicts, since the two
 PRs touch disjoint files.
+
+### SH-142 — done
+
+**Outcome:** `DaemonGuard`'s `Drop` no longer reaps its daemon through a bare
+`Command::output()`. `output()` waits on the child and *then* reads its pipes
+to end-of-file — a second, unbounded wait, and the one a descendant that
+inherited the pipe (the SH-94/SH-141 fd-inheritance class) can stretch out
+forever, worst of all inside a `Drop`, which runs during unwind and so hangs
+an *already-failing* test instead of letting it report.
+
+**The fix's shape was not a judgment call — the story dictated it.** SH-142's
+own text named the exact fix: promote `tests/concurrency_soak.rs`'s private
+`run_bounded` helper (spawn on a worker thread, `recv_timeout` the whole
+spawn-wait-collect sequence) into `storyhook-test-support`, "at the point
+there is a second caller, which this is." No council: the one open number —
+`DaemonGuard`'s own `STOP_DEADLINE` — is a "chosen, not derived" test constant
+in the sense this same file's `ACCEPT_DEADLINE` and `EOF_DEADLINE` already
+are, not a decision the codebase's own convention treats as needing a vote.
+Picked at 15s: generous headroom over production's own 10s interactive notice
+(`SERVED_PATIENCE`) for the identical graceful-stop wait, since a guard-armed
+daemon has no in-flight work of its own by the time a test drops it.
+
+**Two commits, two hats.** Commit one moves `run_bounded` verbatim (deadline
+now a parameter, since the two callers — the soak test's contention bound and
+the guard's stop bound — don't share one) and repoints `concurrency_soak.rs`
+at the shared copy; no behavior change, verified by re-running that file's four
+tests unchanged. Commit two is the actual fix: `DaemonGuard::drop` calls the
+promoted helper with the new `STOP_DEADLINE`, plus the regression test.
+
+**Regression test pins the exact hazard.** `run_bounded_gives_up_on_its_
+deadline_rather_than_waiting_out_a_hung_command` spawns `sh -c "sleep 5"`
+against a 300ms deadline and asserts the call still gives up (via panic)
+within ~2s rather than waiting the full five — the property the bare
+`.output()` never had. A happy-path test (`run_bounded_returns_the_childs_
+actual_output`) covers the promoted helper's ordinary case, newly unit-tested
+now that it is a nameable, public function rather than a private fn with only
+indirect load-test coverage.
+
+**Gate:** full `make test` green — fmt, clippy `-D warnings`, the whole Rust
+suite (934+ unit tests plus every integration binary, 0 failures), plugin
+harness 24/24, browser suite 13/13. Supervised in the background with a
+log-growth heartbeat on a 120-second stall bound; no stall, no restart.
+Additionally targeted: `concurrency_soak`, `web_test` (141 tests, the bulk of
+`DaemonGuard`'s callers) and `tailnet_advertise` re-run standalone before the
+full gate, all green.
+
+**Semver: none.** `storyhook-test-support` is a workspace-internal test
+crate, never shipped; no `src/` file changed and no CLI-visible behavior
+moved.
+
+**Landed as two commits on one PR (#159), merge commit (fast-forward),
+verified, branch deleted.**
