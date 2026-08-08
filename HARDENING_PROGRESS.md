@@ -162,7 +162,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-135** — a hand-taken backup inherits the 7-deep daily retention · *filed by SH-132*
 - [x] **SH-138** — rollback drops a project's registered origins
 - [x] **SH-142** — the web-server harness reaps its server with an unbounded `.output()` in a `Drop`
-- [ ] **SH-146** — the daemon never re-attempts its tailnet bind
+- [x] **SH-146** — the daemon never re-attempts its tailnet bind
 - [ ] **SH-147** — the tailnet probe runs twice on the port-fallback path
 - ⚠ **SH-150** — the TUI holds its own store handle · *in-progress as of 2026-08-07T20:35 — another session; do not claim*
 - [ ] **SH-154** — `confirm_undelete` prompts from the service layer, so `reopen` can never ask
@@ -5499,3 +5499,93 @@ moved.
 
 **Landed as two commits on one PR (#159), merge commit (fast-forward),
 verified, branch deleted.**
+
+### SH-146 — done
+
+Picked next off the Medium queue (first unchecked, non-⚠, non-⏸ line) after SH-142.
+Re-checked `story list --state in-progress` before claiming: SH-112 (epic, skip), SH-150
+(⚠, correctly marked, another session), SH-167/SH-177/SH-208 not yet on this file's own
+queue and in progress elsewhere. None conflicted with SH-146.
+
+**Council, because the story's own text named the open questions.** SH-146's description
+said outright that a design was needed for when to re-probe, how to add a listener to a
+running accept loop, and how to mutate `trusted_hosts` while requests are in flight — the
+exact trigger this file's autonomy rule names. Three seats — software-architect,
+devops-engineer, security-researcher. Round 1 was **unanimous for the same architecture**
+from all three, independently and blind: a fourth `thread::scope` background thread (the
+same shape as `heartbeat`/`poll_change_token`/`watch_parent`), capped exponential backoff,
+`scope.spawn`-from-within-scope for the new listener (precedented by `nested_lane`), and
+writing `trusted_hosts` strictly before that spawn so no request can ever be accepted on an
+interface the allowlist does not yet recognize. The vote turned on two secondary questions
+— the lock primitive (`RwLock` vs `ArcSwap` vs `Mutex`) and whether the retry ever gives up
+— and all three seats picked the proposal that also rewrote the on-disk portfile on a late
+bind, the one thing the other two proposals left as an in-memory-only fix that would have
+left `story daemon status`/`address` silently wrong forever after a real self-heal. Two
+non-blocking refinements from the runner-up proposals were folded in as implementation
+detail: the retry must be strictly internal-timer-driven (never triggered by a request,
+closing a local-DoS vector a security seat named), and it is one-shot — once a bind
+succeeds it never re-probes again, so "trust follows bind" stays a fact decided once.
+Verdict recorded as a comment on SH-146; audit trail at
+`.council/sh146-tailnet-rebind-design/` (gitignored).
+
+**What shipped.** `src/daemon/serve.rs`: `Serving.trusted_hosts` is now
+`RwLock<Vec<String>>` (was a plain `Vec`, set once and never mutated) — both read sites
+(`accept_loop`'s per-request clone, `route_job_inner`'s REST-routing borrow) updated to
+take the lock rather than touch the field directly. `bind_listeners`' tailnet half was
+extracted into `probe_and_bind_tailnet(port)`, reused by both the startup path and the new
+`tailnet_reprobe` background thread. `serve()` gained a new parameter,
+`on_late_tailnet_bind`, fired at most once from that thread; `bind_and_serve` (SH-148's
+dead-code entry point, test-harness only) passes a no-op, `lifecycle::run` passes a closure
+that rewrites the portfile via the already-private `write_info`. The backoff itself —
+2s → 60s cap for the first 10 minutes, then a steady 5-minute poll forever, never a hard
+give-up — is a pure function (`next_reprobe_delay`) over an explicit `ReprobeSchedule`
+struct rather than reading `std::env` inline, specifically so it is unit-testable without
+mutating process-global state under parallel test execution. Four `STORYHOOK_TAILNET_
+REPROBE_*_MS` env overrides (initial/cap/window/steady), the same shape
+`STORYHOOK_SSE_HEARTBEAT_MS` already established.
+
+**Tests.** `tests/tailnet_rebind.rs` is new: a two-phase `tailscale` shim (fails until a
+marker file appears, then reports a fixed identity) proves the daemon starts loopback-only,
+self-heals without a restart once the marker flips, that the new listener genuinely accepts
+connections (`wait_for_addr`, not just the reported bind), and that it is auto-trusted for
+a mutation — the late-bind counterpart of `web_test.rs`'s existing
+`web_serve_tailnet_ip_is_auto_trusted_for_mutations`. The identity's IP is real rather than
+the CGNAT-unbindable one `tailnet_advertise.rs` uses (that file needs a bind that *fails*;
+this one needs a late bind that *succeeds*) — found by a UDP `connect` to `8.8.8.8`, a
+route-table lookup that sends nothing, so the test needs no real tailnet and never skips.
+Plus six new unit tests in `serve.rs` for the backoff math (`next_reprobe_delay`: doubles
+from the initial delay, never exceeds the cap even at absurd attempt counts, falls back to
+and stays at the steady state arbitrarily far into a daemon's life) and the chopped-sleep
+shutdown helper (`sleep_chopped`: returns immediately once already stopped, completes
+normally otherwise).
+
+**The one real bug this story's own test setup found, unrelated to the fix itself.**
+`env.project().build()` and `Project::new_story` already talk to a daemon — every `story`
+command reaches the store through one since SH-114 — so building the test fixture silently
+started one first, on the ambient (real) `tailscale` and an OS-assigned port. The later,
+deliberately-instrumented `web start --port N` with the shimmed `PATH` then hit `ensure`'s
+fast path, which returns an already-usable daemon untouched — "a request to start something
+already started is not a request to restart it" is documented, correct behavior, but it
+silently discarded both the test's `--port` and its `PATH` override, so the daemon under
+test kept turning out to be the wrong one, on the wrong port, with the real system
+identity. Fixed by an explicit `env.stop_daemon()` between building the fixture and
+starting the instrumented daemon, forcing a fresh spawn that actually observes both. Not a
+product bug — a fixture-ordering trap any test combining `env.project()` with a
+PATH/env-instrumented `web start` would hit the same way; noted here rather than filed,
+since the fix is one documented line in the new test itself, not a shared harness gap.
+
+**Gate:** full `make test` green — fmt, clippy `-D warnings` (workspace, all-targets), the
+whole Rust suite (939 unit tests plus every integration binary, 0 failures — including the
+full `web_test.rs` (141 tests, the tailnet-dual-bind family and the wedged-tailscale-CLI
+test unaffected) and `tailnet_advertise.rs` (3, unaffected)), `cargo build`, plugin harness
+24/24, browser suite 13/13. Supervised in the background with a log-growth heartbeat on a
+120-second stall bound (`Monitor`, 20s poll); no stall, no restart. One `cargo fmt`
+violation caught on the first run (this file's own SH-182 entry's lesson, repeated once
+more: format before the gate, not after it fails) — `cargo fmt --all` applied, re-run
+green.
+
+**Semver: none suggested.** No precedent in this run's log of bumping mid-loop; left for
+Mikey's own batched `/semver bump` pass.
+
+**Landed as two commits on PR #161 (the fix, then this log entry), merge commit, verified,
+branch deleted.**
