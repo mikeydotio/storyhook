@@ -363,7 +363,6 @@ button { cursor: pointer; }
 }
 .dot { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; flex-shrink: 0; }
 .card-flags { display: flex; gap: 0.3125rem; margin-top: 0.375rem; }
-.flag-ready { color: var(--success); }
 .flag-blocked { color: var(--danger); }
 .flag-archived { color: var(--fg-faint); }
 .flag { font-size: 0.6875rem; font-weight: 600; display: inline-flex; align-items: center; gap: 0.1875rem; }
@@ -2207,7 +2206,8 @@ tbody tr:hover { background: var(--bg-sunken); }
 
     var flags = el("div", { class: "card-flags" }, []);
     if (blocked[st.id]) flags.appendChild(el("span", { class: "flag flag-blocked" }, ["● blocked"]));
-    else if (ready[st.id]) flags.appendChild(el("span", { class: "flag flag-ready" }, ["● ready"]));
+    // Ready is the default state and gets no badge — only the blocked
+    // exception is called out.
     // Only reachable with "Show archived" on — `filteredStories()` excludes
     // these by default — but visible then so an archived card mixed back
     // into a CLOSED column's cards doesn't read as an ordinary closed one.
@@ -2367,7 +2367,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     row.appendChild(el("td", {}, [labelChips(st.labels)]));
     row.appendChild(el("td", {}, [st.assignee ? memberName(st.assignee) : el("span", { style: "color:var(--fg-faint)" }, ["–"])]));
     row.appendChild(el("td", { class: "col-date" }, [updated]));
-    row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : (ready[st.id] ? "3px solid var(--success)" : "");
+    row.style.borderLeft = blocked[st.id] ? "3px solid var(--danger)" : "";
   }
 
   /** Briefly highlights a row that either just appeared or has a field
