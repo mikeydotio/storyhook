@@ -55,14 +55,38 @@ use crate::daemon_containment;
 /// waiting for one that is never coming.
 ///
 /// It was 10 s, and 10 s was measured to be wrong. A `story` command under a pty
-/// prints its first prompt in about 0.9 s, but roughly two runs in ten it takes
+/// prints its first prompt in about 0.9 s, but roughly two runs in ten it took
 /// **seven to ten seconds instead** — reproducibly, in this file and not in a
 /// probe binary running the same command, with every instrumentable sub-phase
 /// (spawn, `wait`, the store commands around it) still measuring in
 /// milliseconds. Neither warming the daemon first nor removing the `git config`
-/// call the client makes changed the distribution. Filed rather than papered
-/// over; the deadline is set above the observed stall so a *real* wedge is still
-/// caught quickly and a known slow start is not reported as one.
+/// call the client makes changed the distribution.
+///
+/// **SH-156 re-opened the question and could not reproduce it.** Over 100 runs
+/// across five shapes — a single test alone, the whole file at
+/// `--test-threads=1` and at `=4`, wrapped through the real `scripts/run-tests.sh`
+/// gate, and immediately preceded by `daemon_wedge`/`concurrency_soak`/
+/// `crash_matrix` to manufacture the contention a real `make test` position
+/// would carry — produced a top time of 5.7 s and zero instances anywhere near
+/// seven. One shape of explanation is ruled out rather than just unconfirmed:
+/// every daemon-lifecycle wait on the spawn path (`SPAWN_DEADLINE`,
+/// `await_healthy`) is hard-capped at 5 s and *errors* past it, so a daemon
+/// stuck coming up cannot produce a slow **pass** — it produces a failure this
+/// suite has never seen. That also confines the gap to the harness's own
+/// unbounded read loop, on the three of seven tests here whose first prompt
+/// (`ask_about_a_new_project`) is printed before the client touches a daemon at
+/// all. The leading theory, unconfirmed because the conditions could not be
+/// recreated on demand: the original measurement (2026-08-02) landed one day
+/// after `target/debug/deps` reached ~200k loose `.o` files and stalled
+/// `FSEventStreamStart` machine-wide (`chore(build): pack split debuginfo`,
+/// 2026-07-28) — a mechanism proven elsewhere in this repository to cost
+/// exactly this shape of multi-second, intermittent, everything-else-fast delay
+/// (SH-53). `target/debug/deps` measured 4,430 entries and zero loose `.o`
+/// files during this investigation, i.e. the mechanism's precondition was
+/// absent, which is consistent with non-reproduction but does not prove the
+/// theory. The deadline stays at 30 s rather than coming down: the original
+/// stall was real when measured, host-level pressure is not a condition this
+/// suite controls, and there is no evidence yet that it cannot recur.
 pub const EXPECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long the pump sleeps between reads when the child has said nothing.
