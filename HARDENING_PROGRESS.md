@@ -5447,3 +5447,113 @@ deleted.** `main` had moved ahead under this run (SH-173's serial-dispatch
 fix landed via PR #155 while this story was in flight) — `gh pr merge`
 handled the merge against current `main` with no conflicts, since the two
 PRs touch disjoint files.
+
+### SH-177 — done
+
+**Outcome:** merged. `tiny_http` is gone. `src/daemon/http1` — this crate's
+own HTTP/1.1 connection layer, built on `httparse` (already in `Cargo.lock`
+via `ureq`, so this added no new dependency) — owns every accepted socket
+from `accept()` onward, and gives the daemon the two bounds SH-172 named and
+could not deliver: every read and write on a peer socket is bound in
+wall-clock time, and the number of connections the daemon serves at once,
+across every listener it binds, is capped.
+
+**Investigation found the story's own two candidate fixes were not
+equally viable.** SH-177 named "replace `tiny_http`" and "add a connection
+cap" as alternatives. They are not: `tiny_http` 0.12.0's own `TaskPool`
+(`util/task_pool.rs`) spawns one thread per connection with no ceiling, and a
+thread blocked reading a dribbled *head* stalls before a `Request` object
+exists — before any application-level counter could ever see it. A cap on
+this daemon's own workers would have left the story's stated consequence
+("grow the daemon's thread count without limit") true. Only replacing the
+transport closes the gap; the cap is still built, but as part of the
+replacement, not instead of it.
+
+**The coupling to `tiny_http` turned out to be thin enough to make the
+harder option cheap.** Fourteen references across five files, all to
+`Header`, `Method`, `Request`, `Response`, `Server`. `src/daemon/http1`'s
+types carry the same names and methods, so `src/api/{http,rpc,rest,
+dispatch}.rs` changed only their `use` line; `src/daemon/serve.rs`'s diff is
+the accept loop itself (`accept_loop` now calls `http1::serve_connections`
+instead of iterating `tiny_http::Server::incoming_requests`) plus building
+one `Limits` and one `ConnectionSlots` in `serve()`. `worker`'s signature and
+body are untouched — it never held a socket directly, so nothing about how
+it routes a request changed.
+
+**One thread per connection, not per request** — cheaper than SH-172's
+shape, and what makes the connection cap also a thread-count cap: a
+kept-alive connection now costs one thread for its whole lifetime rather
+than one per request it carries.
+
+**The wall-clock deadline is the part a bare `SO_RCVTIMEO` — SH-172's
+original, abandoned plan — could never have given, even if it had inherited
+onto accepted sockets the way that plan assumed.** A per-syscall timeout
+bounds one `read()` call; nothing stops a peer from sending one byte just
+under that bound, forever. `Deadline` fixes an absolute instant when a
+phase (a request head, a request body, a response write) begins and shrinks
+the socket's timeout on every call inside that phase, so the *sum* of
+however many reads a peer stretches out is what gets bounded, not each one
+individually — pinned by `a_slow_dribble_still_hits_the_wall_clock_deadline`,
+which dribbles three bytes each safely inside a single-call timeout and
+still gets cut off at the phase's total budget.
+
+**Found and fixed before it shipped: a leftover-bytes bug the daemon's own
+test suite did not catch, because none of its clients send a body small
+enough to land in the same read as its head — except that on loopback, they
+routinely do.** `httparse` reports only how many bytes of a read were the
+head; it says nothing about whether more data follows in the same buffer.
+The first version of `Request::read` started a fresh socket read for the
+body regardless, silently discarding whatever arrived alongside the head —
+which meant any `POST /api/v1/invoke` whose small JSON body happened to
+arrive in the same TCP segment as its head would have its body's opening
+bytes vanish, then hang or misparse waiting for bytes that had already
+come and gone. `cargo test --lib daemon::http1` passed with this bug
+present, because unit tests write head and body as two explicit `write_all`
+calls with nothing forcing the kernel to coalesce them. Caught by reasoning
+through an unrelated `dead_code` warning on `ParseOutcome::Complete`'s
+`consumed` field, not by a failing test — the fix (`PeerReader`, which
+drains that leftover before ever touching the socket again) shipped with
+`a_body_byte_arriving_with_the_head_is_not_dropped`, which forces the
+collision with one `write_all` call carrying both head and body.
+
+**A parallel-session hazard, met and then written down as a rule.**
+Rebuilding this story's two-commit split after its first `make test` pass,
+`git stash push` followed shortly after by `git stash pop` popped a
+different worktree's entry instead of this one's — `refs/stash` is shared
+across every worktree of a repository, and another session working in
+`worktree-SH-150` had pushed its own entry onto the same stack in the
+window between this push and this pop. The conflict that followed
+(`HARDENING_PROGRESS.md`, plus a page of files this story never touched)
+was resolved by `git reset --hard HEAD` — safe here because the popped
+entry survives a conflicted pop rather than being dropped, so the other
+session's work was never at risk — and this story's own edits were
+reapplied directly rather than recovered from stash. `CLAUDE.md` now says
+so: never `git stash` inside a worktree.
+
+**The gate, twice — once green, once with a single unrelated failure
+that reproduced the fix for saying so.** The first full `make test` run
+after wiring the transport in failed one integration test:
+`stalled_connections_past_the_cap_are_refused_without_growing_the_daemon`
+read a multi-header `503` refusal with one raw `read()` call and got back
+only `"HTTP/1.1 "` — the status line's first literal segment, truncated,
+because nothing about `TcpStream` promises several small `write!()` calls
+land in one TCP segment, and the connection-cap refusal path writes on the
+accept thread without `TCP_NODELAY`. Fixed at the root, not just in the
+test: `write_response` now assembles the whole head into one buffer and
+sends it as a single `write_all`, and the test was also corrected to read
+the response a line at a time (`BufReader::read_line`) rather than assuming
+one `read()` captures a whole response — the daemon's *own* clients
+(`ureq`, `EventSource`) already read this way, so only the raw-socket test
+was ever fragile here. Re-ran clean afterward: **2836 passing test-result
+lines** (959 in the library alone), 0 failures, plugin harness 24/24,
+browser suite 13/13. A second, unrelated flake surfaced once more —
+`storyhook-test-support::server::tests::reserved_ports_are_free_distinct_
+and_outside_the_ephemeral_range` failed once under load from a second,
+concurrent `make test` in another worktree contending for the same
+19000–29000 port band — confirmed environmental (this story never touches
+that file) by an immediate clean re-run once the log showed only one gate
+running.
+
+**Semver: patch.** A bug fix with no interface change — `src/daemon/http1`
+is a private implementation detail of the daemon; every route, every
+response shape, and the CLI surface are unchanged.
