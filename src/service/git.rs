@@ -1,10 +1,11 @@
 //! `story commit-sync`: linking git commits to the stories they name.
 //!
 //! Reads the repository's log through `git` itself, finds story ids anywhere in
-//! a commit *message*, and records each one as a `[git] <short-hash>: <subject>`
-//! comment on the story — moving it into the project's active state the first
-//! time a commit **claims** it, if the project has one and has not turned that
-//! off.
+//! a commit *message*, and records each one in the story's `referenced_by`
+//! (SH-169; the `[git] <short-hash>: <subject>` text is still what a reader
+//! sees, just no longer inside `comments` — see `domain::StoryCommitLinked`) —
+//! moving it into the project's active state the first time a commit
+//! **claims** it, if the project has one and has not turned that off.
 //!
 //! # A mention is not a claim (SH-124)
 //!
@@ -59,10 +60,11 @@
 //!
 //! # Idempotency
 //!
-//! A story already carrying a comment that starts `[git] <short-hash>:` is
-//! skipped, so re-running over an overlapping window adds nothing. The check is
-//! against the story's *events*, which is where the legacy path looked, and the
-//! prefix stops at the colon so that a reworded commit does not duplicate.
+//! A commit already linked to a story is skipped, so re-running over an
+//! overlapping window adds nothing. The check ([`already_linked`]) is a
+//! primary-key probe against the structured `story_commit_links` table, not a
+//! scan of comment text — see that function's doc comment for why a second
+//! probe (the seven-character abbreviation) still matters for a pre-#18 row.
 
 use std::collections::BTreeSet;
 
@@ -132,10 +134,10 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
     /// seven days.
     ///
     /// Each story that a commit names is updated in **one transaction**: its
-    /// comment and, when this is the first commit to mention it, its move into
+    /// link and, when this is the first commit to mention it, its move into
     /// the active state land together or not at all. The legacy path wrote them
     /// as two separate appends, so an interruption between them left a story
-    /// commented but not moved.
+    /// linked but not moved.
     ///
     /// Fires no event hooks, which is what the legacy path did — a `commit-sync`
     /// over a week of history would otherwise fire a burst of `comment` and
@@ -161,7 +163,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             ))
         })?;
 
-        let mut comments_added = 0usize;
+        let mut commits_linked = 0usize;
         let mut stories_touched: BTreeSet<String> = BTreeSet::new();
         let mut transitions: Vec<Transition> = Vec::new();
         let mut linked_only: BTreeSet<String> = BTreeSet::new();
@@ -189,7 +191,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
                 let Some(moved) = moved else {
                     continue;
                 };
-                comments_added += 1;
+                commits_linked += 1;
                 stories_touched.insert(story_id.clone());
                 match moved {
                     Some((from, to)) => transitions.push(Transition {
@@ -212,9 +214,9 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         }
 
         let mut message = format!(
-            "scanned {} commits, added {} comments to {} stories",
+            "scanned {} commits, linked {} commits to {} stories",
             commits.len(),
-            comments_added,
+            commits_linked,
             stories_touched.len()
         );
         for transition in &transitions {
@@ -239,8 +241,8 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
     /// Records one commit against one story, in one transaction.
     ///
     /// `Ok(None)` means there was nothing to do: the story is not open, or it
-    /// already carries this commit's comment. `Ok(Some(None))` means a comment
-    /// was added; `Ok(Some(Some((from, to))))` means it was added and the story
+    /// is already linked to this commit. `Ok(Some(None))` means a link was
+    /// added; `Ok(Some(Some((from, to))))` means it was added and the story
     /// moved.
     #[allow(clippy::type_complexity)]
     fn record_commit(

@@ -600,6 +600,29 @@ impl Component for StoryDetail {
             }
         }
 
+        // Referenced By (SH-169) — read-only, like the timestamps below: no
+        // edit action exists for it, so unlike Relations/Comments above it is
+        // never part of `FIELDS`/`selected_field` navigation.
+        if !story.referenced_by_commits.is_empty() {
+            lines.push(render_label_span(
+                "Referenced By",
+                false,
+                label_width,
+                &theme,
+            ));
+            for commit in &story.referenced_by_commits {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(label_width)),
+                    Span::styled(&commit.at[..10.min(commit.at.len())], theme.story_id),
+                    Span::raw(" "),
+                    Span::raw(crate::domain::git_link_comment(
+                        &commit.sha,
+                        &commit.subject,
+                    )),
+                ]));
+            }
+        }
+
         // Description
         let description_val = story.description.as_deref().unwrap_or("(none)");
         if self.mode == DetailMode::EditingDescription && self.selected_field == 8 {
@@ -715,7 +738,9 @@ fn render_editing_field<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Member, Priority, StateDef, StoryComment, StorySnapshot, SuperState};
+    use crate::domain::{
+        CommitReference, Member, Priority, StateDef, StoryComment, StorySnapshot, SuperState,
+    };
     use crate::tui::action::View;
     use crate::tui::data::DataStore;
     use crate::tui::focus::{FocusStack, FocusTarget};
@@ -758,6 +783,11 @@ mod tests {
             comments: vec![StoryComment {
                 at: "2026-01-02T00:00:00Z".to_string(),
                 text: "First comment".to_string(),
+            }],
+            referenced_by_commits: vec![CommitReference {
+                at: "2026-01-03T00:00:00Z".to_string(),
+                sha: "abc1234def567abc1234def567abc1234def567".to_string(),
+                subject: "feat: land it".to_string(),
             }],
             relationships: vec![],
             priority: Priority::High,

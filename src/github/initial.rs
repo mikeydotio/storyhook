@@ -355,6 +355,7 @@ mod tests {
             assignee: None,
             awaiting: None,
             comments: Vec::new(),
+            referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             priority: crate::domain::Priority::None,
             labels: Vec::new(),

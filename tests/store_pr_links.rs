@@ -281,6 +281,113 @@ fn story_pr_merged_updates_status_and_drops_out_of_the_open_read() {
     assert_eq!(status, "merged");
 }
 
+/// `pr_links` (SH-169, `referenced_by.prs`'s read) is the opposite filter
+/// from `open_pr_links`: a merged link is exactly what a reader most wants
+/// to see under "referenced by", not something to hide.
+#[test]
+fn pr_links_includes_a_merged_link_that_open_pr_links_excludes() {
+    let dir = scratch_dir();
+    let (store, project) = fresh_store(dir.path());
+    let story = StoryNo::new(1);
+
+    store
+        .write(|tx| {
+            tx.append_events(
+                project,
+                story,
+                ExpectedSeq::Exact(storyhook::store::EventSeq::ZERO),
+                &[
+                    StoryEvent::StoryPrLinked {
+                        at: "2026-01-01T00:00:00Z".into(),
+                        url: URL.into(),
+                        owner: "acme".into(),
+                        repo: "widgets".into(),
+                        number: 7,
+                        close_on_merge: true,
+                    },
+                    StoryEvent::StoryPrMerged {
+                        at: "2026-01-02T00:00:00Z".into(),
+                        url: URL.into(),
+                    },
+                ],
+            )
+        })
+        .unwrap();
+
+    assert!(
+        store
+            .read(|tx| tx.open_pr_links_for_story(project, story))
+            .unwrap()
+            .is_empty(),
+        "sanity: `open_pr_links_for_story` still excludes it"
+    );
+
+    let links = store.read(|tx| tx.pr_links(project)).unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].0, story);
+    assert_eq!(links[0].1.status, "merged");
+    assert_eq!(links[0].1.number, 7);
+}
+
+/// The project-wide read `story_views` uses to build `referenced_by.prs`
+/// (SH-169), across stories and regardless of status — the same shape
+/// `open_pr_links_answers_project_wide_across_stories` proves for the
+/// open-only variant.
+#[test]
+fn pr_links_answers_project_wide_across_stories_regardless_of_status() {
+    let dir = scratch_dir();
+    let (store, project) = fresh_store(dir.path());
+
+    store
+        .write(|tx| {
+            tx.append_events(
+                project,
+                StoryNo::new(1),
+                ExpectedSeq::Exact(storyhook::store::EventSeq::ZERO),
+                &[StoryEvent::StoryPrLinked {
+                    at: "2026-01-01T00:00:00Z".into(),
+                    url: URL.into(),
+                    owner: "acme".into(),
+                    repo: "widgets".into(),
+                    number: 7,
+                    close_on_merge: true,
+                }],
+            )
+        })
+        .unwrap();
+    store
+        .write(|tx| {
+            tx.append_events(
+                project,
+                StoryNo::new(2),
+                ExpectedSeq::Exact(storyhook::store::EventSeq::ZERO),
+                &[
+                    StoryEvent::StoryPrLinked {
+                        at: "2026-01-01T00:00:00Z".into(),
+                        url: "https://github.com/acme/widgets/pull/9".into(),
+                        owner: "acme".into(),
+                        repo: "widgets".into(),
+                        number: 9,
+                        close_on_merge: false,
+                    },
+                    StoryEvent::StoryPrClosed {
+                        at: "2026-01-02T00:00:00Z".into(),
+                        url: "https://github.com/acme/widgets/pull/9".into(),
+                    },
+                ],
+            )
+        })
+        .unwrap();
+
+    let mut links = store.read(|tx| tx.pr_links(project)).unwrap();
+    links.sort_by_key(|(no, _)| no.get());
+    assert_eq!(links.len(), 2);
+    assert_eq!(links[0].0, StoryNo::new(1));
+    assert_eq!(links[0].1.status, "open");
+    assert_eq!(links[1].0, StoryNo::new(2));
+    assert_eq!(links[1].1.status, "closed");
+}
+
 #[test]
 fn story_pr_closed_without_merging_updates_status_to_closed() {
     let dir = scratch_dir();

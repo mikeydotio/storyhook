@@ -28,7 +28,7 @@ use crate::domain::{
     normalize_labels, relation_edges,
 };
 use crate::error::AppError;
-use crate::output::StoryView;
+use crate::output::{ReferencedBy, StoryView};
 use serde_json::value::RawValue;
 
 use crate::store::{
@@ -518,9 +518,16 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
                     .ok_or_else(|| StoreError::NotFound(format!("story `{id}` not found")))?;
                 // Deliberately the bare view the legacy importer answered with:
                 // no derived relationships, no warnings, no progress rollup.
+                // `referenced_by.commits` still comes along — it is folded
+                // into `row.snapshot` already, no extra query needed — but
+                // `.prs` stays empty, the same project-wide-query line
+                // `query::bare_view` draws for the same reason.
+                let referenced_by =
+                    ReferencedBy::commits_only(row.snapshot.referenced_by_commits.clone());
                 views.push(StoryView {
                     story: row.snapshot,
                     derived_relationships: Vec::new(),
+                    referenced_by,
                     warnings: Vec::new(),
                     flagged_reasons: Vec::new(),
                     stale_info: None,
@@ -600,7 +607,8 @@ pub struct SkippedRemote {
 /// no working checkout anywhere, this may be the only surviving record of it
 /// (SH-138).
 ///
-/// # `legacy_links` — whether a `[git]`-shaped comment is a link record
+/// # `legacy_links` — whether a `[git]`-shaped comment is projected into
+/// `story_commit_links`
 ///
 /// An export document carries no per-event provenance: nothing in it says
 /// whether a `[git] <sha>: <subject>` comment is a pre-#18 link record
@@ -609,18 +617,27 @@ pub struct SkippedRemote {
 /// from the bytes"). `story migrate` never faces this — its input is always an
 /// old `.storyhook` tree, legacy by construction — but a restore's input can be
 /// any export, old or current, so the operator has to say which this one is.
-/// `false` (the default) leaves every comment as prose, exactly as before this
-/// parameter existed; `true` is the operator's assertion that this specific
-/// document predates kind #18, and projects every matching comment into
-/// `story_commit_links` the same way `migrate` replays a legacy tree
-/// (SH-70). Misjudging it is bounded and loud, not silent: a `StoryCommentAdded`
-/// promoted this way is a `LinkSource::Replayed` legacy shape, which
-/// `ON CONFLICT DO NOTHING`s; a real future `StoryCommitLinked` for that same
-/// sha is a plain primary-key `INSERT` and fails outright rather than silently
-/// losing the link (`project_commit_link`). `story doctor`'s
-/// `legacy_link_advice` surfaces any row this produced that has no backing
-/// `StoryCommitLinked` event, so a wrongly-flagged restore is visible rather
-/// than merely awaited.
+///
+/// Since SH-169 this governs only the durable SQL side-table, not the read
+/// model: `fold_story` diverts a matching `StoryCommentAdded` into
+/// `referenced_by_commits` regardless of `legacy_links` — a hand-typed
+/// lookalike is exactly as indistinguishable to the fold as it always was to
+/// this doc's premise, so it renders the same way either way (see
+/// `git_link_sha`'s doc comment, and `service_git.rs`'s
+/// `a_hand_written_comment_that_looks_like_a_link_does_not_suppress_the_real_one`
+/// for the same fold-time ambiguity). `false` (the default) leaves
+/// `story_commit_links` alone, so a future `commit-sync` over the same window
+/// re-links every matching commit; `true` is the operator's assertion that
+/// this specific document predates kind #18, and projects every matching
+/// comment into `story_commit_links` the same way `migrate` replays a legacy
+/// tree (SH-70). Misjudging it is bounded and loud, not silent: a
+/// `StoryCommentAdded` promoted this way is a `LinkSource::Replayed` legacy
+/// shape, which `ON CONFLICT DO NOTHING`s; a real future `StoryCommitLinked`
+/// for that same sha is a plain primary-key `INSERT` and fails outright
+/// rather than silently losing the link (`project_commit_link`). `story
+/// doctor`'s `legacy_link_advice` surfaces any row this produced that has no
+/// backing `StoryCommitLinked` event, so a wrongly-flagged restore is visible
+/// rather than merely awaited.
 pub fn import_project<S: Store>(
     store: &S,
     root: &std::path::Path,
