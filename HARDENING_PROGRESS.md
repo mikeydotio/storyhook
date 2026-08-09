@@ -194,10 +194,10 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-50** — C9 Dispatch button
 - [x] **SH-157** — visually indicate story types · *closed by another session*
 - [x] **SH-169** — add a "Referenced By" field for commits, comments and PRs that mention a story, so the comments list stops filling with `[git]` noise like SH-63's own
-- [ ] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8)*
+- [x] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8); box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
 - [ ] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses
 - [ ] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
-- [ ] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one
+- [x] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one · *box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
 - [ ] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition
 - [ ] **SH-181** — `story doctor` reports 10 malformed labels on the real store: a CSV label stored as one label instead of split
 - [ ] **SH-189** — `story export` is not a complete backup of a github-synced project · *`github.sync` and `github_bases` were deliberately excluded by SH-133; nothing replaces them*
