@@ -447,6 +447,7 @@ mod tests {
                 at: "2026-01-01T12:00:00Z".to_string(),
                 text: "Started work".to_string(),
             }],
+            referenced_by_commits: Vec::new(),
             relationships: vec![
                 StoryRelation {
                     relation: "relates-to".to_string(),

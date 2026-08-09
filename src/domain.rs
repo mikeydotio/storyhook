@@ -260,6 +260,26 @@ pub struct StoryComment {
     pub text: String,
 }
 
+/// One commit that named this story, folded from [`StoryEvent::StoryCommitLinked`]
+/// (or its pre-#18 comment-shaped predecessor — see [`git_link_sha`]).
+///
+/// `sha` is the full forty-character hash for a link recorded after #18; a
+/// link folded from the legacy comment shape only ever preserved the
+/// seven-character abbreviation (that comment format never stored the rest),
+/// so `sha` is shorter for those. Both forms resolve on GitHub, so no caller
+/// needs to tell them apart.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitReference {
+    /// When the link was recorded — the `StoryCommitLinked` event's own
+    /// timestamp, not the commit's author/committer date.
+    pub at: String,
+    /// The commit's hash — full forty characters for a link recorded after
+    /// #18, seven for one folded from the legacy comment shape.
+    pub sha: String,
+    /// The commit's subject line, verbatim.
+    pub subject: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StoryRelation {
     pub relation: String,
@@ -280,6 +300,11 @@ pub struct StorySnapshot {
     pub awaiting: Option<String>,
     #[serde(default)]
     pub comments: Vec<StoryComment>,
+    /// Commits that named this story, kept separate from `comments` so a
+    /// bookkeeping commit mentioning several stories does not spam every one
+    /// of them (SH-169). See [`CommitReference`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_by_commits: Vec<CommitReference>,
     #[serde(default)]
     pub relationships: Vec<StoryRelation>,
     #[serde(default)]
@@ -413,11 +438,14 @@ pub enum StoryEvent {
     /// primary key in the store and a second link record is not a state the
     /// database can hold.
     ///
-    /// **It renders exactly as the comment it replaces.** `fold_story` turns it
-    /// into a `StoryComment` whose text is `[git] <short>: <subject>`, in the
-    /// same position in the same stream, so `story show`, the dashboard, an
-    /// export and the golden corpus see no difference. That is deliberate: the
-    /// change is to how idempotency is *guaranteed*, not to what a user reads.
+    /// **It folds into `referenced_by_commits`, not `comments`** (SH-169).
+    /// Before SH-169, `fold_story` rendered it as a `StoryComment` reading
+    /// `[git] <short>: <subject>` — indistinguishable from a human comment,
+    /// which meant one bookkeeping commit naming several stories spammed a
+    /// `[git]` line onto every one of them. `fold_story` now pushes a
+    /// [`CommitReference`] instead, keeping the invariant this event exists
+    /// for (idempotency keyed on `(project, story, sha)`) separate from how
+    /// the link is displayed.
     ///
     /// `sha` is the full 40-character hash even though only seven of them are
     /// rendered — the record is permanent, and an abbreviation that is unique
@@ -527,15 +555,39 @@ pub fn short_sha(sha: &str) -> &str {
     &sha[..SHORT_SHA.min(sha.len())]
 }
 
-/// The comment text a git link record renders as.
+/// The text a git link renders as wherever a human reads one — the CLI's
+/// `story show`, and formerly (pre-SH-169) the literal `StoryComment` text
+/// `fold_story` produced for it.
 ///
-/// One function, called by [`fold_story`] and by nothing else that formats —
-/// the string `[git] <short>: <subject>` is a user-visible contract with a
-/// test of its own (`service_git.rs::the_comment_reads_git_short_hash_colon_subject`),
+/// One function, called from the render path and by nothing else that
+/// formats — the string `[git] <short>: <subject>` is a user-visible contract
+/// with a test of its own
+/// (`service_git.rs::the_referenced_by_commit_reads_short_hash_colon_subject`),
 /// and a second copy of it is how such a contract drifts.
 #[must_use]
 pub fn git_link_comment(sha: &str, subject: &str) -> String {
     format!("[git] {}: {subject}", short_sha(sha))
+}
+
+/// Splits a pre-#18 link comment (`[git] <short>: <subject>`) into its hash
+/// and subject, or `None` if `text` is not one.
+///
+/// Hex-and-non-empty is the whole test: a user comment that opens `[git]
+/// rebase: ...` is not a link record, and treating it as one would suppress a
+/// real commit.
+///
+/// Splits on the *first colon*, not `": "` — schema migration 2's SQL
+/// backfill locates the hash the same way (`instr(text, ':')`), and the two
+/// must agree on the same input or a row the SQL backfill wrote can name a
+/// commit this parser fails to recognize as a link at fold time. A single
+/// leading space on the subject (the shape [`git_link_comment`] always
+/// writes) is trimmed if present; a comment missing it is rarer but no less a
+/// link record.
+fn parse_git_link_comment(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix("[git] ")?;
+    let (sha, subject) = rest.split_once(':')?;
+    let subject = subject.strip_prefix(' ').unwrap_or(subject);
+    (!sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some((sha, subject))
 }
 
 /// The commit hash a *pre*-#18 link record names, if `text` is one.
@@ -552,11 +604,16 @@ pub fn git_link_comment(sha: &str, subject: &str) -> String {
 /// Returns the *abbreviation*, because that is all such a comment preserved.
 #[must_use]
 pub fn git_link_sha(text: &str) -> Option<&str> {
-    let rest = text.strip_prefix("[git] ")?;
-    let (sha, _) = rest.split_once(':')?;
-    // Hex and non-empty. A user comment that opens `[git] rebase: ...` is not a
-    // link record, and treating it as one would suppress a real commit.
-    (!sha.is_empty() && sha.chars().all(|c| c.is_ascii_hexdigit())).then_some(sha)
+    parse_git_link_comment(text).map(|(sha, _)| sha)
+}
+
+/// The subject a pre-#18 link comment names, if `text` is one — the sibling
+/// extraction [`git_link_sha`] does not do, needed so `fold_story` can route
+/// a legacy `[git]` comment into `referenced_by_commits` (SH-169) with the
+/// same subject text it always rendered.
+#[must_use]
+fn git_link_subject(text: &str) -> Option<&str> {
+    parse_git_link_comment(text).map(|(_, subject)| subject)
 }
 
 /// Every `kind` tag [`StoryEvent`] answers to.
@@ -691,13 +748,13 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryDescriptionSet { .. } => "description-set",
             StoryEvent::StoryClosedAndArchived { .. } => "archived",
             StoryEvent::StoryDeleted { .. } => "deleted",
-            // `"comment"`, not `"commit-linked"`. A link record *is* a comment
-            // to everything that reads a story — see `StoryCommitLinked` — and
-            // this string is rendered to users in `story list --stale`. The
-            // event kind is a storage detail; changing what a human reads
-            // because of it would be a behaviour change smuggled in under a
-            // refactor.
-            StoryEvent::StoryCommitLinked { .. } => "comment",
+            // `"commit-linked"`, not `"comment"` (SH-169). A link record used
+            // to render as a comment, so this string called it one; now that
+            // `fold_story` folds it into `referenced_by_commits` instead (see
+            // `StoryCommitLinked`'s doc comment), calling it "comment" here
+            // would tell a `story list --stale` reader to look for a comment
+            // that no longer exists.
+            StoryEvent::StoryCommitLinked { .. } => "commit-linked",
             StoryEvent::StoryHidden { .. } => "hidden",
             StoryEvent::StoryUnhidden { .. } => "unhidden",
             StoryEvent::StoryPrLinked { .. } => "linked",
@@ -1133,6 +1190,7 @@ pub fn fold_story(
     let mut description = None;
     let mut labels = Vec::new();
     let mut comments = Vec::new();
+    let mut referenced_by_commits = Vec::new();
     let mut relationships = BTreeSet::new();
     let mut closed_at = None;
     let mut deleted = false;
@@ -1151,21 +1209,34 @@ pub fn fold_story(
                 updated_at = Some(at.clone());
                 state = Some(story_state.clone());
             }
+            // A pre-#18 git link masquerades as an ordinary comment — see
+            // `git_link_sha` — so it is diverted into `referenced_by_commits`
+            // here rather than joining `comments` (SH-169). Only the
+            // abbreviation survives from that era; that format never stored
+            // the rest.
             StoryEvent::StoryCommentAdded { at, text } => {
-                comments.push(StoryComment {
-                    at: at.clone(),
-                    text: text.clone(),
-                });
+                match (git_link_sha(text), git_link_subject(text)) {
+                    (Some(sha), Some(subject)) => {
+                        referenced_by_commits.push(CommitReference {
+                            at: at.clone(),
+                            sha: sha.to_string(),
+                            subject: subject.to_string(),
+                        });
+                    }
+                    _ => comments.push(StoryComment {
+                        at: at.clone(),
+                        text: text.clone(),
+                    }),
+                }
                 updated_at = Some(at.clone());
             }
-            // Rendered into the comment stream, in the same position and with
-            // the same text the `StoryCommentAdded` it replaced carried. The
-            // difference between the two is visible to the store and to
-            // nothing else.
+            // Diverted into `referenced_by_commits`, not the comment stream —
+            // see this variant's doc comment (SH-169).
             StoryEvent::StoryCommitLinked { at, sha, subject } => {
-                comments.push(StoryComment {
+                referenced_by_commits.push(CommitReference {
                     at: at.clone(),
-                    text: git_link_comment(sha, subject),
+                    sha: sha.clone(),
+                    subject: subject.clone(),
                 });
                 updated_at = Some(at.clone());
             }
@@ -1416,6 +1487,7 @@ pub fn fold_story(
         story_type,
         description,
         comments,
+        referenced_by_commits,
         relationships: relationships.into_iter().collect(),
         closed_at,
         deleted,
@@ -3696,6 +3768,7 @@ mod tests {
             story_type: None,
             description: None,
             comments: Vec::new(),
+            referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             closed_at: None,
             deleted: false,
@@ -3864,6 +3937,7 @@ mod tests {
                 story_type: None,
                 description: None,
                 comments: Vec::new(),
+                referenced_by_commits: Vec::new(),
                 relationships: vec![StoryRelation {
                     relation: "parent-of".to_string(),
                     other_id: "SH-2".to_string(),
@@ -3887,6 +3961,7 @@ mod tests {
                 story_type: None,
                 description: None,
                 comments: Vec::new(),
+                referenced_by_commits: Vec::new(),
                 relationships: vec![
                     StoryRelation {
                         relation: "child-of".to_string(),
@@ -3916,6 +3991,7 @@ mod tests {
                 story_type: None,
                 description: None,
                 comments: Vec::new(),
+                referenced_by_commits: Vec::new(),
                 relationships: vec![StoryRelation {
                     relation: "child-of".to_string(),
                     other_id: "SH-2".to_string(),
@@ -3939,6 +4015,7 @@ mod tests {
                 story_type: None,
                 description: None,
                 comments: Vec::new(),
+                referenced_by_commits: Vec::new(),
                 relationships: Vec::new(),
                 closed_at: None,
                 deleted: false,
@@ -4771,6 +4848,7 @@ mod tests {
             assignee: None,
             awaiting: None,
             comments: Vec::new(),
+            referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             priority,
             labels: Vec::new(),
@@ -4961,6 +5039,7 @@ mod ready_order_properties {
             assignee: None,
             awaiting: None,
             comments: Vec::new(),
+            referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             priority,
             labels: Vec::new(),

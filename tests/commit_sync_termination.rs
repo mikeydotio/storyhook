@@ -93,18 +93,18 @@ fn event_count(store: &SqliteStore, project: ProjectId, story: StoryNo) -> usize
         .expect("counting events")
 }
 
-/// The story's `[git]` link comments.
-fn link_comments(store: &SqliteStore, project: ProjectId, story: StoryNo) -> Vec<String> {
+/// The story's commit links (SH-169: `referenced_by_commits`, not a
+/// `[git]`-prefixed comment).
+fn link_records(store: &SqliteStore, project: ProjectId, story: StoryNo) -> Vec<String> {
     store
         .read(|tx| {
             Ok(tx
                 .story(project, story)?
                 .expect("the story is in the read model")
                 .snapshot
-                .comments
+                .referenced_by_commits
                 .into_iter()
-                .map(|comment| comment.text)
-                .filter(|text| text.starts_with("[git] "))
+                .map(|link| link.sha)
                 .collect())
         })
         .expect("reading the story")
@@ -167,7 +167,7 @@ fn commit_sync_over_a_body_reference_converges_and_writes_nothing_to_the_reposit
     let commits_before = git(env, project.path(), &["rev-list", "--count", "HEAD"]);
     let mut previous = event_count(&store, project_id, story);
     assert_eq!(
-        link_comments(&store, project_id, story).len(),
+        link_records(&store, project_id, story).len(),
         1,
         "the hook's own run must have linked the commit exactly once"
     );
@@ -188,7 +188,7 @@ fn commit_sync_over_a_body_reference_converges_and_writes_nothing_to_the_reposit
         );
         previous = events;
 
-        let links = link_comments(&store, project_id, story);
+        let links = link_records(&store, project_id, story);
         assert_eq!(
             links.len(),
             1,
@@ -257,7 +257,7 @@ fn a_commit_that_fires_the_hook_produces_nothing_the_hook_would_have_to_record()
     // record — five commits, five links. What must not happen is a sixth from
     // a commit nobody wrote.
     assert_eq!(
-        link_comments(&store, project_id, story).len(),
+        link_records(&store, project_id, story).len(),
         PASSES,
         "one link per commit, and no commit the user did not make"
     );
@@ -306,7 +306,7 @@ fn concurrent_runs_over_one_commit_still_produce_one_link() {
     let project_id = project.project_id(&store);
     let story = project.story_no(&store, &id);
     assert_eq!(
-        link_comments(&store, project_id, story).len(),
+        link_records(&store, project_id, story).len(),
         1,
         "four concurrent scans of one commit must leave one link record"
     );

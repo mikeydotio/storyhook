@@ -17,7 +17,7 @@
 
 use std::process::Command;
 
-use storyhook::domain::{StoryEvent, StorySnapshot};
+use storyhook::domain::{CommitReference, StoryEvent, StorySnapshot};
 use storyhook::error::AppError;
 use storyhook::service::{Clock, GitService, NewStoryInput, StoryService};
 use storyhook::store::{ProjectSettings, ReadOps, Store, StoryNo, WriteOps, partition_known};
@@ -148,6 +148,13 @@ fn comments_of(fixture: &ServiceFixture, story: StoryNo) -> Vec<String> {
         .collect()
 }
 
+/// Every commit `commit-sync` has linked to a story, in order (SH-169) —
+/// what `comments_of` answered before `fold_story` stopped rendering a link
+/// as a comment.
+fn referenced_by_commits_of(fixture: &ServiceFixture, story: StoryNo) -> Vec<CommitReference> {
+    snapshot_of(fixture, story).referenced_by_commits
+}
+
 #[test]
 fn outside_a_git_repository_the_answer_is_a_validation_error() {
     let fixture = ServiceFixture::new();
@@ -270,7 +277,7 @@ fn the_report_counts_commits_scanned_not_commits_matched() {
     commit(&fixture, "docs: also unrelated");
     let message = sync(&fixture).expect("syncing");
     assert!(
-        message.starts_with("scanned 3 commits, added 1 comments to 1 stories"),
+        message.starts_with("scanned 3 commits, linked 1 commits to 1 stories"),
         "{message}"
     );
 }
@@ -279,24 +286,33 @@ fn the_report_counts_commits_scanned_not_commits_matched() {
 // What a commit does to a story — carried across from `differential_git.rs`
 // ---------------------------------------------------------------------------
 
-/// The comment's text is the contract every other surface renders: `story
-/// show`, the dashboard, an export.
+/// The referenced-by entry's fields are the contract every other surface
+/// renders: `story show`, the dashboard, an export (SH-169). And the comment
+/// stream — what `[git]` noise this feature exists to remove — stays empty.
 ///
 /// Pinned here explicitly, character for character, because it is the thing a
 /// later change to how a link is *stored* must not disturb.
 #[test]
-fn the_comment_reads_git_short_hash_colon_subject() {
+fn the_referenced_by_commit_reads_short_hash_colon_subject() {
     let fixture = ServiceFixture::new();
     git_init(&fixture);
     let id = create(&fixture, "Referenced");
     let subject = format!("feat: land {id}");
     commit(&fixture, &subject);
     let short = head_short_hash(&fixture);
+    let full = head_full_hash(&fixture);
     sync(&fixture).expect("syncing");
 
+    let snapshot = snapshot_of(&fixture, StoryNo::new(1));
+    assert_eq!(snapshot.comments, Vec::new(), "no `[git]` comment noise");
+    assert_eq!(snapshot.referenced_by_commits.len(), 1);
+    let commit_ref = &snapshot.referenced_by_commits[0];
+    assert_eq!(commit_ref.sha, full);
+    assert_eq!(commit_ref.subject, subject);
     assert_eq!(
-        comments_of(&fixture, StoryNo::new(1)),
-        vec![format!("[git] {short}: {subject}")]
+        storyhook::domain::git_link_comment(&commit_ref.sha, &commit_ref.subject),
+        format!("[git] {short}: {subject}"),
+        "the rendered form a human reads still matches the pre-SH-169 text"
     );
 }
 
@@ -309,7 +325,7 @@ fn a_repository_whose_commits_name_no_stories_changes_nothing() {
 
     let message = sync(&fixture).expect("syncing");
     assert!(
-        message.starts_with("scanned 1 commits, added 0 comments to 0 stories"),
+        message.starts_with("scanned 1 commits, linked 0 commits to 0 stories"),
         "{message}"
     );
     assert_eq!(events_of(&fixture, StoryNo::new(1)).len(), 1);
@@ -327,7 +343,7 @@ fn a_second_run_over_the_same_window_adds_nothing() {
     let second = sync(&fixture).expect("the second run");
 
     assert!(
-        second.contains("added 0 comments to 0 stories"),
+        second.contains("linked 0 commits to 0 stories"),
         "a re-run over an overlapping window must add nothing: {second}"
     );
     assert_eq!(
@@ -349,7 +365,7 @@ fn several_commits_naming_one_story_comment_it_each_time_and_move_it_once() {
     }
 
     let message = sync(&fixture).expect("syncing");
-    assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 3);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 3);
     assert_eq!(
         message.matches('\u{2192}').count(),
         1,
@@ -375,13 +391,13 @@ fn one_commit_naming_several_stories_touches_each_of_them_once() {
 
     let message = sync(&fixture).expect("syncing");
     assert!(
-        message.starts_with("scanned 1 commits, added 2 comments to 2 stories"),
+        message.starts_with("scanned 1 commits, linked 2 commits to 2 stories"),
         "{message}"
     );
-    assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 1);
-    assert_eq!(comments_of(&fixture, StoryNo::new(2)).len(), 1);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(2)).len(), 1);
     assert!(
-        comments_of(&fixture, StoryNo::new(3)).is_empty(),
+        referenced_by_commits_of(&fixture, StoryNo::new(3)).is_empty(),
         "the story the commit did not name must be untouched"
     );
 }
@@ -398,7 +414,7 @@ fn a_commit_naming_a_closed_story_is_skipped() {
 
     let message = sync(&fixture).expect("syncing");
     assert!(
-        message.contains("added 0 comments to 0 stories"),
+        message.contains("linked 0 commits to 0 stories"),
         "{message}"
     );
     assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "done");
@@ -412,7 +428,7 @@ fn a_commit_naming_a_story_that_does_not_exist_is_skipped() {
 
     let message = sync(&fixture).expect("a phantom reference is not an error");
     assert!(
-        message.contains("added 0 comments to 0 stories"),
+        message.contains("linked 0 commits to 0 stories"),
         "{message}"
     );
 }
@@ -434,7 +450,7 @@ fn a_story_already_out_of_the_default_state_is_commented_but_not_moved() {
         !message.contains('\u{2192}'),
         "a story someone has already moved on must not be dragged back: {message}"
     );
-    assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 1);
     assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "in-progress");
 }
 
@@ -457,9 +473,9 @@ fn a_bare_mention_links_the_commit_and_leaves_the_state_alone() {
         "a bare mention must not move a story: {message}"
     );
     assert_eq!(
-        comments_of(&fixture, StoryNo::new(1)).len(),
+        referenced_by_commits_of(&fixture, StoryNo::new(1)).len(),
         1,
-        "but it must still be linked — the comment trail is the useful half"
+        "but it must still be linked — the referenced-by trail is the useful half"
     );
     assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "todo");
 }
@@ -486,7 +502,10 @@ fn a_refs_trailer_over_a_list_moves_none_of_them() {
             "todo",
             "story {number} must not have moved"
         );
-        assert_eq!(comments_of(&fixture, StoryNo::new(number)).len(), 1);
+        assert_eq!(
+            referenced_by_commits_of(&fixture, StoryNo::new(number)).len(),
+            1
+        );
     }
 }
 
@@ -520,7 +539,7 @@ fn a_conventional_commits_subject_links_without_claiming() {
         !message.contains('\u{2192}'),
         "a CC type prefix is not a trailer key: {message}"
     );
-    assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 1);
     assert_eq!(snapshot_of(&fixture, StoryNo::new(1)).state, "todo");
 }
 
@@ -548,7 +567,7 @@ fn one_commit_may_claim_one_story_and_merely_mention_another() {
         "todo",
         "the mentioned story must not have been dragged along"
     );
-    assert_eq!(comments_of(&fixture, StoryNo::new(2)).len(), 1);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(2)).len(), 1);
 }
 
 /// Without this line a project whose commits use no claim word cannot tell
@@ -603,7 +622,7 @@ fn a_revert_does_not_claim_the_story_its_quoted_subject_names() {
         "a revert re-states the original subject; it does not claim it: {message}"
     );
     assert_eq!(
-        comments_of(&fixture, StoryNo::new(1)).len(),
+        referenced_by_commits_of(&fixture, StoryNo::new(1)).len(),
         1,
         "the revert is still linked, which is what you want to read later"
     );
@@ -620,7 +639,7 @@ fn an_explicit_window_is_honoured() {
         .commit_sync(Some("1h"))
         .expect("syncing");
     assert!(
-        message.starts_with("scanned 1 commits, added 1 comments to 1 stories"),
+        message.starts_with("scanned 1 commits, linked 1 commits to 1 stories"),
         "{message}"
     );
 }
@@ -643,7 +662,7 @@ fn a_window_that_excludes_every_commit_scans_nothing() {
         .commit_sync(Some("0d"))
         .expect("syncing");
     assert!(
-        message.starts_with("scanned 0 commits, added 0 comments to 0 stories"),
+        message.starts_with("scanned 0 commits, linked 0 commits to 0 stories"),
         "{message}"
     );
     assert_eq!(events_of(&fixture, StoryNo::new(1)).len(), 1);
@@ -658,7 +677,7 @@ fn a_reference_carrying_another_projects_prefix_is_ignored() {
 
     let message = sync(&fixture).expect("syncing");
     assert!(
-        message.contains("added 0 comments to 0 stories"),
+        message.contains("linked 0 commits to 0 stories"),
         "{message}"
     );
     assert_eq!(events_of(&fixture, StoryNo::new(1)).len(), 1);
@@ -704,18 +723,22 @@ fn a_story_named_only_in_the_commit_body_is_linked() {
     git_init(&fixture);
     let id = create(&fixture, "Referenced from a trailer");
     commit_with_body(&fixture, "feat: land the thing", &format!("Closes {id}"));
-    let short = head_short_hash(&fixture);
+    let full = head_full_hash(&fixture);
 
     let message = sync(&fixture).expect("syncing");
     assert!(
-        message.starts_with("scanned 1 commits, added 1 comments to 1 stories"),
+        message.starts_with("scanned 1 commits, linked 1 commits to 1 stories"),
         "{message}"
     );
+    let referenced = referenced_by_commits_of(&fixture, StoryNo::new(1));
     assert_eq!(
-        comments_of(&fixture, StoryNo::new(1)),
-        vec![format!("[git] {short}: feat: land the thing")],
-        "the comment text stays the SUBJECT — a multi-paragraph body would be \
-         unreadable in `story show`"
+        referenced
+            .iter()
+            .map(|c| (c.sha.as_str(), c.subject.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(full.as_str(), "feat: land the thing")],
+        "the referenced-by subject stays the SUBJECT — a multi-paragraph body \
+         would be unreadable in `story show`"
     );
 }
 
@@ -735,21 +758,24 @@ fn a_body_line_shaped_like_a_log_line_is_not_read_as_a_commit() {
         "feat: land the thing",
         &format!("deadbeefcafe {id} looks exactly like a log line\nCloses {id}"),
     );
-    let short = head_short_hash(&fixture);
+    let full = head_full_hash(&fixture);
 
     let message = sync(&fixture).expect("syncing");
     assert!(
         message.starts_with("scanned 1 commits,"),
         "one commit, however many lines its message has: {message}"
     );
-    let comments = comments_of(&fixture, StoryNo::new(1));
+    let referenced = referenced_by_commits_of(&fixture, StoryNo::new(1));
     assert_eq!(
-        comments,
-        vec![format!("[git] {short}: feat: land the thing")],
+        referenced
+            .iter()
+            .map(|c| (c.sha.as_str(), c.subject.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(full.as_str(), "feat: land the thing")],
         "a story named twice in one commit is linked once, under the real hash"
     );
     assert!(
-        !comments[0].starts_with("[git] deadbee"),
+        !referenced[0].sha.starts_with("deadbee"),
         "the hash must come from %H, never from body text"
     );
 }
@@ -765,7 +791,7 @@ fn a_body_reference_is_idempotent_across_runs() {
     let before = events_of(&fixture, StoryNo::new(1));
     let second = sync(&fixture).expect("the second run");
 
-    assert!(second.contains("added 0 comments to 0 stories"), "{second}");
+    assert!(second.contains("linked 0 commits to 0 stories"), "{second}");
     assert_eq!(events_of(&fixture, StoryNo::new(1)), before);
 }
 
@@ -783,11 +809,11 @@ fn one_commit_naming_one_story_in_the_subject_and_another_in_the_body_links_both
 
     let message = sync(&fixture).expect("syncing");
     assert!(
-        message.starts_with("scanned 1 commits, added 2 comments to 2 stories"),
+        message.starts_with("scanned 1 commits, linked 2 commits to 2 stories"),
         "{message}"
     );
-    assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 1);
-    assert_eq!(comments_of(&fixture, StoryNo::new(2)).len(), 1);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(2)).len(), 1);
 }
 
 #[test]
@@ -806,7 +832,7 @@ fn a_multi_paragraph_body_is_scanned_to_its_last_line() {
 
     let message = sync(&fixture).expect("syncing");
     assert!(
-        message.contains("added 1 comments to 1 stories"),
+        message.contains("linked 1 commits to 1 stories"),
         "{message}"
     );
 }
@@ -819,7 +845,7 @@ fn a_multi_paragraph_body_is_scanned_to_its_last_line() {
 /// the store can hold.
 ///
 /// The check `commit-sync` makes first is a courtesy — it lets the command
-/// report "added 0 comments" rather than fail. This is what makes the property
+/// report "linked 0 commits" rather than fail. This is what makes the property
 /// true regardless of any caller, which is the difference between an invariant
 /// and a convention.
 #[test]
@@ -850,7 +876,7 @@ fn a_second_link_record_for_one_commit_is_rejected_by_the_store() {
         "the store must refuse a duplicate link record: {second:?}"
     );
     assert_eq!(
-        comments_of(&fixture, StoryNo::new(1)).len(),
+        referenced_by_commits_of(&fixture, StoryNo::new(1)).len(),
         1,
         "and the refusal must have rolled the whole append back"
     );
@@ -866,8 +892,8 @@ fn one_commit_may_link_to_several_stories() {
     commit(&fixture, &format!("chore: {first} and {second}"));
 
     sync(&fixture).expect("syncing");
-    assert_eq!(comments_of(&fixture, StoryNo::new(1)).len(), 1);
-    assert_eq!(comments_of(&fixture, StoryNo::new(2)).len(), 1);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(1)).len(), 1);
+    assert_eq!(referenced_by_commits_of(&fixture, StoryNo::new(2)).len(), 1);
 }
 
 /// A user comment that opens like a link record must not suppress a real one.
@@ -875,7 +901,17 @@ fn one_commit_may_link_to_several_stories() {
 /// The old idempotency check scanned every event for a comment starting
 /// `[git] <short>:`, so typing that prefix by hand silently stopped the next
 /// `commit-sync` from linking that commit. The constraint is keyed on a field,
-/// not on rendered text, so a comment cannot reach it.
+/// not on rendered text, so a comment cannot reach it — `commit_linked` (the
+/// check `record_commit` actually asks) reads the structured
+/// `story_commit_links` table, which a `StoryCommentAdded` never writes to.
+///
+/// Since SH-169, a hand-typed lookalike is textually indistinguishable from a
+/// real *pre-#18* link at fold time too (see `git_link_sha`), so it now folds
+/// into `referenced_by_commits` beside the real one rather than `comments` —
+/// the same ambiguity the format always had, just visible in the section this
+/// feature moved links into. What this test still pins is the property in its
+/// name: the impostor cannot suppress `commit-sync` from creating the real,
+/// structured link.
 #[test]
 fn a_hand_written_comment_that_looks_like_a_link_does_not_suppress_the_real_one() {
     let fixture = ServiceFixture::new();
@@ -883,29 +919,46 @@ fn a_hand_written_comment_that_looks_like_a_link_does_not_suppress_the_real_one(
     let id = create(&fixture, "About to be impersonated");
     commit(&fixture, &format!("feat: land {id}"));
     let short = head_short_hash(&fixture);
+    let full = head_full_hash(&fixture);
 
     StoryService::new(&fixture.ctx())
         .comment(&id, &format!("[git] {short}: I typed this myself"))
         .expect("commenting");
 
     sync(&fixture).expect("syncing");
-    let comments = comments_of(&fixture, StoryNo::new(1));
     assert_eq!(
-        comments.len(),
+        comments_of(&fixture, StoryNo::new(1)),
+        Vec::<String>::new(),
+        "neither the real link nor its lookalike is a comment"
+    );
+    let referenced = snapshot_of(&fixture, StoryNo::new(1)).referenced_by_commits;
+    assert_eq!(
+        referenced.len(),
         2,
-        "the real link must still be recorded beside the impostor: {comments:?}"
+        "the real link must still be recorded beside the impostor: {referenced:?}"
+    );
+    assert!(
+        referenced.iter().any(|c| c.sha == full),
+        "the real, structured link (full hash) is present: {referenced:?}"
+    );
+    assert!(
+        referenced
+            .iter()
+            .any(|c| c.sha == short && c.subject == "I typed this myself"),
+        "the hand-typed lookalike is present too, not silently dropped: {referenced:?}"
     );
 }
 
-/// The link record renders into the comment stream where the comment it
-/// replaced did, and reports the same last-activity type.
+/// The link record folds into `referenced_by_commits`, not the comment
+/// stream (SH-169), and `story list --stale` reports it as `commit-linked`
+/// activity rather than a comment — since there no longer is one.
 #[test]
-fn a_link_record_is_indistinguishable_from_the_comment_it_replaced() {
+fn a_link_record_folds_into_referenced_by_not_comments() {
     use storyhook::domain::last_activity_type;
 
     let fixture = ServiceFixture::new();
     git_init(&fixture);
-    let id = create(&fixture, "Rendered the same");
+    let id = create(&fixture, "Rendered separately");
     fixture
         .store()
         .write(|tx| {
@@ -920,19 +973,26 @@ fn a_link_record_is_indistinguishable_from_the_comment_it_replaced() {
         .expect("writing settings");
     let subject = format!("feat: land {id}");
     commit(&fixture, &subject);
-    let short = head_short_hash(&fixture);
+    let full = head_full_hash(&fixture);
     sync(&fixture).expect("syncing");
 
     let snapshot = snapshot_of(&fixture, StoryNo::new(1));
     assert_eq!(
-        snapshot.comments.last().map(|c| c.text.as_str()),
-        Some(format!("[git] {short}: {subject}").as_str())
+        snapshot.comments,
+        Vec::new(),
+        "the link must not appear as a comment"
+    );
+    assert_eq!(
+        snapshot
+            .referenced_by_commits
+            .last()
+            .map(|c| (c.sha.as_str(), c.subject.as_str())),
+        Some((full.as_str(), subject.as_str()))
     );
     assert_eq!(
         last_activity_type(&events_of(&fixture, StoryNo::new(1))),
-        "comment",
-        "a link record is a comment to everything that reads a story; this \
-         string is rendered by `story list --stale`"
+        "commit-linked",
+        "this string is rendered by `story list --stale`"
     );
     fixture.assert_no_drift();
 }

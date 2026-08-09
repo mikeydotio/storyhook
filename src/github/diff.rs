@@ -400,6 +400,32 @@ fn format_label_set(labels: &BTreeSet<&str>) -> String {
     v.join(", ")
 }
 
+/// Whether `text` is a `[git]` link record, possibly wrapped in one or more
+/// `[storyhook]`/`[github]` sync markers (SH-169).
+///
+/// A project that ran `commit-sync` and `github-sync` together before
+/// SH-169 could have pushed a `[git] <sha>: <subject>` comment to GitHub
+/// (`format_comment_for_github` wraps it `[storyhook] [git] ...` on the way
+/// out; reading it back wraps it again, `[github] [storyhook] [git] ...`).
+/// `fold_story` no longer puts that text in `local.comments` at all, so a
+/// naive base/local/remote text comparison would see the *remote* copy as
+/// newly appeared and reimport it — resurrecting exactly the noise this
+/// story removes, permanently, as a real comment. Unwrapping before the
+/// [`git_link_sha`](crate::domain::git_link_sha) check is what catches it
+/// under any number of prior wrap layers, from either side of the merge.
+fn is_git_link_comment(mut text: &str) -> bool {
+    loop {
+        text = match text
+            .strip_prefix("[github] ")
+            .or_else(|| text.strip_prefix("[storyhook] "))
+        {
+            Some(rest) => rest,
+            None => break,
+        };
+    }
+    crate::domain::git_link_sha(text).is_some()
+}
+
 /// Helper: append-only merge for comments.
 fn merge_comments(
     base: &[StoryComment],
@@ -417,7 +443,9 @@ fn merge_comments(
         .iter()
         .filter(|c| {
             let key = (c.text.clone(), c.at.clone());
-            !base_keys.contains(&key) && !c.text.starts_with("[github]")
+            !base_keys.contains(&key)
+                && !c.text.starts_with("[github]")
+                && !is_git_link_comment(&c.text)
         })
         .cloned()
         .collect();
@@ -428,7 +456,9 @@ fn merge_comments(
         .iter()
         .filter(|c| {
             let key = (c.text.clone(), c.at.clone());
-            !base_keys.contains(&key) && !c.text.starts_with("[storyhook]")
+            !base_keys.contains(&key)
+                && !c.text.starts_with("[storyhook]")
+                && !is_git_link_comment(&c.text)
         })
         .cloned()
         .collect();
@@ -452,6 +482,7 @@ mod tests {
             assignee: None,
             awaiting: None,
             comments: Vec::new(),
+            referenced_by_commits: Vec::new(),
             relationships: Vec::new(),
             priority: Priority::None,
             labels: Vec::new(),
@@ -960,6 +991,54 @@ mod tests {
         // [storyhook] prefixed comment should be filtered out
         assert_eq!(result.new_remote_comments.len(), 1);
         assert_eq!(result.new_remote_comments[0].text, "Real remote comment");
+    }
+
+    /// SH-169 regression: a `[git]` link comment pushed to GitHub before this
+    /// story shipped comes back double-wrapped (`[github] [storyhook] [git]
+    /// ...`) and must never be reimported as a real comment — `fold_story`
+    /// stopped putting that text in `local`/`base` at all, so a naive
+    /// base/remote text comparison would otherwise see it as newly arrived.
+    #[test]
+    fn a_wrapped_git_link_comment_is_never_reimported_from_remote() {
+        let base = make_snapshot("SH-1");
+        let local = base.clone();
+        let mut remote = base.clone();
+        remote.comments.push(StoryComment {
+            at: "2026-01-02T00:00:00Z".to_string(),
+            text: "[github] [storyhook] [git] abc1234: feat: land the thing".to_string(),
+        });
+        remote.comments.push(StoryComment {
+            at: "2026-01-02T01:00:00Z".to_string(),
+            text: "Real remote comment".to_string(),
+        });
+
+        let result = three_way_merge(&base, &local, &remote);
+
+        assert_eq!(result.new_remote_comments.len(), 1);
+        assert_eq!(result.new_remote_comments[0].text, "Real remote comment");
+    }
+
+    /// The same guard applies pushing outward: a hand-typed `[git]`-shaped
+    /// local comment (the "impostor" case `service_git.rs` covers at the
+    /// fold layer) must not be pushed to GitHub as a real comment either.
+    #[test]
+    fn a_git_link_shaped_local_comment_is_never_pushed_to_remote() {
+        let base = make_snapshot("SH-1");
+        let mut local = base.clone();
+        local.comments.push(StoryComment {
+            at: "2026-01-02T00:00:00Z".to_string(),
+            text: "[git] abc1234: I typed this myself".to_string(),
+        });
+        local.comments.push(StoryComment {
+            at: "2026-01-02T01:00:00Z".to_string(),
+            text: "Real local comment".to_string(),
+        });
+        let remote = base.clone();
+
+        let result = three_way_merge(&base, &local, &remote);
+
+        assert_eq!(result.new_local_comments.len(), 1);
+        assert_eq!(result.new_local_comments[0].text, "Real local comment");
     }
 
     #[test]

@@ -24,7 +24,8 @@ use storyhook::cli::GraphMode;
 use storyhook::domain::{Priority, StorySnapshot, SuperState};
 use storyhook::output::StoryView;
 use storyhook::service::{
-    Clock, Ctx, ListFilters, NewStoryInput, QueryService, RelationService, StoryService,
+    Clock, Ctx, ListFilters, NewStoryInput, PrLinkService, QueryService, RelationService,
+    StoryService,
 };
 use storyhook::store::{ProjectId, SqliteStore, Store};
 use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
@@ -462,6 +463,35 @@ fn search_returns_bare_views_with_no_cross_story_facts() {
     // `show` on the same story does carry it, which is the contrast.
     let shown = query(&fixture, |service| service.show(&parent));
     assert!(shown.progress.is_some(), "show rolls progress up");
+}
+
+/// `referenced_by.prs` is a project-wide store read, gated behind
+/// `include_derived` the same way `derived_relationships` is (SH-169) — so
+/// `list` must not pay for it, only `show` does.
+#[test]
+fn referenced_by_prs_only_arrives_on_show_not_list() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "Referenced");
+    PrLinkService::new(&ctx)
+        .link(&id, "https://github.com/acme/widgets/pull/7", false)
+        .expect("linking a PR");
+
+    let listed = query(&fixture, |service| service.list(&ListFilters::default()));
+    let listed_view = listed.iter().find(|v| v.story.id == id).unwrap();
+    assert!(
+        listed_view.referenced_by.prs.is_empty(),
+        "prs are a project-wide read `list` must not pay for, same as \
+         derived_relationships"
+    );
+
+    let shown = query(&fixture, |service| service.show(&id));
+    assert_eq!(
+        shown.referenced_by.prs.len(),
+        1,
+        "show computes the full project-wide pr_links read"
+    );
+    assert_eq!(shown.referenced_by.prs[0].number, 7);
 }
 
 #[test]

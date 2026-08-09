@@ -38,10 +38,12 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::output::{
-    BlockedChainView, GraphOverview, GraphView, ProjectSnapshotView, ReportData, StaleInfo,
-    StoryView, SummaryView,
+    BlockedChainView, GraphOverview, GraphView, ProjectSnapshotView, ReferencedBy, ReportData,
+    StaleInfo, StoryView, SummaryView,
 };
 use crate::store::{ProjectId, ReadOps, StoryNo, StoryQuery, partition_known};
+
+use super::project_prefix;
 
 /// The `story list` filter grammar, as one value.
 ///
@@ -784,6 +786,26 @@ pub fn story_views(
         })
         .collect();
 
+    // Gated on `include_derived`, same as `derived_relationships` above and
+    // for the same reason: `list`/`next`/`summary` and the rest of the
+    // `false` callers have no use for it, so there is no reason to pay for a
+    // project-wide `story_pr_links` read on every one of them. One read for
+    // the whole project rather than one per story, when it does run — the
+    // same shape `progress`/`display_state` use, and for the same reason:
+    // `story_view` answers a single-story question by filtering the *whole*
+    // project's views (see below), so a per-story query here would run once
+    // per story in the project on every `story show`.
+    let mut pr_links_by_id: BTreeMap<String, Vec<crate::store::PrLink>> = BTreeMap::new();
+    if include_derived {
+        let prefix = project_prefix(tx, project)?;
+        for (story_no, link) in tx.pr_links(project)? {
+            pr_links_by_id
+                .entry(story_no.to_id(&prefix))
+                .or_default()
+                .push(link);
+        }
+    }
+
     let mut views = Vec::with_capacity(stories.len());
     for story in stories.into_values() {
         let id = story.id.clone();
@@ -798,9 +820,15 @@ pub fn story_views(
         flagged_reasons.sort();
         flagged_reasons.dedup();
 
+        let referenced_by = ReferencedBy {
+            commits: story.referenced_by_commits.clone(),
+            prs: pr_links_by_id.get(&id).cloned().unwrap_or_default(),
+        };
+
         views.push(StoryView {
             story,
             derived_relationships: derived_relationships.get(&id).cloned().unwrap_or_default(),
+            referenced_by,
             warnings: Vec::new(),
             flagged_reasons,
             stale_info: None,
@@ -836,10 +864,17 @@ pub fn sort_story_views(views: &mut [StoryView]) {
 }
 
 /// A view carrying only the snapshot — what `search` returns.
+///
+/// `referenced_by.commits` still comes along for free (it is folded into the
+/// snapshot itself, no store read required); `referenced_by.prs` does not — a
+/// project-wide join is exactly the per-story-view work this helper exists to
+/// skip, same as `derived_relationships` below.
 fn bare_view(story: StorySnapshot) -> StoryView {
+    let referenced_by = ReferencedBy::commits_only(story.referenced_by_commits.clone());
     StoryView {
         story,
         derived_relationships: Vec::new(),
+        referenced_by,
         warnings: Vec::new(),
         flagged_reasons: Vec::new(),
         stale_info: None,

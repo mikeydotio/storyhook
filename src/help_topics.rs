@@ -654,9 +654,9 @@ Related:
             "commit-sync",
             r#"story commit-sync [--since <duration>]
 
-Scan recent git commits for story ID references and add comments to
-those stories. A commit that CLAIMS a story also moves it into the
-active state.
+Scan recent git commits for story ID references and record them in
+each story's "referenced by" field. A commit that CLAIMS a story also
+moves it into the active state.
 
 Mentioning a story links it. Claiming it moves it:
 
@@ -1026,10 +1026,20 @@ Commands returning a single story ("story" field):
         "closed_at": null
       },
       "derived_relationships": [],
+      "referenced_by": {
+        "commits": [
+          {"at": "2025-01-15T10:30:00Z", "sha": "abc123...", "subject": "feat: closes SH-1"}
+        ],
+        "prs": []
+      },
       "warnings": [],
       "flagged_reasons": [],
       "stale_info": null
     }
+
+  "referenced_by" is omitted entirely when both "commits" and "prs" are
+  empty. "commits" comes from `commit-sync` scanning git history; "prs"
+  from `story link-pr`. Neither ever appears in "comments" (SH-169).
 
   A story removed via `story delete` also carries "deleted": true and
   "deleted_reason": "<reason>" (omitted entirely for non-deleted stories).
