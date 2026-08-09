@@ -425,6 +425,20 @@ tbody tr:hover { background: var(--bg-sunken); }
 }
 .label-combobox { position: relative; display: flex; flex-direction: column; gap: 0.375rem; }
 .section-label { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--fg-faint); margin-bottom: 0.5rem; }
+.section-toggle {
+  display: flex; align-items: center; gap: 0.3125rem; width: 100%; margin-bottom: 0.5rem;
+  padding: 0; border: none; background: none; cursor: pointer; text-align: left;
+  font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--fg-faint);
+}
+.section-toggle:hover { color: var(--fg-muted); }
+.section-toggle .chevron { display: inline-block; width: 0.625rem; font-size: 0.625rem; text-transform: none; }
+.section-toggle .section-count { font-weight: 400; text-transform: none; letter-spacing: normal; }
+.referenced-by-list { display: flex; flex-direction: column; gap: 0.375rem; }
+.referenced-by-row { display: flex; align-items: baseline; gap: 0.4375rem; font-size: 0.8125rem; }
+.referenced-by-meta { font-size: 0.6875rem; color: var(--fg-faint); white-space: nowrap; }
+.referenced-by-text { overflow-wrap: anywhere; }
+.referenced-by-text a { color: inherit; }
 .label-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; align-items: center; }
 .label-chip { display: inline-flex; align-items: center; gap: 0.25rem; }
 .label-chip button { border: none; background: none; color: var(--fg-faint); font-size: 0.75rem; line-height: 1; padding: 0; }
@@ -827,6 +841,17 @@ tbody tr:hover { background: var(--bg-sunken); }
 
   var persistedFilters = loadPersistedFilters();
 
+  /** A persisted drawer-section open/closed preference (SH-169), read once
+   * at startup. `defaultOpen` is the section's own stated default — spelled
+   * out as a plain boolean here rather than as a `!==`/`===` polarity
+   * trick against the stored string, so a future section's intended default
+   * is never a copy-paste guess against an existing, oppositely-polarized
+   * line. */
+  function sectionOpenDefault(key, defaultOpen) {
+    var stored = localStorage.getItem("storyhook.section." + key + ".open");
+    return stored === null ? defaultOpen : stored === "true";
+  }
+
   // ============================================================
   // STATE
   // ============================================================
@@ -882,6 +907,17 @@ tbody tr:hover { background: var(--bg-sunken); }
     // the same thing in any project — so it's a durable cross-project
     // preference like `showArchived` above, not a session/prune value.
     hideEmptyColumns: localStorage.getItem("storyhook.hideEmptyColumns") === "true",
+    // Drawer section open/closed state (SH-169). A durable cross-project
+    // preference like `showArchived`/`hideEmptyColumns` above, not a
+    // per-story or per-repo value — a reader who collapses "Referenced By"
+    // once almost certainly wants it collapsed everywhere. Defaults are the
+    // story's own spec: Comments and Relationships open, Referenced By
+    // closed — see `sectionOpenDefault`.
+    drawerSections: {
+      relationships: sectionOpenDefault("relationships", true),
+      comments: sectionOpenDefault("comments", true),
+      referencedBy: sectionOpenDefault("referencedBy", false)
+    },
     drawerId: null,
     drawerDetail: null,
     pending: {},
@@ -2608,6 +2644,8 @@ tbody tr:hover { background: var(--bg-sunken); }
 
     body.appendChild(buildLabelsSection(st));
     body.appendChild(buildRelationshipsSection(st, full));
+    var referencedBy = buildReferencedBySection(st, full);
+    if (referencedBy) body.appendChild(referencedBy);
     body.appendChild(buildCommentsSection(st));
 
     restoreDrawerFocus(body, focused);
@@ -2806,9 +2844,35 @@ tbody tr:hover { background: var(--bg-sunken); }
     return { element: wrap, getLabels: function() { return selected.slice(); } };
   }
 
+  /** A clickable, persisted `.section-label` replacement (SH-169). `key`
+   * indexes `state.drawerSections` and the matching localStorage key;
+   * `count`, when given, renders beside the label so a collapsed section
+   * still says whether there's anything under it. */
+  function buildSectionToggle(key, label, count) {
+    var open = state.drawerSections[key];
+    var children = [
+      el("span", { class: "chevron" }, [open ? "▾" : "▸"]),
+      label
+    ];
+    if (typeof count === "number") {
+      children.push(el("span", { class: "section-count" }, [" (" + count + ")"]));
+    }
+    return el("button", {
+      type: "button",
+      class: "section-toggle",
+      "aria-expanded": String(open),
+      onClick: function() {
+        state.drawerSections[key] = !open;
+        localStorage.setItem("storyhook.section." + key + ".open", String(!open));
+        renderDrawer();
+      }
+    }, children);
+  }
+
   function buildRelationshipsSection(st, full) {
-    var wrap = el("div", {}, [el("div", { class: "section-label" }, ["Relationships"])]);
     var rels = (st.relationships || []).concat((full && full.derived_relationships) || []);
+    var wrap = el("div", {}, [buildSectionToggle("relationships", "Relationships", rels.length)]);
+    if (!state.drawerSections.relationships) return wrap;
     if (rels.length) {
       var list = el("div", { class: "rel-list" }, []);
       rels.forEach(function(r) {
@@ -2836,9 +2900,11 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   function buildCommentsSection(st) {
-    var wrap = el("div", {}, [el("div", { class: "section-label" }, ["Comments"])]);
+    var comments = st.comments || [];
+    var wrap = el("div", {}, [buildSectionToggle("comments", "Comments", comments.length)]);
+    if (!state.drawerSections.comments) return wrap;
     var list = el("div", { class: "comments" }, []);
-    (st.comments || []).slice().reverse().forEach(function(c) {
+    comments.slice().reverse().forEach(function(c) {
       list.appendChild(el("div", { class: "comment" }, [
         el("div", { class: "comment-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
         el("div", { class: "comment-text" }, [c.text])
@@ -2852,6 +2918,41 @@ tbody tr:hover { background: var(--bg-sunken); }
         .then(function(r) { textarea.value = ""; handleMutationSuccess(r); }).catch(toastError);
     } }, ["Comment"]);
     wrap.appendChild(el("div", { class: "comment-add" }, [textarea, el("div", {}, [submit])]));
+    return wrap;
+  }
+
+  /** Commits `commit-sync` found and PRs `story link-pr` recorded (SH-169) —
+   * the data that used to spam the comments list as `[git]` noise. Commits
+   * come off `st` (folded into the snapshot for free, so present as soon as
+   * the summary is); PRs only arrive with the single-story detail fetch,
+   * same split `buildRelationshipsSection` draws for `derived_relationships`.
+   * Renders nothing at all when there is neither — there is no "add"
+   * affordance here, so an empty collapsible would be pure clutter. */
+  function buildReferencedBySection(st, full) {
+    var commits = st.referenced_by_commits || [];
+    var prs = (full && full.referenced_by && full.referenced_by.prs) || [];
+    if (!commits.length && !prs.length) return null;
+    var wrap = el("div", {}, [buildSectionToggle("referencedBy", "Referenced By", commits.length + prs.length)]);
+    if (!state.drawerSections.referencedBy) return wrap;
+    var list = el("div", { class: "referenced-by-list" }, []);
+    commits.forEach(function(c) {
+      list.appendChild(el("div", { class: "referenced-by-row" }, [
+        el("span", { class: "referenced-by-meta" }, [(c.at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-text" }, ["[git] " + c.sha.slice(0, 7) + ": " + c.subject])
+      ]));
+    });
+    prs.forEach(function(p) {
+      list.appendChild(el("div", { class: "referenced-by-row" }, [
+        el("span", { class: "referenced-by-meta" }, [(p.linked_at || "").replace("T", " ").slice(0, 16)]),
+        el("span", { class: "referenced-by-text" }, [
+          el("a", { href: p.url, target: "_blank", rel: "noopener" }, [
+            "PR " + p.owner + "/" + p.repo + "#" + p.number
+          ]),
+          " (" + p.status + ")"
+        ])
+      ]));
+    });
+    wrap.appendChild(list);
     return wrap;
   }
 

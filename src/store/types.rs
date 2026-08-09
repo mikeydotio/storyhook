@@ -346,7 +346,10 @@ pub struct StoryRow {
 /// A projection of `StoryPrLinked`/`StoryPrMerged`/`StoryPrClosed` — see
 /// `store::sqlite::write::project_pr_link` — keyed on `(owner, repo, number)`
 /// rather than on the story, so it lives beside [`StoryRow`] rather than on it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` since SH-169: `output::ReferencedBy` puts this on
+/// the wire as `referenced_by.prs`, the first path that crosses `/api/v1/invoke`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrLink {
     /// The repository owner, case-folded.
     pub owner: String,

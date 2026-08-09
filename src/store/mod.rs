@@ -352,6 +352,16 @@ pub trait ReadOps {
     /// paired with the story number that owns it — `story pr-check`'s
     /// project-wide read, when no story id is given.
     fn open_pr_links(&self, project: ProjectId) -> Result<Vec<(StoryNo, PrLink)>, StoreError>;
+
+    /// Every linked pull request across the whole project regardless of
+    /// status, paired with the story number that owns it (SH-169).
+    ///
+    /// Unlike [`open_pr_links`](Self::open_pr_links), a merged or closed link
+    /// belongs here too — `referenced_by.prs` is a history of what pointed at
+    /// a story, not a work queue of what still needs asking about, so the
+    /// exact filter that serves `pr-check` would hide the PR a reader is most
+    /// likely to want to see (the one that already shipped the fix).
+    fn pr_links(&self, project: ProjectId) -> Result<Vec<(StoryNo, PrLink)>, StoreError>;
 }
 
 /// Everything that can be written inside a transaction.

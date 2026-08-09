@@ -56,7 +56,7 @@ fn sync_git_basic() {
         .args(["sync-git", "--since", "1h"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("added 1 comments to 1 stories"));
+        .stdout(predicate::str::contains("linked 1 commits to 1 stories"));
 
     // Verify the story now has a [git] comment
     story(dir.path())
@@ -90,7 +90,7 @@ fn sync_git_multiple_ids() {
         .args(["sync-git", "--since", "1h"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("added 2 comments to 2 stories"));
+        .stdout(predicate::str::contains("linked 2 commits to 2 stories"));
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn sync_git_no_matches() {
         .args(["sync-git", "--since", "1h"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("added 0 comments to 0 stories"));
+        .stdout(predicate::str::contains("linked 0 commits to 0 stories"));
 }
 
 #[test]
@@ -135,14 +135,14 @@ fn sync_git_idempotent() {
         .args(["sync-git", "--since", "1h"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("added 1 comments"));
+        .stdout(predicate::str::contains("linked 1 commits"));
 
     // Second sync should add nothing
     story(dir.path())
         .args(["sync-git", "--since", "1h"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("added 0 comments to 0 stories"));
+        .stdout(predicate::str::contains("linked 0 commits to 0 stories"));
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn sync_git_closed_story_ignored() {
         .args(["sync-git", "--since", "1h"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("added 0 comments to 0 stories"));
+        .stdout(predicate::str::contains("linked 0 commits to 0 stories"));
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn sync_git_custom_prefix() {
         .args(["sync-git", "--since", "1h"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("added 1 comments to 1 stories"));
+        .stdout(predicate::str::contains("linked 1 commits to 1 stories"));
 
     story(dir.path())
         .args(["show", "API-1"])
@@ -269,7 +269,7 @@ fn sync_git_summary_message() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "scanned 3 commits, added 2 comments to 2 stories",
+            "scanned 3 commits, linked 2 commits to 2 stories",
         ));
 }
 
@@ -303,7 +303,7 @@ fn sync_git_auto_transition_with_role() {
 
     let output = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
-        output.contains("added 1 comments to 1 stories"),
+        output.contains("linked 1 commits to 1 stories"),
         "unexpected output: {output}"
     );
     assert!(
@@ -354,7 +354,7 @@ fn sync_git_no_transition_without_active_state() {
 
     let output = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(
-        output.contains("added 1 comments to 1 stories"),
+        output.contains("linked 1 commits to 1 stories"),
         "unexpected output: {output}"
     );
     // Should NOT contain a transition line

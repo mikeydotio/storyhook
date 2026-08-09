@@ -853,6 +853,7 @@ mod tests {
             assignee: None,
             awaiting: None,
             comments: vec![],
+            referenced_by_commits: vec![],
             relationships: vec![],
             priority: Priority::None,
             labels: vec![],
