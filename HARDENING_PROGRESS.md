@@ -193,7 +193,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-162** — allow hiding columns
 - [x] **SH-50** — C9 Dispatch button
 - [x] **SH-157** — visually indicate story types · *closed by another session*
-- [ ] **SH-169** — add a "Referenced By" field for commits, comments and PRs that mention a story, so the comments list stops filling with `[git]` noise like SH-63's own
+- [x] **SH-169** — add a "Referenced By" field for commits, comments and PRs that mention a story, so the comments list stops filling with `[git]` noise like SH-63's own
 - [ ] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8)*
 - [ ] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses
 - [ ] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
@@ -236,6 +236,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [ ] **SH-212** — the daemon should unattended-poll GitHub for merged PRs and auto-close their stories · *deferred out of SH-49 by council verdict*
 - [ ] **SH-213** — scp-like syntax with a bracketed IPv6 host normalizes to a garbage key instead of a correct one or a refusal
 - [ ] **SH-216** — `ChangeBus` leading-edge coalescing can silently drop a later, causally-unrelated publish for the same slug
+- [ ] **SH-220** — detect a story-ID mention inside another story's comment text and surface it in Referenced By · *deferred out of SH-169's scope decision — genuinely undesigned, no existing mention grammar*
 
 ### None
 
@@ -7902,3 +7903,96 @@ fires on a GitHub-side merge the way a local `git merge`/`git pull` would, since
 commit ever lands in *this* checkout. Closed explicitly instead
 (`story move SH-187 done`), confirmed via `story show`. Branch verified deleted
 (`git ls-remote --heads origin` empty for it).
+
+### SH-169 — done
+
+**The council-vote mechanism wedged, twice, and the second attempt was decided directly
+instead.** The scope question — SH-169's title names three reference sources (commits,
+comments, PRs) but only commits had any existing detection to build on — genuinely
+needed a judgment call, so it went to `council:council-vote` per this file's autonomy
+rule. Round 1's three seats (`agents:software-architect`, `agents:api-designer`,
+`agents:skeptic`) went idle within seconds of dispatch and never delivered a JSON
+proposal, even after direct nudges; the wedge went uncaught for **22.5 real hours**
+because the chair did not set a bounded stall timeout on a named-teammate dispatch — a
+supervision gap this file's own rule exists to prevent, just not one previously written
+for that dispatch shape. Round 2 was killed within minutes rather than risk repeating
+that, and the user — present and asked directly, since a mechanism had just wasted most
+of a day — chose to have the scope decided directly rather than a third attempt. Full
+audit trail, including the round-1/round-2 timeline and a note on the suspected cause
+(named-teammate dispatches may not reliably return their final text the way an unnamed
+background `Agent` call does), is in `.council/sh-169-referenced-by-scope/`.
+
+**The decision:** ship `referenced_by.commits` (commit-sync's existing detection,
+rerouted out of the comment stream) and `referenced_by.prs` (the already-tracked,
+never-surfaced `story_pr_links` table) now; do not build comment-mention
+auto-detection — no grammar for it exists anywhere, and the semantics are a genuinely
+separate design question. Filed as its own story, **SH-220**, with the open design
+questions named rather than left implicit.
+
+**Implementation matched the decision exactly**, and cost less than expected: since
+`StoryCommitLinked`'s event payload already carries the commit subject, moving it out
+of `comments` needed no schema migration — just a new `StorySnapshot.referenced_by_commits`
+field, populated by the same `fold_story` pass that used to render it into a comment.
+`story_pr_links` needed one new store method (`ReadOps::pr_links`, every status, unlike
+the existing `open_pr_links`) since a merged or closed PR is exactly the kind of
+reference a reader most wants to see, not one to hide. Both reach `StoryView` through a
+new `ReferencedBy` struct, gated the same way `derived_relationships` is: `commits` is
+free (folded already) so `list` carries it too; `prs` is a project-wide read, so only
+`show` pays for it.
+
+**A self-review pass before pushing found eight real issues**, none of them caught by
+`make test` because none of them were covered by a test yet — this is what `/code-review`
+is for. Two were genuine regressions the refactor introduced: `parse_git_link_comment`
+required a colon-*space* to recognize a legacy `[git]` comment, stricter than migration
+2's SQL backfill (any colon), so a legacy comment missing the space would have been
+recognized by the SQL projection but not by the read model — fixed, and
+`the_sql_backfill_and_the_rust_parser_agree` grew a case for it. And `github-sync`'s
+comment merge had no guard against reimporting a `[git]`-shaped comment that had
+previously been pushed to GitHub (wrapped in `[storyhook]`/`[github]` sync markers) —
+now absent from the post-upgrade local/base comment list, it would have resurfaced as a
+permanent duplicate GitHub comment on the next sync for any project that ran both
+features together. The other six were smaller: a `StoryCommentRetracted` no-op on a
+diverted legacy comment (documented as an accepted, extremely narrow edge case rather
+than fixed — retracting a synthetic git-link comment by hand was never a real workflow);
+the TUI's story detail view silently dropping commit links (added a read-only
+Referenced By section there too); an `import_project` doc comment left describing
+pre-SH-169 behavior; missing field-level doc comments; duplicated `ReferencedBy`
+construction across three call sites (added `ReferencedBy::commits_only`); and the web
+dashboard's two collapsible-section defaults being spelled with opposite-polarity
+localStorage checks, a copy-paste trap for a fourth section (added `sectionOpenDefault`
+to spell each default as a plain boolean instead).
+
+**Verified in a real browser, not just by the test suite.** Seeded a story with a real
+`commit-sync` link and a real `story link-pr`, opened the dashboard, and confirmed:
+Referenced By collapsed with the correct count badge, Comments and Relationships open,
+expanding shows the commit and the PR (a live link) correctly formatted, both light and
+dark themes render cleanly, and the section states survive a page reload. This is also
+what caught the SH-187 daemon-token modal as a precondition — the dashboard now refuses
+to load data at all without it, which none of the CLI-only testing up to that point had
+exercised.
+
+**Tests:** new coverage in `store_pr_links.rs` (`pr_links` vs `open_pr_links`, including
+the merged/closed-still-included case and the project-wide read), `service_query.rs`
+(the `include_derived` gate proven directly), `service_git.rs` (every `comments_of`
+assertion that was really testing a commit link rewritten against a new
+`referenced_by_commits_of` helper, plus the rewritten pinned tests for the new render
+shape), `github/diff.rs` (the reimport guard in both directions), `store_migrations.rs`
+(the colon-space case), and `tui/components/story_detail.rs` (fixture coverage for the
+new section, no rendered-buffer assertion — no file in this TUI uses one, for any field,
+so adding that pattern for one new field alone was judged out of proportion here).
+
+**Gate:** `make test` green — fmt, clippy `-D warnings`, full Rust suite, plugin harness
+25/25, e2e 38/38 — run three times end to end (once before the self-review pass, twice
+after: a `cargo fmt` fixup was needed both times, since two separate rounds of manual
+edits landed unformatted). The machine was under heavy contention from several other
+concurrent hardening sessions throughout (worktrees for SH-170, SH-178, SH-188, SH-196
+among the processes visible in `ps aux`); one `bare_integer_ids` daemon-startup timeout
+in an earlier run was confirmed as contention-flakiness, not a regression, by rerunning
+that file alone in isolation.
+
+**PR:** #214, merged as `1c7298b` (`gh pr view` confirmed `MERGED`), fast-forwarded onto
+`main` in this checkout. Two commits: the backend/CLI/TUI change (`774058d`) and the web
+dashboard UI (`062a7c0`), split because the HTML is not part of the Rust build
+(`include_str!`'d at compile time, but nothing in the first commit depends on the
+second) and each commit passes `make test` on its own. Branch verified deleted. New
+follow-up story SH-220 added to the Low queue above, unchecked.
