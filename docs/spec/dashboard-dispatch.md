@@ -161,13 +161,29 @@ story: filed as [SH-187](#follow-up-stories-filed).**
 > listeners. Design of record: [`dashboard-authorization.md`](dashboard-authorization.md).
 
 **F2 — process execution reachable from a browser mutation already existed.** A story
-*move* already reaches `sh -c` through event hooks (`event_hooks.rs:350-357` ←
-`service/mod.rs:258-269`), gated only by the same guard F1 describes. The command text
+*move* already reaches `sh -c` through event hooks (`event_hooks.rs:384-391` ←
+`service/mod.rs:288-302`), gated only by the same guard F1 describes. The command text
 comes from a file already committed in the checkout, not from the request — smaller
 blast radius than dispatch's own attacker-reachable argv, but establishes that
 dispatch is a new *kind* of process execution reachable from this surface, not the
 first. **Pre-existing, wider than this story: filed as
-[SH-188](#follow-up-stories-filed), left undecided.**
+[SH-188](#follow-up-stories-filed).**
+>
+> **Resolved by SH-187, as a side effect.** SH-187's dashboard-wide token gate
+> (`src/api/admission.rs`) runs in `worker()` ahead of `rest::route`, so the mutation
+> this finding named (`POST .../story/{id}/move`) cannot reach `fire_hook`/`sh -c`
+> without both `mutation_guard_ok` and the daemon's bearer token — the same chain F1
+> closed. SH-187's own suite never configured an event hook, so this story's remaining
+> work was one regression test pinning that specific chain end to end (a tokenless
+> mutation is refused *and* fires no hook; the same mutation with the token fires it —
+> `tests/web_test.rs`), not a new mechanism. `fire_hook`'s process-group handling
+> (killing only the `sh` leader on timeout, not its descendants) was raised alongside
+> this finding and is **left unchanged, on purpose** — see `event_hooks.rs`'s own
+> `ScratchFile` docstring and `tests/hook_bounds.rs`'s
+> `a_hook_may_background_work_that_outlives_it`, which pin the SH-141 council's 3–0
+> decision that a hook's descendants are left alone. Changing it now would reverse
+> that decision and would not address this finding either way, since the hook still
+> runs regardless of how its timeout is handled.
 
 **F3 — the residual risk, given F1 and F2 as context.** A peer holding the token who
 can *also* reach the ordinary write surface (F1) can `PATCH` a story's description and
@@ -245,15 +261,15 @@ on purpose). Both are filed and linked below rather than silently absorbed.
 
 ## Follow-up stories filed
 
-Both live in the storyhook store (`story show <id>` is the source of truth). SH-187 is
-resolved and has its own design doc, linked below; SH-188 is still open, with nothing
-under `docs/` to link to yet.
+Both live in the storyhook store (`story show <id>` is the source of truth). Both are
+resolved, and both share the same design doc.
 
 - **SH-187** — the dashboard's mutation guard is not authentication; any tailnet peer
   can write with two headers (F1). Child of SH-112, relates-to SH-50. **Resolved —
   [`dashboard-authorization.md`](dashboard-authorization.md).**
 - **SH-188** — event hooks already let a browser-reachable story mutation run `sh -c`
-  in the project checkout (F2). Child of SH-112, relates-to SH-50.
+  in the project checkout (F2). Child of SH-112, relates-to SH-50. **Resolved by
+  SH-187's fix, above — [`dashboard-authorization.md`](dashboard-authorization.md).**
 
 ## As built — found only once real story.sh runs were driven end to end
 

@@ -2377,6 +2377,76 @@ fn web_mutation_without_a_token_is_401() {
     assert_eq!(data_json["stories"][0]["story"]["state"], "todo");
 }
 
+// --- Mutation guard: the SH-188 chain -- event hooks are behind it too ---
+//
+// SH-187's token gate closed this as a side effect, not as its own design
+// goal: `web_mutation_without_a_token_is_401` above proves a tokenless move
+// is refused and the *story* doesn't change, but no test anywhere combines
+// an HTTP mutation, a configured event hook, and the token gate -- so the
+// specific reachability chain SH-50's authorization review named as finding
+// F2 (a browser-reachable mutation already reaches `sh -c` through event
+// hooks, `event_hooks.rs:384-391` <- `service/mod.rs:288-302`) had never
+// been pinned by an assertion. This is that assertion: a tokenless move must
+// not fire the project's own configured hook, and a credentialed one must.
+
+#[test]
+fn web_mutation_without_a_token_cannot_reach_the_projects_event_hook() {
+    let fixture = served();
+    fixture.seed(&["new", "Story"]);
+
+    // The pointer file's `[hooks]` table is where event hooks live post-flip
+    // (`event_hooks::load_hooks_config`); appended, not overwritten, because
+    // replacing the whole file would destroy the identity `project new` just
+    // wrote and make the checkout unresolvable.
+    let sentinel = fixture.dir().join("hook_fired");
+    let pointer = fixture.dir().join(".storyhook.toml");
+    let identity = std::fs::read_to_string(&pointer)
+        .expect("`story project new` must have written the pointer file this appends to");
+    std::fs::write(
+        &pointer,
+        format!(
+            "{identity}\n[hooks.on_state_change]\ncommand = \"touch {}\"\n",
+            sentinel.display()
+        ),
+    )
+    .expect("appending the project's event-hook configuration");
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    // The CSRF guard header is present and correct -- only the token is
+    // missing -- so this proves the token is what stands between the request
+    // and the hook, not merely that the guard also happened to fail.
+    let err = ureq::post(format!(
+        "http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"
+    ))
+    .header("X-Storyhook", "1")
+    .content_type("application/json")
+    .send(r#"{"state":"in-progress"}"#)
+    .unwrap_err();
+    assert_eq!(status_of(err), 401);
+    assert!(
+        !sentinel.exists(),
+        "a tokenless mutation must not reach the project's event hook"
+    );
+
+    // The same request, credentialed, both succeeds and fires the hook --
+    // the positive control that proves the negative case above means what it
+    // claims: the hook is genuinely reachable, and the token is what was
+    // standing between it and the request, not a misconfigured hook that
+    // would never have fired either way.
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/move"),
+        r#"{"state":"in-progress"}"#,
+    )
+    .expect("a credentialed, guarded move must succeed");
+    assert_eq!(resp.status(), 200);
+    assert!(
+        sentinel.exists(),
+        "a credentialed move must fire the project's configured event hook"
+    );
+}
+
 #[test]
 fn web_root_is_served_without_a_token() {
     let fixture = served();

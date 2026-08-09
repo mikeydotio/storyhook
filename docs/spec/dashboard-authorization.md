@@ -180,3 +180,30 @@ to-fail first request.
 None filed. The residuals above are accepted trade-offs, not deferred work with a
 concrete next step — a future story revisiting per-user tokens or the reverse-proxy
 path would need its own design, not a continuation of this one.
+
+## As built — SH-188 resolved as a side effect, one gap in coverage closed
+
+SH-50's authorization review filed two findings out of the same investigation: **F1**
+("the guard is not authentication," this story) and **F2** ("event hooks already let a
+browser-reachable mutation run `sh -c`," SH-188 — `dashboard-dispatch.md`'s own
+authorization review section). Landing this story's admission gate closes F2 too:
+`POST /api/repos/{id}/story/{id}/move` cannot reach `Ctx::fire_hook` → `sh -c` without
+clearing `admission::admission` first, on every listener, same as any other mutation.
+
+That closure was a side effect, not a design goal of this story, and the gap it left is
+narrow but real: this story's own test suite (`tests/web_test.rs`'s `served()`/`seed()`
+fixture) suppresses event hooks entirely (`Ctx::no_hooks(true)`) to keep fixtures fast
+and hermetic, and `tests/event_hooks.rs` never drives a request through the daemon's
+HTTP/admission layer at all. So while the *mechanism* that closes F2 is fully covered by
+this story's tests, the *specific reachability chain* F2 named — a hook actually
+configured, actually reachable from a browser mutation, actually blocked without a
+credential — had never been exercised end to end. SH-188 added exactly that:
+`tests/web_test.rs::a_tokenless_move_cannot_reach_the_projects_event_hook`, configuring
+a real `[hooks.on_state_change]` hook that writes a sentinel file, asserting a tokenless
+`POST .../move` is refused (401) *and* the sentinel never appears, and that the same
+request with the token both succeeds and fires the hook. No new mechanism, no new
+route — one test closing one specific coverage gap this story's own scope didn't reach.
+
+SH-188's second, unrelated question — whether `fire_hook`'s timeout should kill the
+hook's whole process group instead of just the `sh` leader — is untouched by this story
+and was declined on its own terms; see `dashboard-dispatch.md`'s F2 entry.
