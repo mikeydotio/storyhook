@@ -1294,6 +1294,9 @@ fn remote_snapshot_to_story_snapshot(
         assignee: remote.assignee.clone(),
         awaiting: remote.awaiting.clone(),
         comments: Vec::new(), // Comments handled separately
+        // GitHub issues have no notion of a commit link either; nothing on
+        // the remote side to diff `referenced_by_commits` against.
+        referenced_by_commits: Vec::new(),
         relationships: remote.non_native_relationships.clone(),
         priority: remote.priority.clone(),
         labels: remote.labels.clone(),

@@ -583,7 +583,7 @@ fn the_sql_backfill_and_the_rust_parser_agree() {
     use storyhook::domain::git_link_sha;
     use storyhook::store::ReadOps;
 
-    const CASES: [&str; 7] = [
+    const CASES: [&str; 8] = [
         "[git] abc1234: feat: the work",
         "[git] 0123456789abcdef: a long hash",
         "[git] abc1234: a subject: with a colon in it",
@@ -591,6 +591,11 @@ fn the_sql_backfill_and_the_rust_parser_agree() {
         "[git] nothing here",
         "not a link record at all",
         "[git] : empty",
+        // No space after the colon: both spellings must still find this hash
+        // — the SQL backfill's `instr(text, ':')` does not require one, so a
+        // parser that does would leave a row the migration wrote unrecognized
+        // at fold time.
+        "[git] abc1234:no space",
     ];
 
     let dir = scratch_dir();

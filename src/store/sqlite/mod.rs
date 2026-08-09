@@ -715,6 +715,10 @@ macro_rules! impl_read_ops {
             ) -> Result<Vec<(StoryNo, PrLink)>, StoreError> {
                 read::open_pr_links(&self.conn, project)
             }
+
+            fn pr_links(&self, project: ProjectId) -> Result<Vec<(StoryNo, PrLink)>, StoreError> {
+                read::pr_links(&self.conn, project)
+            }
         }
     };
 }

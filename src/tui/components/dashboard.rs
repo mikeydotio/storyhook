@@ -512,6 +512,7 @@ mod tests {
             assignee: None,
             awaiting: awaiting.map(|s| s.to_string()),
             comments: vec![],
+            referenced_by_commits: vec![],
             relationships: vec![],
             priority,
             labels: vec![],

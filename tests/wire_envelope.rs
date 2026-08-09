@@ -24,16 +24,17 @@ use storyhook::cli::{
     StoreAction, TypeAction, WebAction,
 };
 use storyhook::domain::{
-    Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent, StoryRelation,
-    StorySnapshot, SuperState,
+    CommitReference, Member, Priority, ProgressRollup, StateDef, StoryComment, StoryEvent,
+    StoryRelation, StorySnapshot, SuperState,
 };
 use storyhook::error::{AppError, WireError};
 use storyhook::output::{
     BlockedChainView, ConfirmationPlan, DeletePlan, GraphOverview, GraphView, PhaseView,
-    ProjectSnapshotView, PurgePlan, Response, SetPrefixPlan, SettingKind, SettingSource,
-    SettingView, SetupPlan, StaleInfo, StoryView, SummaryView, UndeletePlan, render_error,
-    render_response,
+    ProjectSnapshotView, PurgePlan, ReferencedBy, Response, SetPrefixPlan, SettingKind,
+    SettingSource, SettingView, SetupPlan, StaleInfo, StoryView, SummaryView, UndeletePlan,
+    render_error, render_response,
 };
+use storyhook::store::PrLink;
 
 /// The four ways a `Response` can be rendered. Every case in this file is
 /// checked in all of them, because `--quiet` and `--json` route through
@@ -76,6 +77,7 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
         assignee: None,
         awaiting: None,
         comments: Vec::new(),
+        referenced_by_commits: Vec::new(),
         relationships: Vec::new(),
         priority: Priority::None,
         labels: Vec::new(),
@@ -92,6 +94,7 @@ fn view(story: StorySnapshot) -> StoryView {
     StoryView {
         story,
         derived_relationships: Vec::new(),
+        referenced_by: ReferencedBy::default(),
         warnings: Vec::new(),
         flagged_reasons: Vec::new(),
         stale_info: None,
@@ -120,6 +123,11 @@ fn maximal_view() -> StoryView {
                     text: "said \"ship it\" — path C:\\tmp\nsecond line".to_string(),
                 },
             ],
+            referenced_by_commits: vec![CommitReference {
+                at: "2026-07-28T09:15:00Z".to_string(),
+                sha: "abc123def456abc123def456abc123def456abc".to_string(),
+                subject: "feat: land SH-1".to_string(),
+            }],
             relationships: vec![
                 StoryRelation {
                     relation: "blocks".to_string(),
@@ -146,6 +154,23 @@ fn maximal_view() -> StoryView {
             relation: "sibling-of".to_string(),
             other_id: "SH-4".to_string(),
         }],
+        referenced_by: ReferencedBy {
+            commits: vec![CommitReference {
+                at: "2026-07-28T09:15:00Z".to_string(),
+                sha: "abc123def456abc123def456abc123def456abc".to_string(),
+                subject: "feat: land SH-1".to_string(),
+            }],
+            prs: vec![PrLink {
+                owner: "mikeydotio".to_string(),
+                repo: "storyhook".to_string(),
+                number: 42,
+                url: "https://github.com/mikeydotio/storyhook/pull/42".to_string(),
+                close_on_merge: true,
+                status: "merged".to_string(),
+                linked_at: "2026-07-28T09:20:00Z".to_string(),
+                last_checked_at: Some("2026-07-28T10:00:00Z".to_string()),
+            }],
+        },
         warnings: vec!["a warning".to_string()],
         flagged_reasons: vec!["stale for 30 days".to_string(), "no assignee".to_string()],
         stale_info: Some(StaleInfo {

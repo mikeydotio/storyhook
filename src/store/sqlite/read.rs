@@ -656,6 +656,30 @@ pub(super) fn open_pr_links(
     collect(rows, "reading open PR links")
 }
 
+/// Every linked pull request across the project regardless of status. See
+/// [`ReadOps::pr_links`](crate::store::ReadOps::pr_links).
+pub(super) fn pr_links(
+    conn: &Connection,
+    project: ProjectId,
+) -> Result<Vec<(StoryNo, PrLink)>, StoreError> {
+    let mut stmt = sql(
+        conn.prepare(&format!(
+            "SELECT story_no, {PR_LINK_COLUMNS} FROM story_pr_links \
+             WHERE project_id = ?1 \
+             ORDER BY story_no, owner, repo, number"
+        )),
+        "preparing a PR-links read",
+    )?;
+    let rows = sql(
+        stmt.query_map(params![project.get()], |row| {
+            let story_no: i64 = row.get(0)?;
+            Ok((StoryNo::new(story_no), pr_link_from_row_offset(row, 1)?))
+        }),
+        "reading PR links",
+    )?;
+    collect(rows, "reading PR links")
+}
+
 /// [`pr_link_from_row`], for a query whose columns start at `offset` rather
 /// than `0` — [`open_pr_links`] prepends `story_no`.
 fn pr_link_from_row_offset(row: &Row<'_>, offset: usize) -> Result<PrLink, rusqlite::Error> {

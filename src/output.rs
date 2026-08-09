@@ -3,9 +3,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    Member, Priority, ProgressRollup, StateDef, StoryRelation, StorySnapshot, SuperState,
+    CommitReference, Member, Priority, ProgressRollup, StateDef, StoryRelation, StorySnapshot,
+    SuperState,
 };
 use crate::error::AppError;
+use crate::store::PrLink;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StaleInfo {
@@ -14,11 +16,51 @@ pub struct StaleInfo {
     pub days_stale: u64,
 }
 
+/// Everything that names a story without living in its own comment thread
+/// (SH-169): the commits `commit-sync` found and the pull requests `story
+/// link-pr` recorded. Assembled at query time, not folded — `commits` is
+/// copied from the story's own [`StorySnapshot::referenced_by_commits`], and
+/// `prs` comes from a separate store read (`ReadOps::pr_links`), the same
+/// split [`StoryView::derived_relationships`] draws between what a story's
+/// own event log says and what a cross-story read adds.
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct ReferencedBy {
+    /// Commits `commit-sync` found naming this story, oldest first — folded
+    /// from the story's own event log, so present on every view regardless
+    /// of `include_derived` (see `service::query::story_views`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commits: Vec<CommitReference>,
+    /// Pull requests `story link-pr` recorded against this story, any
+    /// status — a project-wide store read, so only populated when
+    /// `include_derived` is set (`story show`, not `story list`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prs: Vec<PrLink>,
+}
+
+impl ReferencedBy {
+    fn is_empty(&self) -> bool {
+        self.commits.is_empty() && self.prs.is_empty()
+    }
+
+    /// `commits` with no `prs` — the shape every caller that skips the
+    /// project-wide pr_links read builds (`query::bare_view`,
+    /// `transfer::import_project`), so as not to repeat the same two-field
+    /// literal at each one.
+    pub fn commits_only(commits: Vec<CommitReference>) -> Self {
+        Self {
+            commits,
+            prs: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoryView {
     pub story: StorySnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub derived_relationships: Vec<StoryRelation>,
+    #[serde(default, skip_serializing_if = "ReferencedBy::is_empty")]
+    pub referenced_by: ReferencedBy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1325,6 +1367,23 @@ fn render_story(view: &StoryView) -> String {
         body.push_str("comments:\n");
         for comment in &story.comments {
             body.push_str(&format!("- {} {}\n", comment.at, comment.text));
+        }
+    }
+
+    if !view.referenced_by.is_empty() {
+        body.push_str("referenced_by:\n");
+        for commit in &view.referenced_by.commits {
+            body.push_str(&format!(
+                "- {} {}\n",
+                commit.at,
+                crate::domain::git_link_comment(&commit.sha, &commit.subject)
+            ));
+        }
+        for pr in &view.referenced_by.prs {
+            body.push_str(&format!(
+                "- {} [pr] {} ({})\n",
+                pr.linked_at, pr.url, pr.status
+            ));
         }
     }
 
