@@ -51,6 +51,15 @@ Execution state — wave status, step log, discovered defects — lives in
 **The program is complete and merged.** Follow-on work now lands as ordinary
 branches; the rules below still apply to anything touching the store or the seam.
 
+**The server-owned epic (SH-112) is complete** — all fourteen children merged.
+The daemon is required, project selection is explicit, and git is an optional
+convenience layer that refuses rather than guessing. Design of record:
+[`docs/spec/server-owned.md`](docs/spec/server-owned.md), whose "As built"
+section records the three deviations from the epic as filed — chiefly that the
+committed `.storyhook.toml` pointer survives as an *identity*: a URL belongs to
+at most one project, so a registered origin cannot answer for the second project
+in one repository, nor for a fresh clone on a machine that has registered nothing.
+
 **Store isolation landed** in v2.0.0 (SH-113, the first child of the
 server-owned epic SH-112, and the origin-fix for SH-123). Daemon runtime state
 is derived from the **canonical store path**, so one store has exactly one
