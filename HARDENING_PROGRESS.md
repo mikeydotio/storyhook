@@ -17,8 +17,10 @@ You have no memory of the session that began it. Everything you need is in this
 file and the plan above. Read the plan, then:
 
 1. **Pick** the first unchecked story in the Phase 2 queue, which is ordered by
-   priority. Confirm it is ready (`story list --ready`). Skip **SH-112** — it is
-   an epic and closes when its children do — and skip every line marked **⚠**:
+   priority. Confirm it is ready (`story list --ready`). Skip any **epic** — one
+   closes when its children do, so there is never anything to work on it
+   directly (SH-112, this file's only one, closed 2026-08-09) — and skip every
+   line marked **⚠**:
    those are in-progress in *another* session, and two loops working one story
    is how a branch gets abandoned half-built. Re-check which are ⚠ with
    `story list --state in-progress` rather than trusting the marks, which are
@@ -137,11 +139,11 @@ open, unblocked work, not a filing default to ignore.
 
 ### Critical
 
-- **SH-112** — the server-owned epic · *re-derived 2026-08-08 from `story show SH-112`'s
-  relationships (`story graph` carries no edge for `parent-of`, so it will not surface
-  this): still 14 children. SH-150 closed since the 2026-08-07 re-derivation. SH-187
-  closed the same day (log entry below); **SH-188** is the one child still open. Closes
-  when that one does. Never worked directly.*
+- [x] **SH-112** — the server-owned epic · *all 14 children merged. SH-188, the last
+  one, closed 2026-08-09; the epic closed behind it the same day after a closeout pass
+  wrote the spec it had never had (`docs/spec/server-owned.md`) and cleared the three
+  deviations that had accumulated with nowhere to be recorded. Log entry below. Never
+  worked directly — every line of it landed through a child.*
 
 ### High
 
@@ -246,7 +248,7 @@ above.*
 
 - [ ] **SH-186** — `web_test::a_wedged_tailscale_cli_cannot_stop_the_dashboard_from_serving` fails on at least one dev machine
 - [x] **SH-187** — the dashboard's mutation guard is not authentication — any tailnet peer can write with two headers
-- ⚠ **SH-188** — event hooks already let a browser-reachable story mutation run `sh -c` in the project checkout · *filed under the SH-112 epic; in-progress in another session as of 2026-08-08 (worktree `SH-188`)*
+- [x] **SH-188** — event hooks already let a browser-reachable story mutation run `sh -c` in the project checkout · *the last child of the SH-112 epic; closed 2026-08-09 after SH-187's token gate made the chain unreachable — scope re-decided by council, log entry below*
 - [ ] **SH-198** — `GithubClient::get_timeline` is dead code — zero call sites in `src/` or `tests/` · *filed by SH-158*
 - [ ] **SH-199** — move the New Comment field to above the comments list
 - [ ] **SH-200** — list blocking stories on a story card, with a status light matching each blocker's own column
@@ -8084,3 +8086,131 @@ picks it up next, so re-reading it doesn't require re-deriving what SH-173 chang
 
 **Not ticked in the queue above** — SH-174 remains genuinely open work, unlike the
 resynced SH-170/SH-178.
+
+### SH-188 — done
+
+**Dispatched directly**, like SH-187 before it, into `.claude/worktrees/SH-188`
+rather than self-selected from this queue.
+
+**The story changed underneath the session.** SH-188 was filed out of SH-50's
+authorization review as finding F2: a browser-reachable story mutation reaches an
+unrestricted `sh -c` in the project checkout, via `route_move_story` ->
+`StoryService::set_state` -> `Ctx::fire_hook` -> `event_hooks`'s
+`Command::new("sh")`. Its sibling finding F1 became SH-187, which merged
+(PR #211) **while SH-188 was being planned** — and F1's fix, a bearer token on
+every `/api/**` route, closes F2's chain as a side effect. A route that cannot be
+reached without a credential cannot fire a hook without one either. The plan
+posted to the story on 2026-08-09 was written against the pre-SH-187 tree and was
+stale on arrival: its first two commits (funnelling `web_test`'s requests through
+credential-carrying helpers; a real token in the test seam) had already shipped
+inside SH-187, and its third — a session-cookie scheme — would have rewritten a
+design one day old.
+
+**Council, on exactly that question** (3 seats: security-researcher,
+software-architect, skeptic; ranked-choice, IRV majority on the first count, 2 of
+3 first-place votes): close SH-188, but only after landing one regression test
+that pins the specific chain end to end, correcting `dashboard-dispatch.md`'s F2
+entry (which still read "left undecided" and cited drifted line numbers), and
+explicitly recording the story's *second*, unrelated question rather than letting
+it lapse. Round 1 was 2-1, split on a factual claim that `dispatch::intercept`
+"bypasses" admission; the chair traced it and found the opposite — intercept runs
+strictly *after* admission, deliberate redundant duplication, not a bypass — and
+all three seats revised in deliberation. Rejected: further hardening against a
+token-holder's blast radius, which is the exact residual SH-187's own design doc
+already named and accepted as out of scope.
+
+**The process-group question, declined on the record.** SH-188 also asked whether
+`fire_hook` should kill the hook's whole process group on timeout, the way SH-50's
+dispatch child does, rather than only the `sh` leader. It should not: that reverses
+SH-141's recorded 3-0 council decision, breaks the promise the timeout message
+states in words and `hook_bounds.rs` pins, contradicts `story help hooks`, and does
+nothing for the finding that raised it — the hook still runs; only its stragglers
+would die. Declining loudly rather than silently is half of what the council
+required to close the story.
+
+**What shipped:** `tests/web_test.rs` gains
+`web_mutation_without_a_token_cannot_reach_the_projects_event_hook` — the first
+test anywhere that combines an HTTP mutation, a configured event hook and the
+token gate, proving the tokenless move is refused *and* leaves no sentinel, with
+the credentialed move as its positive control so the rejection means what it
+claims. Plus the F2 correction and a resolution note in
+`dashboard-authorization.md`.
+
+**PR:** #216, merged as `c49ad58`. Branch verified deleted; `story move SH-188
+done` confirmed. `make test` green across three full runs — the middle one caught
+an unrelated pre-existing PTY flake in `crates/storyhook-test-support`, confirmed
+absent from the diff and reproducibly green in isolation, filed as **SH-221**
+rather than fixed in scope.
+
+**One thing did not survive:** the council's seat-by-seat audit trail was written
+to `.council/` inside the worktree, which is gitignored by repo convention, so it
+was never committed. The verdict and its reasoning are preserved in SH-188's own
+comments — the durable record — but the deliberation itself goes when that
+worktree is reaped. Accepted deliberately at closeout rather than rescued.
+
+### SH-112 — done
+
+**The epic, closed behind its last child.** Fourteen children, every one merged;
+never worked directly. Closing it was not a formality, though — a closeout pass
+found the epic had accumulated things nobody would have looked for.
+
+**It had no spec.** SH-112 was specified in its own story description plus a
+planning file under `~/.claude/plans/`, which means that for the entire life of
+the epic there was no document for a deviation to be recorded *in* — and this
+repo's standing rule is that deviations go in the spec's own "As built" section.
+Three had accumulated, each argued carefully in the place it was made (a doc
+comment, a code comment, an entry in this file) and therefore findable only by
+someone who already knew to look. New `docs/spec/server-owned.md` is the design of
+record: the shape as shipped, the fourteen children, an acceptance-criteria table
+naming the test that pins each, and the As built section that was the whole reason
+to write it.
+
+**Deviation 1 — the committed pointer survives as an identity, and outranks the
+origin.** The epic's subtraction list said identity from `.storyhook.toml` would be
+deleted, the file surviving as config only, and listed selection as three steps
+ending at the registered origin. What shipped is four steps with the pointer walk
+at step 2. **Cleared, not fixed**, and the reason is structural rather than
+expedient: SH-119, the subtraction story that would have deleted it, was *blocked*
+by SH-151 — two projects in one repository share an origin, and a URL belongs to at
+most one project by construction, so an origin can never answer for the second one.
+SH-119 shipped the half that was safe (`project_paths` and the recorded-path arm);
+SH-167 later extended the pointer rather than retiring it. The pointer is also the
+only thing that resolves a fresh clone on a machine whose store has registered
+nothing — `story help project` already tells users to commit the file for exactly
+that reason. Crucially it costs the epic nothing it actually promised: the
+filesystem is never *required* (step 1 alone always answers), and a pointer naming
+a uuid this store lacks **refuses** rather than guessing. The subtraction list's
+real error was treating "committed identity" and "recorded path" as one mechanism.
+
+**Deviation 2 — the ordering's justification had expired.** `resolve_project`'s
+doc comment explained pointer-before-origin by saying that *no project in the store
+and no fixture in the suite had a registered origin*, so asking git first would
+spend a 14 ms subprocess to learn nothing. That was measured and true when SH-116
+wrote it; it is false now — most projects in the real store carry an origin.
+**Fixed** as a comment-only change: the ordering stands, because a `stat` walk
+against a `git` subprocess on an 11.8 ms baseline is what actually carries it, but
+a measured claim that has quietly stopped being true is precisely the drift this
+file exists to catch. The same block asserted two other things that had gone stale
+— that the walk still consulted "the recorded path" (pointer-only since schema
+0008) and that step 2 was "SH-119's to delete" (it is permanent) — both corrected.
+
+**Deviation 3 — `story doctor`'s orphan audit survives, narrowed.**
+`CatalogService::orphaned` was named for deletion alongside `relink`, on the ground
+that both existed only to police stored paths. `relink` went; the audit now audits
+exactly `checkout_path`, which did not exist when that list was written — it is
+C8's own creation. **Cleared**: deleting it outright would leave `project list` and
+the dashboard printing a directory that is gone with no way to clean it up. Already
+argued in `catalog.rs`; now recorded where a spec reader will find it.
+
+**A false alarm, corrected in passing.** The closeout's first sweep reported
+acceptance criterion 8's second half — Dispatch shown only for a project with a
+linked checkout — as unpinned. It is not: `e2e/specs/dispatch.spec.ts`'s opening
+test asserts both dispatch buttons are absent for the `--no-attach` "Gamma Archive"
+fixture, with a purpose-built story added to `run-e2e.sh` for it. The sweep missed
+it because the test is labelled with **SH-50's** AC1 rather than the epic's AC8 —
+worth naming, because every criterion in the new table is now cited by test name
+specifically so the next reader does not have to run the same failed grep.
+
+**No version bump.** The `/api` token requirement SH-187 introduced is breaking for
+any tailnet client, and the deferred-batch practice every story above follows still
+applies; `VERSION` stays `v2.0.0` at Mikey's direction.
