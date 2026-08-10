@@ -2848,10 +2848,9 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     /// The project this invocation acts on, in the order SH-116 fixed.
     ///
     /// Four steps, written as four consecutive early-returns rather than as
-    /// nested conditions, and that shape is load-bearing: SH-119 deletes step 2
-    /// and the remaining three are literally the order the story states. A nest
-    /// would make that deletion a rewrite, and a rewrite is what stops a bisect
-    /// attributing a regression.
+    /// nested conditions, and that shape is load-bearing: each step stays
+    /// separately deletable, and a nest would make any such deletion a rewrite
+    /// — a rewrite is what stops a bisect attributing a regression.
     ///
     /// 1. **The selector** — `--project`, else `$STORYHOOK_PROJECT`, collapsed
     ///    into one value by the client. **Binding**: it resolves or it refuses,
@@ -2859,20 +2858,46 @@ impl<'a, S: Store> StoreInvoker<'a, S> {
     ///    measured defect — `STORYHOOK_PROJECT=nonesuch story list` used to be
     ///    ignored in silence and answer about whatever project the directory
     ///    happened to be.
-    /// 2. **The legacy walk** — the pointer file, then the recorded path, at the
-    ///    working directory and then each ancestor. SH-119's to delete.
+    /// 2. **The pointer walk** — the committed `.storyhook.toml`, at the working
+    ///    directory and then each ancestor, bounded by the repository top.
     /// 3. **The origin** — this directory's `origin`, normalized, looked up
     ///    among the registered ones.
     /// 4. Otherwise `None`, and the caller refuses.
     ///
-    /// # Why the walk outranks the origin, for now
+    /// # Why step 2 is still here
     ///
-    /// Measured, not preferred: when this was written **no project in the store
-    /// and no fixture in the suite had a registered origin**, so consulting one
-    /// first would spend a `git` subprocess — 14 ms, against an 11.8 ms
-    /// whole-command baseline — to learn nothing, on every command on the
-    /// machine. Last means it is paid only by a command that is about to refuse
-    /// anyway, where it buys the refusal its `origin` line.
+    /// SH-119 was written to delete it and deleted half: the directory's row in
+    /// `project_paths` went with the index (see [`resolve_at`]). The committed
+    /// pointer stayed, and SH-167 then extended it — `story project link
+    /// checkout` writes one. Kept deliberately, for two things an origin cannot
+    /// do:
+    ///
+    /// * A **fresh clone resolves immediately**, on a machine whose store has
+    ///   registered nothing. An origin registration is a fact about this store;
+    ///   a committed uuid travels in the repository.
+    /// * **Two projects in one repository** each resolve at their own
+    ///   subdirectory. A URL belongs to at most one project by construction, so
+    ///   an origin can only ever answer for one of them — pinned by
+    ///   `origin_ownership.rs::a_second_project_in_one_repository_resolves_by_its_pointer`.
+    ///
+    /// This costs the epic nothing it promised. The filesystem is never
+    /// *required*: step 1 alone always answers. And a pointer naming a uuid this
+    /// store does not hold **refuses** rather than guessing
+    /// ([`unresolvable_pointer_refusal`]) — the failure mode SH-112 asked for.
+    /// Recorded in `docs/spec/server-owned.md`'s "As built".
+    ///
+    /// # Why the walk outranks the origin
+    ///
+    /// Cost, not preference. The walk is a `stat` per ancestor; the origin is a
+    /// `git` subprocess — 14 ms, against an 11.8 ms whole-command baseline — so
+    /// asking it first would roughly double every command the walk was going to
+    /// answer anyway. Last means it is paid by a command that is about to refuse,
+    /// where it buys the refusal its `origin` line.
+    ///
+    /// SH-116 measured that when **no project in the store and no fixture in the
+    /// suite had a registered origin**, which made the case overwhelming and is
+    /// no longer true — most projects have one now. The subprocess is what
+    /// carries the ordering today, not the scarcity.
     ///
     /// The cost is that a pointer file outranks a registered origin when the two
     /// disagree. That state is a checkout claiming two projects, which is a
