@@ -197,7 +197,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-157** — visually indicate story types · *closed by another session*
 - [x] **SH-169** — add a "Referenced By" field for commits, comments and PRs that mention a story, so the comments list stops filling with `[git]` noise like SH-63's own
 - [x] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8); box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
-- [ ] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses · *partial, still open: PR #218 fixed the two concrete under-counts a council found (transition-pair sum, bulk-update's N-aware bound); the ceiling itself — the story's real redesign trigger — remains, see the log entry and the story's own comments*
+- [x] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses · *done — PR #224 pulled the story's own redesign trigger: a 60s ceiling, enforced loudly, `SERVED_DEADLINE` left unchanged, `$STORYHOOK_EXCHANGE_DEADLINE_SECS` deleted*
 - [x] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
 - [x] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one · *box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
 - [ ] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition
@@ -8349,3 +8349,86 @@ each builds and passes `make test` checked out alone, the same bar #214
 (SH-169) set. Landed on top of PR #221 (the SH-112 epic close-out), which
 merged to `main` mid-session; no conflict, verified via `git log
 e33751b..8f6d0bc`. Branch verified deleted.
+
+### SH-174 — done: the redesign trigger itself, pulled
+
+**Picked per this file's own step 1**: first unchecked line in the Medium
+queue after resync, ready, not an epic, not `⚠`/`⏸`. `story show` confirmed
+`todo (OPEN)` with the prior session's council-verdict comment already
+narrowing scope to exactly this: `hooks.settings.timeout_seconds` still had
+no ceiling, and `$STORYHOOK_EXCHANGE_DEADLINE_SECS`'s own docstring still
+named its unaddressed retirement trigger verbatim.
+
+**Council convened** (`.council/sh-174-hook-timeout-ceiling/`, unanimous
+round 1, 3-0 — software-architect, performance-engineer, skeptic) on the
+concrete design: the ceiling's exact value, where it's enforced, whether
+`SERVED_DEADLINE`'s own formula changes, and the escape hatch's disposition.
+All three seats independently proposed the same structure in round 1 —
+differing mainly on the ceiling number (60s ×2, 300s ×1) — and converged
+unanimously on 60s in the vote, the performance-engineer switching off their
+own 300s proposal once the daemon's single-threaded serialization cost was
+weighed (every queued client blocks up to the ceiling behind one hook). Full
+verdict recorded as a story comment on SH-174 and in `DECISION.md`.
+
+**Built to the verdict.** `event_hooks::HOOK_TIMEOUT_CEILING_SECS = 60`,
+enforced inside `load_hooks_config` as a loud refusal (same shape as its
+existing TOML-parse-error path — `eprintln!` naming the offending field,
+value and ceiling, config returns `None`) rather than a silent clamp.
+`SERVED_DEADLINE` is untouched at 120s: the existing
+`max_configured_timeout`/`transition_pair_timeout` allowance mechanism
+(PR #218) keeps working exactly as before, now provably bounded (≤60s single
+hook, ≤120s the transition pair, ≤120s × N `bulk-update`) rather than hedging
+against an unbounded unknown — its docstring rewritten to say so, and
+`the_daemon_deadline_family_is_ordered` needed zero changes. Deleted
+`$STORYHOOK_EXCHANGE_DEADLINE_SECS`'s user-facing surface
+(`parse_exchange_bound`, `Environment::exchange_bound` and its field, the one
+production call site in `HttpInvoker::invoke` now a hardcoded `None`) — SH-182's
+`--deadline` flag already supersedes the use case it served. Kept the
+`ExchangeBound` enum and the `override_bound`/`bound` parameters on
+`verdict()`/`HttpInvoker::send()`: grep-verified real call sites in
+`tests/daemon_timeouts.rs` and `lifecycle.rs`'s own unit tests construct it
+directly, independent of the env var, to drive a 120s bound in 250ms without
+a real sleep — deleting the type would have regressed the suite to real
+120-second sleeps.
+
+**The council's binding addendum, not optional polish.** The skeptic seat
+verified, and both other seats independently corroborated in their votes,
+that `load_hooks_config`'s warn-and-return-`None` path writes to the
+daemon's own stderr log (which the invoking client never sees), and that
+`list_hooks` collapsed that refusal into the identical "no hooks configured"
+string a genuinely empty project produces — shipping a new silent-refusal
+path in the same story that deletes the old escape hatch specifically
+*because* its docstring demanded loud refusal over silent fallback would
+have built the exact defect this story's philosophy forbids. `list_hooks`
+and `test_hook` (`story hooks test`) now say "hooks are configured but not
+active: `<reason>`" distinctly from "no hooks configured (no `[hooks]` table
+in .storyhook.toml)".
+
+**Every test fixture across the codebase carrying a `timeout_seconds` above
+60 audited and rescaled** — `rg -n "timeout_seconds\s*=\s*[0-9]+"` across
+`src/` and `tests/` — six fixtures in `daemon/lifecycle.rs`'s and
+`event_hooks.rs`'s own unit tests used values from 75 to 999 to prove
+sum-vs-max and largest-wins behavior; rescaled to stay under the new ceiling
+while preserving each test's distinguishing property (e.g. 40+15=55 ≠
+max(40,15,60)=60, same shape as the original 100+50=150 ≠ max(100,50,999)=999
+just at a smaller scale). `daemon_concurrency.rs`/`daemon_lifecycle.rs`'s
+integration fixtures already sat at exactly 60 — the boundary is `>`, not
+`≥`, so they needed no change. New unit tests added: at-ceiling accepted,
+over-ceiling refused (both the settings default and a per-hook override),
+`timeout_ceiling_violation` names the specific offending field, and the two
+`list_hooks`/`test_hook` visibility tests the council's addendum required.
+
+**Gate: `make test` green**, supervised (Monitor-based stall watch, 120s
+threshold, no stall hit, heartbeat every ~2 minutes rather than every log
+line after the first attempt proved too chatty and was restarted with a
+tighter filter): `cargo fmt --check`, `clippy --workspace --all-targets -D
+warnings`, the full Rust suite plus doctests, `cargo build`, plugin bash
+harness (25/25), Playwright e2e (**45/45**). `check-no-orphan-servers.sh`
+postlude silent (clean).
+
+**PR:** #224, merged as `0d4acf5` (`gh pr view` confirmed `MERGED`),
+fast-forwarded onto `main` in this checkout, branch verified deleted. The
+commit body's `Closes SH-174` auto-closed the story via `commit-sync` before
+this session's own `story move ... done` ran — confirmed via `story show`
+(`done (CLOSED)`, `auto-closed by merge` in its own comment log) rather than
+re-attempted, since a closed story refuses further modification.
