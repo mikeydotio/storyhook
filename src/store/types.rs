@@ -335,6 +335,9 @@ pub struct StoryRow {
     /// `schema/0010_story_hidden.sql`. `Some` only while `superstate` is
     /// `CLOSED`; the fold and the service layer are what keep that true.
     pub hidden_at: Option<String>,
+    /// Column: whether the story is a draft (SH-175) — `true` until
+    /// `story publish` clears it, and never again after.
+    pub draft: bool,
     /// The story's labels, joined in.
     pub labels: Vec<String>,
     /// The folded snapshot, verbatim — comments and all.
@@ -456,6 +459,8 @@ pub struct StoryQuery {
     /// "Archive" fact. Orthogonal to [`archived`](Self::archived): a story
     /// can be closed and not (yet) hidden, but never hidden while OPEN.
     pub hidden: Option<bool>,
+    /// Restrict to draft (`true`) or live (`false`) stories (SH-175).
+    pub draft: Option<bool>,
     /// Result order.
     pub sort: StorySort,
     /// Maximum rows to return.
@@ -529,6 +534,13 @@ impl StoryQuery {
     #[must_use]
     pub fn hidden(mut self, hidden: bool) -> Self {
         self.hidden = Some(hidden);
+        self
+    }
+
+    /// Restricts to draft or live stories (SH-175).
+    #[must_use]
+    pub fn draft(mut self, draft: bool) -> Self {
+        self.draft = Some(draft);
         self
     }
 

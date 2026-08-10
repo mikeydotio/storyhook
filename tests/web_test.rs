@@ -709,6 +709,51 @@ fn web_serve_api_data_excludes_deleted_stories() {
     );
 }
 
+/// SH-175's council verdict: the board renders from `stories`, which must
+/// never carry a draft, while the Drafts popover and its count badge read
+/// `drafts` — a separate array in the same `/api/data` payload, not a flag
+/// on each story a render call site could forget to check.
+#[test]
+fn web_serve_api_data_routes_drafts_into_their_own_array() {
+    let fixture = served();
+    fixture.seed(&["new", "Live story"]);
+    fixture.seed(&["new", "A sketch", "--draft"]);
+
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = fixture
+        .agent()
+        .get(&format!("http://127.0.0.1:{port}/api/repos/{repo_id}/data"))
+        .call()
+        .unwrap();
+    let body = resp.into_body().read_to_string().unwrap();
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    let story_ids: Vec<&str> = json["stories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["story"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        story_ids,
+        vec!["SH-1"],
+        "draft SH-2 leaked into the board's own `stories` array"
+    );
+
+    let draft_ids: Vec<&str> = json["drafts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["story"]["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        draft_ids,
+        vec!["SH-2"],
+        "the draft must still be reachable, just not in `stories`"
+    );
+}
+
 #[test]
 fn web_serve_404_unknown_route() {
     let fixture = served();
@@ -1999,6 +2044,76 @@ fn web_patch_story_description_without_guard_header_is_403() {
     let json: serde_json::Value =
         serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
     assert_eq!(story_field(&json, "description"), serde_json::Value::Null);
+}
+
+// --- Mutation API: draft / publish (SH-175) ---
+
+#[test]
+fn web_create_story_with_draft_true_creates_a_draft() {
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"A sketch","draft":true}"#,
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "draft"), true);
+}
+
+#[test]
+fn web_create_story_without_draft_is_live() {
+    let fixture = served();
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story"),
+        r#"{"title":"Not a sketch"}"#,
+    )
+    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    // `draft` carries `skip_serializing_if = "is_false"`, matching `deleted`
+    // — a live story's wire form omits the key rather than sending `false`.
+    assert_eq!(story_field(&json, "draft"), serde_json::Value::Null);
+}
+
+#[test]
+fn web_publish_makes_a_draft_live() {
+    let fixture = served();
+    fixture.seed(&["new", "A sketch", "--draft"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let resp = post_json(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/publish"),
+        "{}",
+    )
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value =
+        serde_json::from_str(&resp.into_body().read_to_string().unwrap()).unwrap();
+    assert_eq!(story_field(&json, "draft"), serde_json::Value::Null);
+}
+
+#[test]
+fn web_publish_without_the_csrf_header_is_refused() {
+    let fixture = served();
+    fixture.seed(&["new", "A sketch", "--draft"]);
+    let (port, repo_id) = (fixture.port, fixture.repo_id.as_str());
+
+    let err = post_json_unguarded(
+        &fixture,
+        &format!("http://127.0.0.1:{port}/api/repos/{repo_id}/story/SH-1/publish"),
+        "{}",
+    )
+    .unwrap_err();
+    assert_eq!(status_of(err), 403);
 }
 
 // --- Mutation API: relate / unrelate ---

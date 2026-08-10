@@ -351,6 +351,7 @@ pub fn dispatch<S: Store>(
             priority,
             labels,
             assignee,
+            draft,
         } => {
             let input = NewStoryInput {
                 title,
@@ -360,9 +361,14 @@ pub fn dispatch<S: Store>(
                 priority,
                 labels,
                 assignee,
+                draft,
             };
             let story = StoryService::new(ctx).create(&input)?;
             ctx.story_view(&story.id)
+        }
+        Invocation::Publish { id } => {
+            StoryService::new(ctx).publish(&id)?;
+            ctx.story_view(&id)
         }
         Invocation::Comment { id, text } => {
             StoryService::new(ctx).comment(&id, &text)?;
@@ -535,6 +541,7 @@ pub fn dispatch<S: Store>(
             stale,
             phase,
             story_type,
+            drafts,
         } => {
             let filters = ListFilters {
                 state,
@@ -549,6 +556,7 @@ pub fn dispatch<S: Store>(
                 stale,
                 phase,
                 story_type,
+                drafts,
             };
             query(ctx, |service| service.list(&filters)).map(|views| Response::Stories(views, None))
         }
@@ -2096,7 +2104,8 @@ pub fn needs_github_token(invocation: &Invocation) -> bool {
         | Invocation::Update { .. }
         | Invocation::Version
         | Invocation::ProjectSnapshot
-        | Invocation::History { .. } => false,
+        | Invocation::History { .. }
+        | Invocation::Publish { .. } => false,
     }
 }
 
@@ -2293,6 +2302,7 @@ pub fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Migrate { .. } => "migrate",
         Invocation::ProjectSnapshot => "project-snapshot",
         Invocation::History { .. } => "history",
+        Invocation::Publish { .. } => "publish",
     }
 }
 

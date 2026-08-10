@@ -87,6 +87,7 @@ fn snapshot(id: &str, title: &str) -> StorySnapshot {
         deleted: false,
         deleted_reason: None,
         hidden_at: None,
+        draft: false,
     }
 }
 
@@ -430,6 +431,7 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                 states: Vec::new(),
                 members: Vec::new(),
                 stories: Vec::new(),
+                drafts: Vec::new(),
             })),
         ),
         (
@@ -459,6 +461,10 @@ fn response_corpus() -> Vec<(&'static str, Response)> {
                     created_at: "2026-01-01T00:00:00Z".to_string(),
                 }],
                 stories: vec![maximal_view().story],
+                drafts: vec![StorySnapshot {
+                    draft: true,
+                    ..snapshot("SH-2", "A draft, not yet live")
+                }],
             })),
         ),
         ("story_history_empty", Response::StoryHistory(Vec::new())),
@@ -988,6 +994,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             priority: Some("high".to_string()),
             labels: Some(vec!["backend".to_string(), "api".to_string()]),
             assignee: Some("ada-lovelace".to_string()),
+            draft: true,
         },
         Invocation::MemberAdd {
             input: MemberInput::Identity("Ada Lovelace <ada@example.com>".to_string()),
@@ -1040,6 +1047,7 @@ fn invocation_corpus() -> Vec<Invocation> {
             stale: Some("30d".to_string()),
             phase: Some("1".to_string()),
             story_type: Some("bug".to_string()),
+            drafts: true,
         },
         Invocation::Search {
             query: "trait".to_string(),
@@ -1092,6 +1100,9 @@ fn invocation_corpus() -> Vec<Invocation> {
             id: "SH-1".to_string(),
         },
         Invocation::Unhide {
+            id: "SH-1".to_string(),
+        },
+        Invocation::Publish {
             id: "SH-1".to_string(),
         },
         Invocation::HideState {
@@ -1435,6 +1446,7 @@ fn invocation_name(invocation: &Invocation) -> &'static str {
         Invocation::Reopen { .. } => "Reopen",
         Invocation::Hide { .. } => "Hide",
         Invocation::Unhide { .. } => "Unhide",
+        Invocation::Publish { .. } => "Publish",
         Invocation::HideState { .. } => "HideState",
         Invocation::Delete { .. } => "Delete",
         Invocation::Purge { .. } => "Purge",
@@ -1484,7 +1496,7 @@ fn the_invocation_corpus_covers_every_variant() {
     names.dedup();
     assert_eq!(
         names.len(),
-        59,
+        60,
         "every Invocation variant needs a row in `invocation_corpus`; found {names:?}"
     );
 }

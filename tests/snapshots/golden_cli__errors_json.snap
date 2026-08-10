@@ -11,14 +11,14 @@ stderr: <empty>
 $ story list --no-such-flag --json
 exit: 2
 stdout: 
-{"error":"unknown flag `--no-such-flag` for `story list`.\n\n`story list` takes: --state --assignee --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready\nIf `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
+{"error":"unknown flag `--no-such-flag` for `story list`.\n\n`story list` takes: --state --assignee --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready --drafts\nIf `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.","exit_code":2,"result":"error"}
 
 stderr: <empty>
 
 $ story new --json
 exit: 2
 stdout: 
-{"error":"usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>]","exit_code":2,"result":"error"}
+{"error":"usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>] [--draft]","exit_code":2,"result":"error"}
 
 stderr: <empty>
 
@@ -32,7 +32,7 @@ stderr: <empty>
 $ story list --state --json
 exit: 2
 stdout: 
-{"error":"usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]","exit_code":2,"result":"error"}
+{"error":"usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts]","exit_code":2,"result":"error"}
 
 stderr: <empty>
 

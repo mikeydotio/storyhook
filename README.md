@@ -252,7 +252,7 @@ story project settings get <key>
 story project settings set <key> <value>
 story project settings unset <key>
 
-story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--assignee <member>] [--label <name>] [--labels <csv>]
+story new <title> [--state <slug>] [--type <slug>] [--description "<text>"] [--priority <level>] [--assignee <member>] [--label <name>] [--labels <csv>] [--draft]
 story show <id>
 story comment <id> "<text>"
 story assign <id> <member>
@@ -266,6 +266,7 @@ story reopen <id> [--force]
 story archive <id>
 story unarchive <id>
 story archive-state <slug> [--force]
+story publish <id>
 story delete <id> "<reason>"
 story purge <id> [--force]
 story set <id> (--title "<title>" | --state <slug> | --priority <level> | --assignee <member> | --labels "<csv>" | --blocked "<reason>" | --unblocked | --json "<json>" | --type <slug> | --description "<text>")  # at least one; combine as many as you like
@@ -299,7 +300,7 @@ story epic show <id>
 story epic create "<title>"
 story epic add <epic-id> <story-id>
 
-story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
+story list [--state <slug>] [--assignee <member>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts]
 story next [--count <n>] [--phase <N>]
 story summary
 story report [--html]

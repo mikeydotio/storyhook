@@ -4,6 +4,7 @@ source: tests/golden_cli.rs
 $ story show SH-1
 SH-1 Design the storage engine
 state: todo (OPEN)
+draft: no
 assignee: -
 priority: critical
 type: epic
@@ -18,6 +19,7 @@ progress: 0/3 children done (0%)
 $ story show SH-5
 SH-5 Fix the id collision across worktrees
 state: todo (OPEN)
+draft: no
 assignee: grace-hopper
 priority: critical
 type: bug
@@ -32,6 +34,7 @@ comments:
 $ story show SH-6
 SH-6 Benchmark the rebuild path
 state: todo (OPEN)
+draft: no
 assignee: -
 priority: low
 type: spike
@@ -42,6 +45,7 @@ flagged: no
 $ story show SH-7
 SH-7 Document the data layer
 state: todo (OPEN)
+draft: no
 assignee: -
 priority: none
 type: chore
@@ -51,6 +55,7 @@ flagged: no
 $ story show SH-3
 SH-3 Implement the SQLite engine
 state: in-progress (OPEN)
+draft: no
 assignee: -
 priority: high
 type: normal
@@ -63,6 +68,7 @@ relationships:
 $ story show SH-8
 SH-8 Retire the JSONL reader
 state: done (CLOSED)
+draft: no
 assignee: -
 priority: low
 type: chore
@@ -73,6 +79,7 @@ flagged: no
 $ story show SH-13
 SH-13 Old approach: file-per-story
 state: done (CLOSED, deleted)
+draft: no
 assignee: -
 priority: low
 type: chore

@@ -261,6 +261,7 @@ mod tests {
             deleted: false,
             deleted_reason: None,
             hidden_at: None,
+            draft: false,
         }
     }
 
@@ -443,6 +444,7 @@ mod tests {
                     priority: None,
                     labels: None,
                     assignee: None,
+                    draft: false,
                 }))
                 .unwrap();
         }
@@ -509,6 +511,7 @@ mod tests {
             deleted: false,
             deleted_reason: None,
             hidden_at: None,
+            draft: false,
         }
     }
 
