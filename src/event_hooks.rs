@@ -252,16 +252,22 @@ pub fn load_hooks_config(root: &Path) -> Option<HooksConfig> {
 /// The largest timeout configured for any hook at `root`'s project, or `None`
 /// if it has no hooks configured at all.
 ///
-/// Used to widen a served-command deadline (SH-173): a command's own
-/// completion time is bounded above by *some* configured hook's timeout —
-/// `hook_depth` caps nesting at one, so at most one hook fires inside a
-/// single served request — so a deadline that ignores hook configuration
-/// entirely is what turns a legitimately slow hook into an abandoned
-/// command. Deliberately the *largest* configured value rather than the one
-/// hook the command would actually fire: resolving that precisely would mean
-/// rebuilding the CLI-command-to-hook-event mapping a second time on the
-/// daemon's cold, request-only path, for a number that is already a
-/// generous upper bound either way.
+/// Used to widen a served-command deadline (SH-173) for every command except
+/// the two [`transition_pair_timeout`] covers instead. `hook_depth` caps
+/// *nesting* at one — a hook's own child cannot itself trigger a hook — but
+/// that bounds recursion, not how many distinct hook types one served
+/// command can fire in sequence: `StoryService::fire_transition_hooks`
+/// (`service/story.rs`) fires `on_state_change` and then `on_close`, serially,
+/// in the same call whenever a transition closes a story (SH-174). For every
+/// command that reaches only one hook type per call — which is every command
+/// except `set-state`/`set-fields` — a command's own completion time really
+/// is bounded above by *some* configured hook's timeout, so a deadline that
+/// ignores hook configuration entirely is what turns a legitimately slow
+/// hook into an abandoned command. Deliberately the *largest* configured
+/// value rather than the one hook the command would actually fire: resolving
+/// that precisely would mean rebuilding the CLI-command-to-hook-event mapping
+/// a second time on the daemon's cold, request-only path, for a number that
+/// is already a generous upper bound either way.
 #[must_use]
 pub fn max_configured_timeout(root: &Path) -> Option<Duration> {
     let config = load_hooks_config(root)?;
@@ -281,6 +287,33 @@ pub fn max_configured_timeout(root: &Path) -> Option<Duration> {
         .map(|hook| hook.timeout_seconds.unwrap_or(default))
         .max()
         .map(Duration::from_secs)
+}
+
+/// `on_state_change`'s configured timeout plus `on_close`'s, or `None` if
+/// neither is configured — the one pair of hooks a single served command can
+/// fire serially (SH-174).
+///
+/// `StoryService::fire_transition_hooks` always fires `on_state_change` for a
+/// transition, and also fires `on_close` when the transition closes the
+/// story — both `set-state` (`story move`) and `set-fields` (`story set`)
+/// reach it. [`max_configured_timeout`]'s max-of-one-hook widening
+/// under-counts this specific pair: a widening based on the larger of the
+/// two alone can be exceeded by their sum. A sum, not a max, because unlike
+/// every other command's single hook firing, these two genuinely both run,
+/// one after the other, in the worst case.
+#[must_use]
+pub fn transition_pair_timeout(root: &Path) -> Option<Duration> {
+    let config = load_hooks_config(root)?;
+    let default = config.settings.timeout_seconds;
+    if config.on_state_change.is_none() && config.on_close.is_none() {
+        return None;
+    }
+    let secs: u64 = [config.on_state_change.as_ref(), config.on_close.as_ref()]
+        .into_iter()
+        .flatten()
+        .map(|hook| hook.timeout_seconds.unwrap_or(default))
+        .sum();
+    Some(Duration::from_secs(secs))
 }
 
 fn resolve_hook(config: &HooksConfig, event_type: HookEventType) -> Option<&HookDef> {
@@ -788,5 +821,101 @@ mod tests {
         .to_string();
         assert!(rendered.contains("512 bytes"), "{rendered}");
         assert!(rendered.contains("could not read back"), "{rendered}");
+    }
+
+    fn scratch() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("storyhook-event-hooks-")
+            .tempdir_in("/private/tmp")
+            .expect("a scratch directory")
+    }
+
+    fn write_hooks_toml(dir: &Path, body: &str) {
+        std::fs::create_dir_all(dir.join(".storyhook")).expect("the hooks directory");
+        std::fs::write(dir.join(".storyhook/hooks.toml"), body).expect("writing hooks.toml");
+    }
+
+    /// No hooks configured at all is `None`, matching
+    /// [`max_configured_timeout`]'s own "nothing configured" case.
+    #[test]
+    fn transition_pair_timeout_is_none_with_no_hooks_configured() {
+        let dir = scratch();
+        assert_eq!(transition_pair_timeout(dir.path()), None);
+    }
+
+    /// Neither `on_state_change` nor `on_close` configured is `None`, even
+    /// when other hook types are — the pair this function reports on is
+    /// exactly those two, not "any hook at all".
+    #[test]
+    fn transition_pair_timeout_ignores_every_hook_but_the_pair() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            "[settings]\ntimeout_seconds = 10\n\n\
+             [on_create]\ncommand = \"true\"\ntimeout_seconds = 999\n\n\
+             [on_comment]\ncommand = \"true\"\ntimeout_seconds = 999\n",
+        );
+        assert_eq!(transition_pair_timeout(dir.path()), None);
+    }
+
+    /// The pair sums, rather than taking the larger of the two — the whole
+    /// point of this function existing separately from
+    /// [`max_configured_timeout`]: `fire_transition_hooks` fires both, one
+    /// after the other, when a transition closes a story, so the real
+    /// worst-case cost is their total, not either one alone.
+    #[test]
+    fn transition_pair_timeout_sums_state_change_and_close() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            "[settings]\ntimeout_seconds = 10\n\n\
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 100\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 50\n",
+        );
+        assert_eq!(
+            transition_pair_timeout(dir.path()),
+            Some(Duration::from_secs(150)),
+            "150 = 100 (on_state_change) + 50 (on_close), not max(100, 50)"
+        );
+    }
+
+    /// Only one of the pair configured falls back to the project default for
+    /// the other slot's *absence* correctly: an unconfigured hook contributes
+    /// nothing, not the settings default — `fire_hook` never runs a hook that
+    /// has no `HookDef` at all (`resolve_hook` returns `None` and it's a
+    /// no-op), so counting a phantom default-timeout firing would overcount.
+    #[test]
+    fn transition_pair_timeout_with_only_one_hook_configured_is_that_hooks_alone() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            "[settings]\ntimeout_seconds = 10\n\n\
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 75\n",
+        );
+        assert_eq!(
+            transition_pair_timeout(dir.path()),
+            Some(Duration::from_secs(75)),
+            "on_close is not configured, so fire_hook never runs it — it must \
+             contribute 0s, not the settings default"
+        );
+    }
+
+    /// A hook with no timeout of its own falls back to the project's
+    /// `settings.timeout_seconds`, matching every other hook-timeout
+    /// resolution in this file.
+    #[test]
+    fn transition_pair_timeout_falls_back_to_the_settings_default() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            "[settings]\ntimeout_seconds = 20\n\n\
+             [on_state_change]\ncommand = \"true\"\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 5\n",
+        );
+        assert_eq!(
+            transition_pair_timeout(dir.path()),
+            Some(Duration::from_secs(25)),
+            "25 = 20 (on_state_change, defaulted) + 5 (on_close, explicit)"
+        );
     }
 }
