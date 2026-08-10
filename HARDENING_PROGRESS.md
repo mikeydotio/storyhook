@@ -201,7 +201,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
 - [x] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one · *box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
 - [x] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition · *done — routed through `validate_required_states`; fixed at all four sites sharing the pattern*
-- [ ] **SH-181** — `story doctor` reports 10 malformed labels on the real store: a CSV label stored as one label instead of split
+- [x] **SH-181** — `story doctor` reports 10 malformed labels on the real store: a CSV label stored as one label instead of split · *done — no code defect (SH-164's write-path guard already closed it); real-store data repair, plus SH-225 filed for the closed-story blind spot it surfaced*
 - [ ] **SH-189** — `story export` is not a complete backup of a github-synced project · *`github.sync` and `github_bases` were deliberately excluded by SH-133; nothing replaces them*
 - [ ] **SH-190** — a restored project can be unreachable from its own checkout · *`transfer::import_project` mints a fresh `projects.uuid` the old `.storyhook.toml` pointer no longer matches*
 - [ ] **SH-192** — `RemoteUrl`: a host literally named `local` with an empty port collides with the local-path key space, contradicting the module's own "never collide" claim
@@ -8480,3 +8480,64 @@ commit body's `Closes SH-180` auto-closed the story via `commit-sync` before
 this session's own `story move ... done` ran — confirmed via `story show`
 (`done (CLOSED)`, `auto-closed by merge` in its own comment log) rather than
 re-attempted.
+
+### SH-181 — done: no code defect, a real-store data repair instead
+
+Not a code fix. Full investigation answered all three of the story's own
+questions and found the write path already correct:
+
+1. **Which write path accepted the comma:** none, currently. SH-164's
+   `normalize_labels` + `validate_event_for_append` landed 2026-08-03 22:29
+   PDT (commits `7c09667`, `7a1cff7`) and are wired into
+   `service::append_and_fold` — the one path every service uses to write an
+   event — as a backstop every producer already routes through. Confirmed by
+   reading every `StoryLabelsSet` call site (`story.rs`, `transfer.rs`,
+   `grouping.rs`) and by the tests that already exist for exactly this
+   (`tests/doctor.rs::doctor_reports_and_fixes_a_malformed_label`,
+   `tests/service_integrity.rs`).
+2. **Whether the validation exists at the write boundary:** yes, same
+   answer — `append_and_fold`'s backstop refuses a comma-bearing or
+   untrimmed label unconditionally.
+3. **Whether `--fix` should split or refuse:** already decided, before this
+   story, in the code that already ships: it splits — a label legitimately
+   containing a comma was never representable in the first place, since
+   comma is the universal label delimiter everywhere else in the CLI
+   (`list --label a,b`, `unlabel <id> a,b`).
+
+**What was actually broken: doctor's real-store repair loop only visits
+`open_stories()`**, because `resolve_open_story` refuses to append to any
+archived story project-wide — a deliberate, load-bearing invariant, not a
+bug. All 8 of the malformed-label rows still present (2 of the story's
+original 10 — SH-135, SH-150 — no longer surfaced, already closed by an
+earlier process) are `state: done`, so `story doctor --fix` had been
+silently no-oping on them since the moment SH-164 landed. Confirmed by
+running it against the real store before touching anything: `doctor` and
+`doctor --fix` returned byte-identical output.
+
+**Repair, using only existing tooling, no new code:** `story store backup
+--label pre-sh181-label-repair` (verified, `VACUUM INTO` + `integrity_check`)
+· reopen all 8 (`SH-145, 146, 147, 148, 149, 158, 172, 174`) · one `story
+doctor --fix` pass · spot-verified the split (`SH-145`: `web,sse` →
+`[sse, web]`) · moved all 8 back to `done` · re-ran `story doctor`: exit 0,
+zero `malformed labels` findings — its only remaining output is an
+unrelated, pre-existing, expected finding about legacy `[git]`-comment
+commit links, which names itself "nothing to do."
+
+**Deviation — the reopen/fix/reclose loop was not run autonomously**, the
+same shape as SH-132's. The auto-mode classifier blocked the batch reopen
+loop, then blocked `doctor --fix` and even plain `doctor` as bulk real-store
+mutations. Stopped rather than chunking or retrying around it — reported
+the exact remaining state (8 stories left open mid-repair) and the two exact
+commands to Mikey. He authorized running them directly; individual
+`story reopen <id>` calls succeeded one at a time (the classifier's objection
+was to the batch shape, not the verb), `doctor --fix` succeeded once
+explicitly authorized. Verified this project carries no `[hooks]` table and
+no active github-sync before any of it, so the reopen/reclose cycle had no
+external side effects to weigh against.
+
+**Filed SH-225** for the gap the investigation actually surfaced: `doctor
+--fix` gives no warning when a finding belongs to a closed story and is
+silently left unrepaired — the exact silence that let this sit unnoticed
+from 2026-08-03 until this session. `story_issues`'s relation-repair block
+carries an identical "only reachable on an open story" comment, so the same
+blind spot likely affects more than labels.
