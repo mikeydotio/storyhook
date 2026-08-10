@@ -1764,3 +1764,85 @@ fn migration_ten_leaves_every_other_column_and_the_event_log_untouched() {
          10 must not have added any"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Migration 12: `stories.draft` (SH-175)
+// ---------------------------------------------------------------------------
+
+/// Seeds one v11 project holding one story, straight to the tables — the same
+/// reason `seed_a_v9_story` does: this fixture must stay buildable on a
+/// schema that predates the column migration 12 adds.
+fn seed_a_v11_story(path: &Path) {
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, uuid, slug, name, prefix, created_at)
+             VALUES (1, 'u-1', 'proj', 'Proj', 'SH', '2026-01-01T00:00:00Z');
+         INSERT INTO project_states (project_id, position, slug, superstate)
+             VALUES (1, 0, 'todo', 'OPEN'), (1, 1, 'done', 'CLOSED');
+         INSERT INTO stories (project_id, story_no, head_seq, title, state, superstate,
+                              priority, priority_rank, created_at, updated_at, snapshot)
+             VALUES (1, 1, 1, 'A story', 'todo', 'OPEN', 'none', 4,
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '{}');",
+    )
+    .unwrap();
+}
+
+#[test]
+fn migration_twelve_adds_a_draft_column_that_pre_existing_stories_read_as_live() {
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..11]).unwrap();
+    seed_a_v11_story(store.path());
+
+    assert!(
+        Connection::open(store.path())
+            .unwrap()
+            .prepare("SELECT draft FROM stories")
+            .is_err(),
+        "a v11 database must not already have `draft` — otherwise this test \
+         proves nothing about the migration that adds it"
+    );
+
+    store.migrate().unwrap();
+
+    let draft: bool = Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT draft FROM stories WHERE project_id = 1 AND story_no = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        !draft,
+        "a story that existed before this migration is not retroactively drafted — \
+         SH-175's own text: new stories are live unless a caller opts into draft"
+    );
+}
+
+#[test]
+fn migration_twelve_leaves_every_other_column_and_the_event_log_untouched() {
+    use storyhook::store::ReadOps;
+
+    let dir = scratch_dir();
+    let store = SqliteStore::open(dir.path().join("store.db")).unwrap();
+    store.migrate_with(&migrate::MIGRATIONS[..11]).unwrap();
+    seed_a_v11_story(store.path());
+    let before = next_global_seq(&store, storyhook::store::ProjectId::new(1));
+
+    store.migrate().unwrap();
+
+    assert_eq!(
+        before,
+        next_global_seq(&store, storyhook::store::ProjectId::new(1)),
+        "no data-migrating event is appended — this is a bare `ADD COLUMN`"
+    );
+    let events = store
+        .read(|tx| tx.events_for(storyhook::store::ProjectId::new(1), StoryNo::new(1)))
+        .unwrap();
+    assert!(
+        events.is_empty(),
+        "the pre-existing story was seeded with no events of its own; migration \
+         12 must not have added any"
+    );
+}

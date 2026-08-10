@@ -158,6 +158,7 @@ fn create_story(fixture: &Fixture, title: &str) -> String {
             priority: None,
             labels: None,
             assignee: None,
+            draft: false,
         },
     )
     .unwrap()

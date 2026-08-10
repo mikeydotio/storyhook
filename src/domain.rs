@@ -332,6 +332,13 @@ pub struct StorySnapshot {
     /// reopens, so "hidden implies closed" holds without a schema CHECK.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden_at: Option<String>,
+    /// `true` while the story is a draft — claimed a story id via `story new
+    /// --draft` or the web dashboard's Save Draft button, but has not yet
+    /// been made live (SH-175). Starts `false` for every story that does not
+    /// opt in; once cleared by [`StoryPublished`](StoryEvent::StoryPublished)
+    /// it can never become `true` again — see that event's doc comment.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub draft: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -533,6 +540,48 @@ pub enum StoryEvent {
         at: String,
         url: String,
     },
+    /// Marks a story as a draft at creation (SH-175) — `story new --draft`,
+    /// or the web dashboard's Save Draft button.
+    ///
+    /// Only ever emitted by `creation_events()`, immediately after
+    /// [`StoryCreated`](Self::StoryCreated), and only when the creator asked
+    /// for a draft. No other code path constructs this event, which is what
+    /// makes [`StoryPublished`](Self::StoryPublished) irreversible by
+    /// construction rather than by a runtime check: nothing re-drafts a
+    /// published story. `fold_story` also latches defensively — once a
+    /// `StoryPublished` has been folded, any *later* `StoryCreatedAsDraft`
+    /// (which should never occur through ordinary use, but could arrive via
+    /// a hand-edited `story import` replay) is ignored rather than reopening
+    /// draft status.
+    ///
+    /// A zero-payload event rather than a `StoryDraftSet { draft: bool }`
+    /// deliberately: this codebase's precedent for an on/off fact is a
+    /// distinct paired event per direction
+    /// ([`StoryHidden`](Self::StoryHidden)/[`StoryUnhidden`](Self::StoryUnhidden),
+    /// [`StoryAssigned`](Self::StoryAssigned)/[`StoryAssigneeCleared`](Self::StoryAssigneeCleared)),
+    /// which makes "there is no bool payload to misuse" true by construction.
+    StoryCreatedAsDraft {
+        at: String,
+    },
+    /// Makes a draft story live — `story publish <id>`, the one-way inverse
+    /// of [`StoryCreatedAsDraft`](Self::StoryCreatedAsDraft) (SH-175).
+    ///
+    /// Deliberately not a symmetric pair the way `StoryHidden`/`StoryUnhidden`
+    /// are: SH-175's own text requires publishing to be irreversible. It gets
+    /// its own verb rather than a flag on `story set`, following `Purge`'s
+    /// precedent (`cli.rs`) — a flag that turns a reversible act irreversible
+    /// sits one keystroke away from the reversible one.
+    ///
+    /// Not guarded by `validate_event_for_append`: that hook is a stateless,
+    /// per-event syntax check with no access to prior history, so it cannot
+    /// enforce a sequence-dependent invariant like "never after a later
+    /// draft claim" — and it is documented as bypassed on exactly the
+    /// import/replay paths where enforcement matters most. Real enforcement
+    /// is that no service method other than `StoryService::publish` ever
+    /// constructs this event, plus `fold_story`'s latch.
+    StoryPublished {
+        at: String,
+    },
 }
 
 /// The `kind` tag [`StoryEvent::StoryCommitLinked`] serializes with.
@@ -628,7 +677,7 @@ fn git_link_subject(text: &str) -> Option<&str> {
 /// It cannot drift: `every_known_kind_is_a_variant_and_every_variant_is_known`
 /// reads serde's own `unknown variant, expected one of …` list back out of the
 /// derive and compares it to this array.
-pub const EVENT_KINDS: [&str; 24] = [
+pub const EVENT_KINDS: [&str; 26] = [
     "StoryCreated",
     "StoryCommentAdded",
     "StoryCommentRetracted",
@@ -653,6 +702,8 @@ pub const EVENT_KINDS: [&str; 24] = [
     "StoryPrUnlinked",
     "StoryPrMerged",
     "StoryPrClosed",
+    "StoryCreatedAsDraft",
+    "StoryPublished",
 ];
 
 /// Whether `kind` is an event this binary can decode.
@@ -692,6 +743,8 @@ pub fn event_kind(event: &StoryEvent) -> &'static str {
         StoryEvent::StoryPrUnlinked { .. } => "StoryPrUnlinked",
         StoryEvent::StoryPrMerged { .. } => "StoryPrMerged",
         StoryEvent::StoryPrClosed { .. } => "StoryPrClosed",
+        StoryEvent::StoryCreatedAsDraft { .. } => "StoryCreatedAsDraft",
+        StoryEvent::StoryPublished { .. } => "StoryPublished",
     }
 }
 
@@ -761,6 +814,8 @@ pub fn last_activity_type(events: &[StoryEvent]) -> &'static str {
             StoryEvent::StoryPrUnlinked { .. } => "unlinked",
             StoryEvent::StoryPrMerged { .. } => "pr-merged",
             StoryEvent::StoryPrClosed { .. } => "pr-closed",
+            StoryEvent::StoryCreatedAsDraft { .. } => "created-as-draft",
+            StoryEvent::StoryPublished { .. } => "published",
         })
         .unwrap_or("unknown")
 }
@@ -1196,6 +1251,8 @@ pub fn fold_story(
     let mut deleted = false;
     let mut deleted_reason = None;
     let mut hidden_at = None;
+    let mut draft = false;
+    let mut published = false;
 
     for event in events {
         match event {
@@ -1415,6 +1472,21 @@ pub fn fold_story(
             | StoryEvent::StoryPrClosed { at, .. } => {
                 updated_at = Some(at.clone());
             }
+            StoryEvent::StoryCreatedAsDraft { at } => {
+                // Latched against a `StoryPublished` already seen — see this
+                // variant's doc comment. Ordinary replay never triggers the
+                // guard, since this event only ever precedes any
+                // `StoryPublished` in a legitimately-written log.
+                if !published {
+                    draft = true;
+                }
+                updated_at = Some(at.clone());
+            }
+            StoryEvent::StoryPublished { at } => {
+                draft = false;
+                published = true;
+                updated_at = Some(at.clone());
+            }
         }
     }
 
@@ -1493,6 +1565,7 @@ pub fn fold_story(
         deleted,
         deleted_reason,
         hidden_at,
+        draft,
     })
 }
 
@@ -1706,6 +1779,14 @@ pub fn compute_epic_display_state(
 
 pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnapshot>) -> bool {
     if story.superstate != SuperState::Open {
+        return false;
+    }
+    // A draft is not yet ready for anyone to act on — SH-175's council
+    // verdict decided this on its own semantic grounds (a story `story
+    // publish` hasn't been run on isn't finished being specified), not by
+    // analogy to `story list`, which deliberately keeps showing drafts
+    // inline.
+    if story.draft {
         return false;
     }
     // `"blocked"` is one of the four `REQUIRED_STATES` (SH-125), pinned to
@@ -3525,6 +3606,148 @@ mod tests {
         assert_eq!(story.hidden_at, None);
     }
 
+    #[test]
+    fn fold_story_created_as_draft_sets_draft() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "A draft".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryCreatedAsDraft {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert!(story.draft);
+    }
+
+    #[test]
+    fn fold_story_not_created_as_draft_is_live() {
+        let story = fold_story(
+            "SH-1",
+            &[StoryEvent::StoryCreated {
+                at: "2026-03-13T00:00:00Z".to_string(),
+                title: "Live from the start".to_string(),
+                state: "todo".to_string(),
+            }],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert!(!story.draft);
+    }
+
+    #[test]
+    fn fold_story_published_clears_draft() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "A draft, then published".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryCreatedAsDraft {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                },
+                StoryEvent::StoryPublished {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert!(!story.draft);
+    }
+
+    /// The irreversibility guarantee's defensive half: no legitimate service
+    /// path can ever re-fire `StoryCreatedAsDraft` after `StoryPublished` (see
+    /// that event's own doc comment), but a hand-edited `story import` replay
+    /// could. `fold_story` must not let history arriving out of its normal
+    /// order undo a publish.
+    #[test]
+    fn fold_story_a_later_draft_claim_after_publish_is_ignored() {
+        let story = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Published, then a stray draft claim".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryPublished {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                },
+                StoryEvent::StoryCreatedAsDraft {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert!(
+            !story.draft,
+            "a StoryCreatedAsDraft arriving after StoryPublished must not un-publish the story"
+        );
+    }
+
+    /// A second `StoryPublished` on an already-live story (the shape a
+    /// double-click on the `publish` verb could produce if the service
+    /// layer's own idempotency check were ever bypassed) must fold to the
+    /// same `draft: false` outcome as the first, not error or flip anything.
+    #[test]
+    fn fold_story_publishing_twice_is_idempotent_at_the_fold_level() {
+        let once = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Published once".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryPublished {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+        let twice = fold_story(
+            "SH-1",
+            &[
+                StoryEvent::StoryCreated {
+                    at: "2026-03-13T00:00:00Z".to_string(),
+                    title: "Published once".to_string(),
+                    state: "todo".to_string(),
+                },
+                StoryEvent::StoryPublished {
+                    at: "2026-03-13T00:01:00Z".to_string(),
+                },
+                StoryEvent::StoryPublished {
+                    at: "2026-03-13T00:02:00Z".to_string(),
+                },
+            ],
+            &state_map(),
+        )
+        .unwrap();
+
+        assert!(!once.draft);
+        assert!(!twice.draft);
+        // The service layer is what actually prevents this append (`publish`
+        // no-ops on an already-live story rather than firing a second event)
+        // — this test only pins that *if* one arrived anyway, folding it
+        // wouldn't do anything surprising to `updated_at`.
+        assert_eq!(twice.updated_at, "2026-03-13T00:02:00Z");
+    }
+
     /// `StoryPrLinked`/`StoryPrUnlinked`/`StoryPrMerged`/`StoryPrClosed` are
     /// projection-only: the linkage lives in `story_pr_links`, not on the
     /// folded snapshot. Every field but `updated_at` — which every event
@@ -3774,6 +3997,7 @@ mod tests {
             deleted: false,
             deleted_reason: None,
             hidden_at: None,
+            draft: false,
         };
 
         assert!(!is_ready(&story, &BTreeMap::new()));
@@ -3946,6 +4170,7 @@ mod tests {
                 deleted: false,
                 deleted_reason: None,
                 hidden_at: None,
+                draft: false,
             },
             StorySnapshot {
                 id: "SH-2".to_string(),
@@ -3976,6 +4201,7 @@ mod tests {
                 deleted: false,
                 deleted_reason: None,
                 hidden_at: None,
+                draft: false,
             },
             StorySnapshot {
                 id: "SH-3".to_string(),
@@ -4000,6 +4226,7 @@ mod tests {
                 deleted: false,
                 deleted_reason: None,
                 hidden_at: None,
+                draft: false,
             },
             StorySnapshot {
                 id: "SH-4".to_string(),
@@ -4021,6 +4248,7 @@ mod tests {
                 deleted: false,
                 deleted_reason: None,
                 hidden_at: None,
+                draft: false,
             },
         ];
 
@@ -4858,6 +5086,7 @@ mod tests {
             deleted: false,
             deleted_reason: None,
             hidden_at: None,
+            draft: false,
         }
     }
 
@@ -5049,6 +5278,7 @@ mod ready_order_properties {
             deleted: false,
             deleted_reason: None,
             hidden_at: None,
+            draft: false,
         }
     }
 

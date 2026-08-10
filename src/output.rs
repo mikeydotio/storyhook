@@ -393,8 +393,15 @@ pub struct ProjectSnapshotView {
     pub states: Vec<StateDef>,
     /// The project's members, for resolving an assignee client-side.
     pub members: Vec<Member>,
-    /// Every unarchived story.
+    /// Every unarchived, non-draft story — what the board renders.
     pub stories: Vec<StorySnapshot>,
+    /// Every draft (SH-175), carried separately rather than folded into
+    /// [`stories`](Self::stories): the Drafts popover and its count badge are
+    /// the only thing that reads this, and the board must never render one of
+    /// these as a card. Two lists made that unrepresentable instead of a flag
+    /// per story a board-rendering call site could forget to check.
+    #[serde(default)]
+    pub drafts: Vec<StorySnapshot>,
 }
 
 /// Which project a command resolved to, and where its repo-side work runs.
@@ -909,8 +916,12 @@ fn render_human(response: &Response) -> String {
                 } else {
                     ""
                 };
+                // SH-175: shown inline rather than excluded by default — see
+                // the council verdict on SH-175 for why `list` diverges from
+                // the web board here.
+                let draft = if story.story.draft { " [draft]" } else { "" };
                 body.push_str(&format!(
-                    "{} [{}]{}{} {}{}{}{}{}{}\n",
+                    "{} [{}]{}{} {}{}{}{}{}{}{}\n",
                     story.story.id,
                     story.story.state,
                     priority,
@@ -919,6 +930,7 @@ fn render_human(response: &Response) -> String {
                     progress_summary,
                     labels,
                     deleted,
+                    draft,
                     flagged,
                     stale
                 ));
@@ -1299,6 +1311,13 @@ fn render_story(view: &StoryView) -> String {
         "state: {} ({}{deleted_marker})\n",
         story.state,
         story.superstate.as_str()
+    ));
+    // SH-175: a draft is never shown as a badge on the board, but `story
+    // show` is the one place a reader is looking at exactly this story, so
+    // it earns an unconditional line the way `flagged` gets one below.
+    body.push_str(&format!(
+        "draft: {}\n",
+        if story.draft { "yes" } else { "no" }
     ));
     body.push_str(&format!("assignee: {assignee}\n"));
     body.push_str(&format!("priority: {}\n", story.priority.as_str()));

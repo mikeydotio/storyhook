@@ -47,6 +47,10 @@ pub struct NewStoryInput {
     pub labels: Option<Vec<String>>,
     /// A member id or GitHub handle to assign to.
     pub assignee: Option<String>,
+    /// Creates the story as a draft (SH-175) — `story new --draft`. Claims a
+    /// story id like any other creation; `StoryService::publish` is the only
+    /// way out, and it is one-way.
+    pub draft: bool,
 }
 
 /// The edits `story set` can apply in one call.
@@ -701,6 +705,33 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
         })?)
     }
 
+    /// Makes a draft story live — `story publish <id>` (SH-175). One-way:
+    /// there is no code path back to `draft: true` after this runs, which is
+    /// what makes publishing irreversible rather than merely defaulted.
+    /// Idempotent on a story that is already live — publishing again has
+    /// nothing left to do, so it is not an error.
+    pub fn publish(&self, id: &str) -> Result<StorySnapshot, AppError> {
+        let now = self.ctx.now();
+        let project = self.ctx.project();
+        Ok(self.ctx.store().write(|tx| {
+            let prefix = project_prefix(&*tx, project)?;
+            let states = tx.state_map(project)?;
+            let (story_no, row) = resolve_story(&*tx, project, &prefix, id)?;
+            if !row.snapshot.draft {
+                return Ok(row.snapshot);
+            }
+            Ok(append_and_fold(
+                tx,
+                project,
+                story_no,
+                &prefix,
+                &states,
+                ExpectedSeq::Exact(row.head_seq),
+                &[StoryEvent::StoryPublished { at: now.clone() }],
+            )?)
+        })?)
+    }
+
     /// Everything a bulk "Archive" of `state_slug`'s column would hide, read
     /// before anything is (SH-43). Writes nothing.
     ///
@@ -953,6 +984,11 @@ fn creation_events(
         title: input.title.clone(),
         state: state_slug,
     }];
+    if input.draft {
+        events.push(StoryEvent::StoryCreatedAsDraft {
+            at: now.to_string(),
+        });
+    }
     if let Some(priority) = priority {
         events.push(StoryEvent::StoryPrioritySet {
             at: now.to_string(),

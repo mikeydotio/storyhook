@@ -334,3 +334,68 @@ fn import_maps_description_to_description_field_not_comment() {
         .stdout(predicate::str::contains("description: Came from import"))
         .stdout(predicate::str::contains("comments:").not());
 }
+
+// ============================================================
+// story new --draft (SH-175)
+// ============================================================
+
+#[test]
+fn new_without_draft_is_live() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["new", "Live story"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("draft: no"));
+}
+
+#[test]
+fn new_with_draft_flag_creates_a_draft() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["new", "A sketch", "--draft"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["show", "SH-1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("draft: yes"));
+}
+
+#[test]
+fn a_draft_claims_a_story_id_like_any_other_story() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .args(["new", "A draft", "--draft"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SH-1"));
+
+    story(dir.path())
+        .args(["new", "The next story"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SH-2"));
+}
