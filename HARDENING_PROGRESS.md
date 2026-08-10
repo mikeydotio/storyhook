@@ -200,7 +200,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses · *done — PR #224 pulled the story's own redesign trigger: a 60s ceiling, enforced loudly, `SERVED_DEADLINE` left unchanged, `$STORYHOOK_EXCHANGE_DEADLINE_SECS` deleted*
 - [x] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
 - [x] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one · *box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
-- [ ] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition
+- [x] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition · *done — routed through `validate_required_states`; fixed at all four sites sharing the pattern*
 - [ ] **SH-181** — `story doctor` reports 10 malformed labels on the real store: a CSV label stored as one label instead of split
 - [ ] **SH-189** — `story export` is not a complete backup of a github-synced project · *`github.sync` and `github_bases` were deliberately excluded by SH-133; nothing replaces them*
 - [ ] **SH-190** — a restored project can be unreachable from its own checkout · *`transfer::import_project` mints a fresh `projects.uuid` the old `.storyhook.toml` pointer no longer matches*
@@ -8432,3 +8432,51 @@ commit body's `Closes SH-174` auto-closed the story via `commit-sync` before
 this session's own `story move ... done` ran — confirmed via `story show`
 (`done (CLOSED)`, `auto-closed by merge` in its own comment log) rather than
 re-attempted, since a closed story refuses further modification.
+
+### SH-180 — done: move's undefined-state error now names the repair
+
+Diagnostic-only fix, scoped exactly as filed. `story move`'s "state `X` is
+not defined" named the cause but not the remedy when `X` was one of the four
+`REQUIRED_STATES` (`todo`, `in-progress`, `blocked`, `done`) missing only
+because the project's catalog predates the SH-125 floor — `add_state`'s
+refusal already gives the fuller "every project needs …; Run `story doctor
+--fix`" message for the identical underlying condition, so this reuses that
+same check (`domain::validate_required_states`) rather than duplicating its
+wording, via a new `domain::undefined_state_error` helper.
+
+**Sibling sweep, per the "fix at the origin" rule:** the "is not defined"
+message was duplicated at four sites in `src/service/story.rs`, not just
+`move`'s — `set_state` (`move` itself), `bulk_update`'s own pre-check
+(shadows `set_state`'s, so needed its own fix), `push_state_change` (`story
+set --state`), and `archivable_occupants` (state-archival). All four now
+route through the one helper. A genuinely undefined slug — a typo, not a
+floor gap — still gets the plain message: `undefined_state_error` only
+reaches for the fuller wording when the missing slug is one of the four
+required ones, and `validate_required_states` naturally selects a
+wrong-superstate error over a missing-state one when both are true, matching
+exactly what the real write-time invariant check would say about the same
+catalog.
+
+**Red→green, per the defect-handling tenet:** wrote both regression tests
+against the fix already in place, then proved RED by `git stash`-ing the two
+source files (keeping the tests) and rerunning — the missing-state case
+failed with the old bare message, confirming the test actually exercises the
+gap — then `git stash pop` and reran green. Plain-typo case never needed the
+stash: it was already passing (behavior preserved, not changed) and serves
+as the regression guard against widening the fix too far.
+
+**Gate: `make test` green**, supervised — background run tracked via the
+harness's own completion notification rather than a raw `nohup`+`kill`
+(the first attempt used `nohup`, which the harness can't track; killed and
+restarted properly). Polled log growth every 15s with a 120s stall bound for
+the first ~10 minutes (steady growth throughout, no stall), then handed off
+to the harness's completion notification for the remainder once healthy
+progress was established. Final: cargo suite + doctests, plugin bash harness
+(25/25), Playwright e2e (**45/45**), all green, no orphaned servers.
+
+**PR:** #226, merged as `8b514c0` (`gh pr view` confirmed `MERGED`),
+fast-forwarded onto `main` in this checkout, branch verified deleted. The
+commit body's `Closes SH-180` auto-closed the story via `commit-sync` before
+this session's own `story move ... done` ran — confirmed via `story show`
+(`done (CLOSED)`, `auto-closed by merge` in its own comment log) rather than
+re-attempted.
