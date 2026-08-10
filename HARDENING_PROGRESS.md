@@ -196,10 +196,10 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-50** — C9 Dispatch button
 - [x] **SH-157** — visually indicate story types · *closed by another session*
 - [x] **SH-169** — add a "Referenced By" field for commits, comments and PRs that mention a story, so the comments list stops filling with `[git]` noise like SH-63's own
-- [x] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8); box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
+- [ ] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8); un-ticked 2026-08-10 — the `done (CLOSED)` this box was resynced against was written by a shell, not by an agent, and no work was ever done. See SH-226*
 - [x] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses · *done — PR #224 pulled the story's own redesign trigger: a 60s ceiling, enforced loudly, `SERVED_DEADLINE` left unchanged, `$STORYHOOK_EXCHANGE_DEADLINE_SECS` deleted*
 - [x] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
-- [x] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one · *box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
+- [ ] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one · *un-ticked 2026-08-10 — the `done (CLOSED)` this box was resynced against was written by a shell, not by an agent, and no work was ever done. See SH-226*
 - [x] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition · *done — routed through `validate_required_states`; fixed at all four sites sharing the pattern*
 - [x] **SH-181** — `story doctor` reports 10 malformed labels on the real store: a CSV label stored as one label instead of split · *done — no code defect (SH-164's write-path guard already closed it); real-store data repair, plus SH-225 filed for the closed-story blind spot it surfaced*
 - [ ] **SH-189** — `story export` is not a complete backup of a github-synced project · *`github.sync` and `github_bases` were deliberately excluded by SH-133; nothing replaces them*
@@ -8541,3 +8541,53 @@ silently left unrepaired — the exact silence that let this sit unnoticed
 from 2026-08-03 until this session. `story_issues`'s relation-repair block
 carries an identical "only reachable on an open story" comment, so the same
 blind spot likely affects more than labels.
+
+### SH-226 — filed: four stories were closed by a shell, and two boxes here were ticked on the strength of it
+
+**Not a story completion — a correction.** The SH-170 and SH-178 boxes above
+are un-ticked again. Both were ticked on 2026-08-09 (PR #217) after `story
+show` reported them `done (CLOSED)`. That state was real; the work behind it
+was not. Neither story was ever started.
+
+**What actually closed them.** A Dispatch Auto run (`?auto=1`, SH-208) opened
+a tmux window; the `claude` launch keystroke was swallowed by the pane shell's
+oh-my-zsh update prompt (`zsh: command not found: laude`); `wait_ready`'s Tier
+2 structural fallback (`plugin/claude-code/lib/session.sh:300-311`) mistook the
+resulting idle zsh prompt for a ready Claude TUI — it asks only for a `─`, a
+`❯`, and three identical captures, all of which a Powerlevel10k prompt supplies
+in under a second — and `story.sh` typed the autonomous charter into the shell.
+zsh then ran every backticked span in it as a command substitution, in order:
+`story show`, `/council-vote`, `make test` (which is why the closures lag their
+dispatch by ~14 minutes), `gh pr merge --merge`, and `story move <n> done`.
+
+**Blast radius, measured, not assumed.** Four stories across two projects
+inside 21 minutes: SH-178 (claimed 20:49:04Z, closed 21:03:35Z), SH-170
+(20:49:38Z → 21:05:22Z), CAL-31 (20:59:26Z → 21:10:34Z), CAL-33 (20:59:57Z →
+21:10:50Z). All four: zero commits, zero PRs, zero comments, and a worktree
+branch carrying no commit not already on `origin/main`. Of the 91 stories
+closed store-wide in the preceding five days, no others match; CAL-51 flagged
+on the same heuristic but is legitimate (PR #43). A store-wide probe for the
+*attended* charter's `<plan>` fingerprint returned zero hits across all 14
+projects, all time, which bounds the damage window to `--auto`.
+
+**Attribution.** Only two callers can pass `--auto`. No Claude transcript (of
+2,129) and no line of zsh history (of 5,089) ever dispatched any of the four,
+which excludes the CLI and leaves the dashboard button. Two pairs ~30 s apart,
+ten minutes between projects, is a person clicking.
+
+**Why nobody noticed.** `classify` (`src/api/dispatch.rs:690-693`) reads only
+`ok` from story.sh's JSON and discards `warning` — the field story.sh sets
+exactly when the readiness gate or prompt submission was unconfirmed. There is
+also no durable dispatch record: `DispatchRegistry` is an in-memory `VecDeque`.
+From a terminal a human sees `command not found`; from the dashboard the
+browser reports success.
+
+**Repair landed with this commit:** all four stories reopened to `todo` with
+their scope intact and an incident comment; all four worktrees and branches
+removed (lossless — 0 unique commits each); these two boxes un-ticked. SH-226
+carries the full evidence and holds the fix.
+
+**Do not release the plugin until SH-226 lands.** Installed 0.5.0 carries the
+`story move <n> done` backtick but not the `<reap>` sentence `main` has since
+added — the only reason the four worktrees survived to be examined. The next
+release makes this failure delete its own evidence.
