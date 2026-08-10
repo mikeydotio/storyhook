@@ -198,7 +198,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-169** — add a "Referenced By" field for commits, comments and PRs that mention a story, so the comments list stops filling with `[git]` noise like SH-63's own
 - [x] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8); box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
 - [ ] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses · *partial, still open: PR #218 fixed the two concrete under-counts a council found (transition-pair sum, bulk-update's N-aware bound); the ceiling itself — the story's real redesign trigger — remains, see the log entry and the story's own comments*
-- [ ] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
+- [x] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
 - [x] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one · *box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
 - [ ] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition
 - [ ] **SH-181** — `story doctor` reports 10 malformed labels on the real store: a CSV label stored as one label instead of split
@@ -8230,3 +8230,122 @@ the branch was rebased and the leg is 38/38. The failures were real while they
 lasted, and the gate had reported success on them. Not fixed here — a one-line
 behaviour fix does not belong in a documentation close-out, and its preventative
 action needs a decision of its own.
+
+### SH-175 — done
+
+**Resynced first, per precedent**: SH-196 was confirmed `done (CLOSED)` via
+`story show` but still marked ⚠ (stale from the 2026-08-08 resync) in the High
+queue. Ticked in a standalone docs PR (#220) before picking new work. Also found
+**SH-112's own worktree live** (`.claude/worktrees/SH-112`, branch
+`sh-112-closeout`, a real `story daemon` subprocess still running from a
+`run-tests.sh` invocation) — genuinely in progress in another session, not a
+stale mark this file had any record of. Left untouched, per this file's own rule
+against two loops on one branch; it closed on its own partway through this
+story's work (PR #221, logged above).
+
+**A much bigger story than its queue-line summary.** That line ("require an
+explicit Discard/Save Draft action") was this file's own narrowing of an
+earlier, partial read; `story show SH-175`'s actual text asks for a full
+draft-story feature — a persisted `draft` flag, CLI parity (`story new --draft`,
+a toggle command, a `list` filter), and the web redesign — with several
+backend/CLI design questions genuinely left open ("an appropriate command",
+"an appropriate argument"). Diverging from a queue-line summary this large
+without re-reading the story would have shipped the wrong scope; recorded here
+because the same gap could recur wherever a queue line predates a story's own
+later detail.
+
+**Council convened before implementation**
+(`.council/sh-175-draft-story-design/`, unanimous round 1, 3 seats —
+software-architect, ux-designer-cli, skeptic) on six open questions: the event
+model, the "make live" verb's name, the creation-time flag, `story list`'s
+default visibility, web board parity, and the `list` flag's name. Two of the
+three seats' own round-1 proposals lost to the third after independently
+re-verifying the live code (`story_map`/`story_views` call `StoryQuery::all()`
+with zero default exclusions today, and `is_ready` doesn't special-case
+`hidden_at`) — the losing proposals would have made "default-exclude drafts
+from `list`" the CLI's first-ever default-exclusion behavior, a risk both
+flagged in their own write-ups without a mitigation. No deliberation round
+needed; full verdict and the 6-part answer on the story's own comments.
+
+**Built to the verdict.** Two zero-payload events, `StoryCreatedAsDraft` and
+`StoryPublished` — not a shared `StoryDraftSet{bool}` — mirroring this
+codebase's own precedent for orthogonal on/off facts (`StoryHidden`/
+`StoryUnhidden`). Irreversibility is enforced by construction (no service
+method but `StoryService::publish` ever emits `StoryPublished`) plus a
+defensive latch in `fold_story`, not by `validate_event_for_append` — that hook
+is a stateless per-event check, bypassed on exactly the import/replay paths
+where enforcement would matter most. `story list` never default-excludes
+anything, including drafts (they render inline with a `[draft]` badge;
+`--drafts` only narrows, matching `--flagged`/`--blocked`); `story next`/
+`--ready`/`domain::is_ready` exclude drafts on independent semantic grounds.
+The web board hides drafts through a *separate* read path
+(`project_snapshot`/`project_data_json` both gained a `.draft(false)` filter
+and a sibling `drafts` array) rather than routing through `list`'s contract —
+a deliberate CLI/web divergence the verdict named explicitly.
+
+**A design mistake caught mid-implementation, not by the council.** The
+council's own context summary claimed the web dashboard reads the board from
+`project_snapshot` (`ProjectSnapshotView`) — true for the **TUI**, not the web
+dashboard, which actually reads `/api/data` → `project_data_json` →
+`report_data()`, a different function with no draft-awareness at all. Caught
+while wiring the Drafts popover, which needed real data and found none coming
+through that path. Fixed by adding the same `.draft(false)` split to
+`project_data_json` independently (`stories`/`drafts` in the JSON body,
+mirroring `ProjectSnapshotView`'s two fields) — the `project_snapshot` change
+was kept too, since it correctly gives the *TUI* board the same draft
+exclusion as a side effect, consistent with the feature's intent even though
+the story never asked for TUI support.
+
+**Web UI**: the New Story modal's footer becomes three buttons — Discard Draft
+(red/solid, new `.btn-danger-solid`, leading edge), Save Draft (orange, new
+`.btn-warn`/`--warn` token added to all four theme blocks), Create Story
+(renamed, trailing edge) — and it stops closing on a backdrop click or Escape,
+the one deliberate exception among this file's modals. The same modal doubles
+as "Edit draft" (prefilled, retitled, submit relabeled Publish) when opened
+from a new Drafts popover — a gray `N Drafts`/`No Drafts` button trailing
+`+New`, backdrop-dismissible like every other modal.
+
+**Tests**: `fold_story` unit tests including the fold-level latch (a
+hand-edited replay reordering `StoryCreatedAsDraft` after `StoryPublished`
+must not un-publish); `StoryService::publish` idempotency/not-found;
+CLI tests for `--draft`/`publish`/`--drafts`/`--ready` interaction, including
+`publish`'s bare-integer-id resolution and its empty `VERB_FLAGS` entry;
+REST tests for the `/data` `stories`/`drafts` split and the guarded `publish`
+route; 7 new Playwright specs (`draft-stories.spec.ts`) covering the button
+set/order, both stray-dismiss vectors staying inert, an unsaved discard
+creating nothing, a saved draft being board-invisible while counted, the
+popover's own outside-click dismissal, and the full save-then-publish round
+trip landing a real card.
+
+**Gate: two red arrivals, both pre-existing test-completeness gaps this
+change's own surface expansion exposed, neither a logic defect.**
+`tests/readme_command_reference.rs::every_dispatchable_verb_appears_in_the_
+command_reference` failed because `README.md`'s command list is hand-maintained
+and had no `story publish` line — fixed by adding it (and `--draft`/`--drafts`
+to the `new`/`list` usage lines already there). `tests/wire_envelope.rs::the_
+invocation_corpus_covers_every_variant` failed on a hardcoded expected count
+(`59`) one line above the corpus it counts — bumped to `60`. Both are exactly
+the shape this file's own supervision rule exists to catch cheaply: caught by
+the gate itself, on the first run, with a message naming the exact gap.
+`make test` green on the next run — fmt, clippy `-D warnings`, full Rust suite
+(139 test-result blocks, 0 failures), `cargo build`, plugin bash harness
+(25/25), Playwright e2e (45/45). No stalls; no orphan daemon needed killing
+during the gate itself, though one from an earlier ad hoc `cargo test
+--test web_test` run (outside `scripts/run-tests.sh`'s isolation) was found
+and killed before the first `make test` attempt — `check-no-orphan-servers`
+caught it as designed.
+
+**Golden snapshots reviewed, not blindly accepted**: `INSTA_UPDATE=always`
+regenerated five `tests/snapshots/golden_cli__*.snap` files; every diff hand-
+checked and confirmed as exactly the new `draft: no` line on `story show`/
+`story next`/`story epic show`, or the two usage strings widened by `--draft`/
+`--drafts` — nothing else moved.
+
+**PR**: two commits on #222 (merged `8f6d0bc`, `gh pr view` confirmed
+`MERGED`) — `feat(story)` (backend/CLI/REST/tests) then `feat(web)` (the
+dashboard UI + its own e2e spec), split because the web commit depends on the
+first's REST surface but nothing in the first depends on the web commit, so
+each builds and passes `make test` checked out alone, the same bar #214
+(SH-169) set. Landed on top of PR #221 (the SH-112 epic close-out), which
+merged to `main` mid-session; no conflict, verified via `git log
+e33751b..8f6d0bc`. Branch verified deleted.
