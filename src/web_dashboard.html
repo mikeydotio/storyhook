@@ -21,6 +21,8 @@
   --danger-soft: #fdedee;
   --success: #1f9d55;
   --success-soft: #eafbf1;
+  --warn: #b6540a;
+  --warn-fg: #ffffff;
   --shadow-sm: 0 1px 2px rgba(20, 24, 33, 0.06);
   --shadow-md: 0 6px 20px -4px rgba(20, 24, 33, 0.16), 0 2px 6px rgba(20, 24, 33, 0.08);
   --shadow-lg: 0 24px 60px -12px rgba(20, 24, 33, 0.35);
@@ -51,6 +53,8 @@
     --danger-soft: #3a1c1f;
     --success: #3fc47a;
     --success-soft: #163627;
+    --warn: #d97a1f;
+    --warn-fg: #ffffff;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 8px 24px -6px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
     --shadow-lg: 0 30px 70px -14px rgba(0, 0, 0, 0.7);
@@ -66,6 +70,7 @@
   --fg-muted: #9198a8; --fg-faint: #656d7c; --border: #262a35; --border-strong: #363c4a;
   --accent: #5b7cff; --accent-fg: #ffffff; --accent-soft: #1a2140;
   --danger: #f2686d; --danger-soft: #3a1c1f; --success: #3fc47a; --success-soft: #163627;
+  --warn: #d97a1f; --warn-fg: #ffffff;
   --shadow-sm: 0 1px 2px rgba(0,0,0,.4); --shadow-md: 0 8px 24px -6px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35);
   --shadow-lg: 0 30px 70px -14px rgba(0,0,0,.7);
   --p-critical: #f2686d; --p-high: #ff9152; --p-medium: #f0bd3e; --p-low: #46d18a; --p-none: #656d7c;
@@ -75,6 +80,7 @@
   --fg-muted: #6b7280; --fg-faint: #9aa1ac; --border: #e3e6eb; --border-strong: #d3d7de;
   --accent: #3b5bfd; --accent-fg: #ffffff; --accent-soft: #eaeeff;
   --danger: #e5484d; --danger-soft: #fdedee; --success: #1f9d55; --success-soft: #eafbf1;
+  --warn: #b6540a; --warn-fg: #ffffff;
   --shadow-sm: 0 1px 2px rgba(20,24,33,.06); --shadow-md: 0 6px 20px -4px rgba(20,24,33,.16),0 2px 6px rgba(20,24,33,.08);
   --shadow-lg: 0 24px 60px -12px rgba(20,24,33,.35);
   --p-critical: #e5484d; --p-high: #f2762e; --p-medium: #d9a413; --p-low: #2f9e6e; --p-none: #9aa1ac;
@@ -139,6 +145,14 @@ button { cursor: pointer; }
 .btn-primary:hover { filter: brightness(1.08); }
 .btn-danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 .btn-danger:hover { filter: brightness(0.97); }
+/* Solid, not the soft `.btn-danger` treatment above — SH-175's "Discard
+   Draft" button is deliberately a stronger visual stop than an inline
+   Delete icon: it is the leading, most prominent action in the New Story
+   modal's footer, not a quiet affordance beside other controls. */
+.btn-danger-solid { background: var(--danger); color: var(--accent-fg); border-color: var(--danger); }
+.btn-danger-solid:hover { filter: brightness(1.08); }
+.btn-warn { background: var(--warn); color: var(--warn-fg); border-color: var(--warn); }
+.btn-warn:hover { filter: brightness(1.08); }
 .btn-ghost { border-color: transparent; background: transparent; }
 .btn-ghost:hover { background: var(--bg-sunken); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -502,6 +516,18 @@ tbody tr:hover { background: var(--bg-sunken); }
 .modal-body p { font-size: 0.8125rem; color: var(--fg-muted); margin: 0; }
 .modal-body code { font-family: var(--mono); font-size: 0.75rem; background: var(--bg-sunken); padding: 0.0625rem 0.25rem; border-radius: var(--radius-sm); }
 
+/* ---- Drafts popover ---- */
+.drafts-list { list-style: none; display: flex; flex-direction: column; gap: 0.25rem; max-height: 60vh; overflow-y: auto; }
+.drafts-list-empty { font-size: 0.8125rem; color: var(--fg-muted); padding: 0.5rem 0; }
+.drafts-row {
+  display: flex; align-items: baseline; gap: 0.5rem; width: 100%; text-align: left;
+  padding: 0.5rem 0.625rem; border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; font: inherit; color: var(--fg); cursor: pointer;
+}
+.drafts-row:hover { background: var(--bg-sunken); border-color: var(--border); }
+.drafts-row-id { font-family: var(--mono); font-size: 0.75rem; color: var(--fg-muted); flex-shrink: 0; }
+.drafts-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---- Toasts ---- */
 .toast-stack { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: 0.5rem; z-index: 60; max-width: 22rem; }
 .toast {
@@ -623,6 +649,7 @@ tbody tr:hover { background: var(--bg-sunken); }
       <button type="button" class="btn btn-ghost" id="home-btn">Home</button>
       <button type="button" class="btn btn-ghost" id="settings-btn">Settings</button>
       <button type="button" class="btn btn-primary" id="new-story-btn">+ New</button>
+      <button type="button" class="btn btn-ghost" id="drafts-btn">No Drafts</button>
       <div class="connection">
         <span class="conn-dot" id="conn-dot"></span>
         <span id="conn-text">Connecting…</span>
@@ -691,7 +718,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 
 <div class="backdrop" id="modal-backdrop" hidden></div>
 <div class="modal" id="create-modal" aria-hidden="true">
-  <div class="modal-header">New story</div>
+  <div class="modal-header" id="create-modal-header">New story</div>
   <div class="modal-body">
     <input type="text" id="create-title" placeholder="Title" autocomplete="off">
     <textarea id="create-description" placeholder="Description (optional)" rows="2"></textarea>
@@ -704,8 +731,20 @@ tbody tr:hover { background: var(--bg-sunken); }
     <div class="modal-error" id="create-error"></div>
   </div>
   <div class="modal-footer">
-    <button type="button" class="btn btn-ghost" id="create-cancel">Cancel</button>
-    <button type="button" class="btn btn-primary" id="create-submit">Create</button>
+    <button type="button" class="btn btn-danger-solid" id="create-discard">Discard Draft</button>
+    <button type="button" class="btn btn-warn" id="create-save-draft" style="margin-right:auto">Save Draft</button>
+    <button type="button" class="btn btn-primary" id="create-submit">Create Story</button>
+  </div>
+</div>
+
+<div class="backdrop" id="drafts-backdrop" hidden></div>
+<div class="modal" id="drafts-modal" aria-hidden="true">
+  <div class="modal-header">Drafts</div>
+  <div class="modal-body">
+    <ul class="drafts-list" id="drafts-list"></ul>
+  </div>
+  <div class="modal-footer">
+    <button type="button" class="btn btn-ghost" id="drafts-close">Close</button>
   </div>
 </div>
 
@@ -1653,6 +1692,19 @@ tbody tr:hover { background: var(--bg-sunken); }
     renderFilterOptions();
     renderView();
     updateSubtitle();
+    updateDraftsButton();
+  }
+
+  /** SH-175: the topbar's Drafts button label — "No Drafts" or "N Drafts",
+   * per this project's own draft count. Also refreshes the popover's list
+   * if it happens to be open, so a draft published or discarded from
+   * elsewhere (another tab, another client) doesn't leave a stale row
+   * behind the next poll tick already updated the button for. */
+  function updateDraftsButton() {
+    var drafts = (state.data && state.data.drafts) || [];
+    $("drafts-btn").textContent = (drafts.length || "No") + " Drafts";
+    if (!$("drafts-modal").classList.contains("open")) return;
+    renderDraftsList();
   }
 
   /** Sets the topbar subtitle for whichever screen is active. Split out of
@@ -3936,16 +3988,34 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   // ============================================================
-  // CREATE MODAL
+  // CREATE MODAL (also the Edit Draft modal — SH-175)
   // ============================================================
 
   /** The label combobox currently mounted in the create modal — rebuilt
-   * fresh on every `openCreateModal()` call, read back by `submitCreate()`. */
+   * fresh on every `openCreateModal()` call, read back on save/publish. */
   var createLabelCombobox = null;
 
-  function openCreateModal() {
-    $("create-title").value = "";
-    $("create-description").value = "";
+  /** The draft being edited, or `null` when the modal is in ordinary "New
+   * story" mode — a `StoryView`-shaped object from `state.data.drafts`
+   * (SH-175). Set by `openCreateModal(draft)`, read by `discardDraft()`,
+   * `saveDraft()` and `submitCreate()` to decide POST-a-new-story versus
+   * PATCH-an-existing-one, and cleared by `closeCreateModal()`. A module
+   * variable rather than a DOM data-attribute for the same reason
+   * `createLabelCombobox` already is one: nothing else needs to read it
+   * off the DOM, and the modal is a singleton.
+   */
+  var editingDraft = null;
+
+  /** Opens the New Story modal. Pass a `StoryView`-shaped draft (from
+   * `state.data.drafts`) to reuse it as the Edit Draft modal instead —
+   * same fields, retitled header, and a relabeled submit button (SH-175). */
+  function openCreateModal(draft) {
+    editingDraft = draft || null;
+    var story = editingDraft ? editingDraft.story : null;
+    $("create-modal-header").textContent = story ? "Edit draft" : "New story";
+    $("create-submit").textContent = story ? "Publish" : "Create Story";
+    $("create-title").value = story ? story.title : "";
+    $("create-description").value = (story && story.description) || "";
     autoGrowTextarea($("create-description"));
     $("create-error").textContent = "";
     var m = meta();
@@ -3954,24 +4024,26 @@ tbody tr:hover { background: var(--bg-sunken); }
     // (`src/api/rest.rs::meta_json`), so this can't drift into a hardcoded
     // guess. Falls back to the blank placeholder when a project has none
     // (only reachable on legacy data — see `domain::default_type`'s doc).
-    var defaults = m.defaults || {};
+    // Skipped entirely when editing a draft: its own fields are the default.
+    var defaults = story ? {} : (m.defaults || {});
     clear($("create-state"));
     $("create-state").appendChild(el("option", { value: "" }, ["Default state"]));
     m.states.filter(function(s) { return s.super_state === "OPEN"; }).forEach(function(s) {
       $("create-state").appendChild(el("option", { value: s.slug }, [s.slug]));
     });
-    $("create-state").value = defaults.state || "";
+    $("create-state").value = (story && story.state) || defaults.state || "";
     clear($("create-type"));
     $("create-type").appendChild(el("option", { value: "" }, [typeLabel(null)]));
     m.types.forEach(function(t) { $("create-type").appendChild(el("option", { value: t.slug }, [typeLabel(t.slug)])); });
-    $("create-type").value = defaults.type || "";
+    $("create-type").value = (story && story.story_type) || defaults.type || "";
     clear($("create-priority"));
     $("create-priority").appendChild(el("option", { value: "" }, ["Default priority"]));
     m.priorities.forEach(function(p) { $("create-priority").appendChild(el("option", { value: p }, [p])); });
+    $("create-priority").value = (story && story.priority !== "none" && story.priority) || "";
 
     var labelsField = $("create-labels-field");
     while (labelsField.children.length > 1) labelsField.removeChild(labelsField.lastChild);
-    createLabelCombobox = buildLabelCombobox([], m.labels || []);
+    createLabelCombobox = buildLabelCombobox((story && story.labels) || [], m.labels || []);
     labelsField.appendChild(createLabelCombobox.element);
 
     $("modal-backdrop").hidden = false;
@@ -3984,25 +4056,106 @@ tbody tr:hover { background: var(--bg-sunken); }
   }
 
   function closeCreateModal() {
+    editingDraft = null;
     $("modal-backdrop").classList.remove("open");
     $("create-modal").classList.remove("open");
     $("create-modal").setAttribute("aria-hidden", "true");
     setTimeout(function() { $("modal-backdrop").hidden = true; }, 150);
   }
 
-  function submitCreate() {
+  /** The form's current field values as a `story new`/PATCH-shaped body.
+   * `title` is always present (validated non-empty by the caller); every
+   * other field is present only when non-default, matching how `PATCH
+   * /story/{id}` treats an absent key as "leave alone" — sending every
+   * field unconditionally would clobber a field this form doesn't expose
+   * (e.g. `assignee`) back to blank on every save. */
+  function createFormFields() {
     var title = $("create-title").value.trim();
-    if (!title) { $("create-error").textContent = "Title is required."; return; }
     var body = { title: title };
     var description = $("create-description").value.trim();
     if (description) body.description = description;
     if ($("create-state").value) body.state = $("create-state").value;
     if ($("create-type").value) body.type = $("create-type").value;
     if ($("create-priority").value) body.priority = $("create-priority").value;
-    var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
-    if (labels.length) body.labels = labels;
-    api("POST", apiBase() + "/story", body)
-      .then(function(resp) {
+    return body;
+  }
+
+  /** Applies the form's labels to `id` as an add/remove diff against
+   * `originalLabels` — the same shape the drawer's own label editor sends
+   * (`POST .../labels {add|remove}`), since `PATCH /story/{id}` does not
+   * accept a `labels` field at all (see that route's own comment). Returns
+   * a promise so callers can chain a publish or a close after it settles;
+   * resolves immediately with no request when nothing changed. */
+  function applyLabelDiff(id, originalLabels) {
+    var next = createLabelCombobox ? createLabelCombobox.getLabels() : [];
+    var before = originalLabels || [];
+    var add = next.filter(function(l) { return before.indexOf(l) === -1; });
+    var remove = before.filter(function(l) { return next.indexOf(l) === -1; });
+    var calls = [];
+    if (add.length) calls.push(api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/labels", { add: add }));
+    if (remove.length) calls.push(api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/labels", { remove: remove }));
+    return Promise.all(calls);
+  }
+
+  /** Discard Draft (SH-175). Editing an existing draft: deletes it outright
+   * — "discard" on an already-persisted draft means it goes away, matching
+   * the button's red, destructive styling. Creating a new one: nothing has
+   * been written yet, so this is a plain, no-request close — the same
+   * behavior the old Cancel button always had. */
+  function discardDraft() {
+    if (!editingDraft) { closeCreateModal(); return; }
+    var id = editingDraft.story.id;
+    api("DELETE", apiBase() + "/story/" + encodeURIComponent(id), { reason: "Discarded draft" })
+      .then(function() { closeCreateModal(); fetchData(); })
+      .catch(function(err) { $("create-error").textContent = err.message; });
+  }
+
+  /** Save Draft (SH-175): writes the form's fields but never changes draft
+   * status — creating one sends `draft: true`; editing one only ever PATCHes
+   * (there is no un-publish, so an already-live story can't reach this
+   * modal at all — see `renderDraftsList()`, the only place that opens it
+   * in edit mode). */
+  function saveDraft() {
+    var body = createFormFields();
+    if (!body.title) { $("create-error").textContent = "Title is required."; return; }
+    var request;
+    if (editingDraft) {
+      var id = editingDraft.story.id;
+      request = api("PATCH", apiBase() + "/story/" + encodeURIComponent(id), body)
+        .then(function() { return applyLabelDiff(id, editingDraft.story.labels); });
+    } else {
+      body.draft = true;
+      var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
+      if (labels.length) body.labels = labels;
+      request = api("POST", apiBase() + "/story", body);
+    }
+    request
+      .then(function() { closeCreateModal(); fetchData(); })
+      .catch(function(err) { $("create-error").textContent = err.message; });
+  }
+
+  /** Create Story / Publish (SH-175) — the button `submitCreate` always
+   * drives, whichever label `openCreateModal()` gave it. Creating a new
+   * story: POSTs live (no `draft` field — `story new`'s own default).
+   * Editing a draft: saves the field edits, then publishes — one click
+   * does both, since a click on the modal's one remaining primary action
+   * is the only chance to say "and now make it live" this form offers. */
+  function submitCreate() {
+    var body = createFormFields();
+    if (!body.title) { $("create-error").textContent = "Title is required."; return; }
+    var request;
+    if (editingDraft) {
+      var id = editingDraft.story.id;
+      request = api("PATCH", apiBase() + "/story/" + encodeURIComponent(id), body)
+        .then(function() { return applyLabelDiff(id, editingDraft.story.labels); })
+        .then(function() { return api("POST", apiBase() + "/story/" + encodeURIComponent(id) + "/publish", {}); });
+    } else {
+      var labels = createLabelCombobox ? createLabelCombobox.getLabels() : [];
+      if (labels.length) body.labels = labels;
+      request = api("POST", apiBase() + "/story", body);
+    }
+    request
+      .then(function() {
         closeCreateModal();
         // SH-127: no success toast here -- the new card's own "entering"
         // animation (reconcileColumnCards, driven by diffSnapshots'
@@ -4013,6 +4166,51 @@ tbody tr:hover { background: var(--bg-sunken); }
         fetchData();
       })
       .catch(function(err) { $("create-error").textContent = err.message; });
+  }
+
+  // ============================================================
+  // DRAFTS POPOVER (SH-175)
+  // ============================================================
+
+  function openDraftsModal() {
+    renderDraftsList();
+    $("drafts-backdrop").hidden = false;
+    requestAnimationFrame(function() {
+      $("drafts-backdrop").classList.add("open");
+      $("drafts-modal").classList.add("open");
+      $("drafts-modal").setAttribute("aria-hidden", "false");
+    });
+  }
+
+  function closeDraftsModal() {
+    $("drafts-backdrop").classList.remove("open");
+    $("drafts-modal").classList.remove("open");
+    $("drafts-modal").setAttribute("aria-hidden", "true");
+    setTimeout(function() { $("drafts-backdrop").hidden = true; }, 150);
+  }
+
+  /** Populates the Drafts popover's row list from `state.data.drafts` —
+   * this project's own drafts, per `updateDraftsButton()`'s doc comment.
+   * Clicking a row opens it in the create modal's Edit Draft mode. */
+  function renderDraftsList() {
+    var list = $("drafts-list");
+    clear(list);
+    var drafts = (state.data && state.data.drafts) || [];
+    if (!drafts.length) {
+      list.appendChild(el("li", { class: "drafts-list-empty" }, ["No drafts in this project."]));
+      return;
+    }
+    drafts.forEach(function(draft) {
+      var row = el("button", {
+        type: "button",
+        class: "drafts-row",
+        onClick: function() { closeDraftsModal(); openCreateModal(draft); },
+      }, [
+        el("span", { class: "drafts-row-id" }, [draft.story.id]),
+        el("span", { class: "drafts-row-title" }, [draft.story.title]),
+      ]);
+      list.appendChild(el("li", {}, [row]));
+    });
   }
 
   /** The bulk "Archive" button on a CLOSED-superstate column's header
@@ -4127,12 +4325,19 @@ tbody tr:hover { background: var(--bg-sunken); }
     bindProjectSelector();
     $("home-btn").addEventListener("click", goHome);
     $("settings-btn").addEventListener("click", goSettings);
-    $("new-story-btn").addEventListener("click", openCreateModal);
-    $("create-cancel").addEventListener("click", closeCreateModal);
-    $("modal-backdrop").addEventListener("click", closeCreateModal);
+    // SH-175: the New Story modal no longer closes on a backdrop click or
+    // (see the shared Escape handler below) Escape — only its own three
+    // footer buttons dismiss it. Every other modal in this file keeps that
+    // stray-dismiss behavior; this is the one deliberate exception.
+    $("new-story-btn").addEventListener("click", function() { openCreateModal(); });
+    $("create-discard").addEventListener("click", discardDraft);
+    $("create-save-draft").addEventListener("click", saveDraft);
     $("create-submit").addEventListener("click", submitCreate);
     $("create-title").addEventListener("keydown", function(e) { if (e.key === "Enter") submitCreate(); });
     $("create-description").addEventListener("input", function() { autoGrowTextarea(this); });
+    $("drafts-btn").addEventListener("click", openDraftsModal);
+    $("drafts-close").addEventListener("click", closeDraftsModal);
+    $("drafts-backdrop").addEventListener("click", closeDraftsModal);
     $("token-cancel").addEventListener("click", cancelTokenModal);
     $("token-modal-backdrop").addEventListener("click", cancelTokenModal);
     $("token-submit").addEventListener("click", submitTokenModal);
@@ -4142,7 +4347,9 @@ tbody tr:hover { background: var(--bg-sunken); }
     $("drawer-close").addEventListener("click", closeDrawer);
     $("drawer-backdrop").addEventListener("click", closeDrawer);
     document.addEventListener("keydown", function(e) {
-      if (e.key === "Escape") { closeDrawer(); closeCreateModal(); cancelTokenModal(); closeArchiveModal(); }
+      // SH-175: `create-modal` is deliberately absent here — see the
+      // comment above its own listener bindings.
+      if (e.key === "Escape") { closeDrawer(); closeDraftsModal(); cancelTokenModal(); closeArchiveModal(); }
     });
   }
 

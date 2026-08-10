@@ -1310,6 +1310,8 @@ fn remote_snapshot_to_story_snapshot(
         // Nor of SH-43's hidden/"Archive" fact — it is a local display
         // preference with nothing on the GitHub side to diff against.
         hidden_at: None,
+        // Nor of SH-175's draft flag — same reasoning as `hidden_at` above.
+        draft: false,
     }
 }
 

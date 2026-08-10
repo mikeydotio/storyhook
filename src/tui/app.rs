@@ -444,6 +444,9 @@ fn create_story_mutation(
             priority: priority.map(|p| p.as_str().to_string()),
             labels: (!labels.is_empty()).then(|| labels.to_vec()),
             assignee: assignee.map(str::to_string),
+            // SH-175's draft flag has no TUI surface — the story scoped it to
+            // the CLI and web dashboard only.
+            draft: false,
         },
     )?;
     Ok(story_of(response)?.id)

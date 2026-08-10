@@ -119,6 +119,7 @@ Usage:
   story project settings list|get|set|unset        (this project's settings)
   story new <title> [--state <slug>] [--type <slug>] [--description <text>]
                     [--priority <level>] [--assignee <member>] [--label <name> ...]
+                    [--draft]                        (claims an id; not yet live)
   story tui                                           (interactive terminal UI)
   story web start [--port <PORT>]                  (start web dashboard)
   story web stop                                   (stop web dashboard)
@@ -137,6 +138,7 @@ Usage:
   story list [--state <slug>] [--assignee <id|handle>] [--flagged] [--priority <levels>]
              [--label <labels>] [--created-after <date>] [--updated-after <date>]
              [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
+             [--drafts]                                (narrows to drafts only)
   story next [--count <n>] [--phase <N>]
   story summary
   story report [--html]
@@ -182,6 +184,7 @@ Usage:
   story archive <id>                               (hide a closed story from the primary UI)
   story unarchive <id>
   story archive-state <state-slug> [--force]        (archive every story in a closed column)
+  story publish <id>                               (make a draft live; one-way)
   story delete <id> "<reason>"
   story purge <id> [--force]                       (permanently remove a deleted story)
   story set <id> [--title "<title>"] [--state <slug>] [--priority <level>]
@@ -280,6 +283,13 @@ pub enum Invocation {
         priority: Option<String>,
         labels: Option<Vec<String>>,
         assignee: Option<String>,
+        /// Creates the story as a draft (SH-175) — `story new --draft`.
+        draft: bool,
+    },
+    /// Makes a draft story live — `story publish <id>` (SH-175). One-way;
+    /// idempotent on a story that is already live.
+    Publish {
+        id: String,
     },
     MemberAdd {
         input: MemberInput,
@@ -300,6 +310,9 @@ pub enum Invocation {
         stale: Option<String>,
         phase: Option<String>,
         story_type: Option<String>,
+        /// Narrows to drafts only (SH-175) — mirrors `--flagged`/`--blocked`'s
+        /// narrow-only semantics; drafts are otherwise shown inline.
+        drafts: bool,
     },
     Search {
         query: String,
@@ -1266,6 +1279,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
             value("assignee"),
             value("label"),
             value("labels"),
+            bare("draft"),
         ],
     },
     VerbFlags {
@@ -1284,6 +1298,7 @@ static VERB_FLAGS: &[VerbFlags] = &[
             bare("flagged"),
             bare("blocked"),
             bare("ready"),
+            bare("drafts"),
         ],
     },
     VerbFlags {
@@ -1772,6 +1787,7 @@ fn dispatch(args: &[String]) -> Result<Invocation, AppError> {
         "archive" => parse_hide(args),
         "unarchive" => parse_unhide(args),
         "archive-state" => parse_hide_state(args),
+        "publish" => parse_publish(args),
         "delete" => parse_delete_verb(args),
         "purge" => parse_purge_verb(args),
         "set" => parse_set(args),
@@ -2093,8 +2109,9 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
     let mut assignee = None;
     let mut labels: Vec<String> = Vec::new();
     let mut title_parts = Vec::new();
+    let mut draft = false;
     let mut index = 1;
-    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>]";
+    let usage = "usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>] [--draft]";
     while index < args.len() {
         match args[index].as_str() {
             "--state" => {
@@ -2146,6 +2163,10 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
                 labels.push(value.clone());
                 index += 2;
             }
+            "--draft" => {
+                draft = true;
+                index += 1;
+            }
             _ => {
                 title_parts.push(args[index].clone());
                 index += 1;
@@ -2173,6 +2194,16 @@ fn parse_new(args: &[String]) -> Result<Invocation, AppError> {
             Some(labels)
         },
         assignee,
+        draft,
+    })
+}
+
+fn parse_publish(args: &[String]) -> Result<Invocation, AppError> {
+    if args.len() != 2 {
+        return Err(AppError::Usage("usage: story publish <id>".to_string()));
+    }
+    Ok(Invocation::Publish {
+        id: args[1].clone(),
     })
 }
 
@@ -2381,8 +2412,9 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
     let mut stale = None;
     let mut phase = None;
     let mut story_type = None;
+    let mut drafts = false;
     let mut index = 1;
-    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]";
+    let usage = "usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts]";
 
     while index < args.len() {
         match args[index].as_str() {
@@ -2461,6 +2493,10 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
                 story_type = Some(value.clone());
                 index += 2;
             }
+            "--drafts" => {
+                drafts = true;
+                index += 1;
+            }
             _ => {
                 return Err(AppError::Usage(usage.to_string()));
             }
@@ -2480,6 +2516,7 @@ fn parse_list(args: &[String]) -> Result<Invocation, AppError> {
         stale,
         phase,
         story_type,
+        drafts,
     })
 }
 

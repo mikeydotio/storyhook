@@ -155,6 +155,15 @@ pub const MIGRATIONS: &[Migration] = &[
         // migration 5's `events_reject_delete` warning does not apply.
         foreign_keys_off: false,
     },
+    Migration {
+        version: 12,
+        name: "story_draft",
+        sql: include_str!("schema/0012_story_draft.sql"),
+        // One `ALTER TABLE ... ADD COLUMN`, no CHECK, nothing rebuilt — see
+        // the migration's own header for why this column deliberately has no
+        // CHECK. Migration 5's `events_reject_delete` warning does not apply.
+        foreign_keys_off: false,
+    },
 ];
 
 /// The newest schema version this binary understands.

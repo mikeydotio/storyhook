@@ -7,6 +7,7 @@ SH-1 [todo] (critical) [epic] Design the storage engine (0/3)
 $ story epic show SH-1
 SH-1 Design the storage engine
 state: todo (OPEN)
+draft: no
 assignee: -
 priority: critical
 type: epic

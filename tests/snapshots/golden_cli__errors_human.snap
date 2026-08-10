@@ -14,7 +14,7 @@ stdout: <empty>
 stderr: 
 error: unknown flag `--no-such-flag` for `story list`.
 
-`story list` takes: --state --assignee --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready
+`story list` takes: --state --assignee --priority --label --created-after --updated-after --stale --phase --type --flagged --blocked --ready --drafts
 If `--no-such-flag` was meant as text rather than a flag, quote it as one argument, or put it after a `--`.
 
 
@@ -22,7 +22,7 @@ $ story new
 exit: 2
 stdout: <empty>
 stderr: 
-error: usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>]
+error: usage: story new <title> [--state <slug>] [--type <slug>] [--description <text>] [--priority <level>] [--assignee <member>] [--label <name> ...] [--labels <csv>] [--draft]
 
 
 $ story move SH-1 not-a-state
@@ -36,7 +36,7 @@ $ story list --state
 exit: 2
 stdout: <empty>
 stderr: 
-error: usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>]
+error: usage: story list [--state <slug>] [--assignee <id>] [--flagged] [--priority <levels>] [--label <labels>] [--created-after <date>] [--updated-after <date>] [--blocked] [--ready] [--stale <duration>] [--phase <N>] [--type <slug>] [--drafts]
 
 
 $ story show

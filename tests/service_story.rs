@@ -137,6 +137,7 @@ fn enrichment_events_are_written_in_one_batch_in_a_fixed_order() {
             priority: Some("high".into()),
             labels: Some(vec!["b".into(), "a".into()]),
             assignee: Some("ada".into()),
+            draft: false,
         })
         .expect("creating an enriched story");
 
@@ -1630,6 +1631,129 @@ fn hide_state_does_not_re_hide_an_already_hidden_story() {
 
     service.hide_state("done").unwrap();
     assert_eq!(snapshot(&fixture, &a.id).hidden_at, first_hide.hidden_at);
+}
+
+// --- draft / publish (SH-175) -----------------------------------------------
+
+fn new_draft_story(ctx: &Ctx<'_, SqliteStore>, title: &str) -> StorySnapshot {
+    StoryService::new(ctx)
+        .create(&NewStoryInput {
+            title: title.to_string(),
+            draft: true,
+            ..NewStoryInput::default()
+        })
+        .expect("creating a draft story")
+}
+
+#[test]
+fn creating_with_draft_true_sets_draft() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let story = new_draft_story(&ctx, "a sketch");
+    assert!(story.draft);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryCreatedAsDraft"]
+    );
+}
+
+#[test]
+fn creating_without_draft_is_live_from_the_start() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let story = new_story(&ctx, "live from the start");
+    assert!(!story.draft);
+    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+}
+
+#[test]
+fn publishing_a_draft_clears_draft() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_draft_story(&ctx, "ready to ship");
+
+    let published = service.publish(&story.id).expect("publishing");
+    assert!(!published.draft);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryCreatedAsDraft", "StoryPublished"]
+    );
+}
+
+#[test]
+fn publishing_an_already_live_story_is_a_no_op() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_story(&ctx, "never a draft");
+
+    let published = service.publish(&story.id).expect("publishing");
+    assert!(!published.draft);
+    // No `StoryPublished` event: the idempotent call appended nothing.
+    assert_eq!(event_kinds(&fixture, &story.id), ["StoryCreated"]);
+}
+
+#[test]
+fn publishing_a_draft_twice_appends_only_one_event() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_draft_story(&ctx, "published twice");
+    let first = service.publish(&story.id).unwrap();
+
+    let second = service.publish(&story.id).unwrap();
+    assert!(!second.draft);
+    assert_eq!(second.updated_at, first.updated_at);
+    assert_eq!(
+        event_kinds(&fixture, &story.id),
+        ["StoryCreated", "StoryCreatedAsDraft", "StoryPublished"]
+    );
+}
+
+#[test]
+fn publishing_a_story_that_does_not_exist_is_not_found() {
+    let fixture = ServiceFixture::new();
+    let error = StoryService::new(&fixture.ctx())
+        .publish("SH-1")
+        .unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+}
+
+/// The irreversibility contract itself: there is no service method that
+/// re-drafts a published story. This test exists to fail loudly — a
+/// compile error, not a silent gap — if a future change adds one without a
+/// corresponding decision to relax SH-175's "irreversible... we might
+/// reconsider this rule in a future version" wording. It does that by
+/// exercising the one and only path to `draft: true` (creation) and the
+/// one and only path away from it (`publish`), and asserting neither can be
+/// reached a second time in the other direction.
+#[test]
+fn there_is_no_verb_that_turns_a_live_story_back_into_a_draft() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let service = StoryService::new(&ctx);
+    let story = new_draft_story(&ctx, "one-way door");
+    let published = service.publish(&story.id).expect("publishing");
+    assert!(!published.draft);
+
+    // Every other mutation available on an open story — comment, set
+    // fields, relate — leaves `draft` alone. Spot-checked here with the one
+    // most likely to have been wired wrong: a full `set_fields` patch that
+    // touches unrelated fields must not touch `draft` as a side effect.
+    service
+        .set_fields(
+            &story.id,
+            &storyhook::service::FieldEdits {
+                title: Some("renamed".to_string()),
+                ..storyhook::service::FieldEdits::default()
+            },
+        )
+        .expect("editing fields");
+    assert!(
+        !snapshot(&fixture, &story.id).draft,
+        "an unrelated field edit must not re-draft a published story"
+    );
 }
 
 // --- catalogs other than the default ---------------------------------------

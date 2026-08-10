@@ -77,6 +77,10 @@ pub struct ListFilters {
     pub phase: Option<String>,
     /// `--type <slug>`, or the literal `none` for stories with no type.
     pub story_type: Option<String>,
+    /// `--drafts` (SH-175): narrows to drafts only. Drafts are otherwise
+    /// shown inline in the default `list` output — this never *hides*
+    /// anything the way it would if it were a default exclusion.
+    pub drafts: bool,
 }
 
 /// Answers every read-only question about a project.
@@ -147,9 +151,26 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             prefix: project.prefix,
             states: self.tx.states(self.project)?,
             members: self.tx.members(self.project)?,
+            // `.draft(false)` (SH-175): the web board is a curated "what's
+            // actionable" view — it already excludes archived stories — and
+            // the council verdict on SH-175 keeps that curation separate
+            // from `story list`'s general-purpose, nothing-hidden-by-default
+            // contract rather than routing both through the same filter.
             stories: self
                 .tx
-                .stories(self.project, &StoryQuery::all().archived(false))?
+                .stories(
+                    self.project,
+                    &StoryQuery::all().archived(false).draft(false),
+                )?
+                .into_iter()
+                .map(|row| row.snapshot)
+                .collect(),
+            // Carried alongside `stories`, not merged into it, for the
+            // Drafts popover and its count badge — see the field's own doc
+            // comment on `ProjectSnapshotView`.
+            drafts: self
+                .tx
+                .stories(self.project, &StoryQuery::all().draft(true))?
                 .into_iter()
                 .map(|row| row.snapshot)
                 .collect(),
@@ -208,6 +229,9 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         }
         if filters.ready {
             views.retain(|view| is_ready(&view.story, &stories));
+        }
+        if filters.drafts {
+            views.retain(|view| view.story.draft);
         }
         if let Some(phase) = &filters.phase {
             let label = format!("phase:{phase}");
