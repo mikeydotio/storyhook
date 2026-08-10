@@ -1160,6 +1160,28 @@ pub fn validate_required_states(states: &[StateDef]) -> Result<(), AppError> {
     )))
 }
 
+/// The error for a target state slug absent from a project's catalog.
+///
+/// A slug lookup failing has two different causes, and only one of them is
+/// repairable: a plain typo naming a state that was never defined, or a
+/// [`REQUIRED_STATES`] slug missing from a *legacy* store that predates the
+/// SH-125 invariant (which refuses to let a live edit create the gap, but
+/// cannot retroactively repair one). This routes the second case through
+/// [`validate_required_states`] — the exact check `story doctor` and every
+/// catalog-editing command already run for the same underlying condition — so
+/// a caller who hit it via `story move` gets the same "Run `story doctor
+/// --fix`" guidance they would from editing the catalog directly, instead of
+/// a bare "not defined" that names the cause but not the remedy.
+pub fn undefined_state_error(slug: &str, states: &BTreeMap<String, StateDef>) -> AppError {
+    if REQUIRED_STATES.iter().any(|required| required.slug == slug) {
+        let defined: Vec<StateDef> = states.values().cloned().collect();
+        if let Err(error) = validate_required_states(&defined) {
+            return error;
+        }
+    }
+    AppError::Validation(format!("state `{slug}` is not defined"))
+}
+
 /// `states` with any missing [`REQUIRED_STATES`] added.
 ///
 /// The repair may only **add**. A required slug already present under the wrong
