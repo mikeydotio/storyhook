@@ -166,7 +166,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-158** — `GithubClient` has no trait seam, so two functions have no test at all
 - [x] **SH-145** — the dashboard does not live-update a state change until reload
 - [x] **SH-68** — `sync.mode = auto` is accepted and does nothing · *closed by another session; ⚠ mark was stale as of 2026-08-08*
-- ⚠ **SH-196** — dashboard dispatch fails silently-ish when the installed plugin script predates `--project` · *in-progress in another session as of 2026-08-08 (worktree `SH-196`); added by the 2026-08-08 resync*
+- [x] **SH-196** — dashboard dispatch fails silently-ish when the installed plugin script predates `--project` · *closed by another session; ⚠ mark was stale as of 2026-08-09 — merged PR #212 (`7e1b1d3`) on 2026-08-08*
 
 ### Medium
 
