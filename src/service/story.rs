@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
     Member, Priority, StateDef, StoryEvent, StorySnapshot, SuperState, normalize_labels,
+    undefined_state_error,
 };
 use crate::error::AppError;
 use crate::event_hooks::HookEventType;
@@ -331,7 +332,7 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
             let target = states
                 .get(state)
                 .cloned()
-                .ok_or_else(|| AppError::Validation(format!("state `{state}` is not defined")))?;
+                .ok_or_else(|| undefined_state_error(state, &states))?;
             let extra = comment
                 .map(|text| StoryEvent::StoryCommentAdded {
                     at: now.clone(),
@@ -411,7 +412,10 @@ impl<'ctx, S: Store> StoryService<'ctx, S> {
 
         for (id, state_slug) in updates {
             if !states.contains_key(state_slug) {
-                results.push(format!("{id}: error — state `{state_slug}` is not defined"));
+                results.push(format!(
+                    "{id}: error — {}",
+                    undefined_state_error(state_slug, &states)
+                ));
                 continue;
             }
             match self.set_state(id, state_slug, None, None) {
@@ -884,7 +888,7 @@ fn archivable_occupants(
     let states = tx.state_map(project)?;
     let def = states
         .get(state_slug)
-        .ok_or_else(|| AppError::Validation(format!("state `{state_slug}` is not defined")))?;
+        .ok_or_else(|| undefined_state_error(state_slug, &states))?;
     if def.super_state != SuperState::Closed {
         return Err(AppError::Validation(format!(
             "state `{state_slug}` is open; only a closed-superstate column can be archived"
@@ -1265,7 +1269,7 @@ fn push_state_change(
 ) -> Result<(), AppError> {
     let target = states
         .get(slug)
-        .ok_or_else(|| AppError::Validation(format!("state `{slug}` is not defined")))?;
+        .ok_or_else(|| undefined_state_error(slug, states))?;
     plan.events.extend(state_transition_events(
         target,
         story.awaiting.is_some(),
