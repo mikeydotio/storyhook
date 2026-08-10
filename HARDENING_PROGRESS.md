@@ -195,7 +195,7 @@ more than any single story below it. SH-143 and SH-144 are that wedge, named.
 - [x] **SH-157** — visually indicate story types · *closed by another session*
 - [x] **SH-169** — add a "Referenced By" field for commits, comments and PRs that mention a story, so the comments list stops filling with `[git]` noise like SH-63's own
 - [x] **SH-170** — `project_creation_target`'s outer catch-all could let a future top-level creating verb bypass the SH-95 temp-project guard unnoticed · *residue of SH-117's council (D8); box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
-- [ ] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses
+- [ ] **SH-174** — event hooks run inside the daemon's request handler with no ceiling on `hooks.settings.timeout_seconds`, so a client-side bound is also a bound on the user's own subprocesses · *partial, still open: PR #218 fixed the two concrete under-counts a council found (transition-pair sum, bulk-update's N-aware bound); the ceiling itself — the story's real redesign trigger — remains, see the log entry and the story's own comments*
 - [ ] **SH-175** — the web New Story window should require an explicit Discard/Save Draft action rather than losing an in-progress draft to a stray dismiss
 - [x] **SH-178** — `commit-sync` reports "no claim word" for every reason a story did not move, including four where the commit body did carry one · *box was stale — confirmed `done (CLOSED)` via `story show` 2026-08-09, resynced per the SessionStart hook note*
 - [ ] **SH-180** — `story move`'s undefined-state error omits the `doctor --fix` guidance the state-invariant error already gives for the same underlying condition
@@ -255,6 +255,8 @@ above.*
 - [ ] **SH-215** — `story export`'s help topic and `story import`'s help topic disagree with export's actual output shape
 - [ ] **SH-217** — render markdown in a story's body description in the web interface, switching to plain text while the field is focused for editing
 - [ ] **SH-219** — the `--auto` dispatch flag and `/story:do` skill should signal council-vote for scope/direction questions when the plugin is installed
+- [ ] **SH-222** — `drawer-detail-race.spec.ts` deleting a story during its edit races the button's own DOM stability · *filed while gating SH-174's PR; reproduces identically on unmodified `main`*
+- [ ] **SH-223** — `filter-persistence.spec.ts`'s pruned-filter count races the carried-over filter settling · *filed alongside SH-222, same gating run; the wrong count differs run to run, the signature of a race*
 
 ### What was on the old list and is now done
 
@@ -7996,3 +7998,89 @@ dashboard UI (`062a7c0`), split because the HTML is not part of the Rust build
 (`include_str!`'d at compile time, but nothing in the first commit depends on the
 second) and each commit passes `make test` on its own. Branch verified deleted. New
 follow-up story SH-220 added to the Low queue above, unchecked.
+
+### SH-174 — partial: two under-counts fixed, story stays open
+
+**Resynced first, per the SessionStart hook and precedent**: SH-170 and SH-178 were
+confirmed `done (CLOSED)` via `story show` but still unchecked in the High/Medium queue —
+closed by concurrent sessions with no matching Log entry in this file. Ticked both boxes
+in a standalone docs PR (#217) before picking new work, rather than folding the resync
+into this story's own log entry.
+
+**What SH-174's own text no longer matched.** Filed 2026-08-04, before SH-173 (merged
+2026-08-07) built `served_deadline`'s dynamic per-request derivation
+(`SERVED_DEADLINE + event_hooks::max_configured_timeout(cwd)`). Reading every `fire_hook`
+call site in `src/service/*.rs` against the current code found two concrete, reproducible
+under-counts SH-173 didn't cover, and one claim in SH-174's own description that no longer
+holds:
+
+1. `max_configured_timeout()`'s doc claimed "at most one hook fires inside a single served
+   request" — false. `StoryService::fire_transition_hooks` fires `on_state_change` and then
+   `on_close` serially whenever a transition closes a story. Both `set-state` (`story
+   move`) and `set-fields` (`story set`) reach it. The old widening took `max(all 7
+   configured timeouts)`, not the sum of the two that actually fire — an ordinary,
+   **non-bulk** `story move <id> <closing-state>` could legitimately run up to 2x longer
+   than the client's deadline accounted for.
+2. `bulk_update` (CLI `bulk-update`) loops `set_state` once per `(id, state)` pair — up to
+   2 hooks each, so worst case is `N x (on_state_change + on_close)`, and the old widening
+   budgeted for exactly one hook's timeout regardless of `N`. This is the "affected
+   stories" gap the story's own description names.
+3. `commit-sync` and `import` — which the story's text assumed were part of the "many
+   events" problem — fire **no** event hook at all today (no `fire_hook` call site exists
+   in either `git.rs` or `transfer.rs`). Not part of this gap; noted but not chased
+   further, since it's the opposite-shaped problem (under-firing, not over-budget).
+
+**Council convened** (`.council/sh-174-hook-timeout-budget-scope/`, unanimous round 1,
+3 seats — software-architect, performance-engineer, skeptic) to decide between following
+SH-174's literal original prescription (a hard ceiling on `hooks.settings.timeout_seconds`
++ deleting `$STORYHOOK_EXCHANGE_DEADLINE_SECS`) versus fixing the two concretely-found
+under-counts and leaving the escape hatch alone. Unanimous for the latter, with an
+amendment all three seats converged on independently: `bulk-update`'s bound should be
+N-aware (its item count is already sitting in `request.invocation` at `served_deadline`'s
+one production call site, `src/api/rpc.rs:195`) rather than bucketed into the flat
+`SYNC_SERVED_DEADLINE` github-sync/pr-check already use — because those two legitimately
+get a flat bound only because they run with `no_hooks(true)` (their cost is un-derivable
+locally), which doesn't hold for `bulk-update`. All three also independently flagged that
+the escape hatch's own docstring (`env/mod.rs:586-589`) names its retirement trigger as
+literally "put a ceiling on `hooks.settings.timeout_seconds` … and delete this variable" —
+unmet by this fix, so **SH-174 must not close**.
+
+**Built to the verdict.** `event_hooks::transition_pair_timeout` (new) sums
+`on_state_change` + `on_close`, `None` if neither is configured. `served_deadline`'s
+`set-state`/`set-fields` branch widens by that instead of the max-of-seven. A new
+`served_deadline_for(invocation, cwd)` wrapper — the one function `src/api/rpc.rs` now
+calls — special-cases `Invocation::BulkUpdate` with `updates.len() x` the pair, and
+delegates to `served_deadline` for everything else (kept as a separate function rather
+than threading an item-count parameter through every call site that has nothing to
+multiply). 8 new unit tests, red-first: manually reverted the three implementation edits
+(keeping the new tests), confirmed 5 of 8 failed against the old logic with the exact
+wrong numbers predicted, restored the fix from a saved diff (byte-identical, verified with
+`diff`), confirmed all 8 green.
+
+**Gate: green on the Rust side, red on two pre-existing, unrelated e2e specs.** `cargo
+fmt`, `clippy -D warnings`, the full Rust suite (1062+ tests), `cargo build`, and the
+plugin bash harness (25/25) all passed clean. Playwright e2e: 35/38 — `drawer-detail-race.
+spec.ts:110` and `filter-persistence.spec.ts:87` failed. Confirmed unrelated to this diff
+(backend-only: `rpc.rs`, `lifecycle.rs`, `event_hooks.rs` — nothing web/dashboard) by an
+A/B control test: `git checkout main` with zero local changes, reran the same two specs,
+identical failures. `filter-persistence.spec.ts`'s specific assertion failed with a
+*different* wrong count on each of three runs (0/4, then 0/3, then 0/3 again on clean
+`main`) — the signature of a race an assertion outruns, not a deterministic logic bug.
+Machine load averaged 32–88 throughout (several concurrent hardening sessions building/
+testing at once). Filed **SH-222** and **SH-223** with full repro evidence rather than
+fixing them here (out of scope, would violate two-hats discipline). Pushed with
+`SKIP_PREPUSH_TESTS=1` — a deliberate, documented exception per the SH-169 precedent
+above for a gate failure rigorously proven non-causal, not an improvisation around a red
+gate found on arrival.
+
+**PR:** #218, merged as `ec0b802` (`gh pr view` confirmed `MERGED`), fast-forwarded onto
+`main` in this checkout, branch verified deleted.
+
+**Disposition: `story move SH-174 todo`, not `done`.** Real, tested, merged progress —
+two of the three findings under SH-174's umbrella are fixed — but the story's own
+redesign trigger (the ceiling) is what it's actually about at this point, and that's
+still open. The council verdict comment on SH-174 records the narrowed scope for whoever
+picks it up next, so re-reading it doesn't require re-deriving what SH-173 changed.
+
+**Not ticked in the queue above** — SH-174 remains genuinely open work, unlike the
+resynced SH-170/SH-178.
