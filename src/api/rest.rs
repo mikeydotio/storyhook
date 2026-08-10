@@ -260,6 +260,9 @@ fn route_project<S: Store>(
             (Method::Post, "unarchive") => {
                 guarded_no_body(headers, trusted_hosts, || route_unhide_story(ctx, id))
             }
+            (Method::Post, "publish") => {
+                guarded_no_body(headers, trusted_hosts, || route_publish_story(ctx, id))
+            }
             (Method::Post, "link-pr") => guarded(headers, trusted_hosts, body, |b| {
                 route_link_pr_story(ctx, id, b)
             }),
@@ -607,10 +610,17 @@ fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
             // `story report`/`story list` intentionally still surface them (marked
             // deleted), but the dashboard has no such treatment and would otherwise
             // show them as live cards in whichever column matches their last state.
+            //
+            // Drafts (SH-175) are excluded from `stories` the same way, and for a
+            // parallel reason: the board is a curated "what's actionable" view, and
+            // the council verdict on SH-175 keeps `story list`'s "show everything"
+            // contract from leaking into it. They are not dropped, only routed —
+            // every non-deleted draft lands in `drafts_json` below instead, which is
+            // what powers the Drafts popover and its count badge.
             let stories_json: Vec<serde_json::Value> = data
                 .stories
                 .iter()
-                .filter(|view| !view.story.deleted)
+                .filter(|view| !view.story.deleted && !view.story.draft)
                 .map(|view| {
                     let mut val = serde_json::to_value(view).unwrap_or(serde_json::Value::Null);
                     if let serde_json::Value::Object(ref mut map) = val {
@@ -627,9 +637,17 @@ fn project_data_json<S: Store>(ctx: &Ctx<'_, S>) -> Result<String, AppError> {
                 })
                 .collect();
 
+            let drafts_json: Vec<serde_json::Value> = data
+                .stories
+                .iter()
+                .filter(|view| !view.story.deleted && view.story.draft)
+                .map(|view| serde_json::to_value(view).unwrap_or(serde_json::Value::Null))
+                .collect();
+
             let response = serde_json::json!({
                 "summary": data.summary,
                 "stories": stories_json,
+                "drafts": drafts_json,
                 "ready_ids": data.ready_ids,
                 "blocked_ids": data.blocked_ids,
                 "meta": meta_json(tx, project, &data)?,
@@ -730,6 +748,7 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
         } else {
             None
         };
+        let draft = get_bool(&obj, "draft");
         Ok(reply_with(
             ctx,
             201,
@@ -741,6 +760,7 @@ fn route_create_story<S: Store>(ctx: &Ctx<'_, S>, body: &str) -> Reply {
                 priority,
                 labels,
                 assignee: None,
+                draft,
             },
         ))
     })()
@@ -1005,6 +1025,12 @@ fn route_hide_story<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Reply {
 /// [`route_hide_story`].
 fn route_unhide_story<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Reply {
     reply_with(ctx, 200, Invocation::Unhide { id: id.to_string() })
+}
+
+/// `POST /api/repos/{id}/story/{story}/publish` — makes a draft live
+/// (SH-175). One-way; idempotent on a story that is already live.
+fn route_publish_story<S: Store>(ctx: &Ctx<'_, S>, id: &str) -> Reply {
+    reply_with(ctx, 200, Invocation::Publish { id: id.to_string() })
 }
 
 /// `POST /api/repos/{id}/states/{slug}/archive` — the CLOSED-superstate

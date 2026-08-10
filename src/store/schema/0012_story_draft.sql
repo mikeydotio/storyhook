@@ -1,0 +1,24 @@
+-- storyhook store — schema version 12: `stories.draft`, SH-175's draft flag.
+--
+-- Boolean, stored as `INTEGER NOT NULL DEFAULT 0`: every existing row is a
+-- live story (SH-175's own text — "New stories are not drafts by default;
+-- they are live as soon as they are created"), and every column this schema
+-- treats as boolean already uses this convention (see `deleted`, `archived`
+-- in migration 4).
+--
+-- No CHECK ties `draft` to anything, for the same reason migration 10's
+-- `hidden_at` has none: SQLite's `ALTER TABLE ... ADD COLUMN` cannot add a
+-- cross-column CHECK. Draft is a simpler fact than `hidden_at` in one
+-- respect — it does not depend on `superstate` — but it carries its own
+-- invariant a CHECK still could not express: once cleared it can never be
+-- set again. That is enforced where this codebase's convention puts an
+-- invariant a schema CHECK cannot see: at the service layer
+-- (`StoryService::publish` is the only path that clears it, and nothing
+-- clears it back) and in the fold itself (`fold_story` latches — a
+-- `StoryCreatedAsDraft` folded after a `StoryPublished` is ignored).
+--
+-- No rebuild: `ALTER TABLE ... ADD COLUMN` is the whole schema change, so
+-- this migration runs with `foreign_keys_off: false` and migration 5's
+-- `events_reject_delete` warning does not apply.
+
+ALTER TABLE stories ADD COLUMN draft INTEGER NOT NULL DEFAULT 0;

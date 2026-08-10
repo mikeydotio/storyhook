@@ -253,7 +253,7 @@ Related:
             "new",
             r#"story new <title> [--state <slug>] [--type <slug>] [--description <text>]
               [--priority <level>] [--assignee <member>] [--label <name> ...]
-              [--labels <csv>]
+              [--labels <csv>] [--draft]
 
 Create a new story with the given title. Returns the assigned ID.
 All flags are optional — everything but the title can also be set
@@ -262,9 +262,16 @@ comma-separated list (both may be combined). Comma is always the
 label delimiter, even inside a single --label value — a label can
 never contain one.
 
+--draft creates the story as a draft: it claims an id like any other
+story, but is excluded from 'story next'/'--ready' and shown inline
+in 'story list' with a [draft] badge (or filter to drafts-only with
+'story list --drafts'). 'story publish <id>' makes it live — one-way,
+so there is no flag to undo it.
+
 When to use:
   When you have a discrete piece of work to track. For bulk creation
-  from a spec, use 'story decompose' instead.
+  from a spec, use 'story decompose' instead. Use --draft for an
+  idea you're still shaping and don't want surfacing as ready work yet.
 
 Examples:
   story new "Implement authentication middleware"
@@ -272,8 +279,10 @@ Examples:
   story new "Refactor database connection pooling" --json
   story new "Add rate limiting" --priority high --label backend --label api
   story new "Investigate flaky test" --description "Fails ~1 in 20 runs in CI"
+  story new "Sketch: notification preferences" --draft
 
 Related:
+  story publish <id>     — Make a draft live (one-way)
   story decompose        — Create multiple stories from a spec file
   story set <id>          — Change any field after creation
   story prioritize <id>  — Set priority after creation
@@ -304,6 +313,8 @@ Filters:
   --stale <duration>      Stories not updated in duration (e.g., 2d, 1w)
   --created-after <date>  Stories created after ISO date
   --updated-after <date>  Stories updated after ISO date
+  --drafts                Only draft stories (they otherwise show inline
+                           with a [draft] badge — see 'story help new')
 
 Examples:
   story list                          # All open stories
@@ -312,9 +323,11 @@ Examples:
   story list --priority critical,high # Only critical and high priority
   story list --blocked --json         # Blocked stories as JSON
   story list --stale 3d               # Not updated in 3 days
+  story list --drafts                 # Only drafts, to pick one to edit
 
 Related:
   story next     — Get the highest-priority ready story
+  story publish  — Make a draft live
   story summary  — Aggregate counts by state and priority
   story search   — Full-text search across stories
 "#,
@@ -1560,6 +1573,30 @@ Examples:
 
 Related:
   story archive <id>  — Hide a closed story
+"#,
+        );
+
+        m.insert(
+            "publish",
+            r#"story publish <id>
+
+Makes a draft story live. One-way: there is no command to turn a
+live story back into a draft. Idempotent on a story that is already
+live — publishing again is not an error, it just has nothing to do.
+
+Once published, the story loses its [draft] badge in 'story list',
+becomes eligible for 'story next'/'--ready', and (if it's still in
+its original state) starts appearing on the web dashboard board.
+
+When to use:
+  When a draft is ready to become real, actionable work.
+
+Examples:
+  story publish SH-42
+
+Related:
+  story new --draft   — Create a story as a draft
+  story list --drafts — See every draft in the project
 "#,
         );
 

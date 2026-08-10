@@ -798,6 +798,7 @@ mod tests {
             deleted: false,
             deleted_reason: None,
             hidden_at: None,
+            draft: false,
         }
     }
 

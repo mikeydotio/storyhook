@@ -202,6 +202,7 @@ fn positions(invocation: &mut Invocation) -> Vec<&mut String> {
         | Invocation::Reopen { id, .. }
         | Invocation::Hide { id }
         | Invocation::Unhide { id }
+        | Invocation::Publish { id }
         | Invocation::Delete { id, .. }
         | Invocation::Purge { id, .. }
         | Invocation::SetFields { id, .. }
@@ -441,6 +442,7 @@ mod tests {
                 priority: None,
                 labels: None,
                 assignee: None,
+                draft: false,
             },
             Invocation::Graph {
                 mode: GraphMode::Overview,
