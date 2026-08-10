@@ -1415,14 +1415,19 @@ pub enum ExchangeBound {
 /// `github-sync`'s total is set off this machine (SH-144) and gets its own
 /// constant regardless of hook configuration — its duration is
 /// O(stories × comments) × a 30s per-call client bound, not a function of
-/// any one project's hooks. Every other command's deadline widens by
-/// [`crate::event_hooks::max_configured_timeout`] at `cwd`: a command's own
-/// completion time is bounded above by *some* configured hook's timeout
-/// (`hook_depth` caps nesting at one, so at most one hook fires inside a
-/// single served request — [`crate::service::Ctx::hooks_enabled`]), so
-/// ignoring hook configuration entirely is what turned a legitimately slow
-/// hook into an abandoned command — the gap [`SERVED_DEADLINE`]'s own
-/// docstring names as the reason it could only be calibrated, not derived.
+/// any one project's hooks. `set-state` and `set-fields` widen by
+/// [`crate::event_hooks::transition_pair_timeout`] instead of the general
+/// case below, because they are the one pair of commands that can fire two
+/// hooks serially in one call (SH-174) — every other command's deadline
+/// widens by [`crate::event_hooks::max_configured_timeout`] at `cwd`: a
+/// command's own completion time is bounded above by *some* configured
+/// hook's timeout, so ignoring hook configuration entirely is what turned a
+/// legitimately slow hook into an abandoned command — the gap
+/// [`SERVED_DEADLINE`]'s own docstring names as the reason it could only be
+/// calibrated, not derived.
+///
+/// `bulk-update`'s own O(n) multiplier is not handled here — see
+/// [`served_deadline_for`], which is what the daemon actually calls.
 #[must_use]
 pub fn served_deadline(command: &str, cwd: &Path) -> Duration {
     // `pr-check` gets the same long, hook-independent bound as `github-sync`:
@@ -1432,8 +1437,39 @@ pub fn served_deadline(command: &str, cwd: &Path) -> Duration {
     if command == "github-sync" || command == "pr-check" {
         return SYNC_SERVED_DEADLINE;
     }
-    let allowance = crate::event_hooks::max_configured_timeout(cwd).unwrap_or(Duration::ZERO);
+    let allowance = if command == "set-state" || command == "set-fields" {
+        crate::event_hooks::transition_pair_timeout(cwd)
+    } else {
+        crate::event_hooks::max_configured_timeout(cwd)
+    }
+    .unwrap_or(Duration::ZERO);
     SERVED_DEADLINE + allowance
+}
+
+/// [`served_deadline`], widened further for a command whose cost scales with
+/// how many items it touches.
+///
+/// `bulk-update` (SH-174) loops [`crate::service::StoryService::set_state`]
+/// once per `(id, state)` pair it is given, so its worst-case hook time is
+/// `updates.len() ×` [`crate::event_hooks::transition_pair_timeout`], not one
+/// widening's worth of it — [`served_deadline`] alone would under-count by a
+/// factor of `updates.len()`. A separate function rather than a parameter
+/// [`served_deadline`] always takes: every other invocation's cost is one
+/// command, one hook chain, so threading an item count through call sites
+/// that have nothing to multiply would be a parameter nobody but this one
+/// caller sets to anything but `1`.
+///
+/// The one production caller ([`crate::api::rpc`]) already holds the parsed
+/// [`crate::cli::Invocation`] it can read `updates.len()` from — the number
+/// is not guessed, it is the exact list the command is about to attempt.
+#[must_use]
+pub fn served_deadline_for(invocation: &crate::cli::Invocation, cwd: &Path) -> Duration {
+    if let crate::cli::Invocation::BulkUpdate { updates } = invocation {
+        let per_item = crate::event_hooks::transition_pair_timeout(cwd).unwrap_or(Duration::ZERO);
+        let n = u32::try_from(updates.len().max(1)).unwrap_or(u32::MAX);
+        return SERVED_DEADLINE + per_item * n;
+    }
+    served_deadline(crate::invoke::invocation_name(invocation), cwd)
 }
 
 /// What a waiting client has observed about the daemon, at the moment it
@@ -2204,6 +2240,114 @@ mod tests {
         assert_eq!(
             served_deadline("github-sync", dir.path()),
             SYNC_SERVED_DEADLINE
+        );
+    }
+
+    /// `set-state` and `set-fields` widen by the transition pair's *sum*, not
+    /// the largest-of-all-seven every other command uses (SH-174).
+    /// `fire_transition_hooks` fires `on_state_change` and `on_close`,
+    /// serially, in one call when a transition closes a story — a widening
+    /// based on the larger of the two alone would be exceeded by their sum,
+    /// which is exactly the under-count this test pins closed.
+    #[test]
+    fn set_state_and_set_fields_widen_by_the_transition_pair_sum() {
+        let dir = scratch();
+        std::fs::create_dir_all(dir.path().join(".storyhook")).expect("the hooks directory");
+        std::fs::write(
+            dir.path().join(".storyhook/hooks.toml"),
+            "[settings]\ntimeout_seconds = 10\n\n\
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 100\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 50\n\n\
+             [on_create]\ncommand = \"true\"\ntimeout_seconds = 999\n",
+        )
+        .expect("writing hooks.toml");
+
+        for command in ["set-state", "set-fields"] {
+            assert_eq!(
+                served_deadline(command, dir.path()),
+                SERVED_DEADLINE + Duration::from_secs(150),
+                "`{command}` must widen by on_state_change (100) + on_close (50) = 150, \
+                 not max(100, 50, 999) from on_create, which it can never fire"
+            );
+        }
+        // Every other command still gets the max-of-all-seven widening,
+        // unchanged: on_create's 999s wins there, because those commands
+        // really can only ever fire one hook per call.
+        assert_eq!(
+            served_deadline("comment", dir.path()),
+            SERVED_DEADLINE + Duration::from_secs(999)
+        );
+    }
+
+    /// [`served_deadline_for`] widens `bulk-update` by `updates.len()` times
+    /// the transition pair, not one widening's worth of it regardless of how
+    /// many items are given (SH-174) — the "affected stories" gap this
+    /// story's own description names.
+    #[test]
+    fn bulk_update_widens_by_n_times_the_transition_pair() {
+        let dir = scratch();
+        std::fs::create_dir_all(dir.path().join(".storyhook")).expect("the hooks directory");
+        std::fs::write(
+            dir.path().join(".storyhook/hooks.toml"),
+            "[settings]\ntimeout_seconds = 10\n\n\
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 100\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 50\n",
+        )
+        .expect("writing hooks.toml");
+
+        let three_updates = crate::cli::Invocation::BulkUpdate {
+            updates: vec![
+                ("SH-1".to_string(), "done".to_string()),
+                ("SH-2".to_string(), "done".to_string()),
+                ("SH-3".to_string(), "done".to_string()),
+            ],
+        };
+        assert_eq!(
+            served_deadline_for(&three_updates, dir.path()),
+            SERVED_DEADLINE + Duration::from_secs(150 * 3),
+            "3 items x (100 + 50) per item, not one widening's worth for the whole call"
+        );
+
+        let no_updates = crate::cli::Invocation::BulkUpdate { updates: vec![] };
+        assert_eq!(
+            served_deadline_for(&no_updates, dir.path()),
+            SERVED_DEADLINE + Duration::from_secs(150),
+            "an empty batch still costs at least one widening's worth, not zero"
+        );
+    }
+
+    /// Every non-`BulkUpdate` invocation delegates to [`served_deadline`]
+    /// unchanged — [`served_deadline_for`] only special-cases the one command
+    /// whose cost is not a function of a single hook chain.
+    #[test]
+    fn served_deadline_for_delegates_for_every_non_bulk_invocation() {
+        let dir = scratch();
+        std::fs::create_dir_all(dir.path().join(".storyhook")).expect("the hooks directory");
+        std::fs::write(
+            dir.path().join(".storyhook/hooks.toml"),
+            "[settings]\ntimeout_seconds = 10\n\n\
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 100\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 50\n",
+        )
+        .expect("writing hooks.toml");
+
+        assert_eq!(
+            served_deadline_for(&crate::cli::Invocation::Export, dir.path()),
+            served_deadline("export", dir.path())
+        );
+        assert_eq!(
+            served_deadline_for(
+                &crate::cli::Invocation::SetState {
+                    id: "SH-1".to_string(),
+                    state: "done".to_string(),
+                    comment: None,
+                    if_state: None,
+                },
+                dir.path()
+            ),
+            served_deadline("set-state", dir.path()),
+            "a lone set-state still gets the sum-of-the-pair widening via served_deadline, \
+             just not multiplied by an item count"
         );
     }
 

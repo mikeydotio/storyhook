@@ -192,7 +192,8 @@ fn invoke<S: Store>(store: &S, env: &Environment, entry: &Entry<'_>, body: &str)
         project: request.project.as_ref().map(|p| p.slug().to_string()),
         pid: std::process::id(),
         started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        served_deadline_secs: lifecycle::served_deadline(command, &request.cwd).as_secs(),
+        served_deadline_secs: lifecycle::served_deadline_for(&request.invocation, &request.cwd)
+            .as_secs(),
         cwd: request.cwd.clone(),
     });
 
