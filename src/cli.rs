@@ -997,9 +997,9 @@ pub struct GlobalFlags {
     /// A flag, not an environment variable, and deliberately so: a caller that
     /// cannot wait — a session hook Claude Code will kill regardless — states
     /// that once, for the one invocation asking. `$STORYHOOK_EXCHANGE_DEADLINE_SECS`
-    /// already shows the hazard the other shape has: a variable is set once
-    /// and inherited by everything a shell starts afterward, so one `export`
-    /// would silently abandon every write on the machine (SH-182).
+    /// (deleted, SH-174) showed the hazard the other shape has: a variable is
+    /// set once and inherited by everything a shell starts afterward, so one
+    /// `export` would silently abandon every write on the machine (SH-182).
     ///
     /// Expiry does not cancel the request: the daemon finishes whatever it
     /// accepted, and this process simply stops waiting for the answer and

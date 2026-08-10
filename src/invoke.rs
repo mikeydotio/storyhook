@@ -2737,10 +2737,12 @@ impl Invoker for HttpInvoker {
             .project(request.project)
             .github_token(request.github_token);
 
-        // Resolved once, up here, rather than inside `send`: the bound is a
-        // clock, and `main.rs` states the rule that nothing below its own line
-        // reads the environment for a path or a clock.
-        let bound = self.env.exchange_bound();
+        // Always `None` in production: `bound` exists only as a test seam
+        // (`send`'s own docstring) since SH-174 deleted its sole production
+        // producer, `$STORYHOOK_EXCHANGE_DEADLINE_SECS`. `None` means "use the
+        // deadline each record already carries," which is now provably
+        // sufficient — see `event_hooks::HOOK_TIMEOUT_CEILING_SECS`.
+        let bound = None;
         let poll = crate::daemon::lifecycle::RECORD_POLL;
         let patience = crate::daemon::lifecycle::SERVED_PATIENCE;
 
