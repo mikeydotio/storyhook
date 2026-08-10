@@ -1326,13 +1326,21 @@ pub const CONTROL_DEADLINE: Duration = Duration::from_secs(5);
 ///
 /// # Where the number comes from
 ///
-/// **Calibrated, not derived, and that distinction is deliberate.** Its
-/// neighbour [`SPAWN_LOCK_DEADLINE`] can say "derived, never chosen" because
-/// every wait it covers is storyhook's own bounded code. A handler runs the
-/// *user's* data through the user's event hooks, and
-/// `hooks.settings.timeout_seconds` has no ceiling, so no honest derivation
-/// exists yet. A fake one would be worse than a calibration, because it would
-/// survive a review it should not.
+/// **Calibrated, not derived, and that distinction is deliberate** — for the
+/// *local-work* component this constant alone covers. `hooks.settings.timeout_seconds`
+/// used to have no ceiling, which meant no honest derivation of the hook
+/// component existed and a fake one would have survived a review it should
+/// not have. SH-174 closed that gap: [`crate::event_hooks::HOOK_TIMEOUT_CEILING_SECS`]
+/// (60s) now bounds every configured hook, so the *allowance*
+/// [`served_deadline`] and [`served_deadline_for`] add on top of this
+/// constant is provably bounded — ≤60s for a single hook, ≤120s for the
+/// `set-state`/`set-fields` transition pair, ≤120s × N for `bulk-update` —
+/// rather than the unknown this constant used to have to hedge against.
+/// `SERVED_DEADLINE` itself stays a calibration rather than becoming a
+/// derivation, because it answers a different question than the ceiling
+/// does — how long storyhook's own local work can take with **no** hooks
+/// configured at all — and that number was never a function of the hook
+/// ceiling to begin with.
 ///
 /// So: 120s is 26x the slowest local command ever measured here — a 8,000-story
 /// import at 4.57s, against a store 33x the size of the real one — and 12x the
@@ -1392,11 +1400,17 @@ pub const UNPUBLISHED_DEADLINE: Duration = Duration::from_secs(120);
 /// How long a client will wait for the daemon to finish one command.
 ///
 /// A type rather than a bare `Duration` so that "no bound" is a value somebody
-/// chose rather than a `None` that reads as "unset". Nothing in storyhook's own
-/// code produces [`Self::Unbounded`] — every command is bounded by
-/// [`SERVED_DEADLINE`] or [`SYNC_SERVED_DEADLINE`] — so its **sole producer** is
-/// a user writing `none` in `$STORYHOOK_EXCHANGE_DEADLINE_SECS`, which is
-/// exactly the state worth making visible.
+/// chose rather than a `None` that reads as "unset". Nothing in storyhook's
+/// **production** code constructs either variant — every command is bounded
+/// by [`SERVED_DEADLINE`] or [`SYNC_SERVED_DEADLINE`], both of which
+/// [`crate::event_hooks::HOOK_TIMEOUT_CEILING_SECS`] now makes provably
+/// sufficient (SH-174). This type's sole former producer,
+/// `$STORYHOOK_EXCHANGE_DEADLINE_SECS`, is gone with the gap it existed to
+/// paper over. What remains is a pure test seam: [`verdict`]'s
+/// `override_bound` parameter and [`crate::invoke::HttpInvoker::send`]'s
+/// `bound` parameter let a test drive a 120-second bound in 250 milliseconds
+/// without a real sleep, while [`crate::invoke::HttpInvoker::invoke`] passes
+/// `None` unconditionally in production.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExchangeBound {
     /// Give up when the record has not moved for this long.
@@ -1525,11 +1539,12 @@ pub enum Verdict {
 /// false positive, deleted rather than tuned, and it survives this rewrite
 /// unchanged. `override_bound` is exactly what its name says: `None` means
 /// *use the deadline each record already carries*, which is the production
-/// path and the whole point of publishing it there. `Some` is the user's
-/// `$STORYHOOK_EXCHANGE_DEADLINE_SECS`, and it replaces every deadline below
-/// — including the unpublished one, because a user who says "wait 10
-/// minutes" means it whatever the daemon is or is not saying — and it is
-/// also how a test drives a 120-second bound in 250 milliseconds.
+/// path and the whole point of publishing it there —
+/// [`crate::invoke::HttpInvoker::invoke`] passes `None` unconditionally.
+/// `Some` exists only in tests since SH-174 deleted its production producer:
+/// it replaces every deadline below — including the unpublished one — and is
+/// how a test drives a 120-second bound in 250 milliseconds without a real
+/// sleep.
 #[must_use]
 pub fn verdict(seen: &Observed<'_>, override_bound: Option<ExchangeBound>) -> Verdict {
     if let Some(ExchangeBound::Unbounded) = override_bound {
@@ -2226,13 +2241,13 @@ mod tests {
             dir.path().join(".storyhook/hooks.toml"),
             "[settings]\ntimeout_seconds = 10\n\n\
              [on_comment]\ncommand = \"true\"\n\n\
-             [on_create]\ncommand = \"true\"\ntimeout_seconds = 300\n",
+             [on_create]\ncommand = \"true\"\ntimeout_seconds = 45\n",
         )
         .expect("writing hooks.toml");
 
         assert_eq!(
             served_deadline("comment", dir.path()),
-            SERVED_DEADLINE + Duration::from_secs(300),
+            SERVED_DEADLINE + Duration::from_secs(45),
             "the largest configured hook wins, not the one `comment` would actually fire"
         );
         // Untouched: github-sync's total is set off this machine, not by any
@@ -2256,26 +2271,26 @@ mod tests {
         std::fs::write(
             dir.path().join(".storyhook/hooks.toml"),
             "[settings]\ntimeout_seconds = 10\n\n\
-             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 100\n\n\
-             [on_close]\ncommand = \"true\"\ntimeout_seconds = 50\n\n\
-             [on_create]\ncommand = \"true\"\ntimeout_seconds = 999\n",
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 40\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 15\n\n\
+             [on_create]\ncommand = \"true\"\ntimeout_seconds = 60\n",
         )
         .expect("writing hooks.toml");
 
         for command in ["set-state", "set-fields"] {
             assert_eq!(
                 served_deadline(command, dir.path()),
-                SERVED_DEADLINE + Duration::from_secs(150),
-                "`{command}` must widen by on_state_change (100) + on_close (50) = 150, \
-                 not max(100, 50, 999) from on_create, which it can never fire"
+                SERVED_DEADLINE + Duration::from_secs(55),
+                "`{command}` must widen by on_state_change (40) + on_close (15) = 55, \
+                 not max(40, 15, 60) from on_create, which it can never fire"
             );
         }
         // Every other command still gets the max-of-all-seven widening,
-        // unchanged: on_create's 999s wins there, because those commands
+        // unchanged: on_create's 60s wins there, because those commands
         // really can only ever fire one hook per call.
         assert_eq!(
             served_deadline("comment", dir.path()),
-            SERVED_DEADLINE + Duration::from_secs(999)
+            SERVED_DEADLINE + Duration::from_secs(60)
         );
     }
 
@@ -2290,8 +2305,8 @@ mod tests {
         std::fs::write(
             dir.path().join(".storyhook/hooks.toml"),
             "[settings]\ntimeout_seconds = 10\n\n\
-             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 100\n\n\
-             [on_close]\ncommand = \"true\"\ntimeout_seconds = 50\n",
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 40\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 15\n",
         )
         .expect("writing hooks.toml");
 
@@ -2304,14 +2319,14 @@ mod tests {
         };
         assert_eq!(
             served_deadline_for(&three_updates, dir.path()),
-            SERVED_DEADLINE + Duration::from_secs(150 * 3),
-            "3 items x (100 + 50) per item, not one widening's worth for the whole call"
+            SERVED_DEADLINE + Duration::from_secs(55 * 3),
+            "3 items x (40 + 15) per item, not one widening's worth for the whole call"
         );
 
         let no_updates = crate::cli::Invocation::BulkUpdate { updates: vec![] };
         assert_eq!(
             served_deadline_for(&no_updates, dir.path()),
-            SERVED_DEADLINE + Duration::from_secs(150),
+            SERVED_DEADLINE + Duration::from_secs(55),
             "an empty batch still costs at least one widening's worth, not zero"
         );
     }
@@ -2326,8 +2341,8 @@ mod tests {
         std::fs::write(
             dir.path().join(".storyhook/hooks.toml"),
             "[settings]\ntimeout_seconds = 10\n\n\
-             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 100\n\n\
-             [on_close]\ncommand = \"true\"\ntimeout_seconds = 50\n",
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 40\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 15\n",
         )
         .expect("writing hooks.toml");
 

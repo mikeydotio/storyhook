@@ -164,6 +164,61 @@ fn default_enabled() -> bool {
     true
 }
 
+/// The upper bound on `hooks.settings.timeout_seconds` and any per-hook
+/// [`HookDef::timeout_seconds`] override.
+///
+/// # Why 60s
+///
+/// Event hooks run inside the daemon's single request handler, so this is
+/// also the longest any other queued client blocks behind one hook — 2x that
+/// for the `set-state`/`set-fields` transition pair ([`transition_pair_timeout`]
+/// fires both `on_state_change` and `on_close` serially), which composes
+/// exactly with [`crate::daemon::lifecycle::SERVED_DEADLINE`]'s own 120s. 6x
+/// the 10s default is enough for a webhook POST, a fast `git push`, or
+/// kicking off a CI trigger without waiting for it to finish; a hook that
+/// genuinely needs longer backgrounds the slow part with `cmd &` — the idiom
+/// [`fire_hook`]'s own docs name as the sanctioned outlet for "do not wait
+/// for this" — rather than being waited on directly.
+///
+/// **Redesign trigger** (SH-174, closed by this ceiling): the first real hook
+/// that legitimately needs more than this and cannot be restructured to
+/// background the slow part.
+pub const HOOK_TIMEOUT_CEILING_SECS: u64 = 60;
+
+/// `Some(reason)` if `secs`, under `label`, exceeds [`HOOK_TIMEOUT_CEILING_SECS`].
+fn ceiling_violation(label: &str, secs: u64) -> Option<String> {
+    (secs > HOOK_TIMEOUT_CEILING_SECS)
+        .then(|| format!("{label} = {secs}s exceeds the {HOOK_TIMEOUT_CEILING_SECS}s ceiling"))
+}
+
+/// The first `timeout_seconds` — the project default or any of the seven
+/// per-hook overrides — that exceeds [`HOOK_TIMEOUT_CEILING_SECS`], named so
+/// the caller can say which field to fix rather than only that something is
+/// wrong.
+fn timeout_ceiling_violation(config: &HooksConfig) -> Option<String> {
+    if let Some(reason) =
+        ceiling_violation("settings.timeout_seconds", config.settings.timeout_seconds)
+    {
+        return Some(reason);
+    }
+    let slots: [(&str, Option<&HookDef>); 7] = [
+        ("on_create", config.on_create.as_ref()),
+        ("on_state_change", config.on_state_change.as_ref()),
+        ("on_close", config.on_close.as_ref()),
+        ("on_comment", config.on_comment.as_ref()),
+        ("on_priority_change", config.on_priority_change.as_ref()),
+        ("on_label_change", config.on_label_change.as_ref()),
+        (
+            "on_relationship_change",
+            config.on_relationship_change.as_ref(),
+        ),
+    ];
+    slots.into_iter().find_map(|(name, hook)| {
+        let secs = hook?.timeout_seconds?;
+        ceiling_violation(&format!("{name}.timeout_seconds"), secs)
+    })
+}
+
 impl Default for HooksSettings {
     fn default() -> Self {
         Self {
@@ -229,23 +284,55 @@ impl HookEventType {
 /// repository with both is answered by the pointer, which is the file its
 /// current storyhook writes about and reads.
 pub fn load_hooks_config(root: &Path) -> Option<HooksConfig> {
+    match load_hooks_config_result(root) {
+        Ok(config) => config,
+        Err(message) => {
+            eprintln!("warning: {message}");
+            None
+        }
+    }
+}
+
+/// [`load_hooks_config`]'s full result, before it collapses "misconfigured"
+/// and "absent" into the same `None`.
+///
+/// `Ok(None)`: no `[hooks]` table exists anywhere for this project. `Ok(Some(_))`:
+/// a valid, ceiling-respecting config. `Err(_)`: a `[hooks]` table exists but
+/// is unusable — a TOML parse failure or a [`HOOK_TIMEOUT_CEILING_SECS`]
+/// violation — worded for a human.
+///
+/// [`load_hooks_config`] is the right choice for every hook-firing and
+/// deadline-computing caller, which all treat "misconfigured" and "absent"
+/// identically on purpose: neither fires anything. [`list_hooks`] and
+/// [`test_hook`] are the two surfaces that explain themselves to a human, and
+/// a user who raised `timeout_seconds` past the ceiling deserves to be told
+/// that specifically rather than shown the same message an empty project
+/// gets — the SH-174 council's binding addendum against shipping a second
+/// silent-refusal path in the same story that deleted the first one.
+fn load_hooks_config_result(root: &Path) -> Result<Option<HooksConfig>, String> {
     if let Some(table) = crate::service::project::pointer_hooks(root) {
         return match table.try_into::<HooksConfig>() {
-            Ok(config) => Some(config),
-            Err(e) => {
-                eprintln!("warning: failed to parse the [hooks] table in .storyhook.toml: {e}");
-                None
-            }
+            Ok(config) => match timeout_ceiling_violation(&config) {
+                None => Ok(Some(config)),
+                Some(reason) => Err(format!(
+                    "the [hooks] table in .storyhook.toml refuses to load: {reason}"
+                )),
+            },
+            Err(e) => Err(format!(
+                "the [hooks] table in .storyhook.toml failed to parse: {e}"
+            )),
         };
     }
     let path = root.join(".storyhook/hooks.toml");
-    let raw = std::fs::read_to_string(&path).ok()?;
-    match toml::from_str(&raw) {
-        Ok(config) => Some(config),
-        Err(e) => {
-            eprintln!("warning: failed to parse hooks.toml: {e}");
-            None
-        }
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    match toml::from_str::<HooksConfig>(&raw) {
+        Ok(config) => match timeout_ceiling_violation(&config) {
+            None => Ok(Some(config)),
+            Some(reason) => Err(format!("hooks.toml refuses to load: {reason}")),
+        },
+        Err(e) => Err(format!("hooks.toml failed to parse: {e}")),
     }
 }
 
@@ -573,9 +660,10 @@ pub fn build_payload(fields: serde_json::Value) -> String {
 }
 
 pub fn list_hooks(root: &Path) -> String {
-    match load_hooks_config(root) {
-        None => "no hooks configured (no `[hooks]` table in .storyhook.toml)".to_string(),
-        Some(config) => {
+    match load_hooks_config_result(root) {
+        Err(reason) => format!("hooks are configured but not active: {reason}"),
+        Ok(None) => "no hooks configured (no `[hooks]` table in .storyhook.toml)".to_string(),
+        Ok(Some(config)) => {
             let mut lines = Vec::new();
             let events: [(&str, &Option<HookDef>); 7] = [
                 ("on_create", &config.on_create),
@@ -617,11 +705,19 @@ pub fn test_hook(root: &Path, event_type_str: &str) -> Result<String, crate::err
         ))
     })?;
 
-    let config = load_hooks_config(root).ok_or_else(|| {
-        crate::error::AppError::NotFound(
-            "no event hooks configured; add a `[hooks]` table to .storyhook.toml".to_string(),
-        )
-    })?;
+    let config = match load_hooks_config_result(root) {
+        Err(reason) => {
+            return Err(crate::error::AppError::Validation(format!(
+                "hooks are configured but not active: {reason}"
+            )));
+        }
+        Ok(None) => {
+            return Err(crate::error::AppError::NotFound(
+                "no event hooks configured; add a `[hooks]` table to .storyhook.toml".to_string(),
+            ));
+        }
+        Ok(Some(config)) => config,
+    };
 
     let hook = resolve_hook(&config, event_type).ok_or_else(|| {
         crate::error::AppError::NotFound(format!("no hook configured for {event_type_str}"))
@@ -852,8 +948,8 @@ mod tests {
         write_hooks_toml(
             dir.path(),
             "[settings]\ntimeout_seconds = 10\n\n\
-             [on_create]\ncommand = \"true\"\ntimeout_seconds = 999\n\n\
-             [on_comment]\ncommand = \"true\"\ntimeout_seconds = 999\n",
+             [on_create]\ncommand = \"true\"\ntimeout_seconds = 30\n\n\
+             [on_comment]\ncommand = \"true\"\ntimeout_seconds = 30\n",
         );
         assert_eq!(transition_pair_timeout(dir.path()), None);
     }
@@ -869,13 +965,13 @@ mod tests {
         write_hooks_toml(
             dir.path(),
             "[settings]\ntimeout_seconds = 10\n\n\
-             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 100\n\n\
-             [on_close]\ncommand = \"true\"\ntimeout_seconds = 50\n",
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 40\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 15\n",
         );
         assert_eq!(
             transition_pair_timeout(dir.path()),
-            Some(Duration::from_secs(150)),
-            "150 = 100 (on_state_change) + 50 (on_close), not max(100, 50)"
+            Some(Duration::from_secs(55)),
+            "55 = 40 (on_state_change) + 15 (on_close), not max(40, 15)"
         );
     }
 
@@ -890,11 +986,11 @@ mod tests {
         write_hooks_toml(
             dir.path(),
             "[settings]\ntimeout_seconds = 10\n\n\
-             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 75\n",
+             [on_state_change]\ncommand = \"true\"\ntimeout_seconds = 45\n",
         );
         assert_eq!(
             transition_pair_timeout(dir.path()),
-            Some(Duration::from_secs(75)),
+            Some(Duration::from_secs(45)),
             "on_close is not configured, so fire_hook never runs it — it must \
              contribute 0s, not the settings default"
         );
@@ -916,6 +1012,143 @@ mod tests {
             transition_pair_timeout(dir.path()),
             Some(Duration::from_secs(25)),
             "25 = 20 (on_state_change, defaulted) + 5 (on_close, explicit)"
+        );
+    }
+
+    /// A value exactly at the ceiling is accepted — the check is `>`, not
+    /// `>=`, so the ceiling names the largest *usable* value rather than the
+    /// smallest refused one.
+    #[test]
+    fn a_settings_timeout_at_the_ceiling_loads() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            &format!("[settings]\ntimeout_seconds = {HOOK_TIMEOUT_CEILING_SECS}\n"),
+        );
+        assert!(load_hooks_config(dir.path()).is_some());
+    }
+
+    /// `settings.timeout_seconds` past the ceiling refuses the whole config —
+    /// not a silent clamp back down to the ceiling, which would leave a user
+    /// believing they configured more than they got (SH-174).
+    #[test]
+    fn a_settings_timeout_over_the_ceiling_refuses_to_load() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            &format!(
+                "[settings]\ntimeout_seconds = {}\n",
+                HOOK_TIMEOUT_CEILING_SECS + 1
+            ),
+        );
+        assert!(load_hooks_config(dir.path()).is_none());
+    }
+
+    /// A per-hook override past the ceiling refuses the *whole* config, even
+    /// though `settings.timeout_seconds` itself is fine — the ceiling applies
+    /// to every `timeout_seconds` field, not just the project default.
+    #[test]
+    fn a_per_hook_override_over_the_ceiling_refuses_the_whole_config() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            &format!(
+                "[settings]\ntimeout_seconds = 10\n\n\
+                 [on_create]\ncommand = \"true\"\ntimeout_seconds = {}\n",
+                HOOK_TIMEOUT_CEILING_SECS + 1
+            ),
+        );
+        assert!(load_hooks_config(dir.path()).is_none());
+    }
+
+    /// [`timeout_ceiling_violation`] names the specific offending field, not
+    /// just "invalid config" — the whole point of checking at config-load
+    /// time instead of only refusing to fire is that the message can say
+    /// which line to fix.
+    #[test]
+    fn timeout_ceiling_violation_names_the_offending_field() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            "[settings]\ntimeout_seconds = 10\n\n\
+             [on_close]\ncommand = \"true\"\ntimeout_seconds = 61\n",
+        );
+        let reason = load_hooks_config_result(dir.path()).expect_err("must refuse");
+        assert!(
+            reason.contains("on_close.timeout_seconds"),
+            "must name the offending field: {reason}"
+        );
+        assert!(
+            reason.contains("61"),
+            "must name the offending value: {reason}"
+        );
+        assert!(
+            reason.contains(&HOOK_TIMEOUT_CEILING_SECS.to_string()),
+            "must name the ceiling itself: {reason}"
+        );
+    }
+
+    /// The binding addendum from the SH-174 council: a ceiling-refused config
+    /// must not read identically to a project with no hooks at all.
+    /// `list_hooks` is one of the two surfaces (with [`test_hook`]) that
+    /// explains itself to a human, so it must say *which* of those two very
+    /// different states it is in.
+    #[test]
+    fn list_hooks_distinguishes_a_ceiling_refusal_from_no_hooks_at_all() {
+        let absent = scratch();
+        let absent_message = list_hooks(absent.path());
+        assert!(
+            absent_message.contains("no hooks configured"),
+            "{absent_message}"
+        );
+
+        let refused = scratch();
+        write_hooks_toml(
+            refused.path(),
+            &format!(
+                "[settings]\ntimeout_seconds = {}\n",
+                HOOK_TIMEOUT_CEILING_SECS + 1
+            ),
+        );
+        let refused_message = list_hooks(refused.path());
+        assert_ne!(
+            absent_message, refused_message,
+            "a misconfigured project must not read identically to an absent one"
+        );
+        assert!(
+            !refused_message.contains("no hooks configured"),
+            "a ceiling refusal is not the same claim as \"no hooks configured\": {refused_message}"
+        );
+        assert!(
+            refused_message.contains("ceiling"),
+            "must name the actual problem: {refused_message}"
+        );
+    }
+
+    /// Same distinction as `list_hooks`, for `story hooks test`'s own error —
+    /// a user testing a hook they just misconfigured must be told why it
+    /// refused to load, not given the same "add a `[hooks]` table" advice an
+    /// empty project gets.
+    #[test]
+    fn test_hook_names_the_ceiling_violation_rather_than_no_hooks_configured() {
+        let dir = scratch();
+        write_hooks_toml(
+            dir.path(),
+            &format!(
+                "[settings]\ntimeout_seconds = 10\n\n\
+                 [on_create]\ncommand = \"true\"\ntimeout_seconds = {}\n",
+                HOOK_TIMEOUT_CEILING_SECS + 1
+            ),
+        );
+        let error = test_hook(dir.path(), "create").expect_err("must refuse");
+        let message = error.to_string();
+        assert!(
+            message.contains("ceiling"),
+            "must name the actual problem, not the generic \"no hooks\" message: {message}"
+        );
+        assert!(
+            !message.contains("add a `[hooks]` table"),
+            "that advice is for an absent config, not a refused one: {message}"
         );
     }
 }
