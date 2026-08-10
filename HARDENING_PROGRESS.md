@@ -8214,3 +8214,19 @@ specifically so the next reader does not have to run the same failed grep.
 **No version bump.** The `/api` token requirement SH-187 introduced is breaking for
 any tailnet client, and the deferred-batch practice every story above follows still
 applies; `VERSION` stays `v2.0.0` at Mikey's direction.
+
+**The close-out found the gate cannot fail on its own e2e leg — SH-224, filed
+critical.** Worth recording here rather than only on the story, because it lands
+against this epic's first acceptance criterion. `scripts/run-e2e.sh` reports a
+failing Playwright run as `exit 0`: it captures `$?` inside an `if ! …; then`
+branch, where bash has already inverted the status. Criterion 1 — "the gate reduces
+to one leg" — is still true, and SH-114 really did collapse the two transports into
+one. But the surviving leg has been unable to fail on anything the browser suite
+catches, so every "make test green" in the entries above proved the Rust suite and
+the plugin harness and *not* the dashboard. Found while attributing two e2e failures
+during this pass, which turned out to be a stale base rather than a live defect
+(SH-174's served-deadline bug, fixed in #218 four commits after this branch was cut);
+the branch was rebased and the leg is 38/38. The failures were real while they
+lasted, and the gate had reported success on them. Not fixed here — a one-line
+behaviour fix does not belong in a documentation close-out, and its preventative
+action needs a decision of its own.
