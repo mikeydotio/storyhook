@@ -209,6 +209,45 @@ fn a_project_below_the_floor_cannot_have_its_catalog_edited() {
     assert_eq!(state_of(&fixture, &id), "todo");
 }
 
+// --- SH-180: `move` names the same repair the catalog-edit refusal does ----
+
+/// `story move` to a state missing only because the project predates the
+/// floor gives the same guidance `add_state`'s refusal already gives for the
+/// identical underlying condition — not a bare "is not defined" that leaves
+/// the caller to already know `doctor --fix` exists.
+#[test]
+fn moving_to_a_missing_required_state_gives_the_doctor_fix_guidance() {
+    let fixture = below_the_floor();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "needs blocking");
+
+    let error = StoryService::new(&ctx)
+        .set_state(&id, "blocked", None, None)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("blocked"), "{error}");
+    assert!(error.contains("story doctor --fix"), "{error}");
+}
+
+/// A target slug that was simply never defined — a typo, not a gap in the
+/// required floor — keeps the plain message: `doctor --fix` cannot invent a
+/// state nobody asked for, so it must not be told to.
+#[test]
+fn moving_to_a_never_defined_state_keeps_the_plain_message() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    let id = new_story(&ctx, "needs a real state");
+
+    let error = StoryService::new(&ctx)
+        .set_state(&id, "in-review", None, None)
+        .unwrap_err()
+        .to_string();
+
+    assert_eq!(error, "state `in-review` is not defined");
+    assert!(!error.contains("doctor --fix"), "{error}");
+}
+
 // --- import repairs, because a document may predate the floor --------------
 
 #[test]
