@@ -40,7 +40,12 @@ fn has_session_context(parsed: &serde_json::Value) -> bool {
 
 /// Run the hook with the given cwd as stdin JSON.
 fn run_hook(cwd: &std::path::Path) -> (String, i32) {
-    let stdin_json = format!(r#"{{"cwd":"{}"}}"#, cwd.display());
+    run_hook_with_stdin(&format!(r#"{{"cwd":"{}"}}"#, cwd.display()))
+}
+
+/// Run the hook with an arbitrary raw stdin payload — for asserting on
+/// fields (like `session_id`) that `run_hook`'s bare `{"cwd":...}` omits.
+fn run_hook_with_stdin(stdin_json: &str) -> (String, i32) {
     let output = process::Command::new("bash")
         .arg(hook_script())
         .stdin(process::Stdio::piped())
@@ -491,5 +496,53 @@ fn hook_handles_unicode_in_story_title() {
     assert!(
         result.is_ok(),
         "hook output must be valid JSON with unicode titles"
+    );
+}
+
+// ============================================================
+// dispatch sentinel (SH-231)
+// ============================================================
+
+#[test]
+fn hook_publishes_a_sentinel_carrying_the_piped_session_id() {
+    let dir = scratch_dir();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+
+    let stdin_json = format!(
+        r#"{{"cwd":"{}","session_id":"hook-sess-7","hook_event_name":"SessionStart","source":"startup"}}"#,
+        dir.path().display()
+    );
+    let (_stdout, code) = run_hook_with_stdin(&stdin_json);
+    assert_eq!(code, 0);
+
+    let sentinel_path = dir.path().join(".claude/dispatch-sentinel.json");
+    let raw = std::fs::read_to_string(&sentinel_path)
+        .unwrap_or_else(|e| panic!("expected a sentinel at {}: {e}", sentinel_path.display()));
+    let sentinel: serde_json::Value = serde_json::from_str(&raw).expect("sentinel is valid JSON");
+    assert_eq!(sentinel["session_id"], "hook-sess-7");
+    assert_eq!(sentinel["protocol_version"], 1);
+}
+
+#[test]
+fn hook_writes_no_sentinel_when_there_is_no_storyhook_project() {
+    // Not a storyhook worktree — nothing dispatch ever created — so writing a
+    // sentinel here would be storyhook leaving a file behind in a directory it
+    // has no relationship with. `story.sh dispatch` only ever polls for the
+    // sentinel inside a worktree of an already-initialized project, so this
+    // costs the readiness mechanism nothing.
+    let dir = scratch_dir();
+    let stdin_json = format!(
+        r#"{{"cwd":"{}","session_id":"no-project-sess"}}"#,
+        dir.path().display()
+    );
+    let (_stdout, code) = run_hook_with_stdin(&stdin_json);
+    assert_eq!(code, 0);
+
+    assert!(
+        !dir.path().join(".claude/dispatch-sentinel.json").exists(),
+        "no sentinel should be written outside a resolved storyhook project"
     );
 }

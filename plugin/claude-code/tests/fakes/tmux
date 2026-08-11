@@ -10,8 +10,11 @@
 #   new-window        -> reset the virtual input-box state, print a pane id (%1).
 #                        Since SH-230 also accepts a trailing launch-command
 #                        argument (execed, not typed) and `\;`-chained
-#                        set-window-option segments — see THE PANE'S OCCUPANT
-#                        and `\;`-CHAINED SUB-COMMANDS below.
+#                        set-window-option segments, and since SH-231 also
+#                        spawns a real placeholder process and publishes a
+#                        dispatch sentinel — see THE PANE'S OCCUPANT, THE
+#                        PANE'S PID AND DISPATCH SENTINEL, and `\;`-CHAINED
+#                        SUB-COMMANDS below.
 #   display-message   -> print a window id (@1), exit 0
 #   set-window-option -> no-op, exit 0 as its own top-level call (nothing calls
 #                        it standalone any more); chained onto new-window it is
@@ -150,6 +153,23 @@
 #                                Exercises only the TYPED form (doctor) — the
 #                                EXEC form never calls send-keys for its launch.
 #
+# THE PANE'S PID AND DISPATCH SENTINEL (SH-231). `wait_ready_sentinel` — the
+# readiness gate `cmd_dispatch` now polls instead of `wait_ready`'s screen
+# scrape — genuinely `kill -0`s the pid it captured and re-queries
+# `#{pane_pid}` against it, so the EXEC form spawns a REAL, alive placeholder
+# process (`sleep ${FAKE_TMUX_PANE_LIFETIME:-30}`, stdio detached so a caller's
+# own command substitution never blocks on it) and records its pid to
+# $STATE/pane_pid, which `display-message -p '#{pane_pid}'` now answers with
+# instead of a canned literal. A prior call's placeholder is killed first, so
+# the fake never accumulates background processes across new-window calls in
+# one $STATE dir. It also publishes the dispatch sentinel a real SessionStart
+# hook would (`$cwd/.claude/dispatch-sentinel.json`, `-c`'s own value) —
+# EVERY test using the default STORY_LAUNCH_CMD gets a valid one for free, the
+# same "derivation, not a knob" precedent THE PANE'S OCCUPANT above sets —
+# except when the launch was mangled (a non-claude shell's hook never fires)
+# or a test sets $FAKE_TMUX_SUPPRESS_SENTINEL=1 (models "claude started, but
+# its SessionStart hook never published" — hooks.json missing/disabled).
+#
 # `\;`-CHAINED SUB-COMMANDS (SH-230). Real tmux sends each `;`-separated argv
 # segment to the server as its own command; this fake models only what
 # story.sh's own chained call needs: the FIRST segment is the real new-window
@@ -286,9 +306,28 @@ case "${1:-}" in
       launch_line="${nw_args[$_last_idx]}"
       nw_args=("${nw_args[@]:0:$_last_idx}")
     fi
+    # The `-c <dir>` value, for SH-231's sentinel write below — the same
+    # directory a real `claude` process would `cd` into and a real
+    # SessionStart hook would publish its sentinel relative to.
+    nw_cwd=""
+    _i=0
+    for _a in "${nw_args[@]}"; do
+      if [ "$_a" = "-c" ]; then
+        nw_cwd="${nw_args[$((_i + 1))]:-}"
+        break
+      fi
+      _i=$((_i + 1))
+    done
     printf '%s\n' "${nw_args[*]}" >> "$STATE/new_window_args.log" 2>/dev/null || true
+    # A pane process from a PRIOR new-window call in this same STATE dir (the
+    # shared default dir outlives one test) is no longer this pane's occupant
+    # — kill it best-effort before a new one replaces it, so the fake never
+    # accumulates background processes across calls.
+    if [ -f "$STATE/pane_pid" ]; then
+      kill -9 "$(cat "$STATE/pane_pid" 2>/dev/null)" >/dev/null 2>&1 || true
+    fi
     rm -f "$STATE/input" "$STATE/launched" "$STATE/absorb" "$STATE/pastes.log" \
-          "$STATE/submitted" "$STATE/prompt_submits" \
+          "$STATE/submitted" "$STATE/prompt_submits" "$STATE/pane_pid" \
           "$STATE/pane_command" "$STATE/launch_mangled" "$STATE/window_options.log" \
           2>/dev/null || true
     rm -f "$STATE"/buf-* 2>/dev/null || true
@@ -315,6 +354,34 @@ case "${1:-}" in
       [ -n "$launch_bin" ] || launch_bin="${FAKE_TMUX_SHELL:-zsh}"
       printf '%s' "$launch_bin" > "$STATE/pane_command" 2>/dev/null || true
       printf 'true' > "$STATE/launched" 2>/dev/null || true
+      # SH-231: a REAL, alive placeholder process stands in for whatever the
+      # pane's actual occupant would be — mangled (a surviving fallback
+      # shell) or not (claude itself) both leave SOMETHING alive under
+      # remain-on-exit; only a later, explicit kill (a test simulating
+      # pid-exited) or the next new-window call's own cleanup above ends it.
+      # `#{pane_pid}` below answers with its real pid, so wait_ready_sentinel's
+      # `kill -0` has something genuine to check — a canned fake pid would
+      # make every dispatch test fail that check unconditionally. Short
+      # (${FAKE_TMUX_PANE_LIFETIME:-30}s) rather than long-lived, so a test
+      # that forgets to kill it explicitly still self-heals fast; stdio is
+      # redirected away from the inherited pipe so the caller's own
+      # `$(tmux new-window ...)` returns immediately instead of blocking on
+      # this background job's fd (SH-231 — verified empirically: an
+      # un-redirected background job keeps a command substitution's pipe open
+      # until the job itself exits).
+      ( sleep "${FAKE_TMUX_PANE_LIFETIME:-30}" </dev/null >/dev/null 2>&1 & printf '%s' "$!" > "$STATE/pane_pid" )
+      # The dispatch sentinel a real SessionStart hook would publish, written
+      # ONLY when the launch really became claude (never for a mangled one —
+      # a non-claude shell's hook never fires) and only when a test has not
+      # asked to model "started, but the hook never published" via
+      # FAKE_TMUX_SUPPRESS_SENTINEL.
+      if [ "${FAKE_TMUX_LAUNCH_MANGLE:-}" != 1 ] \
+         && [ "${FAKE_TMUX_SUPPRESS_SENTINEL:-}" != 1 ] \
+         && [ -n "$nw_cwd" ]; then
+        mkdir -p "$nw_cwd/.claude" 2>/dev/null && printf '%s\n' \
+          '{"protocol_version":1,"session_id":null,"story_id":null,"written_at":"2026-01-01T00:00:00Z"}' \
+          > "$nw_cwd/.claude/dispatch-sentinel.json" 2>/dev/null || true
+      fi
       # Record each chained set-window-option segment for its own sake, so a
       # test can confirm SH-230's own design decisions (remain-on-exit, the
       # naming pins) actually reached tmux, not merely that dispatch compiled.
@@ -379,9 +446,13 @@ case "${1:-}" in
     # for '#{window_id}' (unchanged), the readiness gate asks for
     # '#{pane_current_command}' — which must answer the modelled occupant, or a
     # process check would have a test that cannot fail — and dispatch (SH-230)
-    # now also asks for '#{pane_pid}', best-effort, to expose for SH-231's
-    # future benefit. A fixed, obviously-fake pid is enough: nothing on the
-    # dispatch path acts on its VALUE, only its presence and shape.
+    # also asks for '#{pane_pid}', which SH-231's wait_ready_sentinel now
+    # re-queries and `kill -0`s for real, so it answers the REAL pid of the
+    # placeholder process new-window spawned (`$STATE/pane_pid`) rather than a
+    # canned value — a fake pid would make every sentinel-readiness dispatch
+    # test fail its liveness check unconditionally. Empty (not a fallback
+    # literal) when nothing was ever spawned, so a mismatch is observable
+    # rather than silently matching by coincidence.
     dm_fmt=""
     shift || true
     while [ "$#" -gt 0 ]; do
@@ -395,7 +466,7 @@ case "${1:-}" in
       *'#{pane_current_command}'*)
         printf '%s\n' "${FAKE_TMUX_PANE_COMMAND:-$(cat "$STATE/pane_command" 2>/dev/null || printf '')}"
         ;;
-      *'#{pane_pid}'*) printf '54321\n' ;;
+      *'#{pane_pid}'*) printf '%s\n' "$(cat "$STATE/pane_pid" 2>/dev/null || printf '')" ;;
       ''|*'#{window_id}'*) printf '@1\n' ;;
       *) printf '\n' ;;
     esac

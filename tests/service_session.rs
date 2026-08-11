@@ -10,7 +10,7 @@ use storyhook::domain::StoryEvent;
 use storyhook::invoke::dispatch;
 use storyhook::output::Response;
 use storyhook::service::{NewStoryInput, SessionService, StoryService};
-use storyhook_test_support::ServiceFixture;
+use storyhook_test_support::{FIXTURE_NOW, ServiceFixture};
 
 fn create(fixture: &ServiceFixture, title: &str, priority: Option<&str>) -> String {
     StoryService::new(&fixture.ctx())
@@ -205,6 +205,69 @@ fn the_session_start_arm_answers_with_raw_json() {
         panic!("`story session-start` must answer with RawJson so no envelope wraps it");
     };
     assert!(json.starts_with('{'), "{json}");
+}
+
+// --- dispatch sentinel (SH-231) ---------------------------------------------
+
+fn read_sentinel(fixture: &ServiceFixture) -> serde_json::Value {
+    let raw = std::fs::read_to_string(fixture.cwd().join(".claude/dispatch-sentinel.json"))
+        .expect("the sentinel should have been written");
+    serde_json::from_str(&raw).expect("the sentinel should be valid JSON")
+}
+
+#[test]
+fn dispatching_session_start_publishes_a_sentinel_beside_the_hook_envelope() {
+    let fixture = ServiceFixture::new();
+    let response = dispatch(&fixture.ctx(), Invocation::SessionStart).expect("dispatching");
+    assert!(matches!(response, Response::RawJson(_)));
+
+    let sentinel = read_sentinel(&fixture);
+    assert_eq!(sentinel["protocol_version"], 1);
+    assert_eq!(sentinel["written_at"], FIXTURE_NOW);
+    assert_eq!(
+        sentinel["story_id"],
+        fixture
+            .cwd()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("the fixture cwd has a name"),
+        "story_id is best-effort, derived from the dispatch worktree's own directory name"
+    );
+    assert!(
+        sentinel["session_id"].is_null(),
+        "no stdin was piped, so session_id stays absent rather than guessed: {sentinel}"
+    );
+}
+
+#[test]
+fn the_sentinels_session_id_comes_from_the_piped_hook_payload() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx().with_stdin(Some(
+        r#"{"session_id":"sess-42","source":"startup"}"#.to_string(),
+    ));
+    SessionService::new(&ctx).publish_sentinel();
+
+    let sentinel = read_sentinel(&fixture);
+    assert_eq!(sentinel["session_id"], "sess-42");
+}
+
+#[test]
+fn a_sentinel_write_failure_never_blanks_out_a_real_context_envelope() {
+    let fixture = ServiceFixture::new();
+    // `.claude` exists as a plain FILE, not a directory, so `create_dir_all`
+    // inside `publish_sentinel` fails — this must degrade independently of
+    // `context()`, which loaded real project state and has something to say.
+    std::fs::write(fixture.cwd().join(".claude"), b"not a directory")
+        .expect("seeding the collision");
+
+    let ctx = fixture.ctx();
+    let service = SessionService::new(&ctx);
+    service.publish_sentinel(); // must not panic
+    let raw = service.context().expect("context still builds");
+    assert!(
+        raw.contains("PROJECT STATE"),
+        "a sentinel-write failure blanked out real project state: {raw}"
+    );
 }
 
 // --- history ---------------------------------------------------------------
