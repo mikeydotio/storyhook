@@ -120,6 +120,14 @@ Standing rules for every wave:
   refused rather than warned about. The daemon side already had this right —
   `await_healthy` wants a portfile, an identity check and a `hello` round trip. Screen-scraping
   a TUI footer is a heuristic; treat it as one.
+  **But a process's NAME is not its identity** (SH-239): tmux reports
+  `#{pane_current_command}` as the basename of the *resolved* executable, and Claude Code's
+  native installer points `~/.local/bin/claude` at `~/.local/share/claude/versions/<version>`
+  — so the occupant is called `2.1.228` and every dispatch was refused. `pane_runs` now also
+  accepts the launch command's own resolved binary, and a retained sibling version beside it
+  for update skew. Widening the *pattern* would have been the wrong repair twice over: the
+  version changes under running sessions, and `.` re-opens SH-226. Ask what a process **is**,
+  not what it is spelled.
 - Story IDs belong in commit **bodies**, never subjects — a subject reference makes the
   post-commit hook re-dirty the tree.
 - Land your own work: merge commit, verify it landed, delete the branch. No direct pushes
