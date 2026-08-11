@@ -655,6 +655,7 @@ pub fn dispatch<S: Store>(
                         advice.extend(github_remote_advice(ctx)?);
                         advice.extend(abandoned_advice(ctx.env()));
                         advice.extend(pointer_origin_advice(ctx)?);
+                        advice.extend(pointer_prefix_advice(ctx)?);
                         advice.extend(legacy_link_advice(ctx)?);
                         Ok(Response::Issues(advice))
                     }
@@ -3739,6 +3740,42 @@ fn pointer_origin_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppE
         ctx.cwd().display(),
         owned.url().raw(),
         registered.slug,
+    )])
+}
+
+/// What `story doctor` says about a checkout whose pointer names a different
+/// story-id prefix than the project it resolves to actually has (SH-190).
+///
+/// `import_project`'s restore path adopts a stale pointer's *uuid* when the
+/// store lacks it, but deliberately leaves `prefix` bound to the export
+/// document's own value rather than the pointer's — the document's prefix is
+/// what every restored story's id is already rendered against, so overwriting
+/// it with the pointer's would corrupt them (see that function's own doc
+/// comment). A mismatch this leaves behind, or one from a hand-edited or
+/// copy-pasted `.storyhook.toml`, is otherwise silent: nothing else ever
+/// compares the two.
+///
+/// Advisory, like [`pointer_origin_advice`], and never repaired by `--fix` for
+/// the same reason: which side is stale is not this command's to guess.
+fn pointer_prefix_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppError> {
+    let Some(pointer) = crate::service::project::pointer_at_or_above(ctx.cwd()) else {
+        return Ok(Vec::new());
+    };
+    let Some(project) = ctx.store().read(|tx| tx.project(ctx.project()))? else {
+        return Ok(Vec::new());
+    };
+    if pointer.prefix == project.prefix || pointer.uuid != project.uuid {
+        return Ok(Vec::new());
+    }
+
+    Ok(vec![format!(
+        "`{}`'s pointer file names prefix `{}`, but its project `{}` actually uses `{}` — one \
+         of the two is stale. storyhook never rewrites either for you: if the project's ids are \
+         the ones you trust, correct the pointer file's `prefix` field to match.",
+        ctx.cwd().display(),
+        pointer.prefix,
+        project.slug,
+        project.prefix,
     )])
 }
 

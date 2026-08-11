@@ -1192,6 +1192,117 @@ fn a_restore_into_a_directory_that_already_names_a_project_never_mints_a_second(
 }
 
 #[test]
+fn a_restore_into_a_second_empty_store_leaves_a_resolvable_pointer() {
+    // SH-190: the directory restored into already carries a pointer file
+    // (written by the first restore) naming a uuid the *second* store has
+    // never heard of. `import_project`'s create branch used to mint a fresh
+    // project and its own uuid in the second store, while the pointer is
+    // "never overwritten when one already exists" -- so the file on disk
+    // kept naming the first store's uuid, and every command run from this
+    // directory afterward could not find the project it just restored. The
+    // fix adopts the pointer's own uuid instead of minting a new one.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Restored");
+    let exported = export(&fixture);
+
+    let (first_store, dir) = empty_store();
+    transfer::import_project(&first_store, dir.path(), &Clock::System, &exported, false)
+        .expect("the first restore, into the first store");
+    let original_pointer = storyhook::service::project::read_pointer(dir.path())
+        .expect("reading the pointer file")
+        .expect("the first restore must leave a pointer file behind");
+
+    let (second_store, _unused_dir) = empty_store();
+    transfer::import_project(&second_store, dir.path(), &Clock::System, &exported, false)
+        .expect("restoring the same backup into a second, empty store");
+
+    let pointer = storyhook::service::project::read_pointer(dir.path())
+        .expect("reading the pointer file")
+        .expect("a restore must leave a pointer file behind");
+    assert_eq!(
+        pointer.uuid, original_pointer.uuid,
+        "the pointer file is never rewritten -- it already named the right identity"
+    );
+    let project = second_store
+        .read(|tx| tx.project_by_uuid(&pointer.uuid))
+        .expect("reading the store")
+        .expect("the pointer must name a project the second store holds");
+    assert_eq!(
+        project.uuid, original_pointer.uuid,
+        "the second store's project must be created under the identity the pointer already names"
+    );
+    assert_eq!(project.prefix, "SH");
+}
+
+#[test]
+fn a_pointer_naming_an_unparseable_uuid_is_rejected_rather_than_adopted() {
+    // SH-190's fix adopts a stale pointer's uuid verbatim; a hand-edited or
+    // corrupted pointer must not have that string written into `projects.uuid`
+    // unvalidated.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Restored");
+    let exported = export(&fixture);
+
+    let (store, dir) = empty_store();
+    storyhook::service::project::write_pointer(
+        dir.path(),
+        &storyhook::service::project::ProjectPointer::new(
+            "not-a-real-uuid".to_string(),
+            "SH".to_string(),
+        ),
+    )
+    .expect("writing a hand-crafted pointer");
+
+    let error = transfer::import_project(&store, dir.path(), &Clock::System, &exported, false)
+        .expect_err("a malformed pointer uuid must be refused, not adopted");
+    assert!(error.to_string().contains("not a valid uuid"), "{error}");
+    assert!(
+        store.read(|tx| tx.projects()).expect("listing").is_empty(),
+        "a rejected restore must leave no project behind"
+    );
+}
+
+#[test]
+fn a_second_checkout_with_the_same_stale_pointer_cannot_restore_into_the_same_store() {
+    // Two checkouts committed the same pointer file (e.g. two clones of one
+    // repository) before their common store was lost. Restoring the backup
+    // into the first checkout adopts the shared uuid (SH-190); restoring the
+    // *same* backup into the second checkout, against the same store, must
+    // not silently mint a second project under a colliding identity -- it
+    // lands in the ordinary "already holds stories" refusal once the first
+    // restore has claimed that uuid.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "Restored");
+    let exported = export(&fixture);
+
+    let (store, first_dir) = empty_store();
+    let second_dir = scratch_dir();
+    let shared_pointer = storyhook::service::project::ProjectPointer::new(
+        uuid::Uuid::new_v4().to_string(),
+        "SH".to_string(),
+    );
+    storyhook::service::project::write_pointer(first_dir.path(), &shared_pointer)
+        .expect("writing the first checkout's pointer");
+    storyhook::service::project::write_pointer(second_dir.path(), &shared_pointer)
+        .expect("writing the second checkout's pointer");
+
+    transfer::import_project(&store, first_dir.path(), &Clock::System, &exported, false)
+        .expect("the first checkout's restore");
+    let error =
+        transfer::import_project(&store, second_dir.path(), &Clock::System, &exported, false)
+            .expect_err("a second checkout claiming the same identity must not mint a duplicate");
+    assert!(
+        error.to_string().contains("already holds stories"),
+        "{error}"
+    );
+    assert_eq!(
+        store.read(|tx| tx.projects()).expect("listing").len(),
+        1,
+        "only the first checkout's restore may produce a project"
+    );
+}
+
+#[test]
 fn a_document_whose_ids_do_not_match_its_prefix_is_rejected_whole() {
     let (store, dir) = empty_store();
     let mut export = ProjectExport {
