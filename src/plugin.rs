@@ -3,6 +3,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::env::spawn_env::apply_claude_allowlist;
 use crate::error::AppError;
 
 /// Name of the marketplace declared in `.claude-plugin/marketplace.json`.
@@ -80,7 +81,9 @@ fn claude_missing_message() -> String {
 
 /// Returns true if the `claude` CLI is invokable on PATH.
 fn claude_available() -> bool {
-    Command::new("claude")
+    let mut command = Command::new("claude");
+    apply_claude_allowlist(&mut command);
+    command
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -92,7 +95,9 @@ fn claude_available() -> bool {
 ///
 /// A missing binary is mapped to a clear, actionable error rather than a raw IO error.
 fn run_claude(args: &[&str]) -> Result<std::process::Output, AppError> {
-    Command::new("claude").args(args).output().map_err(|e| {
+    let mut command = Command::new("claude");
+    apply_claude_allowlist(&mut command);
+    command.args(args).output().map_err(|e| {
         if e.kind() == ErrorKind::NotFound {
             AppError::Storage(claude_missing_message())
         } else {

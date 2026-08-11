@@ -27,6 +27,13 @@ pub mod git_env;
 /// daemon hands that environment on to a user's hook script, the dashboard's
 /// dispatch child and `claude`.
 pub mod secrets;
+
+/// The allowlists for `story.sh`'s dispatch child and `claude`'s plugin
+/// subcommands — the two spawns storyhook itself trusts. Sibling of
+/// [`git_env`], applying the same "deny at the process, allow at the command"
+/// split to the two children SH-193 named that [`secrets`] and `git_env`
+/// (SH-153, SH-160) do not cover.
+pub mod spawn_env;
 mod store_location;
 
 use std::net::SocketAddr;
