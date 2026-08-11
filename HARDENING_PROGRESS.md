@@ -9817,3 +9817,92 @@ per this run's standing practice.
 
 **Next:** SH-195 — `reserve_port()` has a bind-then-release TOCTOU window
 a leaked or contending daemon can exploit (low).
+
+### SH-195 — done, 2026-08-11
+
+**Filed a defect in `story next` before touching SH-195 itself.** Step 1's
+`story next --count 3` handed back SH-197 as its #2 pick — state
+`in-progress`, `updated_at` minutes old — alongside two genuinely ready
+`todo` stories. Read `is_ready()` (`src/domain.rs`): it special-cases the
+required `blocked` state (SH-126) but never inspects `story.state`
+otherwise, so an in-progress story is exactly as "ready" as a todo one.
+This settles the previous cycle's open question (SH-194's log entry above,
+"`--count`'s wider listing may deliberately relax the readiness filter") —
+it does not; `next(count, phase)` filters and sorts once, then truncates,
+so the single-story call and `--count 3` share one filter. The earlier
+cycle just got lucky that SH-197 didn't sort into the single top slot.
+Filed **SH-236, critical** per this run's own "watch `story next`" rule,
+then picked SH-195 — the story's actual top recommendation, state `todo`,
+unaffected by the bug — rather than working the bad one.
+
+**The story's own theory did not survive reading the code it was filed
+against.** SH-195 as filed worried that `reserve_port()`'s bind-then-release
+check (`crates/storyhook-test-support/src/server.rs`) proves nothing about
+the gap before the daemon it was reserved for actually binds — true as far
+as it goes, but tracing every consumer of that reservation
+(`spawn_daemon`'s two callers, `crash.rs`'s `port_of` and
+`daemon_git_env.rs`'s `await_daemon`) showed neither ever trusts the
+requested port: both read the daemon's *real* bound port back from its
+portfile. `port_of`'s own doc comment already said why: "the reservation is
+only a preference." And `bind_preferred()` already falls back to a
+kernel-assigned port the instant a requested one is taken — proven for this
+exact code path by the pre-existing `tailnet_probe_budget.rs` test, which
+occupies the reserved port *permanently* (a superset of a fleeting race) and
+still gets a correctly-discovered fallback. So the theorized failure (a
+stuck test, a daemon that won't start) does not reproduce for either named
+call site, matching the filer's own "I could not reproduce the failure
+after 5 attempts."
+
+**Fixed by deleting the hazard rather than defending it.** Both call sites
+now spawn `story daemon --serve --port 0` — no reservation, no
+release-to-rebind gap, because there is no separate reservation step at
+all. Corrected `reserve_port()`'s own doc comment, which had overclaimed
+what the bind-then-release check proves, and pointed it at `--port 0` for
+any future direct-daemon-spawn caller. New test
+(`tests/spawn_daemon_port.rs`) pins the property the fix relies on: a
+directly-spawned daemon with no port pre-selected is still fully
+discoverable from its own portfile.
+
+**Swept for siblings, fixed what was in scope, filed the rest.**
+`tests/web_test.rs` has six call sites with the same
+reserve-then-spawn shape, but they trust the requested port *directly* for
+connections and assertions rather than re-deriving it from the portfile —
+a more consequential version of the hazard (SH-51's "a stranger's listener
+answers instead") than either call site actually fixed here. Distinct
+enough in blast radius and ownership (one large, sensitive test file with
+its own history of tailnet-probe subtlety) to warrant its own pass rather
+than folding into this diff. Filed **SH-237, low**, with the five
+straightforward sites and the one (`a_wedged_tailscale_cli_cannot_...`)
+that needs a different readiness signal called out separately.
+
+**One unrelated flake, not reproduced.** The pre-push `make test` re-run
+(immediately after this session had already run the full gate once
+standalone) failed exactly one test:
+`daemon_lifecycle.rs::an_unforced_stop_waits_for_in_flight_work_to_finish`,
+a wall-clock assertion that came in 127ms under its 2s bound. 5/5 isolated
+reruns passed clean (3.4–5.7s each), and the retried push's full gate ran
+clean too — consistent with system load right after a 15+ minute gate
+(e2e/Playwright included), not a regression from this change (which touches
+only port selection, nothing this test exercises). Filed **SH-238, low**,
+noting the test's margin has no slack: it starts timing only after polling
+detects the hook as in-flight, which is itself some undetermined delay
+after the hook's `sleep 2` actually began.
+
+**The gate, twice, clean.** `cargo fmt --all -- --check` and `cargo clippy
+--workspace --all-targets -- -D warnings` clean both runs; full Rust suite
+green (141 `test result: ok` blocks, zero `FAILED`, zero `panic`/`✗`
+outside expected-error test names); plugin shell-script harness 29/29;
+e2e 45/45. Supervised both runs per this file's own rule (log-growth
+heartbeat, this cycle at a coarser 60s poll / 120s stall bound — the
+gate's own runtime made 10s polling pure notification noise); neither
+came close to stalling. `cargo doc -p storyhook-test-support --no-deps`
+checked separately for the new intra-doc link — no new warnings.
+
+**PR:** #265, merged as `b7b5fe7` (`gh pr view` confirmed `MERGED`),
+fast-forwarded onto `main` in this checkout; branch deletion automatic (`gh
+pr merge --delete-branch`), stale remote-tracking ref cleaned with `git
+fetch --prune origin`. `story move SH-195 done` recorded the fix commit via
+`commit-sync`.
+
+**Next:** SH-236 — `is_ready()`/`story next` never excludes a story already
+in the in-progress state (critical).
