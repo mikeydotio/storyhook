@@ -1,3 +1,4 @@
+import { expect } from "@playwright/test";
 import type { APIRequestContext, Page } from "@playwright/test";
 
 /**
@@ -66,4 +67,29 @@ export async function projectSlug(
     throw new Error(`No project named "${name}" in GET /api/repos`);
   }
   return match.id;
+}
+
+/**
+ * Deletes the "todo"-column story titled `title` through the drawer's
+ * footer Delete button and its inline typed-reason confirmation, and waits
+ * for the card to disappear. Was six near-identical copies (one local
+ * `deleteStory` per spec file, plus two more inlined directly) before being
+ * pulled out here — a mechanical, behavior-preserving move so a later
+ * change to what the confirmation itself looks like (SH-197's shared delete
+ * modal) has one call site to update instead of six.
+ */
+export async function deleteStory(page: Page, title: string): Promise<void> {
+  const card = page.locator('.column[data-state="todo"] .card', {
+    hasText: title,
+  });
+  await card.click();
+  await expect(page.locator("#drawer")).toHaveClass(/open/);
+  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
+  await page
+    .locator('input[placeholder="Reason for deletion (required)"]')
+    .fill("e2e cleanup");
+  await page
+    .locator("#drawer-footer button", { hasText: "Confirm delete" })
+    .click();
+  await expect(card).not.toBeVisible();
 }
