@@ -9431,3 +9431,88 @@ the story; the council verdict is recorded as its own comment, dated
 
 **Next:** SH-176 — remove the pre-SH-166 legacy worktree-name fallback
 (low).
+
+### SH-176 — remove the pre-SH-166 legacy worktree-name fallback — 2026-08-11
+
+**Outcome:** done. PR #253, merged as `1f0b8eb` (`gh pr merge --merge
+--delete-branch`), fast-forwarded onto `main` in this checkout; stale
+remote-tracking ref pruned automatically by `gh pr merge`'s own fetch.
+`story move SH-176 done` closed the story.
+
+**The removal trigger wasn't met on arrival, and not only in this repo.**
+The story's own trigger — no `.claude/worktrees/<repo-prefix>-*` directory
+left in any repo using this plugin — named three storyhook worktrees at
+filing time (`sto-SH-42`, `sto-SH-166`, `sto-SH-172`). `sto-SH-166` was
+already gone by the time this cycle picked the story up, but `sto-SH-164`
+had appeared in its place; `sto-SH-42` and `sto-SH-172` were both still
+live. Worse, the trigger's own wording ("any repository using this
+plugin") is not scoped to storyhook itself — a repo-prefix sweep across
+every storyhook-tracked project on this machine found three more, live in
+Lillist (`lil-LIL-94`, `lil-LIL-96`, `lil-LIL-97`), which the story's
+original filing had no way to know about since they were dispatched from
+a different checkout entirely.
+
+**A `git worktree remove` refusal caught a real gap in my own
+verification, not a defect in `story.sh`.** `STORY_DRY_RUN=1` (the
+correct flag) previews cleanly; `DRY_RUN=1` (a plain shell var, never read
+by the script) does not gate anything — every guarded branch in `cmd_reap`
+checks `$DRY_RUN`, a local set only from `${STORY_DRY_RUN:-}`. Guessing
+the wrong name meant three storyhook worktrees (`SH-177`, `SH-182`,
+`SH-187`, `SH-188`, `SH-196`, `SH-202`, `SH-50` — seven, not three; the
+"dry run" that wasn't ran for real) got reaped before the mistake was
+caught. No data was lost — `git worktree remove` refuses a dirty tree
+unconditionally, `git branch -d` refuses an unmerged one, and
+`cmd_reap`'s own `branch_is_merged` check is the same ancestor test
+either way — but two of those worktrees (`SH-182`, `SH-187`) had been
+checked out on a differently-named branch than the canonical one `reap`
+targets, which is by design (the canonical branch is the *dispatch*
+branch, not necessarily the one work landed on) but meant the real
+working branches (`fix/sh-182-hook-deadline`, `docs/sh-187-progress-log`)
+survived as orphans until cleaned up separately with a plain, safe
+`git branch -d`. **Lesson for next time: grep the script for its actual
+env var name before assuming a `DRY_RUN`-shaped convention — a refused
+dry run is loud, but a silently-accepted one only announces itself
+after the fact.**
+
+**Lillist required Mikey's explicit sign-off**, not a council vote — my
+standing permission on sibling repos is read-only per CLAUDE.md, and
+writing to another project's git state is exactly the kind of
+hard-to-reverse, cross-repository action that calls for asking rather
+than assuming a "this run is autonomous" license extends there. Asked;
+approved. `lil-LIL-94` and `lil-LIL-97` were confirmed merged and clean
+and reaped without incident; `lil-LIL-96`'s worktree turned out to be
+already ~98% torn down on disk (500 of ~504 tracked files missing,
+only build-artifact cruft left as untracked) — a prior session had
+evidently `rm -rf`'d most of it without ever calling `git worktree
+remove`. Confirmed the branch (`feat/lil-96-widget-small-donut`) was
+merged, then finished the interrupted teardown with `--force` after a
+second, more specific confirmation from Mikey once the true state (not
+"clean", contrary to my first pass) was clear.
+
+**What shipped:** `legacy_wname()`/`repo_prefix()` deleted from
+`lib/session.sh`; the three adoption call sites in `bin/story.sh`
+(`cmd_dispatch`'s legacy collision check, `cmd_capture`'s legacy-window
+fallback, `_complete_prepare`'s adoption block, and `CMP_LEGACY`
+downstream in both `complete plan` and `complete execute`); the
+`legacy_name` JSON field everywhere it appeared; `SKILL.md`'s
+now-inapplicable adoption note; `test-legacy-worktree-names.sh` deleted
+outright; `lib.sh`'s `legacy_wname_for`/`mk_dispatched_legacy` fixtures
+removed (unused once their one caller was gone).
+
+**Test plan:** `make test` green end to end — full Rust workspace suite,
+the plugin's 29-test shell dispatch suite (`test-complete-execute.sh`,
+`test-complete-plan.sh`, `test-dispatch-collision.sh`,
+`test-doctor-capture.sh`, and `test-reap.sh` all directly exercise the
+touched code paths and all passed), and the 45-test Playwright e2e suite.
+Supervised per this file's own rule — two separate tracked background
+runs (the first Monitor's watch window expired at 15 minutes while
+`cargo build`/`rustdoc` were still doing genuine, verified-active-CPU
+work; re-armed with a 30-minute window rather than treating the timeout
+itself as a stall). Neither run's stall counter reached the 120s bound.
+
+**No version bump** — `chore:`, tech-debt removal with no behavior change
+for anyone not still holding a pre-SH-166 worktree, left for the next
+batched `/semver` pass.
+
+**Next:** SH-179 — GitHub sync can rename a comma-bearing remote label on
+push (low).
