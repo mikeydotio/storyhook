@@ -37,7 +37,7 @@ use std::process::{ExitStatus, Output, Stdio};
 use storyhook::store::FaultPoint;
 
 use crate::env::TestEnv;
-use crate::server::{ChildGuard, reserve_port, wait_for_server};
+use crate::server::{ChildGuard, wait_for_server};
 
 /// What one armed daemon left behind, and what its client was told.
 pub struct Crash {
@@ -134,16 +134,22 @@ pub fn crash_a_starting_daemon(env: &TestEnv, cwd: &Path, point: FaultPoint) -> 
 /// migration race needs several at once and needs to decide for itself what
 /// "finished" means for each.
 ///
-/// The port is reserved rather than left to the environment: `$STORYHOOK_DAEMON_ADDR`
-/// is loopback port 0 for the whole suite, and a daemon on a kernel-assigned port
-/// cannot be waited for by a test that has to know the number first.
+/// `--port 0`, not a `reserve_port()`-picked number (SH-195): every caller here
+/// learns the daemon's *real* port from its portfile (`port_of`, below) rather
+/// than trusting the one it asked for, because `bind_preferred` treats a
+/// requested port as a preference and falls back to a kernel-assigned one the
+/// moment it is taken. A pre-picked port bought nothing these callers needed
+/// and cost a genuine bind-then-release TOCTOU window against whatever else on
+/// the machine might claim it in the milliseconds before this daemon actually
+/// binds; `--port 0` has no such window, because there is no separate
+/// reservation step to race.
 pub fn spawn_daemon(env: &TestEnv, cwd: &Path, point: Option<FaultPoint>) -> ChildGuard {
     let mut serve = env.raw_story(cwd);
     if let Some(point) = point {
         serve.env("STORYHOOK_FAULT", point.as_str());
     }
     serve
-        .args(["daemon", "--serve", "--port", &reserve_port().to_string()])
+        .args(["daemon", "--serve", "--port", "0"])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     ChildGuard::new(serve.spawn().expect("spawning a daemon"))

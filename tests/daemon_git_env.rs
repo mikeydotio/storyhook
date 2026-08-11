@@ -34,7 +34,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use storyhook_test_support::{ChildGuard, TestEnv, git, reserve_port, scratch_dir_named};
+use storyhook_test_support::{ChildGuard, TestEnv, git, scratch_dir_named};
 
 /// A repository at its own top level, with `origin` set and one empty commit.
 ///
@@ -259,10 +259,16 @@ fn a_daemon_spawned_directly_with_git_dir_set_does_not_read_that_repository() {
     );
 
     // The poison rides on the daemon's *own* command, not on a client's.
+    //
+    // `--port 0` rather than a `reserve_port()`-picked number (SH-195):
+    // `await_daemon` below reads the daemon's real port from its portfile,
+    // never from what was requested, so pre-picking one bought nothing but a
+    // bind-then-release TOCTOU window against whatever else might claim it
+    // before this daemon's own bind runs.
     let mut serve = env.raw_story(here.path());
     serve
         .env("GIT_DIR", git_dir_of(elsewhere.path()))
-        .args(["daemon", "--serve", "--port", &reserve_port().to_string()])
+        .args(["daemon", "--serve", "--port", "0"])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let _daemon = ChildGuard::new(serve.spawn().expect("spawning a daemon directly"));
