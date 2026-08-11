@@ -1854,6 +1854,11 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
   function storyMenuModel(v) {
     var st = v.story;
     var description = (st.description || "").trim();
+    // The identical gate renderDrawerFooter's own Dispatch buttons use
+    // (SH-50/SH-208) -- hides rather than disables, since nothing this menu
+    // does can lift "closed" or "no checkout on this machine" on its own.
+    var dispatchHidden = stateSuperstate(st.state) === "CLOSED" || !currentRepoHasCheckout();
+    var dispatchInFlight = !!state.dispatches[st.id];
     return compactSeparators([
       { label: "Copy ID", onSelect: function() { copyText(st.id, "ID"); } },
       { label: "Copy URL", onSelect: function() { copyText(storyPermalink(st.id), "URL"); } },
@@ -1862,8 +1867,20 @@ tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px;
         disabled: !description,
         title: description ? null : "This story has no description",
         onSelect: function() { copyText(description, "Description"); }
+      },
+      { separator: true },
+      dispatchHidden ? null : {
+        label: "Dispatch",
+        disabled: dispatchInFlight,
+        onSelect: function() { startDispatch(st.id, false); }
+      },
+      dispatchHidden ? null : {
+        label: "Dispatch Auto",
+        disabled: dispatchInFlight,
+        title: "Runs unattended past the one plan-approval prompt in the new tmux window.",
+        onSelect: function() { startDispatch(st.id, true); }
       }
-    ]);
+    ].filter(Boolean));
   }
 
   /** Drops a leading, trailing, or doubled-up separator -- what lets one
