@@ -9027,3 +9027,154 @@ branch, since the branch being merged was the current one).
 **Next:** SH-189 — `story export` is not a complete backup of a github-synced
 project. Its `blocked-by SH-153` relationship is stale: SH-153 is `done`, which
 is why `story next` surfaces SH-189 as ready despite the edge still being there.
+
+### SH-189 — done
+
+Picked via `story next`, matching the freshen summary's own pick. Read whole,
+comments included — this is the sibling SH-133's own council named and left
+blocked on SH-153, now unblocked.
+
+**Council first, per this file's autonomy rule** — a real four-way design
+decision (wire shape, owner/repo re-derivation fallback, whether full
+base-carry alone closes the mapped-but-baseless ambiguity SH-133 raised, and
+whether the legacy rollback leg belongs in this story or a sibling), not
+something with one obviously correct answer. Panel: api-designer,
+software-architect, qa-engineer. **A genuine process bug surfaced along the
+way**: the council-vote skill's own invocation arguments (which included
+"record the verdict as a story comment when done" for the chair) were pasted
+verbatim into each round-1 member's prompt, and one member (qa-engineer, which
+carries Bash access) executed that instruction itself, posting its own
+single-seat, pre-deliberation view as a comment before the council had even
+voted once. Caught by inspecting the comment thread before trusting it — the
+premature comment's Q3 answer (ship the legacy leg as a separate sibling)
+directly contradicted the real, final, unanimous verdict (ship it in this
+story). Posted a follow-up comment marking the stray one superseded rather
+than silently leaving two contradictory "verdicts" on the story. Lesson for
+next time: strip any chair-directed instructions out of the Question text
+before it's copied into a member prompt.
+
+**Round 1 was a real 2-1 split, not a formality.** Two of three proposals had
+`import_project` (in the unconditionally-compiled `service::transfer`) call
+`detect_github_remote` directly — which does not compile under
+`--no-default-features`, since everything needed to interpret the github-sync
+blob lives behind that default-but-optional cargo feature. Both authors
+independently re-verified the fact from source during deliberation and
+conceded; the ranked-choice runoff came back unanimous, 3/3 first-place, for
+the design that had gotten it right from the start. Independently re-verified
+myself before implementing (`cargo check --lib --no-default-features` on the
+finished branch, twice — both after the first pass and again after the legacy
+leg landed).
+
+**Outcome, three commits:**
+
+1. `fix(transfer)` — `ProjectExport` gained `github_sync: Option<Value>` and
+   `github_bases: BTreeMap<String, StorySnapshot>` as sibling fields, never
+   folded into `ExportedSettings` (whose whole documented purpose is
+   explaining why `github.sync` does *not* travel through it — extending it
+   would make its own doc comment false). Export rides the existing
+   unconditional `tx.github_base` inside the per-story loop `export()`
+   already runs; no new bulk `ReadOps` method needed, contrary to my own
+   pre-council assumption. Import validates every `github_bases` key against
+   the document's own story ids *before* the write transaction opens — the
+   table has a live `ON DELETE CASCADE` foreign key to `stories`, so an
+   orphan key would otherwise abort mid-transaction with no attribution to
+   which base caused it — and rejects the whole restore with an error naming
+   the offending id, matching the existing `StoryNo::parse_id` precedent for
+   a foreign-prefix story rather than either silently dropping it or
+   partially skipping it.
+2. `fix(github)` — `reconcile_restored_github_remote`, a second,
+   non-transactional, `github-sync`-feature-gated step run immediately after
+   `import_project` commits (from the same `Invocation::ImportProject` arm),
+   re-derives `github.owner`/`github.repo` from the destination checkout's
+   own git remote — the only point in the whole program that can ever
+   correct it, since `run_initial_setup` only runs on an *unconfigured*
+   project and a restore configures one on arrival. Falls back to the
+   document's stale values, best-effort, when detection fails (no remote
+   yet, a non-GitHub remote) rather than refusing the carry. `story doctor`'s
+   new `github_remote_advice` replaces the now-false `backup_advice`
+   (SH-133's "story export does not carry it" stopped being true this
+   session) — it re-compares the *currently configured* repository against
+   the checkout on every run, not a one-shot restore-time message, so drift
+   introduced at any point stays caught.
+3. `fix(storage)` — the legacy rollback leg (`store -> export -> legacy
+   tree`, `tests/migrate_round_trip.rs`'s gate, the far side of the
+   rearchitecture's two-way door) gained the exact pre-rearchitecture on-disk
+   format. Dug it out of git history at `cf80e54~1` (the commit that deleted
+   `LegacySyncStorage` and the rest of the file-based github-sync
+   implementation in W6, before `.storyhook/github-sync.toml` and
+   `.storyhook/github-sync/bases/<id>.json` were gone for good): a
+   TOML-serialized config plus one JSON file per story base. Held opaquely
+   (`serde_json::Value`, `StorySnapshot`) so no `github-sync`-feature-gated
+   type is needed in `storage.rs` — `tests/invoker_seam.rs::the_legacy_write
+   _path_is_gone` already carves out `src/storage.rs`, and only that file, as
+   the rollback writer, so this was not a new exception to negotiate.
+   Also corrected `every_settable_setting_survives_the_whole_loop`'s doc
+   comment in `tests/migrate_round_trip.rs`, whose stated reason for
+   excluding `github.sync` ("the document does not carry it") went false the
+   moment this landed — the exclusion is still correct, but now for the
+   actual reason (`settable()` is about `story project settings set`, a
+   different question from whether export/import carries a value).
+
+**Made bisectable on purpose, not by accident.** `ProjectExport` gaining two
+required fields with no `Default` impl meant `src/storage.rs`'s existing
+struct literal had to change the moment commit 1 landed, before commit 3's
+real legacy-leg feature existed — so commit 1 carries a two-line placeholder
+(`github_sync: None, github_bases: BTreeMap::new()`) that commit 3 replaces
+wholesale. Verified each commit's intermediate state actually compiles
+(`cargo check --lib` after constructing the placeholder, before committing)
+rather than assuming a hand-split diff was still valid Rust.
+
+**A concurrency mistake caught before it produced a false gate result, not
+after.** Kicked off the full `make test` in the background, then continued
+doing the git-history archaeology for the legacy-leg format and the
+commit-splitting file surgery *while it was still running* — both of which
+touch `src/storage.rs`, the same file `make test`'s own `cargo build` was
+mid-way through compiling. Realized partway through that this is exactly the
+race this file's own supervision rules exist to prevent: a `cargo build`
+reading a file that changes underneath it can compile a Frankenstein mix of
+before/after source across different build steps, producing a "green" result
+that certifies nothing real. Killed the in-flight run, ran
+`scripts/check-no-orphan-servers.sh` (found and killed one orphaned daemon
+left behind), and reran the full gate only once the working tree was fully
+committed and stable. The clean rerun is the one whose result this entry
+trusts.
+
+**Test plan:** round trip proving a story with no base is not backfilled with
+one (`github_sync_and_its_bases_round_trip_through_export_and_import`), the
+orphan-base rejection, an adopt-into-existing-project case proving a
+carry-nothing document doesn't blank an already-configured project, owner/repo
+reconciliation across match/mismatch/no-remote-yet/feature-carried-nothing,
+`story doctor`'s advisory across match/mismatch/unverified/unparseable-blob,
+and the legacy leg's own round trip (`export_project`/`import_project`
+against a hand-built `.storyhook/github-sync.toml` + bases directory) — all
+new, all green, alongside the full existing suite.
+
+**The gate, twice — once racing itself, once clean.** First run (the one
+racing concurrent edits, discarded per above) reported one e2e failure after
+everything else passed. Second, clean run: `cargo fmt --check` and `cargo
+clippy --workspace --all-targets -- -D warnings` clean, full Rust suite green,
+plugin harness 30/30, e2e failed on two specs on the first pass
+(`create-story-defaults.spec.ts:30`, `filter-persistence.spec.ts:65`) — both
+already-documented async-settle-timing flake (SH-222/SH-223's class,
+2026-08-10), and this diff touches zero files under `e2e/` or `web/`. An
+e2e-only rerun (`scripts/run-e2e.sh`, no other changes) came back 45/45 clean,
+including both specs that had just failed. Added corroborating evidence to
+SH-223 for the `filter-persistence.spec.ts` occurrence; `create-story-
+defaults.spec.ts` doesn't have a story of its own yet and this was a single
+non-reproducing instance, so per this file's own precedent (SH-174's gate,
+above) it is noted here rather than filed as a new sibling.
+
+**Filed SH-233 as a sibling, not fixed here.** `story migrate` — the *other*,
+one-way legacy-tree-to-store direction `src/legacy/` reads for — never parsed
+`.storyhook/github-sync.toml` either, and still doesn't: confirmed zero
+references by grep. Genuinely out of SH-189's scope (a different command, a
+different reader module, never mentioned by the story text or the council),
+found only because implementing the rollback leg required learning the exact
+on-disk format this gap shares. `low` priority, `bug` type, `relates-to
+SH-189`.
+
+**PR:** #245, merged as `5847bd6` (`gh pr view` confirmed `MERGED`),
+fast-forwarded onto `main` in this checkout; branch deletion automatic (`gh pr
+merge --delete-branch`).
+
+**Next:** whatever `story next` recommends.
