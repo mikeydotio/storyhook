@@ -32,9 +32,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cli::GraphMode;
 use crate::domain::{
-    self, DependencyGraph, Priority, StorySnapshot, SuperState, compute_epic_display_state,
-    compute_integrity_issues, compute_progress, derive_family_relationships, has_children,
-    is_ready, last_activity_type, parse_duration,
+    self, DependencyGraph, Priority, StateDef, StorySnapshot, SuperState,
+    compute_epic_display_state, compute_integrity_issues, compute_progress,
+    derive_family_relationships, has_children, is_claimable, is_ready, last_activity_type,
+    parse_duration,
 };
 use crate::error::AppError;
 use crate::output::{
@@ -119,6 +120,14 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     /// Every story as a view, with the cross-story facts filled in.
     pub fn story_views(&self, include_derived: bool) -> Result<Vec<StoryView>, AppError> {
         story_views(self.tx, self.project, include_derived)
+    }
+
+    /// The state a claim (`story move <id> <active>`, a first commit
+    /// mention) moves a story into — see [`domain::active_state`]. `None`
+    /// for a legacy project with no resolvable one, in which case every
+    /// [`is_claimable`] call below falls back to exactly [`is_ready`].
+    fn active_state(&self) -> Result<Option<StateDef>, AppError> {
+        Ok(domain::active_state(&self.tx.states(self.project)?))
     }
 
     /// `story show <id>` — one story, with its derived family relationships.
@@ -228,7 +237,8 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             });
         }
         if filters.ready {
-            views.retain(|view| is_ready(&view.story, &stories));
+            let active = self.active_state()?;
+            views.retain(|view| is_claimable(&view.story, &stories, active.as_ref()));
         }
         if filters.drafts {
             views.retain(|view| view.story.draft);
@@ -300,9 +310,12 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
     pub fn next(&self, count: usize, phase: Option<&str>) -> Result<Vec<StoryView>, AppError> {
         let views = self.story_views(false)?;
         let stories = view_map(&views);
+        let active = self.active_state()?;
         let mut ready: Vec<StoryView> = views
             .into_iter()
-            .filter(|view| is_ready(&view.story, &stories) && !has_children(&view.story))
+            .filter(|view| {
+                is_claimable(&view.story, &stories, active.as_ref()) && !has_children(&view.story)
+            })
             .collect();
         if let Some(phase) = phase {
             let label = format!("phase:{phase}");
@@ -319,9 +332,10 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let stories = view_map(&views);
         let mut summary = rollup(&views, &stories);
 
+        let active = self.active_state()?;
         let mut ready: Vec<StoryView> = views
             .into_iter()
-            .filter(|view| is_ready(&view.story, &stories))
+            .filter(|view| is_claimable(&view.story, &stories, active.as_ref()))
             .collect();
         sort_ready(&mut ready);
         summary.ready_count = ready.len();
@@ -337,21 +351,26 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
         let stories = view_map(&views);
         let mut summary = rollup(&views, &stories);
 
+        let active = self.active_state()?;
         let mut ready_ids = Vec::new();
         let mut blocked_ids = Vec::new();
         for view in &views {
             if view.story.superstate == SuperState::Open {
-                if is_ready(&view.story, &stories) {
+                if is_claimable(&view.story, &stories, active.as_ref()) {
                     ready_ids.push(view.story.id.clone());
-                } else {
+                } else if !is_ready(&view.story, &stories) {
                     blocked_ids.push(view.story.id.clone());
                 }
+                // Neither: an open, unblocked story someone has already
+                // claimed (SH-236) — visible in `by_state`, but not offered
+                // as ready work and not reported as stuck.
             }
         }
         // `rollup` leaves the ready count at zero because each surface fills it
         // from its own ready set; report's is the open ready ids it just
-        // collected. (`is_ready` is false for a closed story, so this equals
-        // `summary`'s count — the two are computed differently and agree.)
+        // collected. (`is_claimable` is false for a closed story, so this
+        // equals `summary`'s count — the two are computed differently and
+        // agree.)
         summary.ready_count = ready_ids.len();
 
         Ok(ReportData {
@@ -499,9 +518,10 @@ impl<'a, R: ReadOps> QueryService<'a, R> {
             })
             .collect();
         blocked.sort_by_key(|view| domain::story_number(&view.story.id));
+        let active = self.active_state()?;
         let mut ready: Vec<&StoryView> = views
             .iter()
-            .filter(|view| is_ready(&view.story, &stories))
+            .filter(|view| is_claimable(&view.story, &stories, active.as_ref()))
             .collect();
         ready.sort_by(|a, b| domain::ready_order(&a.story, &b.story));
         let ready_count = ready.len();

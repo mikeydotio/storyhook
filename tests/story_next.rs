@@ -179,6 +179,41 @@ fn next_count_returns_multiple() {
     assert!(stdout.contains("SH-3"));
 }
 
+/// Regression test for SH-236: `story next --count N>1` handed back a story
+/// someone had already claimed (moved to `in-progress`), because `is_ready`
+/// never checked the story's state beyond the required `blocked` slug.
+#[test]
+fn next_skips_a_story_already_in_progress() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path()).args(["new", "Task A"]).assert().success();
+    story(dir.path()).args(["new", "Task B"]).assert().success();
+    story(dir.path())
+        .args(["move", "SH-1", "in-progress"])
+        .assert()
+        .success();
+
+    let output = story(dir.path())
+        .args(["next", "--count", "2"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    assert!(!stdout.contains("SH-1"));
+    assert!(stdout.contains("SH-2"));
+
+    // Plain `next` (no --count) agrees: the claimed story is never the
+    // single answer either.
+    story(dir.path())
+        .arg("next")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SH-2"))
+        .stdout(predicate::str::contains("Task B"));
+}
+
 #[test]
 fn next_json_output() {
     let dir = tempdir().unwrap();
