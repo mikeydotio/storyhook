@@ -29,6 +29,20 @@
 //! "auto-transitions stories based on commit patterns (e.g. `closes SH-1`)";
 //! the keyword half had just never been implemented.
 //!
+//! # Naming the real cause, not just "no claim word" (SH-178)
+//!
+//! "reports what it declined to move" used to mean one sentence for every
+//! story that linked without moving, whatever the reason: "no claim word".
+//! That is right for a mention, and wrong for the other four causes —
+//! `sync.auto_transition` being off, the project having no active state (the
+//! common shape since SH-125: three required OPEN states means the old
+//! two-open-state guess never fires), an earlier commit in the same run
+//! already having claimed the story, and a story already moved past the
+//! default open state. Each told the same lie: that the user's commit
+//! grammar was wrong, when nothing about their commits was. [`NotMovedReason`]
+//! now travels with the decision that produced it, from
+//! [`GitService::record_commit`] outward, and the report groups by it.
+//!
 //! # The whole message, not the subject line (SH-58)
 //!
 //! `--format=%H %s` gave the subject and nothing else, so a commit whose body
@@ -66,7 +80,7 @@
 //! scan of comment text — see that function's doc comment for why a second
 //! probe (the seven-character abbreviation) still matters for a pre-#18 row.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::domain::{
     StateDef, StoryEvent, active_state, default_open_state, parse_duration, scan_story_refs,
@@ -115,6 +129,95 @@ struct Transition {
     from: String,
     to: String,
     short_hash: String,
+}
+
+/// Why a commit linked a story without moving it (SH-178).
+///
+/// Before this type existed, every one of these collapsed into one printed
+/// sentence — "no claim word" — because [`GitService::record_commit`] threw the
+/// reason away and the printer had to guess. That told a user whose project
+/// has no active state (the common shape since SH-125: three required OPEN
+/// states means the old two-open-state guess never fires) that their commit
+/// *grammar* was wrong, when the true cause was a configuration fact. The
+/// reason now travels with the decision that produced it.
+///
+/// Declaration order is the report's group order — see
+/// [`GitService::commit_sync`]'s message assembly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum NotMovedReason {
+    /// The reference was a mention, not a claim.
+    NotAClaim,
+    /// `sync.auto_transition` is off for this project.
+    AutoTransitionOff,
+    /// The project has no state carrying the `active` role, and its open
+    /// states don't fit the two-state guess either.
+    NoActiveState,
+    /// An earlier commit in this run already claimed the story. Never
+    /// observed in a rendered report: the story is also in `transitions` by
+    /// construction, so [`GitService::commit_sync`]'s cleanup pass always
+    /// removes it before the message is built. Kept as a real, named branch
+    /// rather than folded into another reason, because the decision that
+    /// produces it — the same-run dedup — is a genuine fifth cause, not an
+    /// alias for one of the other four.
+    AlreadyClaimedThisRun,
+    /// The story has already moved out of the project's default open state.
+    NotInDefaultState,
+}
+
+impl NotMovedReason {
+    /// The report line naming why `story_ids` linked without moving.
+    fn report_line(self, story_ids: &[String]) -> String {
+        let ids = story_ids.join(", ");
+        match self {
+            NotMovedReason::NotAClaim => {
+                format!("linked without claiming: {ids} (no claim word, so state unchanged)")
+            }
+            NotMovedReason::AutoTransitionOff => format!(
+                "linked without moving: {ids} (sync.auto_transition is off for this project)"
+            ),
+            NotMovedReason::NoActiveState => format!(
+                "linked without moving: {ids} (this project has no active state configured)"
+            ),
+            NotMovedReason::AlreadyClaimedThisRun => format!(
+                "linked without moving: {ids} (an earlier commit in this run already claimed it)"
+            ),
+            NotMovedReason::NotInDefaultState => format!(
+                "linked without moving: {ids} (already out of the project's default open state)"
+            ),
+        }
+    }
+}
+
+/// What linking one commit to one already-open, not-yet-linked story did.
+enum LinkOutcome {
+    /// The story moved, from `from` to `to`.
+    Moved { from: String, to: String },
+    /// The commit linked the story but did not move it, and why.
+    NotMoved(NotMovedReason),
+}
+
+/// Whether `story_id` is eligible to move on this commit, and if not, why.
+///
+/// Checked in [`NotMovedReason`]'s own declaration order: grammar and project
+/// configuration are questions about this run alone, asked before anything
+/// about this individual story's own history.
+fn eligible_active_state(
+    claims: bool,
+    auto_transition: bool,
+    active: Option<&StateDef>,
+    already_claimed_this_run: bool,
+) -> Result<&StateDef, NotMovedReason> {
+    if !claims {
+        return Err(NotMovedReason::NotAClaim);
+    }
+    if !auto_transition {
+        return Err(NotMovedReason::AutoTransitionOff);
+    }
+    let active = active.ok_or(NotMovedReason::NoActiveState)?;
+    if already_claimed_this_run {
+        return Err(NotMovedReason::AlreadyClaimedThisRun);
+    }
+    Ok(active)
 }
 
 /// Git integration over one project in one store.
@@ -166,7 +269,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
         let mut commits_linked = 0usize;
         let mut stories_touched: BTreeSet<String> = BTreeSet::new();
         let mut transitions: Vec<Transition> = Vec::new();
-        let mut linked_only: BTreeSet<String> = BTreeSet::new();
+        let mut linked_only: BTreeMap<String, NotMovedReason> = BTreeMap::new();
 
         for commit in &commits {
             // The whole message, subject included — the comment still carries
@@ -175,33 +278,41 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             for reference in scan_story_refs(&prefix, &commit.message) {
                 let claims = reference.claims();
                 let story_id = reference.id;
-                let moved = self.record_commit(
+                // Only a claim is eligible to move a story, and only the first
+                // one in this run (SH-124). `eligible_active_state` names which
+                // of those is false when this reference is not eligible, so the
+                // report can say which — rather than, as before SH-178, folding
+                // every one of them into "no claim word".
+                let eligibility = eligible_active_state(
+                    claims,
+                    auto_transition,
+                    active.as_ref(),
+                    transitions.iter().any(|t| t.story_id == story_id),
+                );
+                let outcome = self.record_commit(
                     &prefix,
                     &story_id,
                     commit,
-                    // A mention links and nothing more (SH-124). Only a claim
-                    // is eligible to move a story, and only the first one in
-                    // this run.
-                    (auto_transition && claims)
-                        .then_some(active.as_ref())
-                        .flatten()
-                        .filter(|_| !transitions.iter().any(|t| t.story_id == story_id)),
+                    eligibility,
                     default_open.as_ref(),
                 )?;
-                let Some(moved) = moved else {
+                let Some(outcome) = outcome else {
                     continue;
                 };
                 commits_linked += 1;
                 stories_touched.insert(story_id.clone());
-                match moved {
-                    Some((from, to)) => transitions.push(Transition {
+                match outcome {
+                    LinkOutcome::Moved { from, to } => transitions.push(Transition {
                         story_id,
                         from,
                         to,
                         short_hash: short_sha(&commit.sha).to_string(),
                     }),
-                    None => {
-                        linked_only.insert(story_id);
+                    // First cause wins: once a story has a recorded reason, a
+                    // later commit's differently-caused non-move (there rarely
+                    // is one) does not overwrite it.
+                    LinkOutcome::NotMoved(reason) => {
+                        linked_only.entry(story_id).or_insert(reason);
                     }
                 }
             }
@@ -226,14 +337,16 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             ));
         }
         // Naming what was declined is what keeps this fix from having the same
-        // shape as the defect it removes. Without it, a project whose commits
-        // never use a claim word sees auto-transition simply stop, with nothing
-        // to distinguish "off" from "broken".
-        if !linked_only.is_empty() {
-            message.push_str(&format!(
-                "\nlinked without claiming: {} (no claim word, so state unchanged)",
-                linked_only.iter().cloned().collect::<Vec<_>>().join(", ")
-            ));
+        // shape as the defect it removes. Grouped by the actual cause (SH-178)
+        // rather than asserted as one cause for all of them — a project with no
+        // active state is told that, which is actionable, rather than being
+        // told its commit grammar is wrong, which is not.
+        let mut by_reason: BTreeMap<NotMovedReason, Vec<String>> = BTreeMap::new();
+        for (story_id, reason) in &linked_only {
+            by_reason.entry(*reason).or_default().push(story_id.clone());
+        }
+        for (reason, story_ids) in &by_reason {
+            message.push_str(&format!("\n{}", reason.report_line(story_ids)));
         }
         Ok(message)
     }
@@ -241,18 +354,18 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
     /// Records one commit against one story, in one transaction.
     ///
     /// `Ok(None)` means there was nothing to do: the story is not open, or it
-    /// is already linked to this commit. `Ok(Some(None))` means a link was
-    /// added; `Ok(Some(Some((from, to))))` means it was added and the story
+    /// is already linked to this commit. `Ok(Some(LinkOutcome::NotMoved(_)))`
+    /// means a link was added and names why the story did not move;
+    /// `Ok(Some(LinkOutcome::Moved { .. }))` means it was added and the story
     /// moved.
-    #[allow(clippy::type_complexity)]
     fn record_commit(
         &self,
         prefix: &str,
         story_id: &str,
         commit: &Commit,
-        active: Option<&StateDef>,
+        active: Result<&StateDef, NotMovedReason>,
         default_open: Option<&StateDef>,
-    ) -> Result<Option<Option<(String, String)>>, AppError> {
+    ) -> Result<Option<LinkOutcome>, AppError> {
         let now = self.ctx.now();
         let project = self.ctx.project();
         Ok(self.ctx.store().write(|tx| {
@@ -275,18 +388,24 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
             }];
             // A story moves on the *first* commit that mentions it and only out
             // of the project's default open state — a story someone has already
-            // moved on to review is not dragged back.
-            let moved = match (active, default_open) {
-                (Some(active), Some(default_open)) if row.snapshot.state == default_open.slug => {
+            // moved on to review is not dragged back. `default_open` is always
+            // `Some` for a conforming project (`todo` is a REQUIRED_STATES OPEN
+            // state, SH-125), but the match stays total rather than assuming it.
+            let outcome = match (active, default_open) {
+                (Ok(active), Some(default_open)) if row.snapshot.state == default_open.slug => {
                     events.extend(state_transition_events(
                         active,
                         row.snapshot.awaiting.is_some(),
                         &now,
                         Vec::new(),
                     ));
-                    Some((row.snapshot.state.clone(), active.slug.clone()))
+                    LinkOutcome::Moved {
+                        from: row.snapshot.state.clone(),
+                        to: active.slug.clone(),
+                    }
                 }
-                _ => None,
+                (Ok(_), _) => LinkOutcome::NotMoved(NotMovedReason::NotInDefaultState),
+                (Err(reason), _) => LinkOutcome::NotMoved(reason),
             };
 
             append_and_fold(
@@ -298,7 +417,7 @@ impl<'ctx, S: Store> GitService<'ctx, S> {
                 ExpectedSeq::Exact(row.head_seq),
                 &events,
             )?;
-            Ok(Some(moved))
+            Ok(Some(outcome))
         })?)
     }
 }
@@ -468,5 +587,105 @@ mod tests {
     fn a_record_without_a_field_separator_is_skipped() {
         let text = format!("no-separator-here\n{RECORD_SEPARATOR}");
         assert!(parse_log(&text).is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // eligible_active_state (SH-178) — every branch, exhaustively
+    // -------------------------------------------------------------------
+
+    fn sample_active_state() -> crate::domain::StateDef {
+        crate::domain::StateDef {
+            slug: "in-progress".to_string(),
+            super_state: crate::domain::SuperState::Open,
+            role: Some(crate::domain::STATE_ROLE_ACTIVE.to_string()),
+            description: None,
+        }
+    }
+
+    #[test]
+    fn a_mention_is_never_eligible_regardless_of_everything_else() {
+        let state = sample_active_state();
+        assert_eq!(
+            eligible_active_state(false, true, Some(&state), false),
+            Err(NotMovedReason::NotAClaim)
+        );
+        // Grammar is checked first: even a project with the setting off and no
+        // active state configured is still reported as "not a claim", because
+        // that is the one true thing about this reference.
+        assert_eq!(
+            eligible_active_state(false, false, None, true),
+            Err(NotMovedReason::NotAClaim)
+        );
+    }
+
+    #[test]
+    fn a_claim_with_auto_transition_off_is_not_eligible() {
+        let state = sample_active_state();
+        assert_eq!(
+            eligible_active_state(true, false, Some(&state), false),
+            Err(NotMovedReason::AutoTransitionOff)
+        );
+    }
+
+    #[test]
+    fn a_claim_with_no_active_state_is_not_eligible() {
+        assert_eq!(
+            eligible_active_state(true, true, None, false),
+            Err(NotMovedReason::NoActiveState)
+        );
+    }
+
+    #[test]
+    fn a_claim_already_used_by_an_earlier_commit_this_run_is_not_eligible() {
+        let state = sample_active_state();
+        assert_eq!(
+            eligible_active_state(true, true, Some(&state), true),
+            Err(NotMovedReason::AlreadyClaimedThisRun)
+        );
+    }
+
+    #[test]
+    fn a_claim_with_everything_else_satisfied_is_eligible() {
+        let state = sample_active_state();
+        assert_eq!(
+            eligible_active_state(true, true, Some(&state), false),
+            Ok(&state)
+        );
+    }
+
+    #[test]
+    fn every_reason_report_line_names_its_own_cause_not_no_claim_word() {
+        let ids = vec!["SH-1".to_string(), "SH-2".to_string()];
+        let cases = [
+            (
+                NotMovedReason::NotAClaim,
+                "linked without claiming: SH-1, SH-2 (no claim word, so state unchanged)",
+            ),
+            (
+                NotMovedReason::AutoTransitionOff,
+                "linked without moving: SH-1, SH-2 (sync.auto_transition is off for this project)",
+            ),
+            (
+                NotMovedReason::NoActiveState,
+                "linked without moving: SH-1, SH-2 (this project has no active state configured)",
+            ),
+            (
+                NotMovedReason::AlreadyClaimedThisRun,
+                "linked without moving: SH-1, SH-2 (an earlier commit in this run already claimed it)",
+            ),
+            (
+                NotMovedReason::NotInDefaultState,
+                "linked without moving: SH-1, SH-2 (already out of the project's default open state)",
+            ),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(reason.report_line(&ids), expected);
+            if reason != NotMovedReason::NotAClaim {
+                assert!(
+                    !reason.report_line(&ids).contains("no claim word"),
+                    "only a real grammar miss may say so: {reason:?}"
+                );
+            }
+        }
     }
 }

@@ -690,9 +690,11 @@ Two things cancel a claim: the words not, no, never, without, unless,
 or an n't word, immediately before the claim word; and a Revert "..."
 subject, which claims nothing on its first line.
 
-Every run reports the stories it linked without claiming, so a project
-whose commits use no claim word can tell 'off' from 'broken'. To stop
-even a claim from moving a story:
+Every run reports why a story that linked did not also move — no claim
+word, sync.auto_transition off, no active state configured, or the
+story already out of its default state — so a project can tell each
+of those apart from 'broken'. To stop even a claim from moving a
+story:
 
   story project settings set sync.auto_transition false
 
