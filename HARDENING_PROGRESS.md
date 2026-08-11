@@ -9178,3 +9178,102 @@ fast-forwarded onto `main` in this checkout; branch deletion automatic (`gh pr
 merge --delete-branch`).
 
 **Next:** whatever `story next` recommends.
+
+### SH-190 — done
+
+Picked via `story next`, matching the freshen summary's own pick. This is the
+sibling SH-133's council named and this run's own SH-189 entry had already
+flagged as "**Next:** SH-190".
+
+**Reproduced first, per the repo's own rule.** Wrote a failing integration
+test (`a_restore_into_a_second_empty_store_leaves_a_resolvable_pointer`)
+before touching any fix code: export a project, restore it into a fresh
+store (writing a pointer naming that store's uuid), then restore the *same*
+document into a *second*, independent, empty store at the same directory —
+the shape a lost-and-rebuilt store produces. Confirmed red: the second
+store's project existed but the pointer still named the first store's uuid,
+resolving to nothing.
+
+**The story's own text was stale, and tracing the resolution path first
+changed the shape of the question.** SH-190 claimed "`project_remotes` is not
+carried by the export document, so the restored project has no registered
+origin" — false today: `export.remotes` is carried and registered on every
+restore (`src/service/transfer.rs:775-792`), and `resolve_project`'s origin
+fallback (`src/invoke.rs:2940-3001`) already rescues an ordinary command from
+a stale pointer *when the checkout owns a git remote that matches a
+registered one*. That narrowed, rather than closed, the defect: a project
+with no git remote (or an unregistered one) was still fully stuck, `import-
+project` never repaired the wrong pointer file even in the cases the origin
+fallback rescued, and the refusal's own suggested remedy (`story import-
+project`) did not actually fix anything for the no-remote case — it would
+loop on the identical refusal forever. Recorded the finding rather than
+trusting the story body, since a story's own text can go stale exactly like
+code comments do.
+
+**Council, per this run's autonomy rule** — three real options the story
+named (carry `projects.uuid` in the export document; adopt the existing
+pointer's uuid; lean harder on the origin fallback), no single obviously
+correct one. Panel: software-architect, api-designer, qa-engineer, all three
+independently converged on the same answer in round-1 research — adopt the
+pointer's own uuid — a signal strong enough that round 1's 2-1 split (over
+which write-up best captured the residual open questions, not over which
+option) resolved to a *unanimous* round-2 ranked-choice runoff after one
+deliberation pass. `.council/sh-190-restored-project-unreachable-checkout/DECISION.md`.
+
+**Deliberation caught what round 1 missed.** Seat 2 (api-designer) had cited
+`Ctx::init`'s identical adoption of a stale pointer's uuid *and* prefix
+together as precedent; independently, seats 1 and 2 both traced
+`export.prefix`'s actual use sites during deliberation
+(`StoryNo::parse_id` at transfer.rs:803, `story_no.to_id` at transfer.rs:840,
+`NewProject.prefix` at transfer.rs:750) and found that mirroring `init`'s
+two-field adoption here would parse and render every restored story's id
+against the *pointer's* prefix while the document's own ids were built
+against a different one — corruption, not merely a stale file. The verdict
+that survived the runoff adopts uuid only; `export.prefix` stays
+authoritative, unconditionally.
+
+**Outcome, two commits (two hats — the fix, then its backstop):**
+
+1. `fix(transfer)` — `import_project`'s create branch adopts the existing
+   pointer's uuid when the store lacks it, rather than minting a fresh
+   `uuid::Uuid::new_v4()`. The pointer file is never rewritten in this branch
+   (it was already correct — the store just hadn't caught up), which
+   trivially preserves any user-authored `[plugin]`/`[hooks]` tables. A
+   pointer uuid that does not parse is rejected before the transaction opens,
+   the same way an orphan `github_bases` key already is, rather than written
+   into the `projects.uuid` identity column unvalidated.
+2. `fix(doctor)` — the one state the fix above leaves representable: a
+   pointer whose `prefix` disagrees with the project it actually resolves to
+   (uuid matches, prefix does not — a hand-edited or copy-pasted pointer, or
+   a restore where the two always disagreed). `pointer_prefix_advice` reports
+   it, mirroring `pointer_origin_advice`'s existing shape exactly: advisory,
+   never touched by `--fix`, because which side is stale is not this
+   command's to guess.
+
+**Test plan:** the SH-190 repro goes green; a malformed/non-uuid pointer
+value is refused rather than adopted
+(`a_pointer_naming_an_unparseable_uuid_is_rejected_rather_than_adopted`); two
+checkouts sharing one stale pointer restored into the same store refuse on
+the second, via the *existing* "already holds stories" guard once the first
+restore has claimed that uuid
+(`a_second_checkout_with_the_same_stale_pointer_cannot_restore_into_the_same_store`
+— confirms this shape needed no new code, only new coverage); the doctor
+advisory's report-and-survive-`--fix` pair, following the pointer/origin
+mismatch tests' own structure line for line. All new, all green, alongside
+the full existing suite.
+
+**The gate, once, clean.** `cargo fmt --check` and `cargo clippy --workspace
+--all-targets -- -D warnings` clean, full Rust suite green (unit +
+integration + doc-tests), plugin shell-script harness 30/30, e2e 45/45 in
+1.2m. No wedge, no restart — supervised the whole ~15-minute run per this
+file's own rule (log-growth heartbeat, 120s stall bound) and it never came
+close to tripping.
+
+**PR:** #247, merged as `f446883` (`gh pr view` confirmed `MERGED`),
+fast-forwarded onto `main` in this checkout; branch deletion automatic (`gh
+pr merge --delete-branch`). SH-190 auto-closed via `commit-sync`'s "Closes
+SH-190" body parse at merge time — `story move SH-190 done` afterward
+correctly refused with "already closed" rather than silently no-op'ing.
+
+**Next:** SH-192 — `RemoteUrl`: a host named `local` with an empty port
+collides with the local-path key space (medium).
