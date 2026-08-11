@@ -221,8 +221,14 @@ fi
 # missing browser already names the fix imperatively, and duplicating that
 # detection here would be a second copy to keep in sync with how Playwright
 # reports it. The hint below only adds where that fix lives in this repo.
-if ! npx playwright test "$@"; then
-  status=$?
+#
+# `|| status=$?` rather than `if ! npx ...; then status=$?`: under `!`, bash
+# inverts the command's exit status, so `$?` inside that then-branch is the
+# *inverted* value — always 0 — and `exit "$status"` would always exit 0
+# regardless of whether Playwright passed (SH-224).
+status=0
+npx playwright test "$@" || status=$?
+if [ "$status" -ne 0 ]; then
   echo "run-e2e.sh: the suite failed. If the error above is about a missing browser executable, run 'make e2e-install' and retry." >&2
   exit "$status"
 fi
