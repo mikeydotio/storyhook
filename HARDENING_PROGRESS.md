@@ -9646,3 +9646,66 @@ this run's standing practice.
 
 **Next:** SH-185 — doctor names an undecodable event but not its
 severity, exit code or JSON shape (low).
+
+### SH-185 — doctor names an undecodable event but not its severity, exit code or JSON shape — 2026-08-11
+
+**Outcome:** done. PR #259, merged as `8fb5633` (`gh pr merge --merge
+--delete-branch`), fast-forwarded onto `main`; stale remote-tracking ref
+pruned with `git remote prune origin`.
+
+**Council invoked** — the story's own text left four genuinely open
+questions (severity representation, exit-code rule, `--fix` messaging,
+JSON shape), so per this file's autonomy rule this went to
+`council:council-vote` rather than a unilateral call. Panel:
+`ux-designer-cli` (domain), `software-architect` (generalist),
+`api-designer` (challenger — the JSON shape is a wire contract
+`tests/wire_envelope.rs` treats as forever). Round 1 split 0-1-2
+(ux-designer-cli proposed a new `Severity`/`Finding` type and a new
+`AppError::DoctorFindings` wire variant; the other two favored reusing
+the existing `Response::Issues` advisory channel with no new type).
+Deliberation persuaded the dissenting seat with file-and-line evidence
+that the exit-code/response-shape split (`issues` vs `error`) is already
+the structural, non-prose signal a script needs — not an invented one —
+and the round-2 ranked-choice runoff was unanimous 3-0. Full audit trail:
+`.council/doctor-undecodable-event-severity-exit-code/` (gitignored,
+verdict recorded as a story comment per the standing instruction).
+
+**What shipped, per the verdict:** the unrecognised-kind line ("a newer
+storyhook wrote it") moved out of `IntegrityService::report()`'s
+health-determining vector entirely into a sibling method,
+`IntegrityService::notices()`. A project whose only anomaly is a notice
+is now healthy — `doctor` exits 0, and the notice text rides the existing
+`Response::Issues` advisory channel instead of becoming an
+`AppError::Integrity`. `--fix` no longer fails over a notice either — its
+success message names it as nothing to fix, by design, rather than
+folding it into a repair failure. The torn-payload line (a known kind
+whose payload won't decode) is untouched: still a `report()` finding,
+still exit 5, still fails `--fix`. No new JSON field or wire type — the
+discriminator is exit code plus which top-level field is populated,
+which the existing split already provides, so `WireError`'s pinned shape
+didn't move. The council's one hard implementation constraint — a notice
+must stay visible even when the same run also carries a real finding,
+not vanish just because it lost its seat in the health vector — is
+carried by a new shared helper, `detail_with_notices`, used by both
+`story doctor`'s plain error path and `--fix`'s failure path.
+
+**Test plan:** the existing SH-67 test
+(`an_event_this_build_cannot_decode_is_reported_and_told_apart_from_a_torn_one`)
+was split into three, each proving one piece of the new contract:
+`an_unrecognised_event_kind_is_a_notice_not_a_finding` (healthy, exit 0,
+advisory text, `--fix` succeeds and still names it),
+`a_torn_known_event_payload_is_still_a_finding_fix_cannot_repair`
+(damage behavior unchanged), and
+`a_notice_stays_visible_alongside_a_real_finding_in_the_same_run` (the
+council's load-bearing visibility constraint, checked through both the
+plain `doctor` dispatch path and `--fix`). `make test` ran as a
+harness-tracked background command with a `wc -c`-on-log heartbeat
+polled every 10s against a 120s stall bound; it completed end to end
+with no stall — full Rust workspace suite, `cargo build`, the 29-test
+plugin suite, and all 45 Playwright e2e specs green.
+
+**No version bump** — `fix:`, left for the next batched `/semver` pass per
+this run's standing practice.
+
+**Next:** SH-191 — github-sync's wizard may duplicate a local story its
+own guard would catch (low).
