@@ -785,6 +785,98 @@ fn spawn_dispatch(
     });
 }
 
+/// I4 CHARTER-INERT's banned set (`.rca/dispatch-types-the-agent-charter/
+/// REMEDIATION.md` item 4): none of these, nor a newline, may appear in text
+/// a dispatch pastes into a shell-backed pane. `story.sh`'s own Part A lint
+/// covers the *shipped* templates; this is the runtime-enforcement rider
+/// (SH-232) over a *user override* of them, which that lint cannot see.
+const CHARTER_INERT_BANNED: [char; 8] = ['`', '$', ';', '&', '|', '<', '>', '!'];
+
+/// `story.sh`'s `render_template` (`lib/session.sh`) substitutes exactly
+/// these four literal tokens, and only these, before a template ever
+/// reaches a pane. A *template* — as opposed to the text it renders to —
+/// legitimately contains `<`/`>` as part of one of them: the shipped
+/// default `PROMPT_TPL` itself reads "...for story <n> in this repo.", and
+/// a user override is expected to use the same placeholder syntax to
+/// reference the story id, window name, checkout dir or reap command.
+/// [`charter_inert_violation`] must not flag that legitimate usage while
+/// still catching a stray `<`/`>` anywhere else in the value.
+const TEMPLATE_PLACEHOLDERS: [&str; 4] = ["<name>", "<dir>", "<reap>", "<n>"];
+
+/// Whether `value` — a raw *template* string, not yet substituted — would
+/// violate I4 CHARTER-INERT once `render_template` finishes with it.
+///
+/// Checks the banned set against `value` with every
+/// [`TEMPLATE_PLACEHOLDERS`] occurrence first removed, since those four
+/// tokens are consumed by substitution rather than surviving into the
+/// rendered text, and each legitimately contains `<`/`>`. The values they
+/// are replaced BY (a story id, a window name, a checkout path, a
+/// `reap` command) are internally constructed rather than free user text,
+/// so they are out of scope for this check — the same boundary
+/// REMEDIATION.md's own item 4 draws around `render_template`'s inputs.
+fn charter_inert_violation(value: &str) -> bool {
+    let mut stripped = value.to_string();
+    for token in TEMPLATE_PLACEHOLDERS {
+        stripped = stripped.replace(token, "");
+    }
+    stripped.contains(CHARTER_INERT_BANNED) || stripped.contains('\n')
+}
+
+/// The three env vars `story.sh` reads as user overrides of the rendered
+/// handoff text (`render_template`'s `PROMPT_TPL`/`AUTO_PROMPT_TPL`/
+/// `PROMPT_EXTRA`) — the names [`prompt_override_violation`] checks and
+/// [`run_child`] reads from this daemon's own inherited environment.
+const PROMPT_OVERRIDE_ENV_VARS: [&str; 3] =
+    ["STORY_PROMPT", "STORY_AUTO_PROMPT", "STORY_PROMPT_EXTRA"];
+
+/// Checks whichever of `story_prompt` / `story_auto_prompt` /
+/// `story_prompt_extra` this dispatch's mode would actually feed to
+/// `story.sh` against I4 CHARTER-INERT — a pure function of the three
+/// already-read values, deliberately, rather than one that reads
+/// `std::env::var` itself: process environment is global state, and reading
+/// it directly here would make every caller either mutate the real process
+/// environment to test this (racing every other test in the same binary,
+/// since `cargo test` runs them in parallel within one process) or not test
+/// it at all. [`run_child`] is the one real caller and does the actual
+/// reads.
+///
+/// `run_child`'s `Command` never calls `env_clear`, so any of the three, if
+/// set anywhere in the daemon's own process environment, flows straight
+/// through to the child unfiltered (SH-232's own finding). `story.sh`'s
+/// `render_template` does pure literal substring substitution — no shell
+/// interpretation of its own — so a template and `PROMPT_EXTRA` that are
+/// each individually free of the banned set produce a rendered result that
+/// is too; checking the raw override values here, before the child is ever
+/// spawned, is therefore sufficient to enforce I4 over them without
+/// duplicating `render_template`'s substitution logic in Rust.
+///
+/// Only the template relevant to `auto` is checked — `story_prompt` for an
+/// attended dispatch, `story_auto_prompt` for `--auto` — matching
+/// `story.sh`'s own `prompt_tpl` selection, so an unrelated bad override in
+/// the *other* mode's template does not refuse a dispatch that would never
+/// have read it. `story_prompt_extra` applies to both, since `story.sh`
+/// appends it to either template unconditionally.
+///
+/// Returns the violating env var's name (one of
+/// [`PROMPT_OVERRIDE_ENV_VARS`]) on a hit, `None` when the relevant values
+/// are absent or clean.
+fn prompt_override_violation(
+    auto: bool,
+    story_prompt: Option<&str>,
+    story_auto_prompt: Option<&str>,
+    story_prompt_extra: Option<&str>,
+) -> Option<&'static str> {
+    let template = if auto {
+        ("STORY_AUTO_PROMPT", story_auto_prompt)
+    } else {
+        ("STORY_PROMPT", story_prompt)
+    };
+    [template, ("STORY_PROMPT_EXTRA", story_prompt_extra)]
+        .into_iter()
+        .find(|(_, value)| value.is_some_and(charter_inert_violation))
+        .map(|(name, _)| name)
+}
+
 /// Runs one dispatch child to completion (or to [`DISPATCH_TIMEOUT`]) and
 /// classifies its outcome. Never returns [`DispatchState::Running`].
 fn run_child(
@@ -794,6 +886,40 @@ fn run_child(
     auto: bool,
     env: &Environment,
 ) -> Classification {
+    let [story_prompt, story_auto_prompt, story_prompt_extra] =
+        PROMPT_OVERRIDE_ENV_VARS.map(|name| std::env::var(name).ok());
+    let violation = prompt_override_violation(
+        auto,
+        story_prompt.as_deref(),
+        story_auto_prompt.as_deref(),
+        story_prompt_extra.as_deref(),
+    );
+    if let Some(name) = violation {
+        // Refused before `story.sh` is ever run: nothing was typed into any
+        // pane, no worktree or claim exists to roll back. Synthesized in
+        // the same {ok, reason, display} shape `refuse_with` itself emits,
+        // so a dashboard reading `record.payload.display` cannot tell this
+        // refusal from one `story.sh` produced.
+        let display = format!(
+            "[story] refused to dispatch {story} — this daemon's own ${name} \
+             environment value contains a character CHARTER-INERT bans (one \
+             of ` $ ; & | < > ! or a newline) and would be pasted into a \
+             live shell-backed pane verbatim. Fix ${name} in the daemon's \
+             own environment and restart it, then retry."
+        );
+        return (
+            DispatchState::Refused,
+            Some(serde_json::json!({
+                "ok": false,
+                "reason": DispatchReason::UnsafePromptOverride.as_str(),
+                "display": display,
+                "env_var": name,
+            })),
+            None,
+            Some(DispatchReason::UnsafePromptOverride),
+        );
+    }
+
     let stdout_file = match tempfile::tempfile() {
         Ok(file) => file,
         Err(e) => {
@@ -1790,6 +1916,169 @@ mod tests {
             serde_json::to_string(&DispatchReason::PaneNotReady).unwrap(),
             "\"pane-not-ready\"",
             "must serialize as the bare string story.sh itself emits, not a tagged object"
+        );
+    }
+
+    #[test]
+    fn charter_inert_violation_flags_every_banned_character_individually() {
+        for banned in CHARTER_INERT_BANNED {
+            let value = format!("investigate story <n>{banned}then plan a fix");
+            assert!(
+                charter_inert_violation(&value),
+                "{banned:?} must be flagged"
+            );
+        }
+        assert!(
+            charter_inert_violation("line one\nline two"),
+            "a newline must be flagged even though it is not in CHARTER_INERT_BANNED itself"
+        );
+    }
+
+    #[test]
+    fn charter_inert_violation_allows_parentheses_and_quotes() {
+        // I4's own stated allowance (REMEDIATION.md item 4): neither can
+        // cause an embedded span to execute, so neutering them would ban
+        // ordinary prose for no safety gain.
+        assert!(!charter_inert_violation(
+            "investigate story <n> (see \"the plan\") and report back"
+        ));
+    }
+
+    #[test]
+    fn charter_inert_violation_allows_clean_text() {
+        assert!(!charter_inert_violation(
+            "Investigate and plan a fix for story <n> in this repo."
+        ));
+    }
+
+    /// The regression this module's own tests caught while writing this
+    /// check: `render_template`'s four placeholder tokens are legitimate
+    /// template syntax, each containing `<`/`>`, and a custom
+    /// `STORY_PROMPT` is EXPECTED to use them -- flagging every one would
+    /// have refused the shipped default templates themselves, which use
+    /// `<n>` verbatim.
+    #[test]
+    fn charter_inert_violation_allows_every_sanctioned_placeholder() {
+        assert!(!charter_inert_violation(
+            "story <n> in worktree <name> at <dir>, then run <reap>"
+        ));
+    }
+
+    /// The other half of the same fix: exempting the placeholder tokens
+    /// must not accidentally exempt `<`/`>` everywhere. A stray bracket
+    /// that is not part of one of the four exact tokens is still a real
+    /// shell redirection risk and must still be caught.
+    #[test]
+    fn charter_inert_violation_still_catches_a_stray_bracket_next_to_a_placeholder() {
+        assert!(charter_inert_violation("story <n> > /tmp/exfil"));
+        assert!(charter_inert_violation(
+            "story <nope> is not a real placeholder"
+        ));
+    }
+
+    /// The shipped defaults must themselves pass this check -- otherwise
+    /// every UNMODIFIED dispatch (`STORY_PROMPT`/`STORY_AUTO_PROMPT` never
+    /// set at all) would refuse itself the moment an operator's daemon
+    /// environment happened to also carry either var for an unrelated
+    /// reason. Extracted directly from the checked-in script rather than
+    /// copy-pasted, so a future edit to either default that reintroduces a
+    /// banned character (item 4's own "nobody maintains any of this"
+    /// warning) is caught here rather than only at dispatch time.
+    #[test]
+    fn the_shipped_default_templates_are_charter_inert() {
+        let script = include_str!("../../plugin/claude-code/bin/story.sh");
+        for (var, tpl_prefix, line_prefix) in [
+            ("PROMPT_TPL", "PROMPT_TPL=\"${STORY_PROMPT:-", "PROMPT_TPL="),
+            (
+                "AUTO_PROMPT_TPL",
+                "AUTO_PROMPT_TPL=\"${STORY_AUTO_PROMPT:-",
+                "AUTO_PROMPT_TPL=",
+            ),
+        ] {
+            let line = script
+                .lines()
+                .find(|l| l.starts_with(line_prefix))
+                .unwrap_or_else(|| panic!("story.sh must still define {var} on its own line"));
+            let default = line
+                .strip_prefix(tpl_prefix)
+                .and_then(|rest| rest.strip_suffix("}\""))
+                .unwrap_or_else(|| {
+                    panic!("{var}'s default-value shape changed -- update this extraction")
+                });
+            assert!(
+                !charter_inert_violation(default),
+                "{var}'s shipped default must itself be CHARTER-INERT"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_override_violation_is_none_when_everything_is_absent() {
+        assert_eq!(prompt_override_violation(false, None, None, None), None);
+        assert_eq!(prompt_override_violation(true, None, None, None), None);
+    }
+
+    #[test]
+    fn prompt_override_violation_is_none_when_everything_is_clean() {
+        assert_eq!(
+            prompt_override_violation(
+                false,
+                Some("a clean prompt"),
+                Some("also clean"),
+                Some("extra")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn prompt_override_violation_catches_story_prompt_when_attended() {
+        assert_eq!(
+            prompt_override_violation(false, Some("rm -rf `whoami`"), None, None),
+            Some("STORY_PROMPT")
+        );
+    }
+
+    #[test]
+    fn prompt_override_violation_ignores_story_prompt_when_auto() {
+        // STORY_PROMPT governs the ATTENDED template; an --auto dispatch
+        // never reads it, so a bad value there must not refuse a dispatch
+        // that was never going to use it.
+        assert_eq!(
+            prompt_override_violation(true, Some("rm -rf `whoami`"), None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn prompt_override_violation_catches_story_auto_prompt_only_when_auto() {
+        assert_eq!(
+            prompt_override_violation(true, None, Some("$(danger)"), None),
+            Some("STORY_AUTO_PROMPT")
+        );
+        assert_eq!(
+            prompt_override_violation(false, None, Some("$(danger)"), None),
+            None,
+            "STORY_AUTO_PROMPT must not gate an attended dispatch"
+        );
+    }
+
+    #[test]
+    fn prompt_override_violation_catches_story_prompt_extra_in_either_mode() {
+        for auto in [false, true] {
+            assert_eq!(
+                prompt_override_violation(auto, None, None, Some("please; also do X")),
+                Some("STORY_PROMPT_EXTRA"),
+                "STORY_PROMPT_EXTRA applies to both templates, auto={auto}"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_override_violation_reports_the_template_before_extra_when_both_are_dirty() {
+        assert_eq!(
+            prompt_override_violation(false, Some("bad `here`"), None, Some("also; bad")),
+            Some("STORY_PROMPT")
         );
     }
 
