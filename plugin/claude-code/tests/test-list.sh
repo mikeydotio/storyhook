@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # `story.sh list` — the rows the skill's List->Pick flow offers.
 #
-# `story list --ready` alone is NOT the right answer: is_ready() asks "is this
-# workable", not "is this available to pick up". It returns true for a story
-# someone is already working (the exact gap /story do's own guard exists to
-# close), and unlike `story next` it does not filter out parents. Both
-# narrowings are asserted here against the real CLI.
+# `story list --ready` used to not be the right answer on its own: is_ready()
+# asked "is this workable", not "is this available to pick up" — it returned
+# true for a story someone was already working (the gap /story do's own guard
+# exists to close), and unlike `story next` it does not filter out parents.
+# storyhook's SH-236 fixed the first gap (`story list --ready` now excludes
+# an in-progress story itself), so cmd_list's own already-claimed filter is
+# redundant with its input rather than load-bearing — kept anyway since a
+# no-op filter costs nothing and a future storyhook regression would be
+# masked, not caused, by removing it. The parent-exclusion narrowing is
+# unaffected and still load-bearing. Both are asserted here against the real
+# CLI.
 source "$(dirname "$0")/lib.sh"
 
 repo=$(mk_story_repo)
@@ -28,13 +34,15 @@ assert_eq "$(jqf "$out" '.stories[0].option.label')" "$ready" "one: option.label
 assert_eq "$(jqf "$out" '.stories[0].option.description')" "Ready one" "one: option.description is the title"
 assert_eq "$(jqf "$out" '.stories[0].priority')" "high" "one: priority surfaced for ordering context"
 
-# --- an already-claimed story is excluded, though is_ready() still says yes ---
+# --- an already-claimed story is excluded (SH-236: storyhook itself now
+# --- excludes it from `list --ready`; cmd_list's own filter is redundant
+# --- defense-in-depth, not what makes this pass) ---
 claimed=$(new_story "$repo" "Being worked")
 (cd "$repo" && story move "$claimed" in-progress >/dev/null 2>&1)
-# Fixture sanity: prove the CLI really does still consider it ready, so the
-# exclusion below is load-bearing rather than incidental.
+# Fixture sanity: pins the new ground truth so a storyhook regression here is
+# caught by *this* test too, not only by storyhook's own SH-236 tests.
 in_ready=$(cd "$repo" && story list --ready --json | jq --arg id "$claimed" '[.stories[]?.story.id]|index($id) != null')
-assert_eq "$in_ready" "true" "fixture sanity: is_ready() still returns true for an in-progress story"
+assert_eq "$in_ready" "false" "fixture sanity: \`story list --ready\` excludes an in-progress story (SH-236)"
 out=$(cd "$repo" && bash "$SCRIPT" list 2>&1)
 assert_eq "$(jqf "$out" '[.stories[].id]|index("'"$claimed"'")')" "null" "claimed: excluded from the pick list"
 

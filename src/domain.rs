@@ -1841,6 +1841,38 @@ pub fn is_ready(story: &StorySnapshot, all_stories: &BTreeMap<String, StorySnaps
     true
 }
 
+/// Whether `story` is [`is_ready`] *and* nobody has claimed it yet.
+///
+/// `active` is the state [`active_state`] resolves to: the one a claim
+/// (`story move <id> in-progress`, or a first commit mention) puts a story
+/// into. A story already sitting there has already been picked up by
+/// someone, so `story next`/`story list --ready` handing it back offers
+/// already-claimed work as if it were free (SH-236) — `is_ready` alone
+/// cannot catch this because it only special-cases the *required* `blocked`
+/// slug (SH-126), and the active state's slug is project-configurable, not
+/// reserved.
+///
+/// This is deliberately a *separate* predicate from `is_ready` rather than a
+/// change to it: several callers (`story list --blocked`, `story report`,
+/// `story context`'s blocked section, the phase-progress rollups) use
+/// `is_ready` to mean "not blocked", and an in-progress story is not
+/// blocked — folding the claimed check into `is_ready` would relabel every
+/// story someone is actively working on as blocked in those views.
+///
+/// `active: None` — a legacy project with no role configured and other than
+/// exactly two OPEN states — leaves this identical to `is_ready`: with no
+/// reliable slug to treat as "claimed", nothing new is excluded.
+pub fn is_claimable(
+    story: &StorySnapshot,
+    all_stories: &BTreeMap<String, StorySnapshot>,
+    active: Option<&StateDef>,
+) -> bool {
+    if !is_ready(story, all_stories) {
+        return false;
+    }
+    active.is_none_or(|state| story.state != state.slug)
+}
+
 /// The order ready work is offered in: `priority ASC, then story number ASC`.
 ///
 /// A **total** order: the pair (priority, number) is unique within a project,
@@ -2773,10 +2805,10 @@ mod tests {
         FieldEdit, Priority, REQUIRED_STATES, STATE_ROLE_ACTIVE, StateChanges, StateDef,
         StateUsage, StoryEvent, StoryRelation, StorySnapshot, SuperState, TypeDef, active_state,
         compute_epic_display_state, compute_progress, default_type, derive_family_relationships,
-        fold_story, has_children, is_ready, last_activity_type, normalize_labels, ready_order,
-        story_number, validate_event_for_append, validate_required_states, validate_state_defs,
-        validate_state_defs_for_write, validate_state_slug, validate_type_slug,
-        with_required_states, would_create_parent_cycle,
+        fold_story, has_children, is_claimable, is_ready, last_activity_type, normalize_labels,
+        ready_order, story_number, validate_event_for_append, validate_required_states,
+        validate_state_defs, validate_state_defs_for_write, validate_state_slug,
+        validate_type_slug, with_required_states, would_create_parent_cycle,
     };
 
     #[test]
@@ -4023,6 +4055,70 @@ mod tests {
         };
 
         assert!(!is_ready(&story, &BTreeMap::new()));
+    }
+
+    /// Regression test for SH-236: `story next --count 3` handed back a
+    /// story in the `in-progress` state (someone else's active work)
+    /// because `is_ready` never inspected `story.state` beyond the required
+    /// `blocked` slug. `is_claimable` is `is_ready` plus that missing check,
+    /// resolved against the project's configured active state rather than a
+    /// hardcoded `"in-progress"` — a project is free to rename or replace
+    /// that slug (SH-124/SH-178's `active` role).
+    #[test]
+    fn is_claimable_returns_false_for_a_story_in_the_active_state() {
+        let mut story = StorySnapshot {
+            id: "SH-1".to_string(),
+            title: "Claimed".to_string(),
+            created_at: "2026-03-13T00:00:00Z".to_string(),
+            updated_at: "2026-03-13T00:00:00Z".to_string(),
+            state: "in-progress".to_string(),
+            superstate: SuperState::Open,
+            assignee: None,
+            awaiting: None,
+            priority: Priority::None,
+            labels: Vec::new(),
+            story_type: None,
+            description: None,
+            comments: Vec::new(),
+            referenced_by_commits: Vec::new(),
+            relationships: Vec::new(),
+            closed_at: None,
+            deleted: false,
+            deleted_reason: None,
+            hidden_at: None,
+            draft: false,
+        };
+        let active = state("in-progress", SuperState::Open, Some(STATE_ROLE_ACTIVE));
+
+        // Untouched: this is still exactly what a claimed story reads as
+        // before SH-236, so a caller that only wants "not blocked" keeps
+        // seeing it that way.
+        assert!(is_ready(&story, &BTreeMap::new()));
+        assert!(!is_claimable(&story, &BTreeMap::new(), Some(&active)));
+
+        // A custom active-state slug is honoured, not just the default —
+        // renaming it doesn't resurrect the bug.
+        story.state = "doing".to_string();
+        let renamed_active = state("doing", SuperState::Open, Some(STATE_ROLE_ACTIVE));
+        assert!(!is_claimable(
+            &story,
+            &BTreeMap::new(),
+            Some(&renamed_active)
+        ));
+
+        // A story in a *different* state than the active one is unaffected.
+        story.state = "todo".to_string();
+        assert!(is_claimable(
+            &story,
+            &BTreeMap::new(),
+            Some(&renamed_active)
+        ));
+
+        // No resolvable active state (legacy project, no role configured):
+        // `is_claimable` falls back to exactly `is_ready` rather than
+        // guessing at a slug.
+        story.state = "in-progress".to_string();
+        assert!(is_claimable(&story, &BTreeMap::new(), None));
     }
 
     #[test]

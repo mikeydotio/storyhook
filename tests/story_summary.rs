@@ -89,6 +89,39 @@ fn summary_shows_ready_stories() {
         .stdout(predicate::str::contains("Ready A"));
 }
 
+/// Regression test for SH-236: an in-progress story is already claimed, so
+/// it must not inflate `summary`'s ready count (nor its blocked count — it
+/// isn't blocked either, just already spoken for).
+#[test]
+fn summary_excludes_in_progress_from_ready_and_blocked() {
+    let dir = tempdir().unwrap();
+    story(dir.path())
+        .args(["project", "new", "--prefix", "SH"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Ready A"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["new", "Claimed B"])
+        .assert()
+        .success();
+    story(dir.path())
+        .args(["move", "SH-2", "in-progress"])
+        .assert()
+        .success();
+
+    story(dir.path())
+        .arg("summary")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ready: 1"))
+        .stdout(predicate::str::contains("blocked: 0"))
+        .stdout(predicate::str::contains("Ready A"))
+        .stdout(predicate::str::contains("Claimed B").not());
+}
+
 #[test]
 fn summary_json_output() {
     let dir = tempdir().unwrap();
