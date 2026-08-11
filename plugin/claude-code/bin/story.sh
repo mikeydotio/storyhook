@@ -28,14 +28,21 @@
 #
 # DELIBERATE DEVIATIONS from the agentics storywork.sh this was forked from:
 #
-#   1. ALREADY-IN-PROGRESS GUARD (new). storyhook's own `is_ready()` returns
-#      true even for a story already `in-progress` — it only checks
-#      open/unblocked, not "hasn't been claimed yet" (confirmed by direct
-#      testing against the CLI: moving a story to in-progress does not drop
-#      it from `story list --ready`). A readiness gate alone would therefore
-#      NOT stop a redispatch of a story someone is already working. This
-#      adds an explicit precondition: state == "in-progress" refuses before
-#      any side effect, run BEFORE the ready-gate below.
+#   1. ALREADY-IN-PROGRESS GUARD (new). Added because storyhook's own
+#      `is_ready()` used to return true even for a story already
+#      `in-progress` — it only checked open/unblocked, not "hasn't been
+#      claimed yet" (confirmed by direct testing against the CLI: moving a
+#      story to in-progress did not drop it from `story list --ready`), so a
+#      readiness gate alone would not have stopped a redispatch of a story
+#      someone was already working. storyhook's SH-236 fixed that root cause
+#      — `story list --ready` (deviation #2's ready-gate, below) now excludes
+#      an in-progress story on its own — so this guard is no longer the only
+#      thing that catches it. Kept anyway: its message names the likely cause
+#      ("a previous `/story do` may still be running against it") and gives a
+#      concrete unstick command, which the ready-gate's fallback reason
+#      ("not in `story list --ready`") does not. Explicit precondition:
+#      state == "in-progress" refuses before any side effect, run BEFORE the
+#      ready-gate below.
 #
 #   2. READY-STATE GATE (new — the literal ask of issue #40). Queries
 #      `story list --ready --json` (the same ground truth `story-work` and
@@ -600,8 +607,8 @@ cmd_dispatch() {
   state=$(printf '%s' "$show_json" | jq -r '.story.story.state // ""')
 
   # Step 5 (deviation #1 — see header): ALREADY-IN-PROGRESS GUARD. Checked
-  # before the ready-gate since `is_ready()` alone would not catch this —
-  # an in-progress-but-unblocked story still reads as "ready".
+  # before the ready-gate for its more specific message — since SH-236 the
+  # ready-gate below would also catch this, just less helpfully.
   if [ "$state" = "in-progress" ]; then
     fail "story $id is already in-progress — not redispatching (a previous \`/story do\` may still be running against it, or move it back to a ready state first if this is stale)."
   fi
@@ -1065,12 +1072,15 @@ cmd_list() {
   require_story
 
   # `story list --ready` is the ground truth the dispatch gate already uses.
-  # Two deliberate narrowings on top of it, both because is_ready() answers
-  # "is this workable", not "is this available to pick up":
-  #   - already-claimed stories are dropped (is_ready() returns true for an
-  #     in-progress story — the exact gap /story do's own guard exists for);
+  # Two narrowings on top of it:
+  #   - already-claimed stories are dropped. Since storyhook's SH-236,
+  #     `list --ready` already excludes an in-progress story on its own, so
+  #     this is now redundant defense-in-depth rather than load-bearing —
+  #     kept because a no-op filter costs nothing and removing it would only
+  #     mask a future storyhook regression here, not prevent one;
   #   - parents are dropped, matching `story next`'s has_children filter,
-  #     since dispatching an epic is never what the user meant.
+  #     since dispatching an epic is never what the user meant — this one
+  #     stays load-bearing, `list --ready` does not filter parents itself.
   local ready_json active
   # Ready stories first, and plainly: it may `fail`, so it cannot be called
   # through $(...). Asking before `story_active_state` is deliberate — that one
