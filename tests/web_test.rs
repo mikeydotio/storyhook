@@ -692,6 +692,13 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
     assert!(body.contains("function copyText"));
     assert!(body.contains(r#"execCommand("copy")"#));
     assert!(body.contains("\"Copy Description\""));
+
+    // SH-197: the context menu's Dispatch group -- gated identically to the
+    // drawer footer's own Dispatch buttons (dashboard-dispatch.md's As-built
+    // section names the shared expression).
+    assert!(body.contains("\"Dispatch\""));
+    assert!(body.contains("\"Dispatch Auto\""));
+    assert!(body.contains("dispatchHidden"));
 }
 
 #[test]

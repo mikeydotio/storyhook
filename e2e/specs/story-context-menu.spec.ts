@@ -53,11 +53,16 @@ test("right-click a card shows Copy ID, Copy URL, Copy Description, in that orde
   await expect(menu).toBeVisible();
   await expect(menu).toHaveAttribute("role", "menu");
 
+  // 5, not 3: Alpha has a checkout, so the Dispatch group (its own spec,
+  // story-context-menu-dispatch.spec.ts) follows the copy group here too.
   const items = menu.locator(".ctxmenu-item");
-  await expect(items).toHaveCount(3);
+  await expect(items).toHaveCount(5);
   await expect(items.nth(0)).toHaveText("Copy ID");
   await expect(items.nth(1)).toHaveText("Copy URL");
   await expect(items.nth(2)).toHaveText("Copy Description");
+  await expect(items.nth(3)).toHaveText("Dispatch");
+  await expect(items.nth(4)).toHaveText("Dispatch Auto");
+  await expect(menu.locator(".ctxmenu-sep")).toHaveCount(1);
 
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
@@ -264,7 +269,8 @@ test("the menu works on a list-view row too", async ({ page }) => {
   await row.click({ button: "right" });
   const menu = page.locator(".ctxmenu");
   await expect(menu).toBeVisible();
-  await expect(menu.locator(".ctxmenu-item")).toHaveCount(3);
+  // 5, not 3: see the item-order test's identical note.
+  await expect(menu.locator(".ctxmenu-item")).toHaveCount(5);
 
   await page.keyboard.press("Escape");
   await page.locator('#view-toggle button[data-view="board"]').click();
