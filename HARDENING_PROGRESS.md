@@ -9346,3 +9346,88 @@ remote prune origin`. `story move SH-192 done` recorded the fix commit via
 
 **Next:** SH-193 — the daemon forwards its whole inherited environment to
 `sh`, `bash` and `claude` (medium).
+
+### SH-193 — done, 2026-08-11
+
+The daemon holds the process environment of whichever client first spawned
+it, for its whole life, and — until now — handed it unfiltered to every
+child it started: a user's own event hook (`sh -c`), the dashboard's
+dispatch child (`bash story.sh`), and `claude`'s plugin subcommands. SH-153
+and SH-160 had already closed this for storyhook's own credential variable
+and for `git`; this story was the general case those two explicitly said
+they did not solve — `AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY`, anything a
+user happened to have exported in whatever shell first started this
+project's daemon, silently available to an unrelated project's hook or
+dispatched agent hours or days later.
+
+**Council convened — a real design decision, not a mechanical fix.** The
+story's own filing left the fix direction undecided and asked for
+measurement before choosing. `.council/sh-193-env-forwarding/` (security-
+researcher, software-architect, skeptic) converged unanimously, but not
+trivially: round-1 research from all three seats independently proposed the
+same two-tier shape (leave the user's event hook alone and documented; give
+`story.sh` and `claude` each an `env_clear()` + allowlist, mirroring
+`git_env.rs`'s SH-160 precedent) — but the single-choice vote then went 3-0
+to the *skeptic's* proposal instead, because all three seats re-verified
+the candidate allowlist against the actual code during voting and found it
+had silently copied `git_env.rs`'s omission of `SSH_AUTH_SOCK` without
+checking that `story.sh` runs real network `git fetch`/`git ls-remote`
+calls — unlike `git_env.rs`'s own local-only call sites, where that
+omission is safe. A council that had rubber-stamped its own round-1
+consensus would have shipped a regression for anyone dispatching against
+an SSH-authenticated remote.
+
+**What shipped:** `src/env/spawn_env.rs`, two allowlists (not one shared
+list — `claude`'s is strictly narrower, matching what it's actually
+measured to need). Both `SSH_AUTH_SOCK` and any claude-auth variable
+(`ANTHROPIC_API_KEY`) are deliberately left off, documented as known
+limitations rather than silently accepted: `story.sh`'s network git calls
+are already best-effort (a failed fetch falls back to a cached ref,
+per `freshen_base_ref`'s own pre-existing contract), and both omitted
+names are themselves live credential handles — putting either back on the
+allowlist for convenience would have undercut the fix's own premise. The
+event hook path (`src/event_hooks.rs`) ships unchanged but newly explicit:
+its doc comment and the `story help hooks` topic now both say a hook
+inherits the *daemon's* environment, not the invoking shell's.
+
+**A real fixture regression, caught by the gate rather than assumed away.**
+`tests/dispatch_endpoint.rs`'s stub-mode selector (`$DISPATCH_STUB_MODE`)
+was itself leaning on the exact hole this story closes — set on the
+daemon's own process and relied on to reach the dispatch child unfiltered.
+Four tests failed the instant the allowlist went in, each because the stub
+silently fell back to its default `ok` branch. Fixed by baking the mode
+into the stub script's own text at write time instead of reading it from
+env — the fixture now controls its child through argv and file content,
+the same two channels a real `story.sh` invocation actually gets.
+
+**Test plan:** four new unit tests in `spawn_env.rs`, including the
+`git_env.rs`-style probe that asserts against a *real spawned child's*
+environment rather than the `Command` builder (the shape that would pass
+identically whether or not `env_clear` ever ran). `make test` green end to
+end: `cargo fmt`/`cargo clippy --workspace --all-targets -D warnings`
+clean, full Rust workspace suite, the plugin's 30-test shell dispatch
+suite (real `story.sh` flows — `test-dispatch-happy.sh`,
+`test-dispatch-auto.sh`, `test-dispatch-exec-launch.sh` among them), and
+the 45-test Playwright e2e suite (real tmux dispatch through the daemon,
+including `dispatch.spec.ts`'s autonomous-dispatch case) — the two suites
+that actually exercise the allowlist end to end rather than a stub.
+Supervised per this file's own rule: `make test` and its stall watchdog
+both run as separate tracked background tasks; neither came close to the
+120s no-growth bound.
+
+**No version bump** — `fix:`, left for the next batched `/semver` pass per
+this run's standing practice; noted in the commit body so the eventual
+auto-generated changelog entry carries the behavior-change callout the
+council's semver question required (an SSH-remote dispatch may now base a
+new worktree on a stale cached ref rather than a fresh one; a `claude`
+authenticated only via an env var rather than persisted `claude login`
+will not authenticate on a dispatch's first tmux session).
+
+**PR:** #251, merged as `7359a99` (`gh pr merge --merge --delete-branch`),
+fast-forwarded onto `main` in this checkout; stale remote-tracking ref
+cleaned with `git fetch origin --prune`. `story move SH-193 done` closed
+the story; the council verdict is recorded as its own comment, dated
+2026-08-11T14:18:40Z.
+
+**Next:** SH-176 — remove the pre-SH-166 legacy worktree-name fallback
+(low).
