@@ -9577,3 +9577,72 @@ this run's standing practice.
 
 **Next:** SH-184 — `export` refuses the whole project when one story id
 will not parse (low).
+
+### SH-184 — `export` refuses the whole project when one story id will not parse — 2026-08-11
+
+**Outcome:** done. PR #257, merged as `23a1c28` (`gh pr merge --merge
+--delete-branch`), fast-forwarded onto `main`; stale remote-tracking ref
+pruned with `git fetch --prune`.
+
+**The fix was smaller than the story's own "Suggested fix" implied.**
+`TransferService::export` re-derived each row's `StoryNo` by parsing its
+`snapshot.id` string against the project's prefix
+(`StoryNo::parse_id(&prefix, &row.snapshot.id)`), and refused the entire
+project the moment one row's stored id disagreed with the prefix — a
+state the schema does not forbid. But `StoryRow` already carries the
+authoritative `story_no: StoryNo` column directly, allocated by
+`allocate_story_no` and never derived from text; the parse was pure
+redundancy that turned a defense-in-depth check into the story's actual
+bug. Swapping `let story_no = StoryNo::parse_id(...)` for `let story_no =
+row.story_no` both fixes the refusal and drops the redundant parse.
+
+The story's suggested fix ("let `story doctor` name the malformation")
+was checked rather than assumed: `diff_read_model`'s existing
+`report("snapshot", ...)` divergence line already re-folds every story
+from its events (which always yields `id = story_no.to_id(&prefix)`) and
+compares the full serialized snapshot against the persisted row — so a
+stored id that disagrees with its own row already surfaces as a `story
+{no}: snapshot is ... but the events say ...` doctor finding, with no
+new doctor code needed for this story. (A first draft of the fix's doc
+comment guessed `set_prefix` as a concrete cause of such disagreement;
+reading `set_prefix`'s own doc comment showed it explicitly refolds every
+row precisely to avoid this, so the comment was corrected to cite only
+the story's own "Extent" wording rather than inventing a scenario that
+turned out to be the one path already guarded against it.)
+
+**What shipped:** `src/service/transfer.rs`'s `export` trusts
+`row.story_no`; one regression test
+(`an_export_carries_a_story_whose_stored_id_disagrees_with_the_prefix` in
+`tests/service_transfer.rs`) tampers a row's stored id via a second raw
+connection (the `store_rebuild.rs` "damage underneath the store" pattern)
+and asserts the whole document still exports, both stories' events
+included — then restores the row before the `ServiceFixture`'s own
+teardown drift check would otherwise flag the deliberately-introduced
+damage itself. Confirmed red on the pre-fix code first (`Integrity("...
+does not belong to a project ...")`), green after.
+
+**Supervision note, not a storyhook defect.** The first `make test` run
+(a manual `nohup ... & disown` job) produced a fully green transcript —
+1122 unit tests, every integration binary, the 29-test plugin suite, and
+all 45 e2e specs passed, zero failures anywhere — but the background
+process was gone (`kill -0` failed) immediately after the e2e summary
+printed, one step short of the gate's final
+`check-no-orphan-servers.sh postlude` line, which is silent on success
+and so its absence alone proved nothing. Manually confirmed no orphaned
+test daemon or port was actually left behind before treating it as
+inconclusive rather than green, then re-ran the identical target through
+the harness's own tracked-background-command mechanism instead of a raw
+`nohup`+`disown` job; that run completed end to end with a harness-
+reported exit code of 0. Filed nowhere because the fault (if any) is in
+how a detached shell job outlives a tool call in this environment, not in
+`story` or the test suite — but worth remembering: a background job's
+process dying is not evidence of a real failure by itself, and isn't
+evidence of success either. Confirm the actual gate outcome (exit code,
+or a definitive terminal marker) before trusting a partial transcript
+either way.
+
+**No version bump** — `fix:`, left for the next batched `/semver` pass per
+this run's standing practice.
+
+**Next:** SH-185 — doctor names an undecodable event but not its
+severity, exit code or JSON shape (low).
