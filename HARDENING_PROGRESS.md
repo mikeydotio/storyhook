@@ -8510,3 +8510,50 @@ bar this session's own instructions set for a critical filing, so it stays a
 noted observation rather than a story. No other gap found in this pass — an
 initial dogfooding run turned up nothing filable; that is what "watch it"
 looks like when the tool holds up, not a step skipped.
+
+### SH-224 — done · `story next`'s first pick under the new dogfooding regime
+
+**Outcome:** merged, PR #233. `scripts/run-e2e.sh` no longer reports a failing
+Playwright run as a green `make test` — the one leg of the gate the Rust suite
+cannot cover was silently inert on exactly the failure it exists to catch.
+
+**The bug, confirmed before touching anything.** `if ! npx playwright test
+"$@"; then status=$?; ...; exit "$status"; fi` reads `$?` after bash's own `!`
+has already inverted it, so `status` was **always 0** inside that branch —
+`exit "$status"` could never report Playwright's real result. Reproduced with
+the story's own minimal case before writing a line of fix: the old shape
+exits 0 for a command that fails with 7; `cmd || status=$?` (no inversion)
+exits 7 for the same command.
+
+**Preventative action, chosen by elimination, not assumption.** The story
+named three options and asked that they be weighed rather than assumed. A
+full e2e-exercising regression test (option 1) would double the cost of the
+already-heaviest leg of the gate just to check one exit code, for a defect
+shape that generalizes past this one call site. `shellcheck` (option 2) was
+checked directly against the exact pattern — `shellcheck` on a file containing
+`if ! false; then status=$?; exit "$status"; fi` exits 0, no warnings — so a
+shellcheck gate would not have caught this. Shipped option 3:
+`tests/shell_negated_status.rs`, a structural scan over every tracked `*.sh`
+file (derived from `git ls-files`, the same reasoning `tests/store_isolation.rs`
+already documents for its own harness list) that fails if any file reads `$?`
+inside an `if !`/`elif !` block — the shape is a bug unconditionally, not
+situationally, so the scan has no false-positive risk from context. True
+red→green verified by stashing the fix and re-running the new test alone: it
+fails, naming `scripts/run-e2e.sh:224`, with the fix stashed; passes with it
+restored.
+
+**Sibling sweep:** grepped all 44 tracked shell scripts for `if ! ` — one
+other file (`story.sh`, three sites) negates a condition, none of the three
+read `$?` afterward. No further fix needed; the new test now guards all 44
+going forward, not just the one file.
+
+**Gate:** full `make test`, supervised (log-growth heartbeat, no stall) —
+140 `test result: ok` blocks, 28/28 plugin harness `PASS`, 45/45 Playwright
+specs green. `cargo fmt`/`cargo clippy -D warnings` clean (clippy flagged and
+this fixed two redundant `trim_start()` calls before `split_whitespace()` in
+the new test file itself, `clippy::trim_split_whitespace`).
+
+**First real use of the dogfooded `next`:** `story next --count 3` surfaced
+SH-224 (critical) ahead of SH-227 (high) and SH-170 (medium, reopened) —
+priority-ordered, nothing unworkable handed back. No defect in `next` to
+report this cycle.
