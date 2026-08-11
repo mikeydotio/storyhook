@@ -57,7 +57,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::daemon::http1::{Header, Method};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
 use crate::api::http::{Reply, mutation_guard_ok, text_reply};
@@ -101,14 +101,109 @@ const RETAIN_FOR: Duration = Duration::from_secs(30 * 60);
 /// at most; a hard `set -e` abort's stderr is rarely more than a few lines.
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 
+/// The taxonomy behind a non-[`Ok`](DispatchState::Ok) terminal
+/// [`DispatchRecord`] (SH-232) — read by [`classify`] from `story.sh`'s own
+/// `reason` field (`refuse`/`refuse_with`, `plugin/claude-code/lib/
+/// session.sh`) instead of leaving it reachable only by parsing
+/// [`DispatchRecord::payload`]. A plain `fail()` refusal (no claim word, not
+/// ready — see `story.sh`'s own guard order) carries no `reason` field at
+/// all, so its record's `reason` stays `None`; that is a real, meaningful
+/// absence, not a gap this type papers over.
+///
+/// [`Other`](Self::Other) is the forward-compat escape hatch: a `story.sh`
+/// newer than the daemon serving it can add a reason this binary has never
+/// heard of (protocol-compatible additions don't bump
+/// [`REQUIRED_DISPATCH_PROTOCOL`]), and dropping that string on the floor —
+/// reporting bare `refused` with nothing further — is exactly the
+/// context-dropping CLAUDE.md's error-handling rule forbids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DispatchReason {
+    /// `story.sh`'s claim compare-and-swap lost a race to another dispatch.
+    ClaimConflict,
+    /// The tmux pane could not be confirmed to be running the launch binary
+    /// within the readiness gate's timeout (I1 DISPATCH-PROVEN-OCCUPANT).
+    PaneNotReady,
+    /// The pane was confirmed ready, but the pasted prompt never reached its
+    /// input box — nothing was submitted (I2 SUBMIT-AFTER-RECEIPT).
+    HandoffUndelivered,
+    /// The prompt reached the input box, but submission was never
+    /// confirmed. The claim and worktree are left in place: the agent may
+    /// already be working.
+    HandoffUnconfirmed,
+    /// This daemon refused to dispatch at all, before ever running
+    /// `story.sh`, because one of its own inherited `STORY_PROMPT` /
+    /// `STORY_AUTO_PROMPT` / `STORY_PROMPT_EXTRA` values violates I4
+    /// CHARTER-INERT (SH-232's runtime-enforcement rider). See
+    /// [`prompt_override_violation`].
+    UnsafePromptOverride,
+    /// A reason string this binary does not recognize, carried verbatim
+    /// rather than dropped.
+    Other(String),
+}
+
+impl DispatchReason {
+    /// `story.sh`'s own reason string for a known variant, or the carried
+    /// string for [`Other`](Self::Other) — round-trips through
+    /// [`Self::parse`] byte for byte.
+    fn as_str(&self) -> &str {
+        match self {
+            Self::ClaimConflict => "claim-conflict",
+            Self::PaneNotReady => "pane-not-ready",
+            Self::HandoffUndelivered => "handoff-undelivered",
+            Self::HandoffUnconfirmed => "handoff-unconfirmed",
+            Self::UnsafePromptOverride => "unsafe-prompt-override",
+            Self::Other(raw) => raw,
+        }
+    }
+
+    /// Maps a `reason` string as `story.sh` (or this module's own
+    /// [`prompt_override_violation`] refusal) emits it to a typed variant,
+    /// never failing: an unrecognized string becomes
+    /// [`Other`](Self::Other) rather than an error, so a shell newer than
+    /// this binary is forward-compatible by construction.
+    fn parse(raw: &str) -> Self {
+        match raw {
+            "claim-conflict" => Self::ClaimConflict,
+            "pane-not-ready" => Self::PaneNotReady,
+            "handoff-undelivered" => Self::HandoffUndelivered,
+            "handoff-unconfirmed" => Self::HandoffUnconfirmed,
+            "unsafe-prompt-override" => Self::UnsafePromptOverride,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+/// Serializes as the bare reason string (`"pane-not-ready"`, not
+/// `{"PaneNotReady": null}`) so a dashboard reads it exactly as `story.sh`
+/// wrote it, and [`Self::Other`] costs the wire format nothing extra either.
+impl Serialize for DispatchReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// The inverse of the `Serialize` impl above — round-trips
+/// [`DispatchRecord`] through [`persist_dispatch_history`] /
+/// [`load_dispatch_history`] without a lossy detour through a generic JSON
+/// enum representation.
+impl<'de> Deserialize<'de> for DispatchReason {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::parse(&String::deserialize(deserializer)?))
+    }
+}
+
 /// One dispatch's lifecycle, as reported to a polling client.
 ///
-/// `finished_at`, `payload` and `error` are absent while [`DispatchState`]
-/// is [`Running`](DispatchState::Running) and present in every terminal
-/// state — `skip_serializing_if` rather than always emitting `null`, so a
-/// client's presence check (`"finished_at" in record`) is the same idiom
-/// the rest of this API already uses for an absent value.
-#[derive(Clone, Debug, Serialize)]
+/// `finished_at`, `payload`, `error` and `reason` are absent while
+/// [`DispatchState`] is [`Running`](DispatchState::Running) —
+/// `skip_serializing_if` rather than always emitting `null`, so a client's
+/// presence check (`"finished_at" in record`) is the same idiom the rest of
+/// this API already uses for an absent value. `#[serde(default)]` alongside
+/// it on every one of those fields is what makes that omission round-trip:
+/// [`load_dispatch_history`] deserializes exactly what
+/// [`persist_dispatch_history`] wrote, and an absent key must not become a
+/// parse error there.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DispatchRecord {
     /// Opaque id a client polls with. Never reused.
     pub handle: String,
@@ -127,22 +222,28 @@ pub struct DispatchRecord {
     /// RFC3339, when this record was created.
     pub started_at: String,
     /// RFC3339, set once `state` leaves [`Running`](DispatchState::Running).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     /// `story.sh`'s own JSON result, relayed verbatim — present for
     /// [`Ok`](DispatchState::Ok) and [`Refused`](DispatchState::Refused),
     /// since a refusal is a well-formed result the script chose to report,
     /// not a failure of the script itself.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
     /// Set only for [`Failed`](DispatchState::Failed): the script could not
     /// be run, did not finish, or exited without printing a result.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The typed reason behind a [`Refused`](DispatchState::Refused) record
+    /// (SH-232) — see [`DispatchReason`]. Absent for
+    /// [`Ok`](DispatchState::Ok), for [`Failed`](DispatchState::Failed), and
+    /// for a `fail()`-shaped refusal that carries no `reason` field at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<DispatchReason>,
 }
 
 /// Where one dispatch attempt stands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DispatchState {
     /// The subprocess is still running.
@@ -271,6 +372,7 @@ impl DispatchRegistry {
                     finished_at: None,
                     payload: None,
                     error: None,
+                    reason: None,
                 },
                 finished_instant: None,
             },
@@ -294,21 +396,25 @@ impl DispatchRegistry {
 
     /// Records `handle`'s outcome and releases its story back to the
     /// running set, so the next `POST` for that story starts fresh.
+    /// `classification` takes [`run_child`]/[`classify`]'s own return shape
+    /// directly (rather than four trailing parameters) so a caller passes
+    /// through exactly what it got, and so this signature does not grow a
+    /// fifth positional argument the next time [`Classification`] does.
     fn finish(
         &self,
         handle: &str,
         story: &str,
-        state: DispatchState,
         finished_at: String,
-        payload: Option<serde_json::Value>,
-        error: Option<String>,
+        classification: Classification,
     ) {
+        let (state, payload, error, reason) = classification;
         let mut inner = self.inner.lock().expect("dispatch registry lock");
         if let Some(entry) = inner.entries.get_mut(handle) {
             entry.record.state = state;
             entry.record.finished_at = Some(finished_at);
             entry.record.payload = payload;
             entry.record.error = error;
+            entry.record.reason = reason;
             entry.finished_instant = Some(Instant::now());
         }
         inner.running_by_story.remove(story);
@@ -523,6 +629,16 @@ fn handle_get(handle: &str, registry: &DispatchRegistry) -> Reply {
     }
 }
 
+/// `(state, payload, error, reason)` — [`run_child`] and [`classify`]'s
+/// shared return shape, named once so the growing tuple stays readable at
+/// each of their several return sites.
+type Classification = (
+    DispatchState,
+    Option<serde_json::Value>,
+    Option<String>,
+    Option<DispatchReason>,
+);
+
 /// Spawns `script --project <project> dispatch <story> [--auto]` on a
 /// detached thread and records its outcome when it finishes. Never touches
 /// the store: everything this needs travels in its arguments.
@@ -538,8 +654,8 @@ fn spawn_dispatch(
     bus: ChangeBus,
 ) {
     std::thread::spawn(move || {
-        let (state, payload, error) = run_child(&script, &project, &story, auto, &env);
-        registry.finish(&handle, &story, state, env.now(), payload, error);
+        let classification = run_child(&script, &project, &story, auto, &env);
+        registry.finish(&handle, &story, env.now(), classification);
         // Lets an open dashboard tab refresh without polling this endpoint
         // itself — the story moved to in-progress (or didn't), and the
         // ordinary `repo-changed` handling already knows how to react.
@@ -555,7 +671,7 @@ fn run_child(
     story: &str,
     auto: bool,
     env: &Environment,
-) -> (DispatchState, Option<serde_json::Value>, Option<String>) {
+) -> Classification {
     let stdout_file = match tempfile::tempfile() {
         Ok(file) => file,
         Err(e) => {
@@ -563,6 +679,7 @@ fn run_child(
                 DispatchState::Failed,
                 None,
                 Some(format!("could not stage dispatch output: {e}")),
+                None,
             );
         }
     };
@@ -573,6 +690,7 @@ fn run_child(
                 DispatchState::Failed,
                 None,
                 Some(format!("could not stage dispatch output: {e}")),
+                None,
             );
         }
     };
@@ -583,6 +701,7 @@ fn run_child(
                 DispatchState::Failed,
                 None,
                 Some(format!("could not stage dispatch output: {e}")),
+                None,
             );
         }
     };
@@ -642,6 +761,7 @@ fn run_child(
                 DispatchState::Failed,
                 None,
                 Some(format!("failed to start the dispatch script: {e}")),
+                None,
             );
         }
     };
@@ -667,12 +787,14 @@ fn run_child(
                     "dispatch did not finish within {}s and was terminated",
                     DISPATCH_TIMEOUT.as_secs()
                 )),
+                None,
             )
         }
         Err(e) => (
             DispatchState::Failed,
             None,
             Some(format!("could not wait for the dispatch process: {e}")),
+            None,
         ),
     }
 }
@@ -681,11 +803,12 @@ fn run_child(
 /// emits exactly one JSON object on stdout on any deliberate exit path
 /// (`fail`/`refuse`/success alike); a `set -e` abort before that point is
 /// the one case with nothing parseable, which is what distinguishes
-/// [`DispatchState::Failed`] from a business [`DispatchState::Refused`].
-fn classify(
-    stdout_file: std::fs::File,
-    stderr_file: std::fs::File,
-) -> (DispatchState, Option<serde_json::Value>, Option<String>) {
+/// [`DispatchState::Failed`] from a business [`DispatchState::Refused`]. The
+/// `reason` element is [`DispatchReason::parse`] of the JSON's own `reason`
+/// field (SH-232) when present — absent for a `fail()`-shaped refusal, which
+/// carries no such field, and always absent for [`DispatchState::Failed`]
+/// since there is no parsed object to read one from.
+fn classify(stdout_file: std::fs::File, stderr_file: std::fs::File) -> Classification {
     let stdout = read_capture(stdout_file);
     match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
         Ok(value) => {
@@ -695,7 +818,11 @@ fn classify(
             } else {
                 DispatchState::Refused
             };
-            (state, Some(value), None)
+            let reason = value
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .map(DispatchReason::parse);
+            (state, Some(value), None, reason)
         }
         Err(_) => {
             let stderr = read_capture(stderr_file);
@@ -704,7 +831,7 @@ fn classify(
             } else {
                 stderr.trim().to_string()
             };
-            (DispatchState::Failed, None, Some(message))
+            (DispatchState::Failed, None, Some(message), None)
         }
     }
 }
@@ -1192,10 +1319,13 @@ mod tests {
         registry.finish(
             &handle,
             "SH-1",
-            DispatchState::Ok,
             "t1".to_string(),
-            Some(serde_json::json!({"ok": true})),
-            None,
+            (
+                DispatchState::Ok,
+                Some(serde_json::json!({"ok": true})),
+                None,
+                None,
+            ),
         );
         match registry.try_start("proj", "SH-1", false, "t2".to_string()) {
             StartOutcome::Started(second) => assert_ne!(second, handle),
@@ -1240,10 +1370,13 @@ mod tests {
             registry.finish(
                 &handle,
                 &format!("SH-{n}"),
-                DispatchState::Ok,
                 "t".to_string(),
-                Some(serde_json::json!({"ok": true})),
-                None,
+                (
+                    DispatchState::Ok,
+                    Some(serde_json::json!({"ok": true})),
+                    None,
+                    None,
+                ),
             );
             handles.push(handle);
         }
@@ -1259,40 +1392,124 @@ mod tests {
 
     #[test]
     fn classify_reports_ok_for_a_successful_result() {
-        let (state, payload, error) =
+        let (state, payload, error, reason) =
             classify(capture_of(r#"{"ok":true,"id":"SH-1"}"#), capture_of(""));
         assert_eq!(state, DispatchState::Ok);
         assert_eq!(payload.unwrap()["id"], "SH-1");
         assert!(error.is_none());
+        assert!(reason.is_none(), "a success carries no reason to report");
     }
 
     #[test]
     fn classify_reports_refused_for_a_well_formed_refusal() {
-        let (state, payload, error) = classify(
+        let (state, payload, error, reason) = classify(
             capture_of(r#"{"ok":false,"display":"not ready"}"#),
             capture_of(""),
         );
         assert_eq!(state, DispatchState::Refused);
         assert_eq!(payload.unwrap()["display"], "not ready");
         assert!(error.is_none());
+        assert!(
+            reason.is_none(),
+            "a fail()-shaped refusal has no `reason` field to read"
+        );
+    }
+
+    /// The taxonomy's whole point (SH-232): a `refuse_with`-shaped refusal's
+    /// `reason` field must not be left stranded inside `payload`.
+    #[test]
+    fn classify_reads_a_known_reason_out_of_a_refusal() {
+        let (state, payload, _error, reason) = classify(
+            capture_of(r#"{"ok":false,"reason":"pane-not-ready","display":"could not confirm"}"#),
+            capture_of(""),
+        );
+        assert_eq!(state, DispatchState::Refused);
+        assert_eq!(reason, Some(DispatchReason::PaneNotReady));
+        // The reason is TYPED, not REMOVED from payload -- an older client
+        // reading payload.reason directly must keep working unchanged.
+        assert_eq!(payload.unwrap()["reason"], "pane-not-ready");
+    }
+
+    /// Every reason `story.sh`'s `dispatch` command can actually emit
+    /// (`refuse`/`refuse_with` call sites in `plugin/claude-code/bin/
+    /// story.sh` and `lib/session.sh`), pinned so a renamed reason string on
+    /// either side is caught here rather than silently degrading to
+    /// [`DispatchReason::Other`].
+    #[test]
+    fn classify_reads_every_known_reason() {
+        let cases = [
+            ("claim-conflict", DispatchReason::ClaimConflict),
+            ("pane-not-ready", DispatchReason::PaneNotReady),
+            ("handoff-undelivered", DispatchReason::HandoffUndelivered),
+            ("handoff-unconfirmed", DispatchReason::HandoffUnconfirmed),
+        ];
+        for (raw, expected) in cases {
+            let (_state, _payload, _error, reason) = classify(
+                capture_of(&format!(r#"{{"ok":false,"reason":"{raw}"}}"#)),
+                capture_of(""),
+            );
+            assert_eq!(reason, Some(expected), "reason string {raw:?}");
+        }
+    }
+
+    /// Forward compatibility (SH-232's whole reason for `Other`): a
+    /// `story.sh` newer than this binary can emit a reason this binary has
+    /// never heard of, and the string must survive rather than vanish.
+    #[test]
+    fn classify_carries_an_unrecognized_reason_as_other_rather_than_dropping_it() {
+        let (_state, _payload, _error, reason) = classify(
+            capture_of(r#"{"ok":false,"reason":"a-future-reason","display":"..."}"#),
+            capture_of(""),
+        );
+        assert_eq!(
+            reason,
+            Some(DispatchReason::Other("a-future-reason".to_string()))
+        );
     }
 
     #[test]
     fn classify_reports_failed_for_unparseable_output_and_carries_stderr() {
-        let (state, payload, error) = classify(
+        let (state, payload, error, reason) = classify(
             capture_of("not json at all"),
             capture_of("bash: jq: command not found"),
         );
         assert_eq!(state, DispatchState::Failed);
         assert!(payload.is_none());
         assert!(error.unwrap().contains("jq: command not found"));
+        assert!(reason.is_none());
     }
 
     #[test]
     fn classify_reports_failed_with_a_generic_message_when_nothing_was_said_at_all() {
-        let (state, _payload, error) = classify(capture_of(""), capture_of(""));
+        let (state, _payload, error, reason) = classify(capture_of(""), capture_of(""));
         assert_eq!(state, DispatchState::Failed);
         assert!(error.unwrap().contains("without printing a result"));
+        assert!(reason.is_none());
+    }
+
+    /// [`DispatchReason`]'s own round trip: serialize as the bare string,
+    /// deserialize back to the same typed variant -- what makes
+    /// `persist_dispatch_history`/`load_dispatch_history` lossless for a
+    /// finished record's reason.
+    #[test]
+    fn dispatch_reason_round_trips_through_json_including_other() {
+        for reason in [
+            DispatchReason::ClaimConflict,
+            DispatchReason::PaneNotReady,
+            DispatchReason::HandoffUndelivered,
+            DispatchReason::HandoffUnconfirmed,
+            DispatchReason::UnsafePromptOverride,
+            DispatchReason::Other("something-new".to_string()),
+        ] {
+            let json = serde_json::to_string(&reason).expect("serialize");
+            let back: DispatchReason = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, reason);
+        }
+        assert_eq!(
+            serde_json::to_string(&DispatchReason::PaneNotReady).unwrap(),
+            "\"pane-not-ready\"",
+            "must serialize as the bare string story.sh itself emits, not a tagged object"
+        );
     }
 
     fn capture_of(content: &str) -> std::fs::File {
