@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { deleteStory, seedToken } from "./support";
 
 /**
  * Exercises SH-168: the board and list views no longer decorate a "ready"
@@ -78,25 +78,6 @@ async function blockStory(
   await expect(page.locator(".banner-blocked")).toBeVisible();
   await page.locator("#drawer-close").click();
   await expect(page.locator("#drawer")).not.toHaveClass(/open/);
-}
-
-async function deleteStory(
-  page: import("@playwright/test").Page,
-  title: string,
-) {
-  const card = page.locator('.column[data-state="todo"] .card', {
-    hasText: title,
-  });
-  await card.click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await page
-    .locator('input[placeholder="Reason for deletion (required)"]')
-    .fill("e2e cleanup");
-  await page
-    .locator("#drawer-footer button", { hasText: "Confirm delete" })
-    .click();
-  await expect(card).not.toBeVisible();
 }
 
 test("a ready card carries no flag badge on the board", async ({ page }) => {

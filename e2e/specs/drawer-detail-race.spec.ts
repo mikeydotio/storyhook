@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { seedToken } from "./support";
+import { deleteStory, seedToken } from "./support";
 
 /**
  * Exercises SH-218: openDrawer() renders once synchronously from cached
@@ -38,25 +38,6 @@ async function createStory(
   await expect(
     page.locator('.column[data-state="todo"] .card', { hasText: title }),
   ).toBeVisible();
-}
-
-async function deleteStory(
-  page: import("@playwright/test").Page,
-  title: string,
-) {
-  const card = page.locator('.column[data-state="todo"] .card', {
-    hasText: title,
-  });
-  await card.click();
-  await expect(page.locator("#drawer")).toHaveClass(/open/);
-  await page.locator("#drawer-footer button", { hasText: "Delete" }).click();
-  await page
-    .locator('input[placeholder="Reason for deletion (required)"]')
-    .fill("e2e cleanup");
-  await page
-    .locator("#drawer-footer button", { hasText: "Confirm delete" })
-    .click();
-  await expect(card).not.toBeVisible();
 }
 
 /** Delays every `GET .../story/<id>` detail fetch, giving the test a wide,
