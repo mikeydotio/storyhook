@@ -34,6 +34,14 @@
 //! Only the first kind of drift is repairable. Re-folding fixes a stale row;
 //! it cannot fix a missing *event*, which is what an asymmetric relation is.
 //! `--fix` says so rather than claiming a repair it did not make.
+//!
+//! One kind of read-model drift is not a *question* at all: an event whose
+//! kind this build has never heard of. SH-185 gave that its own channel,
+//! [`IntegrityService::notices`], which never contributes to [`report`] or
+//! [`fix`]'s verdicts — see that method's doc comment for why.
+//!
+//! [`report`]: IntegrityService::report
+//! [`fix`]: IntegrityService::fix
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -69,7 +77,10 @@ impl<'a, S: Store> IntegrityService<'a, S> {
     /// others' refusals.
     ///
     /// An empty vector means the project is healthy; the caller turns a
-    /// non-empty one into [`AppError::Integrity`].
+    /// non-empty one into [`AppError::Integrity`]. Deliberately excludes
+    /// [`notices`](Self::notices): a project whose only anomaly is an event
+    /// kind this build has never heard of is healthy by this definition,
+    /// because that anomaly is a newer storyhook's data, not damage (SH-185).
     pub fn report(&self) -> Result<Vec<String>, AppError> {
         // One transaction for both: a report whose catalog half and story half
         // came from different instants could name a state the other did not see.
@@ -88,6 +99,21 @@ impl<'a, S: Store> IntegrityService<'a, S> {
             self.project(),
         )?));
         Ok(issues)
+    }
+
+    /// Findings that are informational rather than damage.
+    ///
+    /// Today's only occupant: an event whose kind this build has never heard
+    /// of, which is a newer storyhook's data (SH-67), not corruption. It never
+    /// contributes to [`report`](Self::report)'s health verdict,
+    /// [`fix`](Self::fix)'s success or failure, or `story doctor`'s exit code
+    /// — SH-185's council put it here specifically so it could not. The caller
+    /// still owes it visibility: see `notice_issues`'s doc comment.
+    pub fn notices(&self) -> Result<Vec<String>, AppError> {
+        Ok(notice_issues(&diff_read_model(
+            self.ctx.store(),
+            self.project(),
+        )?))
     }
 
     /// Repairs what can be repaired, then reports what is left.
@@ -222,8 +248,11 @@ impl<'a, S: Store> IntegrityService<'a, S> {
         );
 
         let remaining = self.report()?;
+        let notices = self.notices()?;
         if !remaining.is_empty() {
-            return Err(AppError::Integrity(remaining.join("\n")));
+            return Err(AppError::Integrity(detail_with_notices(
+                &remaining, &notices,
+            )));
         }
 
         let mut message = if touched.is_empty() && states_added == 0 {
@@ -252,6 +281,19 @@ impl<'a, S: Store> IntegrityService<'a, S> {
                     .map(|(story, reason)| format!("{story}: {reason}"))
                     .collect::<Vec<_>>()
                     .join("\n")
+            ));
+        }
+        // Nothing to fix here, by design — not a repair failure. A notice
+        // never enters `remaining` above, so without this it would vanish
+        // from `--fix`'s own report the moment nothing else needed repairing.
+        if !notices.is_empty() {
+            message.push_str(&format!(
+                "\n{} event{} this build does not recognise {} retained by `story export`, but \
+                 will never be foldable here — nothing to fix, by design:\n{}",
+                notices.len(),
+                if notices.len() == 1 { "" } else { "s" },
+                if notices.len() == 1 { "was" } else { "were" },
+                notices.join("\n")
             ));
         }
         Ok(message)
@@ -352,11 +394,14 @@ fn story_issues(tx: &impl ReadOps, project: ProjectId) -> Result<Vec<String>, Ap
 /// nothing in the product ever told a user their store held an event this build
 /// could not decode. That silence was affordable while the fold quietly skipped
 /// them and `story export` quietly dropped them: an unreported loss and an
-/// unreported retention look the same from outside. Export carries them now, so
-/// this is the only channel left — the document is the whole of `story export`'s
-/// output and has no room for a diagnostic beside it — and it is a *pull*
-/// channel by design: an unknown kind is not damage, it is a newer storyhook's
-/// data sitting patiently in a store an older one is reading.
+/// unreported retention look the same from outside. Export carries them now.
+///
+/// Only *half* of `unknown_events` belongs here, though — the half that is
+/// damage. The store's decoder falls back to `Unknown` on *any* failure, so a
+/// kind this build knows and could not read is a torn payload, while a kind it
+/// has never heard of is a newer storyhook's data sitting patiently in a store
+/// an older one is reading. SH-185's council put that second half somewhere it
+/// cannot move `report()`'s health verdict at all: [`notice_issues`].
 fn drift_issues(drift: &crate::store::ReadModelDiff) -> Vec<String> {
     let mut lines = Vec::new();
     for story in &drift.missing_rows {
@@ -375,28 +420,59 @@ fn drift_issues(drift: &crate::store::ReadModelDiff) -> Vec<String> {
         ));
     }
     for unknown in &drift.unknown_events {
-        // The two are different faults wearing one type. The store's decoder
-        // falls back to `Unknown` on *any* failure, so a kind this build knows
-        // and could not read is a torn payload — which is damage — while a kind
-        // it has never heard of is a newer storyhook's, which is not. A report
-        // that called both "unknown" would send a user looking for corruption
-        // that is not there, or reassure one about corruption that is.
         if crate::domain::is_known_event_kind(&unknown.kind) {
             lines.push(format!(
                 "story {}: event {} is a `{}` this build cannot decode — retained verbatim, but \
                  not folded",
                 unknown.story_no, unknown.seq, unknown.kind
             ));
-        } else {
-            lines.push(format!(
+        }
+    }
+    lines
+}
+
+/// The other half of `unknown_events`: kinds this build has never heard of,
+/// which is not damage, so it must never be folded into [`drift_issues`].
+///
+/// SH-185's council answer to what SH-67 left open: this is a *notice*, not a
+/// finding. It plays no part in [`IntegrityService::report`]'s health verdict,
+/// [`IntegrityService::fix`]'s success or failure, or `story doctor`'s exit
+/// code — the caller decides separately how (never *whether*) to surface it,
+/// because dropping it silently just because it lost a seat in the health
+/// vector would be its own regression.
+fn notice_issues(drift: &crate::store::ReadModelDiff) -> Vec<String> {
+    drift
+        .unknown_events
+        .iter()
+        .filter(|unknown| !crate::domain::is_known_event_kind(&unknown.kind))
+        .map(|unknown| {
+            format!(
                 "story {}: event {} is of kind `{}`, which this build does not know — retained \
                  verbatim and carried by `story export`, but not folded. A newer storyhook wrote \
                  it.",
                 unknown.story_no, unknown.seq, unknown.kind
-            ));
-        }
+            )
+        })
+        .collect()
+}
+
+/// Renders `report()`'s findings for display when the run is unhealthy,
+/// appending [`notices`](IntegrityService::notices) after them.
+///
+/// The reason this exists at all: a notice plays no part in deciding whether
+/// the run is healthy, but a project can carry a notice **and** a real finding
+/// in the same run, and the notice still owes the caller visibility — SH-185's
+/// council was explicit that excluding it from the health vector must not
+/// mean excluding it from the output entirely. `story doctor`'s plain report
+/// path and `--fix`'s failure path both need exactly this rendering, so it is
+/// shared rather than duplicated.
+pub fn detail_with_notices(issues: &[String], notices: &[String]) -> String {
+    let mut detail = issues.join("\n");
+    if !notices.is_empty() {
+        detail.push('\n');
+        detail.push_str(&notices.join("\n"));
     }
-    lines
+    detail
 }
 
 /// Every story in the project, keyed by id — archived and deleted included.
