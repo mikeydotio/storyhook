@@ -268,6 +268,8 @@ fn importing_a_document_below_the_floor_repairs_its_catalog() {
         members: Vec::new(),
         settings: None,
         remotes: Vec::new(),
+        github_sync: None,
+        github_bases: std::collections::BTreeMap::new(),
         stories: Vec::new(),
     };
 

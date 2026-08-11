@@ -325,13 +325,20 @@ fn a_projects_registered_origins_reach_the_document_but_not_a_rebuilt_legacy_tre
 /// settable key inherits this check with no production code depending on the
 /// registry and no list here to remember to update.
 ///
-/// **`github.sync` is excluded by `settable()` itself**, which is the honest
-/// spelling of "the document does not carry it": it is `managed_by: "story
-/// github-sync"` and no user writes it. If a later story ever makes that key
-/// settable, this test goes red on a change that looks unrelated — and that is
-/// the *correct* failure, because carrying the blob without the `github_bases`
-/// merge bases the legacy tree cannot hold is worse than not carrying it at all.
-/// Read `ExportedSettings`' own note before deleting this.
+/// **`github.sync` is excluded by `settable()` itself** — it is
+/// `managed_by: "story github-sync"` and no user writes it directly through
+/// `story project settings set`, which is what this loop actually tests.
+/// That is orthogonal to whether the document *carries* it: since SH-189 it
+/// does, in full, alongside `github_bases` — see
+/// `ProjectExport::github_sync`'s own doc comment, and
+/// `export_project_carries_github_sync_and_bases_from_a_legacy_tree` /
+/// `import_project_writes_github_sync_and_bases_into_a_fresh_legacy_tree` in
+/// `src/storage.rs` for that coverage. If a later story ever makes
+/// `github.sync` user-settable, this test goes red on a change that looks
+/// unrelated — that would still be correct, because a *user-written* value
+/// reaching this loop needs the same registry-driven proof every other
+/// settable key gets, distinct from the carry this note used to conflate it
+/// with.
 #[test]
 fn every_settable_setting_survives_the_whole_loop() {
     use storyhook::output::SettingKind;

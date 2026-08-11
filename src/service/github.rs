@@ -334,3 +334,84 @@ impl<S: Store> SyncStorage for StoreSyncStorage<'_, S> {
 fn timestamp_dir(now: &str) -> String {
     now.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
 }
+
+/// Re-derives a just-restored project's `github.owner`/`github.repo` from the
+/// destination checkout's own git remote (SH-189).
+///
+/// # Why this cannot live in `import_project` itself
+///
+/// [`crate::service::transfer::import_project`] is unconditionally compiled —
+/// `story import-project` has to work under `--no-default-features` — while
+/// [`crate::github::sync_state::detect_github_remote`] and everything needed to interpret the
+/// `github_sync` blob live entirely behind this crate's `github-sync` cargo
+/// feature. So the blob rides through the restore's transaction completely
+/// opaque (a verbatim copy — see `transfer::apply_settings`), and this
+/// function runs the correction as a **second, non-transactional step**
+/// immediately after, from the same `story import-project` call site, once the
+/// feature that can read the blob is known to be compiled in. It mirrors the
+/// codebase's existing precedent of the restore's pointer file being written
+/// only after the transaction commits.
+///
+/// # Why a restored document cannot be trusted as-is
+///
+/// A document's `github.owner`/`github.repo` were correct for the checkout
+/// that produced it. Restored into a different checkout — a fork, a
+/// relocated clone — they name the *source* project, and nothing else in the
+/// program will ever re-derive them: [`crate::github::run_sync_with`] only
+/// calls [`crate::github::initial::run_initial_setup`] when a project is
+/// unconfigured, and a restored project is configured the moment its blob
+/// lands. This is the only point that can ever correct it.
+///
+/// # Best-effort, not a refusal
+///
+/// If `detect_github_remote` cannot name a GitHub project for this checkout
+/// (no `origin`, a non-GitHub remote, or simply not yet configured — restoring
+/// into a fresh directory before `git remote add origin` runs is ordinary),
+/// the document's original owner/repo are left exactly as the restore wrote
+/// them. Refusing to carry `github_sync` at all over one stale field would be
+/// a worse asymmetry than the partial-carry harm SH-133 already rejected. The
+/// safety net is `story doctor`'s advisory (SH-189), which re-compares the
+/// *currently configured* owner/repo against the checkout on every run — not
+/// a one-shot message here — so drift is caught for as long as it exists,
+/// including drift introduced after this call returns.
+///
+/// A blob this build cannot parse as a [`GithubSyncConfig`] is left untouched
+/// rather than treated as a failure: the restore that carried it has already
+/// committed, and a malformed or foreign-shaped document is exactly the
+/// condition `story doctor` exists to surface, not a reason to unwind data
+/// that already landed.
+pub fn reconcile_restored_github_remote<S: Store>(
+    store: &S,
+    root: &std::path::Path,
+) -> Result<(), AppError> {
+    // Not threaded through from the caller: `import_project` may have adopted
+    // an *existing* empty project rather than created one, and the pointer
+    // file it just wrote (or deliberately left alone, if one already named
+    // this checkout) is the one place that says which project this checkout
+    // now identifies.
+    let Some(pointer) = super::project::read_pointer(root)? else {
+        return Ok(());
+    };
+    let Some(project) = store.read(|tx| tx.project_by_uuid(&pointer.uuid))? else {
+        return Ok(());
+    };
+    let Some(document) = store.read(|tx| Ok(tx.settings(project.id)?.github_sync))? else {
+        return Ok(());
+    };
+    let Ok(mut config) = serde_json::from_value::<GithubSyncConfig>(document) else {
+        return Ok(());
+    };
+    let Some(detected) = crate::github::sync_state::detect_github_remote(root)? else {
+        return Ok(());
+    };
+    if detected.owner == config.github.owner && detected.repo == config.github.repo {
+        return Ok(());
+    }
+    config.github = detected;
+    let updated = serde_json::to_value(&config)?;
+    Ok(store.write(|tx| {
+        let mut row = tx.settings(project.id)?;
+        row.github_sync = Some(updated);
+        tx.put_settings(project.id, &row)
+    })?)
+}

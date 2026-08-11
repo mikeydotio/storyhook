@@ -652,7 +652,7 @@ pub fn dispatch<S: Store>(
                         };
                         let mut advice = orphan_advice(&orphans);
                         advice.extend(origin_advice(&origins));
-                        advice.extend(backup_advice(ctx)?);
+                        advice.extend(github_remote_advice(ctx)?);
                         advice.extend(abandoned_advice(ctx.env()));
                         advice.extend(pointer_origin_advice(ctx)?);
                         advice.extend(legacy_link_advice(ctx)?);
@@ -1918,6 +1918,14 @@ pub fn dispatch_unscoped_with_stdin<S: Store>(
                 &export,
                 legacy_links,
             )?;
+            // Best-effort, run only once the restore has committed — not part
+            // of the same transaction, and only meaningful when both the
+            // document carried a github-sync configuration and this build can
+            // interpret it (SH-189). See the function's own doc comment for
+            // why it cannot run any earlier or live in `import_project`
+            // itself.
+            #[cfg(feature = "github-sync")]
+            crate::service::github::reconcile_restored_github_remote(store, root)?;
             let message = format!("imported project with {} stories", outcome.stories);
             if outcome.skipped_remotes.is_empty() {
                 Ok(Response::Message(message))
@@ -3512,47 +3520,92 @@ fn deregistered_message(forgotten: &[crate::service::OrphanedRegistration]) -> S
     out
 }
 
-/// What `story doctor` says about a project whose github-sync configuration an
-/// export document does not carry (SH-133).
+/// What `story doctor` says about a github-synced project whose configured
+/// target repository does not match this checkout's own git remote (SH-189).
 ///
-/// **This is the only channel there is.** `story export` answers with
-/// [`Response::RawJson`], which is the whole of standard output with no envelope
-/// around it and nowhere for a warning to ride; and since SH-114 the command
-/// runs inside the daemon, so an `eprintln!` reaches the daemon's log rather
-/// than the person running the backup. SH-67 met the same wall for an event kind
-/// it could not decode and answered it the same way — the store is where the
-/// fact lives, so the command that reads the store is where it is reported.
+/// Replaces the old `backup_advice`, which warned that `story export` did not
+/// carry github-sync's configuration at all — SH-189 made that carry
+/// complete, so that warning went false and this is what took its place: not
+/// "does a backup carry this" but "does the configured `github.owner`/
+/// `github.repo` still name *this* checkout's repository". That question
+/// matters most right after a restore into a fork or a relocated clone — the
+/// one case [`crate::service::github::reconcile_restored_github_remote`]
+/// cannot always answer for certain, since it runs best-effort at restore
+/// time and a checkout may not have `origin` set yet — but it is evaluated
+/// fresh on every `story doctor` run rather than left as a one-shot flag, so
+/// drift introduced at any point (an `origin` changed later, a document
+/// restored by an older binary) is still caught.
 ///
-/// Advisory, like [`origin_advice`], and for the same reason: nothing is broken.
-/// The project works, the backup is a good backup of everything else, and a
-/// non-zero exit would make `doctor` red for every github-synced project on the
-/// machine forever.
+/// Advisory, like [`origin_advice`], and for the same reason: nothing is
+/// broken, the project works, and a non-zero exit would make `doctor` red for
+/// every github-synced project whose checkout simply has no `origin` yet.
 ///
-/// It reads *presence* only. That keeps it working under
-/// `--no-default-features`, where the type describing the document's shape does
-/// not exist at all.
-fn backup_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppError> {
-    let configured = ctx
-        .store()
-        .read(|tx| Ok(tx.settings(ctx.project())?.github_sync.is_some()))?;
-    if !configured {
-        return Ok(Vec::new());
+/// Under `--no-default-features` this reads *presence* only, the same
+/// fallback its `backup_advice` predecessor used: the type describing the
+/// document's shape, and the git-remote detector that would confirm or
+/// refute it, do not exist in that build.
+fn github_remote_advice<S: Store>(ctx: &Ctx<'_, S>) -> Result<Vec<String>, AppError> {
+    #[cfg(feature = "github-sync")]
+    {
+        let document = ctx
+            .store()
+            .read(|tx| Ok(tx.settings(ctx.project())?.github_sync))?;
+        let Some(document) = document else {
+            return Ok(Vec::new());
+        };
+        let Ok(config) =
+            serde_json::from_value::<crate::github::sync_state::GithubSyncConfig>(document)
+        else {
+            // Not this advisory's failure to report: an unparseable blob is
+            // exactly what `story github-sync` itself will refuse on, loudly,
+            // the next time it runs — nothing silent about it either way.
+            return Ok(Vec::new());
+        };
+        let detected = crate::github::sync_state::detect_github_remote(ctx.cwd())?;
+        Ok(match detected {
+            Some(detected)
+                if detected.owner == config.github.owner && detected.repo == config.github.repo =>
+            {
+                Vec::new()
+            }
+            Some(detected) => vec![format!(
+                "github-sync is configured for `{}/{}`, but this checkout's `origin` points at \
+                 `{}/{}` — the next `story github-sync` will push there, not to this \
+                 checkout's own repository. This is common right after a restore into a fork \
+                 or a relocated clone; confirm which repository is intended before syncing.",
+                config.github.owner, config.github.repo, detected.owner, detected.repo,
+            )],
+            None => vec![format!(
+                "github-sync is configured for `{}/{}`, but this checkout has no GitHub \
+                 `origin` to confirm that against — common right after a restore, before `git \
+                 remote add origin` runs. The configured repository has not been verified for \
+                 this checkout.",
+                config.github.owner, config.github.repo,
+            )],
+        })
     }
-    Ok(vec![
-        "github-sync is configured, and `story export` does not carry it. A restored backup \
-         has this project's stories, states, members and settings, but not its issue \
-         mappings or their merge bases — so the first `story github-sync` after a restore \
-         starts from initial setup. Nothing is wrong with this project; this is what a \
-         backup of it does not include."
-            .to_string(),
-    ])
+    #[cfg(not(feature = "github-sync"))]
+    {
+        let configured = ctx
+            .store()
+            .read(|tx| Ok(tx.settings(ctx.project())?.github_sync.is_some()))?;
+        if !configured {
+            return Ok(Vec::new());
+        }
+        Ok(vec![
+            "github-sync is configured, but this build (--no-default-features) cannot verify \
+             its target repository against this checkout's git remote. Rebuild with the \
+             `github-sync` feature to check."
+                .to_string(),
+        ])
+    }
 }
 
 /// What `story doctor` says when the abandoned-command ledger is not empty
 /// (SH-173).
 ///
 /// Advisory rather than an integrity failure, for the same reason
-/// [`backup_advice`] is: an abandoned command *may* have landed — a forced
+/// [`github_remote_advice`] is: an abandoned command *may* have landed — a forced
 /// shutdown does not roll anything back, it only stops confirming — so a
 /// non-zero exit here would tell a script something is broken when the most
 /// likely truth is that nothing is. `story doctor abandoned` is where the
