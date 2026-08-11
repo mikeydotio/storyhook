@@ -856,6 +856,15 @@ Backgrounding work in a hook:
   see it: if a disk fills with no visible cause, 'lsof +L1' lists the
   unlinked-but-open files responsible.
 
+A hook's environment is the daemon's, not yours:
+  A hook runs with whatever environment the daemon happens to be holding —
+  not the shell that triggered the event, and not necessarily a fresh one.
+  The daemon outlives the client that started it, so a variable exported in
+  one shell for one project can still be present hours or days later, when
+  an unrelated project's hook fires. Do not assume the environment is
+  current, and name every variable your hook actually depends on rather
+  than relying on ambient state.
+
 Related:
   story commit-sync  — Manual git sync (hooks automate this)
   [hooks] in .storyhook.toml — Event hook configuration

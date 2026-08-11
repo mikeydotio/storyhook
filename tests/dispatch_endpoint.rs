@@ -9,10 +9,11 @@
 //! *empty* token, by design, for tests that never needed one before this.
 //!
 //! `story.sh` itself is stubbed (a tiny bash script, no `jq` dependency)
-//! branching on `$DISPATCH_STUB_MODE` — no tmux, no git, no worktree. That
-//! end-to-end path (a real `story.sh`, a real worktree, a real fake-tmux
-//! window) is the e2e suite's job; this file is the daemon's HTTP contract
-//! in front of whatever the script reports.
+//! whose mode is baked into its own text at write time (see [`stub_script`])
+//! — no tmux, no git, no worktree. That end-to-end path (a real `story.sh`,
+//! a real worktree, a real fake-tmux window) is the e2e suite's job; this
+//! file is the daemon's HTTP contract in front of whatever the script
+//! reports.
 
 use std::io::Write;
 use std::path::Path;
@@ -21,36 +22,54 @@ use std::time::{Duration, Instant};
 use storyhook::daemon::lifecycle::{self, DaemonInfo};
 use storyhook_test_support::{TestEnv, scratch_dir};
 
-/// A dispatch-stub `story.sh`. Argv is exactly what the daemon invokes:
-/// `--project <slug> dispatch <story-id>`, so `$4` is the story id.
+/// A dispatch-stub `story.sh`, rendered with `mode` baked into its `case`
+/// selector as a literal rather than read from an environment variable at
+/// run time. Argv is exactly what the daemon invokes: `--project <slug>
+/// dispatch <story-id>`, so `$4` is the story id.
+///
+/// **Baked in, not passed via env (SH-193).** This used to read
+/// `$DISPATCH_STUB_MODE`, set on the daemon's own process and relied on to
+/// reach the stub unfiltered all the way through the dispatch child's
+/// inherited environment. `src/env/spawn_env.rs`'s allowlist now clears that
+/// environment before the child ever runs, which is exactly the production
+/// behavior this suite exists to exercise — so the fixture is no longer
+/// allowed to lean on the hole the fix closes. Baking the mode into the
+/// script's own text at write time controls the stub through its argv and
+/// its file, the same two channels a real `story.sh` invocation actually
+/// gets, rather than through an env var storyhook's own allowlist would
+/// (correctly) now strip.
 ///
 /// Declares `DISPATCH_PROTOCOL=1` (SH-196) so this stub keeps resolving
 /// under `resolve_dispatch_script_from`'s protocol check, which applies to
 /// `STORYHOOK_DISPATCH_SCRIPT` the same as any other resolution source —
 /// see `a_script_below_the_required_protocol_is_refused_before_any_handle_exists`
 /// for the deliberately-unmarked negative case.
-const STUB_SCRIPT: &str = r#"#!/usr/bin/env bash
+fn stub_script(mode: &str) -> String {
+    format!(
+        r#"#!/usr/bin/env bash
 DISPATCH_PROTOCOL=1
 set -u
-case "${DISPATCH_STUB_MODE:-ok}" in
+case "{mode}" in
   ok)
-    printf '{"ok":true,"id":"%s","display":"stub dispatched %s"}\n' "$4" "$4"
+    printf '{{"ok":true,"id":"%s","display":"stub dispatched %s"}}\n' "$4" "$4"
     ;;
   refuse)
-    printf '{"ok":false,"display":"stub refused: not ready"}\n'
+    printf '{{"ok":false,"display":"stub refused: not ready"}}\n'
     ;;
   silent)
     exit 7
     ;;
   slow)
-    sleep "${DISPATCH_STUB_SLEEP:-2}"
-    printf '{"ok":true,"id":"%s","display":"stub dispatched slowly"}\n' "$4"
+    sleep 2
+    printf '{{"ok":true,"id":"%s","display":"stub dispatched slowly"}}\n' "$4"
     ;;
   echo-args)
-    printf '{"ok":true,"argv":"%s"}\n' "$*"
+    printf '{{"ok":true,"argv":"%s"}}\n' "$*"
     ;;
 esac
-"#;
+"#
+    )
+}
 
 /// Writes `content` to a fresh temp file and returns it — kept alive by the
 /// caller for as long as the daemon that was pointed at it might still run.
@@ -61,9 +80,9 @@ fn write_script(content: &str) -> tempfile::NamedTempFile {
     file
 }
 
-/// Writes [`STUB_SCRIPT`] to a fresh temp file.
-fn write_stub() -> tempfile::NamedTempFile {
-    write_script(STUB_SCRIPT)
+/// Writes [`stub_script`] rendered for `mode` to a fresh temp file.
+fn write_stub(mode: &str) -> tempfile::NamedTempFile {
+    write_script(&stub_script(mode))
 }
 
 /// Stops whatever daemon `env` is running, even if the test panics first —
@@ -76,15 +95,13 @@ impl Drop for DaemonGuard<'_> {
     }
 }
 
-/// Starts a daemon with `STORYHOOK_DISPATCH_SCRIPT` pointed at `stub`, in
-/// `mode` (read by the stub via `$DISPATCH_STUB_MODE`, inherited all the
-/// way down from this process through the daemon to the dispatch child).
-fn start_with_stub(env: &TestEnv, stub: &Path, mode: &str) -> DaemonInfo {
+/// Starts a daemon with `STORYHOOK_DISPATCH_SCRIPT` pointed at `stub`, whose
+/// own text already selects its mode — see [`stub_script`].
+fn start_with_stub(env: &TestEnv, stub: &Path) -> DaemonInfo {
     let dir = scratch_dir();
     env.story(dir.path())
         .args(["daemon", "start"])
         .env("STORYHOOK_DISPATCH_SCRIPT", stub)
-        .env("DISPATCH_STUB_MODE", mode)
         .assert()
         .success();
     env.daemon()
@@ -189,8 +206,8 @@ fn poll_until_finished(
 fn missing_guard_header_is_403() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
 
     let err = ureq::post(dispatch_url(&info, "proj", "SH-1"))
         .header("X-Storyhook-Token", &info.token)
@@ -203,8 +220,8 @@ fn missing_guard_header_is_403() {
 fn spoofed_host_is_403() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
 
     let err = ureq::post(dispatch_url(&info, "proj", "SH-1"))
         .header("X-Storyhook", "1")
@@ -219,8 +236,8 @@ fn spoofed_host_is_403() {
 fn no_token_is_401_on_post_and_get() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
 
     let post_err = ureq::post(dispatch_url(&info, "proj", "SH-1"))
         .header("X-Storyhook", "1")
@@ -241,8 +258,8 @@ fn no_token_is_401_on_post_and_get() {
 fn wrong_token_is_401() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
 
     let err = post_dispatch(&info, "not-the-token", "proj", "SH-1")
         .expect_err("the wrong token must be rejected");
@@ -253,8 +270,8 @@ fn wrong_token_is_401() {
 fn put_on_a_dispatch_path_is_405() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
 
     let err = ureq::put(dispatch_url(&info, "proj", "SH-1"))
         .header("X-Storyhook", "1")
@@ -269,8 +286,8 @@ fn put_on_a_dispatch_path_is_405() {
 fn a_successful_stub_is_relayed_as_ok_with_its_payload() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
 
     let resp = post_dispatch(&info, &info.token, "proj", "SH-1").expect("dispatch accepted");
     assert_eq!(resp.status(), 202);
@@ -298,8 +315,8 @@ fn a_successful_stub_is_relayed_as_ok_with_its_payload() {
 fn a_well_formed_refusal_is_relayed_verbatim_as_refused() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "refuse");
+    let stub = write_stub("refuse");
+    let info = start_with_stub(&env, stub.path());
 
     let resp = post_dispatch(&info, &info.token, "proj", "SH-1").expect("dispatch accepted");
     let handle = body_json(resp)["dispatch"]["handle"]
@@ -321,8 +338,8 @@ fn a_well_formed_refusal_is_relayed_verbatim_as_refused() {
 fn a_script_that_prints_nothing_is_reported_as_failed() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "silent");
+    let stub = write_stub("silent");
+    let info = start_with_stub(&env, stub.path());
 
     let resp = post_dispatch(&info, &info.token, "proj", "SH-1").expect("dispatch accepted");
     let handle = body_json(resp)["dispatch"]["handle"]
@@ -348,8 +365,8 @@ fn a_script_that_prints_nothing_is_reported_as_failed() {
 fn a_repeated_post_for_a_running_story_reuses_the_handle_rather_than_spawning_twice() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "slow");
+    let stub = write_stub("slow");
+    let info = start_with_stub(&env, stub.path());
 
     let first = body_json(
         post_dispatch(&info, &info.token, "proj", "SH-1").expect("first dispatch accepted"),
@@ -389,8 +406,8 @@ fn a_repeated_post_for_a_running_story_reuses_the_handle_rather_than_spawning_tw
 fn the_project_and_story_reach_the_script_verbatim() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "echo-args");
+    let stub = write_stub("echo-args");
+    let info = start_with_stub(&env, stub.path());
 
     let resp =
         post_dispatch(&info, &info.token, "scad-caliper", "CAL-12").expect("dispatch accepted");
@@ -417,8 +434,8 @@ fn the_project_and_story_reach_the_script_verbatim() {
 fn auto_equals_1_appends_auto_to_the_scripts_argv_and_is_relayed_in_the_record() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "echo-args");
+    let stub = write_stub("echo-args");
+    let info = start_with_stub(&env, stub.path());
 
     let resp = post_dispatch_query(&info, &info.token, "scad-caliper", "CAL-12", "auto=1")
         .expect("dispatch accepted");
@@ -446,8 +463,8 @@ fn auto_equals_1_appends_auto_to_the_scripts_argv_and_is_relayed_in_the_record()
 fn auto_equals_true_is_also_accepted() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
 
     let resp = post_dispatch_query(&info, &info.token, "proj", "SH-1", "auto=true")
         .expect("dispatch accepted");
@@ -461,8 +478,8 @@ fn auto_equals_true_is_also_accepted() {
 fn an_unrecognized_auto_value_is_400() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
 
     let err = post_dispatch_query(&info, &info.token, "proj", "SH-1", "auto=0")
         .expect_err("auto=0 must be rejected, not silently treated as attended");
@@ -477,8 +494,8 @@ fn an_unrecognized_auto_value_is_400() {
 fn a_repeated_post_with_a_different_auto_reuses_the_first_attempts_mode() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "slow");
+    let stub = write_stub("slow");
+    let info = start_with_stub(&env, stub.path());
 
     let first = body_json(
         post_dispatch(&info, &info.token, "proj", "SH-1").expect("first dispatch accepted"),
@@ -508,8 +525,8 @@ fn a_repeated_post_with_a_different_auto_reuses_the_first_attempts_mode() {
 fn an_unknown_handle_is_404() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
-    let stub = write_stub();
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let stub = write_stub("ok");
+    let info = start_with_stub(&env, stub.path());
 
     let err = get_dispatch(&info, &info.token, "proj", "SH-1", "no-such-handle")
         .expect_err("a handle that was never minted must 404");
@@ -529,7 +546,7 @@ fn a_script_below_the_required_protocol_is_refused_before_any_handle_exists() {
     let env = TestEnv::isolated();
     let _guard = DaemonGuard(&env);
     let stub = write_script(UNMARKED_SCRIPT);
-    let info = start_with_stub(&env, stub.path(), "ok");
+    let info = start_with_stub(&env, stub.path());
 
     // http_status_as_error(false): the default "non-2xx is an Err" behavior
     // discards the body (ureq::Error::StatusCode carries only the code, as
