@@ -9995,3 +9995,46 @@ fetch --prune origin`. SH-236 auto-closed by the merge-commit hook
 
 **Next:** run `story next` fresh next cycle rather than naming one here —
 see **Dogfooding `story next`** above.
+
+### SH-239 — done, 2026-08-11
+
+**Not a new fix — landing one already finished.** `story next` handed back
+SH-239 already `in-progress`: the SH-236 entry above had already spotted its
+worktree running `make test` concurrently. Its own comment showed the work
+complete — symlink-aware `pane_runs`, PR #267 open, `make test` green
+(3164 Rust, 29 plugin, 45 e2e) — and stopped there deliberately: opened from
+a linked worktree, so it stopped after the PR per the standing worktree
+rule. This cycle ran from the main checkout, not a worktree, so it picked up
+exactly where that rule says to: verify, merge, close.
+
+**Verified before merging, not just trusted the comment.** `gh pr view 267`
+showed `CLEAN`/`MERGEABLE` against current `main` (four unrelated commits
+had landed since, none touching the dispatch readiness path), and the
+`SH-239` worktree's branch tip matched `origin/fix/sh-239-readiness-gate-
+symlink` byte-for-byte (`git diff` empty) — nothing local and uncommitted
+was at risk of being dropped.
+
+**Cleanup needed two steps because of the lock, not because anything
+failed.** `gh pr merge 267 --merge --delete-branch` merged cleanly but its
+local branch deletion failed — the branch was still checked out in the
+`SH-239` worktree, which `tmux list-windows -a` confirmed was not live
+(no window, no uncommitted changes). Removed the worktree first
+(`git worktree remove`), then the local branch deleted clean; the remote
+branch survived the aborted `--delete-branch` call and needed its own
+`git push origin --delete`.
+
+**Gate re-run on `main` post-merge, not assumed from the PR's own claim.**
+Supervised in the background per this file's own rule (log-growth
+heartbeat, 120s stall bound) — no stall. 3169 Rust tests, 29 plugin
+scripts, 45 e2e specs, zero failures, no orphan servers in the postlude
+check. The small count drift from the PR comment's 3164 is new tests landed
+by unrelated commits merged in the intervening window, not a discrepancy.
+
+**No version bump** — `fix:`, left for the next batched `/semver` pass per
+this run's standing practice.
+
+**PR:** #267, merged as `51951f4` (`gh pr view` confirmed `MERGED`),
+fast-forwarded onto `main` in this checkout via `git pull --ff-only`.
+
+**Next:** run `story next` fresh next cycle rather than naming one here —
+see **Dogfooding `story next`** above.
