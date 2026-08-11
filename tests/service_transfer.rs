@@ -93,6 +93,61 @@ fn an_export_carries_the_catalog_and_every_story() {
 }
 
 #[test]
+fn an_export_carries_a_story_whose_stored_id_disagrees_with_the_prefix() {
+    // The schema does not forbid a row's `snapshot.id` disagreeing with what
+    // `story_no.to_id(&prefix)` would render (SH-184's "Extent"). `export`
+    // used to re-derive `StoryNo` by parsing that string against the
+    // project's prefix and refuse the *entire* project on the one row that
+    // failed to parse. It now trusts the row's own `story_no` column, which
+    // this damage never touches, and carries the story out under its stored
+    // (malformed) id — the same rule SH-67 settled for events.
+    let fixture = ServiceFixture::new();
+    create(&fixture, "First");
+    let healthy_id = create(&fixture, "Second");
+
+    let set_first_id = |value: &str| {
+        rusqlite::Connection::open(fixture.store().path())
+            .expect("opening the store directly")
+            .execute(
+                "UPDATE stories SET snapshot = json_set(snapshot, '$.id', ?1) \
+                 WHERE project_id = ?2 AND story_no = 1",
+                rusqlite::params![value, fixture.project().get()],
+            )
+            .expect("rewriting the first story's stored id");
+    };
+    set_first_id("ZZ-1");
+
+    let export = export(&fixture);
+    // Restore the row before the fixture's own teardown check runs (it folds
+    // every story's events fresh and compares — the same oracle `story
+    // doctor` uses — so it would otherwise flag exactly the damage this test
+    // deliberately introduced, which is `story doctor`'s job, not `export`'s).
+    set_first_id("SH-1");
+
+    assert_eq!(
+        export.stories.len(),
+        2,
+        "the whole project is exported, not just the row that still parses"
+    );
+    let tampered = export
+        .stories
+        .iter()
+        .find(|s| s.id == "ZZ-1")
+        .expect("the damaged story, carried out under its stored id");
+    assert_eq!(
+        tampered.events.len(),
+        1,
+        "its events were still found, keyed by the row's own story_no rather than a reparse"
+    );
+    let healthy = export
+        .stories
+        .iter()
+        .find(|s| s.id == healthy_id)
+        .expect("the untouched story, unaffected by its sibling's damage");
+    assert_eq!(healthy.events.len(), 1);
+}
+
+#[test]
 fn an_export_puts_open_stories_first_and_sorts_each_group_as_text() {
     // Lexicographic, so `SH-10` precedes `SH-2` — the legacy exporter's order,
     // inherited on purpose so the document stays byte-comparable.

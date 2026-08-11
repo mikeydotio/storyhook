@@ -442,8 +442,14 @@ impl<'ctx, S: Store> TransferService<'ctx, S> {
             let mut archived = Vec::new();
             let mut github_bases = BTreeMap::new();
             for row in tx.stories(project, &StoryQuery::all())? {
-                let story_no = StoryNo::parse_id(&prefix, &row.snapshot.id)
-                    .map_err(|error| StoreError::Corrupt(error.to_string()))?;
+                // `row.story_no` is the authoritative column — allocated by
+                // `allocate_story_no` and never re-derived from text. Reparsing
+                // it out of `row.snapshot.id` instead used to make one row whose
+                // stored id disagrees with its own prefix (the schema does not
+                // forbid that) refuse the whole project's export. Trusting the
+                // column carries the story out under its stored id either way;
+                // `story doctor` is what names the disagreement (SH-184).
+                let story_no = row.story_no;
                 let stored = tx.events_for(project, story_no)?;
                 // Every event, decoded or not. `partition_known` stood here and
                 // its second half was discarded, which is what SH-67 was.
