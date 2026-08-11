@@ -453,57 +453,158 @@ fn a_row_that_disagrees_with_its_events_is_reported_and_repaired() {
     assert!(report(&fixture).is_empty());
 }
 
-/// SH-67: the store has always retained an event it cannot decode, and until
-/// now nothing ever said so.
-#[test]
-fn an_event_this_build_cannot_decode_is_reported_and_told_apart_from_a_torn_one() {
-    let fixture = ServiceFixture::new();
-    let ctx = fixture.ctx();
-    new_story(&ctx, "visited by a newer storyhook");
-    drop(ctx);
-    assert!(report(&fixture).is_empty());
-
+/// Injects an unrecognised-kind event (a newer storyhook's data, not this
+/// build's) at seq 2 of a fresh story.
+fn inject_unrecognised_kind(fixture: &ServiceFixture) {
     storyhook::store::test_support::inject_raw_events(
         fixture.store(),
         fixture.project(),
         StoryNo::new(1),
-        &[
-            // A kind no storyhook has ever written: another build's data.
-            storyhook::store::RawEvent {
-                kind: "StoryPinned".to_string(),
-                at: "2030-01-01T00:00:00Z".to_string(),
-                payload: r#"{"kind":"StoryPinned","at":"2030-01-01T00:00:00Z"}"#.to_string(),
-            },
-            // A kind this build knows, whose payload it cannot read: damage.
-            storyhook::store::RawEvent {
-                kind: "StoryCommentAdded".to_string(),
-                at: "2030-01-01T00:00:01Z".to_string(),
-                payload: "{not json at all".to_string(),
-            },
-        ],
+        &[storyhook::store::RawEvent {
+            kind: "StoryPinned".to_string(),
+            at: "2030-01-01T00:00:00Z".to_string(),
+            payload: r#"{"kind":"StoryPinned","at":"2030-01-01T00:00:00Z"}"#.to_string(),
+        }],
     )
     .expect("injecting");
+}
+
+/// Injects a known-kind event whose payload this build cannot read (a torn
+/// payload — damage) at seq 2 of a fresh story.
+fn inject_torn_payload(fixture: &ServiceFixture) {
+    storyhook::store::test_support::inject_raw_events(
+        fixture.store(),
+        fixture.project(),
+        StoryNo::new(1),
+        &[storyhook::store::RawEvent {
+            kind: "StoryCommentAdded".to_string(),
+            at: "2030-01-01T00:00:01Z".to_string(),
+            payload: "{not json at all".to_string(),
+        }],
+    )
+    .expect("injecting");
+}
+
+/// SH-67 gave `story doctor` its first line about an event this build cannot
+/// decode. SH-185 settles what SH-67 left open (its council's Q3): an
+/// unrecognised *kind* is a newer storyhook's data, not damage, so it must
+/// never join `report()`'s health-determining vector, must not push `story
+/// doctor` to a non-zero exit, and must not make `--fix` fail. It is a
+/// *notice* — [`IntegrityService::notices`] — not a finding.
+#[test]
+fn an_unrecognised_event_kind_is_a_notice_not_a_finding() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "visited by a newer storyhook");
+    drop(ctx);
+    inject_unrecognised_kind(&fixture);
+
+    assert!(
+        report(&fixture).is_empty(),
+        "an unrecognised kind must not be a doctor finding"
+    );
+
+    let notices = IntegrityService::new(&fixture.ctx())
+        .notices()
+        .expect("notices");
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert!(
+        notices[0].contains("event 2")
+            && notices[0].contains("`StoryPinned`")
+            && notices[0].contains("A newer storyhook wrote it."),
+        "{notices:?}"
+    );
+
+    // A notice-only project is healthy: `doctor` answers `Issues`, not an
+    // error, and the notice rides along as advice.
+    let advice = advisories(&fixture);
+    assert!(
+        advice.iter().any(|line| line.contains("StoryPinned")),
+        "the notice must still reach the user, just through the advisory channel: {advice:?}"
+    );
+
+    // Nothing to fix, by design — not a repair failure.
+    let message = fix(&fixture).expect("a notice must never fail --fix");
+    assert!(
+        message.contains("StoryPinned"),
+        "the notice must not vanish from --fix's own report either: {message}"
+    );
+}
+
+/// A kind this build knows and cannot read is a torn payload: damage, exactly
+/// as SH-67 left it. It still forces a non-zero exit and `--fix` still cannot
+/// invent the missing bytes.
+#[test]
+fn a_torn_known_event_payload_is_still_a_finding_fix_cannot_repair() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "a torn payload");
+    drop(ctx);
+    inject_torn_payload(&fixture);
 
     let issues = report(&fixture);
-    assert_eq!(issues.len(), 2, "{issues:?}");
+    assert_eq!(issues.len(), 1, "{issues:?}");
     assert!(
         issues[0].contains("event 2")
-            && issues[0].contains("`StoryPinned`")
-            && issues[0].contains("A newer storyhook wrote it."),
-        "an unrecognised kind is not damage, and the report must not imply it is: {issues:?}"
+            && issues[0].contains("`StoryCommentAdded`")
+            && !issues[0].contains("newer storyhook"),
+        "a torn payload reads differently from a notice: {issues:?}"
     );
     assert!(
-        issues[1].contains("event 3")
-            && issues[1].contains("`StoryCommentAdded`")
-            && !issues[1].contains("newer storyhook"),
-        "a kind this build knows and cannot read is a torn payload, and reads differently: \
-         {issues:?}"
+        IntegrityService::new(&fixture.ctx())
+            .notices()
+            .expect("notices")
+            .is_empty(),
+        "a torn payload is damage, not a notice"
     );
 
-    // Neither is repairable, and `--fix` must not pretend otherwise.
     assert!(
         fix(&fixture).is_err(),
         "doctor cannot invent a payload it cannot read"
+    );
+}
+
+/// SH-185's load-bearing constraint: a notice must stay visible even when the
+/// same run also carries a real finding, precisely because it is no longer
+/// part of the vector that decides health. Silently dropping it just because
+/// something else made `doctor` unhealthy would be its own regression.
+#[test]
+fn a_notice_stays_visible_alongside_a_real_finding_in_the_same_run() {
+    let fixture = ServiceFixture::new();
+    let ctx = fixture.ctx();
+    new_story(&ctx, "both a notice and damage");
+    drop(ctx);
+    inject_unrecognised_kind(&fixture);
+    inject_torn_payload(&fixture);
+
+    let issues = report(&fixture);
+    assert_eq!(
+        issues.len(),
+        1,
+        "the notice must not join the health-determining vector: {issues:?}"
+    );
+
+    let error = storyhook::invoke::dispatch(
+        &fixture.ctx(),
+        storyhook::cli::Invocation::Doctor { fix: false },
+    )
+    .expect_err("real damage still fails `doctor`");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("StoryCommentAdded"),
+        "the real finding must still be reported: {rendered}"
+    );
+    assert!(
+        rendered.contains("StoryPinned"),
+        "the notice must not silently vanish just because doctor is unhealthy: {rendered}"
+    );
+
+    let fix_error = fix(&fixture).expect_err("real damage still fails --fix");
+    let fix_rendered = fix_error.to_string();
+    assert!(fix_rendered.contains("StoryCommentAdded"));
+    assert!(
+        fix_rendered.contains("StoryPinned"),
+        "the notice must not vanish from a failed --fix either: {fix_rendered}"
     );
 }
 

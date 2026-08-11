@@ -643,6 +643,7 @@ pub fn dispatch<S: Store>(
                 }
                 Ok(Response::Message(message))
             } else {
+                let notices = service.notices()?;
                 match service.report()? {
                     issues if issues.is_empty() => {
                         let (orphans, origins) = if audit_catalog {
@@ -650,7 +651,11 @@ pub fn dispatch<S: Store>(
                         } else {
                             (Vec::new(), Vec::new())
                         };
-                        let mut advice = orphan_advice(&orphans);
+                        // The notice channel SH-185's council settled on: it
+                        // never made the project unhealthy, so it rides along
+                        // as advice rather than as a finding.
+                        let mut advice = notices;
+                        advice.extend(orphan_advice(&orphans));
                         advice.extend(origin_advice(&origins));
                         advice.extend(github_remote_advice(ctx)?);
                         advice.extend(abandoned_advice(ctx.env()));
@@ -659,7 +664,12 @@ pub fn dispatch<S: Store>(
                         advice.extend(legacy_link_advice(ctx)?);
                         Ok(Response::Issues(advice))
                     }
-                    issues => Err(AppError::Integrity(issues.join("\n"))),
+                    // A real finding still fails the command, but a notice
+                    // present in the same run must not vanish just because it
+                    // played no part in that verdict.
+                    issues => Err(AppError::Integrity(
+                        crate::service::integrity::detail_with_notices(&issues, &notices),
+                    )),
                 }
             }
         }
