@@ -509,7 +509,7 @@ Scan recent git commits for story ID references and add comments. A commit that 
 
 A claim is a claim word — `close`, `fix`, `resolve`, `implement`, `complete`, `start`, `wip`, in any tense — immediately before the id on the same line. `Closes SH-1` and the git trailer `Closes: SH-1` both claim; `Refs SH-1`, `see SH-1` and a bare `SH-1` only link. `fix: SH-1 broken parser` only links, because there the colon is a Conventional Commits type rather than a trailer key. The words `not`, `no`, `never`, `without`, `unless` or an `n't` word before the claim word cancel it, as does a `Revert "…"` subject.
 
-Each run reports what it linked without claiming. `story project settings set sync.auto_transition false` stops even a claim from moving a story.
+Each run reports why a story that linked did not also move — no claim word, `sync.auto_transition` off, no active state configured, or the story already out of its default state. `story project settings set sync.auto_transition false` stops even a claim from moving a story.
 
 ```bash
 story commit-sync --since 1d
