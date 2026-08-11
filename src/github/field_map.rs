@@ -28,6 +28,16 @@ pub struct RemoteSnapshot {
     pub body_text: Option<String>,
     pub story_id: Option<String>,
     pub non_native_relationships: Vec<StoryRelation>,
+    /// Storyhook-rendered label name -> the original GitHub label name it was
+    /// rejoined from, for every remote label [`render_remote_label`] altered
+    /// because it contained a comma. Empty for an issue with no such labels.
+    ///
+    /// [`updates_to_issue_request`] consults this so a push can tell "this
+    /// label already exists on GitHub as `a,b`, leave it" apart from "this
+    /// label is new, push the storyhook name verbatim" — otherwise a push
+    /// triggered by an unrelated field change renames `"a,b"` to `"a & b"` on
+    /// GitHub (SH-179).
+    pub label_remote_names: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,16 +97,12 @@ pub fn story_to_create_request(
 /// alternative is silently reintroducing a bare comma that
 /// [`crate::domain::validate_event_for_append`] would then refuse.
 ///
-/// # Known limit
-///
-/// This only guards the *import* direction. A genuine local label change on
-/// the same issue is pushed back through [`updates_to_issue_request`], which
-/// sends the merged set verbatim — so a GitHub label already named `"a,b"`
-/// would be renamed to `"a & b"` on that issue the next time anything else on
-/// the story's labels changes locally. Suppressing that needs a reverse
-/// mapping threaded from here through the diff engine's [`FieldUpdates`],
-/// which is a change to the merge types and is tracked separately rather than
-/// folded into this fix.
+/// A caller that also needs the original GitHub name back — to avoid renaming
+/// an unchanged label on push (SH-179) — should use
+/// [`issue_to_remote_snapshot`]'s `label_remote_names` map rather than trying
+/// to invert this rendering itself: the join is lossy (`"a,b"` and `"a, b"`
+/// both render to `"a & b"`), so only the snapshot that saw the original name
+/// can answer it.
 fn render_remote_label(name: &str) -> Option<String> {
     let parts: Vec<&str> = name
         .split(',')
@@ -132,10 +138,17 @@ pub fn issue_to_remote_snapshot(
         .and_then(|gh_user| resolve_member_id(&gh_user.login, members));
 
     // --- labels ---
+    let mut label_remote_names: BTreeMap<String, String> = BTreeMap::new();
     let labels: Vec<String> = issue
         .labels
         .iter()
-        .filter_map(|l| render_remote_label(&l.name))
+        .filter_map(|l| {
+            let rendered = render_remote_label(&l.name)?;
+            if rendered != l.name {
+                label_remote_names.insert(rendered.clone(), l.name.clone());
+            }
+            Some(rendered)
+        })
         .collect();
 
     // --- body block parsing ---
@@ -188,6 +201,7 @@ pub fn issue_to_remote_snapshot(
         body_text,
         story_id,
         non_native_relationships,
+        label_remote_names,
     }
 }
 
@@ -197,11 +211,18 @@ pub fn issue_to_remote_snapshot(
 
 /// Convert [`FieldUpdates`] (from the diff engine) into a GitHub
 /// [`UpdateIssueRequest`].
+///
+/// `label_remote_names` is [`RemoteSnapshot::label_remote_names`] from the
+/// snapshot this update was diffed against — it rewrites a rendered label
+/// back to the GitHub name it came from wherever one is known, rather than
+/// pushing the storyhook rendering verbatim and renaming an unchanged remote
+/// label in the process (SH-179).
 pub fn updates_to_issue_request(
     updates: &FieldUpdates,
     story: &StorySnapshot,
     members: &[Member],
     states: &[StateDef],
+    label_remote_names: &BTreeMap<String, String>,
 ) -> UpdateIssueRequest {
     let title = updates.title.clone();
 
@@ -229,7 +250,17 @@ pub fn updates_to_issue_request(
         None => vec![],
     });
 
-    let labels = updates.labels.clone();
+    let labels = updates.labels.as_ref().map(|labels| {
+        labels
+            .iter()
+            .map(|name| {
+                label_remote_names
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone())
+            })
+            .collect()
+    });
 
     // If priority, awaiting, or description changed, we need to re-render the
     // body block.
@@ -691,6 +722,72 @@ mod tests {
             snap.labels,
             vec!["backend & urgent".to_string(), "solo".to_string()]
         );
+
+        // The rejoined label records the real GitHub name it came from
+        // (SH-179) — a plain label has nothing to reverse, so it gets no
+        // entry.
+        assert_eq!(
+            snap.label_remote_names
+                .get("backend & urgent")
+                .map(String::as_str),
+            Some("backend,urgent")
+        );
+        assert!(!snap.label_remote_names.contains_key("solo"));
+    }
+
+    // -----------------------------------------------------------------------
+    // updates_to_issue_request — label translation (SH-179)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn updates_to_issue_request_leaves_an_untouched_comma_bearing_label_alone() {
+        // A push triggered by an unrelated label change (e.g. a genuinely new
+        // label added locally) rebuilds and sends the whole merged label set.
+        // A label that started life on GitHub as "backend,urgent" — rendered
+        // locally as "backend & urgent" — must come back out under its real
+        // name, not get renamed on GitHub because the push used the
+        // storyhook rendering verbatim.
+        let updates = FieldUpdates {
+            labels: Some(vec!["backend & urgent".to_string(), "solo".to_string()]),
+            ..Default::default()
+        };
+        let mut label_remote_names = BTreeMap::new();
+        label_remote_names.insert("backend & urgent".to_string(), "backend,urgent".to_string());
+
+        let story = test_story();
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &label_remote_names,
+        );
+
+        assert_eq!(
+            req.labels,
+            Some(vec!["backend,urgent".to_string(), "solo".to_string()])
+        );
+    }
+
+    #[test]
+    fn updates_to_issue_request_pushes_a_genuinely_new_label_verbatim() {
+        // A label with no entry in label_remote_names is new — or was always
+        // plain — so it is pushed under the storyhook name as-is.
+        let updates = FieldUpdates {
+            labels: Some(vec!["brand-new".to_string()]),
+            ..Default::default()
+        };
+
+        let story = test_story();
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(req.labels, Some(vec!["brand-new".to_string()]));
     }
 
     // -----------------------------------------------------------------------
@@ -895,7 +992,13 @@ mod tests {
         };
 
         let story = test_story();
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         assert_eq!(req.title, Some("New title".to_string()));
         assert_eq!(req.state, Some("closed".to_string()));
@@ -910,7 +1013,13 @@ mod tests {
         };
 
         let story = test_story();
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         assert_eq!(req.assignees, Some(vec!["BobGH".to_string()]));
     }
@@ -923,7 +1032,13 @@ mod tests {
         };
 
         let story = test_story();
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         assert_eq!(req.assignees, Some(vec![]));
     }
@@ -936,7 +1051,13 @@ mod tests {
         };
 
         let story = test_story();
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         let body = req.body.unwrap();
         assert!(body.contains("priority: critical"));
@@ -950,7 +1071,13 @@ mod tests {
         };
 
         let story = test_story();
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         let body = req.body.unwrap();
         assert!(body.contains("awaiting: design review"));
@@ -964,7 +1091,13 @@ mod tests {
         };
 
         let story = test_story();
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         let body = req.body.unwrap();
         assert!(body.starts_with("New free text"));
@@ -980,7 +1113,13 @@ mod tests {
             ..Default::default()
         };
 
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         let body = req.body.unwrap();
         assert!(!body.contains("Will be cleared"));
@@ -997,7 +1136,13 @@ mod tests {
             ..Default::default()
         };
 
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         let body = req.body.unwrap();
         assert!(body.contains("Existing free text"));
@@ -1008,7 +1153,13 @@ mod tests {
     fn updates_to_issue_request_empty_updates() {
         let updates = FieldUpdates::default();
         let story = test_story();
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         assert!(req.title.is_none());
         assert!(req.state.is_none());
@@ -1025,7 +1176,13 @@ mod tests {
         };
 
         let story = test_story();
-        let req = updates_to_issue_request(&updates, &story, &test_members(), &test_states());
+        let req = updates_to_issue_request(
+            &updates,
+            &story,
+            &test_members(),
+            &test_states(),
+            &BTreeMap::new(),
+        );
 
         assert_eq!(req.state, Some("open".to_string()));
         assert!(req.state_reason.is_none());

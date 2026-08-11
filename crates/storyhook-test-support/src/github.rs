@@ -22,7 +22,7 @@ use std::rc::Rc;
 use storyhook::error::AppError;
 use storyhook::github::api::{GithubApi, GithubApiFactory};
 use storyhook::github::types::{
-    CreateIssueRequest, GithubComment, GithubIssue, GithubUser, PullRequestStatus,
+    CreateIssueRequest, GithubComment, GithubIssue, GithubLabel, GithubUser, PullRequestStatus,
     UpdateIssueRequest,
 };
 
@@ -130,6 +130,22 @@ impl FakeGithubApiFactory {
         let mut state = self.state.borrow_mut();
         if let Some(issue) = state.issues.iter_mut().find(|i| i.number == issue_number) {
             issue.title = title.to_string();
+        }
+    }
+
+    /// Overwrites a seeded issue's labels in place — for tests that need a
+    /// remote label already present (e.g. a comma-bearing one, SH-179)
+    /// before the sync engine's first fetch.
+    pub fn set_issue_labels(&self, issue_number: u64, labels: &[&str]) {
+        let mut state = self.state.borrow_mut();
+        if let Some(issue) = state.issues.iter_mut().find(|i| i.number == issue_number) {
+            issue.labels = labels
+                .iter()
+                .map(|name| GithubLabel {
+                    name: (*name).to_string(),
+                    color: None,
+                })
+                .collect();
         }
     }
 

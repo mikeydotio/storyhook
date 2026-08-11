@@ -9,6 +9,8 @@ pub mod storage;
 pub mod sync_state;
 pub mod types;
 
+use std::collections::BTreeMap;
+
 use crate::domain::{Member, Priority, StateDef, StoryEvent, StorySnapshot, normalize_labels};
 use crate::error::AppError;
 use crate::output::Response;
@@ -802,8 +804,13 @@ fn sync_single_story(
     if has_remote_updates || has_new_local_comments {
         // Build the update request for the issue
         if has_remote_updates {
-            let update_req =
-                updates_to_issue_request(&merge_result.remote_updates, story, members, states);
+            let update_req = updates_to_issue_request(
+                &merge_result.remote_updates,
+                story,
+                members,
+                states,
+                &remote_snap.label_remote_names,
+            );
             client.update_issue(mapping.issue_number, &update_req)?;
         }
 
@@ -818,6 +825,7 @@ fn sync_single_story(
                     story,
                     members,
                     states,
+                    &remote_snap.label_remote_names,
                 )?;
             }
         }
@@ -851,6 +859,7 @@ fn sync_single_story(
                         story,
                         members,
                         states,
+                        &remote_snap.label_remote_names,
                     )?;
                     did_push = true;
                 }
@@ -1216,6 +1225,7 @@ fn apply_conflict_locally(
 // Apply resolved conflict remotely (KeepLocal)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn apply_conflict_remotely(
     client: &dyn GithubApi,
     mapping: &StoryIssueMapping,
@@ -1224,6 +1234,7 @@ fn apply_conflict_remotely(
     story: &StorySnapshot,
     members: &[Member],
     states: &[StateDef],
+    label_remote_names: &BTreeMap<String, String>,
 ) -> Result<(), AppError> {
     let conflict = match conflicts.iter().find(|c| c.field == resolved.field) {
         Some(c) => c,
@@ -1270,7 +1281,7 @@ fn apply_conflict_remotely(
         }
     }
 
-    let update_req = updates_to_issue_request(&updates, story, members, states);
+    let update_req = updates_to_issue_request(&updates, story, members, states, label_remote_names);
     client.update_issue(mapping.issue_number, &update_req)?;
     Ok(())
 }
