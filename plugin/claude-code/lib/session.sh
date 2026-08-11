@@ -50,6 +50,7 @@
 #   READY_STABLE_POLLS       wait_ready
 #   READY_FRAME_GLYPH        wait_ready
 #   READY_PROMPT_GLYPH       wait_ready, input_box_text, prompt_accepted
+#   READY_PROCESS_PATTERN    wait_ready, pane_runs
 #   READY_TAIL_LINES         pane_tail
 #   READY_ACCEPT_PATTERN     prompt_accepted
 #   CONFIRM_ATTEMPTS         poll_input
@@ -86,6 +87,17 @@ fail() {
 # lost claim race) from an ordinary error.
 refuse() {
   jq -n --arg r "$1" --arg d "$2" '{ok:false, reason:$r, display:$d}'
+  exit 1
+}
+
+# refuse_with <reason> <message> <json-object> — refuse(), plus diagnostic fields
+# merged in from <json-object>. A dispatch that gets far enough to open a window
+# has evidence worth carrying (which pane, what was running in it, what the pane
+# said), and refuse()'s fixed three-field shape has nowhere to put it. Separate
+# from refuse() rather than a widened refuse() so no existing caller changes.
+refuse_with() {
+  jq -n --arg r "$1" --arg d "$2" --argjson extra "$3" \
+    '{ok:false, reason:$r, display:$d} + $extra'
   exit 1
 }
 
@@ -263,22 +275,68 @@ poll_input() {
   return 1
 }
 
-# wait_ready <pane> <launch-cmd> — poll until Claude's TUI is ready, bounded by
-# READY_ATTEMPTS. Two tiers:
-#   FAST:       launch_gone AND content matches the READY_PATTERN footer marker.
-#   STRUCTURAL: launch_gone AND content has BOTH the frame rule and the idle
-#               prompt glyph AND has stabilised (byte-identical for
-#               READY_STABLE_POLLS consecutive comparisons).
-# Either tier satisfied → success. On success, WAIT_READY_TIER is set to the tier
-# that matched ("marker" | "structural"); a timeout leaves it "none".
+# pane_command <pane> — READ-ONLY. Echo the pane's FOREGROUND command as tmux
+# reports it (`#{pane_current_command}`), or empty when it cannot be observed.
+# This is the only fact on this path that comes from the process table rather
+# than from rendered characters.
+pane_command() {
+  tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null || printf ''
+}
+
+# pane_runs <pane> — 0 iff the pane's occupant matches READY_PROCESS_PATTERN.
+# FAILS CLOSED: an occupant that cannot be observed is not a match, following
+# branch_is_merged's precedent in this file — an un-establishable fact is never
+# read as the permissive answer.
+pane_runs() {
+  local cmd
+  cmd="$(pane_command "$1")"
+  cmd="${cmd##*/}"
+  WAIT_READY_COMMAND="$cmd"
+  [ -n "$cmd" ] || return 1
+  printf '%s' "$cmd" | grep -Eq -- "$READY_PROCESS_PATTERN"
+}
+
+# wait_ready <pane> <launch-cmd> — poll until Claude is ready IN THE PANE,
+# bounded by READY_ATTEMPTS. Every success requires BOTH:
+#
+#   1. The pane's foreground command matches READY_PROCESS_PATTERN — a fact from
+#      the process table, which a shell prompt cannot fake; AND
+#   2. one of two rendering tiers:
+#      FAST:       launch_gone AND content matches the READY_PATTERN footer marker.
+#      STRUCTURAL: launch_gone AND content has BOTH the frame rule and the idle
+#                  prompt glyph AND has stabilised (byte-identical for
+#                  READY_STABLE_POLLS consecutive comparisons).
+#
+# Condition 1 is SH-226. Both tiers used to rest on rendered characters alone,
+# and a Powerlevel10k shell prompt supplies a frame rule and an idle glyph for
+# free — so when a launch failed, this function affirmed in under a second and
+# the caller typed an autonomous agent charter into zsh, which executed it. The
+# check belongs HERE, in the predicate whose own contract claims to establish
+# that Claude is ready, rather than in a caller: a caller-side check would leave
+# this function still asserting something it does not test.
+#
+# The process check is queried only once a tier's other conditions already hold,
+# so the common case costs one extra tmux round trip rather than READY_ATTEMPTS.
+#
+# On return: WAIT_READY_TIER is the tier that matched ("marker" | "structural",
+# else "none"); WAIT_READY_COMMAND is the last occupant observed; and
+# WAIT_READY_REASON is "ok", "wrong-process" (a tier matched but the occupant did
+# not) or "timeout". Errors travel with context: "not ready" and "a shell is
+# sitting in that pane" are different sentences and lead to different actions.
 #
 # launch_gone = "the pane's last non-blank line no longer ends with the launch
-# command", i.e. the typed launch command has left the input line (claude started).
+# command". Note this says nothing about WHY it left: a shell that answered
+# `command not found` satisfies it exactly as a started Claude does, which is why
+# it is not, and never was, evidence that claude started.
 WAIT_READY_TIER="none"
+WAIT_READY_COMMAND=""
+WAIT_READY_REASON="timeout"
 wait_ready() {
   local pane="$1" launch="$2" attempt=0 content last_line
   local prev='' stable=0 launch_gone
   WAIT_READY_TIER="none"
+  WAIT_READY_COMMAND=""
+  WAIT_READY_REASON="timeout"
   while [ "$attempt" -lt "$READY_ATTEMPTS" ]; do
     if content=$(tmux capture-pane -p -t "$pane" 2>/dev/null); then
       last_line=$(printf '%s\n' "$content" | grep -v '^[[:space:]]*$' | tail -1 || true)
@@ -288,8 +346,12 @@ wait_ready() {
       # Tier 1 — broadened footer marker (returns immediately; no stabilise wait).
       if [ "$launch_gone" = true ] \
          && printf '%s' "$content" | grep -Eq -- "$READY_PATTERN"; then
-        WAIT_READY_TIER="marker"
-        return 0
+        if pane_runs "$pane"; then
+          WAIT_READY_TIER="marker"
+          WAIT_READY_REASON="ok"
+          return 0
+        fi
+        WAIT_READY_REASON="wrong-process"
       fi
 
       # Tier 2 — structural frame + idle glyph + stabilisation. Increment the
@@ -303,8 +365,15 @@ wait_ready() {
          && [ -n "$content" ] && [ "$content" = "$prev" ]; then
         stable=$((stable + 1))
         if [ "$stable" -ge "$READY_STABLE_POLLS" ]; then
-          WAIT_READY_TIER="structural"
-          return 0
+          if pane_runs "$pane"; then
+            WAIT_READY_TIER="structural"
+            WAIT_READY_REASON="ok"
+            return 0
+          fi
+          # The glyphs are there and stable, but a shell is what is rendering
+          # them. Keep polling: claude may still be starting behind this pane.
+          WAIT_READY_REASON="wrong-process"
+          stable=0
         fi
       else
         stable=0
@@ -407,12 +476,28 @@ capture_pane_transcript() {
 #            Enter re-send ENTER ALONE (bounded) — never re-paste, which would
 #            duplicate the prompt.
 # A positive result REQUIRES having first observed the box hold the prompt, so an
-# empty box from a never-arrived paste can't masquerade as submitted. If receipt
-# is never confirmed, Enter is still pressed once best-effort (never regress
-# below the old "always Enter"), but the result is reported unconfirmed. Returns
-# 0 only once submission is confirmed.
+# empty box from a never-arrived paste can't masquerade as submitted. Returns 0
+# only once submission is confirmed.
+#
+# SH-226 reversed a rule that used to live here: "if receipt is never confirmed,
+# Enter is still pressed once best-effort (never regress below the old 'always
+# Enter')". Enter was pressed BEFORE `received` was consulted, so a return of 1
+# could not distinguish "never sent" from "sent blind" — and against a pane that
+# is not Claude, that stray Enter IS the submission. The old rule was written
+# when the pane was assumed to be a ready TUI and a spare Enter was harmless.
+# It is not harmless, so Phase B is now wholly conditional on receipt.
+#
+# On return, SEND_PROMPT_PHASE names WHICH phase was reached, so a caller can
+# tell an undelivered handoff (nothing was typed — safe to roll back a claim)
+# from an unconfirmed one (it may already be in front of a live agent — rolling
+# back would hand the same story to a second session):
+#   submitted            receipt AND submission confirmed (the 0 return)
+#   received-unsubmitted the box held the text; submission never confirmed
+#   undelivered          the text never reached the box; NO Enter was sent
+SEND_PROMPT_PHASE="undelivered"
 send_prompt_confirmed() {
   local pane="$1" text="$2" buf="$3" received=false try=0
+  SEND_PROMPT_PHASE="undelivered"
   # Phase A — deliver + confirm receipt.
   while [ "$try" -le "$SEND_RETRIES" ]; do
     if paste_prompt "$pane" "$text" "$buf" && poll_input "$pane" text; then
@@ -421,14 +506,16 @@ send_prompt_confirmed() {
     fi
     try=$((try + 1))
   done
+  # Nothing landed in the box, so nothing is submitted: no Enter is sent at all.
+  [ "$received" = true ] || return 1
+  SEND_PROMPT_PHASE="received-unsubmitted"
   # Phase B — submit + confirm. Re-send Enter alone (never re-paste).
   try=0
   while [ "$try" -le "$SEND_RETRIES" ]; do
     if tmux send-keys -t "$pane" Enter 2>/dev/null; then
-      if [ "$received" = true ]; then
-        poll_input "$pane" empty && return 0
-      else
-        break
+      if poll_input "$pane" empty; then
+        SEND_PROMPT_PHASE="submitted"
+        return 0
       fi
     fi
     try=$((try + 1))

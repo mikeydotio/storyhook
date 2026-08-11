@@ -21,7 +21,13 @@ dry() {
 # A literal copy of PROMPT_TPL's default (story.sh) with <n> substituted —
 # this is the byte-identical regression pin SH-62's own acceptance criteria
 # demand for the no-flag path.
-expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with \`story show $id --json\` (its comments carry the discussion history). When your plan is finalized and approved, post it as a comment on $id via \`story comment $id \"<plan>\"\` before you start implementing. Ensure every pull request you open references story $id in its body, and comment a link to each PR on $id after you push it. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here."
+# SH-226 moved these pins. The commands the charter names are quoted with
+# ‘ ’ rather than backticks, and two parentheticals plus a semicolon became
+# em-dash clauses, so the rendered text carries no character a POSIX shell
+# treats as special -- see tests/test-charter-inert.sh for the invariant and
+# why it has to be structural. The pin itself is unchanged in kind: it still
+# asserts the attended prompt byte-for-byte, which is what catches drift.
+expected_attended_prompt="Investigate and plan a fix for story $id in this repo. Begin by reading it with ‘story show $id --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on $id via ‘story comment $id your-plan’ before you start implementing. Ensure every pull request you open references story $id in its body, and comment a link to each PR on $id after you push it. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here."
 
 out=$(dry)
 assert_eq "$(jqf "$out" .ok)" "true" "attended: ok:true"
@@ -62,9 +68,9 @@ done
 reap_slug=$(slug_for "$repo")
 expected_reap="bash \"$SCRIPT\" --project \"$reap_slug\" reap \"$id\""
 assert_contains "$prompt" "$expected_reap" "auto: prompt carries the exact reap command"
-assert_contains "$prompt" "run \`$expected_reap\` as your absolute last action" \
+assert_contains "$prompt" "run ‘${expected_reap}’ as your absolute last action" \
   "auto: reap is framed as the session's final act"
-assert_contains "$prompt" "never run \`$expected_reap\` after a hard stop" \
+assert_contains "$prompt" "never run ‘${expected_reap}’ after a hard stop" \
   "auto: reap is explicitly forbidden past a hard stop"
 
 # The charter used to require every `story` write to be made from the main
@@ -122,7 +128,7 @@ esac
 out=$(cd "$repo" && STORY_DRY_RUN=1 STORY_PROMPT_EXTRA="EXTRA-CLAUSE" \
   bash "$SCRIPT" dispatch "$id" --auto 2>&1)
 case "$(jqf "$out" .prompt)" in
-  *"never run \`$expected_reap\` after a hard stop. EXTRA-CLAUSE") : ;;
+  *"never run ‘${expected_reap}’ after a hard stop. EXTRA-CLAUSE") : ;;
   *) fail_test "STORY_PROMPT_EXTRA did not append after the auto charter" ;;
 esac
 

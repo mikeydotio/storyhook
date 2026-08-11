@@ -119,12 +119,27 @@ STORY="${STORY_BIN:-story}"
 # story id, for a custom override that wants either.
 LAUNCH_TPL="${STORY_LAUNCH_CMD:-claude --permission-mode plan --model opusplan}"
 # The handoff prompt — the only lever the dispatcher has over the child
-# session. Single-line + ASCII (no backticks) by default; delivery is via a
-# bracketed paste (paste_prompt), so a multi-line STORY_PROMPT override is
-# safe. Storyhook stories aren't GitHub issues: no label to apply, no
-# `Closes #N` convention — the child instead posts its plan back via `story
-# comment` and references the story id in every PR body.
-PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with \`story show <n> --json\` (its comments carry the discussion history). When your plan is finalized and approved, post it as a comment on <n> via \`story comment <n> \"<plan>\"\` before you start implementing. Ensure every pull request you open references story <n> in its body, and comment a link to each PR on <n> after you push it. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here.}"
+# session. Delivery is via a bracketed paste (paste_prompt), so a multi-line
+# STORY_PROMPT override is safe. Storyhook stories aren't GitHub issues: no
+# label to apply, no `Closes #N` convention — the child instead posts its plan
+# back via `story comment` and references the story id in every PR body.
+#
+# CHARTER-INERT (SH-226). Both shipped templates below quote the commands they
+# name with ‘ ’ (U+2018/U+2019), never backticks, and carry none of
+# ` $ ; & | < > ! ( ) [ ] { } * ? ~ # \ ' or a newline. Those characters are
+# non-special in every POSIX-family shell, so the rendered prompt delivered
+# verbatim to one is a single command word list whose worst outcome is one
+# `command not found` — it cannot execute anything it names. That matters
+# because this text reaches places with no gate in front of them: a doc quoting
+# it, a transcript, an agent reading this file. tests/test-charter-inert.sh
+# enforces it against the REAL render path, and also asserts the instructions
+# survive, so the invariant can't be satisfied by deleting them.
+#
+# (This comment used to claim "single-line + ASCII (no backticks) by default".
+# It had been true of neither half since the --auto charter landed. The ‘ ’
+# quotes deliberately break the ASCII half; UTF-8 already rides this pipeline,
+# since READY_PROMPT_GLYPH is U+276F and appears in every capture.)
+PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. When your plan is finalized and approved, post it as a comment on <n> via ‘story comment <n> your-plan’ before you start implementing. Ensure every pull request you open references story <n> in its body, and comment a link to each PR on <n> after you push it. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here.}"
 # The autonomous charter `--auto` swaps in for PROMPT_TPL — plan approval stays
 # the ONE human interaction; everything past it (ambiguity, testing, merge,
 # closure, hard stops) is the child's own call. Closure goes through a plain
@@ -137,7 +152,7 @@ PROMPT_TPL="${STORY_PROMPT:-Investigate and plan a fix for story <n> in this rep
 # means the worktree and the main checkout are the same project, and telling an
 # autonomous agent to `cd` elsewhere for every write was friction bought with a
 # defect that no longer exists.
-AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with \`story show <n> --json\` (its comments carry the discussion history). This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision without a single obvious answer, convene \`/council-vote\` instead of asking, and record the outcome as a comment on <n>. Run the full local suite with \`make test\` and confirm it passes before pushing; the pre-push hook enforces it. Open a pull request whose body references story <n>, comment the PR link on <n>, then merge it yourself with \`gh pr merge --merge\` -- a merge commit, the only method this org allows -- verify the merge actually landed, and delete the source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once the merge lands, judge from your own record of the work whether <n> is genuinely complete: default to closing it with \`story move <n> done\` (or the CLOSED-superstate state this project uses, if not \`done\`) -- a closed story cannot be commented on again, so say everything worth recording BEFORE that move, not after. Once <n> is closed, run \`<reap>\` as your absolute last action -- it reclaims this worktree, deletes its branch, and then closes this very tmux window, so nothing you do after it can be observed. Never run \`/story complete\` yourself: it asks a question, and a session with nobody left to answer it cannot survive one. If your own output shows further PRs or testing are still needed, leave <n> open, comment naming exactly what remains, and do not run \`<reap>\` -- it refuses a story that is not yet closed, but do not rely on that refusal. If you hit a hard stop a council vote cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run \`story block <n> \"<reason>\"\`, leave the PR open and this worktree intact, and stop. Never merge past a hard stop, and never run \`<reap>\` after a hard stop.}"
+AUTO_PROMPT_TPL="${STORY_AUTO_PROMPT:-Investigate and plan a fix for story <n> in this repo. Begin by reading it with ‘story show <n> --json’ -- its comments carry the discussion history. This is an AUTONOMOUS session: the user approves your plan once and is then unavailable -- ask no further questions after that approval and never block waiting on input. When your plan is finalized and approved, post it as a comment on <n> before you start implementing. For every later decision without a single obvious answer, convene ‘/council-vote’ instead of asking, and record the outcome as a comment on <n>. Run the full local suite with ‘make test’ and confirm it passes before pushing -- the pre-push hook enforces it. Open a pull request whose body references story <n>, comment the PR link on <n>, then merge it yourself with ‘gh pr merge --merge’ -- a merge commit, the only method this org allows -- verify the merge actually landed, and delete the source branch. Merging yourself deliberately overrides the standing \"in a linked worktree, stop after opening the PR\" rule, for the merge only. Do not bump the version or deploy from this worktree: do not run semver bump, deployit deploy, or any release/version step, and do not plan for them -- versioning and deployment happen later from the main branch, not here. Once the merge lands, judge from your own record of the work whether <n> is genuinely complete: default to closing it with ‘story move <n> done’ -- or the CLOSED-superstate state this project uses, if not ‘done’ -- a closed story cannot be commented on again, so say everything worth recording BEFORE that move, not after. Once <n> is closed, run ‘<reap>’ as your absolute last action -- it reclaims this worktree, deletes its branch, and then closes this very tmux window, so nothing you do after it can be observed. Never run ‘/story complete’ yourself: it asks a question, and a session with nobody left to answer it cannot survive one. If your own output shows further PRs or testing are still needed, leave <n> open, comment naming exactly what remains, and do not run ‘<reap>’ -- it refuses a story that is not yet closed, but do not rely on that refusal. If you hit a hard stop a council vote cannot resolve -- red tests, a failing merge, an unresolvable conflict -- post a comment on <n> with full diagnostics, run ‘story block <n> the-reason’, leave the PR open and this worktree intact, and stop. Never merge past a hard stop, and never run ‘<reap>’ after a hard stop.}"
 # Extra clause a caller appends to the handoff prompt (daemon-caller seam).
 # Appended VERBATIM with a single space separator, AFTER <n>/<name> templating.
 PROMPT_EXTRA="${STORY_PROMPT_EXTRA:-}"
@@ -165,6 +180,16 @@ READY_FALLBACK_DELAY="${STORY_READY_FALLBACK_DELAY:-3}"
 READY_STABLE_POLLS="${STORY_READY_STABLE_POLLS:-3}"
 READY_FRAME_GLYPH="${STORY_READY_FRAME_GLYPH:-─}"
 READY_PROMPT_GLYPH="${STORY_READY_PROMPT_GLYPH:-❯}"
+# The pane's foreground command must match this before ANY text is delivered to
+# it (SH-226). `node` is here because Claude Code installs as a Node wrapper on
+# some paths and tmux reports the foreground process; excluding it would refuse
+# real sessions. It still excludes every shell, which is the discrimination the
+# failure needs. Heuristic, and deliberately overridable: setting this to `.`
+# matches anything and restores the pre-SH-226 behaviour with no code change —
+# the escape hatch for an environment where Claude reports an unexpected name.
+# `story doctor` prints the name it actually observed, so an operator can see
+# what to put here.
+READY_PROCESS_PATTERN="${STORY_READY_PROCESS_PATTERN:-^(claude|node)$}"
 READY_TAIL_LINES="${STORY_READY_TAIL_LINES:-8}"
 CONFIRM_ATTEMPTS="${STORY_CONFIRM_ATTEMPTS:-8}"
 CONFIRM_DELAY="${STORY_CONFIRM_DELAY:-0.3}"
@@ -450,6 +475,25 @@ enter_checkout() {
 # <pre-claim-state>, guarded by --if-state in-progress so a genuine
 # concurrent transition away from in-progress is never clobbered, and
 # echoes a clause for the failure message naming the outcome either way.
+# dispatch_ready_note — one clause naming WHY wait_ready gave up, from the
+# globals it sets. A timeout and "a shell is sitting in that pane" are different
+# situations with different remedies, and the operator needs to be told which.
+dispatch_ready_note() {
+  case "$WAIT_READY_REASON" in
+    wrong-process)
+      printf 'that pane is running `%s`, not a process matching `%s` — the launch never started. Set STORY_READY_PROCESS_PATTERN if your claude reports a different name; `.` matches anything' \
+        "${WAIT_READY_COMMAND:-?}" "$READY_PROCESS_PATTERN"
+      ;;
+    *)
+      if [ -n "$WAIT_READY_COMMAND" ]; then
+        printf 'timed out waiting for it to render; the pane is running `%s`' "$WAIT_READY_COMMAND"
+      else
+        printf 'timed out waiting for it to render, and the pane occupant could not be observed'
+      fi
+      ;;
+  esac
+}
+
 claim_rollback_note() {
   local id="$1" pre_state="$2"
   local rb_json rb_result
@@ -777,38 +821,80 @@ cmd_dispatch() {
   paste_text "$pane" "$launch_cmd" || true
   tmux send-keys -t "$pane" Enter 2>/dev/null || true
 
-  # Step 12: readiness gate before typing the prompt.
-  local readiness_confirmed=false
-  if wait_ready "$pane" "$launch_cmd"; then
-    readiness_confirmed=true
-  else
-    sleep "$READY_FALLBACK_DELAY"
+  # Step 12: readiness GATE before typing the prompt. This gates (SH-226); it
+  # used to only annotate. An unconfirmed pane gets no text at all: the charter
+  # is an autonomous instruction document whose backticked spans a shell executes
+  # as commands, so "type it anyway and warn" is not a safe default when nobody
+  # is watching the pane. The window is deliberately left standing — it is the
+  # only place the launch failure's own words survive — while the worktree,
+  # branch and claim are rolled back so an immediate retry is not answered with
+  # "already dispatched?" (the collision guard keys on worktree/branch).
+  if ! wait_ready "$pane" "$launch_cmd"; then
+    local ready_tail
+    ready_tail=$(pane_tail "$pane")
+    git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+    git worktree prune >/dev/null 2>&1 || true
+    git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+    refuse_with pane-not-ready \
+      "[story] $id → could not confirm claude is running in window \`$wname\` ($(dispatch_ready_note)). Nothing was typed into that pane. The window is left open so you can look at it; the worktree, branch and claim were rolled back.$(claim_rollback_note "$id" "$pre_claim_state")" \
+      "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
+            --arg pane "$pane" --arg cmd "$WAIT_READY_COMMAND" \
+            --arg wreason "$WAIT_READY_REASON" --arg tail "$ready_tail" \
+            --arg pattern "$READY_PROCESS_PATTERN" \
+            '{id:$id, window:$window, window_name:$wname, pane:$pane,
+              readiness_confirmed:false, pane_command:$cmd,
+              wait_ready_reason:$wreason, ready_process_pattern:$pattern,
+              pane_tail:$tail, claimed:false}')"
   fi
+  local readiness_confirmed=true
 
-  # Step 13: type + submit the prompt, confirmed.
+  # Step 13: type + submit the prompt, confirmed. SEND_PROMPT_PHASE distinguishes
+  # a handoff that never left the keyboard from one that may already be in front
+  # of a live agent — see the rollback asymmetry below.
   local prompt_confirmed=false prompt_accepted_flag=false
   if send_prompt_confirmed "$pane" "$prompt" "story-$id"; then
     prompt_confirmed=true
     if prompt_accepted "$pane"; then
       prompt_accepted_flag=true
     fi
+  else
+    local send_tail
+    send_tail=$(pane_tail "$pane")
+    if [ "$SEND_PROMPT_PHASE" = undelivered ]; then
+      # Nothing reached the input box, so nothing was submitted (guaranteed by
+      # send_prompt_confirmed: no Enter is sent before receipt is observed).
+      # Safe to roll everything back, exactly as a failed window-open does.
+      git worktree remove --force "$worktree_path" >/dev/null 2>&1 || true
+      git worktree prune >/dev/null 2>&1 || true
+      git branch -D "$worktree_branch" >/dev/null 2>&1 || true
+      refuse_with handoff-undelivered \
+        "[story] $id → claude is running in window \`$wname\`, but the prompt never reached its input box, so nothing was submitted. The window is left open; the worktree, branch and claim were rolled back.$(claim_rollback_note "$id" "$pre_claim_state")" \
+        "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
+              --arg pane "$pane" --arg tail "$send_tail" \
+              '{id:$id, window:$window, window_name:$wname, pane:$pane,
+                readiness_confirmed:true, delivery_phase:"undelivered",
+                pane_tail:$tail, claimed:false}')"
+    fi
+    # received-unsubmitted: the box HELD the prompt and submission was never
+    # confirmed. It may already be in front of a live agent, so the claim and the
+    # worktree STAY — rolling back here would return the story to the ready list
+    # and let the next dispatch hand the same work to a second session.
+    refuse_with handoff-unconfirmed \
+      "[story] $id → claude is running in window \`$wname\` and the prompt reached its input box, but the submission was never confirmed. The claim and worktree are DELIBERATELY left in place: the agent may already be working. Look with \`story.sh capture $id\`, then either re-submit in that window or run \`story move $id $pre_claim_state --if-state in-progress\` to release it." \
+      "$(jq -n --arg id "$id" --arg window "$window" --arg wname "$wname" \
+            --arg pane "$pane" --arg tail "$send_tail" \
+            '{id:$id, window:$window, window_name:$wname, pane:$pane,
+              readiness_confirmed:true, delivery_phase:"received-unsubmitted",
+              pane_tail:$tail, claimed:true}')"
   fi
 
-  # Result. ok:true from here on (the claim already succeeded above) — warn
-  # on any unconfirmed step or a non-fresh base.
+  # Result. Reaching here means BOTH readiness and submission were confirmed —
+  # every other outcome refused above. `ok:true` therefore now means "the story
+  # was claimed AND the charter reached a confirmed claude session", which is
+  # what a caller has always read it as; before SH-226 it meant only the former,
+  # and the difference was carried in prose nothing downstream read.
   local warning="" display base
-  if [ "$readiness_confirmed" = true ] && [ "$prompt_confirmed" = true ]; then
-    base="[story] $id ($title) → opened tmux window \`$wname\` on a worktree based on \`origin/$default\` @ \`${base_oid:0:8}\`, launched \`$launch_cmd\` (plan mode), submitted the prompt, and claimed it (now \`in-progress\`)."
-  else
-    if [ "$readiness_confirmed" = false ] && [ "$prompt_confirmed" = false ]; then
-      warning="Couldn't confirm claude finished starting, nor that the prompt submitted — check window \`$wname\`."
-    elif [ "$readiness_confirmed" = false ]; then
-      warning="Couldn't confirm claude finished starting before the prompt was sent, but the prompt did submit — glance at window \`$wname\`."
-    else
-      warning="claude started, but couldn't confirm the prompt submitted — check window \`$wname\`."
-    fi
-    base="[story] $id ($title) → window \`$wname\` opened on a worktree based on \`origin/$default\` @ \`${base_oid:0:8}\`, but I couldn't fully confirm the handoff."
-  fi
+  base="[story] $id ($title) → opened tmux window \`$wname\` on a worktree based on \`origin/$default\` @ \`${base_oid:0:8}\`, launched \`$launch_cmd\` (plan mode), submitted the prompt, and claimed it (now \`in-progress\`)."
   if [ -n "$base_note" ]; then
     warning="${warning:+$warning }${base_note}."
   fi
