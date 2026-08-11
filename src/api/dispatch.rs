@@ -64,6 +64,7 @@ use crate::api::http::{Reply, mutation_guard_ok, text_reply};
 use crate::api::rpc::token_ok;
 use crate::daemon::bus::{Change, ChangeBus};
 use crate::env::Environment;
+use crate::env::spawn_env::apply_dispatch_allowlist;
 
 /// How long a dispatch may run before its whole process group is killed.
 ///
@@ -852,9 +853,13 @@ const PROMPT_OVERRIDE_ENV_VARS: [&str; 3] =
 /// it at all. [`run_child`] is the one real caller and does the actual
 /// reads.
 ///
-/// `run_child`'s `Command` never calls `env_clear`, so any of the three, if
-/// set anywhere in the daemon's own process environment, flows straight
-/// through to the child unfiltered (SH-232's own finding). `story.sh`'s
+/// `run_child`'s `Command` clears its environment and restores only
+/// [`crate::env::spawn_env`]'s dispatch allowlist (SH-193), but all three of
+/// these names are `STORY_`-prefixed and so are on it: any of the three, if
+/// set anywhere in the daemon's own process environment, still flows straight
+/// through to the child (SH-232's own finding, which SH-193 did not close for
+/// these three by design — they are storyhook's own configuration surface,
+/// not a third-party credential). `story.sh`'s
 /// `render_template` does pure literal substring substitution — no shell
 /// interpretation of its own — so a template and `PROMPT_EXTRA` that are
 /// each individually free of the banned set produce a rendered result that
@@ -986,6 +991,11 @@ fn run_child(
         // handoff prompt for the autonomous charter on seeing this flag.
         command.arg("--auto");
     }
+    // Clears whatever this daemon inherited from whoever spawned it and
+    // restores exactly `story.sh`'s own allowlist (SH-193) — before any of
+    // the explicit `.env(...)` calls below, since `env_clear` would otherwise
+    // wipe them out too.
+    apply_dispatch_allowlist(&mut command);
     command
         // Never inherited from the daemon's own cwd, which a daemon spawned
         // from a since-deleted directory (a build's temp dir, a cleaned-up
