@@ -90,6 +90,12 @@
 //! A **relative** path is refused. Two unrelated repositories can each set
 //! `origin` to `../sibling`, so a relative path used as an identity is a silent
 //! collision — the exact failure this module exists to prevent.
+//!
+//! The class tag is only structural because a network key can never format
+//! with a bare trailing colon before its `/`: [`strip_trailing_empty_port`]
+//! collapses an authority's empty port before the host is used, so a host
+//! literally spelled `local` cannot format to `local:` and shadow
+//! [`LOCAL_PREFIX`] (SH-192).
 
 use std::fmt;
 
@@ -487,6 +493,19 @@ fn network_key(authority: &str, path: &str, raw: &str) -> Result<String, Normali
     // are in fact — and *not* splitting on the last colon is what leaves an
     // IPv6 literal like `[::1]` intact instead of mangled.
     let host = host.to_ascii_lowercase();
+    // ...unless the port is empty. `port = *DIGIT` in the URI grammar, so a
+    // bare trailing colon names the same endpoint as no colon at all — this
+    // is a collapse, like the userinfo drop above, not a guess. It is also
+    // load-bearing for `LOCAL_PREFIX`: left unstripped, a host literally
+    // spelled `local` with an empty port formats to `local:`, and
+    // `{host}/{path}` becomes byte-identical to a local path's tagged key
+    // (SH-192). Stripping it here, for every host, is what makes that tag
+    // structural rather than a rule some caller has to remember for one
+    // string.
+    let host = strip_trailing_empty_port(&host);
+    if host.is_empty() {
+        return Err(NormalizeError::Unclassifiable(raw.to_string()));
+    }
 
     // A percent-encoded segment (`acme%2Fwidgets`) is never decoded — it is
     // case-folded and kept as literal text, the same as any other segment.
@@ -510,6 +529,22 @@ fn network_key(authority: &str, path: &str, raw: &str) -> Result<String, Normali
         return Err(NormalizeError::Unclassifiable(raw.to_string()));
     }
     Ok(format!("{host}/{path}"))
+}
+
+/// Drops a URI authority's port separator when the port itself is empty.
+///
+/// `example.com:` and `[::1]:` name the same endpoint as `example.com` and
+/// `[::1]` — the URI grammar defines `port = *DIGIT`, so zero digits after the
+/// colon means "default port", identical to no colon at all. Collapsing the
+/// two is a spelling-equivalence, the same move as dropping userinfo or
+/// folding case above, not a guess.
+///
+/// A single trailing-colon strip is correct even for a bracketed IPv6
+/// literal, whose own colons sit *inside* the brackets: `[::1]:` ends the
+/// address at `]`, so the colon this removes is unambiguously the port
+/// separator and nothing else, however many colons came before it.
+fn strip_trailing_empty_port(host: &str) -> &str {
+    host.strip_suffix(':').unwrap_or(host)
 }
 
 /// Builds the key for a remote that names a filesystem path.
@@ -663,6 +698,17 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_port_is_the_same_endpoint_as_no_port() {
+        // `port = *DIGIT`: a colon with nothing after it is the default port,
+        // not a distinct one — this is what keeps `LOCAL_PREFIX` structural
+        // (SH-192, below).
+        assert_eq!(
+            key("https://git.acme.com:/o/r"),
+            key("https://git.acme.com/o/r")
+        );
+    }
+
+    #[test]
     fn the_git_suffix_is_stripped_exactly_once() {
         // A repository genuinely named `repo.git` must not merge with `repo`.
         assert_eq!(
@@ -725,6 +771,18 @@ mod tests {
     #[test]
     fn a_local_path_cannot_collide_with_a_host_shaped_key() {
         assert_ne!(key("/local/srv"), key("https://local/srv"));
+    }
+
+    #[test]
+    fn a_host_named_local_with_an_empty_port_cannot_collide_with_a_local_path() {
+        // SH-192: `https://local:/o/r` used to normalize to `local:/o/r`,
+        // byte-identical to the local-path key for `/o/r`. An empty port is
+        // stripped by `strip_trailing_empty_port` before the host is ever
+        // formatted, so the network key is `local/o/r` — no trailing colon,
+        // no collision with `LOCAL_PREFIX`.
+        assert_eq!(key("https://local:/o/r"), "local/o/r");
+        assert_eq!(key("/o/r"), "local:/o/r");
+        assert_ne!(key("https://local:/o/r"), key("/o/r"));
     }
 
     #[test]
@@ -834,6 +892,14 @@ mod tests {
         assert_ne!(
             key("https://[::1]/acme/widgets"),
             key("https://[::1]:22/acme/widgets")
+        );
+    }
+
+    #[test]
+    fn an_empty_port_on_an_ipv6_literal_host_is_the_same_endpoint_as_no_port() {
+        assert_eq!(
+            key("https://[::1]:/acme/widgets"),
+            key("https://[::1]/acme/widgets")
         );
     }
 
