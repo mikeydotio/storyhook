@@ -443,6 +443,21 @@ pub fn depth_from_env() -> u32 {
 ///
 /// The child is told `depth + 1`, so the chain is describable rather than merely
 /// stopped.
+///
+/// # The environment contract (SH-193)
+///
+/// **This command's environment is the daemon's, not yours.** No
+/// `env_clear` runs before `hook.command` executes, deliberately — see
+/// [`crate::env::spawn_env`]'s header for why an arbitrary user-authored
+/// command cannot safely have its environment narrowed the way
+/// [`crate::env::git_env`] narrows a trusted `git` invocation. That means a
+/// hook inherits whatever the daemon itself was holding: possibly a
+/// credential exported in a shell that started this daemon for an entirely
+/// different project, hours or days before this hook fired, still present
+/// because the daemon outlives the client that spawned it. Do not assume the
+/// environment is fresh, and do not assume it belongs to whoever triggered
+/// this event — write a hook that names every variable it depends on rather
+/// than relying on ambient state.
 pub fn fire_hook(
     root: &Path,
     config: &HooksConfig,
