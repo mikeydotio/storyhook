@@ -33,7 +33,7 @@ use storyhook::github::storage::SyncStorage;
 use storyhook::github::sync_state::{StoryIssueMapping, SyncMode};
 use storyhook::output::Response;
 use storyhook::service::{NewStoryInput, StoreSyncStorage, StoryService};
-use storyhook_test_support::{FakeGithubApiFactory, ServiceFixture};
+use storyhook_test_support::{FakeGithubApiFactory, RecordedCall, ServiceFixture};
 
 fn token() -> GithubToken {
     GithubToken::new("ghp_fake_token_value").expect("a usable token")
@@ -458,4 +458,85 @@ fn an_error_syncing_one_story_does_not_abort_the_rest_of_the_sync() {
         "the healthy story still pushes: {created:?}"
     );
     assert_eq!(created[0].title, "Never synced yet");
+}
+
+// ---------------------------------------------------------------------------
+// SH-179 — a push must not rename a comma-bearing remote label
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pushing_a_genuinely_new_label_leaves_an_existing_comma_bearing_one_alone() {
+    // SH-164 renders a GitHub label like "backend,urgent" as the storyhook
+    // label "backend & urgent" on the way in, since splitting on the comma
+    // would invent a label GitHub does not have. Left alone, a later push
+    // triggered by a genuine local label change used to send that rendering
+    // straight back to GitHub verbatim, renaming "backend,urgent" itself.
+    let fixture = ServiceFixture::new();
+    add_github_remote(&fixture);
+    let story_id = create(&fixture, "Label test");
+    let ctx = fixture.ctx();
+    let storage = StoreSyncStorage::new(&ctx);
+    let fake = FakeGithubApiFactory::new();
+    let issue = fake.seed_issue("Label test");
+    fake.set_issue_labels(issue.number, &["backend,urgent"]);
+
+    let outcome = run_initial_setup(
+        &storage,
+        &fake,
+        Some(&token()),
+        Some(SetupAnswers {
+            strategy: InitialStrategy::MatchTitles,
+            mode: SyncMode::Manual,
+        }),
+    )
+    .expect("linking");
+    let InitialSetupOutcome::Configured { config, .. } = outcome else {
+        panic!("stated answers must proceed");
+    };
+    storage.save_config(&config).expect("saving the link");
+    let base = storage.story(&story_id).expect("reading");
+    storage
+        .save_base(&story_id, &base)
+        .expect("saving the base");
+
+    // A genuine local label change -- the bug's actual trigger. Nothing
+    // about the pre-existing "backend,urgent" label changed locally or
+    // remotely; the merge only needs to notice "feature" is new.
+    storage
+        .write_events(
+            &story_id,
+            &[StoryEvent::StoryLabelsSet {
+                at: "2026-01-02T00:00:00Z".to_string(),
+                labels: vec!["feature".to_string()],
+            }],
+        )
+        .expect("adding a local label");
+
+    run_sync_with(
+        &storage,
+        &fake,
+        Some(&token()),
+        Some(&story_id),
+        false,
+        None,
+        None,
+        None,
+    )
+    .expect("syncing");
+
+    let update = fake
+        .recorded_calls()
+        .into_iter()
+        .find_map(|call| match call {
+            RecordedCall::UpdateIssue(number, req) if number == issue.number => Some(req),
+            _ => None,
+        })
+        .expect("the label change pushes an update to the issue");
+
+    assert_eq!(
+        update.labels,
+        Some(vec!["backend,urgent".to_string(), "feature".to_string()]),
+        "the pre-existing label must go back out under its real GitHub name, \
+         not the storyhook rendering: {update:?}"
+    );
 }
