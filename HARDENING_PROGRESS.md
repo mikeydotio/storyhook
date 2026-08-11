@@ -9277,3 +9277,72 @@ correctly refused with "already closed" rather than silently no-op'ing.
 
 **Next:** SH-192 — `RemoteUrl`: a host named `local` with an empty port
 collides with the local-path key space (medium).
+
+### SH-192 — done, 2026-08-11
+
+`RemoteUrl::normalize`'s module header claimed a filesystem remote's
+`local:`-tagged key can never collide with a network remote's `host/path`
+key — "class-tagged... so they can never collide". False: `network_key`
+deliberately keeps a port glued to its host segment so `host` and
+`host:8443` stay distinct endpoints, and did not distinguish a *populated*
+port from an *empty* one. A host literally spelled `local` followed by a
+bare colon (`https://local:/o/r`) formatted to `local:`, and
+`{host}/{path}` became byte-identical to `LOCAL_PREFIX`'s local-path key —
+`RemoteUrl::normalize("https://local:/o/r")` and
+`RemoteUrl::normalize("/o/r")` both produced `"local:/o/r"`. The existing
+regression test (`a_local_path_cannot_collide_with_a_host_shaped_key`)
+missed it because it never put a colon after `local`.
+
+**No council needed — the module's own precedent already answered it.** Four
+candidate fixes exist: refuse an empty port outright; special-case the
+literal string `local`; re-tag every network key with an explicit prefix
+(closing the collision by construction, at the cost of changing every
+registered project's stored key); or collapse an empty port into "no port".
+The last one is what shipped, and it did not need a vote: the URI grammar
+defines `port = *DIGIT`, so zero digits after the colon *is* the default
+port, not a distinct one — collapsing it is a spelling-equivalence, the same
+move this module already makes for userinfo (dropped) and case (folded), not
+a guess of the kind this module's design explicitly refuses to make.
+Special-casing `local` would leave the header's "structural" claim false for
+the next string someone finds; re-tagging is a store migration for a defect
+"not believed to affect any real repository today" per the story's own
+extent section. `strip_trailing_empty_port` strips the colon for *every*
+host before it is formatted into a key, so the guarantee is actually
+structural now rather than resting on the value `local` never appearing —
+and because no real remote is ever registered with an explicit-but-empty
+port, no existing stored key changes.
+
+**One function, reused rather than special-cased for IPv6.** The obvious
+worry — an IPv6 literal already carries colons (`[::1]`) — turned out not to
+need its own branch: `strip_suffix(':')` only ever touches the single
+trailing character, and a bracketed host's port separator (if the port is
+empty) is always that same trailing character, directly after the closing
+`]`. `[::1]:` strips to `[::1]`; `[::1]:22` is untouched; `[::1]` alone
+already has no trailing colon to strip. One four-line function covers both
+shapes.
+
+**Test plan:** the exact SH-192 repro pinned as its own test
+(`a_host_named_local_with_an_empty_port_cannot_collide_with_a_local_path`),
+plus the general collapse on a plain host
+(`an_empty_port_is_the_same_endpoint_as_no_port`) and on a bracketed IPv6
+host (`an_empty_port_on_an_ipv6_literal_host_is_the_same_endpoint_as_no_port`),
+alongside the full existing suite — including
+`normalize_never_panics_on_hostile_input`'s adversarial-input list and the
+IPv6/percent-encoding tests SH-139 pinned as exact keys.
+
+**The gate, once, clean.** `cargo fmt --all -- --check` and `cargo clippy
+--workspace --all-targets -- -D warnings` clean; full Rust suite green (unit
++ integration + doc-tests, 140 `test result: ok` blocks, zero `FAILED`);
+plugin shell-script harness green; e2e 45/45 in 1.7m. Supervised the whole
+run per this file's own rule (log-growth heartbeat, 120s stall bound); never
+came close to tripping — the one `over 60 seconds` notice was the known
+long-running crash test this file already documents as expected.
+
+**PR:** #249, merged as `7371d0c` (`gh pr view` confirmed `MERGED`),
+fast-forwarded onto `main` in this checkout; branch deletion automatic (`gh
+pr merge --delete-branch`), stale remote-tracking ref cleaned with `git
+remote prune origin`. `story move SH-192 done` recorded the fix commit via
+`commit-sync`.
+
+**Next:** SH-193 — the daemon forwards its whole inherited environment to
+`sh`, `bash` and `claude` (medium).
