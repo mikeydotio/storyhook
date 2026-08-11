@@ -674,6 +674,14 @@ fn web_serve_root_html_has_board_list_drawer_markers() {
         !body.contains("renderDeleteConfirm"),
         "the inline typed-reason footer form was replaced by the shared delete modal"
     );
+
+    // SH-197: board cards and list rows carry a roving tabindex (WAI-ARIA
+    // grid pattern) so Tab can reach a story at all -- the prerequisite for
+    // Shift+F10/the Menu key ever raising the context menu from a keyboard.
+    assert!(body.contains("function syncRoving"));
+    assert!(body.contains("function bindRovingKeys"));
+    assert!(body.contains("function bindRovingFocus"));
+    assert!(body.contains(".card:focus-visible"));
 }
 
 #[test]

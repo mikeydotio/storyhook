@@ -360,6 +360,7 @@ button { cursor: pointer; }
 .card.dragging { opacity: 0.4; transform: scale(0.97) rotate(-1deg); }
 .card.pending { opacity: 0.55; pointer-events: none; }
 .card.not-draggable { cursor: default; }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .card-id-row { display: flex; align-items: center; gap: 0.3125rem; }
 .card-id { font-family: var(--mono); font-size: 0.6875rem; color: var(--fg-faint); font-weight: 600; }
 .type-badge { font-size: 0.8125rem; line-height: 1; }
@@ -396,6 +397,7 @@ tbody td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vert
 tbody tr { cursor: pointer; transition: background 0.1s; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--bg-sunken); }
+tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .col-id { font-family: var(--mono); white-space: nowrap; font-size: 0.75rem; }
 .col-date { white-space: nowrap; color: var(--fg-muted); font-size: 0.75rem; }
 .state-pill { font-size: 0.6875rem; font-weight: 600; padding: 0.09375rem 0.5rem; border-radius: 9999px; background: var(--bg-sunken); border: 1px solid var(--border); }
@@ -697,11 +699,13 @@ tbody tr:hover { background: var(--bg-sunken); }
     <button type="button" class="filter-clear" id="filter-clear">Clear filters</button>
   </div>
 
-  <main class="board" id="board-view"></main>
+  <span class="sr-only" id="board-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
+  <main class="board" id="board-view" aria-describedby="board-kbd-hint"></main>
 
+  <span class="sr-only" id="list-kbd-hint">Arrow keys move between stories, Enter opens the selected one, and Shift+F10 or the Menu key opens its actions.</span>
   <main class="list" id="list-view" hidden>
     <div class="list-table-wrap">
-      <table>
+      <table aria-describedby="list-kbd-hint">
         <thead>
           <tr>
             <th data-col="id">ID <span class="sort-arrow" id="sort-id"></span></th>
@@ -2262,6 +2266,143 @@ tbody tr:hover { background: var(--bg-sunken); }
   // RENDER: BOARD
   // ============================================================
 
+  // Roving tabindex (SH-197): before this, board cards and list rows were
+  // plain click targets with no `tabindex` at all -- Tab skipped every
+  // story, and `contextmenu` (Shift+F10 / the Menu key) only ever fires on
+  // a focused element, so the context menu the rest of this story adds
+  // would otherwise be mouse-only. WAI-ARIA's grid pattern: exactly one
+  // card/row is a Tab stop (`tabIndex=0`) at a time, arrow keys move it,
+  // Enter/Space activates it -- shared by both views via `syncRoving`,
+  // `rovingId` and `bindRovingKeys` below, since they present the same
+  // story set and switching views should keep the same story selected
+  // rather than resetting to the first one.
+
+  /** Which story id, if any, currently holds the roving tabindex. */
+  var rovingId = null;
+
+  /** `document.activeElement`'s story id, if it's a focused card/row inside
+   * `container` -- captured at the START of a render, before any DOM
+   * mutation, so `syncRoving` (called at the end) can tell "this id lost
+   * its element this render" apart from "nothing was focused to begin
+   * with". */
+  function focusedCardId(container, selector) {
+    var active = document.activeElement;
+    return (active && container.contains(active) && active.matches(selector)) ? active.dataset.id : null;
+  }
+
+  /** Keeps exactly one card/row per `selector` at `tabIndex=0` (the rest at
+   * `-1`) across a keyed reconcile: `rovingId` survives as long as its
+   * element does, else the first surviving element becomes the new stop.
+   *
+   * `focusedId` (`focusedCardId`, captured before this render's mutations)
+   * is who actually held the keyboard. Re-focuses the new stop whenever
+   * that id no longer has REAL focus -- checked against `document.
+   * activeElement`, not just whether the id's element still exists,
+   * because it can lose focus two different ways: removed outright (the
+   * case `removeUnclaimedCards`'s deferred, animated removal creates), or
+   * still present but genuinely repositioned by `reconcileColumnCards`/
+   * `renderList`'s `insertBefore` -- a real DOM move, which the HTML spec's
+   * unfocusing steps blur same as a removal would. (Those two functions
+   * already skip the call when a card/row's position didn't actually
+   * change, so this is a safety net for the reorders that are real, not a
+   * cover for ones that shouldn't have happened.) */
+  function syncRoving(container, selector, focusedId) {
+    var nodes = Array.prototype.slice.call(container.querySelectorAll(selector));
+    if (!nodes.length) { rovingId = null; return; }
+    var survivorIds = {};
+    nodes.forEach(function(n) { survivorIds[n.dataset.id] = true; });
+    var targetId = (rovingId && survivorIds[rovingId]) ? rovingId : nodes[0].dataset.id;
+    nodes.forEach(function(n) { n.tabIndex = (n.dataset.id === targetId) ? 0 : -1; });
+    rovingId = targetId;
+    if (!focusedId) return;
+    var focusedNode = survivorIds[focusedId] ? nodes.filter(function(n) { return n.dataset.id === focusedId; })[0] : null;
+    if (document.activeElement !== focusedNode) {
+      var target = nodes.filter(function(n) { return n.dataset.id === targetId; })[0];
+      if (target) target.focus();
+    }
+  }
+
+  /** Arrow/Home/End/Enter/Space handling for a roving-tabindex grid of
+   * card/row elements, delegated from one listener on `container` (bound
+   * once in `bindShell`) rather than one per card/row -- consistent with
+   * every card/row already being reconciled in place rather than rebuilt.
+   * `move(current, key)` returns the next node for an arrow/Home/End key,
+   * or a falsy value to leave focus where it is (e.g. an edge already
+   * reached). Moving focus is all this does -- `next.focus()` itself is
+   * what makes `bindRovingFocus`, below, promote `next` to `tabIndex=0` and
+   * demote `current`, so this and every other way focus can land on a card
+   * (a mouse click, a raw `.focus()` call) update the roving stop through
+   * the exact same one place rather than two copies that could drift. */
+  function bindRovingKeys(container, selector, move) {
+    container.addEventListener("keydown", function(e) {
+      var current = e.target.closest && e.target.closest(selector);
+      if (!current || !container.contains(current)) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openDrawer(current.dataset.id);
+        return;
+      }
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].indexOf(e.key) === -1) return;
+      var next = move(current, e.key);
+      if (!next) return;
+      e.preventDefault();
+      next.focus();
+    });
+  }
+
+  /** The other half of the roving tabindex: keeps it in sync with whatever
+   * ACTUALLY holds focus, however it got there. A card is a plain click
+   * target first and a keyboard one second -- without this, clicking a
+   * card that wasn't already the roving stop would open its drawer but
+   * leave Tab still parked on whichever card was, which is exactly the
+   * kind of drift a *derived* tab stop (one place decides, everything else
+   * follows) is supposed to make impossible. Delegated the same way as
+   * `bindRovingKeys`, and bound beside it in `bindShell`. */
+  function bindRovingFocus(container, selector) {
+    container.addEventListener("focusin", function(e) {
+      var target = e.target.closest && e.target.closest(selector);
+      if (!target || !container.contains(target) || rovingId === target.dataset.id) return;
+      var previous = container.querySelector(selector + '[tabindex="0"]');
+      if (previous && previous !== target) previous.tabIndex = -1;
+      target.tabIndex = 0;
+      rovingId = target.dataset.id;
+    });
+  }
+
+  /** `bindRovingKeys`' `move` for the board: Up/Down within the current
+   * column, Left/Right to the neighbouring column at the same index,
+   * clamped to its (possibly shorter) length. */
+  function boardRovingMove(current, key) {
+    var cardsEl = current.closest(".column-cards");
+    var column = current.closest(".column");
+    if (!cardsEl || !column) return null;
+    var siblings = Array.prototype.slice.call(cardsEl.querySelectorAll(".card[data-id]"));
+    var idx = siblings.indexOf(current);
+    if (key === "ArrowUp") return siblings[idx - 1];
+    if (key === "ArrowDown") return siblings[idx + 1];
+    if (key === "Home") return siblings[0];
+    if (key === "End") return siblings[siblings.length - 1];
+    var columns = Array.prototype.slice.call($("board-view").children);
+    var colIdx = columns.indexOf(column);
+    var targetColumn = columns[key === "ArrowLeft" ? colIdx - 1 : colIdx + 1];
+    if (!targetColumn) return null;
+    var targetCards = Array.prototype.slice.call(targetColumn.querySelectorAll(".card[data-id]"));
+    return targetCards.length ? targetCards[Math.min(idx, targetCards.length - 1)] : null;
+  }
+
+  /** `bindRovingKeys`' `move` for the list: a single flat sequence, so only
+   * Up/Down/Home/End apply -- there is no column axis for Left/Right to
+   * cross. */
+  function listRovingMove(current, key) {
+    var rows = Array.prototype.slice.call($("list-body").querySelectorAll("tr[data-id]"));
+    var idx = rows.indexOf(current);
+    if (key === "ArrowUp") return rows[idx - 1];
+    if (key === "ArrowDown") return rows[idx + 1];
+    if (key === "Home") return rows[0];
+    if (key === "End") return rows[rows.length - 1];
+    return null;
+  }
+
   // SH-128: card ordering within a column. `PRIORITY_URGENCY` is
   // deliberately its own table rather than a reuse of `PRIORITY_ORDER`
   // above — that one is an ascending-severity index (critical=0) tuned for
@@ -2332,6 +2473,7 @@ tbody tr:hover { background: var(--bg-sunken); }
    */
   function renderBoard(stories, anims) {
     var container = $("board-view");
+    var focusedId = focusedCardId(container, ".card[data-id]");
     var ready = readySet(), blocked = blockedSet();
     var byState = {};
     stories.forEach(function(v) {
@@ -2379,6 +2521,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 
     removeUnclaimedCards(container, claimed, reduceMotion);
     if (!reduceMotion) playFlip(container, firstRects);
+    syncRoving(container, ".card[data-id]", focusedId);
   }
 
   /** Rebuilds the column *shells* (header + empty `.column-cards`) only when
@@ -2439,9 +2582,17 @@ tbody tr:hover { background: var(--bg-sunken); }
    * moving in from a *different* column is reused too) via `populateCard`,
    * or builds a new one; marks every placed id `claimed` so the board-level
    * cleanup pass (`removeUnclaimedCards`) knows what's still wanted
-   * somewhere. Ordering is applied via `appendChild`, which *moves* an
+   * somewhere. Ordering is applied via `insertBefore`, which *moves* an
    * already-attached node rather than cloning it — the prerequisite for
-   * `playFlip` to animate a cross-column move as one continuous slide. */
+   * `playFlip` to animate a cross-column move as one continuous slide.
+   *
+   * A card already in the right spot is left alone rather than re-inserted
+   * (SH-197): `Node.insertBefore`/`appendChild`, even as a same-position
+   * no-op "move", runs the DOM's real remove-then-insert steps, which blurs
+   * a focused node per the HTML spec's unfocusing steps. This function used
+   * to `appendChild` unconditionally, every render, for every card — which
+   * silently stole keyboard focus off the roving stop the instant *any*
+   * story anywhere changed, defeating the point of `syncRoving` below. */
   function reconcileColumnCards(cardsEl, desiredCards, ready, blocked, isClosed, anims, reduceMotion, claimed, existingById) {
     if (!desiredCards.length) {
       if (!cardsEl.querySelector(".column-empty")) {
@@ -2452,6 +2603,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     var placeholder = cardsEl.querySelector(".column-empty");
     if (placeholder) placeholder.remove();
 
+    var cursor = cardsEl.firstElementChild;
     desiredCards.forEach(function(v) {
       var id = v.story.id;
       claimed[id] = true;
@@ -2467,28 +2619,44 @@ tbody tr:hover { background: var(--bg-sunken); }
         }
       }
       if (anims) applyChangeFlash(node, id, anims, reduceMotion);
-      cardsEl.appendChild(node);
+      if (node === cursor) {
+        cursor = cursor.nextElementSibling;
+      } else {
+        cardsEl.insertBefore(node, cursor);
+      }
     });
   }
 
   /** Removes any card left in the DOM that no story wanted this render —
    * genuinely gone (closed, deleted, filtered out), not just relocated to
    * a different column (a relocated card was already re-claimed by
-   * `reconcileColumnCards` via `appendChild`, so it's never "unclaimed"). */
+   * `reconcileColumnCards` via `appendChild`, so it's never "unclaimed").
+   *
+   * `syncRoving`'s own call at the end of `renderBoard` runs before any of
+   * this actually happens -- the exit animation defers the real `.remove()`
+   * by up to 600ms, so a card that's mid-exit is technically still in the
+   * DOM (and, if it held focus, still focused) when that call is made.
+   * `reclaimIfFocused` below is what catches focus at the moment the node
+   * genuinely leaves, whichever of the two removal paths gets there first. */
   function removeUnclaimedCards(container, claimed, reduceMotion) {
     container.querySelectorAll(".card[data-id]").forEach(function(node) {
       var id = node.dataset.id;
       if (claimed[id]) return;
-      if (reduceMotion) {
+      function reclaimIfFocused() {
+        var wasFocused = document.activeElement === node;
         node.remove();
+        if (wasFocused) syncRoving(container, ".card[data-id]", id);
+      }
+      if (reduceMotion) {
+        reclaimIfFocused();
         return;
       }
       node.classList.add("exiting");
-      node.addEventListener("animationend", function() { node.remove(); }, { once: true });
+      node.addEventListener("animationend", reclaimIfFocused, { once: true });
       // Safety net: guarantee removal even if `animationend` never fires
       // (e.g. an ancestor is hidden mid-animation) so a stale card can
       // never linger indefinitely.
-      setTimeout(function() { if (node.parentNode) node.remove(); }, 600);
+      setTimeout(function() { if (node.parentNode) reclaimIfFocused(); }, 600);
     });
   }
 
@@ -2554,7 +2722,12 @@ tbody tr:hover { background: var(--bg-sunken); }
    * here (for the initial fill) and directly on reuse. */
   function buildCard(v, ready, blocked, isClosed) {
     var id = v.story.id;
-    var card = el("div", { dataset: { id: id } }, []);
+    // role="button" + tabIndex (SH-197): every card starts as a Tab stop
+    // in principle -- `syncRoving` (called at the end of every `renderBoard`)
+    // is what actually keeps only one at `tabIndex=0`. Enter/Space/arrow
+    // handling is delegated from `#board-view` (`bindRovingKeys`, bound
+    // once in `bindShell`), not bound per card here.
+    var card = el("div", { dataset: { id: id }, role: "button", tabIndex: -1 }, []);
     card.addEventListener("click", function() { openDrawer(id); });
     card.addEventListener("dragstart", function(e) {
       card.classList.add("dragging");
@@ -2578,6 +2751,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     card.className = "card" + (state.pending[st.id] ? " pending" : "") + (draggable ? "" : " not-draggable");
     card.draggable = draggable;
     card.title = isClosed ? "Reopen from the detail view to move this card" : "";
+    card.setAttribute("aria-label", st.id + ": " + st.title);
     card.style.setProperty("--card-accent", priorityColor(st.priority));
 
     clear(card);
@@ -2768,6 +2942,7 @@ tbody tr:hover { background: var(--bg-sunken); }
    * enough to say "this one changed." */
   function renderList(stories, anims) {
     var body = $("list-body");
+    var focusedId = focusedCardId(body, "tr[data-id]");
     var ready = readySet(), blocked = blockedSet();
 
     var sorted = stories.slice().sort(function(a, b) {
@@ -2786,7 +2961,12 @@ tbody tr:hover { background: var(--bg-sunken); }
       if (row.dataset && row.dataset.id) existingById[row.dataset.id] = row;
     });
 
+    // A row already in the right spot is left alone rather than re-inserted
+    // (SH-197) -- see `reconcileColumnCards`'s identical comment: `appendChild`,
+    // even as a same-position no-op "move", blurs a focused node per the
+    // HTML spec's unfocusing steps.
     var claimed = {};
+    var cursor = body.firstElementChild;
     sorted.forEach(function(v) {
       var id = v.story.id;
       claimed[id] = true;
@@ -2797,17 +2977,30 @@ tbody tr:hover { background: var(--bg-sunken); }
         row = buildListRow(v, ready, blocked);
       }
       if (!reduceMotion && anims) applyRowFlash(row, id, anims);
-      body.appendChild(row);
+      if (row === cursor) {
+        cursor = cursor.nextElementSibling;
+      } else {
+        body.insertBefore(row, cursor);
+      }
     });
 
     Object.keys(existingById).forEach(function(id) {
       if (!claimed[id]) existingById[id].remove();
     });
+    // List rows are removed immediately above (no exit animation, unlike
+    // the board), so -- unlike `renderBoard` -- there is no deferred
+    // removal path that needs its own reclaim hook; this one call covers it.
+    syncRoving(body, "tr[data-id]", focusedId);
   }
 
   function buildListRow(v, ready, blocked) {
     var id = v.story.id;
-    var row = el("tr", { dataset: { id: id } }, []);
+    // See buildCard's identical comment: tabIndex/role make every row a
+    // potential Tab stop; `syncRoving` (called at the end of `renderList`)
+    // keeps only one of them at `tabIndex=0`. No `role="button"` override
+    // here -- a `<tr>` already has table-row semantics a screen reader
+    // handles correctly, and recasting it as a button would only lose that.
+    var row = el("tr", { dataset: { id: id }, tabIndex: -1 }, []);
     row.addEventListener("click", function() { openDrawer(id); });
     populateListRow(row, v, ready, blocked);
     return row;
@@ -2817,6 +3010,7 @@ tbody tr:hover { background: var(--bg-sunken); }
     var st = v.story;
     var updated = (st.updated_at || "").slice(0, 10);
     clear(row);
+    row.setAttribute("aria-label", st.id + ": " + st.title);
     var badge = buildTypeBadge(st.story_type);
     row.appendChild(el("td", { class: "col-id" }, badge ? [badge, " ", st.id] : [st.id]));
     row.appendChild(el("td", {}, [st.title]));
@@ -4711,6 +4905,13 @@ tbody tr:hover { background: var(--bg-sunken); }
       btn.addEventListener("click", function() { setView(btn.dataset.view); });
     });
     bindProjectSelector();
+    // SH-197: one delegated listener per view, not one per card/row --
+    // consistent with cards/rows already being reconciled in place rather
+    // than rebuilt every render.
+    bindRovingKeys($("board-view"), ".card[data-id]", boardRovingMove);
+    bindRovingFocus($("board-view"), ".card[data-id]");
+    bindRovingKeys($("list-body"), "tr[data-id]", listRovingMove);
+    bindRovingFocus($("list-body"), "tr[data-id]");
     $("home-btn").addEventListener("click", goHome);
     $("settings-btn").addEventListener("click", goSettings);
     // SH-175: the New Story modal no longer closes on a backdrop click or
