@@ -57,7 +57,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::daemon::http1::{Header, Method};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
 use crate::api::http::{Reply, mutation_guard_ok, text_reply};
@@ -101,14 +101,109 @@ const RETAIN_FOR: Duration = Duration::from_secs(30 * 60);
 /// at most; a hard `set -e` abort's stderr is rarely more than a few lines.
 const MAX_CAPTURE_BYTES: u64 = 64 * 1024;
 
+/// The taxonomy behind a non-[`Ok`](DispatchState::Ok) terminal
+/// [`DispatchRecord`] (SH-232) — read by [`classify`] from `story.sh`'s own
+/// `reason` field (`refuse`/`refuse_with`, `plugin/claude-code/lib/
+/// session.sh`) instead of leaving it reachable only by parsing
+/// [`DispatchRecord::payload`]. A plain `fail()` refusal (no claim word, not
+/// ready — see `story.sh`'s own guard order) carries no `reason` field at
+/// all, so its record's `reason` stays `None`; that is a real, meaningful
+/// absence, not a gap this type papers over.
+///
+/// [`Other`](Self::Other) is the forward-compat escape hatch: a `story.sh`
+/// newer than the daemon serving it can add a reason this binary has never
+/// heard of (protocol-compatible additions don't bump
+/// [`REQUIRED_DISPATCH_PROTOCOL`]), and dropping that string on the floor —
+/// reporting bare `refused` with nothing further — is exactly the
+/// context-dropping CLAUDE.md's error-handling rule forbids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DispatchReason {
+    /// `story.sh`'s claim compare-and-swap lost a race to another dispatch.
+    ClaimConflict,
+    /// The tmux pane could not be confirmed to be running the launch binary
+    /// within the readiness gate's timeout (I1 DISPATCH-PROVEN-OCCUPANT).
+    PaneNotReady,
+    /// The pane was confirmed ready, but the pasted prompt never reached its
+    /// input box — nothing was submitted (I2 SUBMIT-AFTER-RECEIPT).
+    HandoffUndelivered,
+    /// The prompt reached the input box, but submission was never
+    /// confirmed. The claim and worktree are left in place: the agent may
+    /// already be working.
+    HandoffUnconfirmed,
+    /// This daemon refused to dispatch at all, before ever running
+    /// `story.sh`, because one of its own inherited `STORY_PROMPT` /
+    /// `STORY_AUTO_PROMPT` / `STORY_PROMPT_EXTRA` values violates I4
+    /// CHARTER-INERT (SH-232's runtime-enforcement rider). See
+    /// [`prompt_override_violation`].
+    UnsafePromptOverride,
+    /// A reason string this binary does not recognize, carried verbatim
+    /// rather than dropped.
+    Other(String),
+}
+
+impl DispatchReason {
+    /// `story.sh`'s own reason string for a known variant, or the carried
+    /// string for [`Other`](Self::Other) — round-trips through
+    /// [`Self::parse`] byte for byte.
+    fn as_str(&self) -> &str {
+        match self {
+            Self::ClaimConflict => "claim-conflict",
+            Self::PaneNotReady => "pane-not-ready",
+            Self::HandoffUndelivered => "handoff-undelivered",
+            Self::HandoffUnconfirmed => "handoff-unconfirmed",
+            Self::UnsafePromptOverride => "unsafe-prompt-override",
+            Self::Other(raw) => raw,
+        }
+    }
+
+    /// Maps a `reason` string as `story.sh` (or this module's own
+    /// [`prompt_override_violation`] refusal) emits it to a typed variant,
+    /// never failing: an unrecognized string becomes
+    /// [`Other`](Self::Other) rather than an error, so a shell newer than
+    /// this binary is forward-compatible by construction.
+    fn parse(raw: &str) -> Self {
+        match raw {
+            "claim-conflict" => Self::ClaimConflict,
+            "pane-not-ready" => Self::PaneNotReady,
+            "handoff-undelivered" => Self::HandoffUndelivered,
+            "handoff-unconfirmed" => Self::HandoffUnconfirmed,
+            "unsafe-prompt-override" => Self::UnsafePromptOverride,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+/// Serializes as the bare reason string (`"pane-not-ready"`, not
+/// `{"PaneNotReady": null}`) so a dashboard reads it exactly as `story.sh`
+/// wrote it, and [`Self::Other`] costs the wire format nothing extra either.
+impl Serialize for DispatchReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// The inverse of the `Serialize` impl above — round-trips
+/// [`DispatchRecord`] through [`persist_dispatch_history`] /
+/// [`load_dispatch_history`] without a lossy detour through a generic JSON
+/// enum representation.
+impl<'de> Deserialize<'de> for DispatchReason {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::parse(&String::deserialize(deserializer)?))
+    }
+}
+
 /// One dispatch's lifecycle, as reported to a polling client.
 ///
-/// `finished_at`, `payload` and `error` are absent while [`DispatchState`]
-/// is [`Running`](DispatchState::Running) and present in every terminal
-/// state — `skip_serializing_if` rather than always emitting `null`, so a
-/// client's presence check (`"finished_at" in record`) is the same idiom
-/// the rest of this API already uses for an absent value.
-#[derive(Clone, Debug, Serialize)]
+/// `finished_at`, `payload`, `error` and `reason` are absent while
+/// [`DispatchState`] is [`Running`](DispatchState::Running) —
+/// `skip_serializing_if` rather than always emitting `null`, so a client's
+/// presence check (`"finished_at" in record`) is the same idiom the rest of
+/// this API already uses for an absent value. `#[serde(default)]` alongside
+/// it on every one of those fields is what makes that omission round-trip:
+/// [`load_dispatch_history`] deserializes exactly what
+/// [`persist_dispatch_history`] wrote, and an absent key must not become a
+/// parse error there.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DispatchRecord {
     /// Opaque id a client polls with. Never reused.
     pub handle: String,
@@ -127,22 +222,28 @@ pub struct DispatchRecord {
     /// RFC3339, when this record was created.
     pub started_at: String,
     /// RFC3339, set once `state` leaves [`Running`](DispatchState::Running).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     /// `story.sh`'s own JSON result, relayed verbatim — present for
     /// [`Ok`](DispatchState::Ok) and [`Refused`](DispatchState::Refused),
     /// since a refusal is a well-formed result the script chose to report,
     /// not a failure of the script itself.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
     /// Set only for [`Failed`](DispatchState::Failed): the script could not
     /// be run, did not finish, or exited without printing a result.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The typed reason behind a [`Refused`](DispatchState::Refused) record
+    /// (SH-232) — see [`DispatchReason`]. Absent for
+    /// [`Ok`](DispatchState::Ok), for [`Failed`](DispatchState::Failed), and
+    /// for a `fail()`-shaped refusal that carries no `reason` field at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<DispatchReason>,
 }
 
 /// Where one dispatch attempt stands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DispatchState {
     /// The subprocess is still running.
@@ -213,18 +314,71 @@ enum StartOutcome {
     AtCapacity,
 }
 
-/// Tracks every dispatch this daemon has started, in memory only. Restarting
-/// the daemon forgets every record — a dispatch that outlives the request
-/// that started it does not need its bookkeeping to outlive the daemon.
+/// Tracks every dispatch this daemon has started. Every record starts life
+/// in memory only; [`Self::load`] (SH-232) is what makes a *finished* one
+/// survive a restart, by seeding fresh in-memory state from
+/// [`Environment::dispatch_history`] rather than by reaching across
+/// restarts some other way — the persisted file is a snapshot [`Self::finish`]
+/// writes, read back exactly once, at the moment a new registry is built.
 pub struct DispatchRegistry {
     inner: Mutex<Inner>,
+    /// `Some` only for a registry built via [`Self::load`] — the real
+    /// daemon's own registry. `None` for every [`Self::new`] (every test in
+    /// this module, and any future caller that wants a registry with no
+    /// filesystem footprint at all): [`Self::finish`] persists nothing when
+    /// this is `None`, so a plain `new()` stays exactly as pure and
+    /// in-memory as it always was.
+    persist_env: Option<Environment>,
 }
 
 impl DispatchRegistry {
     pub fn new() -> Self {
         DispatchRegistry {
             inner: Mutex::new(Inner::default()),
+            persist_env: None,
         }
+    }
+
+    /// A registry seeded from whatever the previous daemon on this store
+    /// last persisted (SH-232), and that itself persists every completion
+    /// from here on — the constructor the real daemon uses; every test in
+    /// this module keeps using the pure in-memory [`Self::new`] instead.
+    ///
+    /// Only ever loads a *terminal* record: [`Environment::dispatch_history`]'s
+    /// own doc explains why a dispatch still
+    /// [`Running`](DispatchState::Running) when the previous daemon exited
+    /// is never in that file to begin with. Defensive rather than trusting
+    /// (skips a `Running` record if one is somehow found anyway) because
+    /// resurrecting a "running" dispatch this daemon never started, with no
+    /// child process behind it, would strand a client polling a handle that
+    /// can never move again.
+    pub fn load(env: &Environment) -> Self {
+        let mut registry = Self::new();
+        {
+            let mut inner = registry.inner.lock().expect("dispatch registry lock");
+            for record in load_dispatch_history(env) {
+                if record.state == DispatchState::Running {
+                    continue;
+                }
+                inner.finished_order.push_back(record.handle.clone());
+                inner.entries.insert(
+                    record.handle.clone(),
+                    Entry {
+                        record,
+                        // The real elapsed time since the *previous*
+                        // daemon's finish is unrecoverable -- `Instant` is
+                        // process-local and does not survive serialization.
+                        // Treating a freshly-loaded record as "just
+                        // finished" only widens its RETAIN_FOR window
+                        // slightly across a restart; RETAIN_FINISHED's
+                        // count-based cap is unaffected either way.
+                        finished_instant: Some(Instant::now()),
+                    },
+                );
+            }
+        }
+        registry.persist_env = Some(env.clone());
+        registry
     }
 
     /// Reserves a slot for a new dispatch of `story` under `project`, or
@@ -271,6 +425,7 @@ impl DispatchRegistry {
                     finished_at: None,
                     payload: None,
                     error: None,
+                    reason: None,
                 },
                 finished_instant: None,
             },
@@ -294,26 +449,60 @@ impl DispatchRegistry {
 
     /// Records `handle`'s outcome and releases its story back to the
     /// running set, so the next `POST` for that story starts fresh.
+    /// `classification` takes [`run_child`]/[`classify`]'s own return shape
+    /// directly (rather than four trailing parameters) so a caller passes
+    /// through exactly what it got, and so this signature does not grow a
+    /// fifth positional argument the next time [`Classification`] does.
+    ///
+    /// Persists the bounded finished set to disk (SH-232) when this
+    /// registry was built via [`Self::load`] — the snapshot is taken, and
+    /// the mutex released, before the write happens, so a slow or full
+    /// filesystem never holds up `try_start`/`get`/`finish` on another
+    /// thread (each holds `inner`'s lock too, from an HTTP handler's own
+    /// call stack for the first two).
+    ///
+    /// Two concurrent `finish()` calls (up to [`MAX_RUNNING`] can overlap)
+    /// therefore have no ordering guarantee between their two *disk writes*
+    /// — each snapshot is correct as of its own mutation, but the file
+    /// system could apply them in either order, so the persisted file could
+    /// transiently reflect the earlier of the two. Deliberately not fixed
+    /// by writing inside the lock: this is a snapshot of the in-memory
+    /// registry, not the registry itself, so a stale disk copy self-heals
+    /// on the very next dispatch to finish, whenever that is — and holding
+    /// `inner`'s lock across a filesystem write would make an unrelated
+    /// `POST`/`GET` briefly hostage to that write.
     fn finish(
         &self,
         handle: &str,
         story: &str,
-        state: DispatchState,
         finished_at: String,
-        payload: Option<serde_json::Value>,
-        error: Option<String>,
+        classification: Classification,
     ) {
-        let mut inner = self.inner.lock().expect("dispatch registry lock");
-        if let Some(entry) = inner.entries.get_mut(handle) {
-            entry.record.state = state;
-            entry.record.finished_at = Some(finished_at);
-            entry.record.payload = payload;
-            entry.record.error = error;
-            entry.finished_instant = Some(Instant::now());
+        let (state, payload, error, reason) = classification;
+        let snapshot = {
+            let mut inner = self.inner.lock().expect("dispatch registry lock");
+            if let Some(entry) = inner.entries.get_mut(handle) {
+                entry.record.state = state;
+                entry.record.finished_at = Some(finished_at);
+                entry.record.payload = payload;
+                entry.record.error = error;
+                entry.record.reason = reason;
+                entry.finished_instant = Some(Instant::now());
+            }
+            inner.running_by_story.remove(story);
+            inner.finished_order.push_back(handle.to_string());
+            Self::evict(&mut inner);
+            self.persist_env.is_some().then(|| {
+                inner
+                    .finished_order
+                    .iter()
+                    .filter_map(|h| inner.entries.get(h).map(|entry| entry.record.clone()))
+                    .collect::<Vec<_>>()
+            })
+        };
+        if let (Some(records), Some(env)) = (snapshot, &self.persist_env) {
+            persist_dispatch_history(env, &records);
         }
-        inner.running_by_story.remove(story);
-        inner.finished_order.push_back(handle.to_string());
-        Self::evict(&mut inner);
     }
 
     /// Drops finished records beyond [`RETAIN_FINISHED`] or older than
@@ -345,6 +534,57 @@ impl Default for DispatchRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Writes `records` to [`Environment::dispatch_history`], temp-plus-`rename`
+/// and mode 0600 — the same shape as `daemon::lifecycle::publish_inflight`
+/// and for the same reason: a client that read a half-written file mid-write
+/// would see a truncated or torn JSON array.
+///
+/// **Best-effort, and never fatal** (mirrors `publish_inflight`'s own rule):
+/// a state directory that is full, missing or read-only must still let the
+/// dispatch that finished report its OWN result to the caller polling it —
+/// failing here would replace a good answer with a bad diagnostic about a
+/// diagnostic.
+fn persist_dispatch_history(env: &Environment, records: &[DispatchRecord]) {
+    let path = env.dispatch_history();
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let Ok(document) = serde_json::to_string(records) else {
+        return;
+    };
+    let temp = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let Ok(mut file) = options.open(&temp) else {
+        return;
+    };
+    if std::io::Write::write_all(&mut file, document.as_bytes()).is_err() {
+        return;
+    }
+    drop(file);
+    let _ = std::fs::rename(&temp, &path);
+}
+
+/// Reads back whatever the previous daemon (if any) last persisted via
+/// [`persist_dispatch_history`]. Absent file (no previous daemon ever
+/// finished a dispatch on this store, or nothing has been written yet) and a
+/// parse failure (a stale format from an older binary — the write above is
+/// atomic, so a torn read is not possible, but an incompatible one is) both
+/// read as "no history" rather than as an error — the same choice
+/// `daemon::lifecycle::read_inflight` makes for the same reason: a fresh
+/// daemon must never refuse to start over a file it no longer understands.
+fn load_dispatch_history(env: &Environment) -> Vec<DispatchRecord> {
+    let Ok(raw) = std::fs::read_to_string(env.dispatch_history()) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
 }
 
 /// A project slug or story id, validated against the shape `story.sh` itself
@@ -523,6 +763,16 @@ fn handle_get(handle: &str, registry: &DispatchRegistry) -> Reply {
     }
 }
 
+/// `(state, payload, error, reason)` — [`run_child`] and [`classify`]'s
+/// shared return shape, named once so the growing tuple stays readable at
+/// each of their several return sites.
+type Classification = (
+    DispatchState,
+    Option<serde_json::Value>,
+    Option<String>,
+    Option<DispatchReason>,
+);
+
 /// Spawns `script --project <project> dispatch <story> [--auto]` on a
 /// detached thread and records its outcome when it finishes. Never touches
 /// the store: everything this needs travels in its arguments.
@@ -538,13 +788,105 @@ fn spawn_dispatch(
     bus: ChangeBus,
 ) {
     std::thread::spawn(move || {
-        let (state, payload, error) = run_child(&script, &project, &story, auto, &env);
-        registry.finish(&handle, &story, state, env.now(), payload, error);
+        let classification = run_child(&script, &project, &story, auto, &env);
+        registry.finish(&handle, &story, env.now(), classification);
         // Lets an open dashboard tab refresh without polling this endpoint
         // itself — the story moved to in-progress (or didn't), and the
         // ordinary `repo-changed` handling already knows how to react.
         bus.publish(Change::Project(project));
     });
+}
+
+/// I4 CHARTER-INERT's banned set (`.rca/dispatch-types-the-agent-charter/
+/// REMEDIATION.md` item 4): none of these, nor a newline, may appear in text
+/// a dispatch pastes into a shell-backed pane. `story.sh`'s own Part A lint
+/// covers the *shipped* templates; this is the runtime-enforcement rider
+/// (SH-232) over a *user override* of them, which that lint cannot see.
+const CHARTER_INERT_BANNED: [char; 8] = ['`', '$', ';', '&', '|', '<', '>', '!'];
+
+/// `story.sh`'s `render_template` (`lib/session.sh`) substitutes exactly
+/// these four literal tokens, and only these, before a template ever
+/// reaches a pane. A *template* — as opposed to the text it renders to —
+/// legitimately contains `<`/`>` as part of one of them: the shipped
+/// default `PROMPT_TPL` itself reads "...for story <n> in this repo.", and
+/// a user override is expected to use the same placeholder syntax to
+/// reference the story id, window name, checkout dir or reap command.
+/// [`charter_inert_violation`] must not flag that legitimate usage while
+/// still catching a stray `<`/`>` anywhere else in the value.
+const TEMPLATE_PLACEHOLDERS: [&str; 4] = ["<name>", "<dir>", "<reap>", "<n>"];
+
+/// Whether `value` — a raw *template* string, not yet substituted — would
+/// violate I4 CHARTER-INERT once `render_template` finishes with it.
+///
+/// Checks the banned set against `value` with every
+/// [`TEMPLATE_PLACEHOLDERS`] occurrence first removed, since those four
+/// tokens are consumed by substitution rather than surviving into the
+/// rendered text, and each legitimately contains `<`/`>`. The values they
+/// are replaced BY (a story id, a window name, a checkout path, a
+/// `reap` command) are internally constructed rather than free user text,
+/// so they are out of scope for this check — the same boundary
+/// REMEDIATION.md's own item 4 draws around `render_template`'s inputs.
+fn charter_inert_violation(value: &str) -> bool {
+    let mut stripped = value.to_string();
+    for token in TEMPLATE_PLACEHOLDERS {
+        stripped = stripped.replace(token, "");
+    }
+    stripped.contains(CHARTER_INERT_BANNED) || stripped.contains('\n')
+}
+
+/// The three env vars `story.sh` reads as user overrides of the rendered
+/// handoff text (`render_template`'s `PROMPT_TPL`/`AUTO_PROMPT_TPL`/
+/// `PROMPT_EXTRA`) — the names [`prompt_override_violation`] checks and
+/// [`run_child`] reads from this daemon's own inherited environment.
+const PROMPT_OVERRIDE_ENV_VARS: [&str; 3] =
+    ["STORY_PROMPT", "STORY_AUTO_PROMPT", "STORY_PROMPT_EXTRA"];
+
+/// Checks whichever of `story_prompt` / `story_auto_prompt` /
+/// `story_prompt_extra` this dispatch's mode would actually feed to
+/// `story.sh` against I4 CHARTER-INERT — a pure function of the three
+/// already-read values, deliberately, rather than one that reads
+/// `std::env::var` itself: process environment is global state, and reading
+/// it directly here would make every caller either mutate the real process
+/// environment to test this (racing every other test in the same binary,
+/// since `cargo test` runs them in parallel within one process) or not test
+/// it at all. [`run_child`] is the one real caller and does the actual
+/// reads.
+///
+/// `run_child`'s `Command` never calls `env_clear`, so any of the three, if
+/// set anywhere in the daemon's own process environment, flows straight
+/// through to the child unfiltered (SH-232's own finding). `story.sh`'s
+/// `render_template` does pure literal substring substitution — no shell
+/// interpretation of its own — so a template and `PROMPT_EXTRA` that are
+/// each individually free of the banned set produce a rendered result that
+/// is too; checking the raw override values here, before the child is ever
+/// spawned, is therefore sufficient to enforce I4 over them without
+/// duplicating `render_template`'s substitution logic in Rust.
+///
+/// Only the template relevant to `auto` is checked — `story_prompt` for an
+/// attended dispatch, `story_auto_prompt` for `--auto` — matching
+/// `story.sh`'s own `prompt_tpl` selection, so an unrelated bad override in
+/// the *other* mode's template does not refuse a dispatch that would never
+/// have read it. `story_prompt_extra` applies to both, since `story.sh`
+/// appends it to either template unconditionally.
+///
+/// Returns the violating env var's name (one of
+/// [`PROMPT_OVERRIDE_ENV_VARS`]) on a hit, `None` when the relevant values
+/// are absent or clean.
+fn prompt_override_violation(
+    auto: bool,
+    story_prompt: Option<&str>,
+    story_auto_prompt: Option<&str>,
+    story_prompt_extra: Option<&str>,
+) -> Option<&'static str> {
+    let template = if auto {
+        ("STORY_AUTO_PROMPT", story_auto_prompt)
+    } else {
+        ("STORY_PROMPT", story_prompt)
+    };
+    [template, ("STORY_PROMPT_EXTRA", story_prompt_extra)]
+        .into_iter()
+        .find(|(_, value)| value.is_some_and(charter_inert_violation))
+        .map(|(name, _)| name)
 }
 
 /// Runs one dispatch child to completion (or to [`DISPATCH_TIMEOUT`]) and
@@ -555,7 +897,41 @@ fn run_child(
     story: &str,
     auto: bool,
     env: &Environment,
-) -> (DispatchState, Option<serde_json::Value>, Option<String>) {
+) -> Classification {
+    let [story_prompt, story_auto_prompt, story_prompt_extra] =
+        PROMPT_OVERRIDE_ENV_VARS.map(|name| std::env::var(name).ok());
+    let violation = prompt_override_violation(
+        auto,
+        story_prompt.as_deref(),
+        story_auto_prompt.as_deref(),
+        story_prompt_extra.as_deref(),
+    );
+    if let Some(name) = violation {
+        // Refused before `story.sh` is ever run: nothing was typed into any
+        // pane, no worktree or claim exists to roll back. Synthesized in
+        // the same {ok, reason, display} shape `refuse_with` itself emits,
+        // so a dashboard reading `record.payload.display` cannot tell this
+        // refusal from one `story.sh` produced.
+        let display = format!(
+            "[story] refused to dispatch {story} — this daemon's own ${name} \
+             environment value contains a character CHARTER-INERT bans (one \
+             of ` $ ; & | < > ! or a newline) and would be pasted into a \
+             live shell-backed pane verbatim. Fix ${name} in the daemon's \
+             own environment and restart it, then retry."
+        );
+        return (
+            DispatchState::Refused,
+            Some(serde_json::json!({
+                "ok": false,
+                "reason": DispatchReason::UnsafePromptOverride.as_str(),
+                "display": display,
+                "env_var": name,
+            })),
+            None,
+            Some(DispatchReason::UnsafePromptOverride),
+        );
+    }
+
     let stdout_file = match tempfile::tempfile() {
         Ok(file) => file,
         Err(e) => {
@@ -563,6 +939,7 @@ fn run_child(
                 DispatchState::Failed,
                 None,
                 Some(format!("could not stage dispatch output: {e}")),
+                None,
             );
         }
     };
@@ -573,6 +950,7 @@ fn run_child(
                 DispatchState::Failed,
                 None,
                 Some(format!("could not stage dispatch output: {e}")),
+                None,
             );
         }
     };
@@ -583,6 +961,7 @@ fn run_child(
                 DispatchState::Failed,
                 None,
                 Some(format!("could not stage dispatch output: {e}")),
+                None,
             );
         }
     };
@@ -642,6 +1021,7 @@ fn run_child(
                 DispatchState::Failed,
                 None,
                 Some(format!("failed to start the dispatch script: {e}")),
+                None,
             );
         }
     };
@@ -667,12 +1047,14 @@ fn run_child(
                     "dispatch did not finish within {}s and was terminated",
                     DISPATCH_TIMEOUT.as_secs()
                 )),
+                None,
             )
         }
         Err(e) => (
             DispatchState::Failed,
             None,
             Some(format!("could not wait for the dispatch process: {e}")),
+            None,
         ),
     }
 }
@@ -681,11 +1063,12 @@ fn run_child(
 /// emits exactly one JSON object on stdout on any deliberate exit path
 /// (`fail`/`refuse`/success alike); a `set -e` abort before that point is
 /// the one case with nothing parseable, which is what distinguishes
-/// [`DispatchState::Failed`] from a business [`DispatchState::Refused`].
-fn classify(
-    stdout_file: std::fs::File,
-    stderr_file: std::fs::File,
-) -> (DispatchState, Option<serde_json::Value>, Option<String>) {
+/// [`DispatchState::Failed`] from a business [`DispatchState::Refused`]. The
+/// `reason` element is [`DispatchReason::parse`] of the JSON's own `reason`
+/// field (SH-232) when present — absent for a `fail()`-shaped refusal, which
+/// carries no such field, and always absent for [`DispatchState::Failed`]
+/// since there is no parsed object to read one from.
+fn classify(stdout_file: std::fs::File, stderr_file: std::fs::File) -> Classification {
     let stdout = read_capture(stdout_file);
     match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
         Ok(value) => {
@@ -695,7 +1078,11 @@ fn classify(
             } else {
                 DispatchState::Refused
             };
-            (state, Some(value), None)
+            let reason = value
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .map(DispatchReason::parse);
+            (state, Some(value), None, reason)
         }
         Err(_) => {
             let stderr = read_capture(stderr_file);
@@ -704,7 +1091,7 @@ fn classify(
             } else {
                 stderr.trim().to_string()
             };
-            (DispatchState::Failed, None, Some(message))
+            (DispatchState::Failed, None, Some(message), None)
         }
     }
 }
@@ -1192,10 +1579,13 @@ mod tests {
         registry.finish(
             &handle,
             "SH-1",
-            DispatchState::Ok,
             "t1".to_string(),
-            Some(serde_json::json!({"ok": true})),
-            None,
+            (
+                DispatchState::Ok,
+                Some(serde_json::json!({"ok": true})),
+                None,
+                None,
+            ),
         );
         match registry.try_start("proj", "SH-1", false, "t2".to_string()) {
             StartOutcome::Started(second) => assert_ne!(second, handle),
@@ -1240,10 +1630,13 @@ mod tests {
             registry.finish(
                 &handle,
                 &format!("SH-{n}"),
-                DispatchState::Ok,
                 "t".to_string(),
-                Some(serde_json::json!({"ok": true})),
-                None,
+                (
+                    DispatchState::Ok,
+                    Some(serde_json::json!({"ok": true})),
+                    None,
+                    None,
+                ),
             );
             handles.push(handle);
         }
@@ -1257,42 +1650,448 @@ mod tests {
         );
     }
 
+    /// A plain `new()` — every test above this one — must never touch a
+    /// filesystem at all, even when `finish()` is called: only [`load`]
+    /// wires up `persist_env`. Verified against a home that does not exist,
+    /// same as the `env()` placeholder helper's own doc: if `finish()`
+    /// tried to write here it would have to create directories first, and
+    /// this test would see them.
+    #[test]
+    fn new_never_persists_regardless_of_finish() {
+        let registry = DispatchRegistry::new();
+        let handle = match registry.try_start("proj", "SH-1", false, "t0".to_string()) {
+            StartOutcome::Started(h) => h,
+            other => panic!("expected Started: {other:?}"),
+        };
+        registry.finish(
+            &handle,
+            "SH-1",
+            "t1".to_string(),
+            (
+                DispatchState::Ok,
+                Some(serde_json::json!({"ok": true})),
+                None,
+                None,
+            ),
+        );
+        assert!(
+            !env().dispatch_history().exists(),
+            "a plain new() registry must never write dispatch history to disk"
+        );
+    }
+
+    #[test]
+    fn load_with_no_prior_history_starts_empty() {
+        let home = storyhook_test_support::scratch_dir();
+        let registry = DispatchRegistry::load(&Environment::at(home.path()));
+        match registry.try_start("proj", "SH-1", false, "t0".to_string()) {
+            StartOutcome::Started(_) => {}
+            other => panic!("a freshly loaded registry must start empty: {other:?}"),
+        }
+    }
+
+    /// SH-232's central claim: a finished dispatch survives the daemon that
+    /// finished it. `finish()` on one `load()`-backed registry persists;
+    /// `load()` on a second, independent registry (a fresh daemon, same
+    /// store) reads it back — including the typed `reason`, round-tripped
+    /// rather than degraded to an untyped payload lookup.
+    #[test]
+    fn a_finished_dispatch_survives_across_a_reload() {
+        let home = storyhook_test_support::scratch_dir();
+        let env = Environment::at(home.path());
+        let first = DispatchRegistry::load(&env);
+        let handle = match first.try_start("proj", "SH-1", true, "t0".to_string()) {
+            StartOutcome::Started(h) => h,
+            other => panic!("expected Started: {other:?}"),
+        };
+        first.finish(
+            &handle,
+            "SH-1",
+            "t1".to_string(),
+            (
+                DispatchState::Refused,
+                Some(serde_json::json!({"ok": false, "reason": "pane-not-ready"})),
+                None,
+                Some(DispatchReason::PaneNotReady),
+            ),
+        );
+
+        let second = DispatchRegistry::load(&env);
+        let record = second
+            .get(&handle)
+            .expect("a finished record must survive a fresh registry load");
+        assert_eq!(record.state, DispatchState::Refused);
+        assert_eq!(record.reason, Some(DispatchReason::PaneNotReady));
+        assert!(record.auto, "auto must survive the round trip too");
+        assert_eq!(record.story, "SH-1");
+    }
+
+    /// [`Environment::dispatch_history`]'s own doc: a dispatch still
+    /// `Running` has no thread left to observe it once its daemon exits, so
+    /// it must never appear in a loaded registry even if a corrupted or
+    /// hand-edited history file somehow contains one — resurrecting a
+    /// handle nothing can ever finish would strand a polling client.
+    #[test]
+    fn load_skips_a_running_record_found_in_history() {
+        let home = storyhook_test_support::scratch_dir();
+        let env = Environment::at(home.path());
+        let stray = DispatchRecord {
+            handle: "stray-handle".to_string(),
+            project: "proj".to_string(),
+            story: "SH-9".to_string(),
+            auto: false,
+            state: DispatchState::Running,
+            started_at: "t0".to_string(),
+            finished_at: None,
+            payload: None,
+            error: None,
+            reason: None,
+        };
+        persist_dispatch_history(&env, std::slice::from_ref(&stray));
+
+        let registry = DispatchRegistry::load(&env);
+        assert!(
+            registry.get("stray-handle").is_none(),
+            "a Running record in history must never be resurrected"
+        );
+    }
+
+    /// A daemon restart between two `finish()` calls must not lose the
+    /// first one — the second `load()`'s write has to include what the
+    /// first `load()` already persisted, not just its own record.
+    #[test]
+    fn history_accumulates_across_more_than_one_reload() {
+        let home = storyhook_test_support::scratch_dir();
+        let env = Environment::at(home.path());
+
+        let first = DispatchRegistry::load(&env);
+        let h1 = match first.try_start("proj", "SH-1", false, "t0".to_string()) {
+            StartOutcome::Started(h) => h,
+            other => panic!("expected Started: {other:?}"),
+        };
+        first.finish(
+            &h1,
+            "SH-1",
+            "t1".to_string(),
+            (
+                DispatchState::Ok,
+                Some(serde_json::json!({"ok": true})),
+                None,
+                None,
+            ),
+        );
+
+        let second = DispatchRegistry::load(&env);
+        let h2 = match second.try_start("proj", "SH-2", false, "t2".to_string()) {
+            StartOutcome::Started(h) => h,
+            other => panic!("expected Started: {other:?}"),
+        };
+        second.finish(
+            &h2,
+            "SH-2",
+            "t3".to_string(),
+            (
+                DispatchState::Ok,
+                Some(serde_json::json!({"ok": true})),
+                None,
+                None,
+            ),
+        );
+
+        let third = DispatchRegistry::load(&env);
+        assert!(
+            third.get(&h1).is_some(),
+            "the first daemon's record must survive a second restart"
+        );
+        assert!(
+            third.get(&h2).is_some(),
+            "the second daemon's record must also be present"
+        );
+    }
+
     #[test]
     fn classify_reports_ok_for_a_successful_result() {
-        let (state, payload, error) =
+        let (state, payload, error, reason) =
             classify(capture_of(r#"{"ok":true,"id":"SH-1"}"#), capture_of(""));
         assert_eq!(state, DispatchState::Ok);
         assert_eq!(payload.unwrap()["id"], "SH-1");
         assert!(error.is_none());
+        assert!(reason.is_none(), "a success carries no reason to report");
     }
 
     #[test]
     fn classify_reports_refused_for_a_well_formed_refusal() {
-        let (state, payload, error) = classify(
+        let (state, payload, error, reason) = classify(
             capture_of(r#"{"ok":false,"display":"not ready"}"#),
             capture_of(""),
         );
         assert_eq!(state, DispatchState::Refused);
         assert_eq!(payload.unwrap()["display"], "not ready");
         assert!(error.is_none());
+        assert!(
+            reason.is_none(),
+            "a fail()-shaped refusal has no `reason` field to read"
+        );
+    }
+
+    /// The taxonomy's whole point (SH-232): a `refuse_with`-shaped refusal's
+    /// `reason` field must not be left stranded inside `payload`.
+    #[test]
+    fn classify_reads_a_known_reason_out_of_a_refusal() {
+        let (state, payload, _error, reason) = classify(
+            capture_of(r#"{"ok":false,"reason":"pane-not-ready","display":"could not confirm"}"#),
+            capture_of(""),
+        );
+        assert_eq!(state, DispatchState::Refused);
+        assert_eq!(reason, Some(DispatchReason::PaneNotReady));
+        // The reason is TYPED, not REMOVED from payload -- an older client
+        // reading payload.reason directly must keep working unchanged.
+        assert_eq!(payload.unwrap()["reason"], "pane-not-ready");
+    }
+
+    /// Every reason `story.sh`'s `dispatch` command can actually emit
+    /// (`refuse`/`refuse_with` call sites in `plugin/claude-code/bin/
+    /// story.sh` and `lib/session.sh`), pinned so a renamed reason string on
+    /// either side is caught here rather than silently degrading to
+    /// [`DispatchReason::Other`].
+    #[test]
+    fn classify_reads_every_known_reason() {
+        let cases = [
+            ("claim-conflict", DispatchReason::ClaimConflict),
+            ("pane-not-ready", DispatchReason::PaneNotReady),
+            ("handoff-undelivered", DispatchReason::HandoffUndelivered),
+            ("handoff-unconfirmed", DispatchReason::HandoffUnconfirmed),
+        ];
+        for (raw, expected) in cases {
+            let (_state, _payload, _error, reason) = classify(
+                capture_of(&format!(r#"{{"ok":false,"reason":"{raw}"}}"#)),
+                capture_of(""),
+            );
+            assert_eq!(reason, Some(expected), "reason string {raw:?}");
+        }
+    }
+
+    /// Forward compatibility (SH-232's whole reason for `Other`): a
+    /// `story.sh` newer than this binary can emit a reason this binary has
+    /// never heard of, and the string must survive rather than vanish.
+    #[test]
+    fn classify_carries_an_unrecognized_reason_as_other_rather_than_dropping_it() {
+        let (_state, _payload, _error, reason) = classify(
+            capture_of(r#"{"ok":false,"reason":"a-future-reason","display":"..."}"#),
+            capture_of(""),
+        );
+        assert_eq!(
+            reason,
+            Some(DispatchReason::Other("a-future-reason".to_string()))
+        );
     }
 
     #[test]
     fn classify_reports_failed_for_unparseable_output_and_carries_stderr() {
-        let (state, payload, error) = classify(
+        let (state, payload, error, reason) = classify(
             capture_of("not json at all"),
             capture_of("bash: jq: command not found"),
         );
         assert_eq!(state, DispatchState::Failed);
         assert!(payload.is_none());
         assert!(error.unwrap().contains("jq: command not found"));
+        assert!(reason.is_none());
     }
 
     #[test]
     fn classify_reports_failed_with_a_generic_message_when_nothing_was_said_at_all() {
-        let (state, _payload, error) = classify(capture_of(""), capture_of(""));
+        let (state, _payload, error, reason) = classify(capture_of(""), capture_of(""));
         assert_eq!(state, DispatchState::Failed);
         assert!(error.unwrap().contains("without printing a result"));
+        assert!(reason.is_none());
+    }
+
+    /// [`DispatchReason`]'s own round trip: serialize as the bare string,
+    /// deserialize back to the same typed variant -- what makes
+    /// `persist_dispatch_history`/`load_dispatch_history` lossless for a
+    /// finished record's reason.
+    #[test]
+    fn dispatch_reason_round_trips_through_json_including_other() {
+        for reason in [
+            DispatchReason::ClaimConflict,
+            DispatchReason::PaneNotReady,
+            DispatchReason::HandoffUndelivered,
+            DispatchReason::HandoffUnconfirmed,
+            DispatchReason::UnsafePromptOverride,
+            DispatchReason::Other("something-new".to_string()),
+        ] {
+            let json = serde_json::to_string(&reason).expect("serialize");
+            let back: DispatchReason = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, reason);
+        }
+        assert_eq!(
+            serde_json::to_string(&DispatchReason::PaneNotReady).unwrap(),
+            "\"pane-not-ready\"",
+            "must serialize as the bare string story.sh itself emits, not a tagged object"
+        );
+    }
+
+    #[test]
+    fn charter_inert_violation_flags_every_banned_character_individually() {
+        for banned in CHARTER_INERT_BANNED {
+            let value = format!("investigate story <n>{banned}then plan a fix");
+            assert!(
+                charter_inert_violation(&value),
+                "{banned:?} must be flagged"
+            );
+        }
+        assert!(
+            charter_inert_violation("line one\nline two"),
+            "a newline must be flagged even though it is not in CHARTER_INERT_BANNED itself"
+        );
+    }
+
+    #[test]
+    fn charter_inert_violation_allows_parentheses_and_quotes() {
+        // I4's own stated allowance (REMEDIATION.md item 4): neither can
+        // cause an embedded span to execute, so neutering them would ban
+        // ordinary prose for no safety gain.
+        assert!(!charter_inert_violation(
+            "investigate story <n> (see \"the plan\") and report back"
+        ));
+    }
+
+    #[test]
+    fn charter_inert_violation_allows_clean_text() {
+        assert!(!charter_inert_violation(
+            "Investigate and plan a fix for story <n> in this repo."
+        ));
+    }
+
+    /// The regression this module's own tests caught while writing this
+    /// check: `render_template`'s four placeholder tokens are legitimate
+    /// template syntax, each containing `<`/`>`, and a custom
+    /// `STORY_PROMPT` is EXPECTED to use them -- flagging every one would
+    /// have refused the shipped default templates themselves, which use
+    /// `<n>` verbatim.
+    #[test]
+    fn charter_inert_violation_allows_every_sanctioned_placeholder() {
+        assert!(!charter_inert_violation(
+            "story <n> in worktree <name> at <dir>, then run <reap>"
+        ));
+    }
+
+    /// The other half of the same fix: exempting the placeholder tokens
+    /// must not accidentally exempt `<`/`>` everywhere. A stray bracket
+    /// that is not part of one of the four exact tokens is still a real
+    /// shell redirection risk and must still be caught.
+    #[test]
+    fn charter_inert_violation_still_catches_a_stray_bracket_next_to_a_placeholder() {
+        assert!(charter_inert_violation("story <n> > /tmp/exfil"));
+        assert!(charter_inert_violation(
+            "story <nope> is not a real placeholder"
+        ));
+    }
+
+    /// The shipped defaults must themselves pass this check -- otherwise
+    /// every UNMODIFIED dispatch (`STORY_PROMPT`/`STORY_AUTO_PROMPT` never
+    /// set at all) would refuse itself the moment an operator's daemon
+    /// environment happened to also carry either var for an unrelated
+    /// reason. Extracted directly from the checked-in script rather than
+    /// copy-pasted, so a future edit to either default that reintroduces a
+    /// banned character (item 4's own "nobody maintains any of this"
+    /// warning) is caught here rather than only at dispatch time.
+    #[test]
+    fn the_shipped_default_templates_are_charter_inert() {
+        let script = include_str!("../../plugin/claude-code/bin/story.sh");
+        for (var, tpl_prefix, line_prefix) in [
+            ("PROMPT_TPL", "PROMPT_TPL=\"${STORY_PROMPT:-", "PROMPT_TPL="),
+            (
+                "AUTO_PROMPT_TPL",
+                "AUTO_PROMPT_TPL=\"${STORY_AUTO_PROMPT:-",
+                "AUTO_PROMPT_TPL=",
+            ),
+        ] {
+            let line = script
+                .lines()
+                .find(|l| l.starts_with(line_prefix))
+                .unwrap_or_else(|| panic!("story.sh must still define {var} on its own line"));
+            let default = line
+                .strip_prefix(tpl_prefix)
+                .and_then(|rest| rest.strip_suffix("}\""))
+                .unwrap_or_else(|| {
+                    panic!("{var}'s default-value shape changed -- update this extraction")
+                });
+            assert!(
+                !charter_inert_violation(default),
+                "{var}'s shipped default must itself be CHARTER-INERT"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_override_violation_is_none_when_everything_is_absent() {
+        assert_eq!(prompt_override_violation(false, None, None, None), None);
+        assert_eq!(prompt_override_violation(true, None, None, None), None);
+    }
+
+    #[test]
+    fn prompt_override_violation_is_none_when_everything_is_clean() {
+        assert_eq!(
+            prompt_override_violation(
+                false,
+                Some("a clean prompt"),
+                Some("also clean"),
+                Some("extra")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn prompt_override_violation_catches_story_prompt_when_attended() {
+        assert_eq!(
+            prompt_override_violation(false, Some("rm -rf `whoami`"), None, None),
+            Some("STORY_PROMPT")
+        );
+    }
+
+    #[test]
+    fn prompt_override_violation_ignores_story_prompt_when_auto() {
+        // STORY_PROMPT governs the ATTENDED template; an --auto dispatch
+        // never reads it, so a bad value there must not refuse a dispatch
+        // that was never going to use it.
+        assert_eq!(
+            prompt_override_violation(true, Some("rm -rf `whoami`"), None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn prompt_override_violation_catches_story_auto_prompt_only_when_auto() {
+        assert_eq!(
+            prompt_override_violation(true, None, Some("$(danger)"), None),
+            Some("STORY_AUTO_PROMPT")
+        );
+        assert_eq!(
+            prompt_override_violation(false, None, Some("$(danger)"), None),
+            None,
+            "STORY_AUTO_PROMPT must not gate an attended dispatch"
+        );
+    }
+
+    #[test]
+    fn prompt_override_violation_catches_story_prompt_extra_in_either_mode() {
+        for auto in [false, true] {
+            assert_eq!(
+                prompt_override_violation(auto, None, None, Some("please; also do X")),
+                Some("STORY_PROMPT_EXTRA"),
+                "STORY_PROMPT_EXTRA applies to both templates, auto={auto}"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_override_violation_reports_the_template_before_extra_when_both_are_dirty() {
+        assert_eq!(
+            prompt_override_violation(false, Some("bad `here`"), None, Some("also; bad")),
+            Some("STORY_PROMPT")
+        );
     }
 
     fn capture_of(content: &str) -> std::fs::File {

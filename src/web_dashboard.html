@@ -541,6 +541,28 @@ tbody tr:hover { background: var(--bg-sunken); }
 .toast.leaving { animation: toast-out 0.15s ease-in forwards; }
 @keyframes toast-out { to { opacity: 0; transform: translateX(12px); } }
 
+/* ---- Dispatch history (SH-232) ----
+   A --auto dispatch's result as a row that stays until dismissed, not a
+   toast that vanishes on its own -- nobody is necessarily watching the tab
+   when an autonomous dispatch finishes. Bottom-right so it never collides
+   with the toast stack (top-right), which attended dispatches still use. */
+.dispatch-history { position: fixed; bottom: 1rem; right: 1rem; display: flex; flex-direction: column-reverse; gap: 0.5rem; z-index: 60; max-width: 26rem; }
+.dispatch-history-row {
+  display: flex; align-items: flex-start; gap: 0.5rem;
+  background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  box-shadow: var(--shadow-md); border-radius: var(--radius-sm); padding: 0.625rem 0.875rem;
+  font-size: 0.8125rem; animation: toast-in 0.18s ease-out;
+}
+.dispatch-history-row.error { border-left-color: var(--danger); }
+.dispatch-history-row.success { border-left-color: var(--success); }
+.dispatch-history-body { flex: 1; min-width: 0; }
+.dispatch-history-reason { color: var(--fg-muted); font-family: var(--mono); font-size: 0.75rem; }
+.dispatch-history-dismiss {
+  flex-shrink: 0; background: transparent; border: none; color: var(--fg-muted); cursor: pointer;
+  font-size: 1rem; line-height: 1; padding: 0.125rem 0.25rem; border-radius: var(--radius-sm);
+}
+.dispatch-history-dismiss:hover { background: var(--bg-sunken); color: var(--fg); }
+
 /* ---- Live updates: card/row enter, exit, cross-column move, field flash ----
    All gated behind `prefers-reduced-motion: no-preference` (the JS side
    mirrors this via `prefersReducedMotion()` and skips adding these classes
@@ -779,6 +801,7 @@ tbody tr:hover { background: var(--bg-sunken); }
 </div>
 
 <div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
+<div class="dispatch-history" id="dispatch-history" role="region" aria-label="Autonomous dispatch results" aria-live="polite"></div>
 
 <script>
 (function() {
@@ -962,11 +985,18 @@ tbody tr:hover { background: var(--bg-sunken); }
     pending: {},
     lastFetchAt: 0,
     fetchOk: false,
-    // Story id -> {handle, timer} for a dispatch this tab is polling (SH-50).
-    // Keyed per-story rather than one global slot, matching the daemon's own
-    // support for several concurrent dispatches; a dispatch keeps polling
-    // (and still toasts on completion) even after its drawer closes.
-    dispatches: {}
+    // Story id -> {handle, timer, auto} for a dispatch this tab is polling
+    // (SH-50). Keyed per-story rather than one global slot, matching the
+    // daemon's own support for several concurrent dispatches; a dispatch
+    // keeps polling even after its drawer closes. An attended completion
+    // still toasts; a --auto completion becomes a `dispatchHistory` row
+    // instead (SH-232) -- see `finishDispatch`.
+    dispatches: {},
+    // Durable rows for --auto dispatch completions this tab has seen, newest
+    // first -- see `addDispatchHistoryRow`/`renderDispatchHistory`. Not
+    // persisted across a reload: it exists to survive a toast's own
+    // 4.5s/9s auto-dismiss, not a page close.
+    dispatchHistory: []
   };
 
   /** Set by `fetchData()` (from `diffSnapshots`) whenever fresh data arrives
@@ -1484,11 +1514,11 @@ tbody tr:hover { background: var(--bg-sunken); }
         // instead, since one of them is "try again later" and the other is
         // "something is actually broken".
         if (record.state === "ok") {
-          finishDispatch(storyId, "success", display);
+          finishDispatch(storyId, "success", display, current.auto, record.reason);
         } else if (record.state === "refused") {
-          finishDispatch(storyId, "error", "Dispatch refused — " + display);
+          finishDispatch(storyId, "error", "Dispatch refused — " + display, current.auto, record.reason);
         } else {
-          finishDispatch(storyId, "error", "Dispatch failed — " + display);
+          finishDispatch(storyId, "error", "Dispatch failed — " + display, current.auto, record.reason);
         }
       })
       .catch(function(err) {
@@ -1498,21 +1528,78 @@ tbody tr:hover { background: var(--bg-sunken); }
         // a mid-poll token re-prompt) retries rather than giving up on a
         // dispatch that is very possibly still running.
         if (attempt + 1 >= DISPATCH_MAX_POLLS) {
-          finishDispatch(storyId, "error", "Dispatch failed — lost track of the dispatch: " + err.message);
+          finishDispatch(storyId, "error", "Dispatch failed — lost track of the dispatch: " + err.message, current.auto);
           return;
         }
         current.timer = setTimeout(function() { pollDispatch(storyId, handle, attempt + 1); }, DISPATCH_POLL_MS);
       });
   }
 
-  /** Clears `storyId`'s entry, toasts the outcome, and resyncs -- a
-   * dispatch that succeeded moved the story to in-progress, and one worth
-   * knowing about even if its drawer is no longer open. */
-  function finishDispatch(storyId, variant, message) {
+  /** Clears `storyId`'s entry and resyncs -- a dispatch that succeeded moved
+   * the story to in-progress, and one worth knowing about even if its
+   * drawer is no longer open.
+   *
+   * An ATTENDED completion toasts, same as always -- someone is watching
+   * the tmux window directly, so the toast is a courtesy, not the only
+   * record. A `--auto` completion becomes a durable `dispatchHistory` row
+   * instead (SH-232): nobody is necessarily watching an unattended run, and
+   * a 4.5s/9s self-deleting toast is how SH-227's own incident review found
+   * this endpoint's ONLY result was reported. `reason` (SH-232's typed
+   * taxonomy) is optional -- absent for a client-side timeout/network
+   * failure, which never reached a `story.sh` result to read one from. */
+  function finishDispatch(storyId, variant, message, auto, reason) {
     delete state.dispatches[storyId];
-    toast(message, variant);
+    if (auto) {
+      addDispatchHistoryRow(storyId, variant, message, reason);
+    } else {
+      toast(message, variant);
+    }
     if (state.drawerId === storyId) renderDrawer();
     fetchData();
+  }
+
+  var dispatchHistorySeq = 0;
+
+  /** Adds a durable row for a finished `--auto` dispatch and re-renders the
+   * panel. Newest first, unbounded within this tab's own session -- a user
+   * who lets many autonomous dispatches pile up unread can dismiss them
+   * individually or in a batch; there is no server-side cap to mirror here
+   * since this list is not the daemon's own persisted history (SH-232), just
+   * this tab's memory of what it has already seen. */
+  function addDispatchHistoryRow(storyId, variant, message, reason) {
+    state.dispatchHistory.unshift({
+      key: "dh-" + (++dispatchHistorySeq),
+      storyId: storyId,
+      variant: variant,
+      message: message,
+      reason: reason || null
+    });
+    renderDispatchHistory();
+  }
+
+  function dismissDispatchHistoryRow(key) {
+    state.dispatchHistory = state.dispatchHistory.filter(function(row) { return row.key !== key; });
+    renderDispatchHistory();
+  }
+
+  function renderDispatchHistory() {
+    var panel = $("dispatch-history");
+    clear(panel);
+    state.dispatchHistory.forEach(function(row) {
+      panel.appendChild(el("div", { class: "dispatch-history-row " + row.variant }, [
+        el("div", { class: "dispatch-history-body" }, [
+          el("strong", {}, [row.storyId + ": "]),
+          row.message,
+          row.reason ? el("div", { class: "dispatch-history-reason" }, [row.reason]) : null
+        ]),
+        el("button", {
+          class: "dispatch-history-dismiss",
+          type: "button",
+          "aria-label": "Dismiss this dispatch result",
+          onClick: function() { dismissDispatchHistoryRow(row.key); }
+        }, ["×"])
+      ]));
+    });
   }
 
   // ============================================================
